@@ -961,6 +961,7 @@ it.live(
         assert.strictEqual(yield* enroll(alice, { organizationId: bob.organization.id }), 404);
         assert.strictEqual(yield* enroll({}, { organizationId: alice.organization.id }), 401);
         assert.strictEqual(yield* enroll(alice, { organizationId: alice.organization.id, extra: true }), 422);
+        assert.strictEqual(yield* enroll(alice, { organizationId: "not-a-uuid" }), 422);
         // The slug no longer names an Organization to the CLI surface.
         assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug }), 422);
       }).pipe(Effect.provide(layer));

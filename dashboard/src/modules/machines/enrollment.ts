@@ -1,6 +1,7 @@
 import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
+import { Uuid } from "#/lib/schema";
 
 export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -14,7 +15,7 @@ const OrganizationSlug = Schema.String.check(
 );
 
 /** The CLI names its Organization by ID, the dashboard by the slug in its URL. */
-const OrganizationId = Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty());
+const OrganizationId = Uuid;
 
 export const MintMachineEnrollmentInput = Schema.Struct({
   organizationSlug: OrganizationSlug,
