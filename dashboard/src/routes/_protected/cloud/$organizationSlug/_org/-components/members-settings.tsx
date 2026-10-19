@@ -27,7 +27,6 @@ import { toErrorMessage } from "#/lib/error-message";
 import {
   inviteMemberServerFn,
   leaveOrganizationServerFn,
-  type listMembersServerFn,
   removeMemberServerFn,
   revokeInviteServerFn,
   setMemberRoleServerFn,
@@ -185,7 +184,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   );
 }
 
-type PendingInvite = Awaited<ReturnType<typeof listMembersServerFn>>["invites"][number];
+type PendingInvite = { id: string; email: string | null; role: InviteRole; invited_by: string; expires_at: string };
 
 export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
   invites: readonly PendingInvite[];
