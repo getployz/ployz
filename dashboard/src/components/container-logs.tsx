@@ -1,4 +1,4 @@
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link } from "@tanstack/react-router";
 import { LatestButton, LOG_TIME_COLUMN, LogEmpty, LogHeader, LogSkeleton, useLogScroll } from "./log-scroll";
@@ -11,6 +11,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectI
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
@@ -33,8 +34,13 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const scope = useCollectionScope();
   const stream = getContainerLogStream(selection, scope);
   const { collection } = stream;
+  useEffect(() => stream.view(), [stream]);
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
-  const { opened, offline, refused, hidden, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  const { opened, offline: streamOffline, refused: streamRefused, hidden, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  // The log stream connects apart from the Runtime Watch, so it says the servers are offline only when the watch agrees.
+  const watched = useRuntimeLens(selection.organizationSlug).status === "observed";
+  const offline = streamOffline && !watched;
+  const refused = streamRefused || (streamOffline && watched);
   const timestamp = logTimestamp(useTimeZone());
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
@@ -64,9 +70,10 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   });
   const machines = new Map(loaded.map(row => [row.machineId, row.machineName]));
   const services = [...new Set(loaded.map(row => row.serviceName))];
-  // A line names its service and server only where they vary; a filter shows only with something to pick.
+  // A filter shows only with something to pick.
   const servicesVary = !selection.serviceId && services.length > 1;
   const machinesVary = machines.size > 1;
+  const tag = sourceTag(loaded, selection);
   const linkClass = "underline underline-offset-4";
   const offlineLink = <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className={linkClass}>Check your servers</Link>;
   const [only] = lacking.length === 1 ? lacking : [];
@@ -126,14 +133,14 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
               if (row.kind === "gap") {
                 return <div key={item.key} ref={virtual.measureElement} data-index={item.index} role="note" className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6 text-muted-foreground italic max-sm:flex-col max-sm:gap-0" style={{ transform: `translateY(${item.start}px)` }}>
                   <time className={cn("shrink-0 max-sm:w-auto", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
-                  <span className="min-w-0 flex-1">{servicesVary || machinesVary ? <span className="mr-3">{[servicesVary && row.serviceName, machinesVary && row.machineName].filter(Boolean).join(" · ")}</span> : null}{gapReasons[row.reason]}</span>
+                  <span className="min-w-0 flex-1">{tag(row) ? <span className="mr-3">{tag(row)}</span> : null}{gapReasons[row.reason]}</span>
                 </div>;
               }
               // A phone stacks the time over its line, which keeps the width.
               return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6 max-sm:flex-col max-sm:gap-0" style={{ transform: `translateY(${item.start}px)` }}>
                 <time className={cn("shrink-0 text-muted-foreground max-sm:w-auto", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
                 <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", levelTone[row.level])}>
-                  {servicesVary || machinesVary ? <span className="mr-3 text-muted-foreground">{[servicesVary && row.serviceName, machinesVary && row.machineName].filter(Boolean).join(" · ")}</span> : null}{row.message}
+                  {tag(row) ? <span className="mr-3 text-muted-foreground">{tag(row)}</span> : null}{row.message}
                 </span>
               </div>;
             })}
@@ -143,6 +150,17 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
       </div>
     </div>
   </div>;
+}
+
+/**
+ * What a line names of where it came from, only where that varies: its service, its server, and its container when a
+ * service has more than one on a server, as a Deploy that replaces one leaves the old copy's last lines beside the new one's.
+ */
+export function sourceTag(rows: readonly ContainerLogRow[], selection: Pick<ContainerLogSelection, "serviceId">) {
+  const servicesVary = !selection.serviceId && new Set(rows.map(row => row.serviceName)).size > 1;
+  const machinesVary = new Set(rows.map(row => row.machineId)).size > 1;
+  const copiesVary = new Set(rows.map(row => row.containerId)).size > new Set(rows.map(row => `${row.serviceName}/${row.machineId}`)).size;
+  return (row: ContainerLogRow) => [servicesVary && row.serviceName, machinesVary && row.machineName, copiesVary && row.containerId.slice(0, 7)].filter(Boolean).join(" · ");
 }
 
 function LogFilter({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
