@@ -195,7 +195,13 @@ fn run_json_with<V: AsRef<std::ffi::OsStr>>(
 fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
     let (code, json, _) = run_json(&["ctx", "ls", "--json"]);
     assert_eq!(code, Some(0));
-    assert_eq!(json, serde_json::json!({ "contexts": [] }));
+    assert_eq!(json.get("contexts"), Some(&serde_json::json!([])), "{json}");
+    assert!(
+        json.get("next")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|next| next.ends_with("server ls")),
+        "{json}"
+    );
 
     let (code, json, _) = run_json(&["ctx", "use", "missing", "--json"]);
     assert_eq!(code, Some(1));
