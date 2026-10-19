@@ -91,10 +91,10 @@ Some things are not tools. Run these yourself in a terminal:
 
 Tools that can delete something when they run are marked destructive: `deploy`,
 `deployment_retry`, `deployment_start`, `discard`, `environment_remove`, `project_remove`, the
-server commands that drain, clean, forget or remove a server, the Volume commands that move, mirror
-or release a copy or remove a mirror, and removing an organization member or invite. Staging a
-removal, such as `service_remove`, deletes nothing until the next deploy, so it isn't marked. When
-one of them needs your approval (see
+server commands that drain, clean, forget or remove a server, the Volume commands that move,
+mirror, release or restore a copy or remove a mirror, and removing an organization member or
+invite. Staging a removal, such as `service_remove`, deletes nothing until the next deploy, so it
+isn't marked. When one of them needs your approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Your answer
 goes to Ployz Cloud with your own sign-in, not the agent's token. Removing a
