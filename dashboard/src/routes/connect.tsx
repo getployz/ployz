@@ -12,6 +12,7 @@ import { connectChoicesQueryOptions, connectPageQuery } from "#/modules/agent/co
 import { remoteAgentsEnabled } from "#/modules/agent/connect.server";
 import { runAppEffect } from "#/server/run.server";
 import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
+import { toErrorMessage } from "#/lib/error-message";
 
 // An agent's OAuth authorize request lands here twice: signed out to sign in, then signed in to grant access.
 export const Route = createFileRoute("/connect")({
@@ -58,7 +59,7 @@ function ConnectConsent({ email, organizations, selected, agent }: { email: stri
         const decided = await decide({ data: { organizationId, accept, oauthQuery: connectPageQuery() } });
         window.location.href = decided.url;
       } catch (failure) {
-        setError(failure instanceof Error ? failure.message : "Ployz couldn't record your answer. Try again.");
+        setError(toErrorMessage(failure, "Ployz couldn't record your answer. Try again."));
       }
     });
   }

@@ -220,7 +220,8 @@ is disabled.
 If a server is offline, the organization stays, disabled, until that server is back. Then click
 **Try again**.
 
-With no organization left, the dashboard offers **Create an organization**.
+The dashboard then opens another of your organizations. With none left, it offers **Create an
+organization**.
 
 From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,

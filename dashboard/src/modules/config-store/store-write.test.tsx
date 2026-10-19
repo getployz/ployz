@@ -113,7 +113,7 @@ it("undoes an edit the Store refuses as a conflict and shows what changed elsewh
 it("words a refused rename as the Store does: a referenced variable isn't a stale revision", async () => {
   const test = setup(view(2, 1));
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
-  const message = "web.API_URL is used by web.UPSTREAM; rename it with update_references to switch them to PUBLIC_API_URL";
+  const message = "web.API_URL is used by web.UPSTREAM; rename it with updated references to switch them to PUBLIC_API_URL";
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message, details: { variables: ["web.UPSTREAM"] } } });
   let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
   act(() => { edit = test.edit({ environment: ref, changes: [{ op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" }] }); });

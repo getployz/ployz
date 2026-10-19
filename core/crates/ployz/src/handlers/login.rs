@@ -6,7 +6,8 @@ use serde::Serialize;
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{env, switch, value};
 use crate::cloud_login::{
-    self, Account, CredentialStore, DEFAULT_CLOUD, Organization, Pending, SignedIn, Start,
+    self, Account, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Pending, SignedIn,
+    Start,
 };
 
 pub(super) fn login_command(command: Command) -> Command {
@@ -57,10 +58,12 @@ struct PendingReport<'a> {
 pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = CredentialStore::beside(&config_path(matches)?);
-    let cloud = match matches.get_one::<String>("cloud-url") {
-        Some(cloud) => cloud.clone(),
-        None => store.cloud()?.unwrap_or_else(|| DEFAULT_CLOUD.to_owned()),
-    };
+    let stored = readable_cloud(&store, "Replacing it.")?;
+    let cloud = matches
+        .get_one::<String>("cloud-url")
+        .cloned()
+        .or(stored)
+        .unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
     let wait = matches.get_flag("wait") || !crate::ui::json();
     runtime()?.block_on(async {
         let (pending, resumed) = match cloud_login::start(&store, &cloud).await? {
@@ -105,7 +108,13 @@ fn report(signed_in: &SignedIn) -> Result<(), Error> {
 
 pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(leaf_matches(root))?);
+    readable_cloud(&store, "Forgetting it.")?;
     let out = runtime()?.block_on(cloud_login::logout(&store))?;
+    if let Some(error) = out.as_ref().and_then(|out| out.unrevoked.as_ref()) {
+        crate::ui::warn(format!(
+            "{error} Signed out here only: Cloud may still honour this device's sign-in until you remove it with ployz token rm."
+        ));
+    }
     let next = out.as_ref().and_then(|out| {
         let device = out.device.as_deref()?;
         // Run from another signed-in device or with PLOYZ_TOKEN: this one is signed out.
@@ -127,6 +136,17 @@ pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
     })?;
     out.as_ref()
         .map_or(Ok(()), |out| super::account::unconfirmed(&out.servers))
+}
+
+/// The stored sign-in's Cloud, warning with `then` when it is unreadable and so is none.
+fn readable_cloud(store: &CredentialStore, then: &str) -> Result<Option<String>, Error> {
+    match store.cloud() {
+        Err(error @ LoginError::Corrupt { .. }) => {
+            crate::ui::warn(format!("{error} {then}"));
+            Ok(None)
+        }
+        stored => Ok(stored?),
+    }
 }
 
 #[derive(serde::Serialize)]

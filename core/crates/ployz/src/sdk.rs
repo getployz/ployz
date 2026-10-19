@@ -33,6 +33,7 @@ mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
+mod sealed;
 mod store_call;
 mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
@@ -61,6 +62,9 @@ pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_histo
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
     expected_fingerprints,
+};
+pub use sealed::{
+    LiveLogRecord, LogLine, PendingNames, ScrubbedHistoryStream, ScrubbedLogStream, SealedNames,
 };
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
