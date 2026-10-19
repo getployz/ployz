@@ -28,7 +28,7 @@ pub(crate) enum Error {
     Http(#[source] reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("enroll HTTP {status}: {body}")]
+    #[error("enroll HTTP {status}{}", crate::cloud_login::readable(.body))]
     Status { status: u16, body: String },
     #[error(
         "waited {} minutes for another Server to found this Organization; if it was deleted, run ployz server forget or use Forget Servers in the dashboard",
@@ -639,6 +639,20 @@ mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
+
+    #[test]
+    fn an_enroll_error_page_prints_as_its_status_alone() {
+        let page = Error::Status {
+            status: 502,
+            body: "<html><body>Bad gateway</body></html>".to_owned(),
+        };
+        assert_eq!(page.to_string(), "enroll HTTP 502");
+        let json = Error::Status {
+            status: 409,
+            body: r#"{"error":"taken"}"#.to_owned(),
+        };
+        assert_eq!(json.to_string(), r#"enroll HTTP 409: {"error":"taken"}"#);
+    }
 
     #[test]
     fn cloud_enroll_storage_wire_accepts_zfs_with_and_without_a_device() {

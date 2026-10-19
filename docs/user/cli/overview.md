@@ -217,7 +217,7 @@ ployz up
 The first time, Ployz creates a project named after the directory, adds a service with an https
 address, builds your app, deploys it and prints the address.
 
-An upload can be at most 256 MiB compressed. To deploy on every push instead, see
+An upload can be at most 95 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
 
 `ployz github ls` lists the GitHub accounts your organization is connected to, and the link to
