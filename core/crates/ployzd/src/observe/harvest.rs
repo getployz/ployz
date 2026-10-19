@@ -331,7 +331,9 @@ impl Harvester {
         self.damage.retain(|id, _| present.contains(id));
         self.owned_by_event.retain(|id, _| present.contains(id));
         self.runs.retain(|id, _| present.contains(id));
-        self.delivered.retain(|(id, _), _| present.contains(id));
+        let newest = self.last_event_nanos;
+        self.delivered
+            .retain(|(id, _), at| present.contains(id) || Some(*at) == newest);
         self.stop_signals.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id);
@@ -3544,6 +3546,24 @@ mod tests {
             running.harvester.on_inspected(other, Inspected::Gone);
         }
         assert_eq!(crashes(&host).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_removed_containers_exit_replayed_after_a_rescan_queues_no_second_crash() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let die = event(
+            "die",
+            T0 + 1,
+            &[("ployz.service.id", SERVICE_ID), ("exitCode", "1")],
+        );
+        running.harvester.on_docker_event(die.clone());
+        running.settle_exits(|| Inspected::Gone);
+        fs::create_dir_all(host.root.0.join("containers")).unwrap();
+        running.harvester.rescan();
+        running.harvester.on_docker_event(die);
+        running.settle_exits(|| Inspected::Gone);
+        assert_eq!(crashes(&host).len(), 1);
     }
 
     #[tokio::test]
