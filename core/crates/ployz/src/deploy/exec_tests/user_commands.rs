@@ -1,6 +1,3 @@
-//! The user stop, start, restart and removal, run through `cleanup`'s user
-//! commands against the owner rules the `Scripted` fake models.
-
 use std::time::Duration;
 
 use ployz_core::{
@@ -13,7 +10,6 @@ use ployz_core::{
 use super::*;
 use crate::deploy::cleanup::{self, UserStarted};
 
-/// `Scripted` with every want it was sent, in order.
 struct Recording {
     fake: Scripted,
     wants: Mutex<Vec<ContainerWant>>,
@@ -113,7 +109,6 @@ enum Command {
     Remove,
 }
 
-/// What one command did: its answer, the wants it sent, and the copy after.
 struct Ran {
     answer: Result<Option<UserStarted>, RpcError>,
     wants: Vec<ContainerWant>,
@@ -150,8 +145,6 @@ async fn run_command(command: Command, recording: Recording) -> Ran {
     }
 }
 
-/// Run `command` on copy `1`, recorded at `rotation` and stopped when `stopped`,
-/// with the owner answering `steps` for the scripted lifecycle calls.
 async fn row(command: Command, rotation: CopyRotation, stopped: bool, steps: Vec<Step>) -> Ran {
     let (machine, copy) = (machine('a'), container('1'));
     let fake = Scripted::new(steps).with_copy(&machine, &copy, rotation);
@@ -243,7 +236,6 @@ fn conflict(ran: &Ran) {
 async fn user_stop_start_restart_remove() {
     let theirs = DeploymentLogId::parse("stopped-before").unwrap();
 
-    // Stop of an In or Pending copy: Held(fresh run), wait unlisted, Stopped.
     for rotation in [CopyRotation::In, CopyRotation::Pending] {
         let ran = row(
             Command::Stop,
@@ -258,7 +250,6 @@ async fn user_stop_start_restart_remove() {
         assert_eq!(ran.wants, [held(&run, rotation), stopped()]);
     }
 
-    // Stop of a copy already Held keeps its run.
     let ran = row(
         Command::Stop,
         CopyRotation::Held(theirs.clone()),
@@ -273,7 +264,6 @@ async fn user_stop_start_restart_remove() {
         [held(&theirs, CopyRotation::Held(theirs.clone())), stopped()]
     );
 
-    // Stop of an Out copy only stops it.
     let ran = row(
         Command::Stop,
         CopyRotation::Out,
@@ -285,7 +275,6 @@ async fn user_stop_start_restart_remove() {
     assert_eq!(ran.rotation, Some(CopyRotation::Out));
     assert_eq!(ran.wants, [stopped()]);
 
-    // A stop a proxy never confirms sends no Stopped: the copy is left running and Held.
     let mut fake = Scripted::new(vec![inspected()]).with_copy(
         &machine('a'),
         &container('1'),
@@ -303,7 +292,6 @@ async fn user_stop_start_restart_remove() {
     let run = held_run(&ran.rotation);
     assert_eq!(ran.wants, [held(&run, CopyRotation::In)]);
 
-    // Start of a Held copy: In with that run, starting it.
     let ran = row(
         Command::Start,
         CopyRotation::Held(theirs.clone()),
@@ -321,7 +309,6 @@ async fn user_stop_start_restart_remove() {
         )]
     );
 
-    // Start of a Pending copy: In once healthy, no run.
     let ran = row(
         Command::Start,
         CopyRotation::Pending,
@@ -333,12 +320,10 @@ async fn user_stop_start_restart_remove() {
     assert_eq!(ran.rotation, Some(CopyRotation::In));
     assert_eq!(ran.wants, [brought_in(None, CopyRotation::Pending)]);
 
-    // Start of an In copy that is stopped: In, met, with no run.
     let ran = row(Command::Start, CopyRotation::In, true, vec![inspected()]).await;
     assert_eq!(ran.answer.unwrap(), Some(UserStarted::In));
     assert_eq!(ran.wants, [brought_in(None, CopyRotation::In)]);
 
-    // Start of a Pending copy that fails health stays out of the routes.
     let mut fake = Scripted::new(vec![inspected()]).with_copy(
         &machine('a'),
         &container('1'),
@@ -353,7 +338,6 @@ async fn user_stop_start_restart_remove() {
     assert_eq!(ran.answer.unwrap(), Some(UserStarted::NotIn(Some(verdict))));
     assert_eq!(ran.rotation, Some(CopyRotation::Pending));
 
-    // Start and restart of an Out copy are refused and send nothing.
     for command in [Command::Start, Command::Restart] {
         let ran = row(command, CopyRotation::Out, true, vec![inspected()]).await;
         conflict(&ran);
@@ -361,7 +345,6 @@ async fn user_stop_start_restart_remove() {
         assert_eq!(ran.rotation, Some(CopyRotation::Out));
     }
 
-    // Restart of an In copy: Held(fresh run), wait unlisted, Stopped, In with that run.
     let ran = row(
         Command::Restart,
         CopyRotation::In,
@@ -391,7 +374,6 @@ async fn user_stop_start_restart_remove() {
         ]
     );
 
-    // Restart of a Held copy only brings it In with its run.
     let ran = row(
         Command::Restart,
         CopyRotation::Held(theirs.clone()),
@@ -408,7 +390,6 @@ async fn user_stop_start_restart_remove() {
         )]
     );
 
-    // Restart of a Pending copy: Stopped then Running, outside rotation.
     let ran = row(
         Command::Restart,
         CopyRotation::Pending,
@@ -420,8 +401,6 @@ async fn user_stop_start_restart_remove() {
     assert_eq!(ran.rotation, Some(CopyRotation::Pending));
     assert_eq!(ran.wants, [stopped(), started_pending()]);
 
-    // Removal of a stopped In copy, or a Held one: Out with allow_empty, wait
-    // unlisted, Gone.
     for (rotation, was_stopped) in [
         (CopyRotation::In, true),
         (CopyRotation::Held(theirs.clone()), false),
@@ -445,7 +424,6 @@ async fn user_stop_start_restart_remove() {
         );
     }
 
-    // Removal of a Pending or Out copy: Gone.
     for rotation in [CopyRotation::Pending, CopyRotation::Out] {
         let ran = row(
             Command::Remove,
@@ -459,7 +437,6 @@ async fn user_stop_start_restart_remove() {
         assert_eq!(ran.wants, [gone()]);
     }
 
-    // Removal of a copy already gone converges with nothing sent.
     let fake = Scripted::new(vec![Step(
         Call::Inspect(machine('a'), container('1')),
         Reply::Error(RpcError {
@@ -473,8 +450,6 @@ async fn user_stop_start_restart_remove() {
     ran.answer.unwrap();
     assert!(ran.wants.is_empty());
 
-    // A proxy copy is never Held, In or Out: stop and remove go straight to the
-    // lifecycle, and a start stays outside rotation.
     for (command, call, want) in [
         (Command::Stop, Call::Stop as fn(_, _) -> _, stopped()),
         (Command::Start, Call::Restart, started_pending()),

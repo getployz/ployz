@@ -91,9 +91,8 @@ pub(super) struct DeployService {
     pub(super) copies: Arc<Mutex<BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>>>,
     /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
     pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
-    /// Each copy whose rotation a want moved, a test seeded, or that this fake created,
-    /// removed copies included. A listed Container no want touched keeps the rotation
-    /// it was listed with.
+    /// Removed copies stay. A listed Container no want touched keeps the rotation it
+    /// was listed with.
     rotations: Arc<Mutex<BTreeMap<ContainerId, Rotated>>>,
     /// Copies that were In and left: a proxy that never drops a route keeps them.
     unrouted: Arc<Mutex<BTreeSet<ContainerId>>>,
@@ -108,7 +107,6 @@ pub(super) struct DeployService {
     pull_failure: RpcError,
 }
 
-/// A copy's Service and rotation as its owner holds them.
 #[derive(Clone, Debug)]
 pub(super) struct Rotated {
     service: QualifiedService,
@@ -222,7 +220,6 @@ impl DeployService {
         self
     }
 
-    /// The proxy on `machine_id` never confirms a copy left its route.
     pub(super) fn never_unroute_on(mut self, machine_id: MachineId) -> Self {
         self.sticky_proxies.insert(machine_id);
         self
@@ -364,7 +361,6 @@ impl DeployService {
         self.listed_containers.clone()
     }
 
-    /// `container` starts at `rotation`, as its owner last wrote it.
     pub(super) fn with_rotation(self, container: ContainerId, rotation: CopyRotation) -> Self {
         let service = self.identity(&container);
         self.rotations
@@ -374,12 +370,10 @@ impl DeployService {
         self
     }
 
-    /// Each copy whose rotation a want moved, seeded, or that this fake created.
     pub(super) fn rotations(&self) -> Arc<Mutex<BTreeMap<ContainerId, Rotated>>> {
         self.rotations.clone()
     }
 
-    /// Copies that left In; a sticky proxy still routes them.
     pub(super) fn unrouted(&self) -> Arc<Mutex<BTreeSet<ContainerId>>> {
         self.unrouted.clone()
     }
@@ -442,7 +436,6 @@ impl DeployService {
         rotations.insert(container_id, Rotated { service, rotation });
     }
 
-    /// The Service inspect reports `container_id` in: its listing's, else `app/web`.
     fn identity(&self, container_id: &ContainerId) -> QualifiedService {
         self.listed_containers
             .lock()
@@ -455,8 +448,6 @@ impl DeployService {
             )
     }
 
-    /// What each Machine's proxy routes for `service`: every In copy, and on a sticky
-    /// proxy every copy that ever was.
     fn routes(&self, service: &QualifiedService) -> RoutesRead {
         let removed = self.removed.lock().unwrap().clone();
         let mut copies: BTreeMap<ContainerId, QualifiedService> = self
@@ -506,8 +497,6 @@ impl DeployService {
         }
     }
 
-    /// The owner's answer to a rotation `want` on `container_id`: refused by the edge
-    /// table, a held health wait for In, or the rotation written.
     async fn turn(
         &self,
         machine_id: MachineId,

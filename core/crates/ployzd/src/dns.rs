@@ -74,8 +74,7 @@ struct Projection {
 struct ProjectionInputs {
     observations: Vec<ContainerObservation>,
     down: DownMachines,
-    /// The routes the last projection answered with, which rule f keeps while
-    /// no copy of a Service is reachable.
+    /// Kept while no copy of a Service is reachable.
     routed: ProxyRoutes,
 }
 

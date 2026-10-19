@@ -1,6 +1,3 @@
-//! A Volume Move across the fleet: the cut on the source Machine and the Writer
-//! start on the destination, with the source copy routed before the Move.
-
 use super::*;
 use crate::storage::test_support::FakePlugin;
 use crate::volume_copy::{CUT_ROUTE, INSPECT_ROUTE, WRITER_ROUTE};
@@ -22,7 +19,6 @@ fn snapshot() -> Value {
     json!({"name":"f-1", "guid":"7", "created_unix_seconds":1_700_000_000})
 }
 
-/// A plugin whose copy reads `before` until `route` runs, and `after` from then on.
 fn plugin(before: Value, route: &str, after: Value) -> FakePlugin {
     let plugin = FakePlugin::default();
     plugin.reply(INSPECT_ROUTE, before);
@@ -38,7 +34,6 @@ fn plugin(before: Value, route: &str, after: Value) -> FakePlugin {
 }
 
 impl Fleet {
-    /// `index`'s Machine API with its own fake plugin.
     fn with_plugin(&self, index: usize, plugin: &FakePlugin) -> MachineService {
         let directory = self.dir.join(format!("plugin-{}", MachineId::random()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -74,7 +69,6 @@ async fn try_set_copy(
         .map_err(|error| format!("{error}: {response:?}"))
 }
 
-/// The cut: the source stops its holder and parks the root in a slot.
 async fn cut(fleet: &Fleet, index: usize) {
     let source = fleet.with_plugin(
         index,
@@ -145,9 +139,6 @@ async fn moved_service_stays_routed() {
     );
 }
 
-/// The moved copy's health fails: the Writer start fails instead of answering done, so
-/// the Move never removes its source, which stays In. A resend once the copy is healthy
-/// routes it.
 #[tokio::test]
 async fn unhealthy_destination_keeps_source_and_fails_run() {
     let fleet = Fleet::start().await;
@@ -193,8 +184,8 @@ async fn unhealthy_destination_keeps_source_and_fails_run() {
     fleet.published(moved, Some(CopyRotation::In)).await;
 }
 
-/// A Release before the commit starts the cut's holder again. The cut left its
-/// rotation alone, so it routes again; an Out written by the cut would be final.
+/// The cut left its rotation alone, so it routes again; an Out written by the cut
+/// would be final.
 #[tokio::test]
 async fn a_release_after_the_cut_routes_the_kept_copy_again() {
     let fleet = Fleet::start().await;

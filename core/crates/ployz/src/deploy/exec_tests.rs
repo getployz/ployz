@@ -106,7 +106,6 @@ enum Reply {
 
 struct Step(Call, Reply);
 
-/// A copy as its owner records it.
 #[derive(Clone, Debug)]
 struct Recorded {
     machine_id: MachineId,
@@ -141,7 +140,6 @@ impl Recorded {
     }
 }
 
-/// One Machine's proxy, as `read_routes` shows its route.
 #[derive(Clone, Copy, Debug)]
 enum Ack {
     /// Lists exactly the In copies on every read.
@@ -154,7 +152,6 @@ enum Ack {
     Missing,
 }
 
-/// Which rotation ask a rival move lands before.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Ask {
     In,
@@ -172,7 +169,6 @@ impl Ask {
     }
 }
 
-/// A rotation write or a removal, in the order the owners applied them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Move {
     To(ContainerId, CopyRotation),
@@ -201,12 +197,10 @@ struct Scripted {
     /// What each Machine reports of each image it pulls; none when absent.
     pull_replies: BTreeMap<MachineId, ImagePulled>,
     pulled: Mutex<BTreeSet<MachineId>>,
-    /// Every copy the owners record, seeded by `with_copy` or on first sight.
     copies: Mutex<BTreeMap<ContainerId, Recorded>>,
-    /// How each Machine's proxy acks; a Machine it omits acks promptly.
+    /// A Machine it omits acks promptly.
     acks: BTreeMap<MachineId, Ack>,
     route_reads: Mutex<BTreeMap<MachineId, usize>>,
-    /// Machines the membership reports Down: their routes no longer count.
     down: BTreeSet<MachineId>,
     /// An In ask on this copy leaves it where it is and answers this verdict.
     unhealthy_in: BTreeMap<ContainerId, HealthVerdict>,
@@ -253,7 +247,6 @@ impl Scripted {
         }
     }
 
-    /// Record a copy of `api` at gen 1 before the run.
     fn with_copy(
         self,
         machine_id: &MachineId,
@@ -287,7 +280,6 @@ impl Scripted {
         self
     }
 
-    /// The copy's rotation now; none once removed or never seen.
     fn rotation(&self, container_id: &ContainerId) -> Option<CopyRotation> {
         self.copies
             .lock()
@@ -301,7 +293,6 @@ impl Scripted {
         self.moves.lock().unwrap().clone()
     }
 
-    /// The copies this run brought In, in order.
     fn brought_in(&self) -> Vec<ContainerId> {
         self.moves()
             .into_iter()
@@ -312,7 +303,6 @@ impl Scripted {
             .collect()
     }
 
-    /// Each live proxy's route once `applied` was applied.
     fn routes_at(&self, applied: &Move) -> BTreeMap<MachineId, Option<BTreeSet<ContainerId>>> {
         let at = self
             .moves()
@@ -341,8 +331,6 @@ impl Scripted {
         assert!(self.steps.lock().unwrap().is_empty());
     }
 
-    /// `observed` with the rotation and gen its owner records, recording a copy
-    /// seen for the first time.
     fn recorded(&self, mut observed: ContainerObservation) -> ContainerObservation {
         let mut copies = self.copies.lock().unwrap();
         let copy = copies
@@ -394,8 +382,7 @@ impl Scripted {
             .collect()
     }
 
-    /// Each live Machine's route for `service`. `advance` counts the read
-    /// toward a delayed ack.
+    /// `advance` counts the read toward a delayed ack.
     fn routes(
         &self,
         service: &QualifiedService,
@@ -451,7 +438,6 @@ impl Scripted {
             .collect()
     }
 
-    /// The owner's rules for one rotation ask, applying any rival move first.
     fn decide(
         &self,
         machine_id: &MachineId,
@@ -1171,7 +1157,6 @@ fn observation(
     .unwrap()
 }
 
-/// A copy already In, as every serving copy is before the run.
 fn routed(
     machine_id: &MachineId,
     container_id: &ContainerId,
@@ -1184,8 +1169,6 @@ fn routed(
     observation
 }
 
-/// A running, addressed In copy that `newest_shape` selects, labelled with
-/// the Deploy that created it when `deploy` is given.
 fn serving(
     machine_id: &MachineId,
     container_id: &ContainerId,

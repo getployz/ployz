@@ -861,8 +861,8 @@ async fn restore_group<C: MachineOperations>(
     }
 }
 
-/// Remove a new copy of a failed group. The owner refuses Gone on a copy that
-/// already came In, so that one leaves through Out and the unlisted wait first.
+/// The owner refuses Gone on a copy that already came In, so that one leaves
+/// through Out and the unlisted wait first.
 async fn discard_new<C: MachineOperations>(
     client: &C,
     progress: &Progress,
@@ -938,11 +938,8 @@ enum Done {
     Publish(usize, Published),
 }
 
-/// How a Service's new copies came In and its old copies left.
 enum Published {
-    /// Every new copy is In and every live proxy lists them.
     Listed,
-    /// These Machines never listed the new copies.
     Unconfirmed(Vec<MachineId>),
     /// A newer gen already serves: the new copies are discarded.
     Superseded,
@@ -950,9 +947,6 @@ enum Published {
     Failed(ExecutionError),
 }
 
-/// Bring a Service's new copies In one at a time, wait until every live proxy
-/// lists them, then retire the old copies the plan names, one Out at a time.
-/// An old copy that cannot leave is reported left running.
 #[expect(
     clippy::too_many_arguments,
     reason = "one call site; the group's copies travel with the rows"
@@ -1018,7 +1012,6 @@ async fn publish_group<C: MachineOperations>(
     Published::Listed
 }
 
-/// Bring `new` In one at a time, then wait until every live proxy lists them.
 async fn route_new<C: MachineOperations>(
     client: &C,
     operations: &[DeployOperation],
@@ -1083,7 +1076,6 @@ async fn route_new<C: MachineOperations>(
     Ok(())
 }
 
-/// The old copies a group's ReplaceContainer tasks name, in task order.
 fn old_copies(
     group: &ServiceGroup,
     operations: &[DeployOperation],
@@ -1291,8 +1283,6 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// The old copy a stop-first step replaces, inspected once for every
-    /// task of the step. A copy already gone is `None`.
     async fn inspect_step<C: MachineOperations>(
         &self,
         client: &C,
@@ -1336,8 +1326,6 @@ impl<'a> Rows<'a> {
         QualifiedService::new(self.namespace.clone(), spec.name.clone())
     }
 
-    /// The gen this run gives new copies of `service`: one above the highest
-    /// gen among the copies it sees, computed once per Service.
     async fn gen_for<C: MachineOperations>(
         &self,
         client: &C,
@@ -1389,8 +1377,8 @@ impl<'a> Rows<'a> {
             .map_or_else(|| id.to_string(), |name| name.to_string())
     }
 
-    /// Report `copy` left running. A Machine that was cut off or powered off
-    /// can route it again once it is back, so the report names each one.
+    /// A Machine that was cut off or powered off can route the copy again once
+    /// it is back, so the report names each one.
     fn leave_running(&self, progress: &Progress, copy: &cleanup::Copy, left: Left) {
         let (reason, away) = self.explain(copy, left);
         progress.warn(DeployWarning::LeftRunning {
@@ -1406,7 +1394,6 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// The reason a copy was left running, and the Machines that were away.
     fn explain(&self, copy: &cleanup::Copy, left: Left) -> (String, Vec<MachineId>) {
         match left {
             Left::NotConfirmed(machines) => (self.not_confirmed(&machines), machines),
@@ -1428,14 +1415,11 @@ impl<'a> Rows<'a> {
     }
 }
 
-/// Whether the Machine never answered: cut off or powered off.
 fn unanswered(error: &RpcError) -> bool {
     error.code == RpcErrorCode::Unavailable || error.target_unanswered()
 }
 
-/// Why cleanup left a copy running.
 enum Left {
-    /// These Machines never confirmed the route change.
     NotConfirmed(Vec<MachineId>),
     Interrupted,
     Refused(ContainerRefusal),
@@ -2117,10 +2101,8 @@ async fn replace_stop_first<C: MachineOperations>(
     }
 }
 
-/// Withdraw an old copy from the route before stopping it, by its rotation:
-/// an In copy is Held for this run so a failed Service can bring it back; a
-/// copy another run holds goes Out (never Held(A) to Held(B)); a Pending or
-/// Out copy only stops. Returns the copy with the rotation it now carries.
+/// An In copy is Held for this run so a failed Service can bring it back; a
+/// copy another run holds goes Out, since Held never passes between runs.
 async fn stop_old_copy<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -2194,8 +2176,7 @@ async fn stop_withdrawn<C: MachineOperations>(
     Ok(copy)
 }
 
-/// A withdrawal that never confirmed: the copy still runs. A copy this run
-/// Held goes back In, so a Service it was serving keeps serving.
+/// A copy this run Held goes back In, so a Service it was serving keeps serving.
 async fn leave_unstopped<C: MachineOperations>(
     client: &C,
     progress: &Progress,
@@ -2268,9 +2249,6 @@ async fn compensate<C: MachineOperations>(
     }
 }
 
-/// Start an old copy again after its replacement failed. A copy this run
-/// Held comes back In and the run waits for every live proxy to list it; a
-/// Pending copy only starts; an Out copy is final and stays out of the route.
 async fn restore_old<C: MachineOperations>(
     client: &C,
     old: &cleanup::Copy,
