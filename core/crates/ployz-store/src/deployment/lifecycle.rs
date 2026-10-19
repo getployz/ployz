@@ -1026,7 +1026,8 @@ fn failure(
     })
 }
 
-/// Why a Deploy that succeeded left a removed Volume's data behind.
+/// Why a Deploy that succeeded left a removed Volume's data behind, in fixed words:
+/// a provider's error can quote its stderr, so only the operator log carries it.
 fn undeleted(
     nodes: &[TargetNode],
     removed: &[VolumeRemoval],
@@ -1042,30 +1043,36 @@ fn undeleted(
             return None;
         };
         deletes.iter().find_map(|id| {
+            let server = operations
+                .iter()
+                .find(|row| row.machine_id == id.machine_id)
+                .and_then(|row| row.machine_name.as_ref())
+                .map_or_else(|| "a Server".to_owned(), |name| format!("Server {name}"));
             let outcome = removed
                 .iter()
                 .find(|removal| removal.id == *id)
                 .map(|removal| &removal.outcome);
-            let Failure { reason, cause } = match outcome {
+            let why = match outcome {
                 Some(VolumeRemovalOutcome::Removed) => return None,
-                Some(VolumeRemovalOutcome::Failed { error }) => Failure::from(error),
-                Some(VolumeRemovalOutcome::Omitted) => {
-                    let server = operations
-                        .iter()
-                        .find(|row| row.machine_id == id.machine_id)
-                        .and_then(|row| row.machine_name.as_ref())
-                        .map_or_else(|| id.machine_id.to_string(), ToString::to_string);
-                    format!("{server} did not answer").into()
+                Some(VolumeRemovalOutcome::Failed { error }) => {
+                    tracing::warn!(volume = %name, docker_volume = %id, %error, "couldn't delete a removed Volume's data");
+                    match error.code {
+                        ployz_core::RpcErrorCode::Unavailable => format!("{server} did not answer"),
+                        ployz_core::RpcErrorCode::Conflict => format!("it is still in use on {server}"),
+                        ployz_core::RpcErrorCode::InvalidArgument
+                        | ployz_core::RpcErrorCode::NotFound
+                        | ployz_core::RpcErrorCode::Ambiguous
+                        | ployz_core::RpcErrorCode::Unsupported
+                        | ployz_core::RpcErrorCode::Internal
+                        | ployz_core::RpcErrorCode::Unauthenticated
+                        | ployz_core::RpcErrorCode::ConfirmationRequired
+                        | ployz_core::RpcErrorCode::Unknown(_) => format!("{server} refused"),
+                    }
                 }
-                None => "the Cluster could not be reached".into(),
+                Some(VolumeRemovalOutcome::Omitted) => format!("{server} did not answer"),
+                None => "the Cluster could not be reached".to_owned(),
             };
-            Some(Failure {
-                reason: format!("{name}: deleting its data failed: {reason}")
-                    .chars()
-                    .take(500)
-                    .collect(),
-                cause,
-            })
+            Some(Failure::from(format!("{name}: deleting its data failed: {why}")))
         })
     })
 }
