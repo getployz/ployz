@@ -2851,7 +2851,18 @@ mod serving_pointer {
     }
 
     async fn read(service: &MachineService) -> Result<RoutesRead, RpcError> {
-        let request = op::ReadRoutes::into_request(ReadRoutesRequest { service: api() });
+        read_at(service, true).await
+    }
+
+    async fn read_pointer(service: &MachineService) -> Result<RoutesRead, RpcError> {
+        read_at(service, false).await
+    }
+
+    async fn read_at(service: &MachineService, routes_only: bool) -> Result<RoutesRead, RpcError> {
+        let request = op::ReadRoutes::into_request(ReadRoutesRequest {
+            service: api(),
+            routes_only,
+        });
         answer::<op::ReadRoutes>(
             service
                 .read_routes(Request::new(request.encode().unwrap()))
@@ -2905,6 +2916,31 @@ mod serving_pointer {
             read(&sees_one_up).await.unwrap().pointer,
             None,
             "a Machine that may not publish still reads routes"
+        );
+        first.abort();
+        second.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A Machine that may not publish may hold a stale pointer, so a pointer read there
+    /// names the publisher instead of answering.
+    #[tokio::test]
+    async fn a_pointer_read_off_the_publisher_names_the_publisher() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = machine_one();
+        let (publisher, first) = machine(&dir, &[], Vec::new()).await;
+        let (lagging, second) = machine(&dir, std::slice::from_ref(&one), vec![alive(&one)]).await;
+        publish(&publisher, None, pointer("d1", "a")).await.unwrap();
+
+        assert_eq!(
+            read_pointer(&publisher).await.unwrap().pointer,
+            Some(pointer("d1", "a"))
+        );
+        let refused = read_pointer(&lagging).await.unwrap_err();
+        assert_eq!(
+            NotPointerPublisher::from_error(&refused),
+            Some(NotPointerPublisher { publisher: one.id })
         );
         first.abort();
         second.abort();

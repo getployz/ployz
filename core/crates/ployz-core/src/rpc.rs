@@ -1310,6 +1310,10 @@ pub enum ServingPointerPublication {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReadRoutesRequest {
     pub service: QualifiedService,
+    /// Any participating Machine answers, and `pointer` may lag. Without it only the
+    /// Serving Pointer publisher answers; others refuse with [`NotPointerPublisher`].
+    #[serde(default)]
+    pub routes_only: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

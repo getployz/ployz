@@ -108,6 +108,7 @@ impl Client {
     ) -> Result<RoutesRead, RpcError> {
         let request = ReadRoutesRequest {
             service: service.clone(),
+            routes_only: false,
         };
         match self.read::<op::ReadRoutes>(request.clone(), at).await {
             Err(error) => match NotPointerPublisher::from_error(&error) {

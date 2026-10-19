@@ -227,6 +227,7 @@ impl Fleet {
     async fn read_routes(&self, index: usize, service: &QualifiedService) -> RoutesRead {
         let request = op::ReadRoutes::into_request(ReadRoutesRequest {
             service: service.clone(),
+            routes_only: true,
         });
         self.node(index)
             .service

@@ -767,7 +767,12 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::ReadRoutes>(request)?;
-        let replicated = match self.ready_replicated() {
+        let replicated = if request.routes_only {
+            self.ready_replicated()
+        } else {
+            self.pointer_replicated().await
+        };
+        let replicated = match replicated {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };
