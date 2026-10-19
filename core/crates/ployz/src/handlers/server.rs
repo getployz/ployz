@@ -258,7 +258,7 @@ async fn entries(
                     return Err(if access.unreachable.is_empty() {
                         no_servers()
                     } else {
-                        no_reachable_server(&access.unreachable)
+                        no_reachable_server(access.unreachable, None)
                     });
                 }
                 return Ok(SelectedConnections {
