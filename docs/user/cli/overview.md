@@ -335,8 +335,10 @@ answers or you remove it with `ployz server rm`. To finish it sooner, run the sa
 or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
 the first run did. With `--json` it reports `removal: removed` only once the environment is gone
 from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Until then it reports
-`removal: removing` with the removal deployments it ran and, when one didn't apply, `next`: the
-command that finishes it.
+`removal: removing`, with the removal's `id` and the removal deployments it ran in `deployments`.
+When one of them didn't apply, it also reports that deployment in full under `deployment` (its
+`status`, `outcome` and `nodes`) and `next`: the command that finishes it, with the same
+`--ployz-config` when you passed one.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

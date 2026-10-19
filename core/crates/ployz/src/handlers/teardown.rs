@@ -311,7 +311,6 @@ pub(super) fn remove(
             removal,
             effects,
             ran,
-            next: stopped.as_ref().map(|stopped| stopped.again.clone()),
             stopped,
         })),
         Ok(None) => Ok(None),
@@ -654,18 +653,19 @@ pub(super) struct Removed {
     pub(super) effects: Vec<DestructiveEffect>,
     #[serde(rename = "deployments")]
     pub(super) ran: Vec<DeploymentSummary>,
-    /// The command that finishes it, once a removal Deployment didn't apply.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<String>,
-    #[serde(skip)]
+    #[serde(flatten)]
     stopped: Option<Stopped>,
 }
 
 /// The removal Deployment that didn't apply (yet), how running it ended, and the
 /// command that finishes it.
+#[derive(serde::Serialize)]
 struct Stopped {
+    #[serde(rename = "deployment")]
     view: DeploymentView,
+    #[serde(skip)]
     ran: Result<(), Error>,
+    #[serde(rename = "next")]
     again: String,
 }
 
