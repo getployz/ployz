@@ -53,7 +53,7 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
         .expect("since has a default")
         .clone();
     let now = Utc::now();
-    let since_seconds = crate::operator::parse_log_time(&since, now.timestamp())?
+    let since_seconds = crate::operator::parse_log_time("since", &since, now.timestamp())?
         .ok_or_else(|| Error::usage("--since needs a time, such as 1h"))?;
     let until_nanos = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
     let range = MetricRange {

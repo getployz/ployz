@@ -500,7 +500,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::TtyRequiresStdin
         | OperatorError::InvalidServiceSelector(_)
         | OperatorError::InvalidTail(_)
-        | OperatorError::InvalidLogTime(_)
+        | OperatorError::InvalidTime { .. }
         | OperatorError::InvalidProxyPort
         | OperatorError::InvalidLocalPort(_)
         | OperatorError::InvalidRemotePort(_)

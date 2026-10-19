@@ -49,7 +49,7 @@ pub(crate) fn compiled() -> Command {
     .arg(
         switch("json", None)
             .global(true)
-            .help("Print the result as one JSON object on stdout"),
+            .help("Print the result as one JSON object on stdout; streams print one per line"),
     )
     .arg(
         value("color", None)

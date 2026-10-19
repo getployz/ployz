@@ -235,17 +235,17 @@ fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
     use chrono::TimeZone as _;
 
     let now = 1_800_000_000;
-    assert_eq!(parse_log_time("", now).unwrap(), None);
+    assert_eq!(parse_log_time("since", "", now).unwrap(), None);
     assert_eq!(
-        parse_log_time("1763953966", now).unwrap(),
+        parse_log_time("since", "1763953966", now).unwrap(),
         Some(1_763_953_966)
     );
     assert_eq!(
-        parse_log_time("2024-01-31T10:30:00+02:00", now).unwrap(),
+        parse_log_time("since", "2024-01-31T10:30:00+02:00", now).unwrap(),
         Some(1_706_689_800)
     );
     assert_eq!(
-        parse_log_time("2024-05-14T22:50:00", now).unwrap(),
+        parse_log_time("since", "2024-05-14T22:50:00", now).unwrap(),
         Some(
             chrono::Local
                 .with_ymd_and_hms(2024, 5, 14, 22, 50, 0)
@@ -254,13 +254,21 @@ fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
                 .timestamp()
         )
     );
-    assert_eq!(parse_log_time("2m30s", now).unwrap(), Some(1_799_999_850));
-    assert_eq!(parse_log_time("30d", now).unwrap(), Some(1_797_408_000));
-    // A duration past the timestamp range is refused, not wrapped into the future.
-    assert!(parse_log_time("10000000000000000000s", now).is_err());
     assert_eq!(
-        parse_log_time("notatime", now).unwrap_err().to_string(),
-        "invalid log time \"notatime\": expected a relative duration, RFC 3339 date, or Unix timestamp"
+        parse_log_time("since", "2m30s", now).unwrap(),
+        Some(1_799_999_850)
+    );
+    assert_eq!(
+        parse_log_time("since", "30d", now).unwrap(),
+        Some(1_797_408_000)
+    );
+    // A duration past the timestamp range is refused, not wrapped into the future.
+    assert!(parse_log_time("since", "10000000000000000000s", now).is_err());
+    assert_eq!(
+        parse_log_time("since", "notatime", now)
+            .unwrap_err()
+            .to_string(),
+        "invalid time \"notatime\" for --since: expected a relative duration, RFC 3339 date, or Unix timestamp"
     );
     assert_eq!(
         parse_tail("abc").unwrap_err().to_string(),

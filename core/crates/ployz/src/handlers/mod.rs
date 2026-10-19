@@ -707,12 +707,12 @@ mod tests {
             (
                 "since",
                 "notatime",
-                r#"invalid log time "notatime": expected a relative duration, RFC 3339 date, or Unix timestamp"#,
+                r#"invalid time "notatime" for --since: expected a relative duration, RFC 3339 date, or Unix timestamp"#,
             ),
             (
                 "until",
                 "notatime",
-                r#"invalid log time "notatime": expected a relative duration, RFC 3339 date, or Unix timestamp"#,
+                r#"invalid time "notatime" for --until: expected a relative duration, RFC 3339 date, or Unix timestamp"#,
             ),
             (
                 "tail",

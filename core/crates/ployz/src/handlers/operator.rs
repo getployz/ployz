@@ -31,6 +31,7 @@ use crate::{
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
         prepare_service_history, select_proxy_container,
     },
+    ui::Hint,
 };
 
 use super::{
@@ -127,7 +128,8 @@ pub(super) struct Scoped {
 }
 
 /// `selector` in `scoped`: a bare Service Name becomes that Namespace's Service, by
-/// its runtime name, so a renamed Service is still found.
+/// its runtime name, so a renamed Service is still found. A bare name no deployed
+/// Service has is refused, so a typo never reads as a quiet Service.
 pub(super) fn in_scope(
     selector: ServiceSelector,
     scoped: Option<&Scoped>,
@@ -135,14 +137,18 @@ pub(super) fn in_scope(
     let Some(scoped) = scoped else {
         return Ok(selector);
     };
-    let runtime = ployz_core::ServiceName::parse(selector.as_str())
-        .ok()
-        .and_then(|name| scoped.services.get(&name))
-        .map(|runtime| ServiceSelector::parse(runtime.to_string()))
-        .transpose()?;
-    Ok(runtime
-        .unwrap_or(selector)
-        .with_namespace(&scoped.namespace)?)
+    let Ok(name) = ployz_core::ServiceName::parse(selector.as_str()) else {
+        return Ok(selector.with_namespace(&scoped.namespace)?);
+    };
+    let Some(runtime) = scoped.services.get(&name) else {
+        let valid = scoped.services.keys().map(ToString::to_string);
+        return Err(Error::not_found(format!(
+            "No deployed Service named {name} in Environment {}",
+            scoped.environment.name
+        ))
+        .hint((!scoped.services.is_empty()).then(|| Hint::valid(valid))));
+    };
+    Ok(ServiceSelector::parse(runtime.to_string())?.with_namespace(&scoped.namespace)?)
 }
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
@@ -606,8 +612,9 @@ fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
 const NANOS: i64 = 1_000_000_000;
 
 fn log_window(matches: &ArgMatches, now: i64) -> Result<LogsOptions, Error> {
-    let time = |name: &str| {
+    let time = |name: &'static str| {
         parse_log_time(
+            name,
             matches
                 .get_one::<String>(name)
                 .map(String::as_str)
@@ -1287,7 +1294,7 @@ mod scope_tests {
     }
 
     #[test]
-    fn a_renamed_service_is_found_by_its_runtime_name() {
+    fn a_service_is_found_by_its_runtime_name_and_a_typo_is_refused() {
         let name = |text: &str| ployz_core::ServiceName::parse(text).unwrap();
         let scoped = Scoped {
             environment: ployz_store::EnvironmentSummary {
@@ -1302,11 +1309,15 @@ mod scope_tests {
         };
         let resolve = |selector: &str| {
             in_scope(ServiceSelector::parse(selector).unwrap(), Some(&scoped))
-                .unwrap()
-                .to_string()
+                .map(|selector| selector.to_string())
         };
-        assert_eq!(resolve("api2"), "shop-production/api");
-        assert_eq!(resolve("web"), "shop-production/web");
-        assert_eq!(resolve("other-ns/api2"), "other-ns/api2");
+        assert_eq!(resolve("api2").unwrap(), "shop-production/api");
+        assert_eq!(resolve("other-ns/api2").unwrap(), "other-ns/api2");
+        let typo = resolve("web").unwrap_err();
+        assert_eq!(
+            typo.to_string(),
+            "No deployed Service named web in Environment production"
+        );
+        assert_eq!(typo.hints(), [Hint::valid(["api2"])]);
     }
 }
