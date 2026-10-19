@@ -12,7 +12,9 @@ class FakeNames {
   reads: Landed[] = [];
   // Like the native handle: an ask before anyone waits is kept, and an ask wakes the oldest waiter only.
   asked = false;
+  closed = false;
   wakes: (() => void)[] = [];
+  waits: Promise<void>[] = [];
   want() { const wake = this.wakes.shift(); if (wake) wake(); else this.asked = true; }
   begin() {
     const read: Landed = {};
@@ -20,9 +22,13 @@ class FakeNames {
     return { done: (names: readonly string[] | null) => { read.names = names; }, failed: () => { read.failed = true; } };
   }
   wanted() {
+    if (this.closed) return Promise.resolve();
     if (this.asked) { this.asked = false; return Promise.resolve(); }
-    return new Promise<void>(resolve => { this.wakes.push(resolve); });
+    const wait = new Promise<void>(resolve => { this.wakes.push(resolve); });
+    this.waits.push(wait);
+    return wait;
   }
+  close() { this.closed = true; for (const wake of this.wakes.splice(0)) wake(); }
 }
 
 beforeEach(() => { vi.useFakeTimers(); });
@@ -74,4 +80,14 @@ it("fails the read when the Store can't answer, and keeps reading", async () => 
     await vi.advanceTimersByTimeAsync(20);
     expect(handle.reads).toEqual([{ failed: true }, { names: [] }]);
   } finally { await close(); }
+});
+
+it("closes the handle with the scope, which ends its pending wait", async () => {
+  const { handle, close } = await feed(() => []);
+  await vi.advanceTimersByTimeAsync(0);
+  const [wait] = handle.waits;
+  expect(wait).toBeDefined();
+  await close();
+  expect(handle.closed).toBe(true);
+  await expect(Promise.race([wait, Promise.resolve("pending")])).resolves.toBeUndefined();
 });

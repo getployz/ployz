@@ -9,7 +9,8 @@ const RECHECK_MS = 5_000;
 /**
  * The handle one log request's readers scrub under, fed from the Store for as long as the scope lives. A reader that
  * read a Container's env after the last names read asks for the next one, so a Deploy that seals a variable and starts
- * its Container mid-stream is scrubbed from that Container's first line. A failed read hides every line from then on.
+ * its Container mid-stream is scrubbed from that Container's first line. A failed read hides every line until a later
+ * read lands. Closing the scope closes the handle, which ends its pending native wait.
  */
 export const sealedFeed = Effect.fn("Runtime.sealedFeed")(function* (organizationId: string, namespace: string, sealed = new SealedNames()) {
   const refresh = Effect.gen(function* () {
@@ -23,6 +24,7 @@ export const sealedFeed = Effect.fn("Runtime.sealedFeed")(function* (organizatio
   // round would leave the old one holding the next ask.
   let pending: Promise<void> | undefined;
   const wanted = Effect.map(Effect.promise(() => (pending ??= sealed.wanted())), () => { pending = undefined; });
+  yield* Effect.addFinalizer(() => Effect.sync(() => sealed.close()));
   yield* Effect.forkScoped(Effect.forever(Effect.andThen(Effect.race(wanted, Effect.sleep(RECHECK_MS)), refresh)));
   return sealed;
 });
