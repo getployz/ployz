@@ -212,13 +212,40 @@ pub(crate) fn freeze(
     if !full {
         // The planner also ships, at its Saved snapshot, each Service the named ones reference.
         let shipped = lowered.intent.applied_names();
+        // A changed Config or Volume ships with the Service that mounts it, and is
+        // recorded only once that Service is a node.
+        let changed = |service: &SavedServiceIntent| {
+            !applied.services.contains(service)
+                || service.config_attachments.iter().any(|mount| {
+                    let id = &mount.config_resource_id;
+                    saved
+                        .configs
+                        .iter()
+                        .find(|config| config.resource_id == *id)
+                        != applied
+                            .configs
+                            .iter()
+                            .find(|config| config.resource_id == *id)
+                })
+                || service.volume_attachments.iter().any(|mount| {
+                    let id = &mount.volume_resource_id;
+                    saved
+                        .volumes
+                        .iter()
+                        .find(|volume| volume.resource_id == *id)
+                        != applied
+                            .volumes
+                            .iter()
+                            .find(|volume| volume.resource_id == *id)
+                })
+        };
         let referenced: Vec<TargetNode> = saved
             .services
             .iter()
             .filter(|service| {
                 shipped.contains(&service.config.private_dns)
                     && !nodes.iter().any(|node| node.id() == service.id)
-                    && !applied.services.contains(service)
+                    && changed(service)
             })
             .map(TargetNode::service)
             .collect::<Result<_, _>>()?;

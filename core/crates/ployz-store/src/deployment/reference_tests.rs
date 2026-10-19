@@ -10,7 +10,7 @@ use crate::{
     Actor, Admit, ConfigId, ConfigMountAt, ConfigStore, CreateConfig, CreateProject, CreateService,
     Deploy, DeploymentId, DeploymentStatus, DiffQuery, Edit, EnvironmentId, EnvironmentRef,
     NodeStatus, OrganizationId, ProjectId, ProjectName, PutConfigFile, RunEvidence, RunnerId,
-    ServiceLineageId, SettingPath,
+    ServiceLineageId, SettingPath, VolumeId, VolumeName,
 };
 
 fn uuid(n: u8) -> String {
@@ -154,6 +154,34 @@ fn services(store: &ConfigStore, who: &Actor, id: &DeploymentId) -> Vec<(String,
         .filter(|node| matches!(node.node, crate::DeployedNode::Service { .. }))
         .map(|node| (node.node.name().to_owned(), node.outcome))
         .collect()
+}
+
+/// Every node of Deployment `id` with its outcome.
+fn nodes(store: &ConfigStore, who: &Actor, id: &DeploymentId) -> Vec<(String, NodeStatus)> {
+    store
+        .read(who, &crate::DeploymentQuery { id: id.clone() })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.outcome))
+        .collect()
+}
+
+fn put_file(store: &ConfigStore, who: &Actor, content: &str) {
+    store
+        .write(
+            who,
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("app").unwrap(),
+                file: ConfigFileName::parse("app.yml").unwrap(),
+                content: content.into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
 }
 
 fn staged(store: &ConfigStore, who: &Actor) -> usize {
@@ -305,4 +333,109 @@ fn a_narrowed_deploy_warns_of_a_fragile_file_a_service_it_references_mounts() {
         json!(claimed.deployment.warnings),
         json!([{ "config": "app", "file": "app.yml", "variable": "web.HOSTS" }])
     );
+}
+
+#[test]
+fn a_narrowed_deploy_records_a_changed_file_a_service_it_references_mounts() {
+    let (store, who) = store();
+    create(&store, &who, 3, "client");
+    create(&store, &who, 4, "web");
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: ConfigId::parse(uuid(5)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("app").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: name("web"),
+                    dir: "/etc/app".into(),
+                }],
+            },
+        )
+        .unwrap();
+    put_file(&store, &who, "mode: slow\n");
+    let first = deploy(&store, &who, 1, &[]);
+    assert_eq!(
+        run(&store, &first, &["client", "web"]),
+        DeploymentStatus::Applied
+    );
+    put_file(&store, &who, "mode: fast\n");
+    set(
+        &store,
+        &who,
+        &[("client.env.WEB", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"))],
+    );
+    let narrowed = deploy(&store, &who, 2, &["client"]);
+    assert_eq!(
+        run(&store, &narrowed, &["web", "client"]),
+        DeploymentStatus::Applied
+    );
+    assert_eq!(
+        nodes(&store, &who, &narrowed),
+        [
+            ("client".to_owned(), NodeStatus::Deployed),
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("app".to_owned(), NodeStatus::Deployed),
+        ]
+    );
+    assert_eq!(staged(&store, &who), 0, "the new file is applied");
+}
+
+#[test]
+fn a_narrowed_deploy_records_a_changed_volume_a_service_it_references_mounts() {
+    let (store, who) = store();
+    create(&store, &who, 3, "client");
+    create(&store, &who, 4, "web");
+    store
+        .write(
+            &who,
+            &crate::CreateVolume {
+                id: VolumeId::parse(uuid(5)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                storage: ployz_core::config::VolumeKind::Docker {},
+                mounts: vec![crate::Mount {
+                    service: name("web"),
+                    path: "/data".into(),
+                }],
+                shared_writes: false,
+                storage_locked: false,
+            },
+        )
+        .unwrap();
+    let first = deploy(&store, &who, 1, &[]);
+    assert_eq!(
+        run(&store, &first, &["client", "web"]),
+        DeploymentStatus::Applied
+    );
+    store
+        .write(
+            &who,
+            &crate::SetVolumeSharedWrites {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                shared_writes: true,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        &[("client.env.WEB", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"))],
+    );
+    let narrowed = deploy(&store, &who, 2, &["client"]);
+    assert_eq!(
+        run(&store, &narrowed, &["web", "client"]),
+        DeploymentStatus::Applied
+    );
+    assert_eq!(
+        nodes(&store, &who, &narrowed),
+        [
+            ("client".to_owned(), NodeStatus::Deployed),
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("data".to_owned(), NodeStatus::Deployed),
+        ]
+    );
+    assert_eq!(staged(&store, &who), 0, "the Volume change is applied");
 }
