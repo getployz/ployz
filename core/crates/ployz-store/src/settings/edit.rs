@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::git::GitSetting;
-use crate::id::{Revision, VolumeName};
+use crate::id::{ConfigId, Revision, VolumeName};
 use crate::policy::{self, Policy};
 use crate::registry;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
@@ -33,7 +33,8 @@ pub struct Edit {
     #[serde(default)]
     pub expect: Option<Revision>,
     /// The changes, applied in order, except that image and repository changes go first.
-    /// Every Setting set must apply to the source the whole edit leaves.
+    /// Every Setting set must apply to the source the whole edit leaves, and no path is
+    /// changed twice.
     pub changes: Vec<Change>,
 }
 
@@ -131,10 +132,11 @@ pub(crate) fn edit(
             json!({}),
         ));
     }
+    let mut steps = expand(&edit.changes)?;
     let environment = scope::lock(tx, who, &edit.environment)?;
     environment.expect(edit.expect)?;
+    refuse_twice(&steps, &environment)?;
     let before = environment.working.clone();
-    let mut steps = expand(&edit.changes)?;
     // Each Setting set, judged against the source the whole edit leaves.
     let mut set = Vec::new();
     for (path, step) in &steps {
@@ -198,6 +200,57 @@ pub(crate) fn edit(
     })
 }
 
+/// Two changes to one path: only the last would land, without a word. A rename writes
+/// where it moves from and where it moves to, a variable set with `exported` writes
+/// its `.exported` too, and a Config by name and by ID is one Config.
+fn refuse_twice(steps: &[(SettingPath, Step)], environment: &Environment) -> Result<(), RpcError> {
+    let mut written: Vec<SettingPath> = Vec::new();
+    for (path, step) in steps {
+        let mut writes = vec![(identity(path, environment), path.clone())];
+        let also = match (step, path.target()) {
+            (Step::Rename { to, .. }, _) => Some(Target::Variable(to.clone())),
+            (Step::Set(Value::Object(fields)), Some(Target::Variable(key)))
+                if fields.contains_key("exported") =>
+            {
+                Some(Target::Exported(key.clone()))
+            }
+            _ => None,
+        };
+        if let Some(also) = also {
+            let also = SettingPath::at(path.settings_of()?, also);
+            if also != *path {
+                writes.push((also.clone(), also));
+            }
+        }
+        for (identity, named) in writes {
+            if written.contains(&identity) {
+                return Err(error::invalid(
+                    format!("{named} is changed twice in one edit; change it once"),
+                    json!({ "path": named }),
+                ));
+            }
+            written.push(identity);
+        }
+    }
+    Ok(())
+}
+
+/// `path`, with a Config it mounts named by ID. A Config no ID matches stays as named;
+/// applying the change refuses it.
+fn identity(path: &SettingPath, environment: &Environment) -> SettingPath {
+    let (Some(service), Some(Target::ConfigMount(config))) = (path.service(), path.target()) else {
+        return path.clone();
+    };
+    config
+        .resolve([&environment.working])
+        .ok()
+        .and_then(|config| ConfigId::parse(&config.resource_id).ok())
+        .map_or_else(
+            || path.clone(),
+            |id| SettingPath::at(service, Target::ConfigMount(id.into())),
+        )
+}
+
 /// Whether `setting` chooses the Service's source.
 const fn is_source(setting: ServiceSetting) -> bool {
     matches!(
@@ -238,12 +291,6 @@ impl Editing<'_> {
                 let rewrote =
                     variables::rename(&mut self.environment, service, key, &to, update_references)?;
                 if let Some(rewrote) = rewrote {
-                    // What the variable types moves with it.
-                    for typed in &mut self.typed_addresses {
-                        if typed.path == path {
-                            typed.path = renamed.clone();
-                        }
-                    }
                     let rewrote = rewrote
                         .into_iter()
                         .map(|(service, key)| SettingPath::at(&service, Target::Variable(key)));
@@ -256,8 +303,6 @@ impl Editing<'_> {
                 return Ok(());
             }
         };
-        // Only the last change to a variable decides what it types.
-        self.typed_addresses.retain(|typed| typed.path != path);
         // A new credential applies at once; turning one on or off is staged.
         if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
             let changed = match &value {

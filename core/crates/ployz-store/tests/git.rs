@@ -1210,6 +1210,49 @@ fn unset(path: &str) -> Change {
 }
 
 #[test]
+fn an_edit_that_changes_one_path_twice_is_refused_and_changes_nothing() {
+    let (store, who) = image_service();
+    let before = values(&store, &who);
+    let patch = |value: Value| Change::Patch {
+        path: SettingPath::parse("web").unwrap(),
+        value,
+    };
+    let refused = [
+        (
+            vec![set("web.image", json!("nginx:2")), unset("web.image")],
+            "web.image",
+        ),
+        (
+            vec![unset("web.image"), set("web.image", json!("nginx:2"))],
+            "web.image",
+        ),
+        (
+            vec![set("web.replicas", json!(2)), set("WEB.replicas", json!(3))],
+            "web.replicas",
+        ),
+        (
+            vec![
+                patch(json!({ "replicas": 2 })),
+                set("web.replicas", json!(3)),
+            ],
+            "web.replicas",
+        ),
+    ];
+    for (changes, path) in refused {
+        let error = store
+            .write_trusted(&who, &edit(changes.clone()), &evidence())
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{changes:?}");
+        assert_eq!(
+            error.message,
+            format!("{path} is changed twice in one edit; change it once"),
+            "{changes:?}"
+        );
+        assert_eq!(values(&store, &who), before, "{changes:?}");
+    }
+}
+
+#[test]
 fn unsetting_a_setting_the_source_lacks_is_accepted_and_changes_nothing() {
     let (store, who) = image_service();
     let before = values(&store, &who);
