@@ -2585,7 +2585,6 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
             changed: true,
         }),
         uploader: None,
-        deployment: None,
     };
     let with = |n: u8, upload: Option<UploadedSource>| {
         store.write_trusted(
@@ -2607,12 +2606,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     bad["digest"] = json!("D".repeat(64));
     assert!(serde_json::from_value::<UploadedSource>(bad).is_err());
     let first = with(1, Some(upload.clone())).unwrap();
-    // Admission names the Deployment that uploaded it: Cloud keeps its content there.
-    let admitted = UploadedSource {
-        deployment: Some(id(1)),
-        ..upload.clone()
-    };
-    assert_eq!(first.upload.as_ref(), Some(&admitted));
+    assert_eq!(first.upload.as_ref(), Some(&upload));
     let a = runner("cli-a");
     let claimed = store.claim(&id(1), &a).unwrap();
     // The runner prepares the Service without a source from the lowering input.
@@ -2655,7 +2649,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         .unwrap();
     // A later Deployment without a new upload keeps building from the latest one.
     let second = with(2, None).unwrap();
-    assert_eq!(second.upload.as_ref(), Some(&admitted));
+    assert_eq!(second.upload.as_ref(), Some(&upload));
     let claimed = store.claim(&id(2), &a).unwrap();
     assert_eq!(
         claimed.receipts.get(&ServiceName::parse("app").unwrap()),
@@ -2667,7 +2661,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
             .unwrap()
             .deployment
             .upload,
-        Some(admitted.clone())
+        Some(upload.clone())
     );
     // A retry ships the failed one's upload, not the Environment's latest.
     let mut newer = upload.clone();
@@ -2675,7 +2669,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     with(3, Some(newer)).unwrap();
     assert_eq!(
         retry(&store, &who, 4, 1).unwrap().upload,
-        Some(admitted.clone())
+        Some(upload.clone())
     );
     // Once no Service builds from an upload, a Deployment carries none.
     store
@@ -2753,11 +2747,10 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         )
         .unwrap();
     let app = ServiceName::parse("app").unwrap();
-    let upload = |uploader: Option<&str>, deployment: Option<u8>| UploadedSource {
+    let upload = |uploader: Option<&str>| UploadedSource {
         digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
         base: None,
         uploader: uploader.map(|name| Principal::parse(name).unwrap()),
-        deployment: deployment.map(id),
     };
     let admit = |n: u8, who: &Actor| {
         let command = Command::Admit(Admit::Deploy(Deploy {
@@ -2766,7 +2759,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             services: Vec::new(),
             version: None,
             // A caller can't name the uploader: only Cloud's authentication does.
-            upload: Some(upload(Some("mallory"), None)),
+            upload: Some(upload(Some("mallory"))),
             accept_volume_loss: Vec::new(),
             message: None,
         }));
@@ -2780,18 +2773,18 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         else {
             panic!("an admit writes a Deployment");
         };
-        *summary
+        summary
     };
     let nick = Actor {
         principal: Some(Principal::parse("nick").unwrap()),
         ..who.clone()
     };
     let admitted = admit(1, &nick);
-    assert_eq!(admitted.upload, Some(upload(Some("nick"), Some(1))));
+    assert_eq!(admitted.upload, Some(upload(Some("nick"))));
     assert_eq!(admitted.admitted_by, nick.principal);
     assert!(admitted.admitted_at > 0);
     assert_eq!((admitted.started_at, admitted.ended_at), (None, None));
-    assert_eq!(admit(2, &who).upload, Some(upload(None, Some(2))));
+    assert_eq!(admit(2, &who).upload, Some(upload(None)));
     let a = runner("cloud-a");
     let claimed = store.claim(&id(2), &a).unwrap();
     assert_eq!(claimed.uploads, vec![app.clone()]);
@@ -2828,7 +2821,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     // A retry keeps the upload's provenance.
     assert_eq!(
         retry(&store, &who, 3, 2).unwrap().upload,
-        Some(upload(None, Some(2)))
+        Some(upload(None))
     );
 }
 
@@ -3526,7 +3519,6 @@ fn agent_deploys_upload(
                 digest: ployz_core::UploadDigest::parse(upload.to_string().repeat(64)).unwrap(),
                 base: None,
                 uploader: None,
-                deployment: None,
             }),
             accept_volume_loss: Vec::new(),
             message: None,

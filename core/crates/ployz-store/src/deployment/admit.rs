@@ -291,7 +291,6 @@ fn deploy(
     // Only Cloud's authentication names an uploader, never the caller.
     let upload = admit.upload.clone().map(|upload| UploadedSource {
         uploader: who.principal.clone(),
-        deployment: Some(admit.id.clone()),
         ..upload
     });
     let summary = deployment::admit(

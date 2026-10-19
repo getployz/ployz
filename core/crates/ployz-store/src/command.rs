@@ -356,18 +356,18 @@ commands! {
         => crate::review::publish::discard(tx, who, c);
     /// Freeze Saved State into a queued Deployment, publishing Working State first,
     /// or queue again what an ended Deployment froze.
-    Admit(Admit) -> Deployment(crate::DeploymentSummary) as *
+    Admit(Admit) -> Deployment(crate::DeploymentSummary)
         keyed [c.id().as_str()] if crate::replay::admit
         needs ChangesDeploy
         agent [DeployInput, DeploymentRetry]
         => crate::deployment::admit::admit(tx, who, c, trusted);
     /// Hand a queued Deployment to a runner now.
-    Start(Start) -> Deployment(crate::DeploymentSummary) as *
+    Start(Start) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy
         agent [DeploymentStart]
         => crate::deployment::start(tx, who, &c.deployment);
     /// Cancel a queued or running Deployment.
-    Cancel(Cancel) -> Deployment(crate::DeploymentSummary) as *
+    Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy
         agent [DeploymentCancel]
         => crate::removal::cancel(tx, who, &c.deployment);
@@ -741,7 +741,7 @@ pub enum Written {
     /// A Saved revision was restored or undone into the draft.
     HistoryStaged(HistoryStaged),
     /// A Deployment admitted, started or cancelled, or what its runner recorded.
-    Deployment(Box<crate::DeploymentSummary>),
+    Deployment(crate::DeploymentSummary),
     /// A public domain was given to a Service, or it already had it.
     DomainAdded(crate::DomainAdded),
     /// A public domain was changed or removed.

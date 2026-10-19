@@ -123,7 +123,6 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                     digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
                     base: None,
                     uploader: None,
-                    deployment: None,
                 }),
                 accept_volume_loss: Vec::new(),
                 message: None,

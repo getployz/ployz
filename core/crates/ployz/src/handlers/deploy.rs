@@ -858,7 +858,6 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
         digest,
         base,
         uploader: None,
-        deployment: None,
     })
 }
 

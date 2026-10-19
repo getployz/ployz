@@ -91,50 +91,80 @@ export const extractUpload = Effect.fn("ConfigStore.extractUpload")(function* (o
   return yield* extractUploadedSource(data());
 });
 
+/** What Cloud reads of a Deployment to tell which upload it builds from. */
+interface Builds {
+  id: string;
+  environment_id: string;
+  number: number;
+  in_flight: boolean;
+  upload: { digest: string } | null;
+}
+
+/** Whether two Deployments of one Environment build from the same upload: the same content, by digest. */
+const sameUpload = (a: Builds, b: Builds) =>
+  a.upload !== null && b.upload !== null && a.environment_id === b.environment_id && a.upload.digest === b.upload.digest;
+
+/** Every upload Cloud holds for the Organization, with its Deployment while the Store still has it. */
+const heldUploads = Effect.fn("ConfigStore.heldUploads")(function* (store: ConfigStore, organizationId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ deploymentId: uploadChunk.deploymentId, arrived: min(uploadChunk.createdAt) })
+    .from(uploadChunk).where(eq(uploadChunk.organizationId, organizationId)).groupBy(uploadChunk.deploymentId);
+  return yield* Effect.forEach(rows, ({ deploymentId, arrived }) =>
+    storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
+      Effect.map((view) => Option.some(view)),
+      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(Option.none())),
+      Effect.map((view) => ({ deploymentId, arrived: arrived ?? new Date(0), view })),
+    ));
+});
+
 /**
- * The Deployment whose upload Deployment `deploymentId` builds from: the one that uploaded it, which may be an earlier
- * one. `undefined` without an upload.
+ * The Deployment whose upload Deployment `deploymentId` builds from: the newest one Cloud holds with the same content
+ * in its Environment, which may be an earlier Deployment, or itself. `undefined` without an upload.
  */
 export const uploadOwner = Effect.fn("ConfigStore.uploadOwner")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
 ) {
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
-  return view.upload === null ? undefined : view.upload.deployment ?? view.id;
+  if (view.upload === null) return undefined;
+  const owners = (yield* heldUploads(store, organizationId)).flatMap(({ view: held }) =>
+    Option.isSome(held) && sameUpload(held.value, view) ? [held.value] : []);
+  return owners.reduce<Builds | undefined>((newest, held) => newest === undefined || held.number > newest.number ? held : newest, undefined)?.id
+    ?? deploymentId;
 });
 
 /**
- * Whether Deployment `deploymentId`'s upload, which arrived at `arrived`, may still build: its Deployment may still
- * run, or its Environment's newest Deployment builds from it. One not admitted yet gets a day.
- */
-const kept = Effect.fn("ConfigStore.uploadKept")(function* (
-  store: ConfigStore, organizationId: string, deploymentId: string, arrived: Date,
-) {
-  const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
-    Effect.map(Option.some),
-    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(Option.none())),
-  );
-  if (Option.isNone(view)) return arrived.getTime() > Date.now() - 24 * 60 * 60 * 1000;
-  if (view.value.in_flight) return true;
-  const { project, name } = view.value.environment;
-  const newest = yield* storeTry(() => store.read(organizationId, {
-    query: "deployments", environment: { project, environment: name }, limit: 1, cursor: null,
-  })).pipe(
-    Effect.map((page) => page.deployments[0]),
-    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(undefined)),
-  );
-  return newest?.upload != null && (newest.upload.deployment ?? newest.id) === deploymentId;
-});
-
-/**
- * Delete every upload of the Organization that can no longer build: one replaced by a newer upload, or whose Services
- * or Environment are gone. One Store read or two per upload Cloud holds.
+ * Delete every upload of the Organization that can no longer build. An upload stays while its Deployment may still
+ * run, or a Deployment of its Environment builds from it that may still run or is the newest; when two hold the same
+ * content, the newer one stays. One not admitted yet stays a day. One Store read per upload, and one per Environment.
  */
 export const releaseUploads = Effect.fn("ConfigStore.releaseUploads")(function* (store: ConfigStore, organizationId: string) {
   const { drizzle } = yield* Database;
-  const held = yield* drizzle.select({ deploymentId: uploadChunk.deploymentId, arrived: min(uploadChunk.createdAt) })
-    .from(uploadChunk).where(eq(uploadChunk.organizationId, organizationId)).groupBy(uploadChunk.deploymentId);
-  for (const { deploymentId, arrived } of held) {
-    if (yield* kept(store, organizationId, deploymentId, arrived ?? new Date(0))) continue;
+  const held = yield* heldUploads(store, organizationId);
+  const environments = new Map<string, readonly Builds[]>();
+  const recent = Effect.fn("ConfigStore.uploadEnvironment")(function* (view: Builds & { environment: { project: string; name: string } }) {
+    const known = environments.get(view.environment_id);
+    if (known !== undefined) return known;
+    const { project, name } = view.environment;
+    const deployments = yield* storeTry(() => store.read(organizationId, {
+      query: "deployments", environment: { project, environment: name }, limit: 20, cursor: null,
+    })).pipe(
+      Effect.map((page): readonly Builds[] => page.deployments),
+      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed([])),
+    );
+    environments.set(view.environment_id, deployments);
+    return deployments;
+  });
+  for (const { deploymentId, arrived, view } of held) {
+    const kept = yield* Effect.gen(function* () {
+      if (Option.isNone(view)) return arrived.getTime() > Date.now() - 24 * 60 * 60 * 1000;
+      if (view.value.in_flight) return true;
+      const newer = held.some(({ view: other }) =>
+        Option.isSome(other) && sameUpload(other.value, view.value) && other.value.number > view.value.number);
+      if (view.value.upload === null || newer) return false;
+      const deployments = yield* recent(view.value);
+      return deployments.some((deployment, index) => (index === 0 || deployment.in_flight) && sameUpload(deployment, view.value));
+    });
+    if (kept) continue;
     yield* drizzle.delete(uploadChunk).where(and(eq(uploadChunk.organizationId, organizationId), eq(uploadChunk.deploymentId, deploymentId)));
   }
 });

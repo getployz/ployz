@@ -244,11 +244,6 @@ pub struct UploadedSource {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub uploader: Option<Principal>,
-    /// The Deployment that uploaded it, which Cloud keeps its content under;
-    /// admission sets it. Later Deployments that build from it keep naming it.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub deployment: Option<DeploymentId>,
 }
 
 /// Where an upload came from: "base abc123", plus "+ changes" when it differs from it.
