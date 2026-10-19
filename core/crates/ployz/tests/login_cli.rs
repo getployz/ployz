@@ -427,9 +427,9 @@ fn org_rm_removes_the_acting_organization_by_its_id_then_moves_the_device() {
         String::from_utf8_lossy(&removed.stderr)
     );
     let removed = json_of(&removed);
-    assert_eq!(removed["organization"], "acme");
-    assert_eq!(removed["removed"], true);
-    assert_eq!(removed["acting"], "dev");
+    assert_eq!(removed.get("organization"), Some(&json!("acme")));
+    assert_eq!(removed.get("removed"), Some(&json!(true)));
+    assert_eq!(removed.get("acting"), Some(&json!("dev")));
     let routes = routes.lock().unwrap().clone();
     let at = |route: &str| {
         routes
