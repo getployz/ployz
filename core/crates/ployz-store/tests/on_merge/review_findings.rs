@@ -1080,7 +1080,7 @@ fn a_merge_only_saved_names_the_removed_service_its_values_read() {
             &who,
             &ployz_store::Discard {
                 environment: at("production"),
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: None,
                 version: None,
             },
@@ -1136,7 +1136,7 @@ fn a_merge_keeps_the_label_the_list_showed_for_a_service_left_behind() {
             &who,
             &ployz_store::Discard {
                 environment: at("production"),
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: None,
                 version: None,
             },

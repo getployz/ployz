@@ -1244,7 +1244,7 @@ fn discard_brings_a_reference_back_on_the_removed_service_it_read() {
             &who(),
             &ployz_store::Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: None,
                 version: None,
             },
