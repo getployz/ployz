@@ -493,10 +493,10 @@ mod tests {
             }
         }))
         .unwrap();
-        let mut out = Vec::new();
+        let mut out = anstream::StripStream::new(Vec::new());
         record(&details).write(&mut out, false).unwrap();
         assert_eq!(
-            String::from_utf8(out).unwrap(),
+            String::from_utf8(out.into_inner()).unwrap(),
             "server = machine-1\n\
              id = 8d996790baf04c20b81cdbf8c7897016\n\
              phase = participating\n\
