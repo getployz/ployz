@@ -399,7 +399,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     if view.deployment.remove {
         return failure;
     }
-    failure.hint(Hint::Retry(command(&[
+    failure.outcome().hint(Hint::Retry(command(&[
         "deploy",
         "--project",
         view.environment.project.as_str(),
@@ -499,6 +499,14 @@ mod tests {
         assert_eq!(retries(&removal), 1);
         removal.deployment.remove = true;
         assert_eq!(retries(&removal), 0);
+    }
+
+    #[test]
+    fn a_failed_deploy_is_its_result_and_a_failed_removal_stays_partial() {
+        let mut view = view();
+        assert!(completion(&view, command).unwrap_err().is_outcome());
+        view.deployment.remove = true;
+        assert!(!completion(&view, command).unwrap_err().is_outcome());
     }
 
     #[test]

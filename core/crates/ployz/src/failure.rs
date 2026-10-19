@@ -27,6 +27,8 @@ use crate::{
 pub struct Failure {
     inner: Inner,
     interrupted: bool,
+    /// The printed result is itself the failure, not a partial one.
+    outcome: bool,
     diagnostic: Option<Box<ui::progress::Diagnostic>>,
     /// Data its `--json` error carries in `details` beside what the error says.
     added: serde_json::Map<String, Value>,
@@ -72,6 +74,7 @@ impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
             interrupted: false,
+            outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
             inner: Inner::Command {
@@ -96,6 +99,7 @@ impl Failure {
         Self {
             inner: Inner::Exit(code),
             interrupted: false,
+            outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
         }
@@ -107,6 +111,7 @@ impl Failure {
         Self {
             inner: Inner::Partial,
             interrupted: false,
+            outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
         }
@@ -125,6 +130,17 @@ impl Failure {
 
     pub(crate) const fn is_interrupted(&self) -> bool {
         self.interrupted
+    }
+
+    /// The result already printed is this failure, such as a Deployment that failed:
+    /// it exits by its code rather than as a partial result.
+    pub(crate) fn outcome(mut self) -> Self {
+        self.outcome = true;
+        self
+    }
+
+    pub(crate) const fn is_outcome(&self) -> bool {
+        self.outcome
     }
 
     pub(crate) fn with_diagnostic(mut self, diagnostic: ui::progress::Diagnostic) -> Self {
@@ -220,6 +236,7 @@ impl Failure {
     pub(crate) fn context(mut self, message: impl Into<Cow<'static, str>>) -> Self {
         let RpcError { code, details, .. } = self.report();
         let interrupted = self.interrupted;
+        let outcome = self.outcome;
         let diagnostic = self.diagnostic.take();
         let mut contextual = Self::command(Message {
             code,
@@ -228,6 +245,7 @@ impl Failure {
             source: Some(Box::new(self)),
         });
         contextual.interrupted = interrupted;
+        contextual.outcome = outcome;
         contextual.diagnostic = diagnostic;
         contextual
     }
