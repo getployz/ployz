@@ -354,6 +354,7 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
         "env new",
         CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
     ),
+    ("env ls", CliNext::Tool("environment_show", None)),
     (
         "env branch",
         CliNext::Fix(FixRow::Open(DashboardPage::Environments)),

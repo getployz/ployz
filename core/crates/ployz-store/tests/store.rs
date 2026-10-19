@@ -695,7 +695,10 @@ fn environments_are_created_in_a_named_project_and_addressed_by_name() {
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(
         error.details,
-        json!({ "next": "ployz env new preview --project shop" })
+        json!({
+            "next": "ployz env ls --project shop",
+            "valid_children": ["production", "staging"],
+        })
     );
 }
 
