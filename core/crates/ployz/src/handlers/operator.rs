@@ -109,6 +109,7 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
             environment: view.environment,
             namespace: view.namespace,
             services: view.services,
+            authored: view.authored,
         })),
         Err(StoreCallError::Refused(error)) if !asked && error.code == RpcErrorCode::NotFound => {
             Ok(None)
@@ -125,11 +126,14 @@ pub(super) struct Scoped {
     pub(super) namespace: Namespace,
     pub(super) services:
         std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::ServiceName>,
+    /// Every Service in Working State, deployed or not.
+    pub(super) authored: std::collections::BTreeSet<ployz_core::ServiceName>,
 }
 
 /// `selector` in `scoped`: a bare Service Name becomes that Namespace's Service, by
-/// its runtime name, so a renamed Service is still found. A bare name no deployed
-/// Service has is refused, so a typo never reads as a quiet Service.
+/// its runtime name, so a renamed Service is still found. A bare name the
+/// Environment has neither deployed nor authored is refused, so a typo never reads
+/// as a quiet Service.
 pub(super) fn in_scope(
     selector: ServiceSelector,
     scoped: Option<&Scoped>,
@@ -140,15 +144,23 @@ pub(super) fn in_scope(
     let Ok(name) = ployz_core::ServiceName::parse(selector.as_str()) else {
         return Ok(selector.with_namespace(&scoped.namespace)?);
     };
-    let Some(runtime) = scoped.services.get(&name) else {
-        let valid = scoped.services.keys().map(ToString::to_string);
-        return Err(Error::not_found(format!(
-            "No deployed Service named {name} in Environment {}",
-            scoped.environment.name
-        ))
-        .hint((!scoped.services.is_empty()).then(|| Hint::valid(valid))));
-    };
-    Ok(ServiceSelector::parse(runtime.to_string())?.with_namespace(&scoped.namespace)?)
+    if let Some(runtime) = scoped.services.get(&name) {
+        return Ok(ServiceSelector::parse(runtime.to_string())?.with_namespace(&scoped.namespace)?);
+    }
+    if scoped.authored.contains(&name) {
+        return Ok(selector.with_namespace(&scoped.namespace)?);
+    }
+    let valid = scoped
+        .services
+        .keys()
+        .chain(&scoped.authored)
+        .map(ToString::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    Err(Error::not_found(format!(
+        "No Service named {name} in Environment {}",
+        scoped.environment.name
+    ))
+    .hint((!valid.is_empty()).then(|| Hint::valid(valid))))
 }
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
@@ -255,6 +267,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 environment: view.environment,
                 namespace: view.namespace,
                 services: view.runtime_names,
+                authored: std::collections::BTreeSet::new(),
             })
         }
         _ => scope(root)?,
@@ -1306,18 +1319,20 @@ mod scope_tests {
             },
             namespace: Namespace::parse("shop-production").unwrap(),
             services: [(name("api2"), name("api"))].into(),
+            authored: [name("api2"), name("worker")].into(),
         };
         let resolve = |selector: &str| {
             in_scope(ServiceSelector::parse(selector).unwrap(), Some(&scoped))
                 .map(|selector| selector.to_string())
         };
         assert_eq!(resolve("api2").unwrap(), "shop-production/api");
+        assert_eq!(resolve("worker").unwrap(), "shop-production/worker");
         assert_eq!(resolve("other-ns/api2").unwrap(), "other-ns/api2");
         let typo = resolve("web").unwrap_err();
         assert_eq!(
             typo.to_string(),
-            "No deployed Service named web in Environment production"
+            "No Service named web in Environment production"
         );
-        assert_eq!(typo.hints(), [Hint::valid(["api2"])]);
+        assert_eq!(typo.hints(), [Hint::valid(["api2", "worker"])]);
     }
 }

@@ -2832,7 +2832,7 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
 }
 
 #[test]
-fn live_reads_refuse_a_service_the_environment_has_not_deployed() {
+fn live_reads_refuse_a_service_the_environment_does_not_have() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
@@ -2841,16 +2841,20 @@ fn live_reads_refuse_a_service_the_environment_has_not_deployed() {
             &["logs", "-f", "nosvc"],
             &["logs", "web", "nosvc"],
             &["metrics", "nosvc"],
-            &["metrics", "web"],
         ] {
             let refused = error(store, args);
-            assert_eq!(refused["code"], json!("not_found"), "{args:?}: {refused}");
-            assert!(
-                refused["message"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("No deployed Service named "),
-                "{args:?}: {refused}"
+            assert_eq!(
+                (
+                    &refused["code"],
+                    &refused["message"],
+                    &refused["details"]["valid_children"]
+                ),
+                (
+                    &json!("not_found"),
+                    &json!("No Service named nosvc in Environment production"),
+                    &json!(["web"])
+                ),
+                "{args:?}"
             );
         }
     }
