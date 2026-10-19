@@ -34,13 +34,45 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # Linux jobs run on the self-hosted pool when CI_SELF_HOSTED is on, the run is a push or a same-repo PR
+  # (fork PRs never), and a ployz-omarchy runner is online and idle. Otherwise, or on any error, GitHub's.
+  # Ported from mikehardy/runner-fallback-action: picks happen one at a time, each after a pause that lets
+  # the previous pick's jobs claim their runners. queue: max keeps every waiting pick instead of cancelling it.
+  runner:
+    name: Pick runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    concurrency:
+      group: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'ci-runner-pick' || format('ci-runner-pick-{0}', github.run_id) }}
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        env:
+          TRUSTED: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          # Fine-grained PAT with Administration: Read on this repo; GITHUB_TOKEN cannot list runners.
+          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+        run: |
+          runner=ubuntu-24.04
+          if [ "$TRUSTED" = true ]; then
+            sleep 15
+            if idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
+              echo "Idle ployz-omarchy runners: $idle"
+              [ "$idle" -ge 1 ] && runner=ployz-omarchy
+            else
+              echo "::warning::Could not list self-hosted runners; using $runner"
+            fi
+          fi
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "Selected runner: $runner" >> "$GITHUB_STEP_SUMMARY"
+
   changes:
-    # Same-repo runs go to the self-hosted pool when CI_SELF_HOSTED is on; fork PRs never do.
-    runs-on: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'ployz-omarchy' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       jobs: ${{ steps.select.outputs.jobs }}
-      runner: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'ployz-omarchy' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,8 +86,8 @@ jobs:
         run: python3 scripts/ci.py select "$BASE_SHA" "$GITHUB_SHA"
 
   contracts:
-    needs: changes
-    runs-on: ${{ needs.changes.outputs.runner }}
+    needs: [changes, runner]
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -89,9 +121,9 @@ jobs:
     defaults:
       run:
         working-directory: core
-    needs: changes
+    needs: [changes, runner]
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
-    runs-on: ${{ needs.changes.outputs.runner }}
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -114,9 +146,9 @@ jobs:
     defaults:
       run:
         working-directory: core
-    needs: changes
+    needs: [changes, runner]
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
-    runs-on: ${{ needs.changes.outputs.runner }}
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 25
     permissions:
       contents: read
@@ -185,10 +217,10 @@ jobs:
     defaults:
       run:
         working-directory: dashboard/uptime
-    needs: changes
+    needs: [changes, runner]
     # Main always runs it, so every main commit has a ployz-uptime:<sha> for Railway to pin.
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
-    runs-on: ${{ needs.changes.outputs.runner }}
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -236,7 +268,7 @@ jobs:
       - run: cargo check --package ployz --all-targets --locked
 
   cloud:
-    needs: changes
+    needs: [changes, runner]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'cloud')
     uses: ./.github/workflows/cloud.yml
     permissions:
@@ -245,7 +277,7 @@ jobs:
       # Main commits and release tags publish the Cloud image.
       packages: write
     with:
-      runner: ${{ needs.changes.outputs.runner }}
+      runner: ${{ needs.runner.outputs.runner }}
     secrets: inherit
 
   release-contracts:
@@ -260,12 +292,12 @@ jobs:
   # The binaries the verify harness runs, built once per change on main so local runs download them.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
-    needs: changes
+    needs: [changes, runner]
     if: github.event_name != 'pull_request'
     defaults:
       run:
         working-directory: core
-    runs-on: ${{ needs.changes.outputs.runner }}
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -307,7 +339,7 @@ jobs:
     name: CI ready
     if: always()
     needs: [changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
-    runs-on: ${{ needs.changes.outputs.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
