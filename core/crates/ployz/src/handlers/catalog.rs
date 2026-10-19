@@ -597,4 +597,16 @@ mod tests {
         let domains = catalog::explain("web.domains").unwrap().schema;
         assert_eq!(type_of(&domains), "array");
     }
+
+    #[test]
+    fn auto_deploy_promises_a_deploy_only_for_pushes_the_app_delivers() {
+        let auto_deploy = catalog::explain("web.autoDeploy").unwrap().schema;
+        assert_eq!(
+            auto_deploy
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap(),
+            "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once."
+        );
+    }
 }

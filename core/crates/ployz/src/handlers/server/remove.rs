@@ -4,7 +4,7 @@ use ployz_core::{
 };
 
 use super::super::runtime;
-use super::{ConnectionOptions, target};
+use super::{ConnectionOptions, Reached, target};
 use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
@@ -48,9 +48,22 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?.to_owned();
     let runtime = runtime()?;
+    let reached = runtime.block_on(async {
+        match removal {
+            Removal::Forget => super::connect_or_unanswered(matches, options.context()).await,
+            Removal::Reset => Ok(Reached::Client(
+                super::connect(matches, options.context()).await?,
+            )),
+        }
+    })?;
+    let mut client = match reached {
+        Reached::Client(client) => client,
+        Reached::Unanswered(credential) => {
+            return super::forget::forget_unanswered(&runtime, matches, &credential, &selector);
+        }
+    };
     // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-    let (mut client, machines, selected, current, hold, held) = runtime.block_on(async {
-        let mut client = super::connect(matches, options.context()).await?;
+    let (machines, selected, current, hold, held) = runtime.block_on(async {
         let machines = client.machines().await?;
         let observation =
             crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
@@ -69,7 +82,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             Removal::Forget => Some(client.held_copies(observation).await?),
             Removal::Reset => None,
         };
-        Ok::<_, Error>((client, machines, selected, current, hold, held))
+        Ok::<_, Error>((machines, selected, current, hold, held))
     })?;
     if let Some(HeldCopies::Answered(held)) = &held
         && !held.is_empty()

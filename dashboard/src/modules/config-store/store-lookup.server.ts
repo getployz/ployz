@@ -20,6 +20,17 @@ export const findService = Effect.fn("ConfigStore.findService")(function* (organ
   return null;
 });
 
+/**
+ * Every variable name the Store ever held Sealed in the Environment that owns `namespace`, plus every template, for
+ * scrubbing its Containers' logs. Null when the Organization owns no such Namespace, so the reader scrubs every value.
+ */
+export const sealedNames = Effect.fn("ConfigStore.sealedNames")(function* (organizationId: string, namespace: string) {
+  const owned = (yield* owners(organizationId)).find((row) => row.namespace === namespace);
+  if (owned === undefined) return null;
+  const { names } = yield* readStore(organizationId, { query: "sealed_names", environment: { project: owned.project, environment: owned.environment } });
+  return names;
+});
+
 export const environmentProtected = Effect.fn("ConfigStore.environmentProtected")(function* (organizationId: string, project: string, environmentId: string) {
   const { environments } = yield* readStore(organizationId, { query: "environments", project });
   return environments.find(({ id }) => id === environmentId)?.protected === true;
