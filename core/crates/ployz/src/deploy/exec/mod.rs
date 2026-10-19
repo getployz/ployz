@@ -1751,6 +1751,10 @@ impl<'a> Rows<'a> {
     }
 
     fn not_confirmed(&self, machines: &[MachineId]) -> String {
+        // Every proxy in the read confirmed, but the read did not name every live Machine.
+        if machines.is_empty() {
+            return "the route set did not name every live Machine".into();
+        }
         let names: Vec<String> = machines.iter().map(|id| self.machine_name(id)).collect();
         format!("proxy on {} did not confirm", names.join(", "))
     }
