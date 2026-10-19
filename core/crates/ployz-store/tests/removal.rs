@@ -1242,6 +1242,36 @@ fn rerunning_a_removal_under_way_needs_no_new_version() {
 }
 
 #[test]
+fn giving_up_every_copy_on_a_rerun_takes_off_past_a_silent_server() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    set_default(&store, &who, "staging");
+    let removing = confirmed(
+        &store,
+        &who,
+        accepting_data(Some("production")),
+        &observing(observed()),
+    )
+    .unwrap();
+    fail(&store, &taking_off(&removing, "production"), &["web"]);
+
+    // `b…` goes silent, so it may hold a copy of `data` nobody confirmed.
+    let silent = observing(VolumeObservation {
+        unanswered: vec![server('b')],
+        ..observed()
+    });
+    let every_copy = Remove {
+        every_copy: volumes(&[("production", &["data"])]),
+        ..accepting_data(Some("production"))
+    };
+    // Giving up more than the removal holds is a fresh confirmation.
+    let asked = refusal(store.write_trusted(&who, &every_copy, &silent));
+    assert_eq!(asked.code, RpcErrorCode::ConfirmationRequired);
+    let rerun = confirmed(&store, &who, every_copy, &silent).unwrap();
+    assert_eq!(left(rerun), [("production".into(), LeftStatus::Removing)]);
+}
+
+#[test]
 fn an_agent_rerunning_a_removal_under_way_still_asks_a_human() {
     let (store, who) = branched();
     let required = Trusted {
