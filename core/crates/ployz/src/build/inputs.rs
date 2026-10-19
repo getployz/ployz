@@ -379,12 +379,12 @@ impl UploadListing {
     /// Fails on unreadable entries, and in a Git checkout when `git ls-files` fails.
     pub fn read(root: &Path) -> Result<Self, Error> {
         let read = || -> io::Result<_> {
-            let in_checkout = root
-                .canonicalize()?
-                .ancestors()
-                .any(|dir| dir.join(".git").exists());
-            if in_checkout {
-                return git_kept_paths(root);
+            for dir in root.canonicalize()?.ancestors() {
+                match fs::symlink_metadata(dir.join(".git")) {
+                    Ok(_) => return git_kept_paths(root),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(_) => return Ok(None),
+                }
             }
             let mut paths = BTreeSet::new();
             walk(root, root, &mut paths)?;
@@ -699,6 +699,19 @@ mod tests {
             UploadListing::read(root).err().unwrap().to_string(),
             GIT_UNREADABLE,
             "nothing is archived when Git can't say what it ignores"
+        );
+    }
+
+    #[test]
+    fn an_upload_with_a_dangling_git_link_is_refused() {
+        let checkout = tempfile::tempdir().unwrap();
+        let root = checkout.path();
+        fs::write(root.join("app"), "").unwrap();
+        symlink("/missing-gitdir", root.join(".git")).unwrap();
+        assert_eq!(
+            UploadListing::read(root).err().unwrap().to_string(),
+            GIT_UNREADABLE,
+            "a .git that points nowhere is a checkout Git can't read"
         );
     }
 
