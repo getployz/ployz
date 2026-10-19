@@ -1030,7 +1030,7 @@ pub fn ployz_version() -> String {
 }
 
 /// The Sealed names one log request scrubs under. Feed it every read of the Store's
-/// `sealed_names`; readers given it wait for the first read and hide lines while the last read failed.
+/// `sealed_names`; readers given it wait for the first read and hide while the newest read failed.
 #[napi]
 pub struct SealedNames {
     inner: sdk::SealedNames,
