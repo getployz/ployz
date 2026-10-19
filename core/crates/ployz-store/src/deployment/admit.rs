@@ -166,7 +166,7 @@ pub(crate) fn admit(
             let (retried, rollback) = deployment::retry(tx, who, retry, trusted)?;
             if let Some((review, gate)) = asked {
                 trusted.writes(&scope::load_by_id(tx, &retried.environment_id)?.summary.name)?;
-                review::approve_retry(who, &review, (&retry.deployment, &rollback), &gate)?;
+                review::approve_retry(who, &review, (retry, &rollback), &gate)?;
             }
             if retried.remove
                 && let Some(outcome) =

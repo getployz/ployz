@@ -316,7 +316,7 @@ pub(crate) fn retry(
     let mut rollback = Rollback {
         number: stored.summary.number,
         rolls_back: undone(tx, &stored.summary)?,
-        deletes: Vec::new(),
+        removes: Vec::new(),
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -344,11 +344,7 @@ pub(crate) fn retry(
         false => Some(rollback_losses(tx, who, &stored, retry, trusted)?),
     };
     if let Some((_, losses)) = &fresh {
-        rollback.deletes = losses
-            .iter()
-            .filter(|loss| !loss.deletes.is_empty())
-            .map(|loss| loss.volume.name.clone())
-            .collect();
+        rollback.removes.clone_from(losses);
     }
     let (services, nodes) = retried(tx, &stored, fresh)?;
     let admitted_at = now();
@@ -406,12 +402,12 @@ pub(crate) fn retry(
 }
 
 /// What a redeploy rolls back: the Deployment it ships again, by number, the
-/// newer ones it undoes, and the Volumes whose data it deletes.
+/// newer ones it undoes, and the Volumes it removes with the data each deletes.
 #[derive(Clone, Debug)]
 pub(crate) struct Rollback {
     pub(crate) number: u64,
     pub(crate) rolls_back: Vec<u64>,
-    pub(crate) deletes: Vec<VolumeName>,
+    pub(crate) removes: Vec<VolumeLoss>,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed
