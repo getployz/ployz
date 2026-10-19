@@ -63,7 +63,8 @@ no service arguments, and `--follow` still use live container discovery.
   first. It doesn't copy them anywhere else. To search or keep logs for longer, send them from your app to a log
   service.
 - **A replica that failed keeps its output.** Its exit code appears when the server observed it,
-  so you can see why it stopped.
+  so you can see why it stopped. A replica that keeps restarting shows each exit, and an OOM kill
+  reads **killed out of memory**.
 - **Deleted environments and removed services keep their logs until retention removes them.**
   Recreating an environment with the same name can show its earlier logs. A service's card
   on a deployment shows only that deployment's output.

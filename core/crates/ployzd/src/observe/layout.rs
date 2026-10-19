@@ -7,6 +7,8 @@
 //!       <cid>/                          one per container Ployz ran
 //!         meta.json                     ContainerMeta
 //!         gaps.jsonl                    one Gap per line
+//!         exits.jsonl                   one RunExit per line, each run's
+//!                                       exit the harvester saw
 //!         scanned                       seq of the newest file the damage
 //!                                       scan has read past
 //!         first-set.json                FirstSeen, until max-file judges it
@@ -56,6 +58,7 @@ pub const CONTAINERS_DIR: &str = "containers";
 pub const META_FILE: &str = "meta.json";
 pub const META_TEMP_FILE: &str = "meta.tmp";
 pub const GAPS_FILE: &str = "gaps.jsonl";
+pub const EXITS_FILE: &str = "exits.jsonl";
 pub const LINKING_FILE: &str = "linking.tmp";
 pub const SCANNED_FILE: &str = "scanned";
 pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
@@ -321,6 +324,15 @@ pub struct Gap {
     pub from: i64,
     pub to: i64,
     pub reason: GapReason,
+}
+
+/// One line of `exits.jsonl`: a run's exit at `ts`, in Unix nanoseconds.
+/// `meta.json` holds only the current run, so a restart would lose it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunExit {
+    pub ts: i64,
+    pub exit_code: Option<i64>,
+    pub oom_killed: bool,
 }
 
 #[cfg(test)]

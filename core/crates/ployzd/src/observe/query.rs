@@ -31,7 +31,8 @@ use ployz_core::{
 use super::{
     frame::{self, Event, Frames, Reassembler, Stream},
     layout::{
-        ContainerKind, ContainerMeta, GAPS_FILE, Gap, GapReason, LogFileName, META_FILE, StoreRoot,
+        ContainerKind, ContainerMeta, EXITS_FILE, GAPS_FILE, Gap, GapReason, LogFileName,
+        META_FILE, RunExit, StoreRoot,
     },
 };
 
@@ -193,7 +194,7 @@ pub fn page(
         check(cancel)?;
         described.insert(stored.id, describe(&stored.id, &stored.meta));
         stored.read_gaps(query, &mut best);
-        stored.read_exit(&mut best);
+        stored.read_exits(&mut best);
         stored.read_files(query, &mut best, cancel)?;
     }
 
@@ -291,28 +292,42 @@ impl Stored {
         }
     }
 
-    fn read_exit(&self, best: &mut Best<'_>) {
-        let Some(ts) = self
+    /// Each run's exit the harvester kept, and the exit `meta.json` holds
+    /// when the harvester missed it, as while `ployz observe` was down.
+    fn read_exits(&self, best: &mut Best<'_>) {
+        let kept: Vec<RunExit> = fs::read_to_string(self.dir.join(EXITS_FILE))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let finished = self
             .meta
             .finished_at
             .as_deref()
             .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-            .and_then(|at| at.timestamp_nanos_opt())
-        else {
-            return;
-        };
-        let key = Key {
-            ts,
-            container: self.id,
-            seq: u64::MAX,
-            n: 0,
-        };
-        best.offer(key, || HistoryRow::Exit {
-            container_id: self.id,
-            ts,
-            exit_code: self.meta.exit_code,
-            oom_killed: self.meta.oom_killed,
-        });
+            .and_then(|at| at.timestamp_nanos_opt());
+        // Docker sets FinishedAt before it sends the `die` the harvester keeps.
+        let missed = finished
+            .filter(|finished| !kept.iter().any(|exit| exit.ts >= *finished))
+            .map(|ts| RunExit {
+                ts,
+                exit_code: self.meta.exit_code,
+                oom_killed: self.meta.oom_killed,
+            });
+        for (n, exit) in kept.into_iter().chain(missed).enumerate() {
+            let key = Key {
+                ts: exit.ts,
+                container: self.id,
+                seq: u64::MAX,
+                n: n as u64,
+            };
+            best.offer(key, || HistoryRow::Exit {
+                container_id: self.id,
+                ts: exit.ts,
+                exit_code: exit.exit_code,
+                oom_killed: exit.oom_killed,
+            });
+        }
     }
 
     fn read_files(
@@ -706,7 +721,9 @@ pub(crate) mod tests {
     use crate::{
         observe::{
             frame::{Piece, Stream, tests::frame},
-            layout::{ContainerKind, ContainerMeta, Gap, GapReason, LogFileName, StoreRoot},
+            layout::{
+                ContainerKind, ContainerMeta, Gap, GapReason, LogFileName, RunExit, StoreRoot,
+            },
         },
         test_dir::TestDir,
     };
@@ -893,6 +910,52 @@ pub(crate) mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn the_exit_meta_holds_shows_once_beside_the_exits_the_harvester_kept() {
+        let store = Store::new();
+        let id = store.container('c', "web");
+        store.file(&id, 0, &[line(T0, "first")]);
+        let dir = store.root.container(&id);
+        let kept =
+            [(T0 + 10, 137, true), (T0 + 21, 1, false)].map(|(ts, code, oom_killed)| RunExit {
+                ts,
+                exit_code: Some(code),
+                oom_killed,
+            });
+        let jsonl: String = kept
+            .iter()
+            .map(|exit| serde_json::to_string(exit).unwrap() + "\n")
+            .collect();
+        std::fs::write(dir.join("exits.jsonl"), jsonl).unwrap();
+        let exits = |finished_at: &str| {
+            let mut meta: ContainerMeta =
+                serde_json::from_slice(&std::fs::read(dir.join("meta.json")).unwrap()).unwrap();
+            meta.finished_at = Some(finished_at.into());
+            meta.exit_code = Some(1);
+            std::fs::write(dir.join("meta.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+            store
+                .page(request(LogDirection::Forward, 100))
+                .rows
+                .into_iter()
+                .filter_map(|row| {
+                    let HistoryRow::Exit { ts, exit_code, .. } = row else {
+                        return None;
+                    };
+                    Some((ts, exit_code))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            exits("2025-10-09T08:53:20.000000020Z"),
+            [(T0 + 10, Some(137)), (T0 + 21, Some(1))]
+        );
+        assert_eq!(
+            exits("2025-10-09T08:53:20.000000030Z"),
+            [(T0 + 10, Some(137)), (T0 + 21, Some(1)), (T0 + 30, Some(1))]
+        );
     }
 
     #[test]
