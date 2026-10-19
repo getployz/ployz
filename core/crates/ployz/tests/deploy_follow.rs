@@ -750,8 +750,8 @@ fn listed(newer: &DeploymentView) -> Reply {
     }
 }
 
-/// `deploy web`, superseded by `deploy client`: the CLI's result after following.
-fn superseded_by_client(client_ships: &[&str]) -> Value {
+/// `deploy web`, superseded by `deploy client`, as the CLI ends it.
+fn superseded_by_client(client_ships: &[&str]) -> Output {
     let root = tempfile::tempdir().unwrap();
     let ours = narrowed(7, DeploymentStatus::Queued, "web", &["web"]);
     let superseded = narrowed(7, DeploymentStatus::Superseded, "web", &["web"]);
@@ -785,17 +785,27 @@ fn superseded_by_client(client_ships: &[&str]) -> Value {
             events.to_str().unwrap(),
         ],
     );
+    output
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_follows_a_newer_one_that_ships_its_service_by_reference() {
+    let output = superseded_by_client(&["client", "web"]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("number"), Some(&json!(8)), "{result}");
+    assert_eq!(result.get("status"), Some(&json!("applied")), "{result}");
 }
 
 #[test]
-fn a_superseded_narrowed_deploy_follows_a_newer_one_that_ships_its_service_by_reference() {
-    let result = superseded_by_client(&["client", "web"]);
-    assert_eq!(result.get("number"), Some(&json!(8)), "{result}");
-    assert_eq!(result.get("status"), Some(&json!("applied")), "{result}");
+fn a_superseded_narrowed_deploy_stops_when_the_newer_one_leaves_its_service_out() {
+    let output = superseded_by_client(&["client"]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("number"), Some(&json!(7)), "{result}");
+    assert_eq!(result.get("status"), Some(&json!("superseded")), "{result}");
 }

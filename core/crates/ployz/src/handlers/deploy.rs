@@ -18,7 +18,7 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeploymentId, DeploymentStatus,
+    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
     DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish,
     RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
@@ -727,7 +727,7 @@ fn follow(
     }
 }
 
-/// The newest Deployment newer than superseded `view` that targets every Service `view` did, among the latest and those in flight.
+/// The newest Deployment newer than superseded `view` that ships every Service `view` targeted, among the latest and those in flight.
 fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<DeploymentSummary>, Error> {
     let page = store.read(&DeploymentsQuery {
         environment: EnvironmentRef {
@@ -737,15 +737,42 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
         limit: None,
         cursor: None,
     })?;
+    let ours = &view.deployment.services;
     // The latest may ship other Services while an older one in flight ships ours:
     // the latest, then the in-flight ones newest first, whatever page they fall on.
-    Ok(page.latest.into_iter().chain(page.in_flight).find(|newer| {
-        newer.number > view.deployment.number
-            && ships_all(&view.deployment.services, &newer.services)
-    }))
+    let latest = page.latest.as_ref().map(|latest| latest.id.clone());
+    let in_flight = page
+        .in_flight
+        .into_iter()
+        .filter(|newer| latest.as_ref() != Some(&newer.id));
+    for newer in page.latest.into_iter().chain(in_flight) {
+        if newer.number <= view.deployment.number {
+            continue;
+        }
+        // A narrowed one also ships, as Service nodes, the Services its named ones reference.
+        let shipped = if newer.services.is_empty() || ours.is_empty() {
+            newer.services.clone()
+        } else {
+            store
+                .read(&ployz_store::DeploymentQuery {
+                    id: newer.id.clone(),
+                })?
+                .nodes
+                .into_iter()
+                .filter_map(|node| match node.node {
+                    DeployedNode::Service { name, .. } => Some(name),
+                    DeployedNode::Volume { .. } | DeployedNode::Config { .. } => None,
+                })
+                .collect()
+        };
+        if ships_all(ours, &shipped) {
+            return Ok(Some(newer));
+        }
+    }
+    Ok(None)
 }
 
-/// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.
+/// Whether a Deployment shipping `newer` ships every Service one targeting `ours` would; empty ships every Service.
 fn ships_all(ours: &[ServiceName], newer: &[ServiceName]) -> bool {
     newer.is_empty() || !ours.is_empty() && ours.iter().all(|service| newer.contains(service))
 }
