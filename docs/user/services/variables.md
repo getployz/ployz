@@ -86,6 +86,12 @@ Your service still gets the real value when it deploys.
   with its variables. Delete a sealed variable yourself if you don't want it.
 - A sealed value is stored exactly as typed, so it can't hold a
   [reference](#reference-another-services-variable).
+- The [Ployz agent](../account/agent-sidebar.md) and `ployz mcp` can have Ployz make and seal
+  a new random value, 32 letters, that they never see. They refuse a value you give them and name the
+  `ployz set ... --secret` command to run instead.
+- Asking for a new random value for a variable that's already sealed keeps the sealed value, so
+  a retried change never swaps the password a database already uses. To get a new value, delete
+  the variable first. A plain variable gets a new sealed value.
 
 ## Reference another service's variable
 
