@@ -1128,8 +1128,10 @@ impl Client {
                 machine_id,
                 container_id,
                 action,
-                signal.clone(),
-                grace_period_seconds,
+                StopOptions {
+                    signal: signal.clone(),
+                    grace_period_seconds,
+                },
                 queued.get(&machine_id).copied().unwrap_or(1),
                 cancellation.clone(),
             ));
@@ -1806,8 +1808,7 @@ async fn change_on_machine(
     machine_id: MachineId,
     container_id: ContainerId,
     action: ContainerAction,
-    signal: Option<String>,
-    grace_period_seconds: Option<u16>,
+    stop: StopOptions,
     queued: u32,
     cancellation: CancellationToken,
 ) -> Result<MachineSuccess<ContainerId>, MachineFailure<ContainerOperationFailure>> {
@@ -1816,10 +1817,7 @@ async fn change_on_machine(
         &machine_id,
         &container_id,
         action,
-        StopOptions {
-            signal,
-            grace_period_seconds,
-        },
+        stop,
         queued,
         &cancellation,
     )
