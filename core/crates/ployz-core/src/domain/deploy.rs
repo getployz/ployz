@@ -838,12 +838,12 @@ impl Display for DeployWarning {
             ),
             Self::LeftRunning {
                 service,
-                container_id,
                 machine,
                 reason,
+                ..
             } => write!(
                 f,
-                "{service} copy {container_id} left running on {machine}: {reason}"
+                "{service}  left running on {machine} ({reason}). The next deploy cleans it up."
             ),
         }
     }
