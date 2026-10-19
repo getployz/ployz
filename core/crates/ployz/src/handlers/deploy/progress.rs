@@ -335,8 +335,8 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             view.namespace.clone(),
             view.runtime_names.get(name).unwrap_or(name).clone(),
         );
-        let mut failed = false;
-        let mut ran = false;
+        let mut logs = false;
+        let mut pulled = false;
         for row in &node.rows {
             let RowState::Failed {
                 reason: row_reason,
@@ -362,8 +362,18 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 server: row.server.clone(),
                 log: log.clone(),
             });
-            failed = true;
-            ran |= *step != Some(FailedAt::Pull);
+            match step {
+                Some(
+                    FailedAt::Start
+                    | FailedAt::Health
+                    | FailedAt::Hook
+                    | FailedAt::Stop
+                    | FailedAt::Remove,
+                ) => logs = true,
+                Some(FailedAt::Pull) => pulled = true,
+                Some(FailedAt::Build | FailedAt::Create | FailedAt::Volume) => {}
+                None => logs |= log.is_some(),
+            }
         }
         let scope = [
             "--project",
@@ -372,13 +382,14 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             view.environment.name.as_str(),
         ];
         // One hint per Service, by its config name: it reads every Server's logs, and a
-        // token that reads through Cloud can serve it too. A failed pull started no
-        // Container, so an image Service shows its image instead.
-        if ran {
+        // token that reads through Cloud can serve it too. Before a Container exists it
+        // would show only the old one's lines, so a failed pull names the image instead,
+        // unless a build made it.
+        if logs {
             hints.push(Hint::Inspect(command(
                 &[&["logs", name.as_str()][..], &scope].concat(),
             )));
-        } else if failed && !view.builds.iter().any(|build| build.service == *name) {
+        } else if pulled && !view.builds.iter().any(|build| build.service == *name) {
             let image = format!("{name}.image");
             hints.push(Hint::Inspect(command(
                 &[&["get", image.as_str()][..], &scope].concat(),
@@ -532,6 +543,32 @@ mod tests {
             inspects(&failure(&view, command)),
             ["ployz logs web --project shop --env production"]
         );
+    }
+
+    #[test]
+    fn a_create_failure_offers_no_logs_only_the_old_container_wrote() {
+        let mut view = view();
+        for node in &mut view.nodes {
+            for row in &mut node.rows {
+                if let RowState::Failed { step, log, .. } = &mut row.state {
+                    *step = Some(FailedAt::Create);
+                    *log = None;
+                }
+            }
+        }
+        let failed = failure(&view, command);
+        assert!(inspects(&failed).is_empty());
+        assert!(
+            failed
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Retry(_)))
+        );
+
+        for row in failed_rows(&mut view) {
+            *row = None;
+        }
+        assert!(inspects(&failure(&view, command)).is_empty());
     }
 
     #[test]

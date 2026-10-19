@@ -27,10 +27,18 @@ records the existing Deployment events as NDJSON. Source builds appear against t
 Service before the Deploy is planned, without a depth. A failure names the Server
 where it happened.
 
-A failed deploy shows the deepest cause, available failed-container log tails, and
-`inspect:` and `retry:` commands. `inspect:` reads the Service's logs. When a Service set by
-`image` failed only to pull it, no Container started, so `inspect:` shows its `image` setting
-instead. A Deployment result that did not fully succeed exits with code 3. A warning that
+A failed deploy shows the deepest cause, available failed-container log tails, and a
+`retry:` command. It adds an `inspect:` command for each failed Service when there is
+something to inspect:
+
+- A failure while starting, health-checking, running a hook for, stopping or removing a
+  Container shows `ployz logs <service>`.
+- A failed image pull shows `ployz get <service>.image`. A Service built from source has no
+  `image` setting, so it gets no `inspect:` line.
+- A failure before any Container exists, such as creating the Container or preparing its
+  Volumes, gets no `inspect:` line. `ployz logs` would show only the old Container.
+
+A Deployment result that did not fully succeed exits with code 3. A warning that
 names an incomplete Server observation also makes an
 otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
