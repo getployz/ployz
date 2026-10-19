@@ -558,6 +558,7 @@ pub async fn stop_one(
                 grace_period_seconds: None,
             },
             1,
+            &CancellationToken::new(),
         ))
         .await
 }
@@ -577,7 +578,12 @@ pub async fn remove_one(
 ) -> Result<(), RpcError> {
     let client = session.client()?;
     session
-        .until_closed(cleanup::user_remove(&client, &machine, &container))
+        .until_closed(cleanup::user_remove(
+            &client,
+            &machine,
+            &container,
+            &CancellationToken::new(),
+        ))
         .await
 }
 

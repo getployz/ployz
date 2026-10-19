@@ -22,6 +22,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tonic::{
     Streaming,
     codec::{CompressionEncoding, ProstCodec},
@@ -1108,6 +1109,7 @@ impl Client {
         action: ContainerAction,
         signal: Option<String>,
         grace_period_seconds: Option<u16>,
+        cancellation: &CancellationToken,
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
@@ -1129,6 +1131,7 @@ impl Client {
                 signal.clone(),
                 grace_period_seconds,
                 queued.get(&machine_id).copied().unwrap_or(1),
+                cancellation.clone(),
             ));
             task_targets.insert(handle.id(), (machine_id, container_id));
         }
@@ -1806,15 +1809,19 @@ async fn change_on_machine(
     signal: Option<String>,
     grace_period_seconds: Option<u16>,
     queued: u32,
+    cancellation: CancellationToken,
 ) -> Result<MachineSuccess<ContainerId>, MachineFailure<ContainerOperationFailure>> {
     match change_container_rpc(
         &client,
         &machine_id,
         &container_id,
         action,
-        signal,
-        grace_period_seconds,
+        StopOptions {
+            signal,
+            grace_period_seconds,
+        },
         queued,
+        &cancellation,
     )
     .await
     {
@@ -1837,25 +1844,25 @@ async fn change_container_rpc(
     machine_id: &MachineId,
     container_id: &ContainerId,
     action: ContainerAction,
-    signal: Option<String>,
-    grace_period_seconds: Option<u16>,
+    stop: StopOptions,
     queued: u32,
+    cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
-    let stop = StopOptions {
-        signal,
-        grace_period_seconds,
-    };
     match action {
         ContainerAction::Start => cleanup::user_start(client, machine_id, container_id)
             .await
             .and_then(admitted),
-        ContainerAction::Restart => cleanup::user_restart(client, machine_id, container_id, stop)
-            .await
-            .and_then(admitted),
-        ContainerAction::Stop => {
-            cleanup::user_stop(client, machine_id, container_id, stop, queued).await
+        ContainerAction::Restart => {
+            cleanup::user_restart(client, machine_id, container_id, stop, cancellation)
+                .await
+                .and_then(admitted)
         }
-        ContainerAction::Remove => cleanup::user_remove(client, machine_id, container_id).await,
+        ContainerAction::Stop => {
+            cleanup::user_stop(client, machine_id, container_id, stop, queued, cancellation).await
+        }
+        ContainerAction::Remove => {
+            cleanup::user_remove(client, machine_id, container_id, cancellation).await
+        }
     }
 }
 
