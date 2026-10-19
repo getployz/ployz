@@ -103,6 +103,8 @@ ployz set web.image=nginx:1.27 web.buildMethod=dockerfile   # refused: an image 
 ployz set web.image=nginx:1.27 web.repository=acme/web      # refused: one source at a time
 ```
 
+One edit changes each setting at most once, so an edit that sets and unsets `web.image` is refused.
+
 The source never blocks an unset. A setting the service's source does not have is already
 at its default, so unsetting it changes nothing. A repository service still refuses an unset
 `branch`, because it always builds a branch: set another one instead. An empty service takes

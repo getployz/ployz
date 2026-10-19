@@ -1227,10 +1227,7 @@ fn an_edit_that_changes_one_path_twice_is_refused_and_changes_nothing() {
             "web.image",
         ),
         (
-            vec![
-                set("web.replicas", json!(2)),
-                set("web.replicas", json!(3)),
-            ],
+            vec![set("web.replicas", json!(2)), set("WEB.replicas", json!(3))],
             "web.replicas",
         ),
         (

@@ -296,8 +296,6 @@ fn a_typed_private_address_answers_with_its_reference() {
                 json!("https://api.internal.example.com"),
             ),
             ("web.env.SELF", json!("http://web.internal:8080")),
-            // Only the last value set to a variable is answered.
-            ("web.env.API_DB", json!("http://api.internal")),
             (
                 "web.env.API_DB",
                 json!("http://${{ api.PLOYZ_PRIVATE_DOMAIN }}"),

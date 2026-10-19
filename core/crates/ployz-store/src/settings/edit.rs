@@ -33,7 +33,8 @@ pub struct Edit {
     #[serde(default)]
     pub expect: Option<Revision>,
     /// The changes, applied in order, except that image and repository changes go first.
-    /// Every Setting set must apply to the source the whole edit leaves.
+    /// Every Setting set must apply to the source the whole edit leaves, and no path is
+    /// changed twice.
     pub changes: Vec<Change>,
 }
 
@@ -131,10 +132,23 @@ pub(crate) fn edit(
             json!({}),
         ));
     }
+    let mut steps = expand(&edit.changes)?;
+    // Two changes to one path: only the last would land, without a word.
+    if let Some(path) = steps.iter().enumerate().find_map(|(index, (path, _))| {
+        steps
+            .iter()
+            .take(index)
+            .any(|(earlier, _)| earlier == path)
+            .then_some(path)
+    }) {
+        return Err(error::invalid(
+            format!("{path} is changed twice in one edit; change it once"),
+            json!({ "path": path }),
+        ));
+    }
     let environment = scope::lock(tx, who, &edit.environment)?;
     environment.expect(edit.expect)?;
     let before = environment.working.clone();
-    let mut steps = expand(&edit.changes)?;
     // Each Setting set, judged against the source the whole edit leaves.
     let mut set = Vec::new();
     for (path, step) in &steps {
@@ -238,12 +252,6 @@ impl Editing<'_> {
                 let rewrote =
                     variables::rename(&mut self.environment, service, key, &to, update_references)?;
                 if let Some(rewrote) = rewrote {
-                    // What the variable types moves with it.
-                    for typed in &mut self.typed_addresses {
-                        if typed.path == path {
-                            typed.path = renamed.clone();
-                        }
-                    }
                     let rewrote = rewrote
                         .into_iter()
                         .map(|(service, key)| SettingPath::at(&service, Target::Variable(key)));
@@ -256,8 +264,6 @@ impl Editing<'_> {
                 return Ok(());
             }
         };
-        // Only the last change to a variable decides what it types.
-        self.typed_addresses.retain(|typed| typed.path != path);
         // A new credential applies at once; turning one on or off is staged.
         if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
             let changed = match &value {

@@ -848,6 +848,20 @@ fn unsetting_private_dns_restores_the_service_name() {
 }
 
 #[test]
+fn a_path_given_twice_is_refused_and_changes_nothing() {
+    for store in &targets() {
+        shop_with_web(store);
+        let refused = failed(store, &["set", "web.replicas=2", "web.replicas=3"], 2);
+        assert_eq!(refused["code"], "invalid_argument");
+        assert_eq!(
+            refused["message"],
+            "web.replicas is changed twice in one edit; change it once"
+        );
+        assert_eq!(setting(store, "web.replicas"), json!(1));
+    }
+}
+
+#[test]
 fn an_env_value_prints_on_one_escaped_line_for_humans() {
     for store in &targets() {
         shop_with_web(store);

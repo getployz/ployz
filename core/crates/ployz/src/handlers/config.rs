@@ -317,19 +317,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    if let Some(path) = repeated(&changes) {
-        return Err(Error::usage(format!("{path} is given twice; set it once")));
-    }
     edit(root, changes)
-}
-
-/// A path two of `changes` set: only the last would land, without a word.
-fn repeated(changes: &[Change]) -> Option<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    changes.iter().find_map(|change| match change {
-        Change::Set { path, .. } => (!seen.insert(path.to_string())).then(|| path.to_string()),
-        Change::Unset { .. } | Change::Patch { .. } | Change::Rename { .. } => None,
-    })
 }
 
 /// The one positional a flag applies to.
@@ -591,22 +579,6 @@ mod tests {
         elsewhere.environment.id =
             ployz_store::EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap();
         assert!(torn(&(view, Some(elsewhere))));
-    }
-
-    #[test]
-    fn a_path_set_twice_is_named() {
-        let set = |path: &str, value: &str| Change::Set {
-            path: SettingPath::parse(path).unwrap(),
-            value: json!(value),
-        };
-        assert_eq!(
-            repeated(&[set("web.replicas", "2"), set("web.image", "a")]),
-            None
-        );
-        assert_eq!(
-            repeated(&[set("web.replicas", "2"), set("WEB.replicas", "3")]).as_deref(),
-            Some("web.replicas")
-        );
     }
 
     #[test]
