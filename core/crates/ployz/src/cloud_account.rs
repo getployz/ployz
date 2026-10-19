@@ -943,7 +943,7 @@ fn too_big(why: &str) -> RpcError {
     RpcError {
         code: ployz_core::RpcErrorCode::InvalidArgument,
         message: format!(
-            "{why} Deploy from GitHub instead, or remove large files from the directory. ployz up uploads every file except .git, including ones Git ignores such as node_modules."
+            "{why} Deploy from GitHub instead, or remove large files from the directory. In a Git checkout, ployz up leaves out files Git ignores, so add ones such as node_modules to .gitignore."
         ),
         details: serde_json::Value::Null,
         cause: Vec::new(),
@@ -1251,7 +1251,7 @@ mod tests {
         assert_eq!(refused.code, ployz_core::RpcErrorCode::InvalidArgument);
         assert_eq!(
             refused.message,
-            "The source is 96 MiB compressed, over the 95 MiB upload limit. Deploy from GitHub instead, or remove large files from the directory. ployz up uploads every file except .git, including ones Git ignores such as node_modules."
+            "The source is 96 MiB compressed, over the 95 MiB upload limit. Deploy from GitHub instead, or remove large files from the directory. In a Git checkout, ployz up leaves out files Git ignores, so add ones such as node_modules to .gitignore."
         );
         assert_eq!(
             listener.accept().unwrap_err().kind(),

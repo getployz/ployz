@@ -365,7 +365,7 @@ fn special_file(path: &Path, root: &Path) -> io::Error {
 }
 
 /// An Uploaded Source's content digest: lowercase hex sha256 over every path, byte,
-/// mode and link under `root`, except a top-level `.git`, which is never uploaded.
+/// mode and link an upload of `root` holds.
 ///
 /// # Errors
 /// Fails on unreadable entries and sockets or special files.
@@ -384,7 +384,9 @@ pub fn content_digest(root: &Path) -> Result<String, Error> {
     Ok(hex::encode(digest))
 }
 
-/// Every path an upload of `root` holds, relative to it: all but a top-level `.git`.
+/// Every path an upload of `root` holds, relative to it. In a Git checkout that is
+/// what Git keeps, tracked or untracked but not ignored. Elsewhere it is all but a
+/// top-level `.git`.
 fn uploaded_paths(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
     fn walk(path: &Path, root: &Path, paths: &mut BTreeSet<PathBuf>) -> io::Result<()> {
         for entry in fs::read_dir(path)? {
@@ -400,9 +402,63 @@ fn uploaded_paths(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
         }
         Ok(())
     }
+    if let Some(paths) = git_kept_paths(root)? {
+        return Ok(paths);
+    }
     let mut paths = BTreeSet::new();
     walk(root, root, &mut paths)?;
     Ok(paths)
+}
+
+/// The files `git ls-files` keeps under `root` and their directories, or `None` when
+/// `root` is not in a Git checkout Git can read.
+fn git_kept_paths(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    // Spare a Mac without developer tools the prompt its stub `git` opens.
+    if !root
+        .canonicalize()?
+        .ancestors()
+        .any(|dir| dir.join(".git").exists())
+    {
+        return Ok(None);
+    }
+    let output = match std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut paths = BTreeSet::new();
+    for file in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|file| !file.is_empty())
+    {
+        let file = Path::new(std::ffi::OsStr::from_bytes(file));
+        // `--cached` still lists a tracked file deleted from the working tree.
+        match fs::symlink_metadata(root.join(file)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
+        paths.extend(
+            file.ancestors()
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(Path::to_owned),
+        );
+    }
+    Ok(Some(paths))
 }
 
 /// An upload of `root` as Cloud takes it: a gzipped tar of what [`content_digest`]
@@ -579,6 +635,86 @@ mod tests {
             content_digest(&source).unwrap(),
             content_digest(root).unwrap()
         );
+    }
+
+    #[test]
+    fn an_upload_of_a_git_checkout_holds_only_what_git_keeps() {
+        let checkout = tempfile::tempdir().unwrap();
+        let root = checkout.path();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        fs::write(root.join(".gitignore"), "node_modules/\n.env\ndist/\n").unwrap();
+        fs::write(root.join(".env"), "SECRET=1").unwrap();
+        fs::create_dir_all(root.join("node_modules/left-pad")).unwrap();
+        fs::write(root.join("node_modules/left-pad/index.js"), "").unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/app.js"), "tracked").unwrap();
+        fs::write(root.join("notes.txt"), "untracked").unwrap();
+        fs::create_dir(root.join("dist")).unwrap();
+        fs::write(root.join("dist/vendor.js"), "forced").unwrap();
+        fs::write(root.join("dist/build.js"), "ignored").unwrap();
+        git(&["add", "src/app.js"]);
+        git(&["add", "--force", "dist/vendor.js"]);
+        let unpacked = unpack(root);
+        let source = unpacked.path().join("source");
+        assert_eq!(
+            files(&source, &source),
+            [".gitignore", "dist/vendor.js", "notes.txt", "src/app.js"].map(PathBuf::from),
+            "Git's kept files, tracked or untracked, and nothing it ignores"
+        );
+        assert_eq!(
+            content_digest(&source).unwrap(),
+            content_digest(root).unwrap(),
+            "the digest leaves out what the archive leaves out"
+        );
+    }
+
+    #[test]
+    fn an_upload_outside_a_git_checkout_holds_every_file_but_git() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::write(root.join(".gitignore"), "node_modules/\n.env\n").unwrap();
+        fs::write(root.join(".env"), "SECRET=1").unwrap();
+        fs::create_dir(root.join("node_modules")).unwrap();
+        fs::write(root.join("node_modules/index.js"), "").unwrap();
+        let unpacked = unpack(root);
+        let source = unpacked.path().join("source");
+        assert_eq!(
+            files(&source, &source),
+            [".env", ".gitignore", "node_modules/index.js"].map(PathBuf::from)
+        );
+    }
+
+    fn unpack(root: &Path) -> tempfile::TempDir {
+        let unpacked = tempfile::tempdir().unwrap();
+        tar::Archive::new(flate2::read::GzDecoder::new(
+            upload_archive(root).unwrap().as_slice(),
+        ))
+        .unpack(unpacked.path())
+        .unwrap();
+        unpacked
+    }
+
+    fn files(dir: &Path, root: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                found.extend(files(&path, root));
+            } else {
+                found.push(path.strip_prefix(root).unwrap().to_owned());
+            }
+        }
+        found.sort();
+        found
     }
 
     #[test]
