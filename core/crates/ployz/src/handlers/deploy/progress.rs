@@ -223,6 +223,21 @@ pub(super) fn completion(
     Ok(())
 }
 
+/// How to retry a removal or shutdown that didn't apply when the command that ran it
+/// is `deployment retry` or `start`: retry this Deployment. A Deploy can't.
+pub(super) fn removal_retry(
+    view: &DeploymentView,
+    command: impl Fn(&[&str]) -> String,
+) -> Option<Hint> {
+    (view.deployment.remove && view.deployment.status != DeploymentStatus::Applied).then(|| {
+        Hint::Retry(command(&[
+            "deployment",
+            "retry",
+            &view.deployment.number.to_string(),
+        ]))
+    })
+}
+
 fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failure {
     let (reason, cause) = match &view.deployment.outcome {
         Some(
@@ -403,6 +418,19 @@ mod tests {
         assert_eq!(retries(&removal), 1);
         removal.deployment.remove = true;
         assert_eq!(retries(&removal), 0);
+    }
+
+    #[test]
+    fn a_failed_removal_retried_by_deployment_says_to_retry_it_again() {
+        let mut removal = view();
+        assert_eq!(removal_retry(&removal, command), None);
+        removal.deployment.remove = true;
+        assert_eq!(
+            removal_retry(&removal, command),
+            Some(Hint::Retry("ployz deployment retry 7".to_owned()))
+        );
+        removal.deployment.status = DeploymentStatus::Applied;
+        assert_eq!(removal_retry(&removal, command), None);
     }
 
     #[test]

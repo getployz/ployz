@@ -289,7 +289,12 @@ fn ship(
     admitted: &DeploymentSummary,
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<(), Error> {
-    execute(matches, store, admitted, None, events)?.finish()
+    let shipped = execute(matches, store, admitted, None, events)?;
+    let again = progress::removal_retry(&shipped.view, |words| next(matches, words));
+    shipped.finish().map_err(|error| match again {
+        Some(again) => error.hint(again),
+        None => error,
+    })
 }
 
 /// A Deployment that ended, or was left to run: its view, the command to run next,
