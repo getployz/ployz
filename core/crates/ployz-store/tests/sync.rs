@@ -10,14 +10,15 @@
 
 use std::collections::BTreeMap;
 
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, AdmitRemoval, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject,
-    CreateService, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentRemoval, EnvironmentsQuery, KeepBranch, OrganizationId, Permission, ProjectId,
-    ProjectName, Publish, Removal, Remove, RemoveService, RemovedBecause, RenameService, SecretRow,
-    ServiceLineageId, ServiceQuery, SettingPath, Sweep, SyncChange, SyncChanges, SyncId, SyncQuery,
-    SyncRow, SyncView, Synced, SystemEvent, Trusted, UndoSync, Written,
+    CreateService, DeploymentId, DeploymentStatus, DeploymentSummary, Discard, Edit, EnvironmentId,
+    EnvironmentName, EnvironmentRef, EnvironmentRemoval, EnvironmentsQuery, KeepBranch,
+    OrganizationId, Permission, ProjectId, ProjectName, Publish, Removal, Remove, RemoveService,
+    RemovedBecause, RenameService, SecretRow, ServiceLineageId, ServiceQuery, SettingPath, Sweep,
+    SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, SystemEvent, Trusted,
+    UndoSync, Written,
 };
 use serde_json::{Value, json};
 
@@ -942,62 +943,79 @@ fn a_branch_a_sync_closed_lists_its_removal_before_and_after_the_sweep_starts_it
     );
 }
 
-#[test]
-fn two_sweeps_that_both_find_a_close_due_admit_one_removal() {
-    let (store, who) = shop(true);
-    deploy(&store, &who, "fix-web", 30);
-    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+/// Run `fix-web`, change its `web` image to `image` and close it by a Sync.
+fn close_by_sync(store: &ConfigStore, who: &Actor, n: u8, image: &str) {
+    deploy(store, who, "fix-web", n);
+    set(store, who, "fix-web", &[("web.image", json!(image))]);
     let closing = SyncChanges {
         close_after: true,
-        ..sync(&view(&store, &who), None)
+        ..sync(&view(store, who), Some(&["web.source"]))
     };
-    assert!(store.write(&who, &closing).unwrap().closing);
-    let sweep = || {
-        let Written::Automated(automated) = store
-            .system(
-                &who.organization,
-                &SystemEvent::Sweep(Sweep { now: 0 }),
-                &Trusted::default(),
-            )
-            .unwrap()
-        else {
-            panic!("a sweep writes Automated");
-        };
-        automated
-            .closing
-            .into_iter()
-            .map(|environment| environment.name.to_string())
-            .collect::<Vec<_>>()
-    };
-    // The hourly sweep and one a close asked for both read the mark before either admits.
-    assert_eq!(
-        (sweep(), sweep()),
-        (vec!["fix-web".to_owned()], vec!["fix-web".to_owned()])
-    );
-    let admit = || {
-        let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
-        let admitted = store.write_trusted(
-            &who,
-            &Admit::Remove(AdmitRemoval {
-                id: id.clone(),
-                environment: at("fix-web"),
-            }),
+    assert!(store.write(who, &closing).unwrap().closing);
+}
+
+/// The Environments one sweep finds closing, by name.
+fn swept(store: &ConfigStore, who: &Actor) -> Vec<String> {
+    let Written::Automated(automated) = store
+        .system(
+            &who.organization,
+            &SystemEvent::Sweep(Sweep { now: 0 }),
             &Trusted::default(),
-        );
-        (id, admitted)
+        )
+        .unwrap()
+    else {
+        panic!("a sweep writes Automated");
     };
-    let (first, admitted) = admit();
-    admitted.unwrap();
-    let (_, again) = admit();
-    assert_eq!(again.unwrap_err().code, RpcErrorCode::Conflict);
-    let removal = store
-        .read(&who, &EnvironmentsQuery::default())
+    automated
+        .closing
+        .into_iter()
+        .map(|environment| environment.name.to_string())
+        .collect()
+}
+
+/// Admit `fix-web`'s removal as Cloud does for each Environment a sweep found closing.
+fn admit_removal(
+    store: &ConfigStore,
+    who: &Actor,
+    trusted: &Trusted,
+) -> (DeploymentId, Result<DeploymentSummary, RpcError>) {
+    let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+    let admitted = store.write_trusted(
+        who,
+        &Admit::Remove(AdmitRemoval {
+            id: id.clone(),
+            environment: at("fix-web"),
+        }),
+        trusted,
+    );
+    (id, admitted)
+}
+
+fn listed_removal(store: &ConfigStore, who: &Actor) -> Option<EnvironmentRemoval> {
+    store
+        .read(who, &EnvironmentsQuery::default())
         .unwrap()
         .environments
         .into_iter()
         .find(|listing| listing.name.as_str() == "fix-web")
-        .unwrap()
-        .removal;
+        .and_then(|listing| listing.removal)
+}
+
+#[test]
+fn two_sweeps_that_both_find_a_close_due_admit_one_removal() {
+    let (store, who) = shop(true);
+    close_by_sync(&store, &who, 30, "web:2");
+    // The hourly sweep and one a close asked for both read the mark before either admits.
+    let fix_web = vec!["fix-web".to_owned()];
+    assert_eq!(
+        (swept(&store, &who), swept(&store, &who)),
+        (fix_web.clone(), fix_web)
+    );
+    let (first, admitted) = admit_removal(&store, &who, &Trusted::default());
+    admitted.unwrap();
+    let (_, again) = admit_removal(&store, &who, &Trusted::default());
+    assert_eq!(again.unwrap_err().code, RpcErrorCode::Conflict);
+    let removal = listed_removal(&store, &who);
     assert!(
         matches!(
             &removal,
@@ -1005,7 +1023,70 @@ fn two_sweeps_that_both_find_a_close_due_admit_one_removal() {
         ),
         "{removal:?}"
     );
-    assert_eq!(sweep(), Vec::<String>::new());
+    assert_eq!(swept(&store, &who), Vec::<String>::new());
+}
+
+#[test]
+fn two_sweeps_admit_one_removal_when_it_applies_at_once() {
+    let (store, who) = shop(true);
+    close_by_sync(&store, &who, 30, "web:2");
+    let fix_web = vec!["fix-web".to_owned()];
+    assert_eq!(
+        (swept(&store, &who), swept(&store, &who)),
+        (fix_web.clone(), fix_web)
+    );
+    // With no Servers counted, the removal applies as it is admitted.
+    let none = Trusted {
+        servers: Some(0),
+        ..Trusted::default()
+    };
+    let (first, admitted) = admit_removal(&store, &who, &none);
+    assert_eq!(admitted.unwrap().status, DeploymentStatus::Applied);
+    let (_, again) = admit_removal(&store, &who, &none);
+    assert_eq!(again.unwrap_err().code, RpcErrorCode::Conflict);
+    let removal = listed_removal(&store, &who);
+    assert!(
+        matches!(
+            &removal,
+            Some(EnvironmentRemoval::Deployment(applied)) if applied.id == first
+        ),
+        "{removal:?}"
+    );
+    // The next sweep sees nothing of it runs, and deletes it.
+    assert_eq!(swept(&store, &who), Vec::<String>::new());
+    let gone = store
+        .read(
+            &who,
+            &BranchQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_new_branch_closing_under_a_removed_branchs_name_admits_its_own_removal() {
+    let (store, who) = shop(true);
+    let none = Trusted {
+        servers: Some(0),
+        ..Trusted::default()
+    };
+    close_by_sync(&store, &who, 30, "web:2");
+    assert_eq!(swept(&store, &who), vec!["fix-web".to_owned()]);
+    admit_removal(&store, &who, &none).1.unwrap();
+    assert_eq!(swept(&store, &who), Vec::<String>::new());
+
+    deploy(&store, &who, "production", 2);
+    branch(&store, &who, 10, "production", "fix-web");
+    close_by_sync(&store, &who, 31, "web:3");
+    assert_eq!(swept(&store, &who), vec!["fix-web".to_owned()]);
+    let (id, admitted) = admit_removal(&store, &who, &none);
+    let admitted = admitted.unwrap();
+    assert_eq!(
+        (admitted.id, admitted.status),
+        (id, DeploymentStatus::Applied)
+    );
 }
 
 #[test]

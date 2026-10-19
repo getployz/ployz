@@ -349,20 +349,23 @@ pub(crate) fn admit(
             json!({ "next": next("remove", json!({ "project": summary.project, "environment": summary.name })) }),
         ));
     };
-    match standing(tx, &mark, &environment)? {
-        Standing::Unknown => return Err(error::conflict(unknown(&environment), json!({}))),
-        // Two sweeps can find it due at once: the later admit must not supersede the earlier.
-        Standing::InFlight(running) if running.remove => {
+    // Two sweeps can find it due at once: the mark admits its removal once.
+    if let Some(before) = mark.evidence.get(&summary.id) {
+        let removal = deployment::load(tx, &before.deployment)?.summary;
+        let already = if removal.status == DeploymentStatus::Applied {
+            Some("removed")
+        } else {
+            removal.status.in_flight().then_some("is removing")
+        };
+        if let Some(already) = already {
             return Err(error::conflict(
-                format!(
-                    "Deployment {} is already removing {}",
-                    running.label(),
-                    summary.name
-                ),
-                json!({ "deployment": running.id }),
+                format!("Deployment {} {already} {}", removal.label(), summary.name),
+                json!({ "deployment": removal.id }),
             ));
         }
-        Standing::Gone | Standing::InFlight(_) | Standing::Blocked(_) | Standing::Due => {}
+    }
+    if let Standing::Unknown = standing(tx, &mark, &environment)? {
+        return Err(error::conflict(unknown(&environment), json!({})));
     }
     if let Target::Environment(_) = mark.target {
         guard(tx, &environment)?;
