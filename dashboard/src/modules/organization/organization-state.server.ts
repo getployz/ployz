@@ -14,6 +14,7 @@ import {
   personalOrganizationBaseSlug,
   personalOrganizationName,
   type PersonalOrganizationUser,
+  type RenameOrganization,
   type SyncOrganizationSlug,
 } from "./organization-state";
 import { organization } from "./tables";
@@ -107,6 +108,14 @@ export const createOrganization = Effect.fn("Organization.create")(function* (ac
   const created = yield* database.transaction(insertOrganization(actor.userId, input.name, input.slug));
   yield* updateActorSessionsOrganization(actor, created.id, created.slug);
   return created.slug;
+});
+
+/** A new name, by an owner or admin. The slug, and so every address and URL, stays. */
+export const renameOrganization = Effect.fn("Organization.rename")(function* (actor: Actor, input: RenameOrganization) {
+  const { organization: { id } } = yield* requireAccess(actor, input.organizationSlug, "org:settings");
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(organization).set({ name: input.name }).where(eq(organization.id, id));
+  return { name: input.name };
 });
 
 export const updateActorSessionsOrganization = Effect.fn(

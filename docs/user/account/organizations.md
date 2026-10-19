@@ -22,7 +22,9 @@ organization, and you own it. Switch between your organizations under **Switch o
 
 In the sidebar, click **Organization** for its settings:
 
-- **General**: your organization's **Domain**, which your services' free addresses live under.
+- **General**: your organization's **Display name**. Owners and admins can change it: type a new
+  one and press Enter or click the check. Its URL stays the same. Below it, your organization's
+  **Domain**, which your services' free addresses live under.
   It appears with your first deploy. Below it, **Allow support access**, and **Forget all
   servers** for when your servers were deleted.
 - **Members**: who's in the organization, their roles, and, for owners and admins, pending

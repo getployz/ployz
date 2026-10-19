@@ -1,10 +1,10 @@
 import { eq } from "drizzle-orm";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { member, session, user } from "#/modules/identity/tables";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
-import { CreateOrganization } from "./organization-state";
-import { createOrganization } from "./organization-state.server";
+import { CreateOrganization, RenameOrganization } from "./organization-state";
+import { createOrganization, renameOrganization } from "./organization-state.server";
 import { organization } from "./tables";
 
 let harness: PostgresTestHarness;
@@ -43,5 +43,42 @@ describe("createOrganization", () => {
 
   it("never takes a slug a Cloud page uses", async () => {
     expect(await create({ name: "Account", slug: "Account" })).toMatch(/^account-[0-9a-f]{8}$/u);
+  });
+});
+
+describe("renameOrganization", () => {
+  const rename = (userId: string, input: { organizationSlug: string; name: string }) => harness.runEffect(
+    renameOrganization({ userId }, Schema.decodeUnknownSync(RenameOrganization)(input)).pipe(
+      Effect.map((renamed) => ({ ok: true as const, ...renamed })),
+      Effect.catchTags({ Forbidden: (error) => Effect.succeed({ ok: false as const, error: error._tag }) }),
+    ),
+  );
+  const named = async (slug: string) =>
+    (await harness.db.select({ name: organization.name }).from(organization).where(eq(organization.slug, slug)))[0]?.name;
+
+  it("renames for an owner or admin and keeps the slug; a member is refused", async () => {
+    const slug = await create({ name: "Initech", slug: "initech" });
+    const [created] = await harness.db.select({ id: organization.id }).from(organization).where(eq(organization.slug, slug));
+    if (!created) throw new Error(`no organization ${slug}`);
+    const others = await harness.db.insert(user).values([
+      { email: "bill@example.test", name: "Bill" },
+      { email: "milton@example.test", name: "Milton" },
+    ]).returning({ id: user.id });
+    const [admin, plain] = others.map((row) => row.id) as [string, string];
+    await harness.db.insert(member).values([
+      { userId: admin, organizationId: created.id, role: "admin" },
+      { userId: plain, organizationId: created.id, role: "member" },
+    ]);
+
+    expect(await rename(actor, { organizationSlug: slug, name: "  Initrode  " })).toEqual({ ok: true, name: "Initrode" });
+    expect(await rename(admin, { organizationSlug: slug, name: "Initech Labs" })).toEqual({ ok: true, name: "Initech Labs" });
+    expect(await rename(plain, { organizationSlug: slug, name: "Milton's" })).toEqual({ ok: false, error: "Forbidden" });
+    expect(await named(slug)).toBe("Initech Labs");
+  });
+
+  it("takes the same names an Organization is created with", () => {
+    const decode = Schema.decodeUnknownSync(RenameOrganization);
+    expect(() => decode({ organizationSlug: "initech", name: "   " })).toThrow();
+    expect(() => decode({ organizationSlug: "initech", name: "x".repeat(65) })).toThrow();
   });
 });
