@@ -90,19 +90,7 @@ pub(crate) enum Event {
     Published(usize),
     PublishFailed(usize),
     PublishUnconfirmed(usize),
-    /// `machine` routes `service` at this Deploy's pointer.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the executor now reports a Service Routed only after every live proxy lists it; R4 drops the per-Machine gate"
-        )
-    )]
-    Acked {
-        service: ServiceName,
-        machine: MachineId,
-    },
-    /// Every Machine routes `service` at this Deploy's pointer.
+    /// Every live proxy lists `service`'s new copies.
     Routed(ServiceName),
 }
 
@@ -129,7 +117,6 @@ pub(crate) struct Schedule {
     tasks: Vec<Task>,
     published: BTreeSet<ServiceName>,
     publish_requested: BTreeSet<usize>,
-    acked: BTreeSet<(ServiceName, MachineId)>,
     routed: BTreeSet<ServiceName>,
     /// Starts dispatched and not yet returned, whatever their group's phase.
     starting: BTreeSet<usize>,
@@ -166,7 +153,6 @@ impl Schedule {
             tasks,
             published: BTreeSet::new(),
             publish_requested: BTreeSet::new(),
-            acked: BTreeSet::new(),
             routed: BTreeSet::new(),
             starting: BTreeSet::new(),
             unconfirmed: BTreeSet::new(),
@@ -328,9 +314,6 @@ impl Schedule {
                 self.unconfirmed.insert(group);
                 self.apply(Event::PublishFailed(group));
             }
-            Event::Acked { service, machine } => {
-                self.acked.insert((service, machine));
-            }
             Event::Routed(service) => {
                 self.routed.insert(service);
             }
@@ -404,9 +387,6 @@ impl Schedule {
                 actions.push(Action::Publish(group));
             }
         }
-        // An ack admits one round. Routed holds for the run: a Service is
-        // Routed once every live proxy lists its new copies.
-        self.acked.clear();
         actions
     }
 
@@ -475,17 +455,9 @@ impl Schedule {
         group: &'a ServiceGroup,
         task: usize,
     ) -> impl Iterator<Item = &'a ServiceName> {
-        let Task { machine, kind } = self.task(task);
+        let waits = self.task(task).kind != TaskKind::Other;
         group.dependencies.iter().filter(move |dependency| {
-            self.published.contains(*dependency)
-                && match kind {
-                    TaskKind::Start | TaskKind::Hook => {
-                        !self.routed.contains(*dependency)
-                            && !self.acked.contains(&((*dependency).clone(), *machine))
-                    }
-                    TaskKind::Unroute => !self.routed.contains(*dependency),
-                    TaskKind::Other => false,
-                }
+            waits && self.published.contains(*dependency) && !self.routed.contains(*dependency)
         })
     }
 }
@@ -561,15 +533,12 @@ mod tests {
             .collect()
     }
 
-    fn ack(service: &str, machine: char) -> Event {
-        Event::Acked {
-            service: name(service),
-            machine: self::machine(machine),
-        }
+    fn routed(service: &str) -> Event {
+        Event::Routed(name(service))
     }
 
     #[test]
-    fn a_chain_starts_each_service_after_its_dependency_publishes_and_its_machine_acks() {
+    fn a_chain_starts_each_service_after_its_dependency_publishes_and_is_routed() {
         let mut schedule = Schedule::new(
             vec![
                 group("db", &[], vec![Step::Parallel(vec![0])]),
@@ -586,14 +555,14 @@ mod tests {
         schedule.apply(Event::Published(0));
         assert!(
             starts(&mut schedule).is_empty(),
-            "api waits on Machine 1's ack"
+            "api waits until every proxy lists db"
         );
         assert_eq!(schedule.blocked_on_acks(), vec![(1, name("db"))]);
-        schedule.apply(ack("db", '1'));
+        schedule.apply(routed("db"));
         assert_eq!(starts(&mut schedule), vec![1]);
         schedule.apply(Event::Completed(1));
         schedule.apply(Event::Published(1));
-        schedule.apply(ack("api", '1'));
+        schedule.apply(routed("api"));
         assert_eq!(starts(&mut schedule), vec![2]);
         schedule.apply(Event::Completed(2));
         schedule.apply(Event::Published(2));
@@ -615,26 +584,19 @@ mod tests {
         assert_eq!(starts(&mut schedule), vec![0]);
         schedule.apply(Event::Completed(0));
         schedule.apply(Event::Published(0));
-        schedule.apply(ack("db", '1'));
-        assert_eq!(
-            starts(&mut schedule),
-            vec![1],
-            "queue's Machine 2 has not acked db"
-        );
-        schedule.apply(ack("db", '2'));
-        assert_eq!(starts(&mut schedule), vec![2]);
+        schedule.apply(routed("db"));
+        assert_eq!(starts(&mut schedule), vec![1, 2]);
         schedule.apply(Event::Completed(1));
         schedule.apply(Event::Published(1));
-        schedule.apply(ack("cache", '2'));
+        schedule.apply(routed("cache"));
         assert!(starts(&mut schedule).is_empty(), "queue has not published");
         schedule.apply(Event::Completed(2));
         schedule.apply(Event::Published(2));
         assert!(
             starts(&mut schedule).is_empty(),
-            "Machine 2 has not acked queue"
+            "no proxy is known to list queue yet"
         );
-        schedule.apply(ack("cache", '2'));
-        schedule.apply(ack("queue", '2'));
+        schedule.apply(routed("queue"));
         assert_eq!(starts(&mut schedule), vec![3]);
     }
 
@@ -755,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn an_ack_admits_one_round_and_a_later_start_reads_it_again() {
+    fn a_routed_dependency_admits_every_later_step_of_its_dependent() {
         let mut schedule = Schedule::new(
             vec![
                 group("db", &[], vec![Step::Parallel(vec![0])]),
@@ -767,16 +729,11 @@ mod tests {
         schedule.apply(Event::Completed(0));
         assert_eq!(publishes(&mut schedule), vec![0]);
         schedule.apply(Event::Published(0));
-        schedule.apply(ack("db", '1'));
+        schedule.apply(routed("db"));
         assert_eq!(starts(&mut schedule), vec![1]);
         schedule.apply(Event::Completed(1));
-        assert!(
-            starts(&mut schedule).is_empty(),
-            "an amended db row may not be routed yet"
-        );
-        assert_eq!(schedule.blocked_on_acks(), vec![(2, name("db"))]);
-        schedule.apply(ack("db", '1'));
         assert_eq!(starts(&mut schedule), vec![2]);
+        assert!(schedule.blocked_on_acks().is_empty());
     }
 
     #[test]
@@ -800,16 +757,13 @@ mod tests {
             vec![(2, name("db")), (2, name("cache"))]
         );
         for (_, service) in schedule.blocked_on_acks() {
-            schedule.apply(Event::Acked {
-                service,
-                machine: machine('1'),
-            });
+            schedule.apply(Event::Routed(service));
         }
         assert_eq!(starts(&mut schedule), vec![2]);
     }
 
     #[test]
-    fn a_hook_waits_for_its_machine_to_route_a_changed_dependency() {
+    fn a_hook_waits_until_a_changed_dependency_is_routed() {
         let mut schedule = Schedule::new(
             vec![
                 group("db", &[], vec![Step::Parallel(vec![0])]),
@@ -826,7 +780,7 @@ mod tests {
             "the migration would run against the old db"
         );
         assert_eq!(schedule.blocked_on_acks(), vec![(1, name("db"))]);
-        schedule.apply(ack("db", '2'));
+        schedule.apply(routed("db"));
         assert_eq!(starts(&mut schedule), vec![1]);
     }
 
@@ -883,7 +837,7 @@ mod tests {
             "b finishes with its publish"
         );
         schedule.apply(Event::Published(1));
-        schedule.apply(ack("b", '2'));
+        schedule.apply(routed("b"));
         assert!(starts(&mut schedule).is_empty(), "c never starts");
         schedule.apply(Event::Completed(4));
         assert_eq!(starts(&mut schedule), vec![5], "d's next step still runs");
