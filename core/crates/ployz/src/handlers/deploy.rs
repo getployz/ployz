@@ -18,9 +18,9 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, ConfigStore, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary,
-    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish, RunnerId, Start,
-    UploadBase, UploadedSource, VolumeName,
+    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeploymentId, DeploymentStatus,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish,
+    RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Next, Store, environment, mint, next, scoped, store};
@@ -939,10 +939,7 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     for deployment in &page.deployments {
         table.row([
             Cell::from(format!("#{}", deployment.number)),
-            Cell::status(
-                super::store::word(&deployment.status),
-                status_tone(deployment.status),
-            ),
+            Cell::status(status_word(deployment), status_tone(deployment)),
             Cell::from(deployment.saved.to_string()),
         ]);
     }
@@ -953,11 +950,24 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
+/// A Deployment's status in a word or two; a push waiting for CI says how its CI stands.
+fn status_word(deployment: &DeploymentSummary) -> String {
+    match (deployment.status, deployment.ci) {
+        (DeploymentStatus::WaitingForCi, Some(CiVerdict::Failed)) => "CI failed".to_owned(),
+        (DeploymentStatus::WaitingForCi, _) => "waiting for CI".to_owned(),
+        (status, _) => super::store::word(&status),
+    }
+}
+
 /// How a Deployment's status reads at a glance.
-const fn status_tone(status: DeploymentStatus) -> Tone {
-    match status {
+const fn status_tone(deployment: &DeploymentSummary) -> Tone {
+    match deployment.status {
         DeploymentStatus::Applied => Tone::Good,
         DeploymentStatus::Failed | DeploymentStatus::Unknown => Tone::Bad,
+        DeploymentStatus::WaitingForCi => match deployment.ci {
+            Some(CiVerdict::Failed) => Tone::Bad,
+            Some(CiVerdict::Pending) | None => Tone::Change,
+        },
         DeploymentStatus::Queued
         | DeploymentStatus::Superseded
         | DeploymentStatus::Running
@@ -1217,7 +1227,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{service_outcome_lines, ships_all};
+    use super::{Tone, service_outcome_lines, ships_all, status_tone, status_word};
     use ployz_core::ServiceName;
 
     #[test]
@@ -1253,5 +1263,33 @@ mod tests {
         assert!(ships_all(&names(&["web"]), &names(&["web", "db"])));
         assert!(!ships_all(&names(&["web", "db"]), &names(&["web"])));
         assert!(!ships_all(&names(&[]), &names(&["web"])));
+    }
+
+    #[test]
+    fn a_push_waiting_for_ci_reads_how_its_ci_stands() {
+        let deployment = |status: &str, ci: Option<&str>| -> ployz_store::DeploymentSummary {
+            serde_json::from_value(serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000101",
+                "environment_id": "00000000-0000-4000-8000-000000000002",
+                "number": 1, "status": status, "saved": 1, "services": [],
+                "runner": null, "upload": null, "remove": false, "admitted_by": null,
+                "admitted_at": 0, "started_at": null, "ended_at": null, "message": null,
+                "push": null, "ci": ci, "in_flight": false, "outcome": null,
+            }))
+            .unwrap()
+        };
+        let read = |status: &str, ci: Option<&str>| {
+            let deployment = deployment(status, ci);
+            (status_word(&deployment), status_tone(&deployment))
+        };
+        assert_eq!(
+            read("waiting_for_ci", Some("pending")),
+            ("waiting for CI".to_owned(), Tone::Change)
+        );
+        assert_eq!(
+            read("waiting_for_ci", Some("failed")),
+            ("CI failed".to_owned(), Tone::Bad)
+        );
+        assert_eq!(read("queued", None), ("queued".to_owned(), Tone::Change));
     }
 }

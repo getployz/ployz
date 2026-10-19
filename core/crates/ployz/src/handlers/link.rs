@@ -558,14 +558,16 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             limit: Some(RECENT),
             cursor: None,
         })?;
-        let ended = page.deployments.iter().find(|deployment| {
-            !deployment.status.in_flight() && deployment.status != DeploymentStatus::Superseded
-        });
+        let ended = page
+            .deployments
+            .iter()
+            .find(|deployment| deployment.status.ended());
         if let Some(ended) = ended {
             let reason = match ended.status {
                 DeploymentStatus::Failed => Some("deployment_failed"),
                 DeploymentStatus::Unknown => Some("deployment_unknown"),
-                DeploymentStatus::Queued
+                DeploymentStatus::WaitingForCi
+                | DeploymentStatus::Queued
                 | DeploymentStatus::Superseded
                 | DeploymentStatus::Running
                 | DeploymentStatus::Applied
