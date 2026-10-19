@@ -1027,6 +1027,9 @@ fn internal_response(error: impl std::error::Error + 'static) -> Status {
 }
 
 #[cfg(test)]
+#[path = "rotation_fleet_tests.rs"]
+mod rotation_fleet_tests;
+#[cfg(test)]
 #[path = "local_tests.rs"]
 mod tests;
 #[path = "local_volume_copy.rs"]

@@ -295,6 +295,26 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                     .map(|(owner, container)| vec![json!(owner), json!(container)]),
             )
         }
+        "SELECT id, container FROM containers WHERE machine_id = ? ORDER BY id" => {
+            let machine_id = text_param(&statement.params, 0);
+            events(
+                &["id", "container"],
+                kv.containers
+                    .iter()
+                    .filter(|(_, (owner, _))| owner == machine_id)
+                    .map(|(id, (_, container))| vec![json!(id), json!(container)]),
+            )
+        }
+        "SELECT name, volume FROM volumes WHERE machine_id = ? ORDER BY name" => {
+            let machine_id = text_param(&statement.params, 0);
+            events(
+                &["name", "volume"],
+                kv.volumes
+                    .iter()
+                    .filter(|((owner, _), _)| owner == machine_id)
+                    .map(|((_, name), volume)| vec![json!(name), json!(volume)]),
+            )
+        }
         "SELECT container FROM containers WHERE id = ?" => {
             let id = text_param(&statement.params, 0);
             events(
@@ -318,6 +338,13 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
             events(
                 &["volume"],
                 kv.volumes.get(&key).map(|volume| vec![json!(volume)]),
+            )
+        }
+        "SELECT value FROM cluster WHERE key = ?" => {
+            let key = text_param(&statement.params, 0);
+            events(
+                &["value"],
+                kv.serving_pointers.get(key).map(|value| vec![json!(value)]),
             )
         }
         "SELECT value FROM cluster WHERE key = 'network'" => {
@@ -403,6 +430,23 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     text_param(&statement.params, 1).to_owned(),
                 ));
                 let _ = kv.ingress_changes.send(());
+            }
+            "DELETE FROM containers WHERE id = ? AND machine_id = ?" => {
+                let id = text_param(&statement.params, 0);
+                if kv
+                    .containers
+                    .get(id)
+                    .is_some_and(|(owner, _)| owner == text_param(&statement.params, 1))
+                {
+                    kv.containers.remove(id);
+                    let _ = kv.container_changes.send(());
+                }
+            }
+            "DELETE FROM volumes WHERE machine_id = ? AND name = ?" => {
+                kv.volumes.remove(&(
+                    text_param(&statement.params, 0).to_owned(),
+                    text_param(&statement.params, 1).to_owned(),
+                ));
             }
             query => panic!("unexpected statement {query}"),
         }
