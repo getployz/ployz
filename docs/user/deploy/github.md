@@ -90,6 +90,10 @@ A push ships the new commit with the settings you last deployed or
 [saved](deployments.md#deploy-your-changes). Staged changes you haven't saved stay
 behind, and services the push doesn't touch keep running as they are.
 
+A push deploys the services on its Git branch and the services they reference. Saved
+changes to any other service wait in the bottom bar for your next deploy: click **Deploy**, or run
+`ployz deploy`.
+
 ## Wait for CI
 
 Turn on **Wait for CI** under **Settings → Source** to hold a push's deploy until its GitHub

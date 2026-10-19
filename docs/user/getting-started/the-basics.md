@@ -55,6 +55,7 @@ deployment, with its own page and logs. See [Deployments](../deploy/deployments.
 
 ![The bottom bar with one staged change](../images/bottom-bar-changes.png)
 
-A Git push deploys too: your latest commit with the settings you last deployed. To send staged
-changes along with the next push, click **Save only** in **Details**, or Alt-click **Deploy**; changes you
-only staged stay behind.
+A Git push deploys too: your latest commit with the settings you last deployed. To send a
+service's staged changes along with its next push, click **Save only** in **Details**, or
+Alt-click **Deploy**; changes you only staged stay behind. A push deploys the services on its Git
+branch and the services they reference, so saved changes to the others wait for **Deploy**.

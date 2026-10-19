@@ -43,10 +43,10 @@ deployment's page and `ployz deploy` name each one.
 
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not
-deployed**. Your
-next deploy takes them along, including one started by a push to GitHub; unsaved changes stay
-behind. Saving again with no changes creates no new version. The CLI calls this
-`ployz deploy --skip-deploy`, and accepts `--message`.
+deployed**. Your next deploy takes them along; unsaved changes stay behind. A push to GitHub
+takes only the saved changes of the services it deploys; see
+[Deploy on push](github.md#deploy-on-push). Saving again with no changes creates no new version.
+The CLI calls this `ployz deploy --skip-deploy`, and accepts `--message`.
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
 Discarding a service or volume you never deployed deletes it. Discard does not save a version.
