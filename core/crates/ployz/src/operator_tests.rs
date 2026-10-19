@@ -90,7 +90,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     ));
     assert!(matches!(
         select_exec_container(&service, Some(&container_selector("api-hook"))),
-        Err(OperatorError::Container(ployz_core::ContainerSelectorError::NotFound { selector }))
+        Err(OperatorError::Container(ployz_core::ContainerSelectorError::NotFound { selector, .. }))
             if selector.as_str() == "api-hook"
     ));
     assert_eq!(

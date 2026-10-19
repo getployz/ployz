@@ -677,6 +677,24 @@ fn a_mount_directory_holds_one_volume_or_config() {
 }
 
 #[test]
+fn a_config_never_mounts_over_the_kernel_filesystems() {
+    let (store, who) = shop();
+    create(&store, &who, 10, "other", &[]).unwrap();
+    for dir in ["/proc", "/sys/fs", "/dev/shm"] {
+        let refused = refused(attach(&store, &who, "other", "web", dir));
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{dir}");
+        assert!(
+            refused.message.contains("the kernel"),
+            "{}",
+            refused.message
+        );
+    }
+    let on_create = refused(create(&store, &who, 11, "procm", &[("web", "/proc")]));
+    assert_eq!(on_create.code, RpcErrorCode::InvalidArgument);
+    attach(&store, &who, "other", "web", "/devices").unwrap();
+}
+
+#[test]
 fn two_mounts_may_not_land_files_on_one_path() {
     let (store, who) = shop();
     create(&store, &who, 10, "outer", &[("web", "/etc")]).unwrap();

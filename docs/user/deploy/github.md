@@ -194,7 +194,8 @@ ployz github cat acme/web apps/web/package.json
 `--match` matches the whole path from the top of the repository, so `*.toml` finds only files at
 the top, and `**/*.toml` finds them in every folder. Quote the glob so your shell doesn't expand
 it. A listing stops at 500 files. When it's cut short, name a folder or a narrower `--match` to
-see the rest.
+see the rest. A folder or file the repository doesn't have fails with `No path` and exit code 1,
+as `github cat` does for a missing file.
 
 `github cat` prints text files up to 64 KiB. For a larger file or a binary one, it says so
 instead of printing it. Pass `--ref` to read a branch, tag or commit other than the default.

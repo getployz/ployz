@@ -177,11 +177,12 @@ doesn't exist and for a private image you have no access to.
 
 ## Deploy says a service has nothing to run
 
-`api has nothing to run yet: add an image or connect a repository`
+`api has nothing to run yet: add an image, connect a repository, or run ployz up in its directory`
 
 The service has no source, and its card shows **No source**. Ployz won't deploy the environment
 until it has one. Open its **Settings → Source** and click **Git repository** or **Container
-image**, or delete the service.
+image**, or delete the service. A service you uploaded with `ployz up` has no source in a new
+branch: run `ployz up --env <branch>` from your app's directory.
 
 ## My uploaded code is gone
 

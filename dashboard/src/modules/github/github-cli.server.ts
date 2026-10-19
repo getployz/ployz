@@ -98,6 +98,9 @@ export const repositoryTree = Effect.fn("GithubCli.repositoryTree")(function* (
     Effect.catchIf(isGithubObservationNotFound, () => new NotFound({ message: `No ref ${at} in ${repository.fullName}.` })));
   const directory = directoryOf(query.path);
   const under = directory === "" ? listed.paths : listed.paths.filter((file) => file === directory || file.startsWith(`${directory}/`));
+  if (directory !== "" && under.length === 0 && !listed.truncated) {
+    return yield* new NotFound({ message: `No path ${directory} at ${at} in ${repository.fullName}.` });
+  }
   const matcher = query.match === undefined ? null : basicGlob(query.match);
   const matching = matcher === null ? under : under.filter((file) => matcher.match(file));
   return {

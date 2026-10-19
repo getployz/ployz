@@ -48,6 +48,7 @@ fn isolated(home: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
     command
         .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", home.join("config.yaml"))
         .env_remove("PLOYZ_STORE")
         .env_remove("PLOYZ_TOKEN")
@@ -3296,6 +3297,15 @@ fn up_ships_a_directory_without_git() {
 
         let other = second.path().join("My Shop");
         std::fs::create_dir(&other).unwrap();
+        let (code, empty) = in_dir(store, home.path(), &other, &args, &[]);
+        assert_eq!(code, Some(2), "{empty}");
+        assert!(
+            empty["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Nothing to deploy: ")),
+            "{empty}"
+        );
+        std::fs::write(other.join("Dockerfile"), "FROM scratch\n").unwrap();
         let (code, taken) = in_dir(store, home.path(), &other, &args, &[]);
         assert_eq!(code, Some(1), "{taken}");
         assert_eq!(

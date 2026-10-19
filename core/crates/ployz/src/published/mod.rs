@@ -230,7 +230,7 @@ impl Setup {
         let config = std::env::var(env::CONFIG)
             .ok()
             .filter(|path| !path.is_empty())
-            .unwrap_or_else(|| "~/.config/ployz/config.yaml".to_owned());
+            .unwrap_or_else(crate::context::default_config_path);
         Self::beside(
             &crate::context::expand_home(Path::new(&config)),
             std::env::var(env::CLOUD_URL).ok(),
