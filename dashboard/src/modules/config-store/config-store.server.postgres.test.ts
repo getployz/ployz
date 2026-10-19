@@ -1367,6 +1367,11 @@ it.live(
           ["app.example.com", "setting_up", "deploy"],
           [hostname, "setting_up", "deploy"],
         ]);
+        for (const query of [{ query: "diff", environment: here }, { query: "service", environment: here, service: "web" }] as const) {
+          const shown = JSON.stringify((yield* request("read", alice, query)).json);
+          assert.include(shown, hostname, `${query.query} names the staged domain in full`);
+          assert.notInclude(shown, "<cluster domain>");
+        }
 
         const before = reservations();
         assert.strictEqual((yield* request("write", alice, { command: "remove_domain", environment: here, domain: "web" })).status, 200);
