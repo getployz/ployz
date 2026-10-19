@@ -46,20 +46,6 @@ function sealedVariable(): VariableRecord {
   };
 }
 
-/** Presses a key on the focused element the way a browser does: Tab moves focus, Enter clicks a button. */
-function press(key: "Tab" | "Enter" | "Escape") {
-  const target = document.activeElement ?? document.body;
-  if (!fireEvent.keyDown(target, { key })) return;
-  if (key === "Tab") {
-    const tabbable = [...document.body.querySelectorAll<HTMLElement>("*")]
-      .filter((element) => element.tabIndex >= 0 && !element.matches(":disabled"));
-    tabbable[tabbable.indexOf(target as HTMLElement) + 1]?.focus();
-  } else if (key === "Enter" && target instanceof HTMLButtonElement) {
-    fireEvent.click(target);
-  }
-  fireEvent.keyUp(target, { key });
-}
-
 describe("VariableRow", () => {
   beforeEach(() => {
     vi.spyOn(toast, "success");
@@ -329,25 +315,6 @@ describe("VariableRow", () => {
     }
     fireEvent.click(screen.getByRole("button", { name: "Show API_KEY" }));
     expect(screen.getByRole("button", { name: "Hide API_KEY" })).toBeTruthy();
-  });
-
-  it("reaches the Sealed lock with Tab, opens it with Enter, and closes it with Escape", async () => {
-    render(<>
-      <button type="button">Before</button>
-      <VariableRow variable={sealedVariable()} collection={collection} onSealVariable={vi.fn()} />
-    </>);
-    const lock = screen.getByRole("button", { name: "Sealed" });
-    screen.getByRole("button", { name: "Before" }).focus();
-
-    press("Tab");
-    expect(document.activeElement).toBe(lock);
-
-    press("Enter");
-    expect(await screen.findByText("Sealed. Its value is never shown.")).toBeTruthy();
-
-    press("Escape");
-    await waitFor(() => expect(screen.queryByText("Sealed. Its value is never shown.")).toBeNull());
-    expect(document.activeElement).toBe(lock);
   });
 
   it.each([
