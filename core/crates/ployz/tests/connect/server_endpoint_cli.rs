@@ -111,7 +111,7 @@ async fn a_new_endpoint_reaches_every_other_server_when_the_target_is_off_the_me
 }
 
 #[tokio::test]
-async fn a_target_that_does_not_answer_is_named_and_left_unchanged() {
+async fn a_target_that_does_not_answer_is_named_with_an_unknown_outcome() {
     let (address, _two) = serve_discovery(entry('b')).await;
     let config = std::env::temp_dir().join(format!("ployz-endpoint-{}.yaml", MachineId::random()));
     std::fs::write(
@@ -141,7 +141,7 @@ async fn a_target_that_does_not_answer_is_named_and_left_unchanged() {
     assert_eq!(
         result.pointer("/error/message"),
         Some(&json!(
-            "Server one didn't answer. Run this on the Server, or retry once it's back. No changes made."
+            "Server one didn't answer, so the change may or may not have landed. Check it with ployz server ls once it's back, or run this on the Server."
         )),
         "{result}"
     );

@@ -536,7 +536,7 @@ async fn apply_update(
         }
         (Err(error), _) if error.code == RpcErrorCode::Unavailable => {
             return Err(Error::from(error).context(format!(
-                "Server {selector} didn't answer. Run this on the Server, or retry once it's back. No changes made."
+                "Server {selector} didn't answer, so the change may or may not have landed. Check it with ployz server ls once it's back, or run this on the Server."
             )));
         }
         (Err(error), _) => return Err(error.into()),
