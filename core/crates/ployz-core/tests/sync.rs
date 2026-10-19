@@ -1967,12 +1967,8 @@ fn dependents_lists_mounts_and_config_mounts() {
     };
     assert_eq!(show(DATA), [format!("{API}:mounts.{DATA}")]);
     assert_eq!(show(config), [format!("{WEB}:configs.{config}")]);
-    let mut worker = vec![
-        format!("{API}:variables.WORKER_URL"),
-        format!("{config}:files.app.conf"),
-    ];
-    worker.sort();
-    assert_eq!(show(WORKER), worker);
+    // A reference holds nothing: worker's readers are not its dependents.
+    assert!(show(WORKER).is_empty());
     // A node's own rows are not its dependents; nothing uses cache.
     assert!(show(API).is_empty());
     assert!(show(CACHE).is_empty());
@@ -2273,7 +2269,7 @@ fn a_removed_node_the_sender_still_uses_differs_as_live() {
 }
 
 #[test]
-fn a_removal_lands_only_once_nothing_left_references_it() {
+fn a_removal_lands_while_references_to_it_stay() {
     let mut from = without(production(), WORKER);
     svc(&mut from, API)["variables"]
         .as_array_mut()
@@ -2281,31 +2277,12 @@ fn a_removal_lands_only_once_nothing_left_references_it() {
         .retain(|v| v["key"] != "WORKER_URL");
     unreference_worker(&mut from);
     let plan = compare(Some(&production()), &from, &production(), Way::Merge);
-    let (node, variable, file) = (
-        format!("{WORKER}:node"),
-        format!("{API}:variables.WORKER_URL"),
-        format!("{CONFIG}:files.app.conf"),
-    );
+    let node = format!("{WORKER}:node");
     let none = BTreeMap::new();
 
-    // Each owner that still references it is listed, and apply refuses.
-    assert_eq!(
-        removal_dependents(&plan, std::slice::from_ref(&node), &none),
-        [format!("{node} <- {variable}"), format!("{node} <- {file}")]
-    );
-    let refused = land(&plan, std::slice::from_ref(&node)).unwrap_err();
-    assert_eq!(refused.message, "Node is still referenced");
-    let picks = [node.clone(), variable.clone()];
-    assert_eq!(
-        removal_dependents(&plan, &picks, &none),
-        [format!("{node} <- {file}")]
-    );
-    assert!(land(&plan, &picks).is_err());
-
-    // Removing or rewriting every reference lets it land, from next and base.
-    let picks = [node.clone(), variable.clone(), file.clone()];
-    assert!(removal_dependents(&plan, &picks, &none).is_empty());
-    let applied = land(&plan, &picks).unwrap();
+    // The variable and file still reading worker hold nothing.
+    assert!(removal_dependents(&plan, std::slice::from_ref(&node), &none).is_empty());
+    let applied = land(&plan, std::slice::from_ref(&node)).unwrap();
     for env in [json_of(&applied.next), json_of(&applied.base)] {
         assert!(
             env["services"]
@@ -2316,31 +2293,10 @@ fn a_removal_lands_only_once_nothing_left_references_it() {
             "{env:#}"
         );
     }
-
-    // An edited value that references it again refuses.
-    let file_id: RowId = file.parse().unwrap();
-    let referencing = BTreeMap::from([(file_id, SealedCell::Cell(row(&plan, &file).into.clone()))]);
     assert_eq!(
-        removal_dependents(&plan, &picks, &referencing),
-        [format!("{node} <- {file}")]
+        var(&mut json_of(&applied.next), API, "WORKER_URL")["key"],
+        "WORKER_URL"
     );
-    assert_eq!(
-        plan.apply(&ids(&picks), &referencing).unwrap_err().message,
-        "Node is still referenced"
-    );
-
-    // A dependent kept out by a mark keeps the node in.
-    let opts = Opts {
-        from_marks: vec![variable.clone()],
-        ..Opts::default()
-    };
-    let marked = compare_with(Some(&production()), &from, &production(), Way::Merge, opts);
-    let picks = [node.clone(), file.clone()];
-    assert_eq!(
-        removal_dependents(&marked, &picks, &none),
-        [format!("{node} <- {variable}")]
-    );
-    assert!(land(&marked, &picks).is_err());
 }
 
 #[test]

@@ -539,7 +539,7 @@ impl Plan {
     /// # Errors
     /// Returns ConfigError for an unknown pick, a pick of a row that differs or whose new
     /// node isn't picked, a value for a node, a name clash, a removed node something
-    /// else still references ([`Self::removal_dependents`]), or a `next` that isn't valid.
+    /// else still mounts ([`Self::removal_dependents`]), or a `next` that isn't valid.
     pub fn apply(
         &self,
         picks: &BTreeSet<RowId>,
@@ -555,7 +555,7 @@ impl Plan {
         if let Some((removal, _)) = removal_dependents(&next, &removals).into_iter().next() {
             return Err(ConfigError::at(
                 &removal.to_string(),
-                "Node is still referenced",
+                "Node is still mounted",
             ));
         }
         let into_cells = Cells::of(&self.into, &self.hostnames.into);
@@ -586,7 +586,7 @@ impl Plan {
         })
     }
 
-    /// The rows of other nodes that still reference each node `picks` removes, once
+    /// The rows of other nodes that still mount each node `picks` removes, once
     /// every other pick has landed with `values`: what [`Self::apply`] refuses. A row
     /// of a node that is removed too doesn't count. Only removals with a dependent
     /// are listed.
@@ -861,7 +861,7 @@ pub fn marks_on<'marks>(
     })
 }
 
-/// The rows of nodes `removals` keeps in `next` that still use each removed node.
+/// The rows of nodes `removals` keeps in `next` that still mount each removed node.
 fn removal_dependents(next: &Intent, removals: &[&PlannedRow]) -> BTreeMap<RowId, Vec<RowId>> {
     let removed = |lineage: &str| removals.iter().any(|row| row.id.lineage == lineage);
     removals
@@ -924,23 +924,14 @@ fn uses(env: &Intent, lineage: &str) -> bool {
         .any(|used| used == lineage)
 }
 
-/// The rows of other nodes in `env` that use `lineage`: a variable or config file that
-/// references it, a Volume mount or a Config mount of it.
+/// The rows of other nodes in `env` that mount `lineage`: a Volume mount or a Config
+/// mount of it. A variable or config file that references it doesn't hold it: once it
+/// goes, that reference is broken, and a Deploy leaves out what reads it.
 #[must_use]
 pub fn dependents(env: &Intent, lineage: &str) -> Vec<RowId> {
     let mut rows = Vec::new();
     for service in env.services.iter().filter(|s| s.lineage_id != lineage) {
         let at = |at| RowId::of(&service.lineage_id, at);
-        for variable in &service.variables {
-            if variable
-                .value
-                .referenced_lineages()
-                .into_iter()
-                .any(|used| used == lineage)
-            {
-                rows.push(at(At::Variable(variable.key.clone())));
-            }
-        }
         for attachment in &service.volume_attachments {
             if env.volumes.iter().any(|v| {
                 v.resource_id == attachment.volume_resource_id && v.resource_lineage_id == lineage
@@ -953,24 +944,6 @@ pub fn dependents(env: &Intent, lineage: &str) -> Vec<RowId> {
                 c.resource_id == attachment.config_resource_id && c.resource_lineage_id == lineage
             }) {
                 rows.push(at(At::ConfigMount(lineage.to_owned())));
-            }
-        }
-    }
-    for config in env
-        .configs
-        .iter()
-        .filter(|c| c.resource_lineage_id != lineage)
-    {
-        for (name, file) in &config.files {
-            if file
-                .referenced_lineages()
-                .into_iter()
-                .any(|used| used == lineage)
-            {
-                rows.push(RowId::of(
-                    &config.resource_lineage_id,
-                    At::File(name.clone()),
-                ));
             }
         }
     }

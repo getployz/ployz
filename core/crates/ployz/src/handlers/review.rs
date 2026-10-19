@@ -149,6 +149,12 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 )
             ));
         }
+        for reference in &view.broken {
+            crate::ui::stream(format_args!(
+                "{reference}; deploys skip it until you change it: {}",
+                super::store::fix_broken(matches, reference)
+            ));
+        }
         if view.published && !view.changes.is_empty() {
             crate::ui::stream(format_args!(
                 "Saved as version #{}. Not deployed.",

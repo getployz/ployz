@@ -6,6 +6,8 @@ export type VariableValue =
 /** One of a Service's variables, as the variables panel shows and edits it. */
 export type VariableRecord = {
   unresolvedReferences?: readonly string[];
+  /** Why a reference in it is broken ("redis was removed"): deploys leave it out until it changes. */
+  broken?: string;
   /** The next Deploy changes it: the pink trail. */
   changed?: boolean;
   /** Its Environment marks it Never sync: Sync never carries it in or out. */

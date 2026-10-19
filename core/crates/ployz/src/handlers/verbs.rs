@@ -640,7 +640,8 @@ pub(crate) const SERVICE_RM: Verb = Verb::cloud(
     Never,
     service::authored::remove_command,
     service::authored::remove,
-);
+)
+.docs("services/services.md");
 pub(crate) const SERVICE_START: Verb = Verb::cloud(
     "service start",
     Never,

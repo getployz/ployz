@@ -146,7 +146,7 @@ pub(crate) fn environment(
                 VariableKey::parse(&variable.key).map_err(|_| crate::error::corrupt("variable"))?;
             row(
                 Target::Variable(key.clone()),
-                variables::shown(variable, &environment.names()),
+                variables::shown(variable, &environment.shown_names()),
                 Value::Null,
                 Apply::Staged,
             )?;
@@ -219,7 +219,7 @@ pub(crate) fn values(
         })
         .filter(|(_, value)| !value.is_null())
         .collect();
-    let env = variables::patch_values(service, &environment.names());
+    let env = variables::patch_values(service, &environment.shown_names());
     if !env.is_empty() {
         values.insert("env".to_owned(), Value::Object(env));
     }

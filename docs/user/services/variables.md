@@ -114,8 +114,17 @@ reference to any variable either way.
   `${{ postgres.DATABASE_URL }}` is staging's database.
 - A reference to a sealed variable keeps the secret hidden. Your service gets the real value.
 - A service that references another starts after it on every deploy.
-- Ployz refuses a reference to a service or variable that doesn't exist, and won't delete one
-  that something references. Remove the reference first.
+- A reference must name a service in the environment when you write it. A reference to a
+  variable that doesn't exist, or to a service or variable you delete later, is a **Broken
+  reference**: Ployz doesn't stop you, and shows it in red on the variable, in **Details**,
+  `ployz diff` and `ployz status`. Deploys leave the variable out, and any variable that
+  references it, and warn, until you change it.
+- A reference to a deleted service shows its last name, as `${{ <deleted redis>.KEY }}`. Two
+  deleted services of one name show as `<deleted redis>` and `<deleted redis#2>`, in the order
+  you deleted them, and keep those names. A branch shows a service its parent deleted by the
+  parent's name for it. A service deleted before Ployz recorded names shows by the end of its
+  ID, as `<deleted #3f2a9c01>`. Edit the rest of the value or file
+  around it and it stays; you can't write a new one.
 - Write `$${{` for a literal `${{`.
 
 ## Variables Ployz provides

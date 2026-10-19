@@ -179,6 +179,45 @@ fn ingress_unchecked(view: &DeploymentView) -> impl Iterator<Item = &str> {
         })
 }
 
+/// What the Deployment left out of a Service's variables or a Config's files.
+pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
+    view.deployment
+        .warnings
+        .iter()
+        .filter_map(|warning| {
+            Some(match warning {
+                DeploymentWarning::NotSet {
+                    service,
+                    variable,
+                    broken: true,
+                } => format!("Left {variable} out of {service}: it has a broken reference."),
+                DeploymentWarning::NotSetInFile {
+                    config,
+                    file,
+                    secret,
+                    broken: true,
+                } => format!("Left {secret} empty in {config}/{file}: it is a broken reference."),
+                DeploymentWarning::NotSet {
+                    service, variable, ..
+                } => format!("Left {variable} out of {service}: it is not set."),
+                DeploymentWarning::NotSetInFile {
+                    config,
+                    file,
+                    secret,
+                    ..
+                } => format!("Left {secret} empty in {config}/{file}: it is not set."),
+                DeploymentWarning::Fragile {
+                    config,
+                    file,
+                    variable,
+                } => format!("{variable} may break {config}/{file}."),
+                DeploymentWarning::IngressNotServing { .. }
+                | DeploymentWarning::IngressUnchecked { .. } => return None,
+            })
+        })
+        .collect()
+}
+
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
     let unchecked = ingress_unchecked(view).map(|cause| {
         format!(

@@ -590,7 +590,7 @@ pub(crate) struct ServiceRemove {
 
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
-    const DESCRIPTION: &'static str = "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve.";
+    const DESCRIPTION: &'static str = "Remove a Service, staged until a deploy a human approves. `broken`: references deploys skip.";
     const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
@@ -622,6 +622,7 @@ impl Tool for ServiceRemove {
             "at": at(&staged.environment),
             "removed": staged.service.name,
             "asks_approval": asks_approval,
+            "broken": staged.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),
         }))
     }
 }

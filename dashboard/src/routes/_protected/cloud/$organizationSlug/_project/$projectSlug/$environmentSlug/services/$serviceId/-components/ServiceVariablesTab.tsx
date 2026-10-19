@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import type { Persistable } from "#/collections/query-collection";
-import type { EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
+import type { BrokenReference, EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
+import { brokenVariables } from "#/modules/config-store/store-broken";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter, variableReferrers } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -25,7 +26,7 @@ import type { RawEditorDiff } from "#/modules/variables/variable-raw-editor";
 import { ServiceVariablesRawEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditor";
 
 /** A Config Store Service's variables: each edit is one optimistic write of `SERVICE.env.KEY`; a secret never reads back. */
-export function StoreServiceVariablesTab({ organizationSlug, environment, service, services, settings, changes }: {
+export function StoreServiceVariablesTab({ organizationSlug, environment, service, services, settings, changes, broken }: {
   organizationSlug: string;
   environment: EnvironmentRef;
   service: ServiceListing;
@@ -34,10 +35,12 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
   settings: EnvironmentView;
   /** What the next Deploy changes in it, by Setting. */
   changes: ReadonlyMap<string, unknown>;
+  /** The Environment's broken references (`DiffView.broken`). */
+  broken: readonly BrokenReference[];
 }) {
   const store = useStoreWriter(organizationSlug);
   const rows = serviceSettingRows(settings, service.name);
-  const variables = serviceVariables(rows, service.id, changes, new Set(settings.never_synced));
+  const variables = serviceVariables(rows, service.id, changes, new Set(settings.never_synced), brokenVariables(broken, service.name));
   const writer = storeVariableWriter(store, environment, service.name, variables, rows);
 
   return (

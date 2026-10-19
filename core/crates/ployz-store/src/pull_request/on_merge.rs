@@ -4,7 +4,7 @@
 //! changed them. Exclude is a Never sync mark on the PR Environment; only an Edit, the
 //! value a row lands with in place of the PR Environment's, is stored.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Arrives, At, Cell, Cells, PRIVATE_DOMAIN_KEY, Plan, RowId, SERVICE_NAME_KEY,
@@ -21,6 +21,7 @@ use crate::branch::{
     share, shown,
 };
 use crate::id::ServiceLineageId;
+use crate::scope::RemovedServices;
 use crate::storage;
 use crate::variables::{self, VariableKey};
 
@@ -72,7 +73,7 @@ pub struct MergeRow {
     pub conflict: bool,
     /// The row of the new node it is in, which rides with it.
     pub requires: Option<RowId>,
-    /// The rows that still reference the node it removes: it stays until they change.
+    /// The rows that still mount the node it removes: it stays until they change.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<NamedRow>>", optional)]
     pub refused_by: Vec<NamedRow>,
@@ -130,7 +131,7 @@ pub(crate) struct Landing {
 }
 
 impl Landing {
-    /// The rows that land: a removal something still references doesn't.
+    /// The rows that land: a removal something still mounts doesn't.
     pub(crate) fn riding(&self) -> BTreeSet<RowId> {
         self.rows
             .iter()
@@ -196,7 +197,7 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
     let way = Move::merge(tx, from, &into)?;
     let plan = way.plan(&saved);
     let stored = edits(tx, &from.summary.id, &into.summary.id)?;
-    let (from_names, into_names) = (from.names(), into.names());
+    let names = merge_names(from, &into);
     let mut rows = Vec::new();
     for row in plan.rows() {
         let (ride, conflict, arrives) = match &row.verdict {
@@ -230,11 +231,11 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
         };
         let at = named(&[&from.working, &saved], &row.id)
             .ok_or_else(|| error::corrupt("On merge row"))?;
-        let preview = shown(&from.working, &from_names, &row.id, &row.from);
-        let production = shown(&saved, &into_names, &row.id, &row.into);
+        let preview = shown(&from.working, &names, &row.id, &row.from);
+        let production = shown(&saved, &names, &row.id, &row.into);
         let lands = match (stored.get(&row.id), arrives) {
             _ if ride == Ride::Kept => production.clone(),
-            (Some(edit), _) if ride == Ride::Edited => shown_edit(edit, &into_names),
+            (Some(edit), _) if ride == Ride::Edited => shown_edit(edit, &names),
             (_, Arrives::NeedsValue) => json!({ "secret": false }),
             _ => preview.clone(),
         };
@@ -271,7 +272,7 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
         .map(|row| row.at.row.clone())
         .collect();
     let values = edited_values(stored, &rows);
-    // Dropping a refused removal keeps its node, whose own references can refuse
+    // Dropping a refused removal keeps its node, whose own mounts can refuse
     // another removal, so repeat until none is refused.
     let mut refused = BTreeMap::new();
     loop {
@@ -308,6 +309,63 @@ fn edited_values(
             .any(|row| row.at.row == *id && row.ride == Ride::Edited)
     });
     stored
+}
+
+/// Each Service only `from` has that `into` shows another Service's name for, with
+/// that name.
+fn clashing(from: &Environment, into: &Environment) -> BTreeMap<String, String> {
+    let names = into.names();
+    let taken: BTreeSet<&String> = names.values().collect();
+    from.names()
+        .into_iter()
+        .filter(|(lineage, name)| {
+            !names.contains_key(lineage)
+                && !into.removed.contains(lineage)
+                && !into.inherited.contains(lineage)
+                && taken.contains(name)
+        })
+        .collect()
+}
+
+/// The removals `into` records once `from` merges into it: its own; then `from`'s
+/// after them; then each Service only `from` has whose name `into` shows another
+/// Service by, as a removal by that name. Both sides of a merge show removed
+/// Services by these, so one shown label is one Service across the list, and the
+/// merge records them so `into` keeps showing them so.
+fn merge_removals(from: &Environment, into: &Environment) -> RemovedServices {
+    let mut removed = into.removed.clone();
+    removed.append(&from.removed, |_| true);
+    for (lineage, name) in clashing(from, into) {
+        removed.record(&lineage, Some(&name));
+    }
+    removed
+}
+
+/// How the On merge list shows each Service, by lineage, as `into` will see it:
+/// its own names; then each Service it removed; then each only `from` has, by its
+/// name there unless `into` shows another Service so; then the rest of
+/// [`merge_removals`]. One label per Service and one Service per label, so the list
+/// shows values and reads Edits by the same names.
+fn merge_names(from: &Environment, into: &Environment) -> BTreeMap<String, String> {
+    let removals = merge_removals(from, into).shown(BTreeMap::new(), &into.inherited, []);
+    let clashing = clashing(from, into);
+    let mut labels = into.names();
+    for (lineage, label) in &removals {
+        if into.removed.contains(lineage) || into.inherited.contains(lineage) {
+            labels
+                .entry(lineage.clone())
+                .or_insert_with(|| label.clone());
+        }
+    }
+    for (lineage, name) in from.names() {
+        if !clashing.contains_key(&lineage) {
+            labels.entry(lineage).or_insert(name);
+        }
+    }
+    for (lineage, label) in removals {
+        labels.entry(lineage).or_insert(label);
+    }
+    labels
 }
 
 /// An Edit as reads show it.
@@ -435,8 +493,31 @@ pub(crate) fn set_merge_value(
         let cell = if planned.from.is_secret() || planned.into.is_secret() {
             SealedCell::Secret(crate::branch::seal_secret(sealing, &row, &label, value)?)
         } else {
-            let (parts, fingerprint) =
-                variables::text_parts(&VariableKey::parse(key)?, value, &landing.into.names())?;
+            let old: Vec<ValuePart> = [&planned.from, &planned.into]
+                .into_iter()
+                .filter_map(|cell| match cell {
+                    Cell::Value(value) => value.get("parts").cloned(),
+                    Cell::Absent | Cell::Secret { .. } | Cell::SecretWithoutValue => None,
+                })
+                .filter_map(|parts| serde_json::from_value::<Vec<ValuePart>>(parts).ok())
+                .flatten()
+                .collect();
+            let labels = merge_names(&from, &landing.into);
+            let mut removed = landing.into.removed_names();
+            for (lineage, name) in merge_removals(&from, &landing.into).names() {
+                removed.insert(lineage.clone(), name.clone());
+            }
+            let shown = variables::Shown {
+                labels: &labels,
+                removed: &removed,
+            };
+            let (parts, fingerprint) = variables::text_parts(
+                &VariableKey::parse(key)?,
+                value,
+                &landing.into.names(),
+                shown,
+                &old,
+            )?;
             let mut value = json!(variables::stored(parts));
             if let Some(object) = value.as_object_mut() {
                 object.insert("fingerprint".into(), json!(fingerprint));
@@ -798,7 +879,7 @@ fn land_one(
         })
         .map(|row| row.id.clone())
         .collect();
-    // A draft that still references a removed node keeps it in Working State.
+    // A draft that still mounts a removed node keeps it in Working State.
     loop {
         let refused = mirror
             .removal_dependents(&staged, &values)
@@ -813,6 +894,18 @@ fn land_one(
         working = with_variable_ids_of(&saved, &working, next);
     }
     let consumed = end_included(tx, &into, Some(&from.summary.id))?;
+    // Saved took the merge whatever Working keeps, so the record takes each removal
+    // the list showed, by the label it showed, and names each Service only the
+    // preview had that Saved reads.
+    destination.removed = merge_removals(from, &destination);
+    let read = crate::rules::removed_lineages(&saved, &destination.live);
+    for (lineage, name) in from.names() {
+        if read.contains(&lineage) {
+            destination
+                .removed
+                .record_beside(&lineage, Some(&name), &destination.inherited);
+        }
+    }
     if working != destination.working {
         let carried = Carried::of(tx, &from.summary.id, &from.working)?;
         crate::branch::land(
@@ -825,6 +918,8 @@ fn land_one(
         )?;
     } else if consumed {
         scope::persist_working(tx, &mut destination)?;
+    } else {
+        scope::persist_removed(tx, &mut destination)?;
     }
 
     // The pair shares the PR Environment's values: an Edit is the Destination's own

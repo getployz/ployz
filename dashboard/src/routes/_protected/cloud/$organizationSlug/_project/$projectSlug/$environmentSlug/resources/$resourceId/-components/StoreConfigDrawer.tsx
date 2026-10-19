@@ -2,7 +2,7 @@ import { StoreConfigMounts } from "#/modules/config-store/StoreConfigMounts";
 import { useRef, useState } from "react";
 import { Schema } from "effect";
 import { useBlocker, useLoaderData, useNavigate } from "@tanstack/react-router";
-import { EllipsisIcon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { AlertTriangleIcon, EllipsisIcon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import type { ConfigItemView, ConfigListing, DiffView, EnvironmentRef, ServiceListing } from "@ployz/sdk";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
@@ -19,6 +19,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
 import { previewSegments } from "#/modules/config-store/config-references";
+import { brokenFiles } from "#/modules/config-store/store-broken";
 import {
   configBytesText, configEdits, configFileSizeError, configReferenceValues, draftAccess, EXECUTABLE_MODE, executableToggle, fileAccessLabel,
   hiddenFile, READ_ONLY_MODE, saveConfigCommand, utf8Bytes, type FileDraft,
@@ -171,7 +172,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
           <SettingsWorkspace label="Files" hint="Saved files reach each mount on your next deploy.">
           <ConfigFiles fileNames={fileNames} current={current} onSelect={setSelected} item={item} drafts={drafts} dirty={dirty}
             textOf={textOf} hidden={hidden} targets={targets} serviceNames={serviceNames} values={values} readOnly={removing}
-            onDraft={draft} onSave={save} onRemove={removeFile}
+            broken={brokenFiles(diff.broken ?? [], state.config.name)} onDraft={draft} onSave={save} onRemove={removeFile}
             onAdd={(file) => { draft(file, { content: "" }); setSelected(file); }}
             footer={removing ? null : (
               <div className="flex items-center justify-end gap-3">
@@ -208,10 +209,12 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
 }
 
 function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf, hidden, targets, serviceNames, values, readOnly,
-  onDraft, onSave, onRemove, onAdd, footer }: {
+  broken, onDraft, onSave, onRemove, onAdd, footer }: {
   fileNames: readonly string[]; current: string | null; onSelect: (file: string) => void; item: ConfigItemView;
   drafts: ReadonlyMap<string, FileDraft>; dirty: ReadonlySet<string>; textOf: (file: string) => string; hidden: (file: string) => boolean;
   targets: readonly ReferenceTarget[]; serviceNames: readonly string[]; values: ReturnType<typeof configReferenceValues>;
+  /** Why each file with a broken reference is broken, by name. */
+  broken: ReadonlyMap<string, string>;
   readOnly: boolean; onDraft: (file: string, change: Partial<FileDraft>) => void; onSave: () => void; onRemove: (file: string) => void;
   onAdd: (file: string) => void; footer: React.ReactNode;
 }) {
@@ -245,6 +248,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
                 <button type="button" role="tab" aria-selected={active} onClick={() => onSelect(file)}
                   className="flex items-center gap-1.5 py-1 pl-2.5 pr-1 font-mono text-xs">
                   {file}
+                  {broken.has(file) ? <AlertTriangleIcon className="size-3 text-destructive" aria-label="Broken reference" /> : null}
                   {mode === EXECUTABLE_MODE ? <span className="text-muted-foreground" title="Executable">x</span> : null}
                   {dirty.has(file) ? <span className="size-1.5 rounded-full bg-foreground" aria-label="Unsaved" /> : null}
                 </button>
@@ -293,6 +297,11 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
             autoComplete="off" isDirty error={adding.error} onValueChange={(name) => setAdding({ name, error: null })}
             onConfirm={add} onCancel={() => setAdding(null)} />
         </SettingsFormField>
+      ) : null}
+      {current !== null && broken.has(current) ? (
+        <p role="status" className="flex items-center gap-1 text-xs text-destructive">
+          <AlertTriangleIcon className="size-3" />Broken reference: {broken.get(current)}
+        </p>
       ) : null}
       {current === null ? (
         <Empty variant="placeholder"><EmptyDescription>No files.</EmptyDescription></Empty>

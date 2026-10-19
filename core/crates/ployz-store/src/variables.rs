@@ -12,8 +12,8 @@ use std::fmt;
 use ployz_core::config::{
     CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput, ResolveVariablesResult,
     ResolvedConfigFile, ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
-    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, parse_variable_template,
-    render_variable_parts, resolve_config_file, resolve_variables,
+    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, is_deleted_owner,
+    parse_variable_template, render_variable_parts, resolve_config_file, resolve_variables,
 };
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
 use ring::rand::{SecureRandom as _, SystemRandom};
@@ -228,7 +228,13 @@ pub(crate) fn set(
             ));
         }
         (Some(Input::Text(text)), _) => {
-            let (parts, fingerprint) = text_parts(key, &text, &names)?;
+            let old = current.map_or(&[][..], |current| current.value.parts());
+            let (labels, removed) = (environment.shown_names(), environment.removed_names());
+            let shown = Shown {
+                labels: &labels,
+                removed: &removed,
+            };
+            let (parts, fingerprint) = text_parts(key, &text, &names, shown, old)?;
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
@@ -312,6 +318,37 @@ pub(crate) fn rename(
             .map(|(service, key)| format!("{service}.{key}"))
             .collect::<Vec<_>>()
     };
+    // A Config file doesn't follow a rename, and the rename would break it.
+    let reads = |part: &ValuePart| {
+        matches!(
+            part,
+            ValuePart::Ref {
+                owner: ValuePartOwner::Service { lineage_id },
+                key: reads,
+            } if *lineage_id == lineage && reads == key.as_str()
+        )
+    };
+    let files: Vec<String> = environment
+        .working
+        .configs
+        .iter()
+        .flat_map(|config| {
+            config
+                .files
+                .iter()
+                .filter(|(_, content)| content.content.iter().any(reads))
+                .map(move |(file, _)| format!("{}/{file}", config.name))
+        })
+        .collect();
+    if !files.is_empty() {
+        return Err(error::conflict(
+            format!(
+                "{} references {service}.{key}; change those references first",
+                files.join(", ")
+            ),
+            json!({ "files": files, "references": format!("{service}.{key}") }),
+        ));
+    }
     let referrers = referrers(environment, service, &lineage, key)?;
     if !referrers.is_empty() && !update_references {
         let summary = &environment.summary;
@@ -398,20 +435,74 @@ fn referrers(
     Ok(found)
 }
 
-/// Text as a variable's parts, referencing Services by their names in `names`
-/// (lineage → name), with its fingerprint.
+/// How an edit reads the Services its references name.
+#[derive(Clone, Copy)]
+pub(crate) struct Shown<'a> {
+    /// Each Service by lineage, as reads show it.
+    pub(crate) labels: &'a BTreeMap<String, String>,
+    /// The name each removed Service was last called, by lineage, where a record
+    /// has one.
+    pub(crate) removed: &'a BTreeMap<String, String>,
+}
+
+/// The lineage each `${{ name.KEY }}` of an edit reads: the Service `shown` labels
+/// `name`. A removed Service's, such as `${{ <deleted redis>.KEY }}`, only where the
+/// edited value, `old`, reads that `KEY` of it: an edit keeps the references it had
+/// and adds none to a removed Service. A `<deleted NAME>` no label matches reads the
+/// one Service `old` reads that `KEY` of and that was last called `NAME`, as reads
+/// showed it before another removal of that name made both show by lineage.
+pub(crate) fn lineage_of<'a>(
+    shown: Shown<'a>,
+    old: &'a [ValuePart],
+) -> impl FnMut(&str, &str) -> Option<String> + 'a {
+    move |name, key| {
+        let removed = is_deleted_owner(name);
+        let referenced = || {
+            old.iter().filter_map(|part| match part {
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Service { lineage_id },
+                    key: reads,
+                } => Some((lineage_id, reads)),
+                ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
+            })
+        };
+        let labelled = shown
+            .labels
+            .iter()
+            .filter(|(_, shown)| shown.as_str() == name)
+            .map(|(lineage, _)| lineage)
+            .find(|lineage| {
+                !removed || referenced().any(|(read, reads)| read == *lineage && reads == key)
+            });
+        if let Some(lineage) = labelled {
+            return Some(lineage.clone());
+        }
+        let last_called = name.strip_prefix("<deleted ")?.strip_suffix('>')?;
+        let mut alike: Vec<&String> = referenced()
+            .filter(|(_, reads)| *reads == key)
+            .map(|(lineage, _)| lineage)
+            .filter(|lineage| shown.removed.get(*lineage).map(String::as_str) == Some(last_called))
+            .collect();
+        alike.sort();
+        alike.dedup();
+        match alike.as_slice() {
+            [lineage] => Some((*lineage).clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Text as a variable's parts, referencing Services as [`lineage_of`] reads them,
+/// with its fingerprint.
 pub(crate) fn text_parts(
     key: &VariableKey,
     text: &str,
     names: &BTreeMap<String, String>,
+    shown: Shown<'_>,
+    old: &[ValuePart],
 ) -> Result<(Vec<ValuePart>, String), RpcError> {
     validate_text(key, text)?;
-    let template = parse_variable_template(text, |name| {
-        names
-            .iter()
-            .find(|(_, slug)| slug.as_str() == name)
-            .map(|(lineage, _)| lineage.clone())
-    });
+    let template = parse_variable_template(text, lineage_of(shown, old));
     if template.unterminated {
         return Err(invalid(
             key,
@@ -606,13 +697,16 @@ pub(crate) struct Resolved {
     /// Each Service's variables left out because a secret without a value reaches
     /// them, by Service ID.
     pub(crate) not_set: BTreeMap<String, Vec<String>>,
+    /// Each Service's variables left out because they reference, directly or through
+    /// another variable, a Service or variable that isn't there, by Service ID.
+    pub(crate) broken: BTreeMap<String, Vec<String>>,
 }
 
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers. With `unseal`, secrets and values
 /// that reference one resolve to plaintext. Without it, such a variable is left
-/// out and such a file is empty. A variable a secret without a value reaches is
-/// always left out; in a file that secret is empty.
+/// out and such a file is empty. A variable a secret without a value, or a broken
+/// reference, reaches is always left out; in a file either is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, or `internal` when a sealed
@@ -654,6 +748,7 @@ pub(crate) fn resolve(
         env: BTreeMap::new(),
         configs: BTreeMap::new(),
         not_set: BTreeMap::new(),
+        broken: BTreeMap::new(),
     };
     for node in &compiled.node_snapshots {
         let config = match &node.snapshot.0 {
@@ -675,6 +770,7 @@ pub(crate) fn resolve(
         };
         let mut env = BTreeMap::new();
         let mut not_set = Vec::new();
+        let mut broken = Vec::new();
         for (key, value) in &config.env {
             let value = match value {
                 ServiceEnvValue::Literal { value, parts: None } => Some(value.clone()),
@@ -685,11 +781,18 @@ pub(crate) fn resolve(
                     self_owner_id: node.node_id.clone(),
                     producers: producers.clone(),
                 }) {
+                    ResolveVariablesResult::Resolved { warnings, .. } if !warnings.is_empty() => {
+                        broken.push(key.clone());
+                        None
+                    }
                     ResolveVariablesResult::Resolved { value, secret, .. } => {
                         (unseal.is_some() || !secret).then_some(value)
                     }
-                    ResolveVariablesResult::NotSet => {
+                    ResolveVariablesResult::NotSet { warnings } => {
                         not_set.push(key.clone());
+                        if !warnings.is_empty() {
+                            broken.push(key.clone());
+                        }
                         None
                     }
                     ResolveVariablesResult::Cycle { path } => {
@@ -715,6 +818,9 @@ pub(crate) fn resolve(
         }
         if !not_set.is_empty() {
             resolved.not_set.insert(node.node_id.clone(), not_set);
+        }
+        if !broken.is_empty() {
+            resolved.broken.insert(node.node_id.clone(), broken);
         }
         resolved.env.insert(node.node_id.clone(), env);
     }
@@ -765,7 +871,7 @@ mod tests {
     fn a_config_file_that_reads_a_secret_is_empty_without_the_key() {
         let key = SealingKey::new(b"test-encryption-secret").unwrap();
         let file = |text: &str| SavedConfigFile {
-            content: parse_variable_template(text, |_| Some("web-lineage".to_owned())).parts,
+            content: parse_variable_template(text, |_, _| Some("web-lineage".to_owned())).parts,
             mode: FileMode::READ_ONLY,
             uid: 0,
             gid: 0,

@@ -35,7 +35,11 @@ changed: every GitHub service moves to the newest commit on its Git branch, and 
 or lost a server, replicas spread over the servers you have now (if a service's volume was on a
 lost server, see [When a server goes down](../services/scaling.md#when-a-server-goes-down)).
 Everything else keeps running as it is. A secret that is **Not set** never stops a deploy: the
-deploy skips it, and any variable that references it, and warns.
+deploy skips it, and any variable that references it, and warns. A
+[broken reference](../services/variables.md#reference-another-services-variable), to a service or
+variable that isn't there, doesn't either: the deploy leaves that variable out the same way, or
+leaves the reference empty in a config file, along with any reference that reads it, and the
+deployment's page and `ployz deploy` name each one.
 
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not
@@ -85,9 +89,10 @@ If an action would overwrite draft changes, the confirmation lists exactly which
 Cancel changes nothing. If someone edits the environment after your review, reopen the action
 to review the new draft. Save or Deploy makes the staged result a saved version.
 
-Undo and Roll back pass the same checks as an edit made by hand. One that would leave a
-reference to a deleted Service, reuse a name or hostname another Service took since, or break a
-rule is refused with the reason, and nothing is staged.
+Undo and Roll back pass the same checks as an edit made by hand. One that would reuse a name or
+hostname another Service took since, or break a rule, is refused with the reason, and nothing is
+staged. One that leaves a reference to a deleted Service stages, and shows it as a
+**Broken reference**.
 
 History restores configuration references. It never brings back a sealed value. A sealed
 variable that still exists keeps its current value, and one added since stays. A sealed variable

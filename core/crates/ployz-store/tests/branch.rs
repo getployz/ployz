@@ -464,6 +464,116 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
 }
 
 #[test]
+fn a_live_reference_breaks_once_its_parent_deploys_without_the_variable() {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("db.env.PASS", json!("pw"))]);
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.DB_PASS", json!("${{ db.PASS }}"))],
+    );
+    let broken = || {
+        let diff = store
+            .read(
+                &who,
+                &DiffQuery {
+                    environment: at("fix-web"),
+                },
+            )
+            .unwrap();
+        texts(&diff.broken)
+    };
+    assert!(broken().is_empty());
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("db.env.PASS").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    assert!(broken().is_empty());
+    deploy(&store, &who, "production", 2, true);
+    assert_eq!(
+        broken(),
+        ["web.env.DB_PASS references db.PASS, which doesn't exist"]
+    );
+}
+
+#[test]
+fn a_live_reference_holds_while_its_parent_only_stages_the_removal() {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("db.env.PASS", json!("pw"))]);
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.DB_PASS", json!("${{ db.PASS }}"))],
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("production"),
+                service: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    let diff = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    assert!(diff.broken.is_empty(), "{:?}", texts(&diff.broken));
+    assert_eq!(
+        values(&store, &who, "fix-web", "web")["env"]["DB_PASS"],
+        json!("${{ db.PASS }}")
+    );
+}
+
+#[test]
+fn removing_an_own_copy_the_parent_still_runs_breaks_nothing() {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("db.env.PASS", json!("pw"))]);
+    deploy(&store, &who, "production", 1, true);
+    store
+        .write(&who, &branch("fix-web", "production", &["web", "db"]))
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.DB_PASS", json!("${{ db.PASS }}"))],
+    );
+    let removed = store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("fix-web"),
+                service: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    assert!(removed.broken.is_empty(), "{:?}", texts(&removed.broken));
+}
+
+#[test]
 fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
@@ -821,5 +931,139 @@ fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
     assert_eq!(
         values(&store, &who, "fix-web", "web")["configs"],
         json!({ "sentinel": "/etc/sentry" })
+    );
+}
+
+#[test]
+fn a_branch_shows_a_service_its_parent_removed_by_the_parents_name_for_it() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("jobs").unwrap(),
+                image: Some("jobs:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "web.env.HOSTS",
+            json!("${{ db.PLOYZ_PRIVATE_DOMAIN }},${{ jobs.PLOYZ_PRIVATE_DOMAIN }}"),
+        )],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db"), node("jobs")];
+    store.write(&who, &create).unwrap();
+    let remove = |service: &str, n: u8| {
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at("production"),
+                    service: ServiceName::parse(service).unwrap(),
+                },
+            )
+            .unwrap();
+        deploy(&store, &who, "production", n, true);
+    };
+    let hosts = || values(&store, &who, "fix-web", "web")["env"]["HOSTS"].clone();
+    remove("jobs", 2);
+    let shown = hosts();
+    // db sorts before jobs, so a label numbered as reads meet removals would move.
+    remove("db", 3);
+
+    let kept = shown
+        .as_str()
+        .unwrap()
+        .replace("${{ db.PLOYZ_PRIVATE_DOMAIN }},", "");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.HOSTS", json!(format!("{kept}/v2")))],
+    );
+    assert_eq!(
+        hosts(),
+        json!("${{ <deleted jobs>.PLOYZ_PRIVATE_DOMAIN }}/v2")
+    );
+}
+
+#[test]
+fn an_edit_reads_the_removed_service_it_showed_after_a_second_removal_shares_its_name() {
+    let (store, who) = shop();
+    let jobs = |environment: &str, n: u8| {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at(environment),
+                    name: ServiceName::parse("jobs").unwrap(),
+                    image: Some("jobs:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    };
+    let remove = |environment: &str, n: u8| {
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at(environment),
+                    service: ServiceName::parse("jobs").unwrap(),
+                },
+            )
+            .unwrap();
+        deploy(&store, &who, environment, n, true);
+    };
+    let reference = json!("${{ jobs.PLOYZ_PRIVATE_DOMAIN }}");
+    jobs("production", 6);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.FIRST", reference.clone())],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("b", "production", &["web"]);
+    create.live = vec![node("db"), node("jobs")];
+    store.write(&who, &create).unwrap();
+    remove("production", 2);
+    jobs("b", 7);
+    set(&store, &who, "b", &[("web.env.SECOND", reference)]);
+    deploy(&store, &who, "b", 3, true);
+    let mut create = branch("c", "b", &["web"]);
+    create.live = vec![node("jobs")];
+    store.write(&who, &create).unwrap();
+    let first = || values(&store, &who, "c", "web")["env"]["FIRST"].clone();
+    // c's own value, so b's edits to its copy stay b's.
+    let shown = json!("${{ <deleted jobs>.PLOYZ_PRIVATE_DOMAIN }}/c");
+    set(&store, &who, "c", &[("web.env.FIRST", shown.clone())]);
+    assert_eq!(first(), shown);
+
+    // b's own jobs leaves as `<deleted jobs>` too, so c shows both by lineage.
+    set(&store, &who, "b", &[("web.env.FIRST", json!("plain"))]);
+    remove("b", 4);
+    set(
+        &store,
+        &who,
+        "c",
+        &[(
+            "web.env.FIRST",
+            json!(format!("{}/v2", shown.as_str().unwrap())),
+        )],
+    );
+    assert_eq!(
+        first(),
+        json!("${{ <deleted #00000006>.PLOYZ_PRIVATE_DOMAIN }}/c/v2")
     );
 }
