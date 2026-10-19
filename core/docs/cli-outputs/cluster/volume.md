@@ -225,6 +225,11 @@ stdout:
 Staged shared writes on for Volume data in shop/production.
 ```
 
+stderr:
+```
+next: ployz deploy --env production --project shop
+```
+
 ### volume set --docker (managed -> docker)
 
 ```console
