@@ -20,6 +20,7 @@ import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import type { OperationVerb } from "#/modules/approvals/approvals";
 import { readStore } from "#/modules/config-store/config-store.server";
+import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
@@ -184,7 +185,8 @@ const deploying = (lane: Pick<VolumeRunRow, "kind" | "heldBy">) => lane.kind ===
 
 /**
  * The Volume's name now, read by the ids its Docker volume name carries, so a rename after the request resolved still
- * shows: a run keeps the name it started under. A Volume no longer configured keeps that name.
+ * shows: a run keeps the name it started under. A Volume no longer configured keeps that name, and so does one whose
+ * Project was renamed or Environment removed between the two reads.
  */
 const currentVolumeName = Effect.fn("VolumeRun.currentVolumeName")(function* (run: Pick<VolumeRunRow, "organizationId" | "dockerVolume" | "volumeName">) {
   const parsed = parseDockerVolumeName(run.dockerVolume);
@@ -192,8 +194,11 @@ const currentVolumeName = Effect.fn("VolumeRun.currentVolumeName")(function* (ru
   const { namespaces } = yield* readStore(run.organizationId, { query: "namespaces" });
   const owned = namespaces.find((entry) => entry.namespace === parsed.namespace);
   if (owned === undefined) return run.volumeName;
-  const { volumes } = yield* readStore(run.organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } });
-  return volumes.find((volume) => volume.id === parsed.volumeId)?.name ?? run.volumeName;
+  const named = yield* readStore(run.organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } }).pipe(
+    Effect.map(({ volumes }) => volumes.find((volume) => volume.id === parsed.volumeId)?.name),
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(undefined)),
+  );
+  return named ?? run.volumeName;
 });
 
 /** Names the Volume as it is called at the refusal, so the hints run as printed. */

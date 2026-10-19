@@ -14,6 +14,7 @@ import type {
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
+import { RpcError } from "@ployz/sdk";
 import { createHash } from "node:crypto";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Exit } from "effect";
@@ -176,6 +177,10 @@ describe("volume runs", () => {
   let opens: number;
   let sent: SetVolumeCopyRequest[];
   let held: Map<string, () => CopyRefusal | null>;
+  /** The Project's name in the Store; a read of its Environment by another name is not found. */
+  let storeProject: string;
+  /** Runs once after the Store answers a namespaces read, as a write committed between that read and the next. */
+  let afterNamespaces: (() => void) | null;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
   /** The nodes every Deployment the Store reads back targets. */
   let deployNodes: Array<{ type: "volume" | "service"; id: string; name: string; outcome: "pending"; rows: [] }>;
@@ -421,11 +426,22 @@ describe("volume runs", () => {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
           githubCancel: async () => [],
           abandonDeployment: async (id: string) => ({ id, status: "failed" }),
-          read: async (_: string, query: { query: string; id?: string }) => query.query === "namespaces"
-            ? { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] }
-            : query.query === "deployment"
-              ? { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: "shop", name: "production" }, nodes: deployNodes }
-              : { environment: { id: "env-1", project: "shop", name: "production", revision: 1 }, volumes: storeVolumes },
+          read: async (_: string, query: { query: string; id?: string; environment?: { project: string | null } }) => {
+            if (query.query === "namespaces") {
+              const answer = { namespaces: [{ namespace: "shop-production", project: storeProject, environment: "production" }] };
+              const after = afterNamespaces;
+              afterNamespaces = null;
+              after?.();
+              return answer;
+            }
+            if (query.query === "deployment") {
+              return { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" }, nodes: deployNodes };
+            }
+            if (query.environment !== undefined && query.environment.project !== storeProject) {
+              throw new RpcError({ code: "not_found", message: `No Project named ${query.environment.project}`, details: null });
+            }
+            return { environment: { id: "env-1", project: storeProject, name: "production", revision: 1 }, volumes: storeVolumes };
+          },
         })),
       }),
       Effect.provideService(OrganizationRuntime, {
@@ -513,6 +529,8 @@ describe("volume runs", () => {
     slotIds = 0;
     snapshots = new Map([[base.name, base]]);
     containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true }];
+    storeProject = "shop";
+    afterNamespaces = null;
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
     deployNodes = [{ type: "service", id: "svc-web", name: "web", outcome: "pending", rows: [] }, { type: "volume", id: volumeId, name: "data", outcome: "pending", rows: [] }];
     machines = [
@@ -690,6 +708,18 @@ describe("volume runs", () => {
       const named = storeVolumes.find((volume) => volume.name === name);
       expect(named?.id).toBe(volumeId);
       expect((await runEffect(listVolumeRuns(organizationId, volumeId))).map((run) => run.id)).toContain(id);
+    });
+
+    it("a Project renamed between the refusal's Namespace and Volume reads still refuses the Volume as busy, by the name its run saved", async () => {
+      const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const resolved = await runEffect(resolveVolume(organizationId, environment, volumeId));
+      afterNamespaces = () => { storeProject = "store"; };
+
+      expect(await runEffect(insertRun({ userId, organizationId }, { volumeId, kind: "sync", args: { full: false } }, resolved, crypto.randomUUID()))).toMatchObject({
+        ok: false,
+        refusal: { code: "conflict", message: `data is busy with a mirror; ployz volume runs data ${first.id} follows it, and ployz volume release data stops it` },
+      });
+      expect(storeProject).toBe("store");
     });
 
     it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
