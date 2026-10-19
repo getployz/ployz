@@ -945,7 +945,7 @@ impl From<LoginError> for Failure {
             | LoginError::Denied
             | LoginError::Ended => Some("ployz login"),
             LoginError::AwaitingApproval { .. } => Some("ployz login --wait"),
-            LoginError::TokenRefused => Some("unset PLOYZ_TOKEN && ployz login"),
+            LoginError::TokenRefused => Some(crate::cloud_account::SIGN_IN_PAST_TOKEN),
             LoginError::UnknownOrganization(_) => Some("ployz org ls"),
             LoginError::UnknownCredential(_) => Some("ployz token ls"),
             LoginError::Unreachable { .. }

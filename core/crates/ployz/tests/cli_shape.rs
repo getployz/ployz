@@ -2455,18 +2455,37 @@ fn run_token_cloud(cloud: &str, args: &[&str]) -> (Option<i32>, String, String) 
     )
 }
 
+/// `ployz login` alone changes nothing while `PLOYZ_TOKEN` is set: the token still wins,
+/// so the refusal would repeat.
 #[test]
-fn a_token_refused_a_token_command_hears_cloud_s_sentence_and_next_step() {
+fn a_token_refused_a_token_command_hears_cloud_s_sentence_and_a_next_step_past_the_token() {
     let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can make tokens. No changes made.","details":{"next":"ployz login"}}}"#;
-    let (cloud, _) = token_cloud(403, refused);
+    let (cloud, _sent) = token_cloud(403, refused);
     let (code, _, stderr) = run_token_cloud(&cloud, &["token", "new", "x"]);
     assert_eq!(code, Some(1), "{stderr}");
     assert_eq!(
         stderr,
-        "error: Only a signed-in person can make tokens. No changes made.\nnext: ployz login\n"
+        "error: Only a signed-in person can make tokens. No changes made.\nnext: unset PLOYZ_TOKEN && ployz login\n"
+    );
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can revoke tokens; revoke it under Organization → Tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _sent) = token_cloud(403, refused);
+    let (code, stdout, stderr) = run_token_cloud(&cloud, &["token", "rm", "t1", "--json"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        json.pointer("/error/details/next"),
+        Some(&serde_json::json!("unset PLOYZ_TOKEN && ployz login"))
+    );
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can make Fleet Tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _sent) = token_cloud(403, refused);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["server", "token", "create"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.ends_with("\nnext: unset PLOYZ_TOKEN && ployz login\n"),
+        "{stderr}"
     );
     let older = r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}"#;
-    let (cloud, _) = token_cloud(422, older);
+    let (cloud, _sent) = token_cloud(422, older);
     let (code, _, stderr) = run_token_cloud(&cloud, &["token", "rm", "t1"]);
     assert_eq!(code, Some(2), "{stderr}");
     assert_eq!(

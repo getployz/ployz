@@ -1096,7 +1096,7 @@ pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
         .cloned()
 }
 
-/// Cloud's refusal of a call, as it sent it.
+/// Cloud's refusal of a call, with a next step that works under `PLOYZ_TOKEN`.
 pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     #[derive(Deserialize)]
     struct Refusal {
@@ -1104,7 +1104,23 @@ pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     }
     serde_json::from_slice::<Refusal>(body)
         .ok()
-        .map(|refusal| refusal.error)
+        .map(|refusal| past_token(refusal.error))
+}
+
+/// `ployz login` while `PLOYZ_TOKEN` is set: the token still wins over the sign-in.
+pub(crate) const SIGN_IN_PAST_TOKEN: &str = "unset PLOYZ_TOKEN && ployz login";
+
+/// Cloud can't know a token caller is a shell with `PLOYZ_TOKEN` set, so its
+/// `ployz login` step becomes one that works while the token is.
+fn past_token(mut refused: RpcError) -> RpcError {
+    let token = std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+    if token
+        && let Some(next) = refused.details.get_mut("next")
+        && next == "ployz login"
+    {
+        *next = SIGN_IN_PAST_TOKEN.into();
+    }
+    refused
 }
 
 /// A Cloud route's `PublicError`, as the refusal it stands for.

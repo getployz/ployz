@@ -13,7 +13,6 @@ import {
   createOrganizationToken,
   knownEnvironment,
   listCredentials,
-  requireSignedIn,
   revokeCredential,
 } from "#/modules/identity/organization-token.server";
 import {
@@ -138,7 +137,7 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
 // The CLI reads a bare 404 as an unsupported route, so a missing Volume or run answers as a refusal.
 const missingRefusal = (message: string) => refusal({ code: "not_found", message, details: null });
 const noSuchServer = () => missingRefusal("No such Server.");
-/** A token can't make or revoke tokens (see `requireSignedIn`): refused before its request is read, so no field of it is blamed. */
+/** A token can't make or revoke tokens or Fleet Tokens (see `requireSignedIn`): refused before its request is read, so no field of it is blamed. */
 const personOnly = (message: string) => refusal({ code: "forbidden", message, details: { next: "ployz login" } });
 
 const forgetter = (caller: Caller) => ({ userId: caller.userId, credential: caller.credential, organizationId: caller.organization.id });
@@ -253,7 +252,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       };
     }
     case "POST fleet-tokens": {
-      yield* requireSignedIn(caller);
+      if (caller.credential.kind !== "session") {
+        return personOnly("Only a signed-in person can make Fleet Tokens. No changes made.");
+      }
       const input = yield* decodeBody(NewFleetToken, request,
         "A Fleet Token takes an expiry of 1d, 7d or 30d, and an optional name of lowercase letters, digits and hyphens.");
       const created = yield* createFleetToken(caller, {
@@ -265,7 +266,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { fleet_token: { id: created.id, name: created.name, token: created.token, expires_at: created.expiresAt } };
     }
     case "DELETE fleet-tokens/:id": {
-      yield* requireSignedIn(caller);
+      if (caller.credential.kind !== "session") {
+        return personOnly("Only a signed-in person can revoke Fleet Tokens; revoke it under Servers → Tokens. No changes made.");
+      }
       const ref = decodeURIComponent(id ?? "");
       const target = Schema.is(Uuid)(ref) ? { id: ref } : { name: ref };
       const revoked = yield* revokeFleetToken(caller, { organizationSlug: caller.organization.slug, ...target });

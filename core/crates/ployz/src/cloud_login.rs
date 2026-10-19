@@ -593,8 +593,6 @@ async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginErr
     }
 }
 
-/// `body` as the tail of a status line: a short text or JSON answer is worth
-/// printing, a proxy's HTML error page is not.
 /// Cloud's own sentence for a failed call, else its status and any readable body.
 pub(crate) fn answered(prefix: &str, status: u16, body: &str) -> String {
     cloud_message(body.as_bytes())
@@ -613,6 +611,8 @@ pub(crate) fn cloud_message(body: &[u8]) -> Option<String> {
     message.map(str::to_owned)
 }
 
+/// `body` as the tail of a status line: a short text or JSON answer is worth
+/// printing, a proxy's HTML error page is not.
 fn readable(body: &str) -> String {
     let body = body.trim();
     if body.is_empty() || body.starts_with('<') {
