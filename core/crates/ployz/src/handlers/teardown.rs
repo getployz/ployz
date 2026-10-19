@@ -230,7 +230,7 @@ pub(super) fn remove(
                     shipped => shipped?,
                 };
                 if view.deployment.status != DeploymentStatus::Applied {
-                    let reported = unfinished(matches, &view, &ran, outcome, &again);
+                    let reported = unfinished(matches, (&view, &effects), &ran, outcome, &again);
                     ran.clear();
                     reported?;
                     return Ok(None);
@@ -304,7 +304,11 @@ pub(super) fn remove(
             for deployment in &ran {
                 crate::ui::stream(format_args!("Deployment #{} applied", deployment.number));
             }
-            crate::ui::emit_committed(json!({ "applied": ran }), Err(error)).map(|()| None)
+            let mut committed = json!({ "applied": ran });
+            if !effects.is_empty() {
+                committed["effects"] = json!(effects);
+            }
+            crate::ui::emit_committed(committed, Err(error)).map(|()| None)
         }
         Err(error) => Err(error),
     }
@@ -798,11 +802,11 @@ pub(super) fn take_off(
 }
 
 /// Report a removal Deployment that didn't apply (yet), after the `applied` ones
-/// before it, naming `again`, the command that finishes it: exit 3, or 0 when
-/// `--detach` asked not to wait.
+/// before it, with the `effects` its removal was bound to, naming `again`, the
+/// command that finishes it: exit 3, or 0 when `--detach` asked not to wait.
 pub(super) fn unfinished(
     matches: &ArgMatches,
-    view: &DeploymentView,
+    (view, effects): (&DeploymentView, &[DestructiveEffect]),
     applied: &[DeploymentSummary],
     ran: Result<(), Error>,
     again: &str,
@@ -813,10 +817,19 @@ pub(super) fn unfinished(
         view: &'a DeploymentView,
         #[serde(skip_serializing_if = "<[_]>::is_empty")]
         applied: &'a [DeploymentSummary],
+        #[serde(skip_serializing_if = "<[_]>::is_empty")]
+        effects: &'a [DestructiveEffect],
     }
     let hint = Some(again.to_owned());
     crate::ui::finish(
-        &store::Next::new(&Unfinished { view, applied }, hint),
+        &store::Next::new(
+            &Unfinished {
+                view,
+                applied,
+                effects,
+            },
+            hint,
+        ),
         || {
             for deployment in applied {
                 crate::ui::stream(format_args!("Deployment #{} applied", deployment.number));
