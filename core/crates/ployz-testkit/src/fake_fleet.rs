@@ -936,8 +936,6 @@ impl Fleet {
         }
     }
 
-    /// Apply `want` to one Container: its rotation moves by the owner's edge table,
-    /// and a start or a stop changes whether it runs.
     fn ensure(
         &mut self,
         target: MachineId,
@@ -986,8 +984,6 @@ impl Fleet {
         .into())
     }
 
-    /// Every online Machine's proxy routes the In copies of `service` the fleet holds;
-    /// an offline Machine reads Down.
     fn routes(&self, service: &QualifiedService) -> RoutesRead {
         let routed: BTreeSet<ContainerId> = self
             .machines

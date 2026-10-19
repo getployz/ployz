@@ -1,4 +1,4 @@
-//! The owner's rotation verdict for fake Machines: R2's edge table and `expect`
+//! The owner's rotation verdict for fake Machines: the edge table and `expect`
 //! check, without the guards that read other copies (health before In, `LastIn`,
 //! `OlderThanIn`).
 

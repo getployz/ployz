@@ -43,7 +43,7 @@ pub(crate) mod caddy;
 
 use caddy::CaddyAdmin;
 
-/// Deploy column of every route ack. Acks name the Containers routed, not a deploy.
+/// Acks name the Containers routed, not a deploy.
 fn rotation_ack_deploy() -> DeploymentLogId {
     DeploymentLogId::parse("rotation").expect("rotation is a valid deploy id")
 }
@@ -198,8 +198,6 @@ impl IngressSite {
 }
 
 impl IngressProjection {
-    /// Derive the complete ingress-relevant value from observed Service
-    /// Containers and the routes this proxy chose for them.
     #[must_use]
     pub(crate) fn derive(
         machine: &Machine,
@@ -390,7 +388,7 @@ where
 {
     let mut last_input = None;
     let mut acked = BTreeMap::new();
-    // What Caddy holds now, which rule f keeps while every copy is out of reach.
+    // Kept while every copy is out of reach.
     let mut routed = ProxyRoutes::new();
     let mut down = DownMachines::new(machine.id);
     'watch: loop {
@@ -489,7 +487,6 @@ where
     }
 }
 
-/// One ack per routed Service, listing exactly the Containers Caddy applied.
 fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAck> {
     routes
         .iter()

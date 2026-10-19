@@ -897,7 +897,6 @@ fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> 
     std::future::ready(Ok(BTreeSet::new()))
 }
 
-/// The ack row this Machine writes for the fixture's API Service.
 fn ack(machine: &Machine, routed: &[&ContainerObservation]) -> Vec<Value> {
     let mut ids: Vec<_> = routed
         .iter()

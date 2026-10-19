@@ -334,7 +334,6 @@ impl MachineService {
         })
     }
 
-    /// The Container `start` names, as Docker shows it, or `None` when it has none.
     async fn start_container(
         &self,
         start: &Start,

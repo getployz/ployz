@@ -148,7 +148,6 @@ mod rule_f {
         CopyRotation::Held(DeploymentLogId::parse("run").unwrap())
     }
 
-    /// Routes after one pass from `current`, with `down` Machines Down.
     fn next(
         copies: impl IntoIterator<Item = ContainerObservation>,
         down: &[MachineId],
@@ -158,7 +157,6 @@ mod rule_f {
         proxy_routes(&containers, |machine| down.contains(machine), current)
     }
 
-    /// The routes a proxy holds after routing `copies` once with no Machine Down.
     fn routed(copies: impl IntoIterator<Item = ContainerObservation>) -> ProxyRoutes {
         next(copies, &[], &ProxyRoutes::new())
     }
