@@ -354,7 +354,10 @@ pub(crate) async fn user_start<C: MachineOperations>(
         CopyRotation::Held(run) => Some(run.clone()),
         CopyRotation::Pending | CopyRotation::In => None,
     };
-    started(bring_in(client, &copy, &observed.resolved_spec, run).await?)
+    started(
+        &copy,
+        bring_in(client, &copy, &observed.resolved_spec, run).await?,
+    )
 }
 
 pub(crate) async fn user_restart<C: MachineOperations>(
@@ -369,7 +372,10 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     let run = match (routable(&observed), &copy.rotation) {
         (true, CopyRotation::Out) => return Err(deploy_again(&copy)),
         (true, CopyRotation::Held(run)) => {
-            return started(bring_in(client, &copy, spec, Some(run.clone())).await?);
+            return started(
+                &copy,
+                bring_in(client, &copy, spec, Some(run.clone())).await?,
+            );
         }
         (true, CopyRotation::In) => fresh_run(),
         (false, _) | (true, CopyRotation::Pending) => {
@@ -396,7 +402,7 @@ pub(crate) async fn user_restart<C: MachineOperations>(
             copy.container_id
         ))),
     };
-    let started = started(bring_in(client, &held, spec, Some(run)).await?);
+    let started = started(&held, bring_in(client, &held, spec, Some(run)).await?);
     stopped?;
     started
 }
@@ -489,11 +495,33 @@ async fn run_pending<C: MachineOperations>(
     Ok(UserStarted::Running)
 }
 
-fn started(brought: BroughtIn) -> Result<UserStarted, RpcError> {
+/// `copy` carries the rotation the In ask expected, which a refusal leaves in place.
+fn started(copy: &Copy, brought: BroughtIn) -> Result<UserStarted, RpcError> {
     match brought {
         BroughtIn::In => Ok(UserStarted::In),
         BroughtIn::NotIn { health } => Ok(UserStarted::NotIn(health)),
+        // The user rows of the caller table never retire a copy, so a superseded one
+        // is named with the rotation it keeps.
+        BroughtIn::Refused(refusal) if refusal.reason == ContainerRefusalReason::OlderThanIn => {
+            let mut error = refusal.into_error();
+            error.message = format!(
+                "Container {} is left {} and not routed: {}. Remove it; the newer copy serves the Service.",
+                copy.container_id,
+                rotation_name(&copy.rotation),
+                error.message
+            );
+            Err(error)
+        }
         BroughtIn::Refused(refusal) => Err(refusal.into_error()),
+    }
+}
+
+fn rotation_name(rotation: &CopyRotation) -> &'static str {
+    match rotation {
+        CopyRotation::Pending => "Pending",
+        CopyRotation::In => "In",
+        CopyRotation::Held(_) => "Held",
+        CopyRotation::Out => "Out",
     }
 }
 
