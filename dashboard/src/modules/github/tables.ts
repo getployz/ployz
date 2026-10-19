@@ -11,6 +11,8 @@ export const githubInstallation = pgTable("github_installation", {
   suspendedAt: timestamp("suspended_at", { mode: "date", withTimezone: true }),
   /** When a sync last cached the installation's repositories; null until the first one lands. */
   repositoriesSyncedAt: timestamp("repositories_synced_at", { mode: "date", withTimezone: true }),
+  /** Bumped by every write to the installation's cached repositories, under their cache lock. */
+  repositoriesVersion: integer("repositories_version").notNull().default(0),
   createdAt,
   updatedAt,
 });

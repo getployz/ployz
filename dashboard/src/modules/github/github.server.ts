@@ -10,6 +10,7 @@ import {
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { listGithubRepositoryFiles, listGithubRepositoryBranches } from "#/modules/github/github.api";
 import {
+  bumpGithubRepositoryCacheVersion,
   deleteCachedGithubRepositoriesById,
   deleteCachedGithubRepositoriesForInstallation,
   deleteGithubInstallation,
@@ -92,6 +93,7 @@ export const processGithubInstallationEvent = Effect.fn(
     yield* (yield* Database).transaction(Effect.gen(function* () {
       yield* lockGithubRepositoryCache(payload.installation.id);
       yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
+      yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
     }));
   } else yield* deleteGithubInstallation(payload.installation.id);
   return {
@@ -125,6 +127,7 @@ export const processGithubInstallationRepositoriesEvent = Effect.fn(
         removedRepositoryIds,
       );
     }
+    yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
   }));
   return {
     installationId: payload.installation.id,

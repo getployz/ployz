@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Effect, Fiber, Layer, Schedule } from "effect";
+import { Deferred, Effect, Fiber, Layer, Schedule } from "effect";
 import { eq, sql } from "drizzle-orm";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
@@ -206,6 +206,7 @@ it.live("returns from a connect without listing GitHub, queues a sync for every 
 const hopperCloud = Effect.fn(function* () {
   const inngest = new Inngest({ id: "github-connect-test" });
   const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+  REPOSITORY_COUNTS.set(9, 150);
   revoked.clear();
   renamed.clear();
   afterSecondPage = undefined;
@@ -286,6 +287,61 @@ it.live("removes a repository GitHub revoked while a sync listed it, once the sy
     const repositories = yield* cached;
     expect(repositories.has(9120)).toBe(false);
     expect(repositories.size).toBe(149);
+  }), 60_000);
+
+const hopperRepositoriesEvent = (action: "added" | "removed", added: readonly number[], removed: readonly number[]) =>
+  processGithubInstallationRepositoriesEvent({
+    deliveryId: `delivery-${action}-${[...added, ...removed].join("-")}`, action, installation: { id: 9 },
+    repositories_added: added.map((id) => ({ ...repository(id), updated_at: "2026-01-01T00:00:00Z" })),
+    repositories_removed: removed.map((id) => ({ ...repository(id), updated_at: "2026-01-01T00:00:00Z" })),
+    sender: { id: 1, login: "carol" },
+  });
+
+it.live("holds no connection or lock while GitHub keeps a sync waiting, so a webhook for the installation lands meanwhile", () =>
+  Effect.gen(function* () {
+    const { run, connectHopper, sync, cached } = yield* hopperCloud();
+    yield* connectHopper;
+    const waiting = yield* Deferred.make<void>();
+    const answer = yield* Deferred.make<void>();
+    afterSecondPage = Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Deferred.await(answer)));
+    const syncing = yield* Effect.forkDetach(sync);
+    yield* Effect.gen(function* () {
+      yield* Deferred.await(waiting);
+      const held = yield* run(Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const [row] = yield* drizzle.select({
+          transactions: sql<number>`count(*) filter (where state like 'idle in transaction%')::int`,
+          locks: sql<number>`(select count(*)::int from pg_locks where locktype = 'advisory' and objid = 9 and objsubid = 2)`,
+        }).from(sql`pg_stat_activity`).where(sql`datname = current_database()`);
+        return row;
+      }));
+      expect(held).toEqual({ transactions: 0, locks: 0 });
+      REPOSITORY_COUNTS.set(9, 151);
+      yield* run(hopperRepositoriesEvent("added", [9150], [])).pipe(Effect.timeout("5 seconds"));
+      expect((yield* cached).has(9150)).toBe(true);
+    }).pipe(Effect.ensuring(Deferred.succeed(answer, undefined)));
+    yield* Fiber.join(syncing);
+    expect((yield* cached).size).toBe(151);
+  }), 60_000);
+
+it.live("lists again rather than undo a webhook that wrote after the sync listed GitHub", () =>
+  Effect.gen(function* () {
+    const { run, connectHopper, sync, cached } = yield* hopperCloud();
+    yield* connectHopper;
+    yield* sync;
+
+    // GitHub grants 9150 and revokes 9120 once the sync has listed its last page, and the webhook saying so lands first.
+    afterSecondPage = Effect.gen(function* () {
+      REPOSITORY_COUNTS.set(9, 151);
+      revoked.add(9120);
+      yield* run(hopperRepositoriesEvent("added", [9150], []));
+      yield* run(hopperRepositoriesEvent("removed", [], [9120]));
+    }).pipe(Effect.orDie);
+    expect(yield* sync).toMatchObject({ processedPageCount: 2, processedRepoCount: 150, deletedRepositoryCount: 0 });
+    const repositories = yield* cached;
+    expect(repositories.has(9150)).toBe(true);
+    expect(repositories.has(9120)).toBe(false);
+    expect(repositories.size).toBe(150);
   }), 60_000);
 
 it.live("writes what GitHub lists and drops the rest, whatever stamps another writer's clock gave the rows", () =>

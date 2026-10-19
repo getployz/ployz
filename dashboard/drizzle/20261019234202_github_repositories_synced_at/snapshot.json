@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "f5a346ad-2ccd-4c53-acb2-c9087ba21773",
+  "id": "35a4cf28-1302-472b-8c41-921d099d2fa7",
   "prevIds": [
     "2e03ecd5-7f60-4bf2-8ae5-23aff8fd0495",
     "d8deedbd-7c25-4f78-985d-1d2777fd29b3"
@@ -5023,6 +5023,19 @@
       "generated": null,
       "identity": null,
       "name": "repositories_synced_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "github_installation"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "repositories_version",
       "entityType": "columns",
       "schema": "public",
       "table": "github_installation"

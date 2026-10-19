@@ -1,10 +1,12 @@
-import { Effect, Schema } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { listInstallationReposPage } from "#/modules/github/github.api";
+import type { GithubRepository } from "#/modules/github/github";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import {
   lockGithubRepositoryCache,
   markGithubRepositoriesSynced,
   pruneCachedGithubRepositories,
+  readGithubRepositoryCacheVersion,
   upsertCachedGithubRepositories,
 } from "#/modules/github/github.repository";
 import { Database } from "#/server/database.server";
@@ -33,28 +35,43 @@ export type GithubSyncEffectRunner = <A, E extends Error>(
   effect: Effect.Effect<A, E, Database | AppConfig | GithubApi>,
 ) => Promise<A>;
 
+/** Listings a sync takes before it gives up to a retry, each set aside because another writer changed the cache. */
+const SYNC_LISTING_ATTEMPTS = 3;
+
+export class GithubRepositoryCacheBusy extends Data.TaggedError("GithubRepositoryCacheBusy")<{
+  readonly installationId: number;
+}> {}
+
 /**
- * Caches every repository GitHub grants the installation and drops the rest, in one transaction holding the
- * installation's cache lock, so its writes reflect one listing and no other writer interleaves with them.
+ * Lists every repository GitHub grants the installation, holding no connection or lock, then caches them and drops the
+ * rest in one short transaction under the installation's cache lock. If another writer changed the cache since the
+ * listing began, the listing may be older than that write, so it is listed again rather than written.
  */
 export const syncGithubRepositories = Effect.fn("Github.syncRepositories")(function* (installationId: number) {
   const database = yield* Database;
-  return yield* database.transaction(Effect.gen(function* () {
-    yield* lockGithubRepositoryCache(installationId);
+  for (let attempt = 1; attempt <= SYNC_LISTING_ATTEMPTS; attempt++) {
+    const listedVersion = yield* readGithubRepositoryCacheVersion(installationId);
     const syncedAt = new Date();
-    const listedRepositoryIds: number[] = [];
+    const repositories: GithubRepository[] = [];
     let processedPageCount = 0;
     for (let pageNumber = 1; ; pageNumber++) {
       const page = yield* listInstallationReposPage(installationId, pageNumber);
-      yield* upsertCachedGithubRepositories({ installationId, repositories: page.repositories, syncedAt });
-      listedRepositoryIds.push(...page.repositories.map((repository) => repository.id));
+      repositories.push(...page.repositories);
       processedPageCount += 1;
       if (!page.hasNextPage) break;
     }
-    const deletedRepositoryCount = yield* pruneCachedGithubRepositories(installationId, listedRepositoryIds);
-    yield* markGithubRepositoriesSynced(installationId, syncedAt);
-    return { processedPageCount, processedRepoCount: listedRepositoryIds.length, deletedRepositoryCount };
-  }));
+    const deletedRepositoryCount = yield* database.transaction(Effect.gen(function* () {
+      if ((yield* lockGithubRepositoryCache(installationId)) !== listedVersion) return null;
+      yield* upsertCachedGithubRepositories({ installationId, repositories, syncedAt });
+      const deleted = yield* pruneCachedGithubRepositories(installationId, repositories.map((repository) => repository.id));
+      yield* markGithubRepositoriesSynced(installationId, syncedAt);
+      return deleted;
+    }));
+    if (deletedRepositoryCount !== null) {
+      return { processedPageCount, processedRepoCount: repositories.length, deletedRepositoryCount };
+    }
+  }
+  return yield* new GithubRepositoryCacheBusy({ installationId });
 });
 
 export async function executeSyncGithubRepositories(
@@ -85,8 +102,7 @@ export const createSyncGithubRepositories = (inngest: PloyzInngest) =>
     retries: 3,
     triggers: [{ event: githubRepositoriesSyncRequestedEventType }],
     singleton: SYNC_GITHUB_REPOSITORIES_SINGLETON,
-    // The unkeyed limit spans installations, so syncs holding a connection while they list GitHub leave most of a pool of 10.
-    concurrency: [{ key: "event.data.installationId", limit: 1 }, { limit: 4 }],
+    concurrency: [{ key: "event.data.installationId", limit: 1 }],
   },
   async ({ event, step }) =>
     executeSyncGithubRepositories(

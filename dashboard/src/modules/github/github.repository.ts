@@ -148,19 +148,38 @@ export const deleteGithubInstallation = Effect.fn(
 const GITHUB_REPOSITORY_CACHE_LOCK = 1_349_602;
 
 /**
- * Serializes the writers of one installation's cached repositories until their transaction ends: a sync, which lists
- * GitHub inside it, and the installation webhooks. Each writer's writes then reflect what GitHub said when it held the
- * lock, so the last writer's view stands and no clock orders them.
+ * Serializes the writers of one installation's cached repositories until their transaction ends: a sync's write and the
+ * installation webhooks. Returns the cache's version, or null once the installation is forgotten. Nothing that holds it
+ * waits on GitHub.
  */
 export const lockGithubRepositoryCache = Effect.fn("Github.lockRepositoryCache")(function* (installationId: number) {
   const { drizzle } = yield* Database;
   yield* drizzle.execute(sql`select pg_advisory_xact_lock(${GITHUB_REPOSITORY_CACHE_LOCK}, ${installationId})`);
+  return yield* readGithubRepositoryCacheVersion(installationId);
 });
 
+export const readGithubRepositoryCacheVersion = Effect.fn("Github.readRepositoryCacheVersion")(function* (installationId: number) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ version: schemaGithubInstallation.repositoriesVersion }).from(schemaGithubInstallation)
+    .where(eq(schemaGithubInstallation.installationId, installationId)).limit(1);
+  return rows[0]?.version ?? null;
+});
+
+const nextRepositoriesVersion = sql`${schemaGithubInstallation.repositoriesVersion} + 1`;
+
+/** Records a write to the installation's cached repositories, so a sync that listed GitHub before it lists again. */
+export const bumpGithubRepositoryCacheVersion = Effect.fn("Github.bumpRepositoryCacheVersion")(function* (installationId: number) {
+  const database = yield* Database;
+  yield* database.drizzle.update(schemaGithubInstallation).set({ repositoriesVersion: nextRepositoriesVersion })
+    .where(eq(schemaGithubInstallation.installationId, installationId));
+});
+
+/** Records a sync's write to the installation's cached repositories, as {@link bumpGithubRepositoryCacheVersion} does. */
 export const markGithubRepositoriesSynced = Effect.fn("Github.markRepositoriesSynced")(
   function* (installationId: number, syncedAt: Date) {
     const database = yield* Database;
-    yield* database.drizzle.update(schemaGithubInstallation).set({ repositoriesSyncedAt: syncedAt })
+    yield* database.drizzle.update(schemaGithubInstallation)
+      .set({ repositoriesSyncedAt: syncedAt, repositoriesVersion: nextRepositoriesVersion })
       .where(eq(schemaGithubInstallation.installationId, installationId));
   },
 );
