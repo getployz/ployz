@@ -96,7 +96,7 @@ $ ployz env new Not\ Valid
 
 stderr:
 ```
-error: Expected an Environment name: up to 63 lowercase letters, digits and -
+error: Expected an Environment name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit
 ```
 
 ### env new: unknown --project
