@@ -1054,6 +1054,19 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<(ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
+        self.ensure_unsettled(machine_id, want, timeout)
+            .await?
+            .into_settled()
+    }
+
+    /// Converge one Container and keep a refusal as the owner typed it, for
+    /// callers that act on which rotation rule refused.
+    pub(crate) async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
@@ -1063,8 +1076,7 @@ impl Client {
             self.call_once::<op::EnsureContainer>(payload, Some(&target)),
         )
         .await
-        .map_err(|error| answered_by(machine_id, error))?
-        .into_settled()
+        .map_err(|error| answered_by(machine_id, error))
     }
 
     pub async fn change_observed_service(
