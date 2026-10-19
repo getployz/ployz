@@ -9,7 +9,7 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
     ContainerRuntimeObservation, ContainerWant, Drain, EnvironmentValues, HealthObservation,
     LogHistoryRequest, MachineId, MachineObservation, MachineStorageObservation, Namespace,
-    RpcError, RpcErrorCode, RunTarget, ServiceName, StopOptions,
+    RpcError, RpcErrorCode, RunRotation, RunTarget, ServiceName, StopOptions,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -631,6 +631,7 @@ pub async fn start_one(
                     &machine,
                     ContainerWant::Running {
                         container: RunTarget::Existing(ContainerLocator::Id(container)),
+                        rotation: RunRotation::Pending,
                     },
                     Some(TARGET_RPC_TIMEOUT),
                 )
