@@ -1631,7 +1631,7 @@ fn a_new_volume_on_a_second_replica_is_refused_with_an_add_that_works() {
         name: VolumeName::parse("uploads").unwrap(),
         mounts: vec![Mount {
             service: ServiceName::parse("api").unwrap(),
-            path: "/uploads".into(),
+            path: "/my uploads".into(),
         }],
     };
     let refused = store.write(&who, &add(false)).unwrap_err();
@@ -1642,7 +1642,7 @@ fn a_new_volume_on_a_second_replica_is_refused_with_an_add_that_works() {
     );
     assert_eq!(
         refused.details["next"],
-        "ployz volume add uploads --mount api:/uploads --size 1.5GB --shared-writes --env production --project shop"
+        "ployz volume add uploads --mount 'api:/my uploads' --size 1.5GB --shared-writes --env production --project shop"
     );
     assert!(store.write(&who, &add(true)).unwrap().volume.shared_writes);
 }

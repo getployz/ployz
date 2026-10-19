@@ -606,7 +606,10 @@ impl<'a> Refusing<'a> {
                     .volume_attachments
                     .iter()
                     .filter(|mount| mount.volume_resource_id == node.resource_id)
-                    .map(|mount| format!(" --mount {}:{}", service.slug, mount.mount_path))
+                    .map(|mount| {
+                        let mount = format!("{}:{}", service.slug, mount.mount_path);
+                        format!(" --mount {}", shell_words::quote(&mount))
+                    })
             })
             .collect();
         let storage = match node.storage {
