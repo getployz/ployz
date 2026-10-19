@@ -55,6 +55,12 @@ it("passes any other refusal on", async () => {
   await expect(removeTarget(commit, { project: "shop", environment: "production" }, none)).rejects.toThrow("unsupported");
 });
 
+it("passes on a failure that isn't the Store's answer, such as Cloud's own error", async () => {
+  const failure = { _tag: "PublicError", code: "INTERNAL", message: "Something went wrong." };
+  const commit = () => Promise.reject(failure);
+  await expect(removeTarget(commit, { project: "shop", environment: "staging" }, none)).rejects.toBe(failure);
+});
+
 it("lists each Branch right under its Parent", () => {
   const listing = (name: string, parent: string | null = null): EnvironmentListing => ({ id: name, name, default: false, parent, removal: null, merged: false, branch_setup: [], protected: false, protections: 0 });
   const tree = storeEnvironmentTree([listing("fix", "staging"), listing("production"), listing("staging"), listing("orphan", "gone")]);
