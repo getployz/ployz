@@ -234,8 +234,8 @@ prepares Docker and ZFS meanwhile.
    refusal during the install itself ends it with an error instead, since the token was only just
    given, and starts nothing.
 10. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
-   `/etc/ployz/fleet-token` if it still holds the token Cloud answered, and won't start again at
-   boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
+   `/etc/ployz/fleet-token`, or the file you named with `--token-file`, if it still holds the
+   token Cloud answered, and won't start again at boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
    deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
    keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
    again to start a new check-in attempt. A non-rejection response clears the local rejection
@@ -251,7 +251,7 @@ prepares Docker and ZFS meanwhile.
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
     the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
     fleet first. When it reads `Joined`, the loop turns itself off and deletes
-    `/etc/ployz/fleet-token`.
+    `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
     example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
     and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz
