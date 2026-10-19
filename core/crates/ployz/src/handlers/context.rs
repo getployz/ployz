@@ -13,8 +13,18 @@ use crate::context::{
 
 use super::{Error, leaf_matches, required};
 
-/// Where a signed-in user with no contexts finds their Servers instead.
-const NO_CONTEXTS_NEXT: &str = "ployz server ls";
+/// Where a signed-in user with no contexts finds their Servers instead,
+/// keeping a config file named on the command line.
+fn no_contexts_next(leaf: &ArgMatches) -> String {
+    let mut args = vec!["ployz"];
+    if leaf.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine)
+        && let Some(path) = leaf.get_one::<String>("ployz-config")
+    {
+        args.extend(["--ployz-config", path]);
+    }
+    args.extend(["server", "ls"]);
+    shell_words::join(args)
+}
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
     if matches
@@ -75,11 +85,9 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     if !contexts.is_empty() {
         return ui::list(&json!({ "contexts": contexts }), &table);
     }
-    ui::list(
-        &json!({ "contexts": contexts, "next": NO_CONTEXTS_NEXT }),
-        &table,
-    )?;
-    ui::hint(&Hint::Next(NO_CONTEXTS_NEXT.to_owned()));
+    let next = no_contexts_next(leaf_matches(matches));
+    ui::list(&json!({ "contexts": contexts, "next": next }), &table)?;
+    ui::hint(&Hint::Next(next));
     Ok(())
 }
 
@@ -104,7 +112,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
             "no contexts found in Ployz config {}",
             config.path().display()
         ))
-        .hint(Hint::Next(NO_CONTEXTS_NEXT.to_owned())));
+        .hint(Hint::Next(no_contexts_next(leaf))));
     }
     let requested_connection = leaf.get_one::<String>("connection");
     let selected = match leaf.get_one::<String>("context-name") {
