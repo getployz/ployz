@@ -162,6 +162,20 @@ impl DeployPlan {
             machine_names: BTreeMap::new(),
         }
     }
+
+    /// Name each Machine `machine-<hex>` by the hex digit its test id repeats.
+    #[cfg(test)]
+    pub(super) fn with_machine_names(mut self, machines: &[MachineId]) -> Self {
+        self.machine_names = machines
+            .iter()
+            .map(|id| {
+                let hex = id.to_string().chars().next().expect("a machine id");
+                let name = ployz_core::MachineName::parse(format!("machine-{hex}")).unwrap();
+                (*id, name)
+            })
+            .collect();
+        self
+    }
 }
 
 /// One group per Service in operation order, each after the one before it, so
