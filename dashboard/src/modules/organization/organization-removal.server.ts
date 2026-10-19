@@ -41,16 +41,18 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* <E 
   if (lacking !== null) return refused({ code: "forbidden", message: `${lacking} No changes made.`, details: { permission: "org:delete" } });
   const store = yield* cloudStore;
   // A Project refuses the removal anyway, so the Store names it before anyone is asked to approve.
-  const { projects } = gate === undefined ? { projects: [] } : yield* storeTry(() => store.read(id, { query: "projects" })).pipe(Effect.orDie);
-  if (gate !== undefined && projects.length === 0) {
-    const gated = yield* gate({
-      subject: `organization:${id}`,
-      verb: "remove",
-      name: slug,
-      preview: { organization: slug },
-      effects: [{ kind: "removes_organization", name: slug, node: id, path: `organizations/${id}` }],
-    });
-    if (!gated.ok) return refused(gated.refusal);
+  if (gate !== undefined) {
+    const { projects } = yield* storeTry(() => store.read(id, { query: "projects" })).pipe(Effect.orDie);
+    if (projects.length === 0) {
+      const gated = yield* gate({
+        subject: `organization:${id}`,
+        verb: "remove",
+        name: slug,
+        preview: { organization: slug },
+        effects: [{ kind: "removes_organization", name: slug, node: id, path: `organizations/${id}` }],
+      });
+      if (!gated.ok) return refused(gated.refusal);
+    }
   }
   const refusal = yield* storeTry(() => store.removeOrganization(id)).pipe(
     Effect.as(null),
