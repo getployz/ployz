@@ -1921,3 +1921,112 @@ async fn new_copies_carry_the_run_label_the_dependency_wait_selects_by() {
     client.assert_done();
     assert_eq!(*client.deploys.lock().unwrap(), vec![Some(run_id())]);
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_unconfirmed_out_leaves_the_services_other_old_copies_in() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (one, two) = (container('a'), container('b'));
+    let (new_one, new_two) = (container('c'), container('d'));
+    let plan = vec![
+        global_replacement(&first, &one, UpdateOrder::StartFirst),
+        global_replacement(&second, &two, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted {
+        withheld: BTreeMap::from([(api(), usize::MAX)]),
+        ..Scripted::new(vec![
+            created(Call::Run(first, ContainerKind::ServiceContainer), &new_one),
+            created(Call::Run(second, ContainerKind::ServiceContainer), &new_two),
+            observed(Call::Inspect(first, one), running()),
+            observed(Call::Inspect(second, two), running()),
+        ])
+    }
+    .with_copy(&first, &one, CopyRotation::In)
+    .with_copy(&second, &two, CopyRotation::In);
+
+    let (_, warnings) =
+        execute_reported(&plan, &[first, second], &client, &CancellationToken::new()).await;
+
+    assert_eq!(client.rotation(&one), Some(CopyRotation::Out));
+    assert_eq!(
+        client.rotation(&two),
+        Some(CopyRotation::In),
+        "no Out follows one whose unlisting was not confirmed"
+    );
+    assert_eq!(
+        warnings,
+        [
+            left_running("machine-1", "proxy on machine-1, machine-2 did not confirm"),
+            mixed_after_return("machine-1"),
+            mixed_after_return("machine-2"),
+            left_running("machine-2", "an earlier copy's Out was not confirmed"),
+        ]
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_route_read_after_an_out_leaves_the_services_other_old_copies_in() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (one, two) = (container('a'), container('b'));
+    let (new_one, new_two) = (container('c'), container('d'));
+    let plan = vec![
+        global_replacement(&first, &one, UpdateOrder::StartFirst),
+        global_replacement(&second, &two, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted {
+        reads_fail_after: Some(Move::To(one, CopyRotation::Out)),
+        ..Scripted::new(vec![
+            created(Call::Run(first, ContainerKind::ServiceContainer), &new_one),
+            created(Call::Run(second, ContainerKind::ServiceContainer), &new_two),
+            observed(Call::Inspect(first, one), running()),
+            observed(Call::Inspect(second, two), running()),
+        ])
+    }
+    .with_copy(&first, &one, CopyRotation::In)
+    .with_copy(&second, &two, CopyRotation::In);
+
+    execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(client.rotation(&one), Some(CopyRotation::Out));
+    assert_eq!(
+        client.rotation(&two),
+        Some(CopyRotation::In),
+        "an Out whose unlisting could not be read stops the Service's cleanup"
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_old_copys_owner_sees_the_new_copies_listed_before_its_out() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (one, two) = (container('a'), container('b'));
+    let (new_one, new_two) = (container('c'), container('d'));
+    let plan = vec![
+        global_replacement(&first, &one, UpdateOrder::StartFirst),
+        global_replacement(&second, &two, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted {
+        lagging: Mutex::new(BTreeMap::from([(second, 3)])),
+        ..Scripted::new(vec![
+            created(Call::Run(first, ContainerKind::ServiceContainer), &new_one),
+            created(Call::Run(second, ContainerKind::ServiceContainer), &new_two),
+            observed(Call::Inspect(first, one), running()),
+            ok(Call::Remove(first, one)),
+            observed(Call::Inspect(second, two), running()),
+            ok(Call::Remove(second, two)),
+        ])
+    }
+    .with_copy(&first, &one, CopyRotation::In)
+    .with_copy(&second, &two, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[first, second], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(client.rotation(&two), None, "the old copy retired");
+    client.assert_done();
+}
