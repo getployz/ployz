@@ -767,6 +767,7 @@ fn print_history(record: &HistoryRecord, utc: bool) -> Result<(), Error> {
             output.write_all(prefix.as_bytes())?;
             output.write_all(text)?;
             output.write_all(b"\n")?;
+            crate::ui::printed();
         }
         HistoryEvent::Gap { to, reason, .. } => {
             let why = match reason {
@@ -930,6 +931,7 @@ async fn print_logs(
         output
             .write_all(prefix.as_bytes())
             .and_then(|()| output.write_all(message))?;
+        crate::ui::printed();
     }
     Ok(())
 }

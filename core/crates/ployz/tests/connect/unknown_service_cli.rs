@@ -83,6 +83,18 @@ async fn a_removed_service_still_reads_and_a_name_nothing_answers_for_is_refused
         String::from_utf8(output.stderr).unwrap(),
         "error: No Service named nosvc in Environment production\nvalid: api\n"
     );
+    // The same without --json: the line printed, so the refusal makes it partial.
+    let output = ployz(&db, address, &["logs", "gone", "nosvc"]).await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).ends_with(" | shutting down\n"),
+        "{output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .ends_with("error: No Service named nosvc in Environment production\nvalid: api\n"),
+        "{output:?}"
+    );
 
     let now = chrono::Utc::now().timestamp_nanos_opt().unwrap();
     let point = ServicePoint {

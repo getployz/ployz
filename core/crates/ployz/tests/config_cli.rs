@@ -326,12 +326,18 @@ fn serve(
     )
 }
 
-/// What this Cloud's one Server, `web-1`, answers when Cloud reads it: one log line
-/// for runtime Service `web`, nothing for any other, and no metric readings.
+/// What this Cloud's Servers answer when Cloud reads them: `web-1` has one log line
+/// for runtime Service `web` and nothing for any other, `web-2` does not answer for
+/// `worker`, and no Server has a metric reading.
 fn servers_read(body: &[u8]) -> Value {
     let ask: Value = serde_json::from_slice(body).unwrap();
     let seen = json!({ "read_at": 0, "from": "server", "unanswered": [] });
     match ask["ask"]["query"].as_str() {
+        Some("logs") if ask["ask"]["service"] == "worker" => json!({
+            "servers": [],
+            "seen": { "read_at": 0, "from": "server", "unanswered": ["web-2"] },
+            "notes": ["web-2 did not answer: timed out"],
+        }),
         Some("logs") => {
             let servers = if ask["ask"]["service"] == "web" {
                 let text =
@@ -3089,6 +3095,7 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
     };
     ok(&linus, &["project", "new", "shop"]);
     ok(&linus, &["service", "add", "web", "--image", "nginx:1"]);
+    ok(&linus, &["service", "add", "worker", "--image", "nginx:1"]);
     for args in [&["logs", "nosvc"][..], &["metrics", "nosvc"]] {
         let refused = error(&linus, args);
         assert_eq!(
@@ -3100,12 +3107,31 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
             (
                 &json!("not_found"),
                 &json!("No Service named nosvc in Environment production"),
-                &json!(["web"])
+                &json!(["web", "worker"])
             ),
             "{args:?}"
         );
     }
     ok(&linus, &["metrics", "web"]);
+    // Nothing printed, but why a Server did not answer for `worker` still shows.
+    let home = tempfile::tempdir().unwrap();
+    let output = linus
+        .command(home.path())
+        .args(["logs", "worker", "nosvc"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap()
+        ),
+        (
+            Some(1),
+            String::new(),
+            "web-2 did not answer: timed out\nerror: No Service named nosvc in Environment production\nvalid: web, worker\n".to_owned()
+        )
+    );
     // Lines for `web` already printed, so the refusal for `nosvc` comes after them.
     let home = tempfile::tempdir().unwrap();
     let output = linus
@@ -3122,7 +3148,8 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
         (
             Some(3),
             "web@web-1  ready\n".to_owned(),
-            "error: No Service named nosvc in Environment production\nvalid: web\n".to_owned()
+            "error: No Service named nosvc in Environment production\nvalid: web, worker\n"
+                .to_owned()
         )
     );
 }

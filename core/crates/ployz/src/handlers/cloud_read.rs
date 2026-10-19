@@ -113,6 +113,12 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
     if read.iter().all(|(_, answer)| answer.servers.is_empty())
         && let Some(refusal) = refusal
     {
+        // Why another name's Servers did not answer still matters beside the refusal.
+        for (_, answer) in &read {
+            for note in &answer.notes {
+                ui::note(note);
+            }
+        }
         return Err(refusal);
     }
     let shown = read
