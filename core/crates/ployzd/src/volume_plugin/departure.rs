@@ -209,6 +209,18 @@ impl VolumeStorage {
     /// holds only a receive that never completed, which every receive makes resumable with
     /// `-s`, so it holds no point at all.
     async fn written_here(&self, fs: &str) -> super::Result<bool> {
+        if self.marked_written_here(fs).await? {
+            return Ok(true);
+        }
+        let Some(newest) = self.newest_guid(fs).await? else {
+            return Ok(false);
+        };
+        Ok(self.local_property(fs, PULLED_PROPERTY).await? != Some(newest))
+    }
+
+    /// Whether a departure snapshot or a seed, promote, cut or epoch mark says the slot
+    /// holds a point this Machine may alone hold.
+    pub(super) async fn marked_written_here(&self, fs: &str) -> super::Result<bool> {
         if self
             .snapshot_names(fs)
             .await?
@@ -228,10 +240,7 @@ impl VolumeStorage {
                 return Ok(true);
             }
         }
-        let Some(newest) = self.newest_guid(fs).await? else {
-            return Ok(false);
-        };
-        Ok(self.local_property(fs, PULLED_PROPERTY).await? != Some(newest))
+        Ok(false)
     }
 
     async fn freeze_root(
