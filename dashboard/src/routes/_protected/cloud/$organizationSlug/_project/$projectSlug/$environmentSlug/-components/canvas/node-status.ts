@@ -125,11 +125,12 @@ export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | 
 }
 
 /**
- * A node's ⚠: how many things on it the user can fix, red when one is its Service being down. `trouble` names what its
- * containers went through, and the ⚠ shows it ahead of the count. `monitoring` when an open uptime incident or that
- * trouble is among them, so the ⚠ opens Monitoring, where the evidence is.
+ * A node's ⚠: how many things on it the user can fix, red when one is its Service being down. `lead` names the issue the
+ * status word doesn't already say (what its containers went through, an unreachable hostname, a failing healthcheck),
+ * and the ⚠ shows it ahead of the count. `monitoring` when an open uptime incident or container trouble is among them,
+ * so the ⚠ opens Monitoring, where the evidence is.
  */
-export type NodeIssues = { count: number; tone: "bad" | "warn"; monitoring: boolean; trouble: ContainerTrouble | null };
+export type NodeIssues = { count: number; tone: "bad" | "warn"; monitoring: boolean; lead: string | null };
 
 /**
  * What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, domains that need them,
@@ -143,7 +144,8 @@ export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow
   const uptime = !status.down && unreachable !== null;
   const own = uptime && !attention.some((domain) => domain.hostname === unreachable);
   const count = (status.down || status.tone === "warn" ? 1 : 0) + (status.checkFailing ? 1 : 0) + attention.length + (own ? 1 : 0) + (trouble ? 1 : 0);
-  return count === 0 ? null : { count, tone: status.down || uptime ? "bad" : "warn", monitoring: own || trouble !== null, trouble };
+  const lead = trouble ?? (uptime ? "Unreachable" : status.checkFailing ? "Check failing" : null);
+  return count === 0 ? null : { count, tone: status.down || uptime ? "bad" : "warn", monitoring: own || trouble !== null, lead };
 }
 
 /** The public domain a Service's card shows, of its domains: the first custom one, else the generated one; `live` once it's set up. */
