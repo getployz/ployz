@@ -892,7 +892,7 @@ impl Display for DeployWarning {
                 ..
             } => write!(
                 f,
-                "{service}  left running on {machine} ({reason}). The next deploy cleans it up."
+                "{service} left running on {machine} ({reason}). The next deploy cleans it up."
             ),
             Self::MixedAfterReturn { machine } => write!(
                 f,
