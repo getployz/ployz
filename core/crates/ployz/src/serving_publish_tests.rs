@@ -501,8 +501,13 @@ mod rpc {
                                 })
                                 .collect(),
                         }),
-                        RpcRequestBody::ReadRoutes(_) => {
-                            calls.lock().unwrap().push(("read", target));
+                        RpcRequestBody::ReadRoutes(request) => {
+                            let read = if request.routes_only {
+                                "read routes"
+                            } else {
+                                "read"
+                            };
+                            calls.lock().unwrap().push((read, target));
                             match refusal {
                                 Some(refusal) => RpcResponse::from(refusal.rpc_error()),
                                 None => RpcResponse::from(RoutesRead {
@@ -584,6 +589,21 @@ mod rpc {
         assert_eq!(
             *fixture.row.lock().unwrap(),
             Some(retired_from(pointer('a', &['2'], &['1']), 'a'))
+        );
+        server.abort();
+    }
+
+    /// Only the publisher answers a pointer read, so the read asks for the pointer and
+    /// not just the routes any Machine holds.
+    #[tokio::test]
+    async fn a_pointer_read_asks_for_the_pointer_where_it_follows() {
+        let (mut client, fixture, server) =
+            cluster(Some(pointer('a', &['1'], &[])), None, Some('1')).await;
+        let read = client.serving_pointer_read(&service()).await.unwrap();
+        assert_eq!(read.pointer, Some(pointer('a', &['1'], &[])));
+        assert_eq!(
+            *fixture.calls.lock().unwrap(),
+            vec![("read", at('1')), ("read", at('2'))]
         );
         server.abort();
     }
