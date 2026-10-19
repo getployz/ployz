@@ -12,7 +12,7 @@ pub(crate) use path::{
 };
 pub use path::{NodeName, SettingPath};
 
-mod size;
+pub(crate) mod size;
 
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
@@ -306,7 +306,7 @@ impl ServiceSetting {
             }
             Self::MemLimit => json!({
                 "anyOf": [
-                    { "type": "number", "exclusiveMinimum": 0, "maximum": MEM_LIMIT_MAX },
+                    { "type": "number", "minimum": size::MEM_LIMIT_MIN, "maximum": MEM_LIMIT_MAX },
                     { "type": "string", "pattern": size::PATTERN },
                 ],
             }),
@@ -612,15 +612,22 @@ impl ServiceSetting {
     }
 
     /// A memory limit in GB from a number, text spelling one, or a size with a unit,
-    /// rounded to whole bytes. A number of bytes is refused with its size.
+    /// rounded to whole bytes. A number of bytes is refused with its size, and one under
+    /// [`size::MEM_LIMIT_MIN`] as too small to run.
     fn mem_limit(self, value: Value) -> Result<Value, RpcError> {
-        if let Some(bytes) = value.as_str().and_then(|text| size::bytes(text.trim())) {
-            return Ok(json!(bytes / 1e9));
+        let value = match value.as_str().and_then(|text| size::bytes(text.trim())) {
+            Some(bytes) => json!(bytes / 1e9),
+            None => self.coerce_number(value),
+        };
+        if value.as_f64().is_some_and(|gb| gb < size::MEM_LIMIT_MIN) {
+            return Err(self.invalid(&format!(
+                "expected at least {} GB (10 MB): Docker refuses less than 6 MiB",
+                size::MEM_LIMIT_MIN
+            )));
         }
-        let value = self.coerce_number(value);
         if value.is_string() {
             return Err(self.invalid(
-                "expected GB above 0 and up to 1024, or a size with a unit such as \"512MiB\" or \"1GiB\"",
+                "expected GB from 0.01 to 1024, or a size with a unit such as \"512MiB\" or \"1GiB\"",
             ));
         }
         if let Some((size, text)) = value.as_f64().and_then(size::looks_like_bytes) {

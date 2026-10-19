@@ -152,10 +152,12 @@ headroom. See [Scaling and multiple servers](scaling.md#run-more-replicas).
 
 ### Memory limit
 
-Empty by default, which means no limit. Set it in GB, up to 1024. From the CLI you can also give
+Empty by default, which means no limit. Set it in GB, from 0.01 (10 MB, since Docker refuses
+less than 6 MiB) up to 1024. From the CLI you can also give
 a unit: `ployz set web.memLimit=512MiB` or `ployz set web.memLimit=1GiB` (MB, GB, TB, MiB, GiB
 and TiB). A plain number is always GB, so `1073741824` is refused rather than read as bytes;
-write `1GiB`. A replica that goes over it is
+write `1GiB`. Changes and `ployz diff` show it in the unit it was likely given, such as
+`192 MiB`. A replica that goes over it is
 killed, and its [Restart policy](#restart-policy) decides whether it comes back. See
 [Scaling and multiple servers](scaling.md#run-more-replicas).
 
