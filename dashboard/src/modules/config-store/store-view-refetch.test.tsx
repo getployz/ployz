@@ -23,6 +23,8 @@ function history(revision: number): HistoryShown {
     environment: { id: "env", project: "shop", name: "production", revision },
     revisions: [{ revision, message: `Merged #${revision}`, saved_by: null, saved_at: null, predecessor: null, changes: [], total_count: 0, linked: {} }],
     more: false,
+    live: null,
+    failed: null,
   } };
 }
 
@@ -73,6 +75,14 @@ it("keeps History's last answer when the Store is busy", async () => {
   act(() => applyOrganizationChanges(["store_environment"], "acme", tab.scope));
   await waitFor(() => expect(tab.reads).toHaveLength(2));
   await act(async () => tab.reads[1]?.answer(history(2)));
+  await waitFor(() => expect(tab.newest()).toBe(2));
+});
+
+it("rereads History when only a Deployment changed", async () => {
+  const tab = openHistory();
+  act(() => applyOrganizationChanges(["store_deployment"], "acme", tab.scope));
+  await waitFor(() => expect(tab.reads).toHaveLength(1));
+  await act(async () => tab.reads[0]?.answer(history(2)));
   await waitFor(() => expect(tab.newest()).toBe(2));
 });
 

@@ -148,8 +148,12 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
     let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
+    let mut shown = None;
     confirm(matches, name.as_str(), "Project", store.again(&[]), || {
-        unconfirmed(&store, &name)
+        unconfirmed(&store, &name).map(|(refusal, loss, listed)| {
+            shown = Some(listed);
+            (refusal, loss)
+        })
     })?;
     let listed = store.read(&ployz_store::ProjectsQuery {})?;
     let environments = listed
@@ -159,7 +163,8 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
         .map(|listing| listing.environments)
         .unwrap_or_default();
     let events = deploy::open_events(matches)?;
-    let Some(removed) = teardown::remove(matches, &store, (&name, None), events)? else {
+    let Some(removed) = teardown::remove(matches, &store, (&name, None), shown.as_ref(), events)?
+    else {
         return Ok(());
     };
     let removal = Removal {
@@ -178,7 +183,10 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
 
 /// Refuse an unconfirmed `project rm`, naming every Environment with what goes
 /// with it, and the exact retry; and the same as a tree for the prompt.
-fn unconfirmed(store: &Store, project: &ProjectName) -> Result<(Error, Tree), Error> {
+fn unconfirmed(
+    store: &Store,
+    project: &ProjectName,
+) -> Result<(Error, Tree, teardown::Shown), Error> {
     let listed = store.read(&ployz_store::ProjectsQuery {})?;
     let Some(listing) = listed
         .projects
@@ -220,5 +228,5 @@ fn unconfirmed(store: &Store, project: &ProjectName) -> Result<(Error, Tree), Er
         json!({ "project": project, "environments": environments }),
     )
     .hint(Hint::Retry(retry));
-    Ok((refusal, loss))
+    Ok((refusal, loss, teardown::Shown::of(&environments)))
 }

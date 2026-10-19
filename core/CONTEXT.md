@@ -577,6 +577,10 @@ _Avoid_: Selected Endpoint, current endpoint
 The endpoint one observing Machine currently selects for reaching a target Machine. Different observers may select different endpoints for the same target.
 _Avoid_: Advertised Endpoint, globally current endpoint
 
+**Pinned Address**:
+A Machine's public IP or Advertised Endpoints when its operator chose them at enrollment or with `server set`. Daemon start rediscovers only unpinned addresses. The pin lives on the Machine and is never replicated.
+_Avoid_: static IP, address override
+
 **Cloud Pairing**:
 Cloud's Organization-scoped association with one Cluster generation, held on each Machine as the `cloud` Management Client. It scopes enrollment and connection candidates; the daemon never sees it, and it is neither Cluster membership nor evidence of reachability.
 _Avoid_: live connection, Cluster authority, per-Machine identity, Management Client

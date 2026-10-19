@@ -349,6 +349,20 @@ cluster until it reboots or you remove it.
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
    services come back.
 
+## A server's address changed
+
+Ployz reads a server's public IP and network addresses again each time Ployz starts on it. When a
+server comes back from a stop with a new address, the other servers learn it, and it shows in
+`ployz server ls`. If the public IP lookup fails, the server keeps its old address and logs a
+warning; restart Ployz on it with `sudo systemctl restart ployz` to try again.
+
+An address you chose yourself never changes on its own. That means `--public-ip` or `--wg-endpoint`
+given to `ployz server init`, `ployz server add` or `ployz server set`. To change it, run
+`ployz server set` again.
+
+If every server's address changed at once, the servers can't reach each other to share the new
+addresses, and each one shows the others as unreachable.
+
 ## Services can't resolve each other's names
 
 A service on the server gets `NXDOMAIN` or a timeout for a name like `postgres.app.internal`,

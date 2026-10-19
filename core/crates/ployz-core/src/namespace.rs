@@ -178,6 +178,8 @@ mod tests {
         }))
         .unwrap();
         ContainerObservation::try_from(crate::ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: ContainerId::parse("c".repeat(64)).unwrap(),
             display_name: format!("{service}-c"),
             created_at_unix_nanos: 0,

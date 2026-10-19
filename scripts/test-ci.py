@@ -45,8 +45,17 @@ class CiTest(unittest.TestCase):
         for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", "core/.cargo/config.toml", ".github/workflows/release.yml", ".github/workflows/release-contracts.yml"]:
             with self.subTest(path=path):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
+        for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", "core/.cargo/config.toml"]:
+            with self.subTest(path=path, pull_request=True):
+                self.assertNotIn("release-contracts", ci["select"]([path], pull_request=True))
+        for path in [".github/workflows/release-contracts.yml", "core/.goreleaser.yaml"]:
+            with self.subTest(path=path, pull_request=True):
+                self.assertIn("release-contracts", ci["select"]([path], pull_request=True))
         self.assertIn("release-contracts", ci["select"]([".github/workflows/ci.yml", "core/.goreleaser.yaml"]))
         self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
+        for path in ["core/crates/ployz/src/main.rs", ".github/workflows/ci.yml"]:
+            with self.subTest(path=path, pull_request=True):
+                self.assertNotIn("macos-cli", ci["select"]([path], pull_request=True))
 
     def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
         self.assertEqual(

@@ -1069,6 +1069,8 @@ impl MachineState {
             labels.insert(DEPLOYMENT_LABEL.to_owned(), deployment.to_string());
         }
         ContainerObservation::try_from(ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: container.id,
             display_name: spec.name.clone(),
             created_at_unix_nanos: FIRST_LOG_NANOS,

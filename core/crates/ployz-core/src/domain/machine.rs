@@ -373,6 +373,45 @@ pub enum PublicIpDiscovery {
     Override(IpAddr),
 }
 
+/// Which of its own addresses a Machine's operator chose. Daemon start refreshes
+/// only the unpinned ones from discovery. Kept on the Machine, never replicated.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(default)]
+pub struct PinnedAddresses {
+    pub public_ip: bool,
+    pub advertised_endpoints: bool,
+}
+
+impl PinnedAddresses {
+    /// Pins for what an enrollment asked for: any public IP choice but `auto`,
+    /// and any explicit endpoint list.
+    #[must_use]
+    pub fn chosen(
+        public_ip: &PublicIpDiscovery,
+        advertised_endpoints: &[AdvertisedEndpoint],
+    ) -> Self {
+        Self {
+            public_ip: *public_ip != PublicIpDiscovery::Auto,
+            advertised_endpoints: !advertised_endpoints.is_empty(),
+        }
+    }
+
+    /// These pins plus every address `update` sets.
+    #[must_use]
+    pub fn with_update(self, update: &MachineUpdate) -> Self {
+        Self {
+            public_ip: self.public_ip || update.public_ip != PublicIpUpdate::Keep,
+            advertised_endpoints: self.advertised_endpoints
+                || update.advertised_endpoints.is_some(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineToken {
     pub id: MachineId,

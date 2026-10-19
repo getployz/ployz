@@ -97,6 +97,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: Some(1400),
+            pinned: Default::default(),
         })
         .unwrap();
     let initialized = first.record().machine().unwrap().clone();
@@ -125,6 +126,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         }),
         Ok(EnrollPlan::Conflict(_))
     ));
@@ -156,6 +158,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
                 },
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     assert_eq!(second.record().id(), assigned.id);
@@ -182,6 +185,7 @@ async fn participating(dir: &TestDir) -> LocalMachine {
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .await
         .unwrap();
@@ -356,6 +360,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     drop(store);
@@ -397,6 +402,7 @@ fn machine_update_is_atomic_and_durable() {
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let original = store.record().machine().unwrap().clone();
@@ -962,6 +968,7 @@ fn join_rejects_empty_local_endpoints_without_changing_the_durable_record() {
                 },
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         }),
         Err(StoreError::MissingEndpoints)
     ));
@@ -1021,6 +1028,7 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
     let member = |registration: Registered, wireguard_mtu| EnrollRequest {
         role: EnrollAs::Member { registration },
         wireguard_mtu,
+        pinned: Default::default(),
     };
     let request = member(registration.clone(), Some(1380));
     let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
