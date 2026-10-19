@@ -360,7 +360,7 @@ struct Ran {
     /// The new Container it started.
     started: Option<ContainerId>,
     /// The old copy it withdrew and stopped, which a failed Service restores.
-    held_old: Option<(ResolvedServiceSpec, cleanup::Copy)>,
+    held_old: Option<Box<(ResolvedServiceSpec, cleanup::Copy)>>,
 }
 
 impl Ran {
@@ -692,7 +692,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 match result {
                     Ok(ran) => {
                         if let Some(old) = ran.held_old {
-                            stopped.entry(group).or_default().push(old);
+                            stopped.entry(group).or_default().push(*old);
                         }
                         if schedule.group(group).publish && starts_container(operation) {
                             if let Some(container_id) = ran.started {
@@ -862,7 +862,7 @@ async fn restore_group<C: MachineOperations>(
     let withdrawn = if unread {
         started
             .iter()
-            .map(|(machine, _)| Withdrawn::Running(machine.clone()))
+            .map(|(machine, _)| Withdrawn::Running(*machine))
             .collect()
     } else {
         join_all(started.iter().map(|(machine, id)| {
@@ -933,7 +933,7 @@ async fn restore_group<C: MachineOperations>(
 enum Withdrawn {
     Gone,
     /// Held by this run and stopped: it can go back In if no old copy does.
-    Held(ResolvedServiceSpec, cleanup::Copy),
+    Held(Box<ResolvedServiceSpec>, cleanup::Copy),
     /// It may still run on this Machine.
     Running(MachineId),
 }
@@ -950,7 +950,7 @@ async fn discard_new<C: MachineOperations>(
     hold: Option<&DeploymentLogId>,
     cancellation: &CancellationToken,
 ) -> Withdrawn {
-    let running = || Withdrawn::Running(machine_id.clone());
+    let running = || Withdrawn::Running(*machine_id);
     let want = ContainerWant::Gone {
         container: ContainerLocator::Id(container_id),
         drain: Drain::NONE,
@@ -986,7 +986,7 @@ async fn discard_new<C: MachineOperations>(
         (Some(run), None) => {
             copy.rotation = CopyRotation::Held(run.clone());
             match stop(client, machine_id, &container_id, Drain::DEFAULT, None).await {
-                Ok(()) => Withdrawn::Held(spec, copy),
+                Ok(()) => Withdrawn::Held(Box::new(spec), copy),
                 Err(error) => {
                     leave_unstopped(client, progress, &copy, &spec, rows, left_by(error)).await;
                     running()
@@ -1643,7 +1643,7 @@ async fn execute_operation<C: MachineOperations>(
             .map(|copy| Ran {
                 started: None,
                 held_old: (copy.rotation == CopyRotation::Held(rows.run.clone()))
-                    .then(|| (details.container.resolved_spec.clone(), copy)),
+                    .then(|| Box::new((details.container.resolved_spec.clone(), copy))),
             })
             .map_err(Into::into),
             Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
@@ -2218,7 +2218,7 @@ async fn replace_stop_first<C: MachineOperations>(
     match started {
         Ok(new_container) => Ok(Ran {
             started: Some(new_container),
-            held_old: held_old.map(|old| (operation.spec.clone(), old)),
+            held_old: held_old.map(|old| Box::new((operation.spec.clone(), old))),
         }),
         Err(error) => Err(compensate(
             client,
