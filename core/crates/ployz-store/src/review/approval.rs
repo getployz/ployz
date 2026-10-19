@@ -405,7 +405,7 @@ pub(crate) fn approve_retry(
     diff.changes.clear();
     diff.total_count = 0;
     let message = gate.message(&diff, "deploy", || {
-        "A human must approve this retry first.".to_owned()
+        "A human must approve this redeploy first.".to_owned()
     });
     gate.require(bound, message, (&BTreeSet::new(), &diff))
 }

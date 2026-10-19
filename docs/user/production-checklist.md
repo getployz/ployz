@@ -47,11 +47,12 @@ list. Each item links to the page that does it.
 - **No automatic failover.** If a server dies, the services that ran only there stop, and a
   database on it is down until the server is back. See
   [When a server goes down](services/scaling.md#when-a-server-goes-down).
-- **No rollbacks.** To go back, revert the commit and push, or change the setting back and
-  deploy.
+- **No automatic rollbacks.** A failed deploy doesn't undo itself. To go back, click **Redeploy**
+  on an earlier deployment; see
+  [Redeploy or cancel a deployment](deploy/deployments.md#redeploy-or-cancel-a-deployment). The
+  rollback lasts until your next push or deploy, so to keep it, revert the commit in Git.
 - **No Docker Compose files.** Add each container as its own service.
 - **No autoscaling.** You choose the number of replicas.
 - **Three roles.** An organization has owners, admins and members, with no finer permissions. See
   [Invite people](account/organizations.md#invite-people).
 
-Rollbacks are planned.

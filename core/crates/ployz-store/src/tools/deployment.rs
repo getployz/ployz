@@ -351,7 +351,7 @@ pub(crate) struct DeploymentRetry {
 
 impl Tool for DeploymentRetry {
     const NAME: &'static str = "deployment_retry";
-    const DESCRIPTION: &'static str = "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve.";
+    const DESCRIPTION: &'static str = "Ship an ended Deployment's commit and settings again; an older one rolls back the newer ones in rolls_back. Every redeploy waits for a human to approve.";
     const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
 
@@ -385,7 +385,7 @@ impl Tool for DeploymentRetry {
                     .filter(|recorded| recorded.id == id)
                     .filter(|recorded| recorded.environment_id == page.environment.id);
                 if let Some(recorded) = recorded {
-                    return Ok(retried(cx, &page.environment, &recorded, None));
+                    return Ok(retried(cx, &page.environment, &recorded, None, &[]));
                 }
                 latest(page)?
             }
@@ -401,7 +401,13 @@ impl Tool for DeploymentRetry {
         });
         let summary = cx.write(&retry)?;
         let retries = Some(source.deployment.number);
-        Ok(retried(cx, &source.environment, &summary, retries))
+        Ok(retried(
+            cx,
+            &source.environment,
+            &summary,
+            retries,
+            &source.newer_applied,
+        ))
     }
 }
 
@@ -410,11 +416,13 @@ fn retried(
     environment: &EnvironmentSummary,
     retried: &DeploymentSummary,
     retries: Option<u64>,
+    rolls_back: &[u64],
 ) -> Value {
     json!({
         "at": at(environment),
         "deployment": retried.number,
         "retries": retries,
+        "rolls_back": rolls_back,
         "status": retried.status,
         "saved_revision": retried.saved.0,
         "next": follow(cx.call(), retried.number),

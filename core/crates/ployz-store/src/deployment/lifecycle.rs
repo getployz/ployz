@@ -250,8 +250,12 @@ pub(super) fn queue(
 }
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
-/// targets, Namespace, registry credentials and upload, whatever changed since. Only a Deployment that ended
-/// without applying can be retried: failed, unknown or cancelled.
+/// targets, Namespace, registry credentials, upload and pinned commits, whatever
+/// changed since. Any Deployment that ended can be redeployed, applied ones too.
+/// One older than a Deployment that applied rolls that back: the caller asked for
+/// exactly that, so nothing refuses it here, but it never deletes Volume data. The
+/// Docker Volumes its source deleted were accepted against what the Servers held
+/// then, and a later Deployment may have brought the same Volume back.
 pub(crate) fn retry(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -261,49 +265,34 @@ pub(crate) fn retry(
     owned(tx, who, source)?;
     let stored = locked(tx, source)?;
     match stored.summary.status {
-        DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled => {}
-        DeploymentStatus::Applied => {
-            return Err(error::conflict(
-                "This Deployment applied, so there is nothing to retry",
-                json!({ "deployment": source }),
-            ));
-        }
+        DeploymentStatus::Applied
+        | DeploymentStatus::Failed
+        | DeploymentStatus::Unknown
+        | DeploymentStatus::Cancelled => {}
         DeploymentStatus::Queued | DeploymentStatus::Running | DeploymentStatus::Cancelling => {
             return Err(error::conflict(
-                "This Deployment hasn't ended: cancel it or wait before retrying it",
+                "This Deployment hasn't ended: cancel it or wait before redeploying it",
                 json!({ "deployment": source }),
             ));
         }
         DeploymentStatus::Superseded => return Err(superseded(source)),
     }
-    // Shipping an older revision over one that applied since would roll it back without saying so.
-    // ponytail: any newer applied Deployment refuses, even one targeting other Services; compare targets if that bites.
-    let newer = tx
-        .query(
-            "SELECT MAX(number) FROM config_deployment \
-             WHERE environment_id = ?1 AND number > ?2 AND status = 'applied'",
-            &[
-                stored.summary.environment_id.as_str().into(),
-                i64::try_from(stored.summary.number)
-                    .map_err(|_| error::corrupt("Deployment number"))?
-                    .into(),
-            ],
-        )?
-        .first()
-        .and_then(|row| row.int(0).ok());
-    if let Some(newer) = newer {
-        return Err(error::conflict(
-            format!(
-                "Deployment #{newer} applied after this one, so retrying it would roll that back: deploy again instead"
-            ),
-            json!({ "deployment": source, "newer": newer }),
-        ));
-    }
     if stored.summary.remove {
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::removal::guard_removal(tx, &environment)?;
     }
-    let (services, nodes) = retried(tx, &stored)?;
+    let (services, mut nodes) = retried(tx, &stored)?;
+    if !newer_applied(tx, &stored.summary)?.is_empty() {
+        nodes.retain(|node| {
+            !matches!(
+                node,
+                TargetNode::Volume {
+                    deletes: Some(_),
+                    ..
+                }
+            )
+        });
+    }
     let admitted_at = now();
     let number = queue(tx, &stored.summary.environment_id, |tx, number| {
         // Every other frozen column comes from the source, so a retry never re-reads
@@ -355,6 +344,24 @@ pub(crate) fn retry(
         ingress: Vec::new(),
         ..stored.summary
     })
+}
+
+/// The Deployments of `deployment`'s Environment that applied after it, oldest
+/// first: what redeploying it rolls back.
+pub(crate) fn newer_applied(
+    tx: &mut dyn Tx,
+    deployment: &DeploymentSummary,
+) -> Result<Vec<u64>, RpcError> {
+    let number =
+        i64::try_from(deployment.number).map_err(|_| error::corrupt("Deployment number"))?;
+    tx.query(
+        "SELECT number FROM config_deployment \
+         WHERE environment_id = ?1 AND number > ?2 AND status = 'applied' ORDER BY number",
+        &[deployment.environment_id.as_str().into(), number.into()],
+    )?
+    .iter()
+    .map(|row| u64::try_from(row.int(0)?).map_err(|_| error::corrupt("Deployment number")))
+    .collect()
 }
 
 /// The targets and nodes a retry of `stored` ships: its own, but a targeted one

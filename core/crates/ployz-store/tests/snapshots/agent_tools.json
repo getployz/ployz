@@ -1607,7 +1607,7 @@
       "read_only": true
     },
     {
-      "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve. May stop to ask a human to approve.",
+      "description": "Ship an ended Deployment's commit and settings again; an older one rolls back the newer ones in rolls_back. Every redeploy waits for a human to approve. May stop to ask a human to approve.",
       "destructive": true,
       "gate": "store",
       "input_schema": {

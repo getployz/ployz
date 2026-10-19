@@ -2221,29 +2221,62 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     assert_eq!(retry(&store, &who, 4, 2).unwrap().saved, newer);
 }
 
-#[test]
-fn a_retry_is_refused_once_a_newer_deployment_applied() {
-    let (store, who) = shop();
-    admit(&store, &who, 1, &[], None).unwrap();
-    fail_api(&store, 1);
-    admit(&store, &who, 2, &[], None).unwrap();
+/// Deployment `n` claimed by `runner-a` and applied; the Deploy Intent it ran.
+fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
     let a = runner("runner-a");
-    store.claim(&id(2), &a).unwrap();
+    let intent = store.claim(&id(n), &a).unwrap().intent;
     store
-        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
     store
-        .record(&id(2), &a, succeeded(&["web", "api"]))
+        .record(&id(n), &a, succeeded(&["web", "api"]))
         .unwrap();
-    // Shipping #1's revision now would undo #2.
-    let refused = retry(&store, &who, 3, 1).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert!(refused.message.contains("#2"), "{}", refused.message);
-    assert_eq!(code(start(&store, &who, 3)), RpcErrorCode::NotFound);
+    intent
+}
+
+fn newer_applied(store: &ConfigStore, who: &Actor, n: u8) -> Vec<u64> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .newer_applied
 }
 
 #[test]
-fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
+fn redeploying_an_older_deployment_rolls_back_to_what_it_froze() {
+    let (store, who) = shop();
+    let first = admit(&store, &who, 1, &[], None).unwrap();
+    let frozen = apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+    assert_ne!(second.saved, first.saved);
+    assert_eq!(newer_applied(&store, &who, 1), [2]);
+    assert!(newer_applied(&store, &who, 2).is_empty());
+
+    // #1 applied and #2 applied after it: redeploying #1 ships #1's revision again.
+    let rolled_back = retry(&store, &who, 3, 1).unwrap();
+    assert_eq!(
+        (rolled_back.number, rolled_back.status, rolled_back.saved),
+        (3, DeploymentStatus::Queued, first.saved)
+    );
+    assert_eq!(apply(&store, 3), frozen);
+    assert_eq!(newer_applied(&store, &who, 1), [2, 3]);
+    // What #2 saved is still the latest Saved revision, so it shows as a change to
+    // deploy, and the next Deploy moves forward to it.
+    assert_eq!(changed(&store, &who), ["web"]);
+    assert_eq!(
+        admit(&store, &who, 4, &[], None).unwrap().saved,
+        second.saved
+    );
+
+    // The newest applied Deployment redeploys too, rolling nothing back.
+    apply(&store, 4);
+    assert!(newer_applied(&store, &who, 4).is_empty());
+    assert_eq!(retry(&store, &who, 5, 4).unwrap().saved, second.saved);
+}
+
+#[test]
+fn a_redeploy_is_refused_unless_its_deployment_ended() {
     let (store, who) = shop();
     let other = Actor::system(OrganizationId::parse("other").unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
@@ -2259,18 +2292,17 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
         .unwrap();
     cancel(&store, &who, 1).unwrap();
     assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
-    // Its runner finished before it saw the cancel: it applied, so nothing to retry.
+    // Its runner finished before it saw the cancel: it applied, and redeploys.
     store
         .record(&id(1), &a, succeeded(&["web", "api"]))
         .unwrap();
     assert_eq!(status(&store, &who, 1), DeploymentStatus::Applied);
-    assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
     // A superseded one never ran: deploy again instead.
     admit(&store, &who, 2, &[], None).unwrap();
     admit(&store, &who, 3, &[], None).unwrap();
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Superseded);
     assert_eq!(code(retry(&store, &who, 9, 2)), RpcErrorCode::Conflict);
-    // A refused retry queued nothing, and an accepted one supersedes what's queued.
+    // A refused redeploy queued nothing, and an accepted one supersedes what's queued.
     fail_api(&store, 3);
     assert_eq!(retry(&store, &who, 9, 3).unwrap().number, 4);
     assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
@@ -2278,6 +2310,8 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
     retry(&store, &who, 6, 3).unwrap();
     assert_eq!(status(&store, &who, 5), DeploymentStatus::Superseded);
     assert_eq!(status(&store, &who, 9), DeploymentStatus::Superseded);
+    assert_eq!(retry(&store, &who, 7, 1).unwrap().number, 7);
+    assert_eq!(status(&store, &who, 6), DeploymentStatus::Superseded);
 }
 
 #[test]
@@ -3594,7 +3628,7 @@ fn an_agent_approval_admits_one_retry() {
     set_replicas(&store, &who, "web", 3);
     let refused = agent_retries(&store, &who, 3, 2, Approval::Required).unwrap_err();
     assert_eq!(refused.code.as_str(), "approval_required");
-    assert_eq!(refused.message, "A human must approve this retry first.");
+    assert_eq!(refused.message, "A human must approve this redeploy first.");
     assert_eq!(refused.details["effects"], json!([]));
     assert_eq!(
         refused.details["diff"]["changes"],

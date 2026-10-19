@@ -272,9 +272,11 @@ pub(crate) fn view(
         })
         .collect();
     let builds = build::views(tx, &stored)?;
+    let newer_applied = newer_applied(tx, &stored.summary)?;
     Ok(DeploymentView {
         builds,
         runtime_names,
+        newer_applied,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,

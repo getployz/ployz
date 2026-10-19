@@ -82,8 +82,9 @@ pub struct Deploy {
     pub message: Option<String>,
 }
 
-/// Retry a failed, unknown or cancelled Deployment: its Saved revision, targets,
-/// Namespace, credentials and upload, whatever was saved since.
+/// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
+/// credentials, upload and pinned commits, whatever was saved since. Redeploying
+/// one older than a Deployment that applied rolls that back.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Retry {
@@ -143,8 +144,8 @@ pub(crate) fn admit(
 ) -> Result<DeploymentSummary, RpcError> {
     match admit {
         // The retry deletes exactly the Docker Volumes its source's review accepted,
-        // which the copied target nodes carry: nothing new, so no new destructive
-        // review. Only an agent's retry asks a human.
+        // which the copied target nodes carry, and a rollback deletes none: nothing
+        // new, so no new destructive review. Only an agent's retry asks a human.
         Admit::Retry(retry) => {
             let asked = retry_review(tx, who, &retry.deployment, trusted)?;
             let retried = deployment::retry(tx, who, &retry.id, &retry.deployment)?;

@@ -740,6 +740,79 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
 }
 
 #[test]
+fn rolling_back_to_a_deployment_that_deleted_a_volume_keeps_its_data() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &["data"], Some(observed(&['a']))).unwrap();
+    let removed = VolumeRemoval {
+        id: held('a'),
+        outcome: VolumeRemovalOutcome::Removed,
+    };
+    assert_eq!(run(&store, 2, vec![removed]).deletes, [held('a')]);
+    // The Volume comes back under the same identity, so its new data lives in the
+    // same Docker Volume #2 deleted.
+    let first = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .deployment
+        .saved;
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: first,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: first,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 3, &[], None).unwrap();
+    run(&store, 3, Vec::new());
+    assert!(listed(&store, &who)[0].deployed);
+
+    // Redeploying #2 rolls #3 back, and never deletes the data #3's Volume holds now.
+    let rolled_back = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
+    assert_eq!(rolled_back.newer_applied, [3]);
+    store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(4),
+                deployment: id(2),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    assert!(run(&store, 4, Vec::new()).deletes.is_empty());
+}
+
+#[test]
 fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();

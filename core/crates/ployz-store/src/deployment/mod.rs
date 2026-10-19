@@ -272,6 +272,10 @@ pub struct DeploymentView {
     /// Each Service's runtime name (its Private DNS name) by its name when admitted,
     /// for finding its containers.
     pub runtime_names: BTreeMap<ServiceName, ServiceName>,
+    /// The numbers of the Deployments that applied after it, oldest first: what
+    /// redeploying it rolls back. Empty when redeploying it rolls nothing back.
+    #[serde(default)]
+    pub newer_applied: Vec<u64>,
 }
 
 /// What a Deployment did to one of its target nodes.

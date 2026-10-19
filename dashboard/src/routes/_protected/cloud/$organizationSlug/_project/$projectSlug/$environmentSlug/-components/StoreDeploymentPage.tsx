@@ -14,8 +14,8 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, nodeApplied, outcomeReason, showCancelling,
-  type DeploymentAction,
+  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, nodeApplied, outcomeReason, rollbackConfirm,
+  showCancelling, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreCancelling } from "#/modules/config-store/store-pending";
@@ -180,13 +180,16 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
   const navigate = useNavigate();
   const writer = useStoreWriter(params.organizationSlug);
   const [cancelOpen, setCancelOpen] = useState(false);
-  const [retrying, setRetrying] = useState(false);
+  const [rollbackOpen, setRollbackOpen] = useState(false);
+  const [redeploying, setRedeploying] = useState(false);
   const { primary, cancelInMenu } = deploymentActions(deployment.status, noServers);
+  const rollback = rollbackConfirm(deployment);
   const copiesWait = useCopiesWait(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).environmentId);
 
-  async function retry() {
+  // This modal is the person's consent to roll back, so the Store asks nothing more.
+  async function redeploy() {
     const id = crypto.randomUUID();
-    setRetrying(true);
+    setRedeploying(true);
     try {
       await writer.commit({
         command: "admit", admit: "retry", id, deployment: deployment.id }).isPersisted.promise;
@@ -194,14 +197,17 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
     } catch {
       // The writer toasted the Store's reason.
     } finally {
-      setRetrying(false);
+      setRedeploying(false);
     }
   }
 
   // Deploy now starts a queued one while nothing else runs.
   const buttons = {
     add_server: <Button size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers" params={params} />}>Add a server</Button>,
-    retry: <RedeployAction copiesWait={copiesWait} disabled={retrying} onRedeploy={() => void retry()} />,
+    redeploy: (
+      <RedeployAction copiesWait={copiesWait} disabled={redeploying}
+        onRedeploy={() => (rollback ? setRollbackOpen(true) : void redeploy())} />
+    ),
     start: (
       <Button size="sm" variant="outline" onClick={() => writer.commit({ command: "start", deployment: deployment.id })}>Deploy now</Button>
     ),
@@ -220,6 +226,23 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
             <DropdownMenuItem onClick={() => setCancelOpen(true)}>Cancel deployment…</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+      ) : null}
+      {rollback ? (
+        <AlertDialog open={rollbackOpen} onOpenChange={setRollbackOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{rollback.title}</AlertDialogTitle>
+              <AlertDialogDescription>{rollback.body}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <Button onClick={() => {
+                setRollbackOpen(false);
+                void redeploy();
+              }}>Roll back</Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       ) : null}
       <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
         <AlertDialogContent>

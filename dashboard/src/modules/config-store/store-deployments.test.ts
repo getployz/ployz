@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  nodeLight, reviewGroups, shownValue, uploadLabel,
+  nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -131,16 +131,24 @@ it("reads a pending node as its Deployment does, and a vanished runner's node as
   expect(nodeLight("unknown", { status: "unknown", in_flight: false })).toBe("unknown");
 });
 
-it("shows one action: retry after a Deployment ended without applying, start while queued, cancel before it ends", () => {
-  expect(deploymentActions("failed", false)).toEqual({ primary: "retry", cancelInMenu: false });
+it("shows one action: redeploy once a Deployment ended, start while queued, cancel before it ends", () => {
+  expect(deploymentActions("failed", false)).toEqual({ primary: "redeploy", cancelInMenu: false });
   expect(deploymentActions("queued", false)).toEqual({ primary: "start", cancelInMenu: true });
   expect(deploymentActions("running", false)).toEqual({ primary: "cancel", cancelInMenu: false });
   expect(deploymentActions("cancelling", false)).toEqual({ primary: null, cancelInMenu: false });
-  expect(deploymentActions("applied", false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions("applied", false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions("superseded", false)).toEqual({ primary: null, cancelInMenu: false });
   // With no Server nothing can run it, so adding one comes first; a running one can still be cancelled.
   expect(deploymentActions("failed", true)).toEqual({ primary: "add_server", cancelInMenu: false });
   expect(deploymentActions("queued", true)).toEqual({ primary: "add_server", cancelInMenu: true });
   expect(deploymentActions("running", true)).toEqual({ primary: "cancel", cancelInMenu: false });
+});
+
+it("asks before a redeploy that rolls back Deployments that applied after it, and only then", () => {
+  expect(rollbackConfirm({ number: 6, newer_applied: [] })).toBeNull();
+  expect(rollbackConfirm({ number: 4, newer_applied: [5] })).toEqual({ title: "Roll back to #4", body: "Undoes #5" });
+  expect(rollbackConfirm({ number: 4, newer_applied: [5, 6] })).toEqual({ title: "Roll back to #4", body: "Undoes #5 and #6" });
+  expect(rollbackConfirm({ number: 3, newer_applied: [5, 6, 8] })).toEqual({ title: "Roll back to #3", body: "Undoes #5, #6 and #8" });
 });
 
 it("names an upload's provenance, and its uploader only when someone else started the Deployment", () => {

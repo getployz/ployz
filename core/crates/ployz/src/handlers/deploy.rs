@@ -1,5 +1,5 @@
 //! `ployz deploy` and `ployz deployment`: ship an Environment from the Config Store,
-//! and read, retry, start and cancel its Deployments. Cloud's runner runs a
+//! and read, redeploy, start and cancel its Deployments. Cloud's runner runs a
 //! Deployment admitted over HTTPS, and `deploy` follows it until it ends. With the
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
@@ -101,7 +101,7 @@ pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 const UNCLAIMED: Duration = Duration::from_secs(30);
 
 pub(super) fn deployment_group(command: Command) -> Command {
-    command.about("Read, retry, start and cancel Deployments")
+    command.about("Read, redeploy, start and cancel Deployments")
 }
 
 pub(super) fn ls_command(command: Command) -> Command {
@@ -118,12 +118,16 @@ pub(super) fn show_command(command: Command) -> Command {
     scoped(command.about("Show a Deployment with its Deploy Preview and Node Outcomes")).arg(id())
 }
 
-pub(super) fn retry_command(command: Command) -> Command {
+pub(super) fn redeploy_command(command: Command) -> Command {
     following(scoped(base(
         command,
-        "Deploy again exactly what a failed, unknown or cancelled Deployment froze, and follow it",
+        "Deploy an ended Deployment's commit and settings again, and follow it. Redeploying \
+         one older than a Deployment that applied rolls that back until the next deploy, so \
+         it asks first; --yes skips the ask. Outside a terminal without --yes it fails with \
+         confirmation_required.",
     )))
     .arg(id())
+    .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
 }
 
 pub(super) fn start_command(command: Command) -> Command {
@@ -929,7 +933,7 @@ pub(super) fn deployment_id(
     Ok(found.deployment.id)
 }
 
-/// A refused retry, start or cancel points at the Deployment's current state.
+/// A refused redeploy, start or cancel points at the Deployment's current state.
 fn refused<'a>(
     matches: &'a ArgMatches,
     store: &'a Store,
@@ -964,11 +968,14 @@ fn id_hint(id: &DeploymentId) -> String {
     shell_words::join(["ployz", "deployment", "show", id.as_str()])
 }
 
-pub(super) fn retry(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let source = deployment_id(matches, &store, "id")?;
     refuse_local_detach(matches, &store)?;
+    if !matches.get_flag("yes") {
+        confirm_rollback(&store, &source)?;
+    }
     let events = open_events(matches)?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
@@ -977,6 +984,42 @@ pub(super) fn retry(root: &ArgMatches) -> Result<(), Error> {
         }))
         .map_err(refused(matches, &store, &source))?;
     ship(matches, &store, &admitted, events)
+}
+
+/// Ask before redeploying `source` rolls back the Deployments that applied after it.
+fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<(), Error> {
+    let view = store.read(&ployz_store::DeploymentQuery { id: source.clone() })?;
+    let Some(undoes) = rolls_back(&view.newer_applied) else {
+        return Ok(());
+    };
+    let number = view.deployment.number;
+    ui::note(format!("Redeploying #{number} undoes {undoes}."));
+    ui::confirm(
+        &format!("Roll back to #{number}?"),
+        || {
+            Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                format!("Rolling back to #{number} needs confirmation. Nothing deployed."),
+                serde_json::json!({ "deployment": number, "rolls_back": view.newer_applied }),
+            )
+            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+        },
+        "Cancelled. Nothing deployed.",
+    )
+}
+
+/// `#5 and #6`, the Deployments a redeploy undoes; none when it undoes nothing.
+fn rolls_back(numbers: &[u64]) -> Option<String> {
+    let (last, rest) = numbers.split_last()?;
+    let named = |number: &u64| format!("#{number}");
+    Some(match rest {
+        [] => named(last),
+        _ => format!(
+            "{} and {}",
+            rest.iter().map(named).collect::<Vec<_>>().join(", "),
+            named(last)
+        ),
+    })
 }
 
 pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {

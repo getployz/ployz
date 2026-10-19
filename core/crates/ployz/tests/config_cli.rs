@@ -2772,17 +2772,40 @@ fn an_upload_is_recorded_with_its_base_commit_and_kept_for_later_deploys() {
 }
 
 #[test]
+fn redeploying_an_older_deployment_asks_before_it_rolls_back() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
+    applied(&store, "production");
+    ok(&store, &["set", "web.replicas=2"]);
+    applied(&store, "production");
+
+    let asked = error(&store, &["deployment", "redeploy", "1"]);
+    assert_eq!(asked["code"], "confirmation_required", "{asked}");
+    assert_eq!(asked["details"]["rolls_back"], json!([2]));
+    assert_eq!(
+        asked["details"]["retry"],
+        json!("ployz deployment redeploy 1 --yes")
+    );
+
+    let rolled_back = no_server_answers(&store, &["deployment", "redeploy", "1", "--yes"]);
+    assert_eq!(rolled_back["number"], json!(3), "{rolled_back}");
+    // Redeploying the newest one rolls nothing back, so it asks nothing.
+    no_server_answers(&store, &["deployment", "redeploy", "3"]);
+}
+
+#[test]
 fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
         let deployed = no_server_answers(store, &["deploy"]);
         let failed_id = deployed["id"].as_str().unwrap().to_owned();
-        // Saved since: a retry still ships what the failed one froze.
+        // Saved since: a redeploy still ships what the failed one froze.
         ok(store, &["set", "web.replicas=2"]);
         ok(store, &["deploy", "--skip-deploy"]);
 
-        let retried = no_server_answers(store, &["deployment", "retry", &failed_id]);
+        let retried = no_server_answers(store, &["deployment", "redeploy", &failed_id]);
         assert_eq!(
             (&retried["number"], &retried["saved"], &retried["status"]),
             (&json!(2), &json!(1), &json!("failed"))
@@ -2801,7 +2824,7 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
             store,
             &[
                 "deployment",
-                "retry",
+                "redeploy",
                 "00000000-0000-4000-8000-000000000999",
             ],
         );

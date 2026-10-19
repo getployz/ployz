@@ -1862,15 +1862,16 @@ fn a_keyed_retry_that_lands_between_its_replays_reads_is_the_replay() {
 }
 
 #[test]
-fn an_applied_deployment_has_nothing_to_retry() {
+fn the_newest_applied_deployment_redeploys_and_rolls_nothing_back() {
     let (store, _) = ended(
         json!({ "type": "completed" }),
         json!({ "type": "success", "completed": [remove_container()] }),
     );
 
-    let refused = call(&store, "deployment_retry", json!({}), "retry-1").refused();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert_eq!(refused.writes, Writes::None);
+    let redeployed = call(&store, "deployment_retry", json!({}), "retry-1").ok();
+    assert_eq!(redeployed["deployment"], 2);
+    assert_eq!(redeployed["retries"], 1);
+    assert_eq!(redeployed["rolls_back"], json!([]));
 }
 
 /// Cloud's metrics answer with `events`, one CPU row and nothing unanswered.

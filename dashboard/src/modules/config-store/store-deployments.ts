@@ -322,18 +322,28 @@ export function missingDeployLogs(deployment: DeploymentView, node: NodeOutcome)
 }
 
 /** The one action a Deployment page shows by itself. */
-export type DeploymentAction = "add_server" | "retry" | "start" | "cancel";
+export type DeploymentAction = "add_server" | "redeploy" | "start" | "cancel";
 
 /**
- * Retry an ended Deployment that didn't apply, start a queued one, cancel one before it ends; with no Server, adding
- * one comes first.
+ * Redeploy an ended Deployment, start a queued one, cancel one before it ends; with no Server, adding one comes first.
  */
 function primaryAction(status: DeploymentStatus, noServers: boolean): DeploymentAction | null {
-  const retry = status === "failed" || status === "unknown" || status === "cancelled";
-  if (noServers && (retry || status === "queued")) return "add_server";
-  if (retry) return "retry";
+  const redeploy = status === "applied" || status === "failed" || status === "unknown" || status === "cancelled";
+  if (noServers && (redeploy || status === "queued")) return "add_server";
+  if (redeploy) return "redeploy";
   if (status === "queued") return "start";
   return status === "running" ? "cancel" : null;
+}
+
+/**
+ * The confirm Redeploy opens when it rolls back Deployments that applied after this one; null when it rolls nothing back
+ * and redeploys in one click.
+ */
+export function rollbackConfirm(deployment: Pick<DeploymentView, "number" | "newer_applied">) {
+  const undone = deployment.newer_applied.map((number) => `#${number}`);
+  if (undone.length === 0) return null;
+  const list = undone.length === 1 ? undone[0] : `${undone.slice(0, -1).join(", ")} and ${undone.at(-1)}`;
+  return { title: `Roll back to #${deployment.number}`, body: `Undoes ${list}` };
 }
 
 /** The action a Deployment page shows, and whether Cancel waits in its menu beside another one. */

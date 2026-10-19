@@ -36,7 +36,7 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
  */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
-  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove"
+  const verb = command === "publish" ? "Save" : command === "retry" ? "Redeploy" : command === "remove" ? "Remove"
     : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : "Deploy";
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
 }
