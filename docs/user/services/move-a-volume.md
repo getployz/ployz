@@ -125,6 +125,19 @@ service there. Then Ployz removes the old server's container. Your service is do
 stop to the start on `web-2`. A service that takes a while to stop or start doesn't fail the
 move. Ployz waits for Docker, up to ten minutes for each stop or start.
 
+`ployz volume move --wait` and `ployz volume runs data RUN` say each step as the move reaches it, and so
+does the bottom bar while a deploy moves the volume:
+
+```
+Copying to web-2.
+web stopped for the final copy.
+Starting web on web-2.
+The Move of Volume data onto web-2 is done: run 3f2a9c1e-7b4d-4e2a-9f1c-2b8d6e0a5c47.
+web was stopped 26s.
+```
+
+The last line says how long your service was down. `volume runs` keeps it as the move's message.
+
 The old server keeps a read-only copy, shown as `data-web-1`. Moving back sends only what
 changed since. If the volume already has a mirror on `web-2`, the move starts from it.
 
