@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
@@ -15,6 +14,7 @@ import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "#/components/ui/input-group";
 import { Spinner } from "#/components/ui/spinner";
+import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
 import { createOrganizationServerFn } from "#/modules/organization/organization-state.functions";
 import { slugifySegment } from "#/utils/slug";
 
@@ -24,7 +24,7 @@ export function NewOrganizationDialog({ onOpenChange }: { onOpenChange: (open: b
   const [name, setName] = useState("");
   const [editedSlug, setEditedSlug] = useState<string | null>(null);
   const slug = editedSlug ?? slugifySegment(name);
-  const mutation = useMutation({
+  const mutation = useExclusiveMutation({
     mutationFn: (data: { name: string; slug: string }) => createOrganizationServerFn({ data }),
     // The session now acts in the new Organization, so the whole document reloads into it.
     onSuccess: (organizationSlug) =>
@@ -42,7 +42,7 @@ export function NewOrganizationDialog({ onOpenChange }: { onOpenChange: (open: b
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (ready && !mutation.isPending) mutation.mutate({ name: name.trim(), slug });
+            if (ready) mutation.mutate({ name: name.trim(), slug });
           }}
         >
           <FieldGroup>

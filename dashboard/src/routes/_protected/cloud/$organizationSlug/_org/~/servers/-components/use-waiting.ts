@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { toast } from "sonner";
+import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
 import { toErrorMessage } from "#/lib/error-message";
 import { PROBE_WINDOW_MS } from "#/modules/machines/waiting/checkin-wire";
 import type { FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
@@ -13,7 +14,7 @@ export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; au
 /** Mints a fleet token. The secret lives only in the result, so it shows once. */
 export function useMintFleetToken(organizationSlug: string) {
   const queryClient = useQueryClient();
-  return useMutation({
+  return useExclusiveMutation({
     mutationFn: (input: MintInput) => createFleetTokenServerFn({ data: { organizationSlug, ...input } }),
     onError: (cause) => toast.error(toErrorMessage(cause, "Couldn't create the token.")),
     onSettled: () => queryClient.invalidateQueries({ queryKey: fleetTokenKeys.all }),
