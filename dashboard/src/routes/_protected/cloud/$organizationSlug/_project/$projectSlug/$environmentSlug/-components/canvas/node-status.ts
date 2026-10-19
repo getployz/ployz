@@ -194,7 +194,12 @@ export function deployChip(
   return service.change === null ? null : stagedChip(service.change, changeCount);
 }
 
-export function restartedServices(deployment: Pick<DeploymentView, "nodes">): ReadonlySet<string> {
+/**
+ * The Services a Deploy stops or starts. Until its runner records the plan every node reads Pending, so only a Service
+ * it builds a new image for counts; a reused build may leave it running.
+ */
+export function restartedServices(deployment: Pick<DeploymentView, "nodes" | "preview" | "builds">): ReadonlySet<string> {
+  if (deployment.preview === null) return new Set(deployment.builds.flatMap((build) => build.status === "reused" ? [] : [build.service]));
   return new Set(deployment.nodes.flatMap((node) => node.type === "service" && node.outcome !== "unchanged" ? [node.name] : []));
 }
 
