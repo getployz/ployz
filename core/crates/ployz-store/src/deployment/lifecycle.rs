@@ -811,6 +811,11 @@ pub(crate) fn record(
             }
             let success = matches!(*outcome, DeployOutcome::Success { .. });
             let (reason, cause) = failure(&outcome, &stored.nodes, &preview.operations)
+                .or_else(|| {
+                    success
+                        .then(|| undeleted(&stored.nodes, &removed, &preview.operations))
+                        .flatten()
+                })
                 .map_or((None, Vec::new()), |failure| {
                     (Some(failure.reason), failure.cause)
                 });
@@ -1018,6 +1023,50 @@ fn failure(
     Some(Failure {
         reason: reason.chars().take(500).collect(),
         cause,
+    })
+}
+
+/// Why a Deploy that succeeded left a removed Volume's data behind.
+fn undeleted(
+    nodes: &[TargetNode],
+    removed: &[VolumeRemoval],
+    operations: &[ployz_core::OperationRow],
+) -> Option<Failure> {
+    nodes.iter().find_map(|node| {
+        let TargetNode::Volume {
+            name,
+            deletes: Some(deletes),
+            ..
+        } = node
+        else {
+            return None;
+        };
+        deletes.iter().find_map(|id| {
+            let outcome = removed
+                .iter()
+                .find(|removal| removal.id == *id)
+                .map(|removal| &removal.outcome);
+            let Failure { reason, cause } = match outcome {
+                Some(VolumeRemovalOutcome::Removed) => return None,
+                Some(VolumeRemovalOutcome::Failed { error }) => Failure::from(error),
+                Some(VolumeRemovalOutcome::Omitted) => {
+                    let server = operations
+                        .iter()
+                        .find(|row| row.machine_id == id.machine_id)
+                        .and_then(|row| row.machine_name.as_ref())
+                        .map_or_else(|| id.machine_id.to_string(), ToString::to_string);
+                    format!("{server} did not answer").into()
+                }
+                None => "the Cluster could not be reached".into(),
+            };
+            Some(Failure {
+                reason: format!("{name}: deleting its data failed: {reason}")
+                    .chars()
+                    .take(500)
+                    .collect(),
+                cause,
+            })
+        })
     })
 }
 
