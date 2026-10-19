@@ -786,10 +786,11 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
         || value.to_string().chars().count(),
         |text| text.chars().count(),
     );
+    let text = crate::ui::escaped(&value.to_string());
     if length <= SHOWN {
-        return value.to_string();
+        return text;
     }
-    let start: String = value.to_string().chars().take(SHOWN).collect();
+    let start: String = text.chars().take(SHOWN).collect();
     format!("{start}… ({length} chars)")
 }
 
@@ -858,7 +859,7 @@ pub(crate) fn plain(value: &serde_json::Value) -> String {
     if value.is_null() {
         "-".to_owned()
     } else {
-        value.to_string()
+        crate::ui::escaped(&value.to_string())
     }
 }
 
@@ -1056,6 +1057,16 @@ mod tests {
     fn empty_text_a_dash_and_unset_read_differently() {
         let shown = [plain(&json!("")), plain(&json!("-")), plain(&json!(null))];
         assert_eq!(shown, ["\"\"", "\"-\"", "-"]);
+    }
+
+    #[test]
+    fn a_value_escapes_what_would_steer_the_terminal() {
+        let value = json!("مرحبا\u{202E}evil\u{200B}\u{85}\t");
+        let escaped = r#""مرحبا\u{202e}evil\u{200b}\u{85}\t""#;
+        assert_eq!(plain(&value), escaped);
+        assert_eq!(shown(&value), escaped);
+        let long = shown(&json!(format!("\u{202E}{}", "a".repeat(100))));
+        assert!(long.starts_with(r#""\u{202e}aaa"#), "{long}");
     }
 
     #[test]
