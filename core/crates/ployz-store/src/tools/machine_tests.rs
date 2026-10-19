@@ -175,3 +175,35 @@ fn a_resume_must_answer_the_step_it_was_given() {
         }
     ));
 }
+
+#[test]
+fn a_bad_argument_outlines_what_fits_instead_of_echoing_the_schema() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "service_update")
+        .unwrap();
+    let whole = (entry.def)().input_schema.to_string().len();
+    for field in ["", "set", "set.bogus"] {
+        let refusal = finish(
+            Refusal::invalid("Unknown Service Setting", field),
+            entry,
+            &Call::new("service_update", json!({ "set": { "bogus": 1 } })),
+            "call-1",
+        );
+        let expected = refusal.expected.unwrap();
+        let size = expected.to_string().len();
+        assert!(
+            size < 2_048 && size < whole / 4,
+            "{field}: {size} of {whole}"
+        );
+        let names = expected
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap();
+        let want = match field {
+            "" => "service",
+            _ => "env",
+        };
+        assert!(names.contains_key(want), "{field}: {expected}");
+    }
+}
