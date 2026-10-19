@@ -312,6 +312,7 @@ fn serve(
             200,
             json!({ "connections": [{ "tcp": engine() }], "unreachable": [] }),
         ),
+        (Some(_), "/api/cli/agent/ask") => (200, servers_read(&body)),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
             approvals.run(&method, route, &body, approval.as_deref())
         }
@@ -323,6 +324,30 @@ fn serve(
         "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     )
+}
+
+/// What this Cloud's one Server, `web-1`, answers when Cloud reads it: one log line
+/// for runtime Service `web`, nothing for any other, and no metric readings.
+fn servers_read(body: &[u8]) -> Value {
+    let ask: Value = serde_json::from_slice(body).unwrap();
+    let seen = json!({ "read_at": 0, "from": "server", "unanswered": [] });
+    match ask["ask"]["query"].as_str() {
+        Some("logs") => {
+            let servers = if ask["ask"]["service"] == "web" {
+                let text =
+                    json!({ "status": "shown", "lines": ["ready"], "cut": false, "redacted": 0 });
+                json!([{ "server": "web-1", "text": text }])
+            } else {
+                json!([])
+            };
+            json!({ "servers": servers, "seen": seen, "notes": [] })
+        }
+        Some("metrics") => json!({
+            "since": 0, "until": 0, "metrics": [], "oom_kills": 0, "exits": 0, "restarts": 0,
+            "events": [], "notes": [], "seen": seen,
+        }),
+        other => panic!("this Cloud reads no {other:?}"),
+    }
 }
 
 /// What this Cloud knows: its GitHub, its one Server, and its Cluster
@@ -2856,6 +2881,53 @@ fn following_logs_refuses_a_service_the_environment_does_not_have() {
             );
         }
     }
+}
+
+#[test]
+fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
+    // Cloud refuses this member Server access, so `logs` and `metrics` read through Cloud.
+    let linus = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_linus",
+    };
+    ok(&linus, &["project", "new", "shop"]);
+    ok(&linus, &["service", "add", "web", "--image", "nginx:1"]);
+    for args in [&["logs", "nosvc"][..], &["metrics", "nosvc"]] {
+        let refused = error(&linus, args);
+        assert_eq!(
+            (
+                &refused["code"],
+                &refused["message"],
+                &refused["details"]["valid_children"]
+            ),
+            (
+                &json!("not_found"),
+                &json!("No Service named nosvc in Environment production"),
+                &json!(["web"])
+            ),
+            "{args:?}"
+        );
+    }
+    ok(&linus, &["metrics", "web"]);
+    // Lines for `web` already printed, so the refusal for `nosvc` comes after them.
+    let home = tempfile::tempdir().unwrap();
+    let output = linus
+        .command(home.path())
+        .args(["logs", "web", "nosvc"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap()
+        ),
+        (
+            Some(3),
+            "web@web-1  ready\n".to_owned(),
+            "error: No Service named nosvc in Environment production\nvalid: web\n".to_owned()
+        )
+    );
 }
 
 /// Run `ployz --json ARGS` in `dir` with a lasting `home`, where directory links live.

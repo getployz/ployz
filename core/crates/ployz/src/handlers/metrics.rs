@@ -74,14 +74,17 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
             let named = leaf
                 .get_one::<String>("service")
                 .expect("the subject group requires a Service or a Server");
-            let (service, unknown) = qualified(root, named)?;
+            let (service, refusal) = qualified(root, named)?;
             (
                 Asked::Service {
                     service: service.clone(),
                     named: named.clone(),
-                    unknown,
+                    unknown: refusal(),
                 },
-                MetricsAsked::Service(service),
+                MetricsAsked::Service {
+                    service,
+                    unknown: refusal(),
+                },
             )
         }
     };
@@ -152,17 +155,23 @@ enum Asked {
     Server(MachineTarget),
 }
 
-/// The Service `named` selects in the addressed Environment, and the refusal for
-/// it if the Environment does not have it now.
-fn qualified(root: &ArgMatches, named: &str) -> Result<(QualifiedService, Option<Error>), Error> {
+/// The Service `named` selects in the addressed Environment, and what gives the
+/// refusal for it if the Environment does not have it now.
+fn qualified(
+    root: &ArgMatches,
+    named: &str,
+) -> Result<(QualifiedService, impl Fn() -> Option<Error>), Error> {
     let scoped = scope(root)?;
     let selector = ServiceSelector::parse(named)?;
-    let unknown = scoped.as_ref().and_then(|scoped| {
-        scoped
-            .unknown(&selector)
-            .map(|name| scoped.no_service(&name))
-    });
-    let selector = in_scope(selector, scoped.as_ref())?;
+    let resolved = in_scope(selector.clone(), scoped.as_ref())?;
+    let unknown = move || {
+        scoped.as_ref().and_then(|scoped| {
+            scoped
+                .unknown(&selector)
+                .map(|name| scoped.no_service(&name))
+        })
+    };
+    let selector = resolved;
     let service = QualifiedService::parse(selector.as_str()).map_err(|_| {
         Error::usage(format!(
             "No Environment is linked, so {named:?} names no Service; add --project and --env"

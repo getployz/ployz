@@ -5,7 +5,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use chrono::Utc;
-use ployz_core::{MachineName, QualifiedService, ServiceName};
+use ployz_core::{MachineName, QualifiedService, ServiceName, ServiceSelector};
 use ployz_store::{
     EnvironmentRef, ServiceQuery,
     tools::{
@@ -85,6 +85,11 @@ pub(super) fn logs(
             })
             .collect::<Result<Vec<_>, Error>>()?
     };
+    let unknown = |name: &ServiceName| {
+        ServiceSelector::parse(name.as_str())
+            .ok()
+            .and_then(|selector| scoped.unknown(&selector))
+    };
     let environment = EnvironmentRef {
         project: Some(scoped.environment.project.clone()),
         environment: Some(scoped.environment.name.clone()),
@@ -119,6 +124,20 @@ pub(super) fn logs(
         )?;
         read.push((name, answer));
     }
+    // A name the Environment lacks that no Server answered for, when every Server answered.
+    let refusal = read
+        .iter()
+        .find(|(name, answer)| {
+            answer.servers.is_empty()
+                && answer.seen.unanswered.is_empty()
+                && unknown(name).is_some()
+        })
+        .map(|(name, _)| scoped.no_service(name));
+    if read.iter().all(|(_, answer)| answer.servers.is_empty())
+        && let Some(refusal) = refusal
+    {
+        return Err(refusal);
+    }
     let shown = read
         .iter()
         .map(|(service, answer)| json!({ "service": service, "logs": answer }))
@@ -145,12 +164,18 @@ pub(super) fn logs(
                 ui::note(note);
             }
         }
-    })
+    })?;
+    refusal.map_or(Ok(()), Err)
 }
 
 /// `metrics` for a Service, by its runtime name, or a Server, by name.
 pub(super) enum MetricsAsked {
-    Service(QualifiedService),
+    Service {
+        service: QualifiedService,
+        /// The refusal to give when nothing answers for a Service the Environment
+        /// does not have now.
+        unknown: Option<Error>,
+    },
     Server(String),
 }
 
@@ -159,13 +184,14 @@ pub(super) fn metrics(
     asked: MetricsAsked,
     since_seconds: i64,
 ) -> Result<(), Error> {
-    let (subject, name) = match asked {
-        MetricsAsked::Service(service) => (
+    let (subject, name, unknown) = match asked {
+        MetricsAsked::Service { service, unknown } => (
             MetricsSubject::Service {
                 namespace: service.namespace.clone(),
                 service: service.name.clone(),
             },
             service.name.to_string(),
+            unknown,
         ),
         MetricsAsked::Server(named) => {
             let only = MachineName::parse(named.as_str())
@@ -180,6 +206,7 @@ pub(super) fn metrics(
                     server: server.reference(),
                 },
                 named,
+                None,
             )
         }
     };
@@ -193,6 +220,12 @@ pub(super) fn metrics(
             deployment: None,
         }),
     )?;
+    if let Some(refusal) = unknown
+        && answer.metrics.is_empty()
+        && answer.seen.unanswered.is_empty()
+    {
+        return Err(refusal);
+    }
     let mut table = Table::new(
         ["METRIC", "NOW", "AVG", "PEAK"],
         "No Server reported a reading in this range.",
