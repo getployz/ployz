@@ -22,10 +22,10 @@ pub(crate) struct Task {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TaskKind {
     /// Creates a new Container: takes a slot in its Machine's window and waits
-    /// until its Machine routes every changed dependency.
+    /// until every live proxy lists each changed dependency's new copy.
     Start,
-    /// Runs a hook against the dependencies, so it waits for its Machine's
-    /// acks like a start but takes no window slot.
+    /// Runs a hook against the dependencies, so it waits for them to be routed
+    /// like a start but takes no window slot.
     Hook,
     /// Removes a copy the Service's previous pointer named, so it waits until
     /// every Machine routes the new pointer.
@@ -263,7 +263,7 @@ impl Schedule {
         })
     }
 
-    pub(crate) fn blocked_on_acks(&self) -> Vec<(usize, ServiceName)> {
+    pub(crate) fn waiting_on_routes(&self) -> Vec<(usize, ServiceName)> {
         let mut blocked = Vec::new();
         for Slot { group, phase } in &self.slots {
             let pending = match phase {
@@ -275,7 +275,7 @@ impl Schedule {
             };
             for task in pending {
                 blocked.extend(
-                    self.missing_acks(group, task)
+                    self.unrouted_dependencies(group, task)
                         .map(|service| (task, service.clone())),
                 );
             }
@@ -360,7 +360,7 @@ impl Schedule {
                 let room = !starts || *window < MACHINE_WINDOW;
                 if room
                     && self
-                        .missing_acks(&self.slot(group).group, task)
+                        .unrouted_dependencies(&self.slot(group).group, task)
                         .next()
                         .is_none()
                 {
@@ -450,7 +450,7 @@ impl Schedule {
             })
     }
 
-    fn missing_acks<'a>(
+    fn unrouted_dependencies<'a>(
         &'a self,
         group: &'a ServiceGroup,
         task: usize,
@@ -557,7 +557,7 @@ mod tests {
             starts(&mut schedule).is_empty(),
             "api waits until every proxy lists db"
         );
-        assert_eq!(schedule.blocked_on_acks(), vec![(1, name("db"))]);
+        assert_eq!(schedule.waiting_on_routes(), vec![(1, name("db"))]);
         schedule.apply(routed("db"));
         assert_eq!(starts(&mut schedule), vec![1]);
         schedule.apply(Event::Completed(1));
@@ -620,7 +620,7 @@ mod tests {
             vec![start('1')],
         );
         assert_eq!(starts(&mut schedule), vec![0]);
-        assert!(schedule.blocked_on_acks().is_empty());
+        assert!(schedule.waiting_on_routes().is_empty());
     }
 
     #[test]
@@ -733,7 +733,7 @@ mod tests {
         assert_eq!(starts(&mut schedule), vec![1]);
         schedule.apply(Event::Completed(1));
         assert_eq!(starts(&mut schedule), vec![2]);
-        assert!(schedule.blocked_on_acks().is_empty());
+        assert!(schedule.waiting_on_routes().is_empty());
     }
 
     #[test]
@@ -753,10 +753,10 @@ mod tests {
         schedule.apply(Event::Published(0));
         schedule.apply(Event::Published(1));
         assert_eq!(
-            schedule.blocked_on_acks(),
+            schedule.waiting_on_routes(),
             vec![(2, name("db")), (2, name("cache"))]
         );
-        for (_, service) in schedule.blocked_on_acks() {
+        for (_, service) in schedule.waiting_on_routes() {
             schedule.apply(Event::Routed(service));
         }
         assert_eq!(starts(&mut schedule), vec![2]);
@@ -779,7 +779,7 @@ mod tests {
             starts(&mut schedule).is_empty(),
             "the migration would run against the old db"
         );
-        assert_eq!(schedule.blocked_on_acks(), vec![(1, name("db"))]);
+        assert_eq!(schedule.waiting_on_routes(), vec![(1, name("db"))]);
         schedule.apply(routed("db"));
         assert_eq!(starts(&mut schedule), vec![1]);
     }

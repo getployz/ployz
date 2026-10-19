@@ -658,7 +658,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             };
             inflight.push(next);
         }
-        let blocked = schedule.blocked_on_acks();
+        let blocked = schedule.waiting_on_routes();
         if blocked != blocked_before {
             blocked_since = None;
             blocked_before.clone_from(&blocked);
