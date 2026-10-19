@@ -288,6 +288,43 @@ fn a_secret_that_resolves_too_long_fails_the_deployment_at_claim() {
 }
 
 #[test]
+fn a_claim_that_resolves_too_long_leaves_the_running_deployment_running() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("api.env.HALF", json!({ "secret": "short" })),
+            ("web.env.BOTH", json!("${{ api.HALF }}${{ api.HALF }}")),
+        ],
+    )
+    .unwrap();
+    let healthy = admit(&store, 1).unwrap();
+    store
+        .claim(&healthy, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    set(
+        &store,
+        &[("api.env.HALF", json!({ "secret": "x".repeat(70 * 1024) }))],
+    )
+    .unwrap();
+    let newer = admit(&store, 2).unwrap();
+    let error = store
+        .claim(&newer, &RunnerId::parse("other").unwrap())
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    let status = |id: &DeploymentId| {
+        store
+            .read(&who(), &ployz_store::DeploymentQuery { id: id.clone() })
+            .unwrap()
+            .deployment
+            .status
+    };
+    assert_eq!(status(&healthy), ployz_store::DeploymentStatus::Running);
+    assert_eq!(status(&newer), ployz_store::DeploymentStatus::Failed);
+}
+
+#[test]
 fn a_typed_private_address_answers_with_its_reference() {
     let store = backend::open();
     shop(&store);
