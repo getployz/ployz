@@ -30,6 +30,10 @@ use crate::docker::{
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
+#[cfg(test)]
+static SETTLES: std::sync::Mutex<std::collections::BTreeMap<ContainerId, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// Why the cut's Container half left the root a writer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CutRefusal {
@@ -711,6 +715,14 @@ impl LocalMachine {
         container_id: &ContainerId,
         spec: &ResolvedServiceSpec,
     ) -> Result<HealthVerdict, Error> {
+        #[cfg(test)]
+        {
+            *SETTLES
+                .lock()
+                .expect("settle counts are never poisoned")
+                .entry(*container_id)
+                .or_default() += 1;
+        }
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
         let healthcheck = spec.container.healthcheck.as_ref();
@@ -759,6 +771,17 @@ impl LocalMachine {
             };
             tokio::time::sleep_until(started + (elapsed + HEALTH_POLL_INTERVAL).min(wake)).await;
         }
+    }
+
+    /// How many health settles this daemon ran for `container_id`.
+    #[cfg(test)]
+    pub(crate) fn settles_for_test(&self, container_id: &ContainerId) -> usize {
+        SETTLES
+            .lock()
+            .expect("settle counts are never poisoned")
+            .get(container_id)
+            .copied()
+            .unwrap_or_default()
     }
 
     async fn converge_container(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {

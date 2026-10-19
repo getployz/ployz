@@ -1144,16 +1144,15 @@ async fn in_on_an_in_copy_starts_it() {
 
 #[tokio::test]
 async fn settled_in_settles_health_once() {
-    const MONITOR: Duration = Duration::from_secs(3);
     let fleet = Fleet::start().await;
+    let node = fleet.node(0);
     let mut spec = spec("api");
-    spec.update.monitor_millis = Some(u64::try_from(MONITOR.as_millis()).unwrap());
+    spec.update.monitor_millis = Some(1_000);
     let mut new = new_copy("a", spec, 1);
     new.answer = AnswerWhen::Settled;
 
-    let started = std::time::Instant::now();
     let reply = ensure(
-        fleet.node(0),
+        node,
         ContainerWant::Running {
             container: RunTarget::New(new),
             rotation: RunRotation::In {
@@ -1163,7 +1162,6 @@ async fn settled_in_settles_health_once() {
         },
     )
     .await;
-    let took = started.elapsed();
 
     assert!(
         matches!(
@@ -1176,7 +1174,7 @@ async fn settled_in_settles_health_once() {
         "{reply:?}"
     );
     assert_eq!(rotation_of(&reply), CopyRotation::In);
-    assert!(took < MONITOR * 2, "settled once, not twice: took {took:?}");
+    assert_eq!(node.service.local.settles_for_test(&present(&reply)), 1);
 }
 
 mod rotation_commands {
