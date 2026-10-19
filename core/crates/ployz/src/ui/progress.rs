@@ -532,7 +532,11 @@ fn drive(
 }
 
 fn terminal_size() -> (usize, usize) {
-    crossterm::terminal::size().map_or((80, 24), |(w, h)| (usize::from(w), usize::from(h)))
+    window(crossterm::terminal::size())
+}
+
+fn window(size: io::Result<(u16, u16)>) -> (usize, usize) {
+    size.map_or((80, 24), |(w, h)| (usize::from(w), usize::from(h)))
 }
 
 fn label(subject: &Subject, frame: &Frame) -> String {

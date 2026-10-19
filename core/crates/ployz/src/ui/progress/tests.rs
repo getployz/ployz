@@ -281,6 +281,38 @@ fn interactive_finish_retains_full_frame_once_and_preserves_earlier_output() {
     assert!(!visible.contains("starting"), "{visible}");
 }
 
+fn unsized_pty() -> (usize, usize) {
+    window(Ok((0, 0)))
+}
+
+#[test]
+fn an_unsized_terminal_still_names_each_row() {
+    let terminal = InMemoryTerm::new(20, 90);
+    let initial = frame(State::Running(RowPhase::Starting));
+    let mut failed = initial.clone();
+    failed.rows.first_mut().unwrap().state = State::Failed;
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+        unsized_pty,
+    );
+    drive(
+        Script {
+            now: Duration::ZERO,
+            events: VecDeque::from([(
+                Duration::from_millis(250),
+                Message::Finish(failed, Disposition::Settled),
+            )]),
+        },
+        initial,
+        backend,
+        &mut TerminalWriter(terminal.clone()),
+        false,
+    );
+    let visible = terminal.contents();
+    assert!(visible.contains("✘ web on alpha  failed"), "{visible}");
+}
+
 #[test]
 fn abandoned_interactive_driver_clears_live_rows_without_claiming_outcome() {
     let terminal = InMemoryTerm::new(20, 90);
