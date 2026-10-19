@@ -5906,17 +5906,6 @@
             {
               "at": "store",
               "ask": {
-                "query": "service",
-                "environment": {
-                  "project": "shop",
-                  "environment": null
-                },
-                "service": "web"
-              }
-            },
-            {
-              "at": "store",
-              "ask": {
                 "query": "numbered_deployment",
                 "environment": {
                   "project": "shop",
@@ -5939,15 +5928,6 @@
               "namespace": "shop-production",
               "services": {},
               "view": "namespace"
-            }
-          },
-          {
-            "error": {
-              "code": "not_found",
-              "message": "No Service named web in Environment production",
-              "details": {
-                "valid_children": []
-              }
             }
           },
           {
