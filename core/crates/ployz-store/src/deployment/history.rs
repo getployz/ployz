@@ -401,15 +401,20 @@ pub(crate) fn build_log(
     build::log(tx, &stored, &query.service)
 }
 
-/// The order a list of every Deployment reads in, holds included: by admission,
-/// newest first. Within one second a hold (unnumbered) leads, and numbered ones
-/// keep their number order; the id settles the rest. Every row has each key, so
-/// a page cursor can't skip one.
+/// The rows a list of an Environment's Deployments shows: every numbered one, a
+/// hold still waiting for CI, and a hold cancelled while waiting. A hold a newer
+/// push replaced before CI answered is left out: it never got a number, and a
+/// burst of them would push real Deployments off the first page.
+const LISTED: &str = "(number IS NOT NULL OR status <> 'superseded')";
+
+/// The order a list reads in: by admission, newest first. Within one second a
+/// hold (unnumbered) leads, and numbered ones keep their number order; the id
+/// settles the rest. Every row has each key, so a page cursor can't skip one.
 const LIST_KEY: &str = "admitted DESC, COALESCE(number, 9223372036854775807) DESC, id DESC";
 
-/// One page of `environment`'s Deployments in [`LIST_KEY`] order, after the one
-/// `after` names: the last of the previous page. The second element names the
-/// last of this page when another follows.
+/// One page of `environment`'s [`LISTED`] Deployments in [`LIST_KEY`] order, after
+/// the one `after` names: the last of the previous page. The second element names
+/// the last of this page when another follows.
 pub(crate) fn page(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -424,7 +429,10 @@ pub(crate) fn page(
     let mut after_sql = String::new();
     if let Some(after) = after {
         let known = tx.query(
-            "SELECT 1 FROM config_deployment WHERE environment_id = ?1 AND id = ?2",
+            &format!(
+                "SELECT 1 FROM config_deployment \
+                 WHERE environment_id = ?1 AND id = ?2 AND {LISTED}"
+            ),
             &[environment.as_str().into(), after.as_str().into()],
         )?;
         if known.is_empty() {
@@ -443,7 +451,8 @@ pub(crate) fn page(
     let rows = tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
-             WHERE environment_id = ?1{after_sql} ORDER BY {LIST_KEY} LIMIT ?2"
+             WHERE environment_id = ?1 AND {LISTED}{after_sql} \
+             ORDER BY {LIST_KEY} LIMIT ?2"
         ),
         &params,
     )?;

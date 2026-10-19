@@ -833,12 +833,18 @@ fn a_cancelled_hold_is_not_the_latest_deployment() {
     let latest = pr.environments[0].deployment.as_ref().unwrap();
     assert_eq!((&latest.id, latest.number), (&opened.id, Some(1)));
 
-    // The list still shows every row: the cancelled hold, the hold it superseded, and #1.
+    // The list shows the cancelled hold and #1; the hold the push superseded is noise.
     let listed: Vec<_> = beside(&store, &who, &opened)
         .iter()
-        .map(|deployment| deployment.number)
+        .map(|deployment| (deployment.number, deployment.status.clone()))
         .collect();
-    assert_eq!(listed, [None, None, Some(1)]);
+    assert_eq!(
+        listed,
+        [
+            (None, DeploymentStatus::Cancelled),
+            (Some(1), DeploymentStatus::Applied)
+        ]
+    );
 }
 
 /// An Environment whose only Deployment is a hold has no latest Deployment to show,
@@ -885,8 +891,9 @@ fn default_deployment_skips_a_newer_hold() {
     assert_eq!(held(&store, &who), [hold]);
 }
 
-/// Pages walk every row, holds included: twenty superseded holds and one waiting
-/// fill a page, and the cursor still reaches the twenty-first.
+/// Pages walk every listed row, holds included: twenty cancelled holds and one
+/// waiting fill a page, and the cursor still reaches the twenty-first. The holds
+/// each push superseded before it was cancelled are not listed at all.
 #[test]
 fn pages_reach_holds_past_the_first_page() {
     let (store, who) = shop();
@@ -894,9 +901,27 @@ fn pages_reach_holds_past_the_first_page() {
     publish(&store, &who);
     let heads: Vec<String> = (1..=21).map(|n| format!("{n:040x}")).collect();
     let mut base: Option<&str> = None;
-    for head in &heads {
+    // Each of the first twenty heads lands on a hold a `stale` push supersedes at
+    // once; the hold for the head itself is then cancelled. The last head waits.
+    let stale: Vec<String> = (1..=20).map(|n| format!("{n:039x}a")).collect();
+    for (n, head) in heads.iter().enumerate() {
+        if let Some(stale) = stale.get(n) {
+            system(&store, &push(base, Some(stale), None));
+            base = Some(stale);
+        }
         system(&store, &push(base, Some(head), None));
         base = Some(head);
+        if n < 20 {
+            let [hold] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
+            store
+                .write(
+                    &who,
+                    &Cancel {
+                        deployment: hold.id,
+                    },
+                )
+                .unwrap();
+        }
     }
     let page = |cursor: Option<String>| {
         store
@@ -925,6 +950,16 @@ fn pages_reach_holds_past_the_first_page() {
     let seen: std::collections::BTreeSet<_> = rows.iter().map(|row| row.id.clone()).collect();
     assert_eq!(seen.len(), 21);
     assert!(rows.iter().all(|row| row.number.is_none()));
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.status == DeploymentStatus::Cancelled)
+            .count(),
+        20
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.status != DeploymentStatus::Superseded)
+    );
     let waiting: Vec<_> = rows
         .iter()
         .filter(|row| row.status == DeploymentStatus::WaitingForCi)

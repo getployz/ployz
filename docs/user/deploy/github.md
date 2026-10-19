@@ -104,6 +104,7 @@ was frozen for it, so it can't be redeployed: push again instead.
 - If a check fails, the deployment reads **CI failed** and the commit doesn't deploy. Re-run the
   check on GitHub and the commit deploys once it passes, or push a fix.
 - A newer push replaces a commit that's still waiting, and so does a deploy you start yourself.
+  A replaced commit leaves the list; one you cancelled stays, so you can see you dropped it.
 - If no checks run for a commit, it waits until your next push. CI that reports commit statuses
   instead of checks counts as no checks.
 
