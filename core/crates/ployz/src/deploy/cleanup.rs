@@ -254,6 +254,38 @@ pub(crate) async fn hold<C: MachineOperations>(
     .map(Step::from)
 }
 
+/// Take `copy` Out and wait until no live proxy routes it. A copy never
+/// routed (Pending) or already Out needs no ask; the wait still runs.
+pub(crate) async fn take_out<C: MachineOperations>(
+    client: &C,
+    copy: &Copy,
+    allow_empty: bool,
+    cancellation: &CancellationToken,
+) -> Result<Step, RpcError> {
+    if matches!(copy.rotation, CopyRotation::In | CopyRotation::Held(_)) {
+        let want = ContainerWant::Out {
+            container: copy.locator(),
+            allow_empty,
+            expect: Some(copy.rotation.clone()),
+        };
+        let answer = client
+            .ensure_unsettled(&copy.machine_id, want, Some(TARGET_RPC_TIMEOUT))
+            .await?;
+        if let EnsuredContainer::Refused { refusal, .. } = answer {
+            return Ok(Step::Refused(refusal));
+        }
+    }
+    wait_unlisted(
+        client,
+        &copy.machine_id,
+        &copy.service,
+        &copy.container_id,
+        cancellation,
+    )
+    .await
+    .map(Step::from)
+}
+
 /// Take `copy` Out, wait until no live proxy routes it, then remove it. A copy
 /// never routed (Pending) goes straight to Gone. The copy is removed only after
 /// the wait confirms: a copy proxies may still route is left running.
@@ -263,34 +295,12 @@ pub(crate) async fn retire<C: MachineOperations>(
     allow_empty: bool,
     cancellation: &CancellationToken,
 ) -> Result<Step, RpcError> {
-    match copy.rotation {
-        CopyRotation::Pending => return remove(client, copy).await,
-        CopyRotation::In | CopyRotation::Held(_) => {
-            let want = ContainerWant::Out {
-                container: copy.locator(),
-                allow_empty,
-                expect: Some(copy.rotation.clone()),
-            };
-            let answer = client
-                .ensure_unsettled(&copy.machine_id, want, Some(TARGET_RPC_TIMEOUT))
-                .await?;
-            if let EnsuredContainer::Refused { refusal, .. } = answer {
-                return Ok(Step::Refused(refusal));
-            }
-        }
-        CopyRotation::Out => {}
+    if copy.rotation == CopyRotation::Pending {
+        return remove(client, copy).await;
     }
-    match wait_unlisted(
-        client,
-        &copy.machine_id,
-        &copy.service,
-        &copy.container_id,
-        cancellation,
-    )
-    .await?
-    {
-        Wait::Done => remove(client, copy).await,
-        wait => Ok(Step::from(wait)),
+    match take_out(client, copy, allow_empty, cancellation).await? {
+        Step::Done => remove(client, copy).await,
+        step => Ok(step),
     }
 }
 
