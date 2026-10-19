@@ -141,8 +141,9 @@ pub(super) fn in_scope(
     let Some(scoped) = scoped else {
         return Ok(selector);
     };
-    let Ok(name) = ployz_core::ServiceName::parse(selector.as_str()) else {
-        return Ok(selector.with_namespace(&scoped.namespace)?);
+    let name = match ployz_core::ServiceName::parse(selector.as_str()) {
+        Ok(name) if ployz_core::ServiceId::parse(selector.as_str()).is_err() => name,
+        _ => return Ok(selector.with_namespace(&scoped.namespace)?),
     };
     if let Some(runtime) = scoped.services.get(&name) {
         return Ok(ServiceSelector::parse(runtime.to_string())?.with_namespace(&scoped.namespace)?);
@@ -1328,6 +1329,8 @@ mod scope_tests {
         assert_eq!(resolve("api2").unwrap(), "shop-production/api");
         assert_eq!(resolve("worker").unwrap(), "shop-production/worker");
         assert_eq!(resolve("other-ns/api2").unwrap(), "other-ns/api2");
+        let id = "a".repeat(32);
+        assert_eq!(resolve(&id).unwrap(), id);
         let typo = resolve("web").unwrap_err();
         assert_eq!(
             typo.to_string(),
