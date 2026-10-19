@@ -201,16 +201,25 @@ pub(crate) fn edit(
 }
 
 /// Two changes to one path: only the last would land, without a word. A rename writes
-/// where it moves from and where it moves to, and a Config by name and by ID is one
-/// Config.
+/// where it moves from and where it moves to, a variable set with `exported` writes
+/// its `.exported` too, and a Config by name and by ID is one Config.
 fn refuse_twice(steps: &[(SettingPath, Step)], environment: &Environment) -> Result<(), RpcError> {
     let mut written: Vec<SettingPath> = Vec::new();
     for (path, step) in steps {
         let mut writes = vec![(identity(path, environment), path.clone())];
-        if let Step::Rename { to, .. } = step {
-            let to = SettingPath::at(path.settings_of()?, Target::Variable(to.clone()));
-            if to != *path {
-                writes.push((to.clone(), to));
+        let also = match (step, path.target()) {
+            (Step::Rename { to, .. }, _) => Some(Target::Variable(to.clone())),
+            (Step::Set(Value::Object(fields)), Some(Target::Variable(key)))
+                if fields.contains_key("exported") =>
+            {
+                Some(Target::Exported(key.clone()))
+            }
+            _ => None,
+        };
+        if let Some(also) = also {
+            let also = SettingPath::at(path.settings_of()?, also);
+            if also != *path {
+                writes.push((also.clone(), also));
             }
         }
         for (identity, named) in writes {

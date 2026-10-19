@@ -798,10 +798,8 @@ fn a_variable_object_with_exported_and_a_change_to_exported_are_refused() {
         set("web.env.X.exported", json!(true)),
     ])
     .unwrap();
-    assert_eq!(
-        value(&store, "web.env.X"),
-        json!({ "value": "y", "exported": true })
-    );
+    assert_eq!(value(&store, "web.env.X"), json!("y"));
+    assert_eq!(value(&store, "web.env.X.exported"), true);
 }
 
 /// Services `web`, `api` and `worker`, where `api` and `worker` reference web's
