@@ -364,6 +364,12 @@ async fn a_start_of_a_held_copy_brings_it_back_in() {
 }
 
 #[tokio::test]
+async fn a_start_whose_health_cannot_be_read_is_unconfirmed() {
+    let service = support::DeployService::new(support::machine('a', "one")).unread_health();
+    assert_eq!(started(service).await, Started::Unconfirmed);
+}
+
+#[tokio::test]
 async fn a_start_whose_copy_cannot_be_read_starts_nothing() {
     let service =
         support::DeployService::new(support::machine('a', "one")).fail_inspects("inspect failed");

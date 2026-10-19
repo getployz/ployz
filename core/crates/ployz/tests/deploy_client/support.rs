@@ -68,6 +68,8 @@ pub(super) struct DeployService {
     oom_killed: bool,
     /// When a Starting Container turns healthy and starts serving.
     healthy_at: Option<tokio::time::Instant>,
+    /// The Machine answers an In ask without a health verdict and leaves the copy where it was.
+    unread_health: bool,
     effective_healthcheck: Option<HealthcheckSpec>,
     removed: Arc<Mutex<BTreeSet<ContainerId>>>,
     pub(super) history_requests: Arc<Mutex<Vec<ployz_core::LogHistoryRequest>>>,
@@ -150,6 +152,7 @@ impl DeployService {
             },
             oom_killed: false,
             healthy_at: None,
+            unread_health: false,
             effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
             history_requests: Arc::new(Mutex::new(Vec::new())),
@@ -222,6 +225,11 @@ impl DeployService {
 
     pub(super) fn never_unroute_on(mut self, machine_id: MachineId) -> Self {
         self.sticky_proxies.insert(machine_id);
+        self
+    }
+
+    pub(super) fn unread_health(mut self) -> Self {
+        self.unread_health = true;
         self
     }
 
@@ -512,6 +520,12 @@ impl DeployService {
                 now: observed(),
                 refusal,
             }),
+            Ok(RotationEdge::Write(CopyRotation::In)) if self.unread_health => {
+                Err(EnsuredContainer::Ensured {
+                    now: observed(),
+                    health: None,
+                })
+            }
             Ok(RotationEdge::Write(CopyRotation::In)) => {
                 let health = self.settle().await;
                 if health == HealthVerdict::Healthy {
