@@ -6,7 +6,7 @@ import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
 import { cliLifetimeLabel, installLines } from "#/modules/machines/waiting/install-lines";
 import { InstallTabs } from "./copy-block";
-import { ADD_SERVERS_REFUSED, useCanAddServers, useMintFleetToken } from "./use-waiting";
+import { useCanAddServers, useMintFleetToken } from "./use-waiting";
 
 const STEPS = [
   { title: "Run the line", description: "Installs the agent. Docker too, if missing." },
@@ -20,7 +20,7 @@ const STEPS = [
  */
 export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: string; arrived: boolean }) {
   const mint = useMintFleetToken(organizationSlug);
-  const allowed = useCanAddServers(organizationSlug);
+  const { allowed, refusal } = useCanAddServers(organizationSlug);
   if (arrived) {
     return mint.data === undefined ? (
       <p className="text-sm text-muted-foreground">Add servers to queue more here.</p>
@@ -38,13 +38,13 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
         <CardDescription>Run this on any Linux server with root. It shows up below in a few seconds.</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {!allowed ? (
-          <p className="text-sm text-muted-foreground">{ADD_SERVERS_REFUSED}</p>
+        {refusal !== undefined ? (
+          <p className="text-sm text-muted-foreground">{refusal}</p>
         ) : mint.data === undefined ? (
           <Button
             variant="ink"
             className="w-fit"
-            disabled={mint.isPending}
+            disabled={!allowed || mint.isPending}
             onClick={() => mint.mutate({ name: null, expiresIn: "7d", autoEnroll: null })}
           >
             {mint.isPending ? <Spinner data-icon="inline-start" /> : <TerminalIcon data-icon="inline-start" />}

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.functions";
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
 import { STALL_MS } from "#/hooks/use-exclusive-mutation";
+import * as memberFunctions from "#/modules/organization/members.functions";
 import { membersKey } from "#/modules/organization/members.queries";
 import { AddServersDialog } from "./add-servers-dialog";
 
@@ -21,16 +22,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function renderDialog(role: "owner" | "admin" | "member" = "owner") {
+async function renderDialog(role: "owner" | "admin" | "member" | "loading" | "failed" | "pending" = "owner") {
   const router = createRouter({
     routeTree: createRootRoute({ component: () => <AddServersDialog organizationSlug="ada" /> }),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   await router.load();
-  const client = new QueryClient();
-  client.setQueryData(membersKey("ada"), { members: [{ you: true, role }], invites: [], mail: false });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (role === "loading") vi.spyOn(memberFunctions, "listMembersServerFn").mockReturnValue(new Promise(() => {}));
+  else if (role === "failed") vi.spyOn(memberFunctions, "listMembersServerFn").mockRejectedValue(new Error("offline"));
+  else if (role !== "pending") client.setQueryData(membersKey("ada"), { members: [{ you: true, role }], invites: [], mail: false });
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
   await screen.findByRole("button", { name: "Add servers" });
+  if (role === "failed") await waitFor(() => expect(client.getQueryState(membersKey("ada"))?.status).toBe("error"));
 }
 
 async function mintWith(expiresIn?: string) {
@@ -168,6 +172,43 @@ it("lets go of a mint that never answers, so Escape closes the dialog", async ()
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("keeps Add servers closed while your role loads, without claiming who may add", async () => {
+  await renderDialog("loading");
+  const add = screen.getByRole("button", { name: "Add servers" });
+  expect(add).toHaveProperty("disabled", true);
+  expect(add.getAttribute("title")).toBeNull();
+});
+
+it("keeps Add servers closed when your role can't be read, without claiming who may add", async () => {
+  await renderDialog("failed");
+  const add = screen.getByRole("button", { name: "Add servers" });
+  expect(add).toHaveProperty("disabled", true);
+  expect(add.getAttribute("title")).toBeNull();
+});
+
+async function resolveRoleAfterLoading(role: "admin" | "member") {
+  let resolve!: (members: Awaited<ReturnType<typeof memberFunctions.listMembersServerFn>>) => void;
+  vi.spyOn(memberFunctions, "listMembersServerFn").mockReturnValue(new Promise((settle) => { resolve = settle; }));
+  await renderDialog("pending");
+  const add = screen.getByRole("button", { name: "Add servers" });
+  expect(add).toHaveProperty("disabled", true);
+  await act(async () => resolve({ members: [{ you: true, role, name: "Ada", email: "ada@example.com", joined_at: "2026-10-01T00:00:00Z" }], invites: [], mail: false }));
+  return add;
+}
+
+it("opens Add servers for an admin once their role loads", async () => {
+  const add = await resolveRoleAfterLoading("admin");
+  await waitFor(() => expect(add).toHaveProperty("disabled", false));
+  fireEvent.click(add);
+  expect(await screen.findByRole("heading", { name: "New fleet token" })).toBeTruthy();
+});
+
+it("keeps Add servers closed for a member before and after their role loads", async () => {
+  const add = await resolveRoleAfterLoading("member");
+  await waitFor(() => expect(add.getAttribute("title")).toBe("Only an owner or admin can add servers."));
+  expect(add).toHaveProperty("disabled", true);
 });
 
 it("keeps a member out of the token form, saying who can add servers", async () => {

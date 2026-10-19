@@ -13,12 +13,16 @@ import { can } from "#/modules/organization/permissions";
 
 export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null };
 
-export const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
+const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
 
-/** Whether you may mint a fleet token. Cloud checks it too; until your role loads, the controls stay open. */
+/**
+ * Whether you may mint a fleet token, and why not once your role says so. Closed until your role loads, and if it
+ * never does, since Cloud refuses the mint without servers:add.
+ */
 export function useCanAddServers(organizationSlug: string) {
   const role = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
-  return role === undefined || can(role, "servers:add");
+  const allowed = role !== undefined && can(role, "servers:add");
+  return { allowed, refusal: role === undefined || allowed ? undefined : ADD_SERVERS_REFUSED };
 }
 
 /** Mints a fleet token. The secret lives only in the result, so it shows once. */
