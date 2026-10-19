@@ -21,7 +21,7 @@ import {
   branchQuery, environmentsQuery, fetchStoreView, requireView, servicesQuery, syncQuery,
   useCachedStoreView, useStoreViews, volumesQuery,
 } from "#/modules/config-store/store-view.queries";
-import { storeEnvironmentTree } from "#/modules/config-store/store-workspace";
+import { removalDeployment, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
 import { useStoreBranchClose } from "./branch-close";
@@ -93,6 +93,8 @@ function BranchSync({ params, store, branch, environments }: {
   const name = branch.environment.name;
   const me = environments.find((environment) => environment.name === name);
   const removal = me?.removal ?? null;
+  const deployment = me ? removalDeployment(me) : null;
+  const closed = deployment?.in_flight === true;
   // Its main half syncs into the Parent.
   const state = syncButtonState(branch, removal);
   // Warm the main half's dialog.
@@ -128,19 +130,19 @@ function BranchSync({ params, store, branch, environments }: {
                 {kept || branch.closes_at === null ? null : <span className="ml-auto pl-4 text-muted-foreground">{closesIn(branch.closes_at)}</span>}
               </DropdownMenuCheckboxItem>
               {/* Off until the next push; one shut down comes back with a Deploy before that. */}
-              {shuttable && removal?.status === "applied" && !removal.in_flight ? (
+              {shuttable && deployment?.status === "applied" && !deployment.in_flight ? (
                 <DropdownMenuItem onClick={() => {
                   writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: store, services: [], version: null, accept_volume_loss: [] });
                 }}>Deploy {name}</DropdownMenuItem>
               ) : shuttable ? (
-                <DropdownMenuItem disabled={removal?.in_flight === true} onClick={() => void closing.start(true)}>
+                <DropdownMenuItem disabled={closed} onClick={() => void closing.start(true)}>
                   Shut down until the next push
                 </DropdownMenuItem>
               ) : null}
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              <DropdownMenuItem variant="destructive" disabled={Boolean(me?.default) || removal?.in_flight === true || children.length > 0}
+              <DropdownMenuItem variant="destructive" disabled={Boolean(me?.default) || closed || children.length > 0}
                 title={me?.default ? `${name} is the project's default` : children.length ? `Close its branches first: ${children.join(", ")}` : undefined}
                 onClick={() => setAsking(true)}>
                 Close {name}…

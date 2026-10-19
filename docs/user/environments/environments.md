@@ -34,7 +34,7 @@ database, so staging gets its own copy of both and its own data. Use your own se
 
 Ployz never copies data, so staging's database starts empty. A setup command runs once, before
 `web` first starts, to fill it. To give every new branch of production the same commands, add
-them under **Branches of production** in production's **Settings → Environment**.
+them under **Branch setup** in production's **Settings → Environment**.
 
 ## Test staging at its own address
 
@@ -170,6 +170,12 @@ syncing** in the Sync dialog.
   Open the Sync button's ▾ menu, then **Close staging…**. Ployz lists what goes, including changes
   you haven't synced. Type `my-app/staging` and click **Close branch**.
 
+A branch that closes as you sync it, or after 7 days, comes off your servers at Ployz's next
+hourly sweep. Until then the Sync button reads **Closing**, and `ployz env ls` shows
+`pending (synced)` or `pending (idle)` under REMOVAL. If its removal hasn't started, close it
+again from the ▾ menu or with `ployz env rm`. Once its removal runs, REMOVAL shows that
+deployment and its status, such as `#4 running`.
+
 ### Production's changes follow into staging
 
 When production deploys something new, the change arrives in staging as a staged change, marked
@@ -191,6 +197,7 @@ another under **Default environment** in **Settings → Project**.
 ### Protect an environment
 
 A new project's default environment starts Protected, and its header shows a **Protected** lock.
+On a phone, the lock shows without the word.
 In a Protected environment, only an owner or admin can connect a repository, change a service's
 deploy branch, or turn protection off. It can't be deleted until you unprotect it. Deleting the
 whole project still takes it. Environments that existed before Protected shipped start

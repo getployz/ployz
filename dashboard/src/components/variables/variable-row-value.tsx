@@ -1,14 +1,9 @@
 import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
 import { CopyButton } from "#/components/copy-button";
-import { AlertTriangleIcon, EyeIcon, EyeOffIcon } from "lucide-react";
+import { AlertTriangleIcon, EyeIcon, EyeOffIcon, LockIcon } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "#/components/ui/tooltip";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 
@@ -108,16 +103,12 @@ export function VariableRowValue({
         <CopyButton value={plainValue} label="Copy value" />
       ) : null}
       {isSealed ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span className="inline-flex size-4 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
-                !
-              </span>
-            }
-          />
-          <TooltipContent>Sealed values cannot be revealed.</TooltipContent>
-        </Tooltip>
+        <Popover>
+          <PopoverTrigger openOnHover render={<Button type="button" variant="ghost" size="icon-sm" aria-label="Sealed" />}>
+            <LockIcon className="text-muted-foreground" />
+          </PopoverTrigger>
+          <PopoverContent>Sealed. Its value is never shown.</PopoverContent>
+        </Popover>
       ) : null}
     </div>
   );

@@ -111,8 +111,8 @@ function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, save
   // A new command runs where the last one does.
   const last = services.find((service) => service.lineageId === setup.commands.at(-1)?.lineageId) ?? services[0];
   return (
-    <SettingsSection id="branch-setup" title={`Branches of ${environmentSlug}`}
-      description="Runs once in each new branch.">
+    <SettingsSection id="branch-setup" title="Branch setup"
+      description={`Commands that run once in each new branch of ${environmentSlug}.`}>
       {!last ? <SettingsEmpty title="Add a service first." /> : <>
         {setup.commands.length === 0 ? <SettingsEmpty title="No setup commands" /> : (
           <SettingsList label="Setup commands">

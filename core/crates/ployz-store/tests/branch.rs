@@ -413,6 +413,33 @@ fn a_branch_is_refused_before_anything_is_written() {
 }
 
 #[test]
+fn an_empty_parent_says_there_is_nothing_to_branch() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    for copy in [&[][..], &["web"][..]] {
+        let refused = store
+            .write(&who, &branch("fix", "production", copy))
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+        assert_eq!(
+            refused.message,
+            "production is empty, so there is nothing to branch"
+        );
+        assert_eq!(refused.details["next"], "ployz env new fix --project shop");
+    }
+}
+
+#[test]
 fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
