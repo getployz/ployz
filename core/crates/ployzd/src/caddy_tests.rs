@@ -1,6 +1,6 @@
 use super::{CONFIG_FILE, CaddyAdmin, Error, render_caddyfile};
 use crate::{
-    corrosion::{CertificateChallenge, CertificateRow, ServingPointers},
+    corrosion::{CertificateChallenge, CertificateRow},
     ingress::{
         IngressProjection, apply_caddy,
         tests::{renderer_projection, test_material},
@@ -8,10 +8,11 @@ use crate::{
 };
 use ployz_core::{
     AdvertisedEndpoint, CertificateHost, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, HOSTNAME_VERIFY_PATH, HealthObservation,
-    HostBind, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, MACHINE_API_PORT, Machine, MachineId,
-    MachineName, Namespace, PortPublication, ResolvedServiceSpec, ServiceContainer, ServiceId,
-    ServiceName, TransportProtocol, WireGuardPublicKey, service_containers,
+    ContainerObservation, ContainerRuntimeObservation, CopyRotation, HOSTNAME_VERIFY_PATH,
+    HealthObservation, HostBind, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, MACHINE_API_PORT,
+    Machine, MachineId, MachineName, Namespace, PortPublication, ProxyRoutes, ResolvedServiceSpec,
+    ServiceContainer, ServiceId, ServiceName, TransportProtocol, WireGuardPublicKey, proxy_routes,
+    service_containers,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -44,16 +45,17 @@ fn projection(
         runtime: Default::default(),
         build_concurrency: None,
     };
-    IngressProjection::derive(
-        &machine,
-        &containers
-            .iter()
-            .cloned()
-            .map(ServiceContainer::into_observation)
-            .collect::<Vec<_>>(),
-        certificates,
-        &ServingPointers::default(),
-    )
+    derive(&machine, containers, certificates)
+}
+
+/// The projection a freshly started proxy derives, with no Machine Down.
+fn derive(
+    machine: &Machine,
+    containers: &[ServiceContainer],
+    certificates: &BTreeMap<CertificateHost, CertificateRow>,
+) -> IngressProjection {
+    let routes = proxy_routes(containers, |_| false, &ProxyRoutes::new());
+    IngressProjection::derive(machine, containers, certificates, &routes)
 }
 
 fn caddyfile_for(
@@ -76,11 +78,10 @@ async fn reconcile<A: CaddyAdmin>(
     config_file: &Path,
     admin: Option<&A>,
 ) -> Result<(), Error> {
-    let projection = IngressProjection::derive(
+    let projection = derive(
         machine,
-        observations,
+        &service_containers(observations.iter().cloned()),
         certificates,
-        &ServingPointers::default(),
     );
     apply_caddy(&projection, config_file, admin).await
 }
@@ -1117,6 +1118,47 @@ async fn reconcile_writes_material_and_pins_it_before_load() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn an_empty_route_answers_the_same_503_as_no_healthy_replicas() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let copy =
+        |suffix: u8, name: &str, update: &dyn Fn(&mut ployz_core::ContainerObservationParts)| {
+            let mut copy = observation(
+                suffix,
+                &local,
+                name,
+                Some([10, 210, 1, suffix + 1]),
+                vec![ingress(&format!("{name}.example"), 80, HttpProtocol::Http)],
+            );
+            copy.try_update(|parts| update(parts)).unwrap();
+            copy
+        };
+    let stopped = copy(1, "stopped", &|parts| {
+        parts.runtime = ContainerRuntimeObservation::Exited { code: 137 }
+    });
+    let out = copy(2, "out", &|parts| parts.rotation = Some(CopyRotation::Out));
+    let held = copy(3, "held", &|parts| {
+        parts.rotation = Some(CopyRotation::Held(
+            ployz_core::DeploymentLogId::parse("d1").unwrap(),
+        ))
+    });
+
+    let caddyfile = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers([stopped, out, held]),
+        "TIMESTAMP",
+        &BTreeMap::new(),
+    );
+
+    let site = |name: &str| {
+        automatic_site_block(&caddyfile, &format!("http://{name}.example")).replace(name, "NAME")
+    };
+    assert!(site("stopped").contains("error NOT_RUNNING 503"));
+    assert_eq!(site("out"), site("stopped"));
+    assert_eq!(site("held"), site("stopped"));
+}
+
 // Only for automatic sites: their tokens contain no quoted braces or placeholders.
 // ponytail: use Caddy adaptation if these fixtures grow arbitrary user directives.
 fn automatic_site_block(caddyfile: &str, address: &str) -> String {
@@ -1226,7 +1268,7 @@ fn observation(
     }))
     .unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-        rotation: None,
+        rotation: Some(CopyRotation::In),
         r#gen: None,
         container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
         display_name: format!("{service_name}-{suffix}"),
