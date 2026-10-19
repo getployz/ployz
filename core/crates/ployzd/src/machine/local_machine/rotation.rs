@@ -263,11 +263,9 @@ impl LocalMachine {
                         Checked::Allowed(to) => to,
                     };
                     if let RotationWant::In { .. } = want {
-                        let observed = containers
-                            .inspect_managed(&id, &local.record().id())
-                            .await?;
-                        if !super::is_running(&observed) {
-                            return Ok(Written::NotRunning(observed.runtime.clone()));
+                        let runtime = containers.inspect_runtime(&id).await?;
+                        if !super::is_running(&runtime) {
+                            return Ok(Written::NotRunning(runtime));
                         }
                     }
                     turn.write(&to).await?;

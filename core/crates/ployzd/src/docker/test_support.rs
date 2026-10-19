@@ -52,6 +52,9 @@ pub(crate) struct FakeDocker {
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
     /// Every stop waits while a test holds this for writing; the request is recorded first.
     pub(crate) stop_gate: Arc<tokio::sync::RwLock<()>>,
+    /// Every inspect of this Container waits while a test holds `inspect_gate` for writing.
+    pub(crate) gated_inspects: Arc<Mutex<Option<String>>>,
+    pub(crate) inspect_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) on_stop: Arc<Mutex<Option<StopHook>>>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
     /// Another start attaches the network first, so this connect finds it attached.
@@ -102,6 +105,17 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             Result<Bytes, std::io::Error>,
         >())
         .into_response();
+    }
+    let gated = method == Method::GET
+        && is_inspect(&path)
+        && fake
+            .gated_inspects
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|container| path.contains(container.as_str()));
+    if gated {
+        drop(fake.inspect_gate.read().await);
     }
     let hold = (method == Method::GET && is_inspect(&path))
         .then(|| fake.inspect_hold.lock().unwrap().take())

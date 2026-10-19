@@ -502,6 +502,25 @@ impl ContainerRuntime {
         self.docker.bridge_capacity().await
     }
 
+    /// Docker's runtime state for `container_id`. No health check runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub async fn inspect_runtime(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<ContainerRuntimeObservation, Error> {
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
+        Ok(runtime_observation(inspected.state.as_ref()))
+    }
+
     pub async fn inspect_managed(
         &self,
         container_id: &ContainerId,

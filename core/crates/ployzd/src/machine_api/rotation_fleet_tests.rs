@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -26,7 +26,11 @@ use ployz_core::{
     WireGuardPublicKey, op,
 };
 use serde_json::{Value, json};
-use tokio::{net::UnixListener, sync::Notify};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixListener,
+    sync::Notify,
+};
 use tokio_util::{codec::LengthDelimitedCodec, sync::CancellationToken};
 use tonic::Request;
 
@@ -300,6 +304,16 @@ impl Node {
         gate
     }
 
+    /// Hold every later inspect of `container` until the guard drops.
+    async fn hold_inspects_of(
+        &self,
+        container: ContainerId,
+    ) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        let gate = Arc::clone(&self.fake.inspect_gate).write_owned().await;
+        *self.fake.gated_inspects.lock().unwrap() = Some(container.to_string());
+        gate
+    }
+
     /// Withdrawn means the stop was planned and is draining or waiting for the turn.
     async fn withdrawn(&self, container: ContainerId) {
         tokio::time::timeout(SETTLE, async {
@@ -461,19 +475,50 @@ fn checked_spec(name: &str) -> ResolvedServiceSpec {
     spec
 }
 
-/// A Service whose HTTP check probes a listener that accepts and never answers.
-/// The counter reads how many probes it accepted.
-async fn hanging_check(name: &str) -> (ResolvedServiceSpec, Arc<AtomicUsize>) {
+/// The endpoint a copy's HTTP check probes. It answers healthy until `silent` is
+/// set, then accepts and never answers.
+struct Endpoint {
+    silent: Arc<AtomicBool>,
+    /// Probes left unanswered.
+    hung: Arc<AtomicUsize>,
+    /// Whether a prober gave up on an unanswered probe.
+    abandoned: Arc<AtomicBool>,
+}
+
+/// A Service checked over HTTP at an [`Endpoint`] on 127.0.0.1.
+async fn checked_at_endpoint(name: &str, silent: bool) -> (ResolvedServiceSpec, Endpoint) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let probes = Arc::new(AtomicUsize::new(0));
+    let endpoint = Endpoint {
+        silent: Arc::new(AtomicBool::new(silent)),
+        hung: Arc::new(AtomicUsize::new(0)),
+        abandoned: Arc::new(AtomicBool::new(false)),
+    };
     tokio::spawn({
-        let probes = Arc::clone(&probes);
+        let (silent, hung, abandoned) = (
+            Arc::clone(&endpoint.silent),
+            Arc::clone(&endpoint.hung),
+            Arc::clone(&endpoint.abandoned),
+        );
         async move {
-            let mut held = Vec::new();
-            while let Ok((stream, _)) = listener.accept().await {
-                probes.fetch_add(1, Ordering::SeqCst);
-                held.push(stream);
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let silent = silent.load(Ordering::SeqCst);
+                if silent {
+                    hung.fetch_add(1, Ordering::SeqCst);
+                }
+                let abandoned = Arc::clone(&abandoned);
+                tokio::spawn(async move {
+                    let mut request = [0; 1024];
+                    if !silent {
+                        let _ = stream.read(&mut request).await;
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                            .await;
+                        return;
+                    }
+                    while let Ok(1..) = stream.read(&mut request).await {}
+                    abandoned.store(true, Ordering::SeqCst);
+                });
             }
         }
     });
@@ -483,7 +528,7 @@ async fn hanging_check(name: &str) -> (ResolvedServiceSpec, Arc<AtomicUsize>) {
         port: NonZeroU16::new(port).unwrap(),
         timeout_seconds: 1,
     }));
-    (spec, probes)
+    (spec, endpoint)
 }
 
 fn new_copy(key: &str, spec: ResolvedServiceSpec, r#gen: u64) -> NewContainer {
@@ -1008,7 +1053,7 @@ async fn older_than_in_probes_no_local_copy() {
     // No rescan, so only the wants under test inspect Containers.
     let fleet = Fleet::rescanning(Duration::from_secs(3600)).await;
     let node = fleet.node(0);
-    let (hanging, probes) = hanging_check("api").await;
+    let (hanging, endpoint) = checked_at_endpoint("api", true).await;
     let pending = |key, spec, r#gen| ContainerWant::Running {
         container: RunTarget::New(new_copy(key, spec, r#gen)),
         rotation: RunRotation::Pending,
@@ -1024,7 +1069,62 @@ async fn older_than_in_probes_no_local_copy() {
 
     let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
     assert!(message.contains(&b.to_string()), "{message}");
-    assert_eq!(probes.load(Ordering::SeqCst), 0, "no health probe ran");
+    assert_eq!(
+        endpoint.hung.load(Ordering::SeqCst),
+        0,
+        "no health probe ran"
+    );
+}
+
+/// The In write checks under the turn only that the copy runs, so a health check
+/// that hangs once the copy settled holds up no other mutation on the Machine.
+#[tokio::test]
+async fn in_write_probes_nothing_under_the_turn() {
+    // No rescan, so only the wants under test inspect Containers.
+    let fleet = Fleet::rescanning(Duration::from_secs(3600)).await;
+    let node = fleet.node(0);
+    let (checked, endpoint) = checked_at_endpoint("api", false).await;
+    let pending = |key, spec| ContainerWant::Running {
+        container: RunTarget::New(new_copy(key, spec, 1)),
+        rotation: RunRotation::Pending,
+    };
+    let a = present(&ensure(node, pending("a", checked)).await);
+    let b = present(&ensure(node, pending("b", spec("worker"))).await);
+    node.set_address(a, "127.0.0.1");
+    let before_turn = fleet.cluster.hold_query(CLUSTER_CONTAINERS, 2);
+
+    let (reply, ()) = tokio::join!(
+        ensure(node, into(a, None, Some(CopyRotation::Pending))),
+        async {
+            before_turn.wait().await;
+            endpoint.silent.store(true, Ordering::SeqCst);
+            let taking = node.hold_inspect();
+            before_turn.wait().await;
+            // The In takes the turn, which inspects `a` first.
+            taking.wait().await;
+            let checking = node.hold_inspect();
+            taking.wait().await;
+            // The In holds the turn and reads whether `a` runs.
+            checking.wait().await;
+            // Probes after the turn, by the In or the publisher, inspect `a` first.
+            let after_turn = node.hold_inspects_of(a).await;
+            checking.wait().await;
+            ensured(&ensure(node, held(b, "run-b", Some(CopyRotation::Pending))).await);
+            // No probe hung under the turn, and none timed out before the Held finished.
+            assert_eq!(
+                (
+                    endpoint.hung.load(Ordering::SeqCst),
+                    endpoint.abandoned.load(Ordering::SeqCst)
+                ),
+                (0, false)
+            );
+            endpoint.silent.store(false, Ordering::SeqCst);
+            drop(after_turn);
+        }
+    );
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In);
+    assert_eq!(node.rotation(b).await, CopyRotation::Held(run("run-b")));
 }
 
 /// A Held and a Stopped that land while an In want reads its guard rows leave the

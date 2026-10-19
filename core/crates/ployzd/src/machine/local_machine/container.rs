@@ -386,7 +386,7 @@ impl LocalMachine {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
         let observed = containers.inspect_managed(container, &machine_id).await?;
-        if !is_running(&observed) {
+        if !is_running(&observed.runtime) {
             return Ok(Ok(observed));
         }
         let _withdrawal = match withdraw().await? {
@@ -482,7 +482,7 @@ impl LocalMachine {
                     Ok(observed) => observed,
                     Err(floor) => return Ok(Err(CutRefusal::Stale(floor))),
                 };
-                if is_running(&observed) {
+                if is_running(&observed.runtime) {
                     return Ok(Err(CutRefusal::Busy));
                 }
             }
@@ -509,7 +509,7 @@ impl LocalMachine {
         let machine_id = self.record().id();
         for holder in containers.volume_holder_ids(name).await? {
             match containers.inspect_managed(&holder, &machine_id).await {
-                Ok(observed) if is_running(&observed) => return Ok(true),
+                Ok(observed) if is_running(&observed.runtime) => return Ok(true),
                 Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 Err(error) => return Err(error.into()),
             }
@@ -1040,9 +1040,9 @@ impl LocalMachine {
 
 /// Whether Docker still runs the Container's process. Paused and restarting count as
 /// running: both can write the Volume again without a start.
-fn is_running(observed: &ContainerObservation) -> bool {
+fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
-        observed.runtime,
+        runtime,
         ContainerRuntimeObservation::Running { .. }
             | ContainerRuntimeObservation::Paused
             | ContainerRuntimeObservation::Restarting
@@ -1159,7 +1159,7 @@ fn plan_container(
                     observed.rotation(),
                 ))
             }
-            Some(observed) if is_running(observed) => ContainerStep::Stop {
+            Some(observed) if is_running(&observed.runtime) => ContainerStep::Stop {
                 id: observed.container_id,
                 drain,
                 stop,
@@ -1183,7 +1183,7 @@ fn plan_container(
                     observed.rotation(),
                 ))
             }
-            Some(observed) if is_running(observed) => ContainerStep::StopThenRemove {
+            Some(observed) if is_running(&observed.runtime) => ContainerStep::StopThenRemove {
                 id: observed.container_id,
                 drain,
                 anonymous_volumes,
@@ -1274,7 +1274,7 @@ fn removed(
 }
 
 fn run_step(observed: &ContainerObservation) -> ContainerStep {
-    if is_running(observed) {
+    if is_running(&observed.runtime) {
         ContainerStep::Done
     } else {
         ContainerStep::Start(observed.container_id)
