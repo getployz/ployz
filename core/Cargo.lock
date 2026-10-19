@@ -4101,6 +4101,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "rustix",
  "sd-notify",
  "serde",
  "serde_json",

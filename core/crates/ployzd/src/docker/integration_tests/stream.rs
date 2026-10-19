@@ -132,20 +132,174 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
 }
 
 #[tokio::test]
+async fn an_exec_slow_to_start_reports_its_real_exit() {
+    let started = std::time::Instant::now();
+    let (docker, docker_server) = mock_exec_inspects(move |_| {
+        let elapsed = started.elapsed();
+        if elapsed < Duration::from_millis(350) {
+            r#"{"Running":false,"ExitCode":null,"Pid":0}"#.to_owned()
+        } else if elapsed < Duration::from_millis(600) {
+            r#"{"Running":true,"ExitCode":null,"Pid":4242}"#.to_owned()
+        } else {
+            r#"{"Running":false,"ExitCode":7,"Pid":0}"#.to_owned()
+        }
+    })
+    .await;
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+    let forwarding = tokio::spawn(async move {
+        let mut output = futures_util::stream::pending();
+        crate::docker::stream::forward_attached_exec(
+            &docker,
+            "slow-start",
+            &mut output,
+            false,
+            &sender,
+            None,
+        )
+        .await
+    });
+
+    let mut frames = Vec::new();
+    while let Some(payload) = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+        .await
+        .expect("the exec must report its exit")
+    {
+        frames.push(ExecResponseFrame::decode(&payload.unwrap()).unwrap());
+    }
+    assert_eq!(frames, [ExecResponseFrame::Exit(7)]);
+    forwarding.await.unwrap().unwrap();
+    docker_server.abort();
+}
+
+#[tokio::test]
+async fn an_exec_docker_never_starts_reports_an_error() {
+    let (docker, docker_server) =
+        mock_exec_inspects(|_| r#"{"Running":false,"ExitCode":null,"Pid":0}"#.to_owned()).await;
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+    let forwarding = tokio::spawn(async move {
+        let mut output = futures_util::stream::pending();
+        crate::docker::stream::forward_attached_exec(
+            &docker,
+            "never-starts",
+            &mut output,
+            false,
+            &sender,
+            None,
+        )
+        .await
+    });
+
+    let payload = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+        .await
+        .expect("an exec that never starts must be reported")
+        .unwrap()
+        .unwrap();
+    let ExecResponseFrame::Error(error) = ExecResponseFrame::decode(&payload).unwrap() else {
+        panic!("an exec that never starts must be an error, not an exit");
+    };
+    assert!(error.message.contains("did not start"), "{}", error.message);
+    forwarding.abort();
+    docker_server.abort();
+}
+
+#[tokio::test]
 async fn a_hung_up_exec_is_killed_once_docker_reports_its_pid() {
+    let mut exec_process = own_process_group_sleep();
+    let pid = exec_process.id().unwrap();
+    let (docker, docker_server) = mock_exec_inspects(move |request| match request {
+        0 => r#"{"Running":false,"ExitCode":null,"Pid":0}"#.to_owned(),
+        1 => r#"{"Running":true,"ExitCode":null,"Pid":0}"#.to_owned(),
+        _ => format!(r#"{{"Running":true,"ExitCode":null,"Pid":{pid}}}"#),
+    })
+    .await;
+
+    crate::docker::stream::kill_exec(&docker, "starting").await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), exec_process.wait())
+        .await
+        .expect("the exec must be killed once Docker reports its PID")
+        .unwrap();
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(9)
+    );
+    docker_server.abort();
+}
+
+#[tokio::test]
+async fn a_hung_up_exec_outside_its_own_group_is_killed_alone() {
     let mut command = tokio::process::Command::new("sleep");
-    command.arg("300").process_group(0).kill_on_drop(true);
+    command.arg("300").kill_on_drop(true);
     let mut exec_process = command.spawn().unwrap();
     let pid = exec_process.id().unwrap();
-    let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let docker_address = docker_listener.local_addr().unwrap();
-    let docker_server = tokio::spawn(async move {
-        for inspected in [
-            r#"{"Running":false,"ExitCode":null,"Pid":0}"#.to_owned(),
-            r#"{"Running":true,"ExitCode":null,"Pid":0}"#.to_owned(),
-            format!(r#"{{"Running":true,"ExitCode":null,"Pid":{pid}}}"#),
-        ] {
-            let mut inspect = accept_docker_request(&docker_listener).await;
+    let (docker, docker_server) =
+        mock_exec_inspects(move |_| format!(r#"{{"Running":true,"ExitCode":null,"Pid":{pid}}}"#))
+            .await;
+
+    crate::docker::stream::kill_exec(&docker, "grouped").await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), exec_process.wait())
+        .await
+        .expect("the exec must be killed through its pidfd")
+        .unwrap();
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(9)
+    );
+    docker_server.abort();
+}
+
+#[tokio::test]
+async fn a_hung_up_exec_reporting_pid_1_signals_nothing() {
+    let mut bystander = own_process_group_sleep();
+    let (docker, docker_server) =
+        mock_exec_inspects(|_| r#"{"Running":true,"ExitCode":null,"Pid":1}"#.to_owned()).await;
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        crate::docker::stream::kill_exec(&docker, "pid-1"),
+    )
+    .await
+    .expect("PID 1 must be refused, not waited on");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(bystander.try_wait().unwrap().is_none());
+    docker_server.abort();
+}
+
+#[tokio::test]
+async fn a_hung_up_exec_that_exits_before_the_kill_spares_its_recycled_pid() {
+    let mut bystander = own_process_group_sleep();
+    let recycled = bystander.id().unwrap();
+    let (docker, docker_server) = mock_exec_inspects(move |request| match request {
+        0 => format!(r#"{{"Running":true,"ExitCode":null,"Pid":{recycled}}}"#),
+        _ => r#"{"Running":false,"ExitCode":0,"Pid":0}"#.to_owned(),
+    })
+    .await;
+
+    crate::docker::stream::kill_exec(&docker, "exited").await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(bystander.try_wait().unwrap().is_none());
+    docker_server.abort();
+}
+
+fn own_process_group_sleep() -> tokio::process::Child {
+    let mut command = tokio::process::Command::new("sleep");
+    command.arg("300").process_group(0).kill_on_drop(true);
+    command.spawn().unwrap()
+}
+
+/// Serves Docker's exec inspect with `respond(request_index)` until aborted.
+async fn mock_exec_inspects(
+    mut respond: impl FnMut(usize) -> String + Send + 'static,
+) -> (bollard::Docker, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for request in 0.. {
+            let inspected = respond(request);
+            let mut inspect = accept_docker_request(&listener).await;
             inspect
                 .write_all(
                     format!(
@@ -159,23 +313,12 @@ async fn a_hung_up_exec_is_killed_once_docker_reports_its_pid() {
         }
     });
     let docker = bollard::Docker::connect_with_http(
-        &format!("http://{docker_address}"),
+        &format!("http://{address}"),
         5,
         bollard::API_DEFAULT_VERSION,
     )
     .unwrap();
-
-    crate::docker::stream::kill_exec(&docker, "starting").await;
-
-    let status = tokio::time::timeout(Duration::from_secs(5), exec_process.wait())
-        .await
-        .expect("the exec must be killed once Docker reports its PID")
-        .unwrap();
-    assert_eq!(
-        std::os::unix::process::ExitStatusExt::signal(&status),
-        Some(9)
-    );
-    docker_server.await.unwrap();
+    (docker, server)
 }
 
 async fn accept_docker_request(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {

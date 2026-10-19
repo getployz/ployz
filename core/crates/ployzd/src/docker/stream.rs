@@ -196,7 +196,7 @@ impl ContainerRuntime {
     }
 }
 
-async fn forward_attached_exec(
+pub(super) async fn forward_attached_exec(
     docker: &bollard::Docker,
     exec_id: &str,
     output: &mut (impl Stream<Item = Result<LogOutput, bollard::errors::Error>> + Unpin),
@@ -205,30 +205,36 @@ async fn forward_attached_exec(
     stdin_task: Option<tokio::task::JoinHandle<()>>,
 ) -> Result<(), Status> {
     enum Completion {
-        StreamEnded,
-        ProcessExited(Option<i64>),
-        Failed(bollard::errors::Error),
+        Exited { code: i64, output_ended: bool },
+        Failed(ExecWaitError),
         ClientGone,
     }
 
     let process_exited = wait_for_exec_exit(docker, exec_id);
     tokio::pin!(process_exited);
+    let mut output_ended = false;
     let completion = loop {
         tokio::select! {
             biased;
             result = &mut process_exited => match result {
-                Ok(exit_code) => break Completion::ProcessExited(exit_code),
+                Ok(code) => break Completion::Exited { code, output_ended },
                 Err(error) => break Completion::Failed(error),
             },
             () = sender.closed() => break Completion::ClientGone,
-            next = output.next() => match next {
+            next = output.next(), if !output_ended => match next {
                 Some(Ok(output)) => {
                     if send_exec(sender, exec_output(output, tty)).await.is_err() {
                         break Completion::ClientGone;
                     }
                 }
-                Some(Err(error)) => break Completion::Failed(error),
-                None => break Completion::StreamEnded,
+                Some(Err(error)) => break Completion::Failed(error.into()),
+                None => match exec_state(docker, exec_id).await {
+                    Ok(ExecState::Exited(code)) => {
+                        break Completion::Exited { code, output_ended: true };
+                    }
+                    Ok(_) => output_ended = true,
+                    Err(error) => break Completion::Failed(error.into()),
+                },
             },
         }
     };
@@ -237,17 +243,73 @@ async fn forward_attached_exec(
     }
 
     match completion {
-        Completion::StreamEnded => match docker.inspect_exec(exec_id).await {
-            Ok(inspected) => send_exec_exit(sender, inspected.exit_code).await,
-            Err(error) => send_exec_error(sender, error).await,
-        },
-        Completion::Failed(error) => send_exec_error(sender, error).await,
-        Completion::ProcessExited(exit_code) => {
-            finish_exec_output(output, tty, sender, exit_code).await
+        Completion::Exited {
+            code,
+            output_ended: true,
+        } => send_exec_exit(sender, code).await,
+        Completion::Exited {
+            code,
+            output_ended: false,
+        } => finish_exec_output(output, tty, sender, code).await,
+        Completion::Failed(error @ ExecWaitError::NeverStarted) => {
+            let reported = send_exec_error(sender, error).await;
+            kill_exec(docker, exec_id).await;
+            reported
         }
+        Completion::Failed(error) => send_exec_error(sender, error).await,
         Completion::ClientGone => {
             kill_exec(docker, exec_id).await;
             Err(Status::cancelled("exec client disconnected"))
+        }
+    }
+}
+
+/// Docker reports an exec as not running both before it starts and after it
+/// exits; only the exit code tells the two apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExecState {
+    NotStarted,
+    StartedWithoutPid,
+    Running(i32),
+    Exited(i64),
+}
+
+async fn exec_state(
+    docker: &bollard::Docker,
+    exec_id: &str,
+) -> Result<ExecState, bollard::errors::Error> {
+    let inspected = docker.inspect_exec(exec_id).await?;
+    Ok(match (inspected.running, inspected.exit_code) {
+        (Some(true), _) => match inspected.pid.and_then(|pid| i32::try_from(pid).ok()) {
+            None | Some(0) => ExecState::StartedWithoutPid,
+            Some(pid) => ExecState::Running(pid),
+        },
+        (Some(false), Some(code)) => ExecState::Exited(code),
+        _ => ExecState::NotStarted,
+    })
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ExecWaitError {
+    #[error(transparent)]
+    Docker(#[from] bollard::errors::Error),
+    #[error("Docker did not start the exec within {} seconds", EXEC_START_WAIT.as_secs())]
+    NeverStarted,
+}
+
+async fn wait_for_exec_exit(docker: &bollard::Docker, exec_id: &str) -> Result<i64, ExecWaitError> {
+    let start_deadline = tokio::time::Instant::now() + EXEC_START_WAIT;
+    let mut started = false;
+    loop {
+        // ponytail: one inspect per 100 ms; use a Docker exec wait API if one appears.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        match exec_state(docker, exec_id).await? {
+            ExecState::Exited(code) => return Ok(code),
+            ExecState::StartedWithoutPid | ExecState::Running(_) => started = true,
+            ExecState::NotStarted if !started && tokio::time::Instant::now() >= start_deadline => {
+                return Err(ExecWaitError::NeverStarted);
+            }
+            ExecState::NotStarted => {}
         }
     }
 }
@@ -258,48 +320,87 @@ async fn forward_attached_exec(
 pub(super) async fn kill_exec(docker: &bollard::Docker, exec_id: &str) {
     // Docker answers the start request before it starts the process, so a
     // client can hang up while the exec has no PID yet.
-    let killed = tokio::time::timeout(EXEC_START_WAIT, async {
+    let found = tokio::time::timeout(EXEC_START_WAIT, async {
         let mut delay = Duration::from_millis(10);
         loop {
-            let inspected = match docker.inspect_exec(exec_id).await {
-                Ok(inspected) => inspected,
-                Err(error) => {
-                    tracing::warn!(error = %ployz_core::error_chain::inline(&error), "inspecting an abandoned exec failed");
-                    return;
-                }
-            };
-            let pid = inspected
-                .pid
-                .and_then(|pid| i32::try_from(pid).ok())
-                .filter(|pid| *pid > 0);
-            match (inspected.running, pid) {
-                (Some(false), _) if inspected.exit_code.is_some() => return,
-                (Some(true), Some(pid)) => {
-                    if let Err(error) = nix::sys::signal::killpg(
-                        nix::unistd::Pid::from_raw(pid),
-                        nix::sys::signal::Signal::SIGKILL,
-                    ) {
-                        tracing::warn!(%error, pid, "killing an abandoned exec failed");
-                    }
-                    return;
-                }
-                _ => {}
+            match exec_state(docker, exec_id).await? {
+                ExecState::Exited(_) => return Ok::<_, bollard::errors::Error>(None),
+                ExecState::Running(pid) => return Ok(Some(pid)),
+                ExecState::NotStarted | ExecState::StartedWithoutPid => {}
             }
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(Duration::from_millis(500));
         }
     })
     .await;
-    if killed.is_err() {
-        tracing::warn!(exec_id, "an abandoned exec never reported a PID to kill");
+    match found {
+        Ok(Ok(Some(pid))) => kill_running_exec(docker, exec_id, pid).await,
+        Ok(Ok(None)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(error = %ployz_core::error_chain::inline(&error), "inspecting an abandoned exec failed");
+        }
+        Err(_) => tracing::warn!(exec_id, "an abandoned exec never reported a PID to kill"),
     }
+}
+
+/// Signals `pid` only while a pidfd shows it still names the process Docker
+/// reports for the exec, so a recycled PID is never hit.
+async fn kill_running_exec(docker: &bollard::Docker, exec_id: &str, pid: i32) {
+    let Some(target) = rustix::process::Pid::from_raw(pid).filter(|_| pid > 1) else {
+        tracing::warn!(pid, "refusing to signal an abandoned exec's PID");
+        return;
+    };
+    let pidfd = match rustix::process::pidfd_open(target, rustix::process::PidfdFlags::empty()) {
+        Ok(pidfd) => pidfd,
+        Err(rustix::io::Errno::SRCH) => return,
+        Err(error) => {
+            tracing::warn!(%error, pid, "opening an abandoned exec's pidfd failed");
+            return;
+        }
+    };
+    let leads_its_group = process_group(pid) == Some(pid);
+    match exec_state(docker, exec_id).await {
+        Ok(ExecState::Running(current)) if current == pid => {}
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(error = %ployz_core::error_chain::inline(&error), "inspecting an abandoned exec failed");
+            return;
+        }
+    }
+    // A pidfd turns readable once its process exits. While it hasn't, `pid`
+    // names that process and no other, so the group read above was its own.
+    let mut poll = [rustix::event::PollFd::new(
+        &pidfd,
+        rustix::event::PollFlags::IN,
+    )];
+    let zero = rustix::event::Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    if !matches!(rustix::event::poll(&mut poll, Some(&zero)), Ok(0)) {
+        return;
+    }
+    let killed = if leads_its_group {
+        rustix::process::kill_process_group(target, rustix::process::Signal::KILL)
+    } else {
+        rustix::process::pidfd_send_signal(&pidfd, rustix::process::Signal::KILL)
+    };
+    if let Err(error) = killed {
+        tracing::warn!(%error, pid, "killing an abandoned exec failed");
+    }
+}
+
+fn process_group(pid: i32) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, after_comm) = stat.rsplit_once(')')?;
+    after_comm.split_whitespace().nth(2)?.parse().ok()
 }
 
 async fn finish_exec_output(
     output: &mut (impl Stream<Item = Result<LogOutput, bollard::errors::Error>> + Unpin),
     tty: bool,
     sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
-    exit_code: Option<i64>,
+    exit_code: i64,
 ) -> Result<(), Status> {
     // ponytail: 100 ms idle ends a held hijack; use a Docker output-complete signal if added.
     // Forwarding buffered output may take longer under downstream backpressure.
@@ -311,20 +412,6 @@ async fn finish_exec_output(
         }
     }
     send_exec_exit(sender, exit_code).await
-}
-
-async fn wait_for_exec_exit(
-    docker: &bollard::Docker,
-    exec_id: &str,
-) -> Result<Option<i64>, bollard::errors::Error> {
-    loop {
-        // ponytail: one inspect per 100 ms; use a Docker exec wait API if one appears.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let inspected = docker.inspect_exec(exec_id).await?;
-        if inspected.running == Some(false) {
-            return Ok(inspected.exit_code);
-        }
-    }
 }
 
 fn exec_output(output: LogOutput, tty: bool) -> ExecResponseFrame {
@@ -368,11 +455,11 @@ async fn send_exec_error(
 
 async fn send_exec_exit(
     sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
-    code: Option<i64>,
+    code: i64,
 ) -> Result<(), Status> {
     send_exec(
         sender,
-        ExecResponseFrame::Exit(code.and_then(|code| i32::try_from(code).ok()).unwrap_or(1)),
+        ExecResponseFrame::Exit(i32::try_from(code).unwrap_or(1)),
     )
     .await
 }
@@ -473,7 +560,7 @@ mod tests {
                 })
             }))
             .chain(futures_util::stream::pending());
-            finish_exec_output(&mut output, false, &sender, Some(0)).await
+            finish_exec_output(&mut output, false, &sender, 0).await
         });
         let mut bytes = Vec::new();
         let mut exit = None;
