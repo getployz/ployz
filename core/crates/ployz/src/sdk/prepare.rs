@@ -190,7 +190,7 @@ pub async fn select_build_machine(
                 reasons.join("; ")
             }
         ),
-        details: serde_json::json!({"rejections": rejected}),
+        details: serde_json::json!({"rejections": rejected, "reasons": reasons}),
         cause: Vec::new(),
     }))
 }
