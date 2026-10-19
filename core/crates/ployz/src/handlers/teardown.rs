@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 
 use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DestructiveEffect, DueQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal, RemovalsQuery, Remove,
-    RemovedQuery, ServicesQuery, ShutDown, VolumeName, VolumesQuery,
+    DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
+    EnvironmentSummary, EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal,
+    RemovalsQuery, Remove, RemovedQuery, ServicesQuery, ShutDown, VolumeName, VolumesQuery,
 };
 use serde_json::json;
 
@@ -94,6 +94,7 @@ pub(super) fn remove(
     matches: &ArgMatches,
     store: &Store,
     (project, environment): (&ProjectName, Option<&EnvironmentName>),
+    shown: Option<&Shown>,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Option<Removed>, Error> {
     deploy::refuse_local_detach(matches, store)?;
@@ -143,16 +144,18 @@ pub(super) fn remove(
     };
     let refs: Vec<_> = members.iter().map(at).collect();
     let what = target(project, environment);
-    let removal =
-        bound(&mut request, &what, |request| store.remove(request, &refs)).map_err(|error| {
-            let first = goes_first(&error, project);
-            let goes = first.is_some();
-            store.accepting(store::with_next(
-                error,
-                |_| goes,
-                || first.unwrap_or_default(),
-            ))
-        })?;
+    let removal = bound(&mut request, &what, shown, |request| {
+        store.remove(request, &refs)
+    })
+    .map_err(|error| {
+        let first = goes_first(&error, project);
+        let goes = first.is_some();
+        store.accepting(store::with_next(
+            error,
+            |_| goes,
+            || first.unwrap_or_default(),
+        ))
+    })?;
     let mut ran = Vec::new();
     let result = (|| {
         let (id, left, waiting_on) = match removal {
@@ -271,10 +274,16 @@ pub(super) fn remove(
 /// no `--expect-version` and the Store refuses it only for a version, show what goes
 /// and send it once more bound to the version that refusal reviewed. A refusal then
 /// never asks for a version: it names what goes, and a lost Volume nobody accepted.
-/// A plan that changed between the two sends refuses the second, saying so.
+///
+/// A name typed at the prompt confirms only what the prompt `shown`: when the
+/// refusal removes a Service or Volume it didn't list, nothing is sent again and the
+/// refusal names what changed since. `--confirm` showed nothing, so the name confirms
+/// the plan as it is. A plan that changed between the two sends refuses the second,
+/// saying so.
 fn bound(
     request: &mut Remove,
     what: &str,
+    shown: Option<&Shown>,
     mut send: impl FnMut(&Remove) -> Result<Removal, StoreCallError>,
 ) -> Result<Removal, StoreCallError> {
     if request.version.is_some() {
@@ -290,13 +299,25 @@ fn bound(
         unaccepted: false,
     }) = Reviewed::of(&refused, &request.accept_volume_loss)
     else {
-        return Err(StoreCallError::Refused(ask(refused, request, what, false)));
+        return Err(StoreCallError::Refused(ask(
+            refused,
+            request,
+            what,
+            &Changed::No,
+        )));
     };
+    let unlisted = shown
+        .map(|shown| shown.unlisted(&effects))
+        .unwrap_or_default();
+    if !unlisted.is_empty() {
+        let since = Changed::SinceConfirmed(&unlisted);
+        return Err(StoreCallError::Refused(ask(refused, request, what, &since)));
+    }
     ui::note(format_args!("Removing {what} {}.", said(&effects)));
     request.version = Some(version);
     send(request).map_err(|error| match error {
         StoreCallError::Refused(refused) => {
-            StoreCallError::Refused(ask(refused, request, what, true))
+            StoreCallError::Refused(ask(refused, request, what, &Changed::WhileRunning))
         }
         error => error,
     })
@@ -340,11 +361,69 @@ impl Reviewed {
 
 /// `refused` as a person who typed the name reads it: what goes, without the
 /// version, and whether it `changed` since this command showed it.
+/// How what a removal deletes moved away from what this command confirmed.
+enum Changed<'a> {
+    No,
+    /// Between the prompt and the first send: these effects it didn't list.
+    SinceConfirmed(&'a [DestructiveEffect]),
+    /// Between the first send and the one bound to its version.
+    WhileRunning,
+}
+
+/// The Services and Volumes the prompt listed before a person typed the name.
+#[derive(Debug, Default)]
+pub(super) struct Shown {
+    services: std::collections::BTreeSet<String>,
+    volumes: std::collections::BTreeSet<String>,
+}
+
+impl Shown {
+    /// What the prompt listed for each of `inventories`.
+    pub(super) fn of<'a>(inventories: impl IntoIterator<Item = &'a Inventory>) -> Self {
+        let mut shown = Self::default();
+        for inventory in inventories {
+            shown
+                .services
+                .extend(inventory.services.iter().map(ToString::to_string));
+            shown.volumes.extend(
+                inventory
+                    .volumes
+                    .iter()
+                    .filter_map(|volume| Some(volume.get("name")?.as_str()?.to_owned())),
+            );
+        }
+        shown
+    }
+
+    /// The effects that remove a Service or a Volume the prompt didn't list. Other
+    /// kinds, such as a domain, go with the Services it listed.
+    fn unlisted(&self, effects: &[DestructiveEffect]) -> Vec<DestructiveEffect> {
+        effects
+            .iter()
+            .filter(|effect| match effect.kind {
+                DestructiveKind::RemovesService => !self.services.contains(&effect.name),
+                DestructiveKind::DeletesVolume | DestructiveKind::DetachesVolume => {
+                    !self.volumes.contains(&effect.name)
+                }
+                DestructiveKind::RemovesDomain
+                | DestructiveKind::RemovesServer
+                | DestructiveKind::RemovesMember
+                | DestructiveKind::ChangesRole
+                | DestructiveKind::RevokesInvite
+                | DestructiveKind::StopsService
+                | DestructiveKind::RestartsService
+                | DestructiveKind::UnprotectsEnvironment => false,
+            })
+            .cloned()
+            .collect()
+    }
+}
+
 fn ask(
     mut refused: ployz_core::RpcError,
     request: &Remove,
     what: &str,
-    changed: bool,
+    changed: &Changed<'_>,
 ) -> ployz_core::RpcError {
     let Some(Reviewed {
         effects,
@@ -358,8 +437,14 @@ fn ask(
         details.remove("version");
     }
     let changed = match changed {
-        true => "What this removes changed while it ran, so nothing was removed. ",
-        false => "",
+        Changed::No => String::new(),
+        Changed::SinceConfirmed(unlisted) => format!(
+            "What this removes changed since you confirmed: it now {}. Nothing was removed. ",
+            said(unlisted)
+        ),
+        Changed::WhileRunning => {
+            "What this removes changed while it ran, so nothing was removed. ".to_owned()
+        }
     };
     let go = match unaccepted {
         true => "Accept each lost Volume by name to go ahead",
@@ -687,7 +772,7 @@ mod tests {
     #[test]
     fn a_removal_binds_the_version_it_was_refused_with_and_sends_once_more() {
         let mut sent = Vec::new();
-        let removed = bound(&mut request(), "shop", |request| {
+        let removed = bound(&mut request(), "shop", None, |request| {
             sent.push(request.version.clone());
             match request.version.as_deref() {
                 Some("v1") => Ok(Removal::Removed {
@@ -703,7 +788,7 @@ mod tests {
     #[test]
     fn a_plan_that_changed_before_the_bound_send_is_refused_without_a_version() {
         let mut sent = 0;
-        let refused = bound(&mut request(), "shop", |_| {
+        let refused = bound(&mut request(), "shop", None, |_| {
             sent += 1;
             Err(asks(if sent == 1 { "v1" } else { "v2" }, "api"))
         });
@@ -720,6 +805,52 @@ mod tests {
         assert_eq!(refused.details.get("version"), None);
     }
 
+    fn shown(services: &[&str]) -> Shown {
+        Shown {
+            services: services.iter().map(|name| (*name).to_owned()).collect(),
+            volumes: std::collections::BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_service_the_prompt_did_not_list_is_refused_without_sending_again() {
+        let mut sent = 0;
+        let refused = bound(&mut request(), "shop", Some(&shown(&["web"])), |_| {
+            sent += 1;
+            Err(asks("v1", "api"))
+        });
+        let Err(StoreCallError::Refused(refused)) = refused else {
+            panic!("a Service the person never saw goes");
+        };
+        assert_eq!(
+            sent, 1,
+            "it sends nothing bound to what the person didn't see"
+        );
+        assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+        assert_eq!(
+            refused.message,
+            "What this removes changed since you confirmed: it now removes Service api. \
+             Nothing was removed. Removing shop removes Service api. Run it again to go ahead"
+        );
+        assert_eq!(refused.details.get("version"), None);
+    }
+
+    #[test]
+    fn what_the_prompt_listed_is_removed_bound_to_its_version() {
+        let mut sent = Vec::new();
+        let removed = bound(&mut request(), "shop", Some(&shown(&["web"])), |request| {
+            sent.push(request.version.clone());
+            match request.version.as_deref() {
+                Some("v1") => Ok(Removal::Removed {
+                    residuals: Vec::new(),
+                }),
+                _ => Err(asks("v1", "web")),
+            }
+        });
+        assert!(matches!(removed, Ok(Removal::Removed { .. })));
+        assert_eq!(sent, [None, Some("v1".to_owned())]);
+    }
+
     #[test]
     fn a_passed_version_is_sent_as_typed_and_only_once() {
         let mut request = Remove {
@@ -727,7 +858,7 @@ mod tests {
             ..request()
         };
         let mut sent = 0;
-        let refused = bound(&mut request, "shop", |_| {
+        let refused = bound(&mut request, "shop", None, |_| {
             sent += 1;
             Err(asks("v1", "web"))
         });
