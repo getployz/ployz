@@ -187,3 +187,76 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() {
+    let (store, actor, id) = deployment();
+    let (entry, edge) = (machine('a', "entry"), machine('b', "edge"));
+    let earlier = serde_json::from_value(serde_json::json!({
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "web:1", "pull_policy": "always" }
+    }))
+    .unwrap();
+    let mut old = running_container_in(&entry, &earlier, "shop-production", '1');
+    old.try_update(|parts| parts.rotation = Some(ployz_core::CopyRotation::In))
+        .unwrap();
+    let old_id = old.container_id;
+    let service = DeployService::new(entry.clone())
+        .with_machines(vec![entry, edge.clone()])
+        .never_unroute_on(edge.machine.id);
+    service.listed_containers().lock().unwrap().push(old);
+    let unrouted = service.unrouted();
+    let (address, server) = listening(service).await;
+    let running = tokio::spawn(ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        id.clone(),
+        RunnerId::parse("cleaning").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !unrouted.lock().unwrap().contains(&old_id) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("cleanup takes the old copy out of rotation");
+    store
+        .write(
+            &actor,
+            &ployz_store::Cancel {
+                deployment: id.clone(),
+            },
+        )
+        .unwrap();
+    let summary = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("cancel must stop the unrouted wait")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        summary.status,
+        DeploymentStatus::Applied,
+        "the new copy serves; only its cleanup was cut short"
+    );
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let left = view
+        .deployment
+        .warnings
+        .iter()
+        .filter_map(|warning| match warning {
+            ployz_store::DeploymentWarning::Deploy { warning } => Some(warning.to_string()),
+            _ => None,
+        })
+        .filter(|line| line.contains("left running"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        left,
+        ["shop-production/web  left running on entry (interrupted). The next deploy cleans it up."]
+    );
+    server.abort();
+}
