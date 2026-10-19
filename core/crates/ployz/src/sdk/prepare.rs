@@ -186,7 +186,7 @@ pub async fn select_build_machine(
                         crate::ui::row(&error)
                     ),
                     if error.code == RpcErrorCode::Unavailable {
-                        "did not answer within 5s"
+                        "did not answer"
                     } else {
                         "its build capability check failed"
                     },
@@ -194,13 +194,18 @@ pub async fn select_build_machine(
             }
         };
         *rejected.entry(category).or_default() += 1;
-        let named = format!("Machine {} ({})", machine.name, machine.id);
-        reasons.push(format!("{named}: {rejection}"));
-        shown.push(format!("{named}: {public}"));
+        reasons.push(format!(
+            "Machine {} ({}): {rejection}",
+            machine.name, machine.id
+        ));
+        shown.push(format!(
+            "Server {} ({}): {public}",
+            machine.name, machine.id
+        ));
     }
     if reasons.is_empty() {
         reasons.push("no Machines observed".into());
-        shown.push("no Machines observed".into());
+        shown.push("no Servers observed".into());
     }
     Err(ConnectError::Remote(RpcError {
         code: RpcErrorCode::Unsupported,

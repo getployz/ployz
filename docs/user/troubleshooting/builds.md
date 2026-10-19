@@ -88,7 +88,7 @@ To stop waiting, click **Cancel** on the deployment's page.
 ## No server can take my build
 
 You'll see `No eligible Build Machine was selected; no build was started.`, followed by why each
-server was turned down, such as `Machine m1 (…): builds are turned off`.
+server was turned down, such as `Server m1 (…): builds are turned off`.
 
 - On **Servers**, check your servers are online.
 - Turn on **Run builds here** on at least one server.

@@ -831,9 +831,9 @@ async fn failed_builder_selection_records_why_each_machine_was_rejected_without_
     let cause = recorded.cause.last().expect("a cause names the rejections");
     assert!(!cause.contains("hunter2"), "{cause}");
     for reason in [
-        "Machine checker",
+        "Server checker",
         "its build capability check failed",
-        "Machine disabled",
+        "Server disabled",
         "builds are turned off",
     ] {
         assert!(cause.contains(reason), "{cause}");
