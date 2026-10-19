@@ -518,6 +518,34 @@ fn a_service_mounts_at_most_768_kb_across_its_configs() {
 }
 
 #[test]
+fn an_unmounted_config_edits_while_another_service_mounts_too_much() {
+    let (store, who) = shop();
+    let reference = "${{ web.KEY }}";
+    let text = reference.repeat(256 * 1024 / reference.len());
+    create(&store, &who, 10, "bulk", &[("web", "/etc/bulk")]).unwrap();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        put(&store, &who, "bulk", name, &text).unwrap();
+    }
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: EnvironmentRef::default(),
+                service: service("web"),
+                name: service("storefront"),
+            },
+        )
+        .unwrap();
+
+    create(&store, &who, 11, "other", &[]).unwrap();
+    put(&store, &who, "other", "a.txt", "ok").unwrap();
+    assert_eq!(
+        refused(put(&store, &who, "bulk", "d.txt", "x")).details["configs"],
+        json!(["bulk"])
+    );
+}
+
+#[test]
 fn a_file_name_is_a_relative_path_of_at_most_four_segments() {
     for bad in [
         "/etc/a",

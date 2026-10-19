@@ -221,6 +221,7 @@ pub(crate) fn put_file(
     let names = environment.names();
     let content = parts(&put.file, &put.content, &names)?;
     let config = environment.config_mut(&put.config)?;
+    let id = config.resource_id.clone();
     let old = config.files.get(&put.file);
     let file = SavedConfigFile {
         content,
@@ -244,7 +245,12 @@ pub(crate) fn put_file(
             ));
         }
         let configs = &environment.working.configs;
-        for node in &environment.working.services {
+        let mounting = environment.working.services.iter().filter(|node| {
+            node.config_attachments
+                .iter()
+                .any(|mount| mount.config_resource_id == id)
+        });
+        for node in mounting {
             let service =
                 ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
             if let Some(error) = collision(&service, node, configs)
@@ -478,10 +484,20 @@ fn oversized(
         .flat_map(|config| config.files.values())
         .map(|file| render_variable_parts(&file.content, names).len())
         .sum();
+    let names: Vec<&ConfigName> = mounted.iter().map(|config| &config.name).collect();
+    mounts_too_much(service, &names, bytes)
+}
+
+/// The refusal for `service` mounting `bytes` of Config text from Configs `names`,
+/// when that is past [`MAX_MOUNTED_BYTES`].
+pub(crate) fn mounts_too_much(
+    service: &ServiceName,
+    names: &[&ConfigName],
+    bytes: usize,
+) -> Option<RpcError> {
     if bytes <= MAX_MOUNTED_BYTES {
         return None;
     }
-    let names: Vec<&ConfigName> = mounted.iter().map(|config| &config.name).collect();
     Some(error::invalid(
         format!(
             "{service} would mount {} KB of Config text from {}; a Service mounts at most 768 KB across its Configs",

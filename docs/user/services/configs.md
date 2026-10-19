@@ -92,7 +92,9 @@ ployz config put app-settings app.conf --from ./app.conf --mode 0440 --uid 1000 
 ## Good to know
 
 - **Small text files.** Each file holds up to 256 KB of UTF-8 text, and one service mounts up to
-  768 KB across all its configs. Keep larger files in your image or a [volume](volumes.md).
+  768 KB across all its configs. A deploy counts the files with their variables filled in, so it
+  refuses a config whose variables push it past that. Keep larger files in your image or a
+  [volume](volumes.md).
 - **Shared changes.** Editing one config affects every service that mounts it. Create another
   config when a service needs different files.
 - **Remove or unmount.** **Remove file** removes a file after deployment. **Unmount**

@@ -513,6 +513,36 @@ fn a_config_deploys_with_the_services_that_mount_it() {
 }
 
 #[test]
+fn a_deploy_refuses_config_that_expands_past_what_a_service_mounts() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("api.env.BIG").unwrap(),
+                    value: json!("x".repeat(64 * 1024)),
+                }],
+            },
+        )
+        .unwrap();
+    sentry(&store, &who);
+    put_sentry(&store, &who, &"${{ api.BIG }}\n".repeat(13));
+
+    let refused = admit(&store, &who, 1, &[], None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert!(refused.message.contains("web"), "{}", refused.message);
+    assert!(
+        refused.message.contains("Config sentry"),
+        "{}",
+        refused.message
+    );
+    assert!(refused.message.contains("768 KB"), "{}", refused.message);
+}
+
+#[test]
 fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
     let (store, who) = shop();
     sentry(&store, &who);
