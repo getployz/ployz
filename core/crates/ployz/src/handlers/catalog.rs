@@ -606,7 +606,7 @@ mod tests {
                 .get("description")
                 .and_then(Value::as_str)
                 .unwrap(),
-            "Deploy the Environment's Saved State when its branch gets a new commit. Pushes reach Ployz only through the GitHub App on the repository. Takes effect at once."
+            "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once."
         );
     }
 }

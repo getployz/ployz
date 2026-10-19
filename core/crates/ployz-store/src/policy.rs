@@ -104,7 +104,7 @@ impl PolicySetting {
     pub(crate) const fn description(self) -> &'static str {
         match self {
             Self::AutoDeploy => {
-                "Deploy the Environment's Saved State when its branch gets a new commit. Pushes reach Ployz only through the GitHub App on the repository. Takes effect at once."
+                "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once."
             }
             Self::WaitForCi => {
                 "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once."

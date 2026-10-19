@@ -259,7 +259,7 @@
             "properties": {
               "autoDeploy": {
                 "default": true,
-                "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+                "description": "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once.",
                 "examples": [
                   false
                 ],
