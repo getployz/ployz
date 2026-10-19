@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
-use ployz_core::{CloudEnrollToken, MachineId, RpcErrorCode, StoragePreparation};
+use ployz_core::{CloudEnrollToken, MachineId, MachineName, RpcErrorCode, StoragePreparation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -116,7 +116,11 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
         let storage = matches.get_one::<StoragePreparation>("storage").cloned();
-        return runtime.block_on(paste(&acting, &minted, storage));
+        let name = matches
+            .get_one::<String>("name")
+            .map(MachineName::parse)
+            .transpose()?;
+        return runtime.block_on(paste(&acting, &minted, storage, name.as_ref()));
     }
     drop(runtime);
     super::super::cloud::enroll(
@@ -187,19 +191,23 @@ pub(in crate::handlers) fn enroll_token(
 fn prompted_token() -> Result<CloudEnrollToken, Error> {
     let token = crate::ui::secret(
         "Enrollment token",
-        || {
-            Error::coded(
-                RpcErrorCode::Unauthenticated,
-                format!(
-                    "Not signed in to Cloud. Pass the enrollment token with --token-stdin, --token-file or {}.",
-                    env::ENROLL_TOKEN
-                ),
-            )
-            .hint(Hint::Next("ployz login".into()))
-        },
+        no_terminal_for_token,
         "Cancelled. Nothing was enrolled.",
     )?;
     Ok(CloudEnrollToken::parse(token.trim())?)
+}
+
+/// Run from a script, nothing can answer the prompt; `sudo` also drops an exported
+/// `PLOYZ_ENROLL_TOKEN`, so name the form that survives it.
+fn no_terminal_for_token() -> Error {
+    Error::coded(
+        RpcErrorCode::Unauthenticated,
+        format!(
+            "No terminal to ask for the enrollment token. Pass it with --token-stdin, --token-file or {}.",
+            env::ENROLL_TOKEN
+        ),
+    )
+    .hint(Hint::Next("sudo ployz server add --token-stdin".into()))
 }
 
 /// What a Cloud enrollment acts with, and the Organization it enrolls into.
@@ -245,8 +253,9 @@ async fn paste(
     acting: &Acting,
     minted: &Minted,
     storage: Option<StoragePreparation>,
+    name: Option<&MachineName>,
 ) -> Result<(), Error> {
-    let line = pasted_command(acting.credential.cloud(), storage);
+    let line = pasted_command(acting.credential.cloud(), storage, name);
     if crate::ui::json() {
         return crate::ui::emit(&PendingReport {
             status: "pending",
@@ -258,7 +267,7 @@ async fn paste(
         });
     }
     crate::ui::note(format_args!(
-        "Run this on the Server, and paste the token when it asks (expires {}):\n\n  {line}\n\n  {}\n",
+        "Run this on the Server, and paste the token when it asks (expires {}). From a script, pipe the token to `sudo ployz server add --token-stdin` instead.\n\n  {line}\n\n  {}\n",
         minted.expires_at, minted.token
     ));
     crate::ui::note("Waiting for the Server to join...");
@@ -266,9 +275,13 @@ async fn paste(
 }
 
 /// One line that installs exactly this CLI's release, so the Server speaks the same
-/// enrollment, keeping an explicit `--storage` choice. It carries no token: `server add`
+/// enrollment, keeping an explicit `--storage` and `--name`. It carries no token: `server add`
 /// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin.
-fn pasted_command(cloud: &str, storage: Option<StoragePreparation>) -> String {
+fn pasted_command(
+    cloud: &str,
+    storage: Option<StoragePreparation>,
+    name: Option<&MachineName>,
+) -> String {
     let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
     } else {
@@ -277,8 +290,11 @@ fn pasted_command(cloud: &str, storage: Option<StoragePreparation>) -> String {
     let storage_flag = storage.map_or(String::new(), |storage| {
         format!(" --storage {}", shell_words::quote(&storage.to_string()))
     });
+    let name_flag = name.map_or(String::new(), |name| {
+        format!(" --name {}", shell_words::quote(name.as_str()))
+    });
     format!(
-        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add{cloud_flag}{storage_flag}",
+        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add{cloud_flag}{storage_flag}{name_flag}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -348,16 +364,40 @@ mod tests {
     fn pasted_command_pins_this_release_and_names_a_non_default_cloud() {
         let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            pasted_command("https://ployz.dev", None),
+            pasted_command("https://ployz.dev", None, None),
             format!("curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo ployz server add")
         );
         assert!(
-            pasted_command("http://localhost:3000", None)
+            pasted_command("http://localhost:3000", None, None)
                 .ends_with("sudo ployz server add --cloud-url 'http://localhost:3000'")
         );
         assert!(
-            pasted_command("https://ployz.dev", Some(StoragePreparation::None))
+            pasted_command("https://ployz.dev", Some(StoragePreparation::None), None)
                 .ends_with("sudo ployz server add --storage none")
+        );
+    }
+
+    #[test]
+    fn pasted_command_keeps_the_requested_name() {
+        let name = MachineName::parse("soak-join").unwrap();
+        assert!(
+            pasted_command("https://ployz.dev", None, Some(&name))
+                .ends_with("sudo ployz server add --name soak-join")
+        );
+    }
+
+    #[test]
+    fn a_missing_terminal_names_the_scripted_token_sources() {
+        let refusal = no_terminal_for_token();
+        let message = refusal.to_string();
+        assert!(!message.contains("Not signed in"), "{message}");
+        assert!(message.contains("--token-stdin"), "{message}");
+        assert!(message.contains(env::ENROLL_TOKEN), "{message}");
+        assert!(
+            refusal
+                .hints()
+                .iter()
+                .all(|hint| *hint != Hint::Next("ployz login".into()))
         );
     }
 }

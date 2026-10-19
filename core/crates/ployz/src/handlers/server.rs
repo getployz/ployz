@@ -796,7 +796,10 @@ fn ingress_image() -> Arg {
 
 pub(super) fn provisioning_flags(command: Command) -> Command {
     machine_policy_flags(command)
-        .arg(value("name", None))
+        .arg(
+            value("name", None)
+                .help("Name the Server; it takes its hostname when omitted"),
+        )
         .arg(switch("no-install", None))
         .arg(
             value("storage", None)
