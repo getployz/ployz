@@ -897,3 +897,103 @@ async fn proxy_copies_never_routed_always_removable() {
     );
     client.assert_done();
 }
+
+#[tokio::test]
+async fn ingress_create_cleanup_never_names_a_sibling() {
+    use crate::deploy::{
+        DeployIntent, DeploySnapshot, PlanOptions, SlotAction, plan_ingress_repairs,
+    };
+    use ployz_core::{
+        Machine, MachineName, MachineObservation, MembershipObservation, WireGuardPublicKey,
+    };
+
+    let server = |hex: char| {
+        MachineObservation::new(
+            Machine {
+                id: machine(hex),
+                name: MachineName::parse(format!("server-{hex}")).unwrap(),
+                subnet: format!("10.210.{hex}.0/24").parse().unwrap(),
+                public_key: WireGuardPublicKey([hex as u8; 32]),
+                public_ip: None,
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                build_concurrency: None,
+            },
+            MembershipObservation::Up,
+        )
+    };
+    let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default());
+    let proxy = |hex: char, on: char| {
+        let mut observed = observation(&machine(on), &container(hex), healthy());
+        observed
+            .try_update(|parts| {
+                parts.namespace = Namespace::system();
+                parts.resolved_spec.name = ingress.name.clone();
+                parts.labels.insert(CREATION_KEY.into(), hex.to_string());
+            })
+            .unwrap();
+        observed
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![server('1'), server('2'), server('3')],
+        containers: vec![proxy('a', '1'), proxy('b', '2')],
+        ..Default::default()
+    };
+    let intent = DeployIntent::apply_all(Namespace::system(), [&ingress], PlanOptions::default());
+    let [repair] = plan_ingress_repairs(&intent, &snapshot).try_into().unwrap();
+    assert_eq!(repair.machine_id, machine('3'));
+    let SlotAction::Create(Ok(plan)) = repair.action else {
+        panic!(
+            "expected a create on the empty Server, got {:?}",
+            repair.action
+        );
+    };
+    let siblings = [
+        (machine('1'), container('a')),
+        (machine('2'), container('b')),
+    ];
+    let new = container('c');
+    let mut client = Scripted {
+        observations: Some(snapshot.containers.clone()),
+        ..Scripted::new(vec![created(
+            Call::Run(machine('3'), ContainerKind::ServiceContainer),
+            &new,
+        )])
+    };
+    for (machine_id, container_id) in &siblings {
+        client = client.with_copy_at(
+            &QualifiedService::system_ingress(),
+            machine_id,
+            container_id,
+            CopyRotation::Pending,
+            Gen::FIRST,
+        );
+    }
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        client.moves().is_empty(),
+        "no want reaches a running sibling proxy: {:?}",
+        client.moves()
+    );
+    for (_, sibling) in siblings {
+        assert_eq!(client.rotation(&sibling), Some(CopyRotation::Pending));
+    }
+    client.assert_done();
+}
