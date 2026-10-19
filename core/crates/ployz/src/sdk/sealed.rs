@@ -46,7 +46,7 @@ struct Read {
 }
 
 /// The Sealed names one log request scrubs under, shared by its readers. Knows none until its
-/// first read lands; until then readers wait, and once a read fails they hide.
+/// first read lands; until then readers wait, and while the newest read failed they hide.
 #[derive(Clone)]
 pub struct SealedNames {
     shared: Arc<State>,
