@@ -92,6 +92,7 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, runtime(on("m1"), on("m2")), { ...offline, desiredReplicas: 2 })).toMatchObject({ word: "Degraded", tone: "warn" });
     expect(runtimeLine(service, runtime(on("m1"), on("m2")), { ...seen, desiredReplicas: 2 }).word).toBe("Online");
     expect(runtimeLine(service, runtime(on("m2")), { ...offline, lens: { ...offline.lens, status: "unavailable" } })).toMatchObject({ word: "Server offline", tone: "quiet", down: false });
+    expect(runtimeLine(service, runtime(on("m2")), watch({ offline: new Set(["m2"]), incomplete: true }))).toMatchObject({ word: "Server offline", tone: "quiet", down: false });
   });
 });
 

@@ -35,7 +35,8 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
   if (!runtime) return !whole ? line("Deployed", "quiet") : starting ? line("Starting", "quiet") : absent;
   if (runtime.containers.length === 0) return absent;
   const containers = runtime.containers.filter((container) => !offline.has(container.machineId));
-  if (containers.length === 0) return line("Server offline", "bad", true);
+  // A Server missing from partial evidence may still serve it.
+  if (containers.length === 0) return whole ? line("Server offline", "bad", true) : line("Server offline", "quiet");
   const running = containers.filter((container) => container.runtime?.state === "running");
   if (running.length === 0) return containers.every((container) => container.runtime?.state === "exited" && container.runtime.code === 0)
     ? line("Stopped", "bad", true) : line("Crashed", "crashed", true);
