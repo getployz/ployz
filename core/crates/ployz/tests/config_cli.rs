@@ -2832,15 +2832,13 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
 }
 
 #[test]
-fn live_reads_refuse_a_service_the_environment_does_not_have() {
+fn following_logs_refuses_a_service_the_environment_does_not_have() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
         for args in [
-            &["logs", "nosvc"][..],
-            &["logs", "-f", "nosvc"],
-            &["logs", "web", "nosvc"],
-            &["metrics", "nosvc"],
+            &["logs", "-f", "nosvc"][..],
+            &["logs", "-f", "web", "nosvc"],
         ] {
             let refused = error(store, args);
             assert_eq!(

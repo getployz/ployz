@@ -165,6 +165,8 @@ pub(super) struct DiscoveryService {
     pub(super) history_requests: Arc<Mutex<Vec<(MachineId, ployz_core::LogHistoryRequest)>>>,
     pub(super) history_failures: Arc<Mutex<BTreeMap<MachineId, Status>>>,
     pub(super) history_blocked: Option<Arc<tokio::sync::Notify>>,
+    /// The Services whose lines the Log Stores kept; every one when unset.
+    pub(super) kept_services: Option<std::collections::BTreeSet<String>>,
     pub(super) tail_failure: Option<Status>,
     pub(super) metric_replies: Arc<Mutex<MetricReplies>>,
     pub(super) metric_requests:
@@ -234,6 +236,7 @@ impl DiscoveryService {
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: Arc::new(Mutex::new(BTreeMap::new())),
             history_blocked: None,
+            kept_services: None,
             tail_failure: None,
             metric_replies: Arc::default(),
             metric_requests: Arc::default(),
@@ -978,6 +981,7 @@ impl FakeMachine for DiscoveryService {
         else {
             return Err(Status::invalid_argument("expected log_history"));
         };
+        let asked = history.service.clone();
         self.history_requests
             .lock()
             .unwrap()
@@ -988,6 +992,12 @@ impl FakeMachine for DiscoveryService {
         if let Some(received) = &self.history_blocked {
             received.notify_one();
             std::future::pending::<()>().await;
+        }
+        if let (Some(kept), Some(service)) = (&self.kept_services, &asked)
+            && !kept.contains(service)
+        {
+            let end = ployz_core::HistoryRow::End { next: None }.encode().unwrap();
+            return Ok(Response::new(Box::pin(tokio_stream::iter([Ok(end)]))));
         }
         let container_id = ContainerId::parse("9".repeat(64)).unwrap();
         let rows = [

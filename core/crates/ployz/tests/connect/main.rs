@@ -48,6 +48,7 @@ mod sdk_volumes;
 mod sdk_watch;
 mod support;
 mod unix_session;
+mod unknown_service_cli;
 use support::*;
 
 #[tokio::test]
