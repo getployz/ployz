@@ -251,7 +251,7 @@ stays stopped.
 How a deploy replaces this service's replicas. **Automatic** by default: **Stop first** for a
 service with a volume, **Start first** for the rest. Choose **Start first** for no downtime,
 **Stop first** when two copies must never run at once, or **Rolling** to replace one server at a
-time. A service with a volume takes **Start first** only when the volume allows shared writes. See
+time so a failed deploy stops at the first server. A service with a volume takes **Start first** only when the volume allows shared writes. See
 [Choose how a deploy replaces replicas](../deploy/deployments.md#choose-how-a-deploy-replaces-replicas).
 
 ## Storage
