@@ -135,7 +135,6 @@ impl Fleet {
         self.node(index).row.id
     }
 
-    /// Report `index` Down in every Machine's membership sample.
     fn down(&self, index: usize) {
         let row = &self.node(index).row;
         let address = std::net::SocketAddr::new(
@@ -148,7 +147,6 @@ impl Fleet {
             .push(json!({ "id": { "addr": address }, "state": "Down" }));
     }
 
-    /// Write `index`'s proxy ack for `service`, routing `containers`.
     async fn ack(&self, index: usize, service: &QualifiedService, containers: &[ContainerId]) {
         self.store
             .publish_ingress_routes(
@@ -272,7 +270,6 @@ impl Node {
             .unwrap();
     }
 
-    /// Hold the exclusive admission turn until `release` is notified.
     async fn hold_turn(&self, release: Arc<Notify>) {
         let started = Arc::new(Notify::new());
         tokio::spawn({
@@ -282,8 +279,7 @@ impl Node {
         started.notified().await;
     }
 
-    /// Wait until a stop has withdrawn `container` from ingress: it planned the stop
-    /// and is draining or waiting for the turn.
+    /// Withdrawn means the stop was planned and is draining or waiting for the turn.
     async fn withdrawn(&self, container: ContainerId) {
         tokio::time::timeout(SETTLE, async {
             while !self.runtime.stopping_ids_for_test().contains(&container) {
@@ -916,7 +912,6 @@ async fn last_in_ignores_a_sibling_on_a_down_machine() {
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
 }
 
-/// In on a copy already In still converges Docker: an exited copy starts again.
 #[tokio::test]
 async fn in_on_an_in_copy_starts_it() {
     let fleet = Fleet::start().await;
@@ -931,7 +926,6 @@ async fn in_on_an_in_copy_starts_it() {
     assert_eq!(rotation_of(&reply), CopyRotation::In);
 }
 
-/// A new copy brought In with a settled answer waits out its health monitor once.
 #[tokio::test]
 async fn settled_in_settles_health_once() {
     const MONITOR: Duration = Duration::from_secs(3);

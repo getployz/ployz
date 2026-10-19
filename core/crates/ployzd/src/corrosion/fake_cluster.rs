@@ -38,8 +38,6 @@ struct ClusterKv {
     held: Option<HeldQuery>,
 }
 
-/// The answer to the `nth` run of `query`, held after it is read until the test
-/// passes its gate twice.
 #[derive(Clone)]
 struct HeldQuery {
     query: String,
@@ -192,7 +190,6 @@ impl FakeCluster {
         gate
     }
 
-    /// Write an ingress route row whose containers column does not decode.
     pub(crate) fn write_undecodable_route(&self, machine: &str, service: &str) {
         let mut kv = self.kv.lock().unwrap();
         kv.ingress_routes.insert(

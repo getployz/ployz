@@ -40,8 +40,8 @@ pub struct MachineSpecStore {
     config_operations: Arc<Mutex<()>>,
     floors: Arc<Mutex<()>>,
     rotations: watch::Sender<()>,
-    /// Held open, never used: SQLite checkpoints a WAL database when its last
-    /// connection closes, which each call's own connection otherwise did.
+    /// Never used: keeps SQLite from checkpointing the WAL each time a call's own
+    /// connection closes as the last one.
     _open: Arc<std::sync::Mutex<Connection>>,
 }
 
@@ -94,8 +94,6 @@ impl MachineSpecStore {
             .transpose()
     }
 
-    /// This Machine's record of each copy's rotation, in one read. A copy that never
-    /// left Pending has no entry.
     pub async fn rotations(
         &self,
         container_ids: Vec<ContainerId>,
@@ -181,8 +179,8 @@ impl MachineSpecStore {
 }
 
 impl ConfigOperation<'_> {
-    /// Record a copy's rotation and wake the observation publisher. The caller checks
-    /// the edge first. Under this lock, so a removal cannot slip between the two.
+    /// Also wakes the observation publisher. The caller checks the edge under this
+    /// same lock, so no removal lands between check and write.
     pub async fn set_rotation(
         &mut self,
         container_id: &ContainerId,

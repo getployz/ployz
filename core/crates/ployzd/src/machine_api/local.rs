@@ -815,7 +815,6 @@ impl MachineRpc for MachineService {
     }
 }
 
-/// Every Machine the ack sample lists.
 fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
     let (named, unnamed) = match ackers {
         Ackers::Known(named) => (Some(named), None),

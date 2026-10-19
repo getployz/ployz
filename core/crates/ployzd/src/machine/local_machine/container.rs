@@ -333,10 +333,8 @@ impl LocalMachine {
         .await
     }
 
-    /// Stop a copy for a Stopped or Gone want, as [`Self::stop_behind_ingress`] does.
-    /// Under the turn its rotation is read again, and the copy stops only if the edge
-    /// table lets it leave toward `target`: an In write that won the turn meanwhile
-    /// keeps it running.
+    /// The rotation is read again under the turn: an In write that won the turn since
+    /// the stop was planned keeps the copy running.
     async fn stop_out_of_rotation(
         &self,
         installation: &crate::mutation::MutationGuard,
@@ -352,8 +350,8 @@ impl LocalMachine {
         .await
     }
 
-    /// Drain `container` behind ingress, then under the exclusive turn run `check`
-    /// and stop it while holding what `check` returned. A refusal stops nothing.
+    /// Drains before the exclusive turn, then stops under it while holding what
+    /// `check` returned. A refusal stops nothing.
     async fn stop_checked<G, R, F, Fut>(
         &self,
         installation: &crate::mutation::MutationGuard,
@@ -661,8 +659,7 @@ impl LocalMachine {
         }
     }
 
-    /// Converge Docker to a want that moves no rotation, settling health when a new
-    /// creation asks for it.
+    /// Only for wants that move no rotation.
     async fn ensure_docker(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         let settled_spec = if let ContainerWant::Running {
             container: RunTarget::New(new),
@@ -1140,8 +1137,7 @@ fn plan_container(
     }
 }
 
-/// Whether the edge table keeps a copy in routing against `target`. The copy must
-/// leave routing first, through an Out want.
+/// True when the copy must leave routing through an Out want first.
 fn in_rotation(rotation: &CopyRotation, target: &RotationTarget) -> bool {
     matches!(
         rotation.edge(target),
@@ -1159,8 +1155,6 @@ fn in_rotation_refusal(container: &ContainerId, rotation: &CopyRotation) -> Cont
     )
 }
 
-/// The copy's rotation turn, unless the edge table keeps the copy in routing
-/// against `target`.
 async fn leave_rotation<'a>(
     containers: &'a crate::docker::ContainerRuntime,
     container: &ContainerId,
@@ -1174,8 +1168,7 @@ async fn leave_rotation<'a>(
     })
 }
 
-/// Remove the copy under the caller's turn unless it is still in routing. A
-/// Container Docker no longer has serves nothing, so only its records go.
+/// A Container Docker no longer has serves nothing, so only its records go.
 async fn remove_out_of_rotation(
     containers: &crate::docker::ContainerRuntime,
     container: &ContainerId,
@@ -1192,7 +1185,6 @@ async fn remove_out_of_rotation(
     Ok(None)
 }
 
-/// A removal that found the Container already gone succeeded.
 fn removed(
     outcome: Result<Option<ContainerRefusal>, Error>,
 ) -> Result<Option<ContainerRefusal>, Error> {

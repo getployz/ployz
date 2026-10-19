@@ -775,7 +775,6 @@ impl ReplicatedStore {
             .await
     }
 
-    /// One Service's ingress route rows, as [`Self::ingress_routes`] keys them.
     pub(crate) async fn service_ingress_routes(
         &self,
         service: &QualifiedService,

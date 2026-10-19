@@ -125,8 +125,7 @@ fn reported_down(
     })
 }
 
-/// Each Machine's routed copies of `service`. Every row whose containers arrived
-/// counts, whatever its deploy column holds.
+/// Every row whose containers arrived counts, whatever its deploy column holds.
 pub(crate) fn routed(
     rows: BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
     service: &QualifiedService,

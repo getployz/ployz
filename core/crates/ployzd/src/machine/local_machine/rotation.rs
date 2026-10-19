@@ -2,7 +2,8 @@
 //! [`CopyRotation::edge`]. Each want is checked before any effect, and again under
 //! the exclusive admission turn right before the write, against the rotation this
 //! Machine recorded. Replicated rows from other Machines are read before the turn
-//! and only narrow what it does.
+//! and only narrow what it does, but they lag: an Out written on another Machine is
+//! invisible here until it replicates, so `LastIn` can count a sibling that just left.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,7 +19,6 @@ use ployz_core::{
 use super::{Error, LocalMachine, not_found_refusal, redacted, refuse};
 use crate::route_acks::{Ackers, Membership, routed};
 
-/// A rotation a want asks a copy to move to.
 #[derive(Clone, Debug)]
 pub(super) enum RotationWant {
     In { run: Option<DeploymentLogId> },
@@ -44,7 +44,7 @@ impl RotationWant {
     }
 }
 
-/// What a rotation check reads about one copy. A copy not created yet has no id.
+/// A copy not created yet has no id.
 #[derive(Clone, Debug)]
 struct CopyState {
     id: Option<ContainerId>,
@@ -64,17 +64,14 @@ impl CopyState {
     }
 }
 
-/// What the LastIn guard reads from replicated rows: each Machine's routed copies
-/// of the Service, the Machines that must ack, and the rows of the routed copies.
 struct Routed {
     routes: BTreeMap<MachineId, BTreeSet<ContainerId>>,
     membership: Membership,
     named: Vec<ContainerObservation>,
 }
 
-/// The replicated rows a want's guard reads, taken before the turn. Only this
-/// copy's rotation and the local copies' rotations are guarded by the turn, and
-/// those are read again under it.
+/// Read before the turn. Only this copy's rotation and the local copies' rotations
+/// are read again under it.
 enum GuardReads {
     None,
     /// Every copy's row, for the OlderThanIn guard.
@@ -82,7 +79,6 @@ enum GuardReads {
     LastIn(Routed),
 }
 
-/// What the write under the turn did.
 enum Written {
     Done,
     /// The copy no longer runs, so In was not written.
@@ -91,13 +87,11 @@ enum Written {
 }
 
 enum Checked {
-    /// The copy already has the asked rotation: nothing to write.
     Met,
     Allowed(CopyRotation),
     Refused(ContainerRefusal),
 }
 
-/// A rotation as refusal messages name it.
 pub(super) fn describe(rotation: &CopyRotation) -> String {
     match rotation {
         CopyRotation::Pending => "pending".to_owned(),
@@ -108,8 +102,7 @@ pub(super) fn describe(rotation: &CopyRotation) -> String {
 }
 
 impl LocalMachine {
-    /// Out or Held: a write only, so the guards that read other copies run once, in
-    /// the write. The Container keeps running.
+    /// Out or Held. The guards that read other copies run once, inside `write`.
     pub(super) async fn rotate(
         &self,
         locator: ContainerLocator,
@@ -131,9 +124,8 @@ impl LocalMachine {
         }
     }
 
-    /// In: start the copy as a Pending `Running` want does, settle its health, and
-    /// write In only once it is healthy. A copy that does not settle healthy keeps
-    /// its rotation, and the answer carries the verdict.
+    /// Writes In only once the copy is healthy. An unhealthy copy keeps its rotation,
+    /// and the answer carries the verdict.
     pub(super) async fn route_in(
         &self,
         container: RunTarget,
@@ -214,9 +206,9 @@ impl LocalMachine {
             .await
     }
 
-    /// Check `want` again under the exclusive turn, against the rotation this Machine
-    /// recorded, and write it. Holds the lock `remove` takes from the read to the write.
-    /// In is written only on a copy that still runs.
+    /// Re-checks `want` under the exclusive turn against this Machine's record,
+    /// holding the lock `remove` takes from read to write. In is written only on a
+    /// copy that still runs.
     async fn write(
         &self,
         copy: CopyState,
@@ -281,7 +273,7 @@ impl LocalMachine {
         })
     }
 
-    /// The replicated rows `want`'s guard needs, read without the turn.
+    /// Read outside the turn.
     async fn guard_reads(
         &self,
         copy: &CopyState,
@@ -298,7 +290,6 @@ impl LocalMachine {
         })
     }
 
-    /// The want against `copy`: [`decide`], then the guards that read other copies.
     async fn check(
         &self,
         copy: &CopyState,
@@ -344,8 +335,7 @@ impl LocalMachine {
         }))
     }
 
-    /// The LastIn guard's reads of replicated rows. Only copies some ack row names can
-    /// pass, so only those rows are read.
+    /// Only copies some ack row names can pass, so only those rows are read.
     async fn routed(&self, copy: &CopyState) -> Result<Routed, Error> {
         let replicated = self.replicated()?;
         let (rows, membership) = tokio::try_join!(
@@ -433,8 +423,7 @@ impl LocalMachine {
         )))
     }
 
-    /// The other In copies of `copy`'s Service among `observed`. A copy on this
-    /// Machine reads this Machine's own record instead of its row, which may lag.
+    /// A local copy reads this Machine's own record, since its replicated row may lag.
     async fn in_siblings(
         &self,
         copy: &CopyState,
@@ -474,7 +463,6 @@ impl LocalMachine {
     }
 }
 
-/// The want against `copy` alone: already met, then `expect`, then the edge table.
 fn decide(copy: &CopyState, want: &RotationWant, expect: Option<&CopyRotation>) -> Checked {
     if want.met_by(&copy.rotation) {
         return Checked::Met;

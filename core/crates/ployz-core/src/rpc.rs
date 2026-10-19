@@ -1242,7 +1242,6 @@ pub enum ContainerRefusalReason {
     LastIn,
     /// A newer copy of the Service is already In.
     OlderThanIn,
-    /// Another run holds the copy.
     HeldByOtherRun,
     /// The copy's rotation is not the one the want expected, or no move leads from it.
     RotationMismatch,

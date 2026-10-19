@@ -212,9 +212,8 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
     );
 }
 
-/// Capabilities every Machine in the field serves. Serving rotation dropped every
-/// daemon older than its own serving routes, so the floor holds them. Raise it only
-/// when no Machine runs older.
+/// Capabilities every Machine in the field serves. Serving rotation cut off daemons
+/// that predate serving routes. Raise it only when no Machine runs older.
 const FIELD_FLOOR: &[&str] = &[
     "ployz.build.grant.inspect.v1",
     "ployz.build.grant.mint.v1",
