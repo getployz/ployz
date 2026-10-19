@@ -185,6 +185,7 @@ pub struct DeploymentSummary {
 impl DeploymentSummary {
     /// How a list names it: `#N` once numbered, else the short commit of the push
     /// it holds.
+    #[must_use]
     pub fn label(&self) -> String {
         match (self.number, &self.push) {
             (Some(number), _) => format!("#{number}"),
