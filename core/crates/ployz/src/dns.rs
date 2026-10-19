@@ -10,7 +10,7 @@ use std::{
 use futures_util::future::join_all;
 use ployz_core::{
     HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication,
-    RequestedServiceSpec, VerifyAnswer, hostname_verdict, refusal_reason,
+    RequestedServiceSpec, VerifyAnswer, generated_refusal_reason, hostname_verdict, refusal_reason,
 };
 use reqwest::{Client, redirect::Policy};
 
@@ -49,6 +49,7 @@ fn ingress_targets_from_ports<'a>(
 fn warnings_from_targets<'a>(
     verdicts: impl IntoIterator<Item = (&'a IngressHost, bool, HostnameVerdict)>,
     cluster_addresses: &[IpAddr],
+    cluster_domain: Option<&IngressHost>,
 ) -> Vec<IngressDnsWarning> {
     verdicts
         .into_iter()
@@ -56,6 +57,13 @@ fn warnings_from_targets<'a>(
             let HostnameVerdict::Refused(refusal) = verdict else {
                 return None;
             };
+            if cluster_domain.is_some_and(|cluster| is_generated(hostname, cluster)) {
+                return Some(IngressDnsWarning(generated_refusal_reason(
+                    hostname,
+                    refusal,
+                    cluster_addresses,
+                )));
+            }
             let body = refusal_reason(hostname, refusal, cluster_addresses);
             Some(IngressDnsWarning(if mentions_certificates {
                 format!("{body} A certificate cannot be issued until then.")
@@ -66,10 +74,20 @@ fn warnings_from_targets<'a>(
         .collect()
 }
 
+/// Whether `hostname` is one label under `cluster_domain`, where Ployz Cloud publishes it.
+fn is_generated(hostname: &IngressHost, cluster_domain: &IngressHost) -> bool {
+    hostname
+        .as_str()
+        .strip_suffix(cluster_domain.as_str())
+        .and_then(|label| label.strip_suffix('.'))
+        .is_some_and(|label| !label.is_empty() && !label.contains('.'))
+}
+
 /// Collect Deploy warnings for Ingress Hostnames that do not reach this Cluster.
 pub fn ingress_dns_warnings<'a>(
     specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
     cluster_addresses: &[IpAddr],
+    cluster_domain: Option<&IngressHost>,
     mut verdict: impl FnMut(&IngressHost) -> HostnameVerdict,
 ) -> Vec<IngressDnsWarning> {
     warnings_from_targets(
@@ -79,6 +97,7 @@ pub fn ingress_dns_warnings<'a>(
                 (hostname, mentions_certificates, verdict(hostname))
             }),
         cluster_addresses,
+        cluster_domain,
     )
 }
 
@@ -166,6 +185,7 @@ pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
     machine_ids: &[MachineId],
     cluster_addresses: &[IpAddr],
     ingress_returning: &[Option<IpAddr>],
+    cluster_domain: Option<&IngressHost>,
 ) -> Vec<IngressDnsWarning> {
     let targets = ingress_targets_from_ports(ports);
     let Ok(client) = Client::builder()
@@ -190,7 +210,7 @@ pub async fn resolve_ingress_dns_warnings_for_ports<'a>(
             verdicts.push((hostname, mentions_certificates, verdict));
         }
     }
-    warnings_from_targets(verdicts, cluster_addresses)
+    warnings_from_targets(verdicts, cluster_addresses, cluster_domain)
 }
 
 #[cfg(test)]
@@ -244,14 +264,15 @@ mod tests {
             },
         ]);
 
-        let warnings =
-            ingress_dns_warnings([&spec], &cluster, |hostname| match hostname.as_str() {
+        let warnings = ingress_dns_warnings([&spec], &cluster, None, |hostname| {
+            match hostname.as_str() {
                 "app.example.com" => HostnameVerdict::Refused(Refusal::RedirectsToHttps),
                 "plain.example.com" => HostnameVerdict::Refused(Refusal::ReachesElsewhere),
                 "proxied.example.com" => HostnameVerdict::ReachesCluster(ClusterRoute::ViaProxy),
                 "mix.example.com" => HostnameVerdict::Refused(Refusal::DoesNotResolve),
                 other => panic!("unexpected {other}"),
-            });
+            }
+        });
 
         assert_eq!(
             warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -259,6 +280,38 @@ mod tests {
                 "app.example.com redirects HTTP to HTTPS before reaching this Cluster. Exempt /.well-known/acme-challenge/* from HTTPS redirects in your proxy. A certificate cannot be issued until then.",
                 "mix.example.com does not resolve. Add a DNS record pointing at 192.0.2.1. A certificate cannot be issued until then.",
                 "plain.example.com answers from another server. Point it at 192.0.2.1.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_generated_domain_waits_for_ployz_cloud_instead_of_asking_for_a_record() {
+        let cluster = ["192.0.2.1".parse().unwrap()];
+        let spec = requested(vec![
+            ingress(explicit("web.acme.ployz.app"), HttpProtocol::Https),
+            ingress(explicit("api.acme.ployz.app"), HttpProtocol::Https),
+            ingress(explicit("deep.web.acme.ployz.app"), HttpProtocol::Https),
+        ]);
+
+        let warnings = ingress_dns_warnings(
+            [&spec],
+            &cluster,
+            Some(&explicit("acme.ployz.app")),
+            |hostname| match hostname.as_str() {
+                "web.acme.ployz.app" | "deep.web.acme.ployz.app" => {
+                    HostnameVerdict::Refused(Refusal::DoesNotResolve)
+                }
+                "api.acme.ployz.app" => HostnameVerdict::Refused(Refusal::ReachesElsewhere),
+                other => panic!("unexpected {other}"),
+            },
+        );
+
+        assert_eq!(
+            warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "api.acme.ployz.app still points at another server. Ployz Cloud moves it once it reaches port 80 on 192.0.2.1.",
+                "deep.web.acme.ployz.app does not resolve. Add a DNS record pointing at 192.0.2.1. A certificate cannot be issued until then.",
+                "web.acme.ployz.app is not published yet. Ployz Cloud publishes it once it reaches port 80 on 192.0.2.1.",
             ]
         );
     }
