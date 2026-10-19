@@ -116,6 +116,24 @@ describe("CustomDomainDialog", () => {
     }
   );
 
+  it("refuses a domain this service already has, in any case", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <CustomDomainDialog
+        takenHostnames={["soak-dash.example.com"]}
+        defaultTargetPort={3000}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+    const input = screen.getByLabelText("Domain");
+    fireEvent.change(input, { target: { value: "Soak-Dash.example.com" } });
+    fireEvent.blur(input);
+    expect(await screen.findByText("Already on this service.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save route" }).hasAttribute("disabled")).toBe(true);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("enables saving a corrected port without requiring blur", async () => {
     const onSubmit = vi.fn();
     render(
