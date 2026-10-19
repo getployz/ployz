@@ -8,7 +8,7 @@ import { Database, DatabaseLive } from "#/server/database.server";
 import { member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
 import { organization as organizationTable } from "#/modules/organization/tables";
 import { hashClaimSecret } from "#/modules/identity/claim-required.server";
-import { eq, like } from "drizzle-orm";
+import { eq, like, sql } from "drizzle-orm";
 import { vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -261,7 +261,7 @@ it.live(
 );
 
 it.live(
-  "starts a CLI device in the Organization the approving page named, not the user's first",
+  "starts a CLI device in the Organization the approving page named, even after another tab switched the session",
   () =>
     Effect.gen(function* () {
       const layer = yield* authLayer;
@@ -270,21 +270,42 @@ it.live(
         const { drizzle } = yield* Database;
         const cookie = yield* signUp("switcher");
         const browser = (yield* auth.getSession(new Headers({ cookie }))) ?? assert.fail("no browser session");
-        const first = browser.session.activeOrganizationId ?? assert.fail("no first Organization");
-        const [named] = yield* drizzle.insert(organizationTable).values({ name: "Named", slug: "named" })
-          .returning({ id: organizationTable.id });
-        const namedId = named?.id ?? assert.fail("no Organization");
+        const switchedTo = browser.session.activeOrganizationId ?? assert.fail("no first Organization");
+        const addOrganization = (slug: string) => drizzle.insert(organizationTable).values({ name: slug, slug })
+          .returning({ id: organizationTable.id })
+          .pipe(Effect.map(([row]) => row?.id ?? assert.fail(`no Organization ${slug}`)));
+        const namedId = yield* addOrganization("named");
+        const foreignId = yield* addOrganization("foreign");
         yield* drizzle.insert(member).values({ userId: browser.user.id, organizationId: namedId, role: "member" });
-        yield* drizzle.update(sessionTable).set({ activeOrganizationId: namedId, activeOrganizationSlug: "named" })
-          .where(eq(sessionTable.id, browser.session.id));
+        // A redemption racing approval must find the binding, so it exists before any code reads as approved.
+        yield* drizzle.execute(sql`
+          create function assert_device_bound() returns trigger language plpgsql as $$
+          begin
+            if new.status = 'approved' and not exists (
+              select 1 from verification where identifier = 'device-organization:' || new.device_code
+            ) then raise exception 'device code approved before its Organization was bound'; end if;
+            return new;
+          end $$;
+          create trigger assert_device_bound before update on device_code
+            for each row execute function assert_device_bound();`, "objects");
 
         const { userCode, poll } = yield* startDevice();
         yield* call(`/device?user_code=${userCode}`, { cookie });
-        assert.strictEqual((yield* call("/device/approve", { cookie, body: { userCode } })).status, 200);
+        // The page named `named`, but the session now acts elsewhere, as after a switch in another tab.
+        assert.notStrictEqual(namedId, switchedTo);
+        assert.strictEqual(browser.session.activeOrganizationId, switchedTo);
+
+        const foreign = yield* call("/device/approve", { cookie, body: { userCode, organizationId: foreignId } });
+        assert.strictEqual(foreign.status, 403);
+        assert.strictEqual((yield* call(`/device?user_code=${userCode}`, { cookie })).json?.status, "pending");
+
+        assert.strictEqual(
+          (yield* call("/device/approve", { cookie, body: { userCode, organizationId: namedId } })).status,
+          200,
+        );
         const token = (yield* poll()).json?.access_token ?? assert.fail("no access token");
 
         const device = yield* call("/get-session", { bearer: token });
-        assert.notStrictEqual(namedId, first);
         assert.strictEqual(device.json?.session?.activeOrganizationId, namedId);
         assert.deepStrictEqual(
           yield* drizzle.select().from(verification).where(like(verification.identifier, "device-organization:%")),

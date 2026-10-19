@@ -5,7 +5,7 @@ import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { betterAuth, type BetterAuthPlugin } from "better-auth";
-import { addOAuthServerContext, createAuthMiddleware, getOAuthState, getSessionFromCtx, isAPIError } from "better-auth/api";
+import { addOAuthServerContext, APIError, createAuthMiddleware, getOAuthState, getSessionFromCtx } from "better-auth/api";
 import { createDpopReplayStore } from "better-auth/oauth2";
 import {
   bearer,
@@ -218,26 +218,33 @@ const claimSignInContext = {
 
 const DEVICE_TOKEN_PATH = "/device/token";
 const decodeDeviceToken = Schema.decodeUnknownOption(Schema.Struct({ device_code: Schema.String }));
-const decodeDeviceApproval = Schema.decodeUnknownOption(Schema.Struct({ userCode: Schema.String }));
+const decodeDeviceApproval = Schema.decodeUnknownOption(
+  Schema.Struct({ userCode: Schema.String, organizationId: Schema.String }),
+);
 
-type BindDeviceOrganization = (userId: string, userCode: string, organizationId: string) => Promise<void>;
+/** False when the approver is not a member of the Organization. */
+type BindDeviceOrganization = (userId: string, userCode: string, organizationId: string) => Promise<boolean>;
 
 /**
- * The `/device` page names the Organization its session acts in, so a code it approves records that one, and the
- * `ployz login` session redeeming the code starts in it.
+ * The `/device` page sends the Organization it named with its approval, so the `ployz login` session redeeming the
+ * code starts in that one. Bound before better-auth marks the code approved, so no redemption can miss it.
  */
 const deviceOrganizationBinding = (bind: BindDeviceOrganization) => ({
   id: "device-organization-binding",
   hooks: {
-    after: [{
+    before: [{
       matcher: (context) => context.path === "/device/approve",
       handler: createAuthMiddleware(async (context) => {
-        if (isAPIError(context.context.returned)) return;
         const approval = decodeDeviceApproval(context.body);
         const approver = await getSessionFromCtx(context);
-        const organizationId = asString(approver?.session["activeOrganizationId"]);
-        if (Option.isNone(approval) || approver === null || organizationId === null) return;
-        await bind(approver.user.id, approval.value.userCode, organizationId);
+        if (Option.isNone(approval) || approver === null) return;
+        const { userCode, organizationId } = approval.value;
+        if (!(await bind(approver.user.id, userCode, organizationId))) {
+          throw new APIError("FORBIDDEN", {
+            error: "access_denied",
+            error_description: "You are not a member of this Organization",
+          });
+        }
       }),
     }],
   },
