@@ -17,8 +17,8 @@ use ployz_core::{
     Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
-    AnswerWhen, Gen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict,
-    HealthcheckSpec, ReadyWait, health_monitor,
+    AnswerWhen, ContainerRun, DeploymentLogId, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
+    HealthPoll, HealthVerdict, HealthcheckSpec, ReadyWait, health_monitor,
 };
 
 use self::rotation::RotationWant;
@@ -33,6 +33,13 @@ use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 #[cfg(test)]
 static SETTLES: std::sync::Mutex<std::collections::BTreeMap<ContainerId, usize>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Each copy a Settled creation found Healthy: the Deploy run that asked, and the
+/// Docker run it saw.
+#[derive(Clone, Default)]
+pub(super) struct SettledCreations(
+    Arc<std::sync::Mutex<std::collections::BTreeMap<ContainerId, (DeploymentLogId, ContainerRun)>>>,
+);
 
 /// Why the cut's Container half left the root a writer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -690,12 +697,12 @@ impl LocalMachine {
         } = &want
             && new.answer == AnswerWhen::Settled
         {
-            Some(new.resolved_spec.clone())
+            Some((new.resolved_spec.clone(), new.deployment_id.clone()))
         } else {
             None
         };
         let ensured = self.converge_container(want).await?;
-        let Some(spec) = settled_spec else {
+        let Some((spec, deploy)) = settled_spec else {
             return Ok(ensured);
         };
         let EnsuredContainer::Ensured {
@@ -705,7 +712,9 @@ impl LocalMachine {
         else {
             return Ok(ensured);
         };
-        let health = self.settle_health(&observed.container_id, &spec).await?;
+        let health = self
+            .settle_health(&observed.container_id, &spec, deploy)
+            .await?;
         Ok(EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health: Some(health),
@@ -716,6 +725,7 @@ impl LocalMachine {
         &self,
         container_id: &ContainerId,
         spec: &ResolvedServiceSpec,
+        deploy: Option<DeploymentLogId>,
     ) -> Result<HealthVerdict, Error> {
         #[cfg(test)]
         {
@@ -735,13 +745,22 @@ impl LocalMachine {
         let monitor = health_monitor(spec);
         let mut wait = ReadyWait::new(healthcheck, monitor);
         let started = tokio::time::Instant::now();
+        let mut first_run = None;
         loop {
             let details = containers
                 .inspect_managed_details(container_id, &machine_id)
                 .await?;
+            first_run = first_run.or_else(|| details.run.clone());
             let elapsed = started.elapsed();
             let wake = match wait.poll(&details, elapsed).0 {
                 HealthPoll::Complete if checked || elapsed >= monitor => {
+                    if let (Some(deploy), Some(run)) = (deploy, first_run) {
+                        self.settled
+                            .0
+                            .lock()
+                            .expect("settled creations are never poisoned")
+                            .insert(*container_id, (deploy, run));
+                    }
                     return Ok(HealthVerdict::Healthy);
                 }
                 HealthPoll::Complete => monitor,
@@ -773,6 +792,35 @@ impl LocalMachine {
             };
             tokio::time::sleep_until(started + (elapsed + HEALTH_POLL_INTERVAL).min(wake)).await;
         }
+    }
+
+    /// Whether `deploy` found this copy Healthy at creation, in the Docker run it
+    /// still runs, and the copy may still serve. Answers once per creation.
+    pub(super) async fn settled_by(
+        &self,
+        container_id: &ContainerId,
+        deploy: Option<&DeploymentLogId>,
+    ) -> Result<bool, Error> {
+        let Some(deploy) = deploy else {
+            return Ok(false);
+        };
+        let settled = self
+            .settled
+            .0
+            .lock()
+            .expect("settled creations are never poisoned")
+            .remove(container_id);
+        let Some((settled_by, settled_run)) = settled else {
+            return Ok(false);
+        };
+        if settled_by != *deploy {
+            return Ok(false);
+        }
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let details = containers
+            .inspect_managed_details(container_id, &self.record().id())
+            .await?;
+        Ok(details.run.as_ref() == Some(&settled_run) && details.container.runtime.may_serve())
     }
 
     /// How many health settles this daemon ran for `container_id`.

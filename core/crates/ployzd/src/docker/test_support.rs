@@ -52,6 +52,9 @@ pub(crate) struct FakeDocker {
     /// Named mode: every start lands, then the process exits at once.
     pub(crate) exit_on_start: Arc<AtomicBool>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
+    /// Named mode: each start of a stopped Container stamps a new `StartedAt`, as
+    /// Docker does.
+    pub(crate) stamp_starts: bool,
     /// Every stop waits while a test holds this for writing; the request is recorded first.
     pub(crate) stop_gate: Arc<tokio::sync::RwLock<()>>,
     /// Every inspect of this Container waits while a test holds `inspect_gate` for writing.
@@ -218,7 +221,15 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         (status, 0)
                     };
                 let container = containers.get_mut(&name).unwrap();
+                let previous = container["State"].clone();
                 container["State"] = serde_json::json!({"Status": status, "ExitCode": code});
+                if fake.stamp_starts && status == "running" {
+                    container["State"]["StartedAt"] = if previous["Status"] == "running" {
+                        previous["StartedAt"].clone()
+                    } else {
+                        chrono::Utc::now().to_rfc3339().into()
+                    };
+                }
                 return StatusCode::NO_CONTENT.into_response();
             }
             panic!("unexpected implicit lifecycle action: {method} {path}");
