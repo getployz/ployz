@@ -932,54 +932,15 @@ async fn publish_group<C: MachineOperations>(
     old: Vec<(MachineId, ContainerId)>,
     cancellation: &CancellationToken,
 ) -> Published {
-    let Some((_, first_machine, _)) = new.first().cloned() else {
+    if new.is_empty() {
         return Published::Listed;
-    };
-    for (task, machine_id, container_id) in &new {
-        let copy = cleanup::Copy {
-            machine_id: machine_id.clone(),
-            service: service.clone(),
-            container_id: *container_id,
-            rotation: CopyRotation::Pending,
-        };
-        let spec = operation_at(operations, *task)
-            .spec()
-            .expect("a started copy has a spec");
-        match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
-            Ok(cleanup::BroughtIn::In) => {}
-            Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
-                let failure = health.and_then(HealthVerdict::into_failure).unwrap_or(
-                    HealthFailure::TimedOut {
-                        deadline_millis: None,
-                        last_check: None,
-                    },
-                );
-                return Published::Failed(health_error(*container_id, failure));
-            }
-            Ok(cleanup::BroughtIn::Refused(refusal))
-                if refusal.reason == ContainerRefusalReason::OlderThanIn =>
-            {
-                return Published::Superseded;
-            }
-            Ok(cleanup::BroughtIn::Refused(refusal)) => {
-                return Published::Failed(machine_error(
-                    MachineAction::StartContainer,
-                    refusal.into_error(),
-                ));
-            }
-            Err(error) => {
-                return Published::Failed(machine_error(MachineAction::StartContainer, error));
-            }
-        }
     }
-    let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
-    match cleanup::wait_listed(client, &first_machine, service, &ids, cancellation, |_| {}).await {
-        Ok(cleanup::Wait::Done) => {}
-        Ok(cleanup::Wait::TimedOut(machines)) => return Published::Unconfirmed(machines),
-        Ok(cleanup::Wait::Cancelled) => return Published::Cancelled,
-        Err(error) => {
-            return Published::Failed(machine_error(MachineAction::ReadRoutes, error));
-        }
+    // System ingress copies stay Pending for life and no route lists them (D11).
+    if *service != QualifiedService::system_ingress()
+        && let Err(published) =
+            route_new(client, operations, rows, service, &new, cancellation).await
+    {
+        return published;
     }
     let mut interrupted = false;
     for (machine_id, container_id) in &old {
@@ -1021,6 +982,71 @@ async fn publish_group<C: MachineOperations>(
         progress.warn(rows.left_running(&copy, reason));
     }
     Published::Listed
+}
+
+/// Bring `new` In one at a time, then wait until every live proxy lists them.
+async fn route_new<C: MachineOperations>(
+    client: &C,
+    operations: &[DeployOperation],
+    rows: &Rows<'_>,
+    service: &QualifiedService,
+    new: &[(usize, MachineId, ContainerId)],
+    cancellation: &CancellationToken,
+) -> Result<(), Published> {
+    let (_, first_machine, _) = new.first().expect("a published group started copies");
+    for (task, machine_id, container_id) in new {
+        let copy = cleanup::Copy {
+            machine_id: machine_id.clone(),
+            service: service.clone(),
+            container_id: *container_id,
+            rotation: CopyRotation::Pending,
+        };
+        let spec = operation_at(operations, *task)
+            .spec()
+            .expect("a started copy has a spec");
+        match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
+            Ok(cleanup::BroughtIn::In) => {}
+            Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
+                let failure = health.and_then(HealthVerdict::into_failure).unwrap_or(
+                    HealthFailure::TimedOut {
+                        deadline_millis: None,
+                        last_check: None,
+                    },
+                );
+                return Err(Published::Failed(health_error(*container_id, failure)));
+            }
+            Ok(cleanup::BroughtIn::Refused(refusal))
+                if refusal.reason == ContainerRefusalReason::OlderThanIn =>
+            {
+                return Err(Published::Superseded);
+            }
+            Ok(cleanup::BroughtIn::Refused(refusal)) => {
+                return Err(Published::Failed(machine_error(
+                    MachineAction::StartContainer,
+                    refusal.into_error(),
+                )));
+            }
+            Err(error) => {
+                return Err(Published::Failed(machine_error(
+                    MachineAction::StartContainer,
+                    error,
+                )));
+            }
+        }
+    }
+    let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
+    match cleanup::wait_listed(client, first_machine, service, &ids, cancellation, |_| {}).await {
+        Ok(cleanup::Wait::Done) => {}
+        Ok(cleanup::Wait::TimedOut(machines)) => return Err(Published::Unconfirmed(machines)),
+        Ok(cleanup::Wait::Cancelled) => return Err(Published::Cancelled),
+        Err(error) => {
+            return Err(Published::Failed(machine_error(
+                MachineAction::ReadRoutes,
+                error,
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The old copies a group's ReplaceContainer tasks name, in task order.
