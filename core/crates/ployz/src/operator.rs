@@ -614,9 +614,9 @@ pub async fn open_service_logs(
     deployment: Option<&str>,
 ) -> Result<Vec<LogInput>, OperatorError> {
     let services = scope.live.services();
-    let targets = log_targets(&services, &scope.asked, args, namespace, deployment)?;
     let mut inputs = Vec::new();
-    for (service, containers) in targets {
+    for target in log_targets(&services, &scope.asked, args, namespace, deployment) {
+        let (service, containers) = target?;
         for container in containers {
             let observation = container.as_observation();
             let request = op::TailLogs::into_request(TailLogsRequest {
@@ -656,15 +656,16 @@ pub async fn open_service_logs(
     Ok(inputs)
 }
 
-/// The containers on the asked Servers each of `args` streams from; none means
-/// every Service in `namespace`, and any of them with nothing there is skipped.
+/// The containers on the asked Servers each of `args` streams from, in argument
+/// order; none means every Service in `namespace`, and any of them with nothing
+/// there is skipped.
 fn log_targets<'a>(
     services: &'a [ServiceObservation],
     asked: &HashSet<ployz_core::MachineId>,
     args: &[ServiceArg],
     namespace: Option<&Namespace>,
     deployment: Option<&str>,
-) -> Result<Vec<(ServiceSelector, Vec<ContainerRef<'a>>)>, OperatorError> {
+) -> Vec<Result<(ServiceSelector, Vec<ContainerRef<'a>>), OperatorError>> {
     let every = args.is_empty();
     let every_arg;
     let args = if every {
@@ -679,7 +680,7 @@ fn log_targets<'a>(
             })
             .collect::<Vec<_>>();
         if every_arg.is_empty() {
-            return Err(OperatorError::NoServices);
+            return vec![Err(OperatorError::NoServices)];
         }
         every_arg.as_slice()
     } else {
@@ -687,9 +688,17 @@ fn log_targets<'a>(
     };
     let mut targets = Vec::new();
     for arg in args {
-        let service = select_service(services, &arg.service)
-            .map_err(|error| not_running(services, namespace, error))?;
-        let containers = select_log_containers(service, &arg.containers)?
+        let selected = select_service(services, &arg.service)
+            .map_err(|error| not_running(services, namespace, error))
+            .and_then(|service| select_log_containers(service, &arg.containers));
+        let containers = match selected {
+            Ok(containers) => containers,
+            Err(error) => {
+                targets.push(Err(error));
+                continue;
+            }
+        };
+        let containers = containers
             .into_iter()
             .filter(|container| {
                 let observation = container.as_observation();
@@ -703,20 +712,21 @@ fn log_targets<'a>(
             if every {
                 continue;
             }
-            return Err(OperatorError::NoContainersOnMachines {
+            targets.push(Err(OperatorError::NoContainersOnMachines {
                 service: arg.service.clone(),
-            });
+            }));
+            continue;
         }
-        targets.push((arg.service.clone(), containers));
+        targets.push(Ok((arg.service.clone(), containers)));
     }
     if targets.is_empty() {
-        return Err(if deployment.is_some() {
+        targets.push(Err(if deployment.is_some() {
             OperatorError::NoDeploymentContainers
         } else {
             OperatorError::NoServices
-        });
+        }));
     }
-    Ok(targets)
+    targets
 }
 
 fn not_running(

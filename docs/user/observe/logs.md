@@ -48,6 +48,8 @@ exits with code 1, or with code 3 when lines for another name you gave already p
 server doesn't answer, Ployz says so instead, since the missing lines may be on that server.
 `--follow` needs a service the environment has now, deployed or not yet deployed, so it refuses any
 other name before reading.
+`ployz logs --follow --machine X` with no service named follows every service that runs on X and
+skips the rest.
 
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.

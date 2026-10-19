@@ -710,25 +710,49 @@ fn every_service_logs_skip_a_service_with_nothing_on_the_asked_servers() {
     let services = live.services();
     let asked = HashSet::from([edge.machine.id]);
 
-    let targets = log_targets(&services, &asked, &[], None, None).unwrap();
-    assert_eq!(
-        targets
+    let summary =
+        |targets: Vec<Result<(ServiceSelector, Vec<ContainerRef<'_>>), OperatorError>>| {
+            targets
+                .into_iter()
+                .map(|target| {
+                    target.map(|(service, containers)| (service.to_string(), containers.len()))
+                })
+                .collect::<Vec<_>>()
+        };
+    let named = |names: &[&str]| {
+        names
             .iter()
-            .map(|(service, containers)| (service.to_string(), containers.len()))
-            .collect::<Vec<_>>(),
-        vec![("app/api".to_owned(), 1)]
-    );
-    let named = [ServiceArg {
-        service: service_selector("app/web"),
-        containers: Vec::new(),
-    }];
+            .map(|name| ServiceArg {
+                service: service_selector(name),
+                containers: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    };
+
     assert!(matches!(
-        log_targets(&services, &asked, &named, None, None),
-        Err(OperatorError::NoContainersOnMachines { .. })
+        summary(log_targets(&services, &asked, &[], None, None)).as_slice(),
+        [Ok((service, 1))] if service == "app/api"
     ));
     assert!(matches!(
-        log_targets(&services, &HashSet::new(), &[], None, None),
-        Err(OperatorError::NoServices)
+        summary(log_targets(&services, &asked, &named(&["app/api", "app/web"]), None, None))
+            .as_slice(),
+        [Ok((service, 1)), Err(OperatorError::NoContainersOnMachines { .. })]
+            if service == "app/api"
+    ));
+    assert!(matches!(
+        summary(log_targets(&services, &HashSet::new(), &[], None, None)).as_slice(),
+        [Err(OperatorError::NoServices)]
+    ));
+    assert!(matches!(
+        summary(log_targets(
+            &services,
+            &HashSet::new(),
+            &[],
+            None,
+            Some("d1")
+        ))
+        .as_slice(),
+        [Err(OperatorError::NoDeploymentContainers)]
     ));
 }
 
