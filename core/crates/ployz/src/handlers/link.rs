@@ -558,14 +558,23 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             limit: Some(RECENT),
             cursor: None,
         })?;
-        let ended = page.deployments.iter().find(|deployment| {
-            !deployment.status.in_flight() && deployment.status != DeploymentStatus::Superseded
-        });
+        // The latest numbered one, when it ended; else, behind work queued since, the
+        // first numbered one on the page that ended, as numbered ones list in number order.
+        let ended = page
+            .latest
+            .as_ref()
+            .filter(|latest| latest.status.ended())
+            .or_else(|| {
+                page.deployments
+                    .iter()
+                    .find(|deployment| deployment.number.is_some() && deployment.status.ended())
+            });
         if let Some(ended) = ended {
             let reason = match ended.status {
                 DeploymentStatus::Failed => Some("deployment_failed"),
                 DeploymentStatus::Unknown => Some("deployment_unknown"),
-                DeploymentStatus::Queued
+                DeploymentStatus::WaitingForCi
+                | DeploymentStatus::Queued
                 | DeploymentStatus::Superseded
                 | DeploymentStatus::Running
                 | DeploymentStatus::Applied
@@ -575,17 +584,13 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             if let Some(reason) = reason {
                 attention.push(Attention {
                     reason: reason.to_owned(),
-                    message: format!("Deployment #{} did not complete", ended.number),
+                    message: format!("Deployment {} did not complete", ended.label()),
                     deployment: Some(ended.id.clone()),
-                    next: Some(super::deploy::show_hint(matches, ended.number)),
+                    next: Some(super::deploy::hint_for(matches, ended)),
                 });
             }
         }
-        deploying = page
-            .deployments
-            .into_iter()
-            .filter(|deployment| deployment.status.in_flight())
-            .collect();
+        deploying = page.in_flight;
     }
     for reference in diff.iter().flat_map(|diff| &diff.broken) {
         attention.push(Attention {
@@ -612,7 +617,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         .or_else(|| {
             deploying
                 .first()
-                .map(|deployment| super::deploy::show_hint(matches, deployment.number))
+                .map(|deployment| super::deploy::hint_for(matches, deployment))
         })
         .or_else(|| {
             (identity.is_none() && this_server.is_none()).then(|| "ployz login".to_owned())
@@ -715,8 +720,8 @@ fn status_record(status: &Status) -> Fields {
         record.push(
             "deploying",
             format_args!(
-                "#{} {}",
-                deployment.number,
+                "{} {}",
+                deployment.label(),
                 super::store::word(&deployment.status)
             ),
         );

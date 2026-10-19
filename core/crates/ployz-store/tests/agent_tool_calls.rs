@@ -1988,7 +1988,7 @@ fn the_newest_applied_deployment_redeploys_and_rolls_nothing_back() {
                 &who(),
                 &ployz_store::NumberedDeploymentQuery {
                     environment: EnvironmentRef::default(),
-                    number,
+                    number: Some(number),
                 },
             )
             .unwrap()

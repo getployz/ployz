@@ -99,6 +99,26 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0020_environment_removed",
         Step::Sql(include_str!("migrations/0020_environment_removed.sql")),
     ),
+    (
+        "0021_deployment_waiting_for_ci",
+        Step::Rust(|tx, backend| {
+            match backend {
+                Backend::Postgres => tx.batch(include_str!(
+                    "migrations/0021_deployment_waiting_for_ci_postgres.sql"
+                ))?,
+                Backend::Sqlite => {
+                    tx.batch(include_str!(
+                        "migrations/0021_deployment_waiting_for_ci_sqlite.sql"
+                    ))?;
+                    // The rebuild kept every child row's Deployment.
+                    if !tx.query("PRAGMA foreign_key_check", &[])?.is_empty() {
+                        return Err(error::corrupt("Deployment references"));
+                    }
+                }
+            }
+            Ok(None)
+        }),
+    ),
 ];
 
 enum Step {
@@ -160,9 +180,16 @@ impl Storage {
                 serde_json::Value::Null,
             ));
         };
-        let storage = Self::Sqlite(sqlite::Sqlite::open(path)?);
-        let converted = storage.write(|tx| migrate(tx, Backend::Sqlite, migrations))?;
-        Ok((storage, converted))
+        let sqlite = sqlite::Sqlite::open(path)?;
+        // A migration may rebuild a table others reference: dropping the old one must
+        // cascade into none of them, and a pragma cannot change mid-transaction.
+        sqlite.foreign_keys(false)?;
+        let storage = Self::Sqlite(sqlite);
+        let converted = storage.write(|tx| migrate(tx, Backend::Sqlite, migrations));
+        if let Self::Sqlite(sqlite) = &storage {
+            sqlite.foreign_keys(true)?;
+        }
+        Ok((storage, converted?))
     }
 
     /// Run `work` in one transaction that commits only when it returns `Ok`.

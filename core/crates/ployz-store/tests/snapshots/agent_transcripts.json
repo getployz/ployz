@@ -5790,6 +5790,8 @@
                 "project": "shop",
                 "revision": 1
               },
+              "in_flight": [],
+              "latest": null,
               "next_cursor": null,
               "view": "deployments"
             }
@@ -6098,6 +6100,8 @@
                 "project": "shop",
                 "revision": 1
               },
+              "in_flight": [],
+              "latest": null,
               "next_cursor": null,
               "view": "deployments"
             }

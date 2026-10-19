@@ -14,7 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import type { DeploymentSummary, Included } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
+import { deploymentLabel, deploymentLight, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { deploymentDestination } from "../deployments/run-search";
@@ -53,10 +53,11 @@ type BottomBarProps = {
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
   /**
-   * Its latest ended Deployments, newest first, or undefined until they load. The newest shows Failed until dismissed;
-   * one seen in flight here shows how it ended.
+   * Its newest numbered Deployment, whatever page it fell on; null before the first Deploy, undefined until it loads.
+   * Ended, it shows Failed until dismissed, or how it ended if seen in flight here. Holds that never ran take no
+   * number, so a burst of them never hides it.
    */
-  ended?: DeploymentSummary[];
+  latest?: DeploymentSummary | null;
   /** A running Deploy's storage step, in words, while it moves or copies a Volume before its Services. */
   storage?: (deploymentId: string) => string | null;
   /** Details' notes: where changes came from, and the Parent's deployed values. */
@@ -92,7 +93,7 @@ export function BottomBar({
   onDiscardNode,
   onDiscardRow,
   active: newestFirst,
-  ended,
+  latest: newest,
   storage = () => null,
   notes,
   proposals,
@@ -131,7 +132,7 @@ export function BottomBar({
     for (const deployment of active) seen.add(deployment.id);
     for (const id of seen) if (seen.size > WATCHED_LIMIT) seen.delete(id);
   }, [active]);
-  const latest = active.length > 0 ? undefined : ended?.[0];
+  const latest = active.length > 0 || newest?.in_flight ? undefined : newest ?? undefined;
   const showsLatest = latest !== undefined && (latest.status === "failed" ? latest.id !== dismissedFailure : watched.current.has(latest.id));
   const outcome = shown || !showsLatest || dismissed.has(latest.id) ? undefined : latest;
   const dismiss = (deployment: DeploymentSummary) => {
@@ -289,8 +290,8 @@ function AttemptState({ deployment, storage, onDismiss }: { deployment: Deployme
   const deploys = deploysLabel(deployment);
   const detail = storage ?? (deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys);
   return (
-    <Row icon={<DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />}
-      title={`${deploymentStatusLabel(deployment)} · Deployment #${deployment.number}`} detail={detail}>
+    <Row icon={<DeploymentStatusIcon status={deploymentLight(deployment)} />}
+      title={`${deploymentStatusLabel(deployment)} · Deployment ${deploymentLabel(deployment)}`} detail={detail}>
       <Link {...deploymentDestination(params, deployment.id)} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>

@@ -94,8 +94,8 @@ impl Tool for EnvironmentShow {
             .collect::<Vec<_>>();
         let services = services_with_domains(&services.services, &domains.domains);
         let latest = deployments
-            .deployments
-            .first()
+            .latest
+            .as_ref()
             .map(|deployment| json!({ "number": deployment.number, "status": deployment.status }));
         Ok(json!({
             "at": at(&diff.environment),

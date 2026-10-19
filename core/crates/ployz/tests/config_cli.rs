@@ -1493,7 +1493,7 @@ fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud
     fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
         if let Written::Deployment(admitted) = written {
             // Keep the second authored Deployment queued, so production can't come off yet.
-            if admitted.number != 2 || admitted.remove {
+            if admitted.number != Some(2) || admitted.remove {
                 succeed(store, &admitted.id);
             }
         }
@@ -2783,10 +2783,10 @@ fn deployment_text_shows_the_deepest_cause_and_json_keeps_the_chain() {
         let runner = RunnerId::parse("failing-worker").unwrap();
         let claimed = store.claim(&admitted.id, &runner).unwrap();
         let cause = match admitted.number {
-            3 => json!([]),
+            Some(3) => json!([]),
             _ => json!(["Writing Docker metadata failed", "No space left on device"]),
         };
-        let evidence = if admitted.number == 2 {
+        let evidence = if admitted.number == Some(2) {
             let operation = json!({
                 "type": "remove_container", "machine_id": "a".repeat(32),
                 "container_id": "b".repeat(64)

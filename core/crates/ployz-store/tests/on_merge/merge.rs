@@ -598,8 +598,8 @@ fn what_landed_waits_for_ci_with_the_push() {
     system(&store, &who, &push(None, HEAD, None));
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
-    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(pushed.waiting.len(), 1, "{pushed:?}");
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(crate::support::held(&store, &who, "production"), [MERGE]);
     let passed = system(
         &store,
         &who,

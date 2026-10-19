@@ -815,7 +815,10 @@ fn a_removal_waits_for_ci_with_what_the_merge_changed() {
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     assert_eq!(
-        (pushed.waiting.len(), pushed.admitted.len()),
+        (
+            crate::support::held(&store, &who, "production").len(),
+            pushed.admitted.len()
+        ),
         (1, 0),
         "{pushed:?}"
     );

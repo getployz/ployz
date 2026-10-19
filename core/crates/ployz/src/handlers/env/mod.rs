@@ -453,7 +453,7 @@ fn environments(listed: &EnvironmentsView) -> crate::ui::Table {
                 environment
                     .removal
                     .as_ref()
-                    .map(|removal| format!("#{} {}", removal.number, store::word(&removal.status)))
+                    .map(|removal| format!("{} {}", removal.label(), store::word(&removal.status)))
                     .unwrap_or_default(),
             ),
             Cell::from(

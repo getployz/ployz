@@ -192,7 +192,7 @@ export const showCancelling = <D extends Pick<DeploymentSummary, "status" | "in_
   cancelling && deployment.in_flight ? { ...deployment, status: "cancelling" } : deployment;
 
 const deploymentStatusLabels = {
-  queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
+  waiting_for_ci: "Waiting for CI", queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
 } satisfies Record<DeploymentStatus, string>;
 
@@ -209,10 +209,17 @@ export const buildNodeId = (service: string) => `build:${service}`;
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
 /** Each status in the icons' vocabulary. */
-export const deploymentStatusIcons = {
-  queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
+const deploymentStatusIcons = {
+  waiting_for_ci: "queued", queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
   unknown: "unknown", cancelled: "cancelled", superseded: "cancelled",
 } satisfies Record<DeploymentStatus, DeploymentLight>;
+
+/** What a Deployment's CI says while it waits for it; a summary the Store wrote before it said so has none. */
+type WaitingCi = Partial<Pick<DeploymentSummary, "ci">>;
+
+/** A Deployment as its icon shows it: one waiting for CI that failed reads as failed. */
+export const deploymentLight = ({ status, ci }: Pick<DeploymentSummary, "status"> & WaitingCi): DeploymentLight =>
+  ci === "failed" ? "failed" : deploymentStatusIcons[status];
 
 export const nodeStatusLabels = {
   pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", not_attempted: "Not attempted",
@@ -235,9 +242,12 @@ export function nodeLight(outcome: NodeStatus, deployment: Pick<DeploymentSummar
 /**
  * A Deployment's status in words. One that takes its Environment off the Servers reads as the Branch panel says it:
  * Coming off the servers, then Off the servers; one that completed with no Server left to take it off (`forgotten`)
- * says what it left.
+ * says what it left. One waiting for CI says so, or that its CI failed.
  */
-export function deploymentStatusLabel({ status, remove, outcome }: Pick<DeploymentSummary, "status" | "remove" | "outcome">) {
+export function deploymentStatusLabel(
+  { status, remove, outcome, ci }: Pick<DeploymentSummary, "status" | "remove" | "outcome"> & WaitingCi,
+) {
+  if (ci === "failed") return "CI failed";
   if (outcome?.type === "forgotten") return "Left on old servers";
   if (remove && status === "running") return "Coming off the servers";
   if (remove && status === "applied") return "Off the servers";
@@ -248,7 +258,14 @@ export function deploymentStatusLabel({ status, remove, outcome }: Pick<Deployme
  * What a Deployment ships, for its row: "Deploys every service", or the Services a targeted Deploy named; nothing for one
  * that takes its Environment off the Servers.
  */
-export const deploysLabel = ({ services, remove }: Pick<DeploymentSummary, "services" | "remove">) =>
+/**
+ * How a Deployment is named: "#N" once it queued; while it waits for CI it has no number yet, so the push's short sha
+ * stands in, and the ID's first 8 characters when no push is known.
+ */
+export const deploymentLabel = ({ number, push, id }: Pick<DeploymentSummary, "number" | "id"> & { push?: { head: string } | null }) =>
+  number !== null ? `#${number}` : (push?.head.slice(0, 7) ?? id.slice(0, 8));
+
+export const deploysLabel =({ services, remove }: Pick<DeploymentSummary, "services" | "remove">) =>
   remove ? null : `Deploys ${services.length === 0 ? "every service" : services.join(", ")}`;
 
 const time = (seconds: number | null) => seconds === null ? null : new Date(seconds * 1000);
@@ -352,13 +369,14 @@ export type DeploymentAction = "add_server" | "redeploy" | "start" | "cancel";
 
 /**
  * Redeploy an ended Deployment, start a queued one, cancel one before it ends; with no Server, adding one comes first.
+ * One waiting for CI only cancels: passing CI queues it. Cancelled while it waited, it froze nothing to redeploy.
  */
-function primaryAction(status: DeploymentStatus, noServers: boolean): DeploymentAction | null {
-  const redeploy = status === "applied" || status === "failed" || status === "unknown" || status === "cancelled";
+function primaryAction(status: DeploymentStatus, held: boolean, noServers: boolean): DeploymentAction | null {
+  const redeploy = status === "applied" || status === "failed" || status === "unknown" || (status === "cancelled" && !held);
   if (noServers && (redeploy || status === "queued")) return "add_server";
   if (redeploy) return "redeploy";
   if (status === "queued") return "start";
-  return status === "running" ? "cancel" : null;
+  return status === "running" || status === "waiting_for_ci" ? "cancel" : null;
 }
 
 /**
@@ -387,8 +405,8 @@ const decodeRollback = Schema.decodeUnknownOption(Schema.Struct({ rolls_back: Sc
  * The action a Deployment page shows, and whether Cancel waits in its menu beside another one. A removal that applied
  * left nothing to redeploy.
  */
-export function deploymentActions(deployment: Pick<DeploymentSummary, "status" | "remove">, noServers: boolean) {
+export function deploymentActions(deployment: Pick<DeploymentSummary, "status" | "remove" | "held">, noServers: boolean) {
   const { status } = deployment;
-  const primary = deployment.remove && status === "applied" ? null : primaryAction(status, noServers);
+  const primary = deployment.remove && status === "applied" ? null : primaryAction(status, deployment.held, noServers);
   return { primary, cancelInMenu: (status === "queued" || status === "running") && primary !== "cancel" };
 }
