@@ -3,7 +3,7 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::{ConfigError, lower_deployment};
+use ployz_core::config::{ConfigError, lower_deployment, parse_service_config};
 use serde_json::{Value, json};
 
 /// Lower a JSON deployment input, answering JSON as Cloud's worker reads it.
@@ -135,6 +135,36 @@ fn lowering_a_memory_limit_gives_its_whole_bytes() {
             bytes
         );
     }
+}
+
+#[test]
+fn lowering_carries_the_update_order_and_leaves_an_unset_one_to_the_deploy() {
+    let config = json!({"version":2,"privateDns":"api",
+        "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+        "healthcheck":{"type":"none"},"restartPolicy":"unless-stopped"
+    });
+    let order = |authored: Option<&str>| {
+        let mut config = config.clone();
+        if let Some(authored) = authored {
+            config["updateOrder"] = json!(authored);
+        }
+        let intent = lowered(json!({
+            "namespace":"production","snapshots":[{"config":config,"resolvedEnv":{}}]
+        }))
+        .unwrap();
+        intent["target"][0]["update"]["order"].clone()
+    };
+    assert_eq!(order(Some("start-first")), json!("start_first"));
+    assert_eq!(order(Some("stop-first")), json!("stop_first"));
+    assert_eq!(order(Some("rolling")), json!("rolling"));
+    assert_eq!(order(None), Value::Null);
+
+    let parsed = parse_service_config(config.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(parsed).unwrap().get("updateOrder"),
+        None,
+        "an unset order is not written, so stored documents hash as before"
+    );
 }
 
 #[test]
