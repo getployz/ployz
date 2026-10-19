@@ -82,7 +82,8 @@ pub(crate) fn inherited(
         return Ok(None);
     }
     let deployments = uploaded(tx, environment)?;
-    let mut by_digest: BTreeMap<String, (UploadedSource, Vec<String>)> = BTreeMap::new();
+    // Each upload, with the first Service that builds from it.
+    let mut by_digest: BTreeMap<String, (UploadedSource, String)> = BTreeMap::new();
     for service in sourceless {
         let Some(upload) = deployments
             .iter()
@@ -92,18 +93,16 @@ pub(crate) fn inherited(
         else {
             continue;
         };
+        let name = service.config.private_dns.as_str().to_owned();
         by_digest
             .entry(upload.digest.as_str().to_owned())
-            .or_insert_with(|| (upload, Vec::new()))
-            .1
-            .push(service.config.private_dns.as_str().to_owned());
+            .or_insert((upload, name));
     }
     let mut uploads = by_digest.into_values();
-    let Some((upload, first)) = uploads.next() else {
+    let Some((upload, a)) = uploads.next() else {
         return Ok(None);
     };
-    if let Some((_, second)) = uploads.next() {
-        let (a, b) = (&first[0], &second[0]);
+    if let Some((_, b)) = uploads.next() {
         return Err(error::invalid(
             format!(
                 "{a} and {b} were uploaded separately, so one Deployment can't build both. \
@@ -182,17 +181,19 @@ pub(crate) fn uploads(
             Err(refused) => return Err(refused),
         };
         let environment = deployment.summary.environment_id.clone();
-        if !environments.contains_key(&environment) {
-            let digests = kept(tx, &environment)?;
-            environments.insert(environment.clone(), digests);
-        }
+        let digests = match environments.entry(environment.clone()) {
+            std::collections::btree_map::Entry::Occupied(known) => known.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(kept(tx, &environment)?)
+            }
+        };
         let digest = deployment
             .summary
             .upload
             .map(|upload| upload.digest.as_str().to_owned());
         let kept = digest
             .as_ref()
-            .is_some_and(|digest| environments[&environment].contains(digest));
+            .is_some_and(|digest| digests.contains(digest));
         uploads.push(HeldUpload {
             deployment: id.clone(),
             environment_id: environment,
