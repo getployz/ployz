@@ -473,7 +473,12 @@ fn unseeded(seeding: &endpoint::Seeding) -> Error {
     seeding.failures.first().map_or_else(
         || Error::not_found("no Server took the endpoint"),
         |missed| {
-            Error::from(missed.error.clone()).context(format!("{} did not answer.", missed.entry))
+            let what = if missed.error.code == RpcErrorCode::Unavailable {
+                "did not answer"
+            } else {
+                "refused the endpoint"
+            };
+            Error::from(missed.error.clone()).context(format!("{} {what}.", missed.entry))
         },
     )
 }
