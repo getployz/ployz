@@ -78,9 +78,9 @@ pub(crate) fn run(
             _ => None,
         };
         let Some(asked) = asked else {
-            break ran.map_err(|error| refused(error, command, setup))?;
+            break ran.map_err(|error| refused(error, root, command, setup))?;
         };
-        let retry = format!("ployz {} --approval {}", command.path(), asked.id);
+        let retry = retry(root, command, &asked.id);
         approval = Some(
             crate::approval::settle(&runtime, &credential, asked.verb(), &asked, retry)
                 .map_err(Failure::from)?,
@@ -111,7 +111,12 @@ pub(crate) async fn run_on(
     .await
 }
 
-fn refused(error: StoreCallError, command: &PublishedCommand, setup: &Setup) -> Failure {
+fn refused(
+    error: StoreCallError,
+    root: &ArgMatches,
+    command: &PublishedCommand,
+    setup: &Setup,
+) -> Failure {
     match error {
         StoreCallError::Refused(RpcError { code, .. }) if code.as_str() == UNKNOWN_COMMAND => {
             setup.evict(&command.name);
@@ -122,13 +127,36 @@ fn refused(error: StoreCallError, command: &PublishedCommand, setup: &Setup) -> 
         }
         StoreCallError::Refused(refusal) => match crate::approval::Asked::of(&refusal) {
             Some(asked) => {
-                let retry = format!("ployz {} --approval {}", command.path(), asked.id);
+                let retry = retry(root, command, &asked.id);
                 Failure::from(refusal).hint(Hint::Retry(retry))
             }
             None => StoreCallError::Refused(refusal).into(),
         },
         error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_)) => error.into(),
     }
+}
+
+/// This command again as typed, carrying approval `id`.
+fn retry(root: &ArgMatches, command: &PublishedCommand, id: &str) -> String {
+    let leaf = leaf(root);
+    let mut words = vec!["ployz".to_owned()];
+    words.extend(
+        crate::handlers::config_flag(root)
+            .into_iter()
+            .flatten()
+            .map(ToOwned::to_owned),
+    );
+    words.extend(command.path.iter().cloned());
+    for arg in &command.args {
+        for value in leaf.get_raw(&arg.name).into_iter().flatten() {
+            if !arg.positional {
+                words.push(format!("--{}", arg.name));
+            }
+            words.push(value.to_string_lossy().into_owned());
+        }
+    }
+    words.extend(["--approval".to_owned(), id.to_owned()]);
+    shell_words::join(words)
 }
 
 fn leaf(mut matches: &ArgMatches) -> &ArgMatches {
@@ -371,6 +399,78 @@ mod tests {
                     .collect(),
             ),
             kind => panic!("{name} is a {kind}"),
+        }
+    }
+
+    /// The fixture manifest, with `server upgrade-policy set` behind approval so a
+    /// gated entry takes named flags too.
+    fn gated() -> crate::published::Published {
+        let mut published = crate::published::Published::parse(include_bytes!(
+            "../../tests/fixtures/published-manifest.json"
+        ))
+        .unwrap();
+        for command in &mut published.commands {
+            if command.path() == "server upgrade-policy set" {
+                command.effect = crate::published::Effect::Write {
+                    ask: true,
+                    removes: false,
+                };
+            }
+        }
+        published
+    }
+
+    fn parsed(published: &crate::published::Published, argv: &[&str]) -> ArgMatches {
+        crate::published::attach(crate::cli::compiled(), published)
+            .try_get_matches_from(argv)
+            .unwrap_or_else(|error| panic!("{argv:?}: {error}"))
+    }
+
+    #[test]
+    fn an_approval_retry_parses_with_every_argument_typed() {
+        let published = gated();
+        for (path, argv) in [
+            (
+                "org member role",
+                vec!["ployz", "org", "member", "role", "Linus Torvalds", "admin"],
+            ),
+            (
+                "server upgrade-policy set",
+                vec![
+                    "ployz",
+                    "--ployz-config",
+                    "/tmp/ployz config.toml",
+                    "server",
+                    "upgrade-policy",
+                    "set",
+                    "--channel",
+                    "beta",
+                    "--automatic",
+                    "false",
+                ],
+            ),
+        ] {
+            let command = published.find(path).unwrap();
+            let root = parsed(&published, &argv);
+            let again = retry(&root, command, "a7e572f3");
+            let words = shell_words::split(&again).unwrap();
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
+            let again = parsed(&published, &words);
+            assert_eq!(
+                input(leaf(&again), command),
+                input(leaf(&root), command),
+                "{path}"
+            );
+            assert_eq!(
+                leaf(&again)
+                    .get_one::<String>("approval")
+                    .map(String::as_str),
+                Some("a7e572f3")
+            );
+            assert_eq!(
+                again.get_one::<String>("ployz-config"),
+                root.get_one::<String>("ployz-config")
+            );
         }
     }
 
