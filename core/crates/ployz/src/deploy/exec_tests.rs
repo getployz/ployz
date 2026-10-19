@@ -136,6 +136,23 @@ impl Recorded {
         }
     }
 
+    /// How a proxy sees this copy: addressed, and serving unless stopped.
+    fn proxied(&self, container_id: &ContainerId) -> ContainerObservation {
+        let runtime = if self.stopped { exited(0) } else { running() };
+        let mut observed = observation(&self.machine_id, container_id, runtime);
+        observed
+            .try_update(|parts| {
+                parts.kind = self.kind;
+                parts.namespace = self.service.namespace.clone();
+                parts.resolved_spec.name = self.service.name.clone();
+                parts.rotation = Some(self.rotation.clone());
+                parts.r#gen = Some(self.r#gen);
+                parts.address = Some(ployz_core::ContainerAddress("10.210.1.2".parse().unwrap()));
+            })
+            .unwrap();
+        observed
+    }
+
     fn is_sibling_of(&self, other: &Self) -> bool {
         self.kind == ContainerKind::ServiceContainer
             && self.present
@@ -223,6 +240,8 @@ struct Scripted {
     /// reads after it leaves In; `usize::MAX` never drops it.
     withheld: BTreeMap<QualifiedService, usize>,
     lingering: Mutex<BTreeMap<ContainerId, usize>>,
+    /// What each proxy last routed, kept by the real rule.
+    served: Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>,
     moves: Mutex<Vec<Move>>,
     /// Each live proxy's route once each move was applied.
     listed: Mutex<Vec<BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>>>,
@@ -255,6 +274,7 @@ impl Scripted {
             moved: Mutex::new(BTreeMap::new()),
             withheld: BTreeMap::new(),
             lingering: Mutex::new(BTreeMap::new()),
+            served: Mutex::new(BTreeMap::new()),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
         }
@@ -406,7 +426,8 @@ impl Scripted {
             .collect()
     }
 
-    /// `advance` counts the read toward a delayed ack.
+    /// `advance` counts the read toward a delayed ack. A proxy that acks
+    /// routes by the real proxy rule, then still lists a withheld copy.
     fn routes(
         &self,
         service: &QualifiedService,
@@ -415,11 +436,15 @@ impl Scripted {
         let proxies = self.proxies();
         let copies = self.copies.lock().unwrap();
         let of_service = || copies.iter().filter(|(_, copy)| copy.service == *service);
+        let siblings = ployz_core::service_containers(
+            of_service()
+                .filter(|(_, copy)| copy.present)
+                .map(|(id, copy)| copy.proxied(id)),
+        );
         let mut lingering = self.lingering.lock().unwrap();
-        let now: BTreeSet<ContainerId> = of_service()
+        let withheld: BTreeSet<ContainerId> = of_service()
             .filter(|(id, copy)| {
-                (copy.present && copy.rotation == CopyRotation::In
-                    || lingering.get(*id).is_some_and(|reads| *reads > 0))
+                lingering.get(*id).is_some_and(|reads| *reads > 0)
                     && !self.down.contains(&copy.machine_id)
             })
             .map(|(id, _)| *id)
@@ -436,20 +461,39 @@ impl Scripted {
             .filter(|(_, copy)| copy.in_before)
             .map(|(id, _)| *id)
             .collect();
+        drop(copies);
+        let mut served = self.served.lock().unwrap();
+        let mut now = |machine: MachineId| {
+            let current = served.entry(machine).or_default();
+            let next =
+                ployz_core::proxy_routes(&siblings, |down| self.down.contains(down), current);
+            let route = next.get(service).cloned().unwrap_or_default();
+            let listed = route
+                .iter()
+                .map(|serving| serving.as_observation().container_id)
+                .chain(withheld.iter().copied())
+                .collect();
+            if next.contains_key(service) {
+                current.insert(service.clone(), route);
+            } else {
+                current.remove(service);
+            }
+            listed
+        };
         let mut reads = self.route_reads.lock().unwrap();
         proxies
             .into_iter()
             .filter(|machine| !self.down.contains(machine))
             .map(|machine| {
                 let route = match self.acks.get(&machine).copied().unwrap_or(Ack::Prompt) {
-                    Ack::Prompt => Some(now.clone()),
+                    Ack::Prompt => Some(now(machine)),
                     Ack::After(reads_before) => {
                         let read = reads.entry(machine).or_default();
                         if advance {
                             *read += 1;
                         }
                         Some(if *read > reads_before {
-                            now.clone()
+                            now(machine)
                         } else {
                             before.clone()
                         })
