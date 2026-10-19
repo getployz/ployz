@@ -332,9 +332,9 @@ fn bound_to(error: Error, effects: &[DestructiveEffect]) -> Error {
 /// never asks for a version: it names what goes, and a lost Volume nobody accepted.
 ///
 /// A name typed at the prompt confirms only what the prompt showed, in `prompted`
-/// with the read that lists it again. Nothing is sent again, and the refusal names
-/// what changed since, when the refusal removes a Service or Volume the prompt
-/// didn't list under its Environment, or when the list read again now differs.
+/// with the read that lists it again. Nothing is sent when the list read again now
+/// differs, and nothing is sent again when the refusal removes a Service or Volume
+/// the prompt didn't list under its Environment; the refusal names what changed.
 /// `--confirm` showed nothing, so the name confirms the plan as it is. A plan that changed between the two sends refuses the second,
 /// saying so. Returns the effects the second send was bound to, none without one,
 /// and with an error that isn't the Store's refusal, which names what goes itself.
@@ -355,6 +355,25 @@ fn bound(
             error,
             effects: Vec::new(),
         })
+    };
+    let shown = match prompted {
+        Some((shown, listed)) => {
+            let since = shown.changes(&listed().map_err(unbound)?);
+            if !since.is_empty() {
+                return Err(unbound(StoreCallError::Refused(ployz_core::RpcError {
+                    code: RpcErrorCode::ConfirmationRequired,
+                    message: format!(
+                        "What this removes changed since you confirmed: {}. Nothing was \
+                         removed. Run it again to go ahead",
+                        since.join(", ")
+                    ),
+                    details: json!({}),
+                    cause: Vec::new(),
+                })));
+            }
+            Some(shown)
+        }
+        None => None,
     };
     if request.version.is_some() {
         return send(request)
@@ -379,14 +398,10 @@ fn bound(
             &Changed::No,
         ))));
     };
-    if let Some((shown, listed)) = prompted {
+    if let Some(shown) = shown {
         let unlisted = shown.unlisted(&effects, by_environment.as_ref());
-        let since = match unlisted.is_empty() {
-            false => format!("it now {}", said(&unlisted)),
-            true => shown.changes(&listed().map_err(unbound)?).join(", "),
-        };
-        if !since.is_empty() {
-            let since = Changed::SinceConfirmed(since);
+        if !unlisted.is_empty() {
+            let since = Changed::SinceConfirmed(format!("it now {}", said(&unlisted)));
             return Err(unbound(StoreCallError::Refused(ask(
                 refused, request, what, &since,
             ))));
@@ -1001,35 +1016,6 @@ mod tests {
     }
 
     #[test]
-    fn a_staged_service_the_prompt_did_not_list_is_refused_without_sending_again() {
-        // The prompt showed production/web; a `worker` staged since then deploys
-        // nothing yet, so the refusal's effects don't name it, but removing deletes it.
-        let prompt = shown(&["web"]);
-        let mut sent = 0;
-        let again = || Ok(shown(&["web", "worker"]));
-        let refused = bound(&mut request(), "shop", Some((&prompt, again)), |_| {
-            sent += 1;
-            Err(asks("v1", "web"))
-        });
-        let Some(refused) = refusal(refused) else {
-            panic!("a staged worker the person never saw goes");
-        };
-        assert_eq!(
-            sent, 1,
-            "it sends nothing bound to what the person didn't see"
-        );
-        assert!(
-            refused.message.starts_with(
-                "What this removes changed since you confirmed: production now has Service \
-                 worker. Nothing was removed."
-            ),
-            "{}",
-            refused.message
-        );
-        assert_eq!(refused.details.get("version"), None);
-    }
-
-    #[test]
     fn a_service_staged_while_the_prompt_was_open_is_not_removed_without_effects() {
         // Nothing ran, so the Store removes without asking for a version; a `worker`
         // staged since the prompt listed `web` would go with it.
@@ -1079,9 +1065,9 @@ mod tests {
     #[test]
     fn a_service_shown_in_another_environment_is_refused_without_sending_again() {
         // The prompt listed production/web and an empty staging; staging/web was
-        // deployed before the name was typed.
+        // deployed after the list was read again, before the first send.
         let listed = shown_in(&[("production", &["web"]), ("staging", &[])]);
-        let again = shown_in(&[("production", &["web"]), ("staging", &["web"])]);
+        let again = shown_in(&[("production", &["web"]), ("staging", &[])]);
         let mut sent = 0;
         let refused = bound(
             &mut request(),
