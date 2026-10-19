@@ -44,6 +44,9 @@ export { ployzVersion };
 
 export { machineUpgradeAttemptId, setVolumeCopyRefusal };
 
+/** The error an SDK call rejects with when a Machine or the Store refuses it. */
+export { RpcError } from "@ployz/sdk";
+
 export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
   sdkPromise("observe copies", () => observeCopies(connections));
 

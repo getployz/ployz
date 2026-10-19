@@ -1,6 +1,5 @@
 import { it } from "@effect/vitest";
 import type { ConfigCommand, ConfigQuery, ConfigWritten, Connection, SystemEvent, VolumeObservation } from "@ployz/sdk";
-import { RpcError } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect, vi } from "vitest";
@@ -12,6 +11,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { StoreRead } from "#/modules/config-store/store.contract";
 import { gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence, VolumeObserver } from "#/modules/config-store/volume-evidence.server";
 import { organizationMachine } from "#/modules/machines/tables";
+import { RpcError } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { machineId } from "#/test/ids";
 import { enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
