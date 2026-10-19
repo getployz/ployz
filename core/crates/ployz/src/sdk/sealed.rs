@@ -214,7 +214,12 @@ impl PendingNames {
 
 /// The fail-closed table. `env` is None until the Container's env has been read; `opened` is
 /// the newest `begin` before a history page opened.
-fn verdict(read: &Read, env: Option<&Env>, opened: Option<u64>, none: &Arc<SealedForms>) -> Verdict {
+fn verdict(
+    read: &Read,
+    env: Option<&Env>,
+    opened: Option<u64>,
+    none: &Arc<SealedForms>,
+) -> Verdict {
     match &read.names {
         Names::Failed => Verdict::Hide,
         Names::Unread => Verdict::Wait,
@@ -263,7 +268,10 @@ impl Env {
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(tag = "text", rename_all = "snake_case")]
 pub enum LogLine {
-    Shown { level: LogLevel, message: String },
+    Shown {
+        level: LogLevel,
+        message: String,
+    },
     /// The first line of a run that could not be checked for Sealed values. The rest of the
     /// run is dropped; the next shown line ends it.
     Hidden,
@@ -388,7 +396,12 @@ impl ScrubbedLogStream {
     }
 
     fn verdict(&self) -> Verdict {
-        match verdict(&self.names.read(), Some(&self.env), None, &self.names.shared.none) {
+        match verdict(
+            &self.names.read(),
+            Some(&self.env),
+            None,
+            &self.names.shared.none,
+        ) {
             Verdict::Wait => Verdict::Hide,
             verdict @ (Verdict::Show(_) | Verdict::Hide) => verdict,
         }

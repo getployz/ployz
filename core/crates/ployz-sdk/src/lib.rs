@@ -1059,6 +1059,12 @@ impl SealedNames {
     }
 }
 
+impl Default for SealedNames {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One read of the Sealed names in flight; it lands once.
 #[napi]
 pub struct NamesRead {
