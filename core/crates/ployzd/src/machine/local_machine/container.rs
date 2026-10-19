@@ -232,6 +232,9 @@ impl LocalMachine {
     /// may have started its own holder of the Volume already. A start ordered after
     /// the check waits for the turn, so it sees this holder running.
     ///
+    /// A Create that asks for In then goes In as an In want does, once healthy. One
+    /// that does not keeps running unrouted until a Deploy routes the Service.
+    ///
     /// # Errors
     ///
     /// Returns when the floor cannot be read, or Docker cannot create or start the
@@ -242,37 +245,73 @@ impl LocalMachine {
         name: DockerVolumeName,
         r#gen: VolumeGen,
     ) -> Result<Result<(), VolumeGen>, Error> {
+        let rotation = match &start {
+            Start::Kept { .. } => RunRotation::Pending,
+            Start::Create { rotation, .. } => rotation.clone(),
+        };
         let local = self.clone();
-        self.finish_mutation(async move {
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
-                return Ok(Err(floor));
-            }
-            let container_id = match start {
-                Start::Kept { container_id } => container_id,
-                Start::Create {
-                    namespace,
-                    resolved_spec,
-                    creation_key,
-                } => {
-                    local
-                        .create_container_admitted(
-                            ContainerKind::ServiceContainer,
-                            &namespace,
-                            &resolved_spec,
-                            Some(creation_key.as_str().to_owned()),
-                            None,
-                            Gen::FIRST,
-                            ImagePull::Policy(None),
-                        )
-                        .await?
-                        .container_id
+        let started = self
+            .finish_mutation(async move {
+                let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+                    return Ok(Err(floor));
                 }
-            };
-            containers.start(&container_id).await?;
-            Ok(Ok(()))
-        })
-        .await
+                let container_id = match start {
+                    Start::Kept { container_id } => container_id,
+                    Start::Create {
+                        namespace,
+                        resolved_spec,
+                        creation_key,
+                        r#gen: copy_gen,
+                        ..
+                    } => {
+                        local
+                            .create_container_admitted(
+                                ContainerKind::ServiceContainer,
+                                &namespace,
+                                &resolved_spec,
+                                Some(creation_key.as_str().to_owned()),
+                                None,
+                                copy_gen,
+                                ImagePull::Policy(None),
+                            )
+                            .await?
+                            .container_id
+                    }
+                };
+                containers.start(&container_id).await?;
+                Ok(Ok(container_id))
+            })
+            .await?;
+        let container_id = match started {
+            Ok(container_id) => container_id,
+            Err(floor) => return Ok(Err(floor)),
+        };
+        if let RunRotation::In { .. } = rotation {
+            let ensured = self
+                .ensure_container(ContainerWant::Running {
+                    container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+                    rotation,
+                })
+                .await?;
+            match ensured {
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Present(observed),
+                    ..
+                } if *observed.rotation() == CopyRotation::In => {}
+                EnsuredContainer::Ensured { health, .. } => tracing::warn!(
+                    container = %container_id,
+                    ?health,
+                    "the moved Service copy runs but is not healthy, so it is not routed"
+                ),
+                EnsuredContainer::Refused { refusal, .. } => tracing::warn!(
+                    container = %container_id,
+                    ?refusal,
+                    "the moved Service copy runs but was refused In, so it is not routed"
+                ),
+            }
+        }
+        Ok(Ok(()))
     }
 
     /// Remove one local container while holding Machine mutation admission.
