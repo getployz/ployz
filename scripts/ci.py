@@ -32,6 +32,10 @@ def select(paths, pull_request=False):
     # every other check together, and they almost never fail where the Linux checks pass.
     if release_inputs_changed(paths) or (cargo_changed and not pull_request):
         selected.add("release-contracts")
+    # The macOS check runs after merge: macOS minutes cost ten times Linux ones, and over two weeks
+    # it never failed on a PR without another check failing too.
+    if pull_request:
+        selected.discard("macos-cli")
     return selected
 
 
