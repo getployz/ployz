@@ -79,6 +79,8 @@ pub(super) struct DeployService {
     creation_pulls: Arc<AtomicUsize>,
     /// Machines whose registry rejects every pull.
     pull_failures: BTreeSet<MachineId>,
+    /// What a rejected pull answers.
+    pull_failure: RpcError,
 }
 
 /// One `PullImage` a Machine answered.
@@ -131,6 +133,12 @@ impl DeployService {
             image_pulls: Arc::new(Mutex::new(Vec::new())),
             creation_pulls: Arc::new(AtomicUsize::new(0)),
             pull_failures: BTreeSet::new(),
+            pull_failure: RpcError {
+                code: RpcErrorCode::Internal,
+                message: "registry refused the pull".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            },
         }
     }
 
@@ -257,13 +265,15 @@ impl DeployService {
         self.creation_pulls.clone()
     }
 
-    fn registry_refusal() -> RpcError {
-        RpcError {
-            code: RpcErrorCode::Internal,
-            message: "registry refused the pull".into(),
+    /// Rejected pulls answer as Docker does for a tag the registry doesn't have.
+    pub(super) fn missing_image(mut self) -> Self {
+        self.pull_failure = RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "image pull failed".into(),
             details: Value::Null,
-            cause: Vec::new(),
-        }
+            cause: vec!["Docker responded with status code 404: nginx:latest: not found".into()],
+        };
+        self
     }
 
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
@@ -626,7 +636,7 @@ impl FakeMachine for DeployService {
                 if !new.image_prepared {
                     self.creation_pulls.fetch_add(1, Ordering::SeqCst);
                     if self.pull_failures.contains(&machine_id) {
-                        return encoded(RpcResponse::from(Self::registry_refusal()));
+                        return encoded(RpcResponse::from(self.pull_failure.clone()));
                     }
                 }
                 if let Some(error) = &self.create_volume_error {
@@ -889,7 +899,7 @@ impl FakeMachine for DeployService {
             return Err(Status::invalid_argument("expected pull_image"));
         };
         if self.pull_failures.contains(&machine) {
-            return encoded(RpcResponse::from(Self::registry_refusal()));
+            return encoded(RpcResponse::from(self.pull_failure.clone()));
         }
         self.image_pulls.lock().unwrap().push(ImagePullCall {
             machine,

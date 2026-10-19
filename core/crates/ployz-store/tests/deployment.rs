@@ -3811,6 +3811,35 @@ fn failed_row(snapshots: &[Vec<OperationRow>]) -> RowState {
 }
 
 #[test]
+fn a_missing_image_reads_as_one_sentence_at_the_pull_step() {
+    let docker = "Docker responded with status code 404: failed to resolve reference \"docker.io/library/nginx:doesnotexist-soak\": docker.io/library/nginx:doesnotexist-soak: not found";
+    let pull = json!({"type": "failed", "error": {
+        "type": "machine", "action": "PullImage",
+        "error": {
+            "code": "not_found",
+            "message": "image pull failed",
+            "details": {"missing_image": "nginx:doesnotexist-soak"},
+            "cause": [docker],
+        }
+    }});
+    let RowState::Failed {
+        reason,
+        cause,
+        step,
+        ..
+    } = failed_row(&[progress(&[("web", "alpha", pull)])])
+    else {
+        panic!("expected a failed row");
+    };
+    assert_eq!(
+        reason,
+        "Image nginx:doesnotexist-soak not found, or its registry needs credentials"
+    );
+    assert_eq!(cause, vec![docker.to_owned()]);
+    assert_eq!(step, Some(FailedAt::Pull));
+}
+
+#[test]
 fn a_failed_row_records_the_step_it_failed_at() {
     let health = json!({"type": "failed", "error": {
         "type": "health", "container_id": "c".repeat(64), "failure": {"type": "cancelled"}
