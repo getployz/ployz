@@ -261,12 +261,16 @@ pub(super) fn select_command(command: Command) -> Command {
         command,
         "Select a context and optionally its default connection",
     )
-    .arg(positional("context-name", false))
+    .arg(
+        positional("context-name", false)
+            .help("The context to select; the current one when omitted"),
+    )
     .arg(
         value("connection", None).help("Connection label or 1-based index in the selected context"),
     )
 }
 
 pub(super) fn remove_command(command: Command) -> Command {
-    base(command, "Remove a local context").arg(positional("context-name", true))
+    base(command, "Remove a local context")
+        .arg(positional("context-name", true).help("The context to remove"))
 }

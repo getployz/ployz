@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::Arc,
@@ -258,7 +259,7 @@ async fn entries(
                     return Err(if access.unreachable.is_empty() {
                         no_servers()
                     } else {
-                        no_reachable_server(access.unreachable, None)
+                        no_reachable_server(access.unreachable, &access.names, None)
                     });
                 }
                 return Ok(SelectedConnections {
@@ -298,7 +299,7 @@ async fn dial(
         if access.unreachable.is_empty() {
             return Ok(None);
         }
-        return Err(no_reachable_server(access.unreachable, None));
+        return Err(no_reachable_server(access.unreachable, &access.names, None));
     }
     // Cloud hands back the connections it holds without probing their Servers.
     let mut unreachable = access
@@ -310,7 +311,7 @@ async fn dial(
     match dial_connections(matches, access.connections).await {
         Ok(client) => Ok(Some(client)),
         Err(error @ ConnectError::AllFailed { reached: false, .. }) if !unreachable.is_empty() => {
-            Err(no_reachable_server(unreachable, Some(error)))
+            Err(no_reachable_server(unreachable, &access.names, Some(error)))
         }
         Err(error) => Err(error.into()),
     }
@@ -332,17 +333,29 @@ fn no_servers() -> Error {
     Error::not_found("this Organization has no Servers").hint(Hint::Next("ployz server add".into()))
 }
 
-/// None of `unreachable` answered; `cause` says how the last attempt failed.
+/// None of `unreachable` answered, each named where Cloud holds its name; `cause` says how
+/// the last attempt failed.
 fn no_reachable_server(
     unreachable: Vec<ployz_core::MachineId>,
+    names: &BTreeMap<ployz_core::MachineId, String>,
     cause: Option<ConnectError>,
 ) -> Error {
+    let shown = unreachable
+        .iter()
+        .map(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string()))
+        .collect::<Vec<_>>();
+    let message = match shown.as_slice() {
+        [one] => format!(
+            "Server {one} isn't answering. If it just joined or restarted, try again in a moment."
+        ),
+        _ => format!(
+            "None of your Servers is answering: {}. If one just joined or restarted, try again in a moment.",
+            super::joined(&shown)
+        ),
+    };
     Error::detailed_caused(
         RpcErrorCode::Unavailable,
-        format!(
-            "no Server of this Organization is reachable now: {}",
-            super::joined(&unreachable)
-        ),
+        message,
         json!({ "unreachable": unreachable }),
         cause,
     )
@@ -520,6 +533,11 @@ async fn apply_update(
                 "endpoint": seeding,
                 "target_error": error,
             }));
+        }
+        (Err(error), _) if error.code == RpcErrorCode::Unavailable => {
+            return Err(Error::from(error).context(format!(
+                "Server {selector} didn't answer. Run this on the Server, or retry once it's back. No changes made."
+            )));
         }
         (Err(error), _) => return Err(error.into()),
     };
@@ -975,6 +993,11 @@ mod tests {
         let access = |unreachable| cloud_account::ServerAccess {
             connections: Vec::new(),
             unreachable,
+            names: [(
+                ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
+                "box-node-7".to_owned(),
+            )]
+            .into(),
         };
         let dialed = dial(leaf_matches(&matches), access(Vec::new())).await;
         assert!(dialed.unwrap().is_none());
@@ -985,6 +1008,10 @@ mod tests {
         };
         let error = error.report();
         assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(
+            error.message,
+            "Server box-node-7 isn't answering. If it just joined or restarted, try again in a moment."
+        );
         assert_eq!(
             error.details.get("unreachable"),
             Some(&json!(["b".repeat(32)]))
@@ -1003,6 +1030,11 @@ mod tests {
             ]))
             .unwrap(),
             unreachable: vec![ployz_core::MachineId::parse(gone.clone()).unwrap()],
+            names: [(
+                ployz_core::MachineId::parse(held.clone()).unwrap(),
+                "web-1".to_owned(),
+            )]
+            .into(),
         };
         let Err(error) = dial(leaf_matches(&matches), access).await else {
             panic!("dialed a Server that is not there");
@@ -1013,6 +1045,12 @@ mod tests {
         );
         let error = error.report();
         assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(
+            error.message,
+            format!(
+                "None of your Servers is answering: web-1, {gone}. If one just joined or restarted, try again in a moment."
+            )
+        );
         assert_eq!(error.details.get("unreachable"), Some(&json!([held, gone])));
     }
 
@@ -1025,6 +1063,7 @@ mod tests {
         let unprovisioned = cloud_account::ServerAccess {
             connections: Vec::new(),
             unreachable: vec![ployz_core::MachineId::parse("b".repeat(32)).unwrap()],
+            names: BTreeMap::new(),
         };
         assert!(answering(matches, unprovisioned).await.unwrap().is_none());
 

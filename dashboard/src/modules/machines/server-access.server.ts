@@ -8,7 +8,7 @@ import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { lacks } from "#/modules/organization/access.server";
-import { organizationMachine, serverAccess } from "#/modules/machines/tables";
+import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -56,7 +56,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     } satisfies StoreRefusal };
   }
   const loaded = yield* loadOrganizationConnections(caller.organization.id);
-  if (loaded.kind === "missing") return { ok: true as const, value: { connections: [], unreachable: [] } };
+  if (loaded.kind === "missing") return { ok: true as const, value: { connections: [], unreachable: [], names: {} } };
   const database = yield* Database;
   const { drizzle } = database;
   const encryption = yield* SecretEncryption;
@@ -110,9 +110,13 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     }
     return { machine_id: machineId, management: management.value };
   }), { concurrency: "unbounded" });
+  const [allocation] = yield* drizzle.select({ assignments: enrollmentAllocation.assignments }).from(enrollmentAllocation)
+    .where(and(eq(enrollmentAllocation.organizationId, caller.organization.id), eq(enrollmentAllocation.clusterKey, loaded.generation)));
   return { ok: true as const, value: {
     connections: results.flatMap(({ machine_id, management }) => management === null ? [] : [{ machine_id, management }]),
     unreachable: results.flatMap(({ machine_id, management }) => management === null ? [machine_id] : []),
+    // Cloud holds only the names enrollment gave, so a Server the CLI can't reach shows by name where it can.
+    names: Object.fromEntries((allocation?.assignments ?? []).map(({ machine }) => [machine.id, machine.name])),
   } };
 });
 

@@ -30,8 +30,8 @@ pub(crate) use waiting::{command as waiting_command, enroll as enroll_waiting};
 
 pub(crate) fn command(command: Command) -> Command {
     super::provisioning_flags(
-        base(command, "Add a Server to your Organization's Cluster")
-            .long_about("Add a Server to your Organization's Cluster through Cloud; the first Server founds it. With DESTINATION, installs Ployz over SSH; without one, adds the Server this runs on. Signed in, it asks Cloud for an enrollment token; signed out, it asks for one at a hidden prompt, or reads --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN. --command prints one line to paste on the Server and the token beside it, then waits until it joins; with --json it returns both at once, and --wait ENROLLMENT waits."),
+        base(command, "Add a Server to your Organization")
+            .long_about("Add a Server to your Organization through Cloud.\n\nWith DESTINATION, installs Ployz over SSH; without one, adds the Server this runs on.\n\nSigned in, it asks Cloud for an enrollment token. Signed out, it asks for one at a hidden prompt, or reads --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN.\n\n--command prints one line to paste on the Server and the token beside it, then waits until it joins. With --json it returns both at once; --wait ENROLLMENT waits."),
     )
     .arg(positional("destination", false))
     .arg(
@@ -261,7 +261,6 @@ async fn paste(
         "Run this on the Server, and paste the token when it asks (expires {}):\n\n  {line}\n\n  {}\n",
         minted.expires_at, minted.token
     ));
-    crate::ui::note("Waiting for the Server to join...");
     wait_joined(acting, &minted.id).await
 }
 
@@ -295,6 +294,7 @@ enum Enrollment {
 }
 
 async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
+    crate::ui::note("Waiting for the Server to join...");
     loop {
         match acting
             .post("servers/enrollment", json!({ "id": enrollment }))

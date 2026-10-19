@@ -620,6 +620,8 @@ struct WaitingCloud {
     rows: Vec<serde_json::Value>,
     list: &'static str,
     unreachable: Vec<String>,
+    /// The names Server Access gives the Servers, by id.
+    names: serde_json::Value,
     /// The connections Server Access hands back, held before any Server was probed.
     connections: Vec<serde_json::Value>,
     rejects: Vec<(&'static str, Option<usize>)>,
@@ -652,6 +654,7 @@ impl WaitingCloud {
             rows,
             list: "200 OK",
             unreachable: Vec::new(),
+            names: serde_json::json!({}),
             connections: Vec::new(),
             rejects: Vec::new(),
             refusal: None,
@@ -673,6 +676,7 @@ fn waiting_cloud(
         rows,
         list,
         unreachable,
+        names,
         connections,
         rejects,
         refusal,
@@ -729,7 +733,7 @@ fn waiting_cloud(
                 }
                 "POST /api/cli/server-access" => (
                     "200 OK",
-                    serde_json::json!({ "connections": connections, "unreachable": unreachable }),
+                    serde_json::json!({ "connections": connections, "unreachable": unreachable, "names": names }),
                 ),
                 "GET /api/cli/enrollments" => {
                     if enrollment_reads > 0 {
@@ -1220,6 +1224,61 @@ fn server_show_falls_back_to_the_waiting_list_when_no_server_answers() {
     assert_eq!(
         json.pointer("/error/code").unwrap(),
         "unavailable",
+        "{json}"
+    );
+}
+
+#[test]
+fn a_server_that_is_not_answering_yet_is_named_with_when_to_try_again() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let joining = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            unreachable: vec![joining.clone()],
+            names: serde_json::json!({ joining.clone(): "box-node-7" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "ls", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/message").unwrap(),
+        "Server box-node-7 isn't answering. If it just joined or restarted, try again in a moment.",
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/details/unreachable").unwrap(),
+        &serde_json::json!([joining]),
+        "{json}"
+    );
+}
+
+#[test]
+fn removing_a_server_that_does_not_answer_points_to_forget() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gone = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            unreachable: vec![gone.clone()],
+            names: serde_json::json!({ gone: "web-1" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    let next = json
+        .pointer("/error/details/next")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(
+        next.ends_with(" server forget web-1 --confirm dead"),
         "{json}"
     );
 }

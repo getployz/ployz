@@ -11,12 +11,12 @@ $ ployz --help
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
+  build       Build one Git Service and push it to a Server that granted the build
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
@@ -92,12 +92,12 @@ $ ployz -h
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
+  build       Build one Git Service and push it to a Server that granted the build
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
@@ -155,12 +155,12 @@ $ ployz
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
+  build       Build one Git Service and push it to a Server that granted the build
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts

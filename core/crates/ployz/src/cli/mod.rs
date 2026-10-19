@@ -41,7 +41,7 @@ pub fn command() -> Command {
 pub(crate) fn compiled() -> Command {
     let root = base(
         Command::new("ployz"),
-        "Manage Ployz machines, services, and volumes",
+        "Run Services on your Servers: deploy, inspect and manage them",
     )
     .styles(crate::ui::clap_styles())
     .after_help(handlers::catalog::SIGNPOST)
@@ -68,7 +68,10 @@ pub(crate) fn base(command: Command, about: &'static str) -> Command {
 
 pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
     let mut args = vec![
-        value("connect", None).env(env::CONNECT).global(true),
+        value("connect", None)
+            .env(env::CONNECT)
+            .help("Reach the Servers through this connection instead of Cloud or a context")
+            .global(true),
         value("ssh-timeout", None)
             .value_name("SECONDS")
             .help("SSH setup timeout in seconds (provisioning: network connection only)")
@@ -86,7 +89,11 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             .global(true),
     ];
     if include_context {
-        args.push(value("context", Some('c')).env(env::CONTEXT));
+        args.push(
+            value("context", Some('c'))
+                .env(env::CONTEXT)
+                .help("Act through this local context instead of the current one"),
+        );
     }
     args
 }
@@ -211,6 +218,36 @@ pub(crate) fn completion(command: Command) -> Command {
 
 #[cfg(test)]
 mod tests {
+    /// Every command and global flag `--help` shows, without its one-line description.
+    fn undescribed(command: &clap::Command, path: &str, blank: &mut Vec<String>) {
+        if command.get_about().is_none() {
+            blank.push(path.to_owned());
+        }
+        for arg in command.get_arguments().filter(|arg| arg.is_global_set()) {
+            if !arg.is_hide_set() && arg.get_help().is_none() {
+                blank.push(format!("{path} --{}", arg.get_id()));
+            }
+        }
+        for sub in command.get_subcommands() {
+            undescribed(sub, &format!("{path} {}", sub.get_name()), blank);
+        }
+    }
+
+    #[test]
+    fn every_command_and_global_flag_has_a_description() {
+        let mut blank = Vec::new();
+        let published = crate::published::Published::parse(include_bytes!(
+            "../../tests/fixtures/published-manifest.json"
+        ))
+        .unwrap();
+        undescribed(
+            &crate::published::attach(super::compiled(), &published),
+            "ployz",
+            &mut blank,
+        );
+        assert_eq!(blank, Vec::<String>::new());
+    }
+
     #[test]
     fn expect_version_takes_a_review_or_refusal_version_only() {
         let project = "9a79b1a9-3c26-40dc-8cd0-3e5567c6daca:3764cac4355a8215";

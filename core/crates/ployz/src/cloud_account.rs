@@ -5,7 +5,7 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
@@ -224,6 +224,9 @@ pub(crate) struct ServerAccess {
     pub(crate) connections: Vec<crate::context::Connection>,
     /// Servers Cloud couldn't provision a holder on now.
     pub(crate) unreachable: Vec<MachineId>,
+    /// The names enrollment gave the Organization's Servers, where Cloud holds one.
+    #[serde(default)]
+    pub(crate) names: BTreeMap<MachineId, String>,
 }
 
 /// A token just made: the one reply that carries its secret.

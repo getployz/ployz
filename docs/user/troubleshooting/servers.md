@@ -321,7 +321,8 @@ No other server can join until the first one finishes.
 
 The **Servers** page shows **Can't reach your servers right now**, with what your servers last
 reported or nothing at all. Adding a server can fail with `This Organization's Servers can't be
-reached`.
+reached`. A CLI command says `Server web-1 isn't answering`, naming each server it couldn't reach.
+A server that just joined or restarted answers within a minute; try again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with

@@ -39,6 +39,18 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Reset)
 }
 
+/// A reset needs its Server to answer; one that is gone is forgotten instead.
+fn unanswered_reset(error: Error, matches: &ArgMatches, selector: &str) -> Error {
+    if error.report().code != RpcErrorCode::Unavailable {
+        return error;
+    }
+    let forget = super::super::rerun(
+        matches,
+        &["server", "forget", selector, "--confirm", "dead"],
+    );
+    error.hint(Hint::Next(forget))
+}
+
 pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Forget)
 }
@@ -51,9 +63,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let reached = runtime.block_on(async {
         match removal {
             Removal::Forget => super::connect_or_unanswered(matches, options.context()).await,
-            Removal::Reset => Ok(Reached::Client(
-                super::connect(matches, options.context()).await?,
-            )),
+            Removal::Reset => super::connect(matches, options.context())
+                .await
+                .map(Reached::Client)
+                .map_err(|error| unanswered_reset(error, matches, &selector)),
         }
     })?;
     let mut client = match reached {

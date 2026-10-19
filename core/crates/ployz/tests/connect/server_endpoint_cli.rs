@@ -111,6 +111,44 @@ async fn a_new_endpoint_reaches_every_other_server_when_the_target_is_off_the_me
 }
 
 #[tokio::test]
+async fn a_target_that_does_not_answer_is_named_and_left_unchanged() {
+    let (address, _two) = serve_discovery(entry('b')).await;
+    let config = std::env::temp_dir().join(format!("ployz-endpoint-{}.yaml", MachineId::random()));
+    std::fs::write(
+        &config,
+        format!("contexts:\n  lab:\n    connections:\n      - tcp: {address}\n"),
+    )
+    .unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .args(["--ployz-config", config.to_str().unwrap(), "--json"])
+        .args([
+            "server",
+            "set",
+            "one",
+            "--label-add",
+            "a=b",
+            "--context",
+            "lab",
+        ])
+        .output()
+        .await
+        .unwrap();
+    let _ = std::fs::remove_file(&config);
+    assert!(!output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.pointer("/error/message"),
+        Some(&json!(
+            "Server one didn't answer. Run this on the Server, or retry once it's back. No changes made."
+        )),
+        "{result}"
+    );
+    assert_eq!(result.pointer("/error/code"), Some(&json!("unavailable")));
+}
+
+#[tokio::test]
 async fn an_older_entry_still_updates_the_target_it_could_not_seed() {
     let mut older = entry('b');
     older.update_unavailable = false;

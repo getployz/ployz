@@ -16,7 +16,7 @@ import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
 import type { JsonObject } from "#/db/tables";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
-import { machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
+import { enrollmentAllocation, machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -170,6 +170,7 @@ const Reply = Schema.Struct({
   removed: Schema.optionalKey(Schema.Union([Schema.Boolean, Named])),
   connections: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, management: Schema.String }))),
   unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
+  names: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   servers: Schema.optionalKey(Schema.Union([
     Schema.Struct({ confirmed: Schema.Array(Schema.String), unconfirmed: Schema.Array(Schema.String) }),
     Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, reach: Schema.String })),
@@ -673,13 +674,13 @@ it.live(
         const ci = { bearer: token.secret };
 
         // Login needed no Server: nothing is paired yet.
-        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json, { connections: [], unreachable: [] });
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json, { connections: [], unreachable: [], names: {} });
         yield* enroll(alice.organization.id, first, true);
         fake.servers.set(first, { online: true, slots: new Map() });
 
         const access = (yield* cli("POST", "server-access", alice)).json;
         const deviceKey = access.connections?.[0]?.management ?? assert.fail("no capability");
-        assert.deepStrictEqual(access, { connections: [{ machine_id: first, management: deviceKey }], unreachable: [] });
+        assert.deepStrictEqual(access, { connections: [{ machine_id: first, management: deviceKey }], unreachable: [], names: {} });
         assert.strictEqual(fake.servers.get(first)?.slots.get(serverAccessLabel(device)), deviceKey);
         // Held, not re-provisioned; stored only encrypted.
         assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.connections, access.connections);
@@ -695,7 +696,14 @@ it.live(
         yield* enroll(alice.organization.id, later, false);
         const laterServer = { online: false, slots: new Map<string, string>() };
         fake.servers.set(later, laterServer);
-        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.unreachable, [later]);
+        yield* database.drizzle.insert(enrollmentAllocation).values({
+          organizationId: alice.organization.id,
+          clusterKey: createHash("sha256").update(pairingSecret).digest("hex"),
+          assignments: [{ machine: { id: later, name: "box-node-2" } }] as never,
+        });
+        const offline = (yield* cli("POST", "server-access", alice)).json;
+        assert.deepStrictEqual(offline.unreachable, [later]);
+        assert.deepStrictEqual(offline.names, { [later]: "box-node-2" });
         laterServer.online = true;
         const both = (yield* cli("POST", "server-access", alice)).json;
         assert.deepStrictEqual(both.connections?.map((row) => row.machine_id).sort(), [first, later]);

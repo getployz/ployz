@@ -22,7 +22,7 @@ pub(super) fn group(command: Command) -> Command {
 pub(super) fn new_command(command: Command) -> Command {
     command
         .about("Create a Project with its Default Environment, production")
-        .arg(positional("name", true))
+        .arg(positional("name", true).help("The new Project's name, unique in the Organization"))
 }
 
 pub(super) fn ls_command(command: Command) -> Command {

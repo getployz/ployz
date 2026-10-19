@@ -259,7 +259,7 @@ Exit 2 is applied by hand in about ten handlers through `.with_exit(USAGE_EXIT)`
 ## 13. Help text
 
 - Bare `ployz` prints help on stdout and exits 0. Bare `ployz org` and `ployz github` print help on stderr and exit 2 ([cloud/org.md](cloud/org.md), [cloud/github.md](cloud/github.md)).
-- Summaries mix casing: `server      Manage Servers` but `service     Manage services`; the tagline is `Manage Ployz machines, services, and volumes` ([store/help.md](store/help.md)).
+- Summaries mix casing: `server      Manage Servers` but `service     Manage services` ([store/help.md](store/help.md)).
 - Commands are mostly alphabetical, but `link`, `github`, `token` and `project` are out of place.
 - Every subcommand repeats the globals. `--connect <connect>` has no description. `--ployz-config` shows the env path.
 - Placeholders mix casing: `<name>`, `<context>`, `<SECONDS>`, `<PROJECT>`, `<VERSION>`, `<FILE>`.
