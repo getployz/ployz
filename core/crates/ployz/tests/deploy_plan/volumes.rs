@@ -779,6 +779,11 @@ fn a_silent_machine_leaves_the_writer_unknown_instead_of_naming_a_copy() {
             "third did not answer, so Volume data's copies are unknown. Bring third back, or deploy the other services by name",
             "{case}"
         );
+        assert_eq!(
+            error.into_rpc_error().code,
+            RpcErrorCode::Unavailable,
+            "{case}"
+        );
     }
 }
 

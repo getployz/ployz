@@ -793,10 +793,15 @@ impl PlanError {
             error @ Self::NoWriter { .. } => {
                 ployz_core::SwitchError::NoWriter.rpc_error(error.to_string())
             }
+            error @ Self::CopiesUnknown { .. } => RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: error.to_string(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
             error @ (Self::ConflictingHostPublications { .. }
             | Self::HostPortConflict { .. }
             | Self::CapacityUnknown
-            | Self::CopiesUnknown { .. }
             | Self::InsufficientCapacity
             | Self::NoEligibleMachines { .. }
             | Self::ServiceModeCannotChange
