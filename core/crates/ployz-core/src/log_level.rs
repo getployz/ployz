@@ -123,6 +123,11 @@ mod tests {
             ("[error] tagged", LogLevel::Error),
             ("[WARN] tagged", LogLevel::Warn),
             ("  INFO indented", LogLevel::Info),
+            (
+                "2026/10/18 14:42:00 [error] 29#29: *1 open() failed",
+                LogLevel::Error,
+            ),
+            ("2026-10-18T14:42:00.123Z WARN slow query", LogLevel::Warn),
         ] {
             assert_eq!(log_level(line.as_bytes()), level, "{line}");
         }
@@ -150,6 +155,8 @@ mod tests {
             "Errors are counted later",
             "errored out",
             "[req-12] handled",
+            "500 error page served",
+            "2026/10/18 14:42:00 served /",
             r#"{"level":7}"#,
             r#"{"level":"loud"}"#,
             "{not json level=",
