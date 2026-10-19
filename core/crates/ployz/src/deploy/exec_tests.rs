@@ -119,6 +119,7 @@ struct Recorded {
     in_before: bool,
     stopped: bool,
     present: bool,
+    deploy: Option<DeploymentLogId>,
 }
 
 impl Recorded {
@@ -133,6 +134,7 @@ impl Recorded {
             in_before: *observed.rotation() == CopyRotation::In,
             stopped: false,
             present: true,
+            deploy: observed.deploy_label(),
         }
     }
 
@@ -236,6 +238,9 @@ struct Scripted {
     /// Another writer moves this copy here just before the run's next ask of
     /// this kind on it.
     moved: Mutex<BTreeMap<(ContainerId, Ask), CopyRotation>>,
+    /// Another writer moves the named other copy there just before the run's next ask of
+    /// this kind on this copy.
+    moved_sibling: Mutex<BTreeMap<(ContainerId, Ask), (ContainerId, CopyRotation)>>,
     /// Every live proxy keeps listing a copy of this Service for this many
     /// reads after it leaves In; `usize::MAX` never drops it.
     withheld: BTreeMap<QualifiedService, usize>,
@@ -279,6 +284,7 @@ impl Scripted {
             failed_route_reads: Mutex::new(0),
             read_latency: false,
             moved: Mutex::new(BTreeMap::new()),
+            moved_sibling: Mutex::new(BTreeMap::new()),
             withheld: BTreeMap::new(),
             lingering: Mutex::new(BTreeMap::new()),
             lagging: Mutex::new(BTreeMap::new()),
@@ -319,8 +325,19 @@ impl Scripted {
                 rotation,
                 stopped: false,
                 present: true,
+                deploy: None,
             },
         );
+        self
+    }
+
+    fn with_deploy(mut self, container_id: &ContainerId, deploy: &DeploymentLogId) -> Self {
+        self.copies
+            .get_mut()
+            .unwrap()
+            .get_mut(container_id)
+            .expect("deploy label on a recorded copy")
+            .deploy = Some(deploy.clone());
         self
     }
 
@@ -563,6 +580,14 @@ impl Scripted {
             .remove(&(container_id, Ask::of(target)));
         if let Some(rotation) = &raced {
             self.record(container_id, |copy| copy.rotation = rotation.clone());
+        }
+        let raced_sibling = self
+            .moved_sibling
+            .lock()
+            .unwrap()
+            .remove(&(container_id, Ask::of(target)));
+        if let Some((sibling, rotation)) = raced_sibling {
+            self.record(sibling, |copy| copy.rotation = rotation);
         }
         let copy = {
             let mut copies = self.copies.lock().unwrap();
@@ -874,6 +899,7 @@ impl Scripted {
                     in_before: false,
                     stopped: false,
                     present: true,
+                    deploy: self.deploys.lock().unwrap().last().cloned().flatten(),
                 },
             );
         }

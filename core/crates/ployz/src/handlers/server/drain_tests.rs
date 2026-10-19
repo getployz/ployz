@@ -4,8 +4,8 @@ use ployz_core::{Machine, MachineId, MachineName, QualifiedService, WireGuardPub
 
 use super::{line, remaining};
 use crate::drain::{
-    DrainOutcome, DrainReport, DrainStop, MachineRef, Move, MoveFailure, Remaining, ServiceDrain,
-    ServicesRole, StayReason,
+    DrainOutcome, DrainReport, DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, Remaining,
+    ServiceDrain, ServicesRole, StayReason,
 };
 
 fn server(hex: char, name: &str) -> Machine {
@@ -35,6 +35,7 @@ fn step(to: &Machine) -> Move {
     Move {
         from: MachineRef::from(&server('b', "web-2")),
         to: MachineRef::from(to),
+        old: OldCopyEnd::Stopped,
     }
 }
 
@@ -127,16 +128,16 @@ fn every_outcome_that_existed_prints_the_same_line() {
                 to: to.clone(),
                 replacement_removed: false,
             }),
-            failed(MoveFailure::OldNotRemoved {
+            failed(MoveFailure::NotServing {
                 from,
                 to,
-                detail: "remove failed".into(),
-                old_stopped: true,
+                detail: "unhealthy".into(),
+                replacement_removed: true,
             }),
         ],
         [
             "app/web: failed: moving it from web-2 to web-1: deploy cancelled",
-            "app/web: failed: moving it from web-2 to web-1: remove failed",
+            "app/web: failed: moving it from web-2 to web-1: unhealthy",
         ],
         "what a move now records about its Containers stays out of the line"
     );

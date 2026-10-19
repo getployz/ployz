@@ -25,8 +25,10 @@ mod report;
 mod schedule;
 
 pub(crate) use apply::{Outcome, apply_requested};
-pub(crate) use convergence::{Converged, OldCopy, Replacement, converge};
-pub use convergence::{DrainStop, MachineRef, Move, MoveFailure, StayReason};
+pub(crate) use convergence::{Converged, converge};
+pub use convergence::{
+    DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
+};
 pub use pipeline::DeployError;
 pub(crate) use pipeline::plan_options;
 pub(crate) use planning::capacity::endpoint_capacity_error;
