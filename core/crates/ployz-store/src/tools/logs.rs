@@ -1,5 +1,6 @@
-//! Container log text that is safe to show: scrubbed of every secret the Store and the
-//! Machine know, and withheld when they could not say which values are secret.
+//! Container log text that is safe to show: scrubbed of the Sealed values its
+//! reader knows and of secret-shaped text. Every other value, plain variables and
+//! image env included, is shown as written.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -18,100 +19,34 @@ const LINE_BYTES: usize = 500;
 const TOTAL_BYTES: usize = 16 * 1024;
 const CUT_MARKER: &str = " [cut]";
 
-/// Secret names and values for the Containers whose logs are scrubbed together. Built from
-/// the Store's view of their env, then each Machine's real env. Never serialized or cloned,
-/// and its Debug prints names only.
-pub struct SecretSet {
-    /// Name and value pairs, so Containers sharing a name keep every value.
-    secrets: BTreeSet<(String, String)>,
-    plain: BTreeMap<String, String>,
-    store: bool,
-    machine: MachineEnv,
-}
+/// Sealed variable values, by name, for the Containers whose logs are scrubbed together.
+/// Never serialized or cloned, and its Debug prints names only.
+pub struct SealedValues(BTreeSet<(String, String)>);
 
-/// Whether every Container's env has been read from its Machine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MachineEnv {
-    Unread,
-    Read,
-    /// One could not be read, so the set stays incomplete whatever is read after it.
-    Unreadable,
-}
-
-impl SecretSet {
-    /// A set with no Store context: anything scrubbed with it is withheld.
+impl SealedValues {
+    /// No Sealed values: only secret-shaped text is scrubbed.
     #[must_use]
-    pub const fn unknown() -> Self {
-        Self {
-            secrets: BTreeSet::new(),
-            plain: BTreeMap::new(),
-            store: false,
-            machine: MachineEnv::Unread,
-        }
-    }
-
-    /// A set for logs no Container env reaches, as a Server process's own: only
-    /// secret-shaped values are scrubbed.
-    #[must_use]
-    pub const fn no_env() -> Self {
-        Self {
-            secrets: BTreeSet::new(),
-            plain: BTreeMap::new(),
-            store: true,
-            machine: MachineEnv::Read,
-        }
-    }
-
-    /// The Store's env for a Container: `secrets` are scrubbed wherever they appear, `plain`
-    /// values stay readable when the Machine's env holds the same value under that name.
-    #[must_use]
-    pub fn from_store(
-        secrets: impl IntoIterator<Item = (String, String)>,
-        plain: impl IntoIterator<Item = (String, String)>,
-    ) -> Self {
-        Self {
-            secrets: secrets.into_iter().collect(),
-            plain: plain.into_iter().collect(),
-            store: true,
-            machine: MachineEnv::Unread,
-        }
-    }
-
-    /// Add a Container's env as its Machine reports it. `None` means it could not be read,
-    /// which leaves the set incomplete for good. Every entry is a secret except one the Store
-    /// knows as plain with the identical value.
-    pub fn add_machine_env(&mut self, env: Option<&BTreeMap<String, String>>) {
-        let Some(env) = env else {
-            self.machine = MachineEnv::Unreadable;
-            return;
-        };
-        for (name, value) in env {
-            if self.plain.get(name) != Some(value) {
-                self.secrets.insert((name.clone(), value.clone()));
-            }
-        }
-        if self.machine == MachineEnv::Unread {
-            self.machine = MachineEnv::Read;
-        }
-    }
-
-    fn complete(&self) -> bool {
-        self.store && self.machine == MachineEnv::Read
+    pub const fn none() -> Self {
+        Self(BTreeSet::new())
     }
 }
 
-impl fmt::Debug for SecretSet {
+impl FromIterator<(String, String)> for SealedValues {
+    fn from_iter<I: IntoIterator<Item = (String, String)>>(values: I) -> Self {
+        Self(values.into_iter().collect())
+    }
+}
+
+impl Extend<(String, String)> for SealedValues {
+    fn extend<I: IntoIterator<Item = (String, String)>>(&mut self, values: I) {
+        self.0.extend(values);
+    }
+}
+
+impl fmt::Debug for SealedValues {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SecretSet")
-            .field(
-                "secrets",
-                &self
-                    .secrets
-                    .iter()
-                    .map(|(name, _)| name)
-                    .collect::<Vec<_>>(),
-            )
-            .field("complete", &self.complete())
+        f.debug_list()
+            .entries(self.0.iter().map(|(name, _)| name))
             .finish()
     }
 }
@@ -164,7 +99,7 @@ pub struct LogExcerpt {
     lines: Vec<String>,
     /// Whether a cap dropped any line or byte.
     cut: bool,
-    /// How many secrets and secret-shaped values were replaced.
+    /// How many Sealed values and secret-shaped values were replaced.
     redacted: u32,
 }
 
@@ -180,7 +115,8 @@ pub enum LogText {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Withheld {
-    /// Which values are secret was not known, so nothing could be scrubbed reliably.
+    /// The Sealed values the lines may hold could not be learned, so they could not be
+    /// scrubbed.
     NoSecretContext,
     /// The logs could not be read in time.
     Unanswered,
@@ -190,30 +126,25 @@ impl LogExcerpt {
     /// Scrub raw log `frames`, chunks of one stream in order, into text that can be shown.
     ///
     /// Order matters: frames are joined first so a value split across two is still matched;
-    /// then each secret's exact, base64 and url-encoded forms become `[secret NAME]`, longest
-    /// first; then secret-shaped patterns become `[redacted]`; caps apply last, so a cut never
-    /// exposes the prefix of a value it would otherwise have matched. Without a complete
-    /// `secrets` the text is withheld.
+    /// then each Sealed value's exact, base64 and url-encoded forms become `[secret NAME]`,
+    /// longest first; then secret-shaped patterns become `[redacted]`; caps apply last, so a
+    /// cut never exposes the prefix of a value it would otherwise have matched.
+    #[must_use]
     pub fn scrub(
         frames: impl IntoIterator<Item = String>,
-        secrets: &SecretSet,
+        sealed: &SealedValues,
         cap: LineCap,
-    ) -> LogText {
-        if !secrets.complete() {
-            return LogText::Withheld {
-                why: Withheld::NoSecretContext,
-            };
-        }
+    ) -> Self {
         let text: String = frames.into_iter().collect();
         let mut redacted = 0;
-        let text = scrub_values(&text, secrets, &mut redacted);
+        let text = scrub_values(&text, sealed, &mut redacted);
         let text = scrub_patterns(&text, &mut redacted);
         let (lines, cut) = capped(&text, cap);
-        LogText::Shown(Self {
+        Self {
             lines,
             cut,
             redacted,
-        })
+        }
     }
 
     #[must_use]
@@ -232,10 +163,10 @@ impl LogExcerpt {
     }
 }
 
-fn scrub_values(text: &str, secrets: &SecretSet, redacted: &mut u32) -> String {
+fn scrub_values(text: &str, sealed: &SealedValues, redacted: &mut u32) -> String {
     let mut forms: Vec<(String, &str)> = Vec::new();
     let mut short = Vec::new();
-    for (name, value) in &secrets.secrets {
+    for (name, value) in &sealed.0 {
         if value.is_empty() {
             continue;
         }

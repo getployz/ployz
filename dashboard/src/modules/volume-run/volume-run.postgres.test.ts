@@ -14,6 +14,7 @@ import type {
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
+import { createHash } from "node:crypto";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Exit } from "effect";
 import { Inngest, NonRetriableError } from "inngest";
@@ -460,10 +461,10 @@ describe("volume runs", () => {
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
     ...Array.from({ length: 8 }, (_, check) => `01-wait-${check}`),
   ].map((id) => ({ id, handler: () => undefined }));
-  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string) => new InngestTestEngine({
+  const execute = (runRowId: string, runId = "run-1", steps?: Array<{ id: string; handler: () => object | undefined }>, volume = volumeId, took?: string, attempt = 0) => new InngestTestEngine({
     function: createRunVolume(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId, took } }],
-    transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
+    transformCtx: (ctx) => ({ ...mockCtx(ctx), runId, attempt }),
     steps: [...(steps ?? []), ...sleeps],
   }).execute();
   /** Runs the row as Inngest would from the event its request sent, `took` and all. */
@@ -1450,7 +1451,7 @@ describe("volume runs", () => {
 
       expect(output.error).toBeDefined();
       expect(verbs.at(-1)).toBe("cut@fsn-1(f-1)");
-      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", inngest_run_id: "run-taker", message: null, finished_at: null })]);
+      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", inngest_run_id: "run-taker", message: "Copying to fsn-2", finished_at: null })]);
     });
 
     it("a run that loses the commit stops like a Stale run, and never tells B to start", async () => {
@@ -2102,6 +2103,52 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", epoch: "1" }]);
     });
 
+    it("says each step on the row as it reaches it, then how long the Service was stopped", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      const seen: Array<string | null> = [];
+      const message = async () => (await rows())[0]?.message ?? null;
+      for (const key of ["snapshot@fsn-1", "cut@fsn-1", "writer@fsn-2"]) beforeSet.set(key, async () => { seen.push(await message()); });
+
+      await execute(run.id);
+
+      expect(seen).toEqual(["Copying to fsn-2", "Copying to fsn-2", "Starting web on fsn-2"]);
+      expect(await rows()).toMatchObject([{ state: "done", message: expect.stringMatching(/^web was stopped \d+s$/) }]);
+    });
+
+    it("says the Service stopped only once a cut answered busy stops it, and times the stop from that answer to B's", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      const seen: Array<string | null> = [];
+      const message = async () => (await rows())[0]?.message ?? null;
+      let clock = 0;
+      const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+      failNext.set("cut@fsn-1", "busy");
+      beforeSet.set("cut@fsn-1", async () => {
+        seen.push(await message());
+        beforeSet.set("cut@fsn-1", async () => {
+          seen.push(await message());
+          clock = 60_000;
+        });
+      });
+      const finalPull = async () => {
+        if (named("fsn-1").copy?.kind === "slot") seen.push(await message());
+        else beforeSet.set("pull@fsn-2", finalPull);
+      };
+      beforeSet.set("pull@fsn-2", finalPull);
+      beforeSet.set("writer@fsn-2", () => {
+        clock = 86_000;
+      });
+
+      try {
+        await execute(run.id);
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(verbs.filter((verb) => verb.startsWith("cut@"))).toHaveLength(2);
+      expect(seen).toEqual(["Copying to fsn-2", "Copying to fsn-2", "web stopped for the final copy"]);
+      expect(await rows()).toMatchObject([{ state: "done", message: "web was stopped 26s" }]);
+    });
+
     it("a cut answered busy is asked again until the Container stopped", async () => {
       failNext.set("cut@fsn-1", "busy");
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
@@ -2151,6 +2198,27 @@ describe("volume runs", () => {
 
       expect(retried.result).toEqual({ runId: run.id, moved: "fsn-2" });
       expect(verbs).toEqual(["pull@fsn-2(f-1)", "pull@fsn-2(f-1)", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+    });
+
+    it("a cut whose answer was lost says no downtime once its retried attempt finishes the Move", async () => {
+      failNext.set("cut@fsn-1", "lost");
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      const lost = await execute(run.id);
+      expect(lost.error).toBeDefined();
+      expect(named("fsn-1").copy).toMatchObject({ kind: "slot" });
+      const ran = vi.mocked(lost.ctx.step.run).mock.calls.map(([id]) => String(id)).filter((id) => id !== "05-cut");
+      const memoized = await Promise.all(ran.map(async (id) => {
+        // SAFETY: each step this run memoized returned JSON.
+        const value = (await lost.state[createHash("sha1").update(id).digest("hex")]) as object | undefined;
+        return { id, handler: () => value };
+      }));
+      verbs = [];
+
+      const retried = await execute(run.id, "run-1", memoized, volumeId, undefined, 1);
+
+      expect(retried.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(verbs[0]).toBe("pull@fsn-1(f-1)");
+      expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
     it("a final pull that fails releases back to A, forgetting nothing B lacks", async () => {

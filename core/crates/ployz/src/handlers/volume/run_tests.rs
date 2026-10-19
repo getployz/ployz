@@ -328,6 +328,46 @@ async fn wait_polls_the_run_until_it_ends() {
     assert_eq!(polls.load(Ordering::SeqCst), 2);
 }
 
+fn noted(state: &str, message: Option<&str>) -> VolumeRun {
+    let mut run: VolumeRun =
+        serde_json::from_value(run(state, "move", json!({ "to": "web-2" }))).unwrap();
+    run.message = message.map(str::to_owned);
+    run
+}
+
+#[test]
+fn a_wait_says_each_step_a_running_move_reaches_once() {
+    let requested = noted("requested", None);
+    let copying = noted("running", Some("Copying to web-2"));
+    let stopped = noted("running", Some("pg stopped for the final copy"));
+    let done = noted("done", Some("pg was stopped 26s"));
+
+    assert_eq!(
+        news(&requested, &copying),
+        [
+            format!("Run {RUN} is running."),
+            "Copying to web-2.".to_owned()
+        ]
+    );
+    assert!(news(&copying, &copying).is_empty());
+    assert_eq!(news(&copying, &stopped), ["pg stopped for the final copy."]);
+    assert!(news(&stopped, &done).is_empty());
+}
+
+#[test]
+fn a_running_run_shows_its_message_as_what_it_does_now() {
+    let shown = |run: &VolumeRun| {
+        let mut shown = Vec::new();
+        record(run).write(&mut shown, true).unwrap();
+        String::from_utf8(shown).unwrap()
+    };
+    let running = shown(&noted("running", Some("pg stopped for the final copy")));
+    assert!(running.contains("now"), "{running}");
+    assert!(!running.contains("message"), "{running}");
+    let done = shown(&noted("done", Some("pg was stopped 26s")));
+    assert!(done.contains("message"), "{done}");
+}
+
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[test]
 fn a_run_that_did_not_finish_is_the_command_s_failure() {

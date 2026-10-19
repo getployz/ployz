@@ -48,7 +48,9 @@ impl Readable {
 
 /// Answer `query` from the Servers behind `session`, describing only the Services
 /// `readable` admits. A Server that did not answer is named in `seen.unanswered`,
-/// never guessed.
+/// never guessed. A logs answer is scrubbed of each Container's values under the
+/// `sealed` names, which the caller takes from the Store, never from the asker; None
+/// says the caller could not, and scrubs every env value.
 ///
 /// # Errors
 /// Returns `unsupported` for a query only Cloud answers, and
@@ -57,13 +59,14 @@ pub async fn ask(
     session: &Session,
     query: CloudQuery,
     readable: &Readable,
+    sealed: Option<&BTreeSet<String>>,
 ) -> Result<Value, RpcError> {
     match query {
         CloudQuery::Servers { only } => encode(&servers(session, only.as_ref(), readable).await?),
         CloudQuery::Containers { namespace, service } => {
             encode(&containers(session, &namespace, service.as_ref()).await?)
         }
-        CloudQuery::Logs(query) => encode(&logs(session, query).await?),
+        CloudQuery::Logs(query) => encode(&logs(session, query, sealed).await?),
         CloudQuery::ServerLogs(query) => encode(&server_logs(session, query).await?),
         CloudQuery::Metrics(query) => encode(&metrics(session, query, readable).await?),
         CloudQuery::Copies { .. } => Err(unsupported(
@@ -222,9 +225,11 @@ async fn containers(
         .await
 }
 
-/// The newest lines of `query`'s Service on each Server, or on the one it names, as
-/// [`super::service_tail`] scrubs them. A Server with no lines in range has no entry.
-async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcError> {
+async fn logs(
+    session: &Session,
+    query: LogsQuery,
+    sealed: Option<&BTreeSet<String>>,
+) -> Result<LogsAnswer, RpcError> {
     let mut client = session.client()?;
     session
         .until_closed(async {
@@ -237,13 +242,7 @@ async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcErro
                 ..LogHistoryRequest::default()
             };
             Ok(tail_each(machines, query.server.as_ref(), |machine| {
-                super::service_tail(
-                    &client,
-                    machine,
-                    selector.clone(),
-                    query.lines,
-                    &query.plain,
-                )
+                super::service_tail(&client, machine, selector.clone(), query.lines, sealed)
             })
             .await)
         })

@@ -10,7 +10,7 @@ use ployz_core::{
     ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, MachineId,
     OperationRow, RpcError, RpcErrorCode, ServiceName,
 };
-use ployz_store::tools::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
+use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Asks, AttachConfig, Cancel, Change, Command, ConfigId,
     ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,
@@ -1723,13 +1723,11 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
         let mut changes = RowTracker::default().changes(&snapshot);
         for row in &mut changes {
             if let RowState::Failed { log, .. } = &mut row.state {
-                let mut secrets = SecretSet::from_store([], []);
-                secrets.add_machine_env(Some(&Default::default()));
-                *log = Some(LogExcerpt::scrub(
+                *log = Some(LogText::Shown(LogExcerpt::scrub(
                     ["alpha disk log\n".to_owned()],
-                    &secrets,
+                    &SealedValues::none(),
                     LineCap::default(),
-                ));
+                )));
             }
         }
         store
