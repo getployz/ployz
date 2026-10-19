@@ -1079,19 +1079,37 @@ pub(crate) fn claim(
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (services, removals) = stored.lowering();
-    let Lowered {
-        input,
-        mut intent,
-        warnings,
-        ..
-    } = lower(
+    let lowered = lower(
         &stored.summary.environment_id,
         &saved,
         (&services, &removals),
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
-    )?;
+    );
+    let Lowered {
+        input,
+        mut intent,
+        warnings,
+        ..
+    } = match lowered {
+        Ok(lowered) => lowered,
+        // Every claim lowers it the same way: it fails rather than waits queued.
+        Err(refused) if refused.code == ployz_core::RpcErrorCode::InvalidArgument => {
+            finish(
+                tx,
+                stored,
+                Outcome::NotExecuted {
+                    reason: refused.message.clone(),
+                    cause: Vec::new(),
+                    needs_upload: Vec::new(),
+                },
+                DeploymentStatus::Failed,
+            )?;
+            return Ok(Err(error::conflict(refused.message, refused.details)));
+        }
+        Err(error) => return Err(error),
+    };
     if stored.run.warnings != warnings {
         stored.run.warnings = warnings;
         stored.summary.warnings = stored.run.summary_warnings();

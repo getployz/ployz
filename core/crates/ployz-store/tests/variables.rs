@@ -248,6 +248,46 @@ fn a_reference_that_resolves_too_long_refuses_the_deploy() {
 }
 
 #[test]
+fn a_secret_that_resolves_too_long_fails_the_deployment_at_claim() {
+    let store = backend::open();
+    shop(&store);
+    let half = "x".repeat(70 * 1024);
+    set(
+        &store,
+        &[
+            ("api.env.HALF", json!({ "secret": half })),
+            ("web.env.BOTH", json!("${{ api.HALF }}${{ api.HALF }}")),
+        ],
+    )
+    .unwrap();
+    // Admission can't open the secret, so only the claim sees the value.
+    let id = admit(&store, 1).unwrap();
+    let message = "web.env.BOTH is too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
+    for refused in [message, "This Deployment already ended"] {
+        let error = store
+            .claim(&id, &RunnerId::parse("runner").unwrap())
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Conflict);
+        assert_eq!(error.message, refused);
+    }
+    let read = store
+        .read(&who(), &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    assert_eq!(
+        read.deployment.status,
+        ployz_store::DeploymentStatus::Failed
+    );
+    assert_eq!(
+        read.deployment.outcome,
+        Some(ployz_store::Outcome::NotExecuted {
+            reason: message.into(),
+            cause: Vec::new(),
+            needs_upload: Vec::new(),
+        })
+    );
+}
+
+#[test]
 fn a_typed_private_address_answers_with_its_reference() {
     let store = backend::open();
     shop(&store);
