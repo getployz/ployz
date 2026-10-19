@@ -329,6 +329,8 @@ impl DeployService {
         resolved_spec: ResolvedServiceSpec,
     ) -> ployz_core::ContainerObservation {
         ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id,
             display_name: format!("{}-1", resolved_spec.name),
             created_at_unix_nanos: 0,
@@ -562,6 +564,8 @@ impl FakeMachine for DeployService {
             ])),
             container: ployz_core::ContainerObservation::try_from(
                 ployz_core::ContainerObservationParts {
+                    rotation: None,
+                    r#gen: None,
                     container_id: inspect.container_id,
                     display_name: "web-1".into(),
                     created_at_unix_nanos: 0,
@@ -1062,6 +1066,8 @@ pub(super) fn running_container_in(
         )
         .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("{}-1", spec.name),
         created_at_unix_nanos: 0,

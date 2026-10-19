@@ -1726,6 +1726,7 @@ mod tests {
                 let new: ployz_core::NewContainer = serde_json::from_value(serde_json::json!({
                     "slot": {"namespace": "app", "kind": "service_container", "creation_key": key},
                     "resolved_spec": spec_with_sources(vec![]),
+                    "gen": 1,
                     "answer": "started",
                 }))
                 .unwrap();

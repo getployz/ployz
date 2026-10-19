@@ -76,6 +76,12 @@ async fn fake_docker(
     if method == Method::POST && path.ends_with("/stop") {
         drop(fake.stop_gate.read().await);
     }
+    if method == Method::GET && path.ends_with("/events") {
+        return axum::body::Body::from_stream(futures_util::stream::pending::<
+            Result<Bytes, std::io::Error>,
+        >())
+        .into_response();
+    }
     let inspect = method == Method::GET
         && path.contains("/containers/")
         && path.ends_with("/json")
@@ -475,6 +481,46 @@ pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, Fa
     )
 }
 
+/// A running managed Container made by the real create path, so it carries the
+/// labels creation stamps.
+pub(super) async fn runtime_with_running_container() -> (ContainerRuntime, FakeDocker, ContainerId)
+{
+    let (runtime, fake) = fake_runtime_with(FakeDocker {
+        create_barrier: Some(Arc::new(tokio::sync::Barrier::new(1))),
+        ..Default::default()
+    })
+    .await;
+    let machine = machine();
+    let created = runtime
+        .create_for_test(
+            &machine.id,
+            machine.subnet.gateway(),
+            ContainerKind::ServiceContainer,
+            &Namespace::parse("app").unwrap(),
+            &spec_with_sources(vec![]),
+        )
+        .await
+        .unwrap();
+    let labels = fake
+        .request_bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(path, _)| path.ends_with("/containers/create"))
+        .unwrap()
+        .1
+        .get("Labels")
+        .unwrap()
+        .clone();
+    *fake.existing_container.lock().unwrap() = Some(serde_json::json!({
+        "Id": created.container_id,
+        "Name": format!("/{}", created.display_name),
+        "Config": {"Labels": labels},
+        "State": {"Status": "running", "Running": true},
+    }));
+    (runtime, fake, created.container_id)
+}
+
 pub(super) fn machine() -> Machine {
     crate::docker::lifecycle::test_machine(
         MachineId::random(),
@@ -490,6 +536,7 @@ pub(super) fn container_request<'spec, Storage>(
 ) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     ContainerRequest {
         deployment_id: None,
+        r#gen: ployz_core::Gen::FIRST,
         image: crate::docker_image::ImagePull::Policy(None),
         creation_key: None,
         kind,

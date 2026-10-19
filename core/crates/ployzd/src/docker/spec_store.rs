@@ -10,12 +10,13 @@ use std::{
 
 use hex::encode as hex_encode;
 use ployz_core::{
-    ConfigMount, ConfigSpec, ContainerId, DockerVolumeName, ResolvedServiceSpec, VolumeGen,
+    ConfigMount, ConfigSpec, ContainerId, CopyRotation, DockerVolumeName, ResolvedServiceSpec,
+    VolumeGen,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard, watch};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS containers (
@@ -26,6 +27,10 @@ CREATE TABLE IF NOT EXISTS volume_floors (
     name  TEXT NOT NULL PRIMARY KEY,
     floor INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rotations (
+    id       TEXT NOT NULL PRIMARY KEY,
+    rotation TEXT NOT NULL CHECK (json_valid(rotation))
+);
 ";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -34,6 +39,7 @@ pub struct MachineSpecStore {
     path: PathBuf,
     config_operations: Arc<Mutex<()>>,
     floors: Arc<Mutex<()>>,
+    rotations: watch::Sender<()>,
 }
 
 pub(super) struct ConfigOperation<'a> {
@@ -57,7 +63,57 @@ impl MachineSpecStore {
             path,
             config_operations: Arc::new(Mutex::new(())),
             floors: Arc::new(Mutex::new(())),
+            rotations: watch::Sender::new(()),
         })
+    }
+
+    /// This Machine's record of a copy's rotation, `None` when it never left Pending.
+    pub async fn rotation(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<CopyRotation>, Error> {
+        let path = self.path.clone();
+        let container_id = container_id.to_string();
+        let encoded = blocking(move || {
+            connect(&path)?
+                .query_row(
+                    "SELECT rotation FROM rotations WHERE id = ?1",
+                    [container_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(Error::from)
+        })
+        .await?;
+        encoded
+            .map(|encoded| serde_json::from_str(&encoded).map_err(Error::from))
+            .transpose()
+    }
+
+    /// Record a copy's rotation and wake the observation publisher. The caller checks the edge first.
+    pub async fn set_rotation(
+        &self,
+        container_id: &ContainerId,
+        rotation: &CopyRotation,
+    ) -> Result<(), Error> {
+        let path = self.path.clone();
+        let container_id = container_id.to_string();
+        let rotation = serde_json::to_string(rotation)?;
+        blocking(move || {
+            connect(&path)?.execute(
+                "INSERT INTO rotations (id, rotation) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET rotation = excluded.rotation",
+                params![container_id, rotation],
+            )?;
+            Ok(())
+        })
+        .await?;
+        self.rotations.send_replace(());
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn subscribe_rotations(&self) -> watch::Receiver<()> {
+        self.rotations.subscribe()
     }
 
     /// Take the floor lock. It comes after the switch lock and the admission turn, and
@@ -136,6 +192,7 @@ impl ConfigOperation<'_> {
         let container_id = container_id.to_string();
         blocking(move || {
             let connection = connect(&path)?;
+            connection.execute("DELETE FROM rotations WHERE id = ?1", [&container_id])?;
             let removed =
                 connection.execute("DELETE FROM containers WHERE id = ?1", [container_id])? > 0;
             if removed
@@ -510,5 +567,43 @@ mod tests {
         drop(operation);
         drop(store);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rotation_survives_observation_rebuild() {
+        use crate::docker::{ContainerRuntime, test_support::runtime_with_running_container};
+        use ployz_core::{CopyRotation, DeploymentLogId, Gen, MachineId};
+
+        let (runtime, _fake, id) = runtime_with_running_container().await;
+        let machine = MachineId::random();
+        let observed = runtime.inspect_managed(&id, &machine).await.unwrap();
+        assert_eq!(observed.rotation, Some(CopyRotation::Pending));
+        assert_eq!(observed.r#gen, Some(Gen::FIRST));
+
+        let held = CopyRotation::Held(DeploymentLogId::parse("d1").unwrap());
+        runtime.set_rotation(&id, &held).await.unwrap();
+        let restarted = ContainerRuntime::new(
+            runtime.local_docker(),
+            MachineSpecStore::open(runtime.spec_store_path_for_test())
+                .await
+                .unwrap(),
+        );
+        let observed = restarted.inspect_managed(&id, &machine).await.unwrap();
+        assert_eq!(observed.rotation(), &held);
+        assert_eq!(observed.copy_gen(), Gen::FIRST);
+    }
+
+    #[tokio::test]
+    async fn rotation_entry_deleted_on_remove() {
+        use crate::docker::test_support::runtime_with_running_container;
+        use ployz_core::CopyRotation;
+
+        let (runtime, _fake, id) = runtime_with_running_container().await;
+        runtime.set_rotation(&id, &CopyRotation::Out).await.unwrap();
+        runtime.remove(&id, false, true).await.unwrap();
+        let store = MachineSpecStore::open(runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.rotation(&id).await.unwrap(), None);
     }
 }
