@@ -13,6 +13,9 @@ use crate::context::{
 
 use super::{Error, leaf_matches, required};
 
+/// The one command that makes a context.
+const MAKE_A_CONTEXT: &str = "ployz server add --standalone DESTINATION";
+
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
     if matches
         .get_one::<String>("connect")
@@ -69,7 +72,11 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
             Cell::from(context.connections.len().to_string()),
         ]);
     }
-    ui::list(&json!({ "contexts": contexts }), &table)
+    ui::list(&json!({ "contexts": contexts }), &table)?;
+    if contexts.is_empty() {
+        ui::hint(&Hint::Next(MAKE_A_CONTEXT.to_owned()));
+    }
+    Ok(())
 }
 
 /// `ployz ctx use CONTEXT`, keeping a config file named on the command line;
@@ -92,7 +99,8 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
         return Err(Error::not_found(format!(
             "no contexts found in Ployz config {}",
             config.path().display()
-        )));
+        ))
+        .hint(Hint::Next(MAKE_A_CONTEXT.to_owned())));
     }
     let requested_connection = leaf.get_one::<String>("connection");
     let selected = match leaf.get_one::<String>("context-name") {

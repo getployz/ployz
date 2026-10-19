@@ -30,7 +30,8 @@ again, or `brew upgrade ployz`.
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
-`ployz ctx` shows where commands act from here.
+`ployz ctx` shows where commands act from here. For servers you run without Ployz Cloud, see
+[Run servers without Ployz Cloud](../servers/standalone-clusters.md).
 
 ## Set up your coding agent
 

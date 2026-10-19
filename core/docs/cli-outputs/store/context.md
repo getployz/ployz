@@ -364,6 +364,7 @@ NAME	CURRENT	DEFAULT	CONNECTIONS
 stderr:
 ```
 No contexts yet.
+next: ployz server add --standalone DESTINATION
 ```
 
 ### ctx ls --json (no contexts)
@@ -602,6 +603,7 @@ NAME	CURRENT	DEFAULT	CONNECTIONS
 stderr:
 ```
 No contexts yet.
+next: ployz server add --standalone DESTINATION
 ```
 
 ### status (with a context removed)
