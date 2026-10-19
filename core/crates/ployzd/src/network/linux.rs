@@ -23,14 +23,16 @@ use ployz_core::{
     WireGuardPublicKey,
 };
 use serde::Deserialize;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::docker_image::is_not_found;
 
 use super::{
-    DOCKER_NETWORK_NAME, MACHINE_API_PORT, MeshPeer, NetworkError, WIREGUARD_INTERFACE_NAME,
-    WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey, attach_peer_selections,
-    checked_command, firewall::remove_firewall_rules, peers_for,
+    ChoiceRefused, DOCKER_NETWORK_NAME, EndpointChoice, MACHINE_API_PORT, MeshPeer, NetworkError,
+    WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
+    attach_peer_selections, checked_command, choose_endpoint, firewall::remove_firewall_rules,
+    peers_for,
 };
 use crate::{
     corrosion::{MachineView, ReplicatedObservations},
@@ -134,14 +136,17 @@ impl NetworkPlane {
     /// Keep the mesh matching the Machine view and the WireGuard device.
     ///
     /// Peers are rebuilt when the view publishes a different snapshot. The device
-    /// is polled every second: handshakes and endpoint roaming have no event.
+    /// is polled every second: handshakes and endpoint roaming have no event. An
+    /// operator's endpoint from `choices` goes to WireGuard at once.
     pub async fn run(
         &mut self,
         machines: Option<MachineView>,
         local: RecordOwner,
+        mut choices: mpsc::Receiver<EndpointChoice>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
         let Some(machines) = machines else {
+            drop(choices);
             shutdown.cancelled().await;
             return Ok(());
         };
@@ -170,6 +175,7 @@ impl NetworkPlane {
                     }
                 }
                 _ = ticker.tick() => self.poll_endpoints(&local).await,
+                Some(choice) = choices.recv() => self.apply_choice(choice, &local).await,
             }
         }
         if local.record().phase() == LocalMachinePhase::Resetting {
@@ -367,6 +373,32 @@ impl NetworkPlane {
             }
             persist_selection(local, peer.machine_id, endpoint).await;
         }
+    }
+
+    async fn apply_choice(&mut self, choice: EndpointChoice, local: &RecordOwner) {
+        let EndpointChoice {
+            peer,
+            endpoint,
+            applied,
+        } = choice;
+        let outcome =
+            match choose_endpoint(&mut self.endpoint_peers, peer, endpoint, SystemTime::now()) {
+                Ok(chosen) => self
+                    .wireguard
+                    .configure_peer(&wireguard_peer(chosen, Some(endpoint)))
+                    .map_err(|error| {
+                        eprintln!(
+                            "failed to dial the operator's WireGuard endpoint: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                        ChoiceRefused::WireGuard
+                    }),
+                Err(refused) => Err(refused),
+            };
+        if outcome.is_ok() {
+            persist_selection(local, peer, endpoint).await;
+        }
+        let _ = applied.send(outcome);
     }
 
     async fn rollback_start(&mut self, docker_created: bool, wireguard_created: bool) {

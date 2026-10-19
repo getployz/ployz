@@ -25,8 +25,8 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    PinnedAddresses, QualifiedService, ResolvedServiceSpec, ServingPointer, StorageChoice,
-    WireGuardPublicKey,
+    PinnedAddresses, QualifiedService, ResolvedServiceSpec, SelectedEndpoint, ServingPointer,
+    StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -383,6 +383,23 @@ pub struct SetPushTargetRequest {
 pub struct PushTargetSet {
     #[ts(type = "string | null")]
     pub url: Option<url::Url>,
+}
+
+/// An operator's endpoint for reaching `peer` from the Machine that takes the request.
+///
+/// It sets only that Machine's own Selected Endpoint; `peer`'s record is unchanged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectEndpointRequest {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
+}
+
+/// The Machine that took a [`SelectEndpointRequest`] now dials `endpoint` for `peer`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EndpointSelected {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
 }
 
 /// The place one Container creation lands on a Machine. The same slot names the
@@ -1385,6 +1402,7 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     PushTargetSet(PushTargetSet) => "push_target_set";
+    EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
@@ -1578,6 +1596,24 @@ impl RpcError {
         }
     }
 
+    /// An error the caller made because its target Machine didn't answer: the target
+    /// sent nothing, so it may answer later. Read back by [`Self::target_unanswered`].
+    #[must_use]
+    pub fn unanswered_target(code: RpcErrorCode, message: String) -> Self {
+        Self {
+            code,
+            message,
+            details: serde_json::json!({ "reason": TARGET_UNANSWERED_REASON }),
+            cause: Vec::new(),
+        }
+    }
+
+    /// Whether the target Machine didn't answer, rather than answering with this error.
+    #[must_use]
+    pub fn target_unanswered(&self) -> bool {
+        self.details.get("reason").and_then(Value::as_str) == Some(TARGET_UNANSWERED_REASON)
+    }
+
     /// The capability this error says its target Machine lacks, if it is a refusal.
     #[must_use]
     pub fn refusal(&self) -> Option<CapabilityRefusal> {
@@ -1649,6 +1685,8 @@ impl fmt::Display for CapabilityRefusal {
 /// Metadata an entry Machine's router puts on a status it made because the target
 /// Machine did not answer the forwarded call. A status the target sent never has it.
 pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
+
+const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
 
 /// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
 #[cfg(not(target_arch = "wasm32"))]

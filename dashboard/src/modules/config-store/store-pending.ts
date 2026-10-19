@@ -127,8 +127,32 @@ export function pendingMarks(queryClient: QueryClient, organizationSlug: string)
   });
 }
 
-const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark &&
-  (mark.environment.project ?? "") === (environment.project ?? "") && (mark.environment.environment ?? "") === (environment.environment ?? "");
+const sameRef = (a: EnvironmentRef, b: EnvironmentRef) => (a.project ?? "") === (b.project ?? "") && (a.environment ?? "") === (b.environment ?? "");
+const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark && sameRef(mark.environment, environment);
+
+/** Commands that leave an Environment's review where it is: the review's own Deploy and Save, a Deployment's start and cancel. */
+const KEEPS_REVIEW: ReadonlySet<ConfigCommand["command"]> = new Set(["admit", "publish", "start", "cancel"]);
+
+/** Whether `command` can move the Environment's review: any other write that names it, a field's edit or a Volume's storage. */
+const movesReview = (command: ConfigCommand, environment: EnvironmentRef) =>
+  !KEEPS_REVIEW.has(command.command) && commandEnvironments(command).some((named) => sameRef(named, environment));
+
+/** The newest write this tab has made, any kind: a press marks it as its gesture starts, for `reviewMoving`. */
+export function writeMark(queryClient: QueryClient): number {
+  return Math.max(0, ...queryClient.getMutationCache().getAll().map((mutation) => mutation.mutationId));
+}
+
+/**
+ * Whether a write that moves the Environment's review is still saving, or was made after `since` (a `writeMark`), read
+ * outside React: the review the user read doesn't include it, so a Deploy or Save pressed now would ship a version
+ * they haven't read.
+ */
+export function reviewMoving(queryClient: QueryClient, organizationSlug: string, environment: EnvironmentRef, since: number): boolean {
+  return queryClient.getMutationCache().findAll({ mutationKey: ["store-write", organizationSlug] }).some((mutation) => {
+    const command = commandOf(mutation);
+    return command !== undefined && movesReview(command, environment) && (mutation.state.status === "pending" || mutation.mutationId > since);
+  });
+}
 
 /** Whether `project` names the one a Project rename moves; none means the Organization's only Project, which may be it. */
 const sameProject = (from: string, project: string | null | undefined) => project == null || project === from;

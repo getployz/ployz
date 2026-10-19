@@ -33,6 +33,7 @@ export function SuggestibleConfirmableInput({
 }: SuggestibleConfirmableInputProps) {
   const [open, setOpen] = React.useState(false)
   const [highlighted, setHighlighted] = React.useState<string>()
+  const popup = React.useRef<HTMLDivElement>(null)
 
   return (
     <Combobox
@@ -72,6 +73,11 @@ export function SuggestibleConfirmableInput({
               setOpen(true)
               inputProps.onFocus?.(event)
             }}
+            onBlur={(event) => {
+              // A pick saves itself; saving the half-typed text on the way would stage twice.
+              if (popup.current?.contains(event.relatedTarget)) return
+              inputProps.onBlur?.(event)
+            }}
             onKeyDown={(event) => {
               if (open && event.key === "Escape") return
               if (open && event.key === "Enter" && highlighted !== undefined) return
@@ -81,7 +87,7 @@ export function SuggestibleConfirmableInput({
           />
         )}
       />
-      <ComboboxContent>
+      <ComboboxContent ref={popup}>
         {suggestionsNotice ? (
           <p className="px-2 py-1.5 text-muted-foreground text-xs">{suggestionsNotice}</p>
         ) : null}

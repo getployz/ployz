@@ -298,7 +298,12 @@ fn ship(
     admitted: &DeploymentSummary,
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<(), Error> {
-    execute(matches, store, admitted, None, events)?.finish()
+    let shipped = execute(matches, store, admitted, None, events)?;
+    let again = progress::removal_retry(&shipped.view, |words| super::rerun(matches, words));
+    shipped.finish().map_err(|error| match again {
+        Some(again) => error.hint(again),
+        None => error,
+    })
 }
 
 /// A Deployment that ended, or was left to run: its view, the command to run next,
@@ -355,7 +360,7 @@ pub(super) fn execute(
                 progress: None,
             })
     } else {
-        follow(store, admitted, events, runner.as_ref(), &signal)
+        follow(matches, store, admitted, events, runner.as_ref(), &signal)
     };
     let mut followed = match followed {
         Ok(followed) => followed,
@@ -429,7 +434,10 @@ pub(super) fn execute(
     if !detached {
         finish_progress(&mut followed, disposition);
     }
-    for warning in progress::ingress_warnings(&followed.view) {
+    for warning in progress::value_warnings(&followed.view)
+        .into_iter()
+        .chain(progress::ingress_warnings(&followed.view))
+    {
         ui::warn(warning);
     }
     let view = followed.view;
@@ -596,6 +604,7 @@ fn tap(
 }
 
 fn follow(
+    matches: &ArgMatches,
     store: &Store,
     admitted: &DeploymentSummary,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
@@ -606,6 +615,18 @@ fn follow(
     let mut last = None;
     let mut followed: Option<Followed> = None;
     let mut id = admitted.id.clone();
+    let mut number = admitted.number;
+    // A Cloud Deployment runs on without this process; a lost read says which one and where to watch it.
+    let lost = |error: Error, number: u64| {
+        if runner.is_some() || error.report().code != RpcErrorCode::Unavailable {
+            return error;
+        }
+        error
+            .context(format!(
+                "Stopped following Deployment #{number}; it keeps running in Ployz Cloud."
+            ))
+            .hint(Hint::Inspect(show_hint(matches, number)))
+    };
     let mut unclaimed = Some(std::time::Instant::now() + UNCLAIMED);
     loop {
         if signal.is_cancelled() {
@@ -626,7 +647,7 @@ fn follow(
             }
             return followed.ok_or_else(Error::cancelled);
         }
-        let view = read?;
+        let view = read.map_err(|error| lost(error, number))?;
         let frame = progress::frame(&view);
         if let Some(followed) = followed.as_mut() {
             if let Some(progress) = followed.progress.as_mut() {
@@ -650,8 +671,19 @@ fn follow(
             if signal.is_cancelled() {
                 return followed.ok_or_else(Error::cancelled);
             }
-            if let Some(newer) = newer? {
+            let newer = newer.map_err(|error| {
+                if error.report().code != RpcErrorCode::Unavailable {
+                    return error;
+                }
+                error
+                    .context(format!(
+                        "Deployment #{number} was superseded, and Ployz Cloud stopped answering before its replacement could be read."
+                    ))
+                    .hint(Hint::Inspect(next(matches, &["deployment", "ls"])))
+            })?;
+            if let Some(newer) = newer {
                 id = newer.id;
+                number = newer.number;
                 last = None;
                 continue;
             }
@@ -1058,9 +1090,12 @@ pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
     refuse_local_detach(matches, &store)?;
     let events = open_events(matches)?;
     let queued = store
-        .try_write(&Start {
-            deployment: id.clone(),
-        })
+        .try_write_checked(
+            &Start {
+                deployment: id.clone(),
+            },
+            &["deployment", "ls"],
+        )
         .map_err(refused(matches, &store, &id))?;
     ship(matches, &store, &queued, events)
 }
@@ -1070,9 +1105,12 @@ pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
     store
-        .try_write(&Cancel {
-            deployment: id.clone(),
-        })
+        .try_write_checked(
+            &Cancel {
+                deployment: id.clone(),
+            },
+            &["deployment", "ls"],
+        )
         .map_err(refused(matches, &store, &id))?;
     let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
     finish_view(&view, Some(show_hint(matches, view.deployment.number)))

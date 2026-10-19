@@ -443,6 +443,66 @@ fn put_sentry(store: &ConfigStore, who: &Actor, content: &str) {
         .unwrap();
 }
 
+// Catches a retried edit rotating a generated secret that its referrers and an
+// initialized database already use, and generate leaving a plain value unsealed.
+#[test]
+fn a_replayed_generate_keeps_its_secret_and_seals_over_plain_text() {
+    let (store, who) = shop();
+    let edit = |changes: Vec<Change>| {
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes,
+                },
+            )
+            .unwrap();
+    };
+    let set = |path: &str, value: Value| Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    };
+    edit(vec![set("web.env.TOKEN", json!("plain-token"))]);
+    let generate = || {
+        ["web.env.PASSWORD", "web.env.TOKEN"]
+            .map(|path| set(path, json!({ "secret": { "generate": true } })))
+            .to_vec()
+    };
+    let a = runner("a");
+    let mut claimed_env = Vec::new();
+    for n in 1..=2 {
+        edit(generate());
+        admit(&store, &who, n, &[], None).unwrap();
+        let claimed = store.claim(&id(n), &a).unwrap();
+        let web = claimed
+            .intent
+            .target
+            .iter()
+            .find(|spec| spec.name.as_str() == "web")
+            .unwrap();
+        let env = &web.container.environment;
+        claimed_env.push((env["PASSWORD"].clone(), env["TOKEN"].clone()));
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    }
+    let (password, token) = &claimed_env[0];
+    for secret in [password, token] {
+        assert_eq!(secret.len(), 32, "{secret}");
+        assert!(secret.chars().all(|c| c.is_ascii_alphabetic()), "{secret}");
+    }
+    assert_ne!(password, token);
+    assert_eq!(
+        claimed_env[0], claimed_env[1],
+        "a replayed generate rotated the secret"
+    );
+}
+
 #[test]
 fn a_config_deploys_with_the_services_that_mount_it() {
     let (store, who) = shop();
@@ -1648,6 +1708,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     log: Some(LogText::Withheld {
                         why: Withheld::Unanswered
                     }),
+                    unanswered: false,
                 }
             ),
             ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
@@ -4137,6 +4198,7 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
             log: Some(LogText::Withheld {
                 why: Withheld::NoSecretContext
             }),
+            unanswered: false,
         }
     );
     let reserialized = serde_json::to_string(&state).unwrap();

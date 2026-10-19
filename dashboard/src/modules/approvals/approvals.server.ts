@@ -309,7 +309,11 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>` or `project:<name>`. */
+  /**
+   * `server:<machine id>`, `servers:<organization id>`, `organization:<organization id>`, `namespace:<name>`,
+   * `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>`,
+   * `environment:<environment id>` or `project:<name>`.
+   */
   subject: string;
   verb: OperationVerb;
   name: string;
@@ -378,6 +382,9 @@ const requestProjectRemoval = Effect.fn("Approvals.requestProjectRemoval")(funct
 });
 
 type Gated = { ok: true; approvalId: string | null } | { ok: false; refusal: StoreRefusal };
+
+/** Asks a human before `asked` runs, as `gateOperation` does for one Caller and the approval it carries. */
+export type Gate = (asked: OperationAsked) => Effect.Effect<Gated, never, Database>;
 
 export const hasApprover = (organizationId: string) =>
   isOwnedOnlyByAgents(organizationId).pipe(Effect.map((agentsOnly) => !agentsOnly), Effect.orDie);

@@ -208,6 +208,12 @@ pub(super) struct DiscoveryService {
     pub(super) upgrade_targets: Arc<Mutex<Vec<String>>>,
     /// Lose the next Upgrade request's reply after accepting it.
     pub(super) lose_upgrade_reply: Arc<AtomicBool>,
+    /// Every operator endpoint this entry took for a peer.
+    pub(super) selected_endpoints: Arc<Mutex<Vec<ployz_core::SelectEndpointRequest>>>,
+    /// UpdateMachine fails in transport, as when the target is off the mesh.
+    pub(super) update_unavailable: bool,
+    /// SelectEndpoint is unimplemented, as on a daemon older than it.
+    pub(super) select_unimplemented: bool,
 }
 
 impl DiscoveryService {
@@ -267,6 +273,9 @@ impl DiscoveryService {
             upgrade_attempt: Arc::default(),
             upgrade_targets: Arc::default(),
             lose_upgrade_reply: Arc::default(),
+            selected_endpoints: Arc::default(),
+            update_unavailable: false,
+            select_unimplemented: false,
         }
     }
 
@@ -1213,10 +1222,38 @@ impl FakeMachine for DiscoveryService {
         ))
     }
 
+    async fn select_endpoint(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if self.select_unimplemented {
+            return Err(Status::unimplemented("SelectEndpoint"));
+        }
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::SelectEndpoint(request) = request.body else {
+            return Err(Status::invalid_argument("expected select_endpoint"));
+        };
+        self.selected_endpoints
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::EndpointSelected {
+                peer: request.peer,
+                endpoint: request.endpoint,
+            })
+            .encode()
+            .unwrap(),
+        ))
+    }
+
     async fn update_machine(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self.update_unavailable {
+            return Err(Status::unavailable("target Machine RPC timed out"));
+        }
         let target = ployz_core::MachineTarget::parse(
             request.metadata().get("machine").unwrap().to_str().unwrap(),
         )

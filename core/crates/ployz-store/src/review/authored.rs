@@ -2155,6 +2155,8 @@ impl Prepared {
                 summary: environment.summary.clone(),
                 working: target,
                 live: environment.live.clone(),
+                removed: environment.removed.clone(),
+                inherited: environment.inherited.clone(),
             },
             from,
         )?;

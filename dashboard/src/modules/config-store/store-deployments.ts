@@ -290,8 +290,9 @@ export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, no
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
 
 /**
- * What a Deployment shipped despite, in words: "TOKEN not set", where a Config file left one empty, a Server left
- * without ingress, ingress it couldn't check, or an image exposing a port its domains don't send to.
+ * What a Deployment shipped despite, in words: "TOKEN not set", a broken reference left out, where a Config file left
+ * one empty, a Server left without ingress, ingress it couldn't check, or an image exposing a port its domains don't
+ * send to.
  */
 export function deploymentWarningText(warning: DeploymentWarning, service?: string) {
   if ("warning" in warning) {
@@ -306,8 +307,13 @@ export function deploymentWarningText(warning: DeploymentWarning, service?: stri
       ? `Ingress isn't running on ${warning.server}: something else holds port 80 or 443`
       : `Ingress isn't running on ${warning.server}: ${warning.ingress.cause}`;
   }
-  if ("service" in warning) return `${warning.variable} not set in ${warning.service}`;
-  if ("secret" in warning) return `${warning.secret} not set in ${warning.config}/${warning.file}`;
+  if ("service" in warning) {
+    return warning.broken ? `Broken reference: ${warning.variable} in ${warning.service}` : `${warning.variable} not set in ${warning.service}`;
+  }
+  if ("secret" in warning) {
+    const at = `${warning.config}/${warning.file}`;
+    return warning.broken ? `Broken reference: ${warning.secret} in ${at}` : `${warning.secret} not set in ${at}`;
+  }
   return `${warning.variable} may break ${warning.config}/${warning.file}`;
 }
 

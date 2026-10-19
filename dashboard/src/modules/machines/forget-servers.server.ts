@@ -3,6 +3,7 @@ import type { AppliedVolume, MachineId } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
+import type { Gate, OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
@@ -111,13 +112,38 @@ export const checkForgetServers = Effect.fn("ForgetServers.check")(function* (fo
 });
 
 /**
- * Forget Servers: the user says the Organization's Servers were deleted. Cloud tries each again and, when none answers
- * and nothing changed since, forgets its Cluster (`forgetCluster`). Cloud does this on its own in one case: a lapsed
- * anonymous sandbox whose Servers every probe for an hour since the last answer failed to reach.
+ * Forgetting Organization `organization`'s Servers as a human approves it, by its slug, which `ployz server forget`
+ * confirms: each Server leaves, and each Volume's data on them is lost.
  */
-export const forgetServers = Effect.fn("ForgetServers.forget")(function* (forgetter: Forgetter) {
+export const forgetServersAsked = (organization: { id: string; slug: string }, { servers, volumes }: ForgetServersCheck): OperationAsked => {
+  const lost = volumes.map(({ project, environment, volume }) => `${project}/${environment}/${volume}`).sort();
+  return {
+    subject: `servers:${organization.id}`,
+    verb: "forget",
+    name: organization.slug,
+    preview: { servers: servers.map((server) => server.id).sort(), volumes: lost },
+    effects: [
+      ...servers.map((server) => ({ kind: "removes_server" as const, name: server.name, node: server.id, path: `servers/${server.id}` })),
+      ...lost.map((name) => ({ kind: "deletes_volume" as const, name, node: name, path: `volumes/${name}` })),
+    ],
+  };
+};
+
+/**
+ * Forget Servers: the user says the Organization's Servers were deleted. Cloud tries each again and, when none answers
+ * and nothing changed since, forgets its Cluster (`forgetCluster`), once `gate` lets it. Cloud does this on its own in
+ * one case: a lapsed anonymous sandbox whose Servers every probe for an hour since the last answer failed to reach.
+ */
+export const forgetServers = Effect.fn("ForgetServers.forget")(function* (
+  forgetter: Forgetter,
+  gate?: (checked: ForgetServersCheck) => ReturnType<Gate>,
+) {
   const { result: checked, seen } = yield* check(forgetter);
   if (!checked.ok || seen === null) return checked;
+  if (gate !== undefined) {
+    const gated = yield* gate(checked.value);
+    if (!gated.ok) return refused(gated.refusal);
+  }
   const forgotten = yield* forgetCluster(forgetter.organizationId, seen);
   if (forgotten.kind === "changed") {
     return refused({ code: "conflict", message: "Your Servers changed while Cloud tried them. Try again.", details: null });

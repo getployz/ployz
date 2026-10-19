@@ -47,7 +47,7 @@ function Gallery() {
           hint="Shown on the canvas and in logs."
           commit="confirm"
           control={(
-            <ConfirmableInput aria-label="Service name" value={draft} isDirty={draft !== name} onValueChange={setDraft}
+            <ConfirmableInput aria-label="Service name" commit="check" value={draft} isDirty={draft !== name} onValueChange={setDraft}
               onConfirm={() => setName(draft)} onCancel={() => setDraft(name)} />
           )}
         />
@@ -90,7 +90,7 @@ function Gallery() {
       <SettingsSection id="confirm" title="Confirm states" description="One confirm row through its write: idle, edited, saving, staged, refused.">
         <SettingsRow label="Idle" hint="Stored value, nothing typed." commit="confirm"
           control={<ConfirmableInput aria-label="Idle" value="3" onValueChange={() => {}} />} />
-        <SettingsRow label="Editing" hint="Enter or ✓ writes, Escape or ✕ reverts." commit="confirm"
+        <SettingsRow label="Editing" hint="Enter or leaving the field writes, Escape reverts." commit="confirm"
           control={<ConfirmableInput aria-label="Editing" value="4" isDirty onValueChange={() => {}} />} />
         <SettingsRow label="Saving" hint="The write is on its way." commit="confirm"
           control={<ConfirmableInput aria-label="Saving" value="4" status={{ phase: "saving" }} onValueChange={() => {}} />} />

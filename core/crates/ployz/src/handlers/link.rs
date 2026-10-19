@@ -587,6 +587,14 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             .filter(|deployment| deployment.status.in_flight())
             .collect();
     }
+    for reference in diff.iter().flat_map(|diff| &diff.broken) {
+        attention.push(Attention {
+            reason: "broken_reference".to_owned(),
+            message: reference.to_string(),
+            deployment: None,
+            next: Some(super::store::fix_broken(matches, reference)),
+        });
+    }
     let staged = diff.as_ref().map(|diff| Staged {
         changes: diff.review_count(),
         saved: diff.published,

@@ -306,6 +306,13 @@ Scripts can tell failures apart by exit code:
 
 `ployz exec` exits with your command's own exit code.
 
+A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
+`service add` and other changes exit 1 with `Cloud ... stopped answering after it got this
+change, so it may have applied.` Its `inspect:` line names the read that shows whether it
+landed, such as `ployz diff` or, for a deploy, `ployz deployment ls`. Check there before you
+run it again. With `--json` the error's `details` says `"writes": "unknown"`. When Cloud
+can't be reached at all, the error says `Could not reach Cloud` and nothing changed.
+
 A command that deletes something, such as `ployz project rm shop`, shows what goes and asks you
 to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
 `--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
@@ -317,8 +324,10 @@ Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,
-and exits 3. Ployz finishes on its own once the server answers or you remove it with
-`ployz server rm`. With `--json` it reports `removal: removed` only once the environment is gone
+and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour after the server
+answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
+or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
+the first run did. With `--json` it reports `removal: removed` only once the environment is gone
 from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in

@@ -39,6 +39,22 @@ def select(paths, pull_request=False):
     return selected
 
 
+# Everything the ployz-store tests compile or read: the crate, its one path dependency, the docs its build
+# script embeds, and one fixture.
+STORE_INPUTS = (
+    "core/crates/ployz-store/", "core/crates/ployz-core/", "docs/user/",
+    "core/crates/ployz/tests/fixtures/published-manifest.json",
+)
+
+
+def store_postgres(paths, pull_request=False):
+    """Whether rust-tests reruns the ployz-store tests on Postgres; their result can't change otherwise."""
+    return not pull_request or select_normal(paths) == NORMAL or any(
+        path.startswith(STORE_INPUTS) or path.startswith("core/.cargo/") or Path(path).name in {"Cargo.toml", "Cargo.lock"}
+        for path in paths
+    )
+
+
 def release_inputs_changed(paths):
     # Batches keep a huge diff under the kernel's argument length limit.
     return any(
@@ -153,12 +169,17 @@ def main():
     args = parser.parse_args()
     if args.command == "select":
         # A manual quick run covers every normal check, without release/cluster work.
-        selected = select(changed_paths(args.base, args.head), os.environ.get("GITHUB_EVENT_NAME") == "pull_request") if args.base and set(args.base) != {"0"} else NORMAL
+        pull_request = os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+        if args.base and set(args.base) != {"0"}:
+            paths = changed_paths(args.base, args.head)
+            selected, postgres = select(paths, pull_request), store_postgres(paths, pull_request)
+        else:
+            selected, postgres = NORMAL, True
         output = json.dumps(sorted(selected))
         print(output)
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a") as file:
-                file.write(f"jobs={output}\n")
+                file.write(f"jobs={output}\npostgres={str(postgres).lower()}\n")
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as file:
                 file.write("| Check | Selection |\n|---|---|\n")

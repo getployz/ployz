@@ -1,7 +1,7 @@
 //! Resolving which Project and Environment a request means, and loading and saving
 //! an Environment's Working State document.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     EnvironmentNodeType, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
@@ -55,6 +55,165 @@ pub(crate) struct Environment {
     /// The name of each node a Branch uses live, by lineage: its variables
     /// reference them by these names.
     pub(crate) live: BTreeMap<String, String>,
+    /// Every Service that ever left its Working State, by lineage. Only grows, so
+    /// how a reference shows a removed Service never changes under an edit.
+    pub(crate) removed: RemovedServices,
+    /// Each Service it reads that left an ancestor and that `removed` lacks, as the
+    /// nearest ancestor recording it has it.
+    pub(crate) inherited: RemovedServices,
+}
+
+/// A Service that left an Environment's Working State: its name when it left, if
+/// any record had one, its number among the removals shown by that name, and its
+/// place among all the Environment's removals. None of them ever changes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Removed {
+    pub(crate) name: Option<String>,
+    pub(crate) nth: usize,
+    pub(crate) order: u64,
+}
+
+impl Removed {
+    /// How reads show the Service `lineage` it records, such as `<deleted redis#2>`,
+    /// or by its lineage when no record named it, such as `<deleted #3f2a9c01>`.
+    fn label(&self, lineage: &str) -> String {
+        match &self.name {
+            Some(name) => ployz_core::config::deleted_owner(name, self.nth),
+            None => ployz_core::config::deleted_lineage(lineage),
+        }
+    }
+}
+
+/// The [`Removed`] Services of an Environment, by lineage.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RemovedServices(BTreeMap<String, Removed>);
+
+impl RemovedServices {
+    /// Record that `lineage` left, called `name`. One recorded already stays as it
+    /// was first recorded.
+    pub(crate) fn record(&mut self, lineage: &str, name: Option<&str>) {
+        self.record_beside(lineage, name, &Self::default());
+    }
+
+    /// [`Self::record`], numbered past each label `beside` shows other Services by.
+    pub(crate) fn record_beside(&mut self, lineage: &str, name: Option<&str>, beside: &Self) {
+        if !self.0.contains_key(lineage) {
+            let mut removed = self.next(name);
+            let taken: BTreeSet<String> = beside
+                .labels()
+                .filter(|(other, _)| *other != lineage)
+                .map(|(_, label)| label)
+                .collect();
+            while name.is_some() && taken.contains(&removed.label(lineage)) {
+                removed.nth += 1;
+            }
+            self.0.insert(lineage.to_owned(), removed);
+        }
+    }
+
+    /// Append each of `other`'s removals this doesn't record, after its own, in
+    /// `other`'s order. `keep` picks the lineages to take.
+    pub(crate) fn append(&mut self, other: &Self, keep: impl Fn(&str) -> bool) {
+        for (lineage, removed) in other.in_order() {
+            if keep(lineage) {
+                self.record(lineage, removed.name.as_deref());
+            }
+        }
+    }
+
+    /// Take each of `other`'s removals this doesn't record, with the label `other`
+    /// shows it by, after its own. `other` is this record grown, so no two Services
+    /// share a label.
+    fn adopt(&mut self, other: &Self) {
+        for (lineage, removed) in other.in_order() {
+            if !self.0.contains_key(lineage) {
+                let order = self.next(None).order;
+                self.0.insert(
+                    lineage.clone(),
+                    Removed {
+                        order,
+                        ..removed.clone()
+                    },
+                );
+            }
+        }
+    }
+
+    /// Whether `lineage` is recorded.
+    pub(crate) fn contains(&self, lineage: &str) -> bool {
+        self.0.contains_key(lineage)
+    }
+
+    /// The last name of each removed Service that has one, by lineage.
+    pub(crate) fn names(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.0
+            .iter()
+            .filter_map(|(lineage, removed)| Some((lineage, removed.name.as_ref()?)))
+    }
+
+    /// The next removal, called `name`: after every one recorded, and numbered
+    /// after every one recorded by that name.
+    fn next(&self, name: Option<&str>) -> Removed {
+        let removals = self.0.values();
+        let alike = removals
+            .clone()
+            .filter(|removed| removed.name.as_deref() == name);
+        Removed {
+            name: name.map(str::to_owned),
+            nth: alike.map(|removed| removed.nth + 1).max().unwrap_or(1),
+            order: removals.map(|removed| removed.order + 1).max().unwrap_or(1),
+        }
+    }
+
+    fn in_order(&self) -> Vec<(&String, &Removed)> {
+        let mut removals: Vec<_> = self.0.iter().collect();
+        removals.sort_by_key(|(lineage, removed)| (removed.order, *lineage));
+        removals
+    }
+
+    /// Each Service recorded, by lineage, with its label.
+    fn labels(&self) -> impl Iterator<Item = (&String, String)> {
+        self.0
+            .iter()
+            .map(|(lineage, removed)| (lineage, removed.label(lineage)))
+    }
+
+    /// `names`; then each Service this records, by the label it was recorded with,
+    /// such as `<deleted redis#2>`; then each `inherited` records, by its label there
+    /// unless another Service shows so; then the rest of `referenced`, by lineage,
+    /// such as `<deleted #3f2a9c01>`. Every label comes from records that only grow,
+    /// so a shown name always means the same Service.
+    pub(crate) fn shown(
+        &self,
+        mut names: BTreeMap<String, String>,
+        inherited: &Self,
+        referenced: impl IntoIterator<Item = String>,
+    ) -> BTreeMap<String, String> {
+        let own: BTreeSet<String> = self.labels().map(|(_, label)| label).collect();
+        let mut alike: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, label) in inherited.labels() {
+            *alike.entry(label).or_default() += 1;
+        }
+        for (lineage, label) in self.labels() {
+            names.entry(lineage.clone()).or_insert(label);
+        }
+        for (lineage, label) in inherited.labels() {
+            let clashes = own.contains(&label) || alike.get(&label) > Some(&1);
+            names.entry(lineage.clone()).or_insert_with(|| {
+                if clashes {
+                    ployz_core::config::deleted_lineage(lineage)
+                } else {
+                    label
+                }
+            });
+        }
+        for lineage in referenced {
+            let label = ployz_core::config::deleted_lineage(&lineage);
+            names.entry(lineage).or_insert(label);
+        }
+        names
+    }
 }
 
 impl Environment {
@@ -69,6 +228,26 @@ impl Environment {
                 .map(|service| (service.lineage_id.clone(), service.slug.clone())),
         );
         names
+    }
+
+    /// [`Self::names`], and each removed Service as reads show it: one name per
+    /// Service, so an edit reads each back as the Service it was.
+    pub(crate) fn shown_names(&self) -> BTreeMap<String, String> {
+        self.removed.shown(
+            self.names(),
+            &self.inherited,
+            crate::rules::removed_lineages(&self.working, &self.live),
+        )
+    }
+
+    /// The name each removed Service it records or inherits was last called, by
+    /// lineage, where a record has one; its own record first.
+    pub(crate) fn removed_names(&self) -> BTreeMap<String, String> {
+        self.inherited
+            .names()
+            .chain(self.removed.names())
+            .map(|(lineage, name)| (lineage.clone(), name.clone()))
+            .collect()
     }
 
     /// Refuse with `conflict` unless Working State is still at `expect`.
@@ -492,18 +671,31 @@ pub(crate) fn load_by_id(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Environm
     load(tx, project, id)
 }
 
+/// The [`RemovedServices`] Environment `id` records.
+pub(crate) fn removed_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<RemovedServices, RpcError> {
+    tx.query(
+        "SELECT removed FROM config_environment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Environment"))?
+    .json(0, "removed Services")
+}
+
 fn load(
     tx: &mut dyn Tx,
     project: ProjectName,
     id: &EnvironmentId,
 ) -> Result<Environment, RpcError> {
     let rows = tx.query(
-        "SELECT name, working_revision, working FROM config_environment WHERE id = ?1",
+        "SELECT name, working_revision, working, removed FROM config_environment WHERE id = ?1",
         &[id.as_str().into()],
     )?;
     let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
     let working = row.intent(2, "Working State")?;
     let live = crate::branch::live_names(tx, id, &working)?;
+    let removed = row.json(3, "removed Services")?;
+    let inherited = inherited(tx, id, &working, &live, &removed)?;
     Ok(Environment {
         summary: EnvironmentSummary {
             id: id.clone(),
@@ -513,7 +705,37 @@ fn load(
         },
         working,
         live,
+        removed,
+        inherited,
     })
+}
+
+/// The removal of each Service `working` reads that is neither in it, nor in `live`,
+/// nor recorded in `removed`, as the nearest ancestor of `id` recording it has it.
+fn inherited(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+    working: &SavedEnvironmentIntent,
+    live: &BTreeMap<String, String>,
+    removed: &RemovedServices,
+) -> Result<RemovedServices, RpcError> {
+    let mut wanted = crate::rules::removed_lineages(working, live);
+    wanted.retain(|lineage| !removed.contains(lineage));
+    let mut inherited = RemovedServices::default();
+    for ancestor in crate::branch::ancestors(tx, id)? {
+        if wanted.is_empty() {
+            break;
+        }
+        let theirs = removed_of(tx, &ancestor)?;
+        wanted.retain(|lineage| match theirs.0.get(lineage) {
+            Some(removal) => {
+                inherited.0.insert(lineage.clone(), removal.clone());
+                false
+            }
+            None => true,
+        });
+    }
+    Ok(inherited)
 }
 
 /// Persist changed Working State as the next revision. The document is validated
@@ -539,15 +761,14 @@ pub(crate) fn persist_working(
     tx: &mut dyn Tx,
     environment: &mut Environment,
 ) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT working, removed FROM config_environment WHERE id = ?1",
+        &[environment.summary.id.as_str().into()],
+    )?;
+    let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
+    let before = row.intent(0, "Working State")?;
+    let mut removed: RemovedServices = row.json(1, "removed Services")?;
     crate::storage::admit_protect(tx, |tx| {
-        let rows = tx.query(
-            "SELECT working FROM config_environment WHERE id = ?1",
-            &[environment.summary.id.as_str().into()],
-        )?;
-        let before = rows
-            .first()
-            .ok_or_else(|| error::corrupt("Environment"))?
-            .intent(0, "Working State")?;
         crate::review::touches_source(
             tx,
             &environment.summary.id,
@@ -555,13 +776,35 @@ pub(crate) fn persist_working(
             &environment.working.services,
         )
     })?;
+    removed.adopt(&environment.removed);
+    let stays = |lineage: &str| {
+        environment
+            .working
+            .services
+            .iter()
+            .any(|service| service.lineage_id == lineage)
+    };
+    for service in &before.services {
+        if !stays(&service.lineage_id) {
+            removed.record_beside(
+                &service.lineage_id,
+                Some(&service.slug),
+                &environment.inherited,
+            );
+        }
+    }
+    environment.removed = removed;
     environment.summary.revision = environment.summary.revision.next();
     tx.execute(
-        "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
+        "UPDATE config_environment SET working_revision = ?1, working = ?2, removed = ?3 WHERE id = ?4",
         &[
             revision_param(environment.summary.revision)?.into(),
             serde_json::to_string(&environment.working)
                 .expect("Working State is JSON")
+                .as_str()
+                .into(),
+            serde_json::to_string(&environment.removed)
+                .expect("names are JSON")
                 .as_str()
                 .into(),
             environment.summary.id.as_str().into(),
@@ -570,6 +813,27 @@ pub(crate) fn persist_working(
     crate::review::sealed::record(tx, environment.summary.id.as_str(), &environment.working)?;
     // A row the draft changed is its own now, whatever proposal brought it.
     crate::branch::release_changed(tx, environment)
+}
+
+/// Persist the removals `environment` records, leaving its Working State as it is.
+pub(crate) fn persist_removed(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+) -> Result<(), RpcError> {
+    let mut removed = removed_of(tx, &environment.summary.id)?;
+    removed.adopt(&environment.removed);
+    environment.removed = removed;
+    tx.execute(
+        "UPDATE config_environment SET removed = ?1 WHERE id = ?2",
+        &[
+            serde_json::to_string(&environment.removed)
+                .expect("names are JSON")
+                .as_str()
+                .into(),
+            environment.summary.id.as_str().into(),
+        ],
+    )?;
+    Ok(())
 }
 
 pub(crate) struct ValidatedWorking {
@@ -619,6 +883,21 @@ pub(crate) fn validate_and_refresh_working_from(
     )?;
     environment.working = working;
     environment.live = live;
+    let read = crate::rules::removed_lineages(&environment.working, &environment.live);
+    for service in from.into_iter().flat_map(|from| &from.services) {
+        if read.contains(&service.lineage_id) {
+            environment
+                .removed
+                .record(&service.lineage_id, Some(&service.slug));
+        }
+    }
+    environment.inherited = inherited(
+        tx,
+        &environment.summary.id,
+        &environment.working,
+        &environment.live,
+        &environment.removed,
+    )?;
     Ok(())
 }
 

@@ -391,9 +391,10 @@ pub(super) struct Lowered {
     /// The Services a narrowed Deploy ships once its builds and uploads land: the
     /// named ones and what they reference. Empty for a full Deploy.
     pub(super) shipped: BTreeSet<ServiceName>,
-    /// Service variables a secret without a value left out, then Config file
-    /// references whose resolved value may break the file. Only lowering with the
-    /// sealing key sees every value, so only it warns of those.
+    /// Service variables a secret without a value or a broken reference left out,
+    /// then Config file references whose resolved value may break the file or is
+    /// left empty. Only lowering with the sealing key sees every value, so only it
+    /// warns of those.
     pub(super) warnings: Vec<DeploymentWarning>,
 }
 
@@ -476,16 +477,31 @@ pub(super) fn lower(
     let mut warnings: Vec<(Vec<&ServiceName>, DeploymentWarning)> = snapshots
         .iter()
         .filter_map(|(config, snapshot)| {
-            let keys = resolved.not_set.remove(snapshot.service_id.as_deref()?)?;
-            Some(keys.into_iter().map(|variable| {
-                (
-                    vec![&config.settings.private_dns],
-                    DeploymentWarning::NotSet {
-                        service: config.settings.private_dns.clone(),
-                        variable,
-                    },
-                )
-            }))
+            let id = snapshot.service_id.as_deref()?;
+            let service = saved
+                .services
+                .iter()
+                .find(|service| service.id == id)
+                .and_then(|service| ServiceName::parse(service.slug.as_str()).ok())
+                .unwrap_or_else(|| config.settings.private_dns.clone());
+            let not_set = resolved.not_set.remove(id).unwrap_or_default();
+            let broken = resolved.broken.remove(id).unwrap_or_default();
+            let left_out = not_set
+                .into_iter()
+                .map(|variable| (variable, false))
+                .chain(broken.into_iter().map(|variable| (variable, true)))
+                .map(|(variable, broken)| {
+                    (
+                        vec![&config.settings.private_dns],
+                        DeploymentWarning::NotSet {
+                            service: service.clone(),
+                            variable,
+                            broken,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            Some(left_out)
         })
         .flatten()
         .collect();
@@ -541,13 +557,16 @@ pub(super) fn lower(
                         },
                     )
                 }));
-                warnings.extend(resolved.not_set.iter().map(|reference| {
+                let not_set = resolved.not_set.iter().map(|reference| (reference, false));
+                let broken = resolved.broken.iter().map(|reference| (reference, true));
+                warnings.extend(not_set.chain(broken).map(|(reference, broken)| {
                     (
                         mounts.clone(),
                         DeploymentWarning::NotSetInFile {
                             config: config.name.clone(),
                             file: name.clone(),
                             secret: shown(reference),
+                            broken,
                         },
                     )
                 }));

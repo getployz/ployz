@@ -5,6 +5,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 
 use super::super::{Error, config_path, leaf_matches, rerun, runtime, store::Next};
+use crate::approval::{self, Verb};
 use crate::cli::{base, positional, value};
 use crate::cloud_account::{self, Credential, ForgetCheck, ObservedServer, ServersForgotten};
 use crate::cloud_login::CredentialStore;
@@ -27,6 +28,7 @@ pub(crate) fn command(command: Command) -> Command {
          Volume data on these Servers can't be recovered. The next ployz server add \
          starts over, and Environments with a saved or deployed revision deploy to it. Type the Organization's \
          slug with --confirm.\n\n\
+         A human approves it in Ployz Cloud first.\n\n\
          Without --confirm outside a terminal, either form fails with \
          confirmation_required, naming what goes and the exact command to retry.",
     )
@@ -35,7 +37,7 @@ pub(crate) fn command(command: Command) -> Command {
         "With a Server: its name, or dead for one that does not answer. Without: the \
          Organization's slug",
     ))
-    .arg(crate::cli::approval().requires("server"))
+    .arg(crate::cli::approval())
 }
 
 /// Forget the named Server, or without one, every Server of the Organization.
@@ -52,14 +54,23 @@ pub(crate) fn forget(root: &ArgMatches) -> Result<(), Error> {
 fn forget_all(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = CredentialStore::beside(&config_path(matches)?);
-    let forgotten = runtime()?.block_on(async {
+    let runtime = runtime()?;
+    let (credential, typed) = runtime.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
         let Some(typed) = matches.get_one::<String>("confirm") else {
             let check = cloud_account::check_forget_servers(&credential).await?;
             return Err(unconfirmed(&check));
         };
-        Ok::<_, Error>(cloud_account::forget_servers(&credential, typed).await?)
+        Ok::<_, Error>((credential, typed))
     })?;
+    let forgotten = approval::approved(
+        &runtime,
+        &credential,
+        Verb::Forget,
+        matches.get_one::<String>("approval").cloned(),
+        |id| super::approved_rerun(matches, &["server", "forget", "--confirm", typed], id),
+        async |approval| cloud_account::forget_servers(&credential, typed, approval).await,
+    )?;
     finished(&forgotten)
 }
 
@@ -72,14 +83,29 @@ pub(super) fn forget_unanswered(
     credential: &Credential,
     selector: &str,
 ) -> Result<(), Error> {
-    finished(&runtime.block_on(unanswered(matches, credential, selector))?)
+    let organization = runtime.block_on(unanswered(matches, credential, selector))?;
+    let forgotten = approval::approved(
+        runtime,
+        credential,
+        Verb::Forget,
+        matches.get_one::<String>("approval").cloned(),
+        |id| {
+            super::approved_rerun(
+                matches,
+                &["server", "forget", selector, "--confirm", "dead"],
+                id,
+            )
+        },
+        async |approval| cloud_account::forget_servers(credential, &organization, approval).await,
+    )?;
+    finished(&forgotten)
 }
 
 async fn unanswered(
     matches: &ArgMatches,
     credential: &Credential,
     selector: &str,
-) -> Result<ServersForgotten, Error> {
+) -> Result<String, Error> {
     let check = cloud_account::check_forget_servers(credential).await?;
     let named =
         |server: &ObservedServer| server.name == selector || server.id.to_string() == selector;
@@ -116,7 +142,7 @@ async fn unanswered(
         )
         .hint(Hint::Retry(retry)));
     }
-    Ok(cloud_account::forget_servers(credential, &check.organization).await?)
+    Ok(check.organization)
 }
 
 fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
@@ -242,7 +268,11 @@ mod tests {
         assert!(forgot.try_recv().is_err(), "forgot without dead typed");
 
         let confirmed = forget_args(&["web-1", "--confirm", "dead"]);
-        let forgotten = unanswered(leaf_matches(&confirmed), &credential, "web-1")
+        let organization = unanswered(leaf_matches(&confirmed), &credential, "web-1")
+            .await
+            .unwrap();
+        assert_eq!(organization, "acme");
+        let forgotten = cloud_account::forget_servers(&credential, &organization, None)
             .await
             .unwrap();
         assert_eq!(
@@ -280,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn a_named_server_is_forgotten_alone_and_only_it_takes_an_approval() {
+    fn a_named_server_is_forgotten_alone_and_either_form_takes_an_approval() {
         let parse = |args: &[&str]| {
             crate::cli::command()
                 .try_get_matches_from(["ployz", "server", "forget"].iter().chain(args))
@@ -292,7 +322,8 @@ mod tests {
             leaf_matches(&one).get_one::<String>("server").unwrap(),
             "web-1"
         );
-        assert!(parse(&["--confirm", "acme", "--approval", "apr_1"]).is_err());
+        let approved = parse(&["--confirm", "acme", "--approval", "apr_1"]).unwrap();
+        assert!(!leaf_matches(&approved).contains_id("server"));
     }
 
     #[test]

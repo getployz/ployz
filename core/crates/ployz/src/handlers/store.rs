@@ -150,13 +150,25 @@ impl<'m> Store<'m> {
 
     /// [`Self::write`], leaving the refusal for the caller to add a next step to.
     pub(crate) fn try_write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
-        self.approved(command, &Trusted::default())
+        self.try_write_checked(command, &["diff"])
     }
 
+    /// [`Self::try_write`] for a command whose effect `check`, a read, shows.
+    pub(crate) fn try_write_checked<C: Tell>(
+        &self,
+        command: &C,
+        check: &[&str],
+    ) -> Result<C::Written, StoreCallError> {
+        self.approved(command, &Trusted::default(), Some(check))
+    }
+
+    /// Apply `command`, asking for approval when Cloud does. A write Cloud took but
+    /// never answered names `check`, the read that shows whether it applied.
     fn approved<C: Tell>(
         &self,
         command: &C,
         trusted: &Trusted,
+        check: Option<&[&str]>,
     ) -> Result<C::Written, StoreCallError> {
         let mut approval = self
             .matches
@@ -170,6 +182,10 @@ impl<'m> Store<'m> {
                 .write(command, trusted.clone(), approval.as_deref())
             {
                 Err(StoreCallError::Refused(refused)) => refused,
+                Err(StoreCallError::Cloud(error @ LoginError::Unanswered { .. })) => {
+                    let check = check.map(|check| Hint::Inspect(next(self.matches, check)));
+                    return Err(StoreCallError::Stopped(Error::from(error).hint(check)));
+                }
                 written => return written,
             };
             let (Backend::Cloud(runtime, credential), Some(asked), false) =
@@ -207,6 +223,7 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            Some(&["diff"]),
         )
     }
 
@@ -240,6 +257,7 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            Some(&["deployment", "ls"]),
         )
     }
 
@@ -266,6 +284,7 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            None,
         )
     }
 
@@ -681,6 +700,28 @@ pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
         }
     }
     shell_words::join(next)
+}
+
+/// The command that points `reference` at something there: a new value for its
+/// variable, or a new copy of its Config file.
+pub(crate) fn fix_broken(matches: &ArgMatches, reference: &ployz_store::BrokenReference) -> String {
+    match &reference.at {
+        ployz_store::ReferenceAt::Variable { service, variable } => next(
+            matches,
+            &["set", &format!("{service}.env.{variable}=VALUE")],
+        ),
+        ployz_store::ReferenceAt::File { config, file } => next(
+            matches,
+            &[
+                "config",
+                "put",
+                config.as_str(),
+                file.as_str(),
+                "--from",
+                "PATH",
+            ],
+        ),
+    }
 }
 
 /// A Store error and the hint this command adds to it.

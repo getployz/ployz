@@ -487,15 +487,14 @@ fn references_and_exports_round_trip_through_get_and_patch() {
     let error = set(&store, &[("api.env.URL", json!("${{ web.HOST"))]).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(error.message.contains("$${{"), "{}", error.message);
-    // A variable web doesn't have is refused, naming what it has; a built-in isn't.
-    let error = set(&store, &[("api.env.URL", json!("${{ web.HOST }}"))]).unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert!(
-        error.message.contains("PLOYZ_PRIVATE_DOMAIN"),
-        "{}",
-        error.message
+    // A variable web doesn't have is taken and reported broken; a built-in isn't broken.
+    set(&store, &[("api.env.URL", json!("${{ web.HOST }}"))]).unwrap();
+    let diff = store.read(&who(), &DiffQuery::default()).unwrap();
+    let broken: Vec<String> = diff.broken.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        broken,
+        ["api.env.URL references web.HOST, which doesn't exist"]
     );
-    assert_eq!(error.details["service"], "web");
     set(
         &store,
         &[("api.env.PEER", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"))],
@@ -1102,6 +1101,585 @@ fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it()
         .unwrap();
     assert_eq!(json!(read.deployment.warnings), warnings);
     assert!(!json!(read).to_string().contains("s3cr3t"));
+}
+
+#[test]
+fn a_deploy_leaves_out_what_reads_a_broken_reference_and_warns() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.PASS", json!("pw")),
+            ("api.env.DB", json!("${{ web.PASS }}")),
+            ("api.env.URL", json!("db://${{ DB }}")),
+            ("api.env.MODE", json!("fast")),
+        ],
+    )
+    .unwrap();
+    store
+        .write(
+            &who(),
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("api").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who(),
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+                file: ConfigFileName::parse("config.yml").unwrap(),
+                content: "pass: ${{ web.PASS }}\nmode: ${{ api.MODE }}\nurl: ${{ api.URL }}\n"
+                    .into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    unset(&store, "web.env.PASS");
+    let id = admit(&store, 1).unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let api = environment_of(&claimed, "api");
+    assert_eq!(api["MODE"], json!("fast"), "{api}");
+    assert!(api.get("DB").is_none() && api.get("URL").is_none(), "{api}");
+    let spec = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "api")
+        .unwrap();
+    let config = spec.configs().first().unwrap();
+    assert_eq!(
+        String::from_utf8(config.content.clone()).unwrap(),
+        "pass: \nmode: fast\nurl: \n"
+    );
+    let warnings = json!(claimed.deployment.warnings);
+    assert_eq!(
+        warnings,
+        json!([
+            { "service": "api", "variable": "DB", "broken": true },
+            { "service": "api", "variable": "URL", "broken": true },
+            { "config": "sentry", "file": "config.yml", "secret": "web.PASS", "broken": true },
+            { "config": "sentry", "file": "config.yml", "secret": "api.URL", "broken": true },
+        ])
+    );
+    let before: Vec<WarningBefore> = serde_json::from_value(warnings).unwrap();
+    assert_eq!(
+        before.iter().map(WarningBefore::text).collect::<Vec<_>>(),
+        [
+            "DB not set in api",
+            "URL not set in api",
+            "web.PASS not set in sentry/config.yml",
+            "api.URL not set in sentry/config.yml",
+        ]
+    );
+}
+
+#[test]
+fn editing_a_broken_variable_keeps_its_reference() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.PASS", json!("pw")),
+            ("api.env.URL", json!("db://${{ web.PASS }}")),
+        ],
+    )
+    .unwrap();
+    store
+        .write(
+            &who(),
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        value(&store, "api.env.URL"),
+        json!("db://${{ <deleted web>.PASS }}")
+    );
+    set(
+        &store,
+        &[("api.env.URL", json!("pg://${{ <deleted web>.PASS }}"))],
+    )
+    .unwrap();
+    assert_eq!(
+        value(&store, "api.env.URL"),
+        json!("pg://${{ <deleted web>.PASS }}")
+    );
+    let refused = set(
+        &store,
+        &[("api.env.URL", json!("${{ <deleted web>.OTHER }}"))],
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    let diff = store
+        .read(
+            &who(),
+            &DiffQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    let broken: Vec<String> = diff.broken.iter().map(ToString::to_string).collect();
+    assert_eq!(broken, ["api.env.URL references web, which was removed"]);
+}
+
+#[test]
+fn removed_services_shown_alike_are_told_apart_by_number() {
+    let store = backend::open();
+    shop(&store);
+    let remove = |name: &str| {
+        store
+            .write(
+                &who(),
+                &ployz_store::RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse(name).unwrap(),
+                },
+            )
+            .unwrap();
+    };
+    set(
+        &store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("api.env.HOSTS", json!("${{ web.URL }}")),
+        ],
+    )
+    .unwrap();
+    remove("web");
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &[
+            ("web.env.URL", json!("w")),
+            (
+                "api.env.HOSTS",
+                json!("${{ <deleted web>.URL }},${{ web.URL }}"),
+            ),
+        ],
+    )
+    .unwrap();
+    remove("web");
+    assert_eq!(
+        value(&store, "api.env.HOSTS"),
+        json!("${{ <deleted web>.URL }},${{ <deleted web#2>.URL }}")
+    );
+    set(
+        &store,
+        &[("api.env.HOSTS", json!("${{ <deleted web#2>.URL }}"))],
+    )
+    .unwrap();
+    assert_eq!(
+        value(&store, "api.env.HOSTS"),
+        json!("${{ <deleted web#2>.URL }}")
+    );
+}
+
+/// `web` removed twice, `web.env.FIRST` referencing the first and `api.env.SECOND`
+/// the second.
+fn two_removed_webs(store: &ConfigStore) {
+    let remove = || {
+        store
+            .write(
+                &who(),
+                &ployz_store::RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap();
+    };
+    set(
+        store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("api.env.FIRST", json!("${{ web.URL }}")),
+        ],
+    )
+    .unwrap();
+    remove();
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("api.env.SECOND", json!("${{ web.URL }}")),
+        ],
+    )
+    .unwrap();
+    remove();
+}
+
+#[test]
+fn a_bulk_edit_dropping_one_removed_service_keeps_the_others_number() {
+    let store = backend::open();
+    shop(&store);
+    two_removed_webs(&store);
+    assert_eq!(
+        value(&store, "api.env.SECOND"),
+        json!("${{ <deleted web#2>.URL }}")
+    );
+
+    set(
+        &store,
+        &[
+            ("api.env.FIRST", json!("plain")),
+            ("api.env.SECOND", json!("${{ <deleted web#2>.URL }}/v2")),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        value(&store, "api.env.SECOND"),
+        json!("${{ <deleted web#2>.URL }}/v2")
+    );
+}
+
+#[test]
+fn discard_brings_a_reference_back_on_the_removed_service_it_read() {
+    let store = backend::open();
+    shop(&store);
+    two_removed_webs(&store);
+    store
+        .write_trusted(
+            &who(),
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &ployz_store::Trusted {
+                approval: ployz_store::Approval::NotRequired,
+                ..ployz_store::Trusted::default()
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &[
+            ("api.env.FIRST", json!("plain")),
+            ("api.env.SECOND", json!("plain")),
+        ],
+    )
+    .unwrap();
+
+    store
+        .write(
+            &who(),
+            &ployz_store::Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Saved),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            value(&store, "api.env.FIRST"),
+            value(&store, "api.env.SECOND")
+        ),
+        (
+            json!("${{ <deleted web>.URL }}"),
+            json!("${{ <deleted web#2>.URL }}")
+        )
+    );
+}
+
+#[test]
+fn an_edit_keeps_each_reference_on_the_removed_service_it_names() {
+    let store = backend::open();
+    shop(&store);
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("jobs").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("api.env.URL", json!("a")),
+            ("jobs.env.HOSTS", json!("${{ web.URL }},${{ api.URL }}")),
+        ],
+    )
+    .unwrap();
+    store
+        .write(
+            &who(),
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("db").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("jobs").unwrap(),
+                    dir: "/etc/db".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let put = |content: &str| {
+        store.write(
+            &who(),
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("db").unwrap(),
+                file: ConfigFileName::parse("db.yml").unwrap(),
+                content: content.into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+    };
+    put("primary: ${{ web.URL }}\nreplica: ${{ api.URL }}").unwrap();
+    admit(&store, 1).unwrap();
+    for gone in ["web", "api"] {
+        store
+            .write(
+                &who(),
+                &ployz_store::RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse(gone).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+    let file = || {
+        store
+            .read(
+                &who(),
+                &ployz_store::ConfigItemQuery {
+                    environment: EnvironmentRef::default(),
+                    config: ConfigName::parse("db").unwrap().into(),
+                },
+            )
+            .unwrap()
+            .contents[&ConfigFileName::parse("db.yml").unwrap()]
+            .clone()
+    };
+
+    assert_eq!(
+        value(&store, "jobs.env.HOSTS"),
+        json!("${{ <deleted web>.URL }},${{ <deleted api>.URL }}")
+    );
+    set(
+        &store,
+        &[("jobs.env.HOSTS", json!("${{ <deleted api>.URL }}"))],
+    )
+    .unwrap();
+    assert_eq!(
+        value(&store, "jobs.env.HOSTS"),
+        json!("${{ <deleted api>.URL }}")
+    );
+    let invented = set(
+        &store,
+        &[("jobs.env.HOSTS", json!("${{ <deleted web>.URL }}"))],
+    );
+    assert_eq!(invented.unwrap_err().code, RpcErrorCode::InvalidArgument);
+
+    assert_eq!(
+        file(),
+        "primary: ${{ <deleted web>.URL }}\nreplica: ${{ <deleted api>.URL }}"
+    );
+    put("replica: ${{ <deleted api>.URL }}").unwrap();
+    assert_eq!(file(), "replica: ${{ <deleted api>.URL }}");
+    let invented = put("primary: ${{ <deleted web>.URL }}");
+    assert_eq!(invented.unwrap_err().code, RpcErrorCode::InvalidArgument);
+}
+
+#[test]
+fn a_service_removed_before_names_were_recorded_shows_by_its_lineage() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("jobs").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("jobs.env.URL", json!("j")),
+            ("api.env.FIRST", json!("${{ web.URL }}")),
+            ("api.env.SECOND", json!("${{ jobs.URL }}")),
+        ],
+    )
+    .unwrap();
+    store
+        .write_trusted(
+            &who(),
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &ployz_store::Trusted {
+                approval: ployz_store::Approval::NotRequired,
+                ..ployz_store::Trusted::default()
+            },
+        )
+        .unwrap();
+    let remove_both = || {
+        for gone in ["web", "jobs"] {
+            store
+                .write(
+                    &who(),
+                    &ployz_store::RemoveService {
+                        environment: EnvironmentRef::default(),
+                        service: ServiceName::parse(gone).unwrap(),
+                    },
+                )
+                .unwrap();
+        }
+    };
+    remove_both();
+    execute(&url, "UPDATE config_environment SET removed = '{}'");
+    set(&store, &[("api.env.OTHER", json!("x"))]).unwrap();
+    let shown = || {
+        (
+            value(&store, "api.env.FIRST"),
+            value(&store, "api.env.SECOND"),
+        )
+    };
+    let nameless = (
+        json!("${{ <deleted #00000003>.URL }}"),
+        json!("${{ <deleted #00000005>.URL }}"),
+    );
+    assert_eq!(shown(), nameless);
+
+    set(
+        &store,
+        &[("api.env.SECOND", json!("${{ <deleted #00000005>.URL }}/v2"))],
+    )
+    .unwrap();
+    assert_eq!(
+        shown(),
+        (nameless.0, json!("${{ <deleted #00000005>.URL }}/v2"))
+    );
+}
+
+/// Run `sql` on the database at `url`, beside the Store.
+fn execute(url: &str, sql: &str) {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute(sql, [])
+                .unwrap();
+        }
+        None => {
+            postgres::Client::connect(url, postgres::NoTls)
+                .unwrap()
+                .execute(sql, &[])
+                .unwrap();
+        }
+    }
+}
+
+/// `DeploymentWarning` before broken references, as older clients still read it.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum WarningBefore {
+    Fragile {
+        config: String,
+        file: String,
+        variable: String,
+    },
+    NotSet {
+        service: String,
+        variable: String,
+    },
+    NotSetInFile {
+        config: String,
+        file: String,
+        secret: String,
+    },
+    IngressNotServing {
+        server: String,
+        ingress: Value,
+    },
+    IngressUnchecked {
+        cause: String,
+    },
+}
+
+impl WarningBefore {
+    fn text(&self) -> String {
+        match self {
+            Self::Fragile {
+                config,
+                file,
+                variable,
+            } => format!("{variable} may break {config}/{file}"),
+            Self::NotSet { service, variable } => format!("{variable} not set in {service}"),
+            Self::NotSetInFile {
+                config,
+                file,
+                secret,
+            } => format!("{secret} not set in {config}/{file}"),
+            Self::IngressNotServing { server, ingress } => format!("{server}: {ingress}"),
+            Self::IngressUnchecked { cause } => cause.clone(),
+        }
+    }
 }
 
 #[test]

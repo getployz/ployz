@@ -66,6 +66,14 @@ describe("VariableRow", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it("warns in red where a broken reference is fixed, in place of the deleted-Service guess", () => {
+    render(<VariableRow variable={plainVariable({ value: { type: "plain", value: "${{ <deleted>.URL }}" }, broken: "redis was removed" })}
+      collection={collection} onSealVariable={vi.fn()} />);
+    const warning = screen.getByText("Broken reference: redis was removed");
+    expect(warning.parentElement?.className).toContain("text-destructive");
+    expect(screen.queryByText(/References a variable whose service was deleted/u)).toBeNull();
+  });
+
   it("shows a seal action for plain variables and confirms without plaintext", async () => {
     const onSealVariable = vi.fn().mockResolvedValue(undefined);
 

@@ -35,7 +35,9 @@ Services or their dependencies, or to observed work the deploy affected. An Entr
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
 
-Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
+If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
+`Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line
+for `ployz deployment show N`. Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
 keeps running. The command returns its last known result when one is available, including
 a completion observed during interruption. An active
 Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests

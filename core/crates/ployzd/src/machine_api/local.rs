@@ -8,10 +8,10 @@ use std::{
 
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
-    ContainerList, ContainerObservation, ContractDescription, EnvironmentValues, LiveLogTarget,
-    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, NotPointerPublisher,
-    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    ServingPointerRead, op,
+    ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
+    LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
+    NotPointerPublisher, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, SelectEndpointRequest, ServingPointerRead, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -21,7 +21,7 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
-    network::MACHINE_API_PORT,
+    network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
 };
 
@@ -37,6 +37,7 @@ pub struct MachineService {
     switch_mutation: Arc<tokio::sync::Mutex<()>>,
     pub(crate) builds: Arc<crate::build::Runner>,
     pub(crate) grants: Arc<crate::management::BuildGrants>,
+    pub(crate) endpoint_chooser: Option<crate::network::EndpointChooser>,
 }
 
 impl MachineService {
@@ -55,6 +56,7 @@ impl MachineService {
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
             grants: Arc::default(),
+            endpoint_chooser: None,
         }
     }
 
@@ -149,6 +151,43 @@ impl MachineService {
             return Err(NotPointerPublisher { publisher }.rpc_error());
         }
         Ok(replicated)
+    }
+
+    /// Hand an operator's endpoint for a peer to this Machine's WireGuard. Only this
+    /// Machine's own route changes; the peer's record does not.
+    async fn select(&self, request: SelectEndpointRequest) -> Result<EndpointSelected, RpcError> {
+        let SelectEndpointRequest { peer, endpoint } = request;
+        if peer == self.local_record().id() {
+            return Err(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "a Server does not choose an endpoint for itself".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            });
+        }
+        let chooser = self
+            .endpoint_chooser
+            .as_ref()
+            .ok_or_else(|| unavailable("WireGuard is not running on this Server"))?;
+        let (applied, outcome) = tokio::sync::oneshot::channel();
+        chooser
+            .send(EndpointChoice {
+                peer,
+                endpoint,
+                applied,
+            })
+            .await
+            .map_err(|_| unavailable("WireGuard is not running on this Server"))?;
+        match outcome.await {
+            Ok(Ok(())) => Ok(EndpointSelected { peer, endpoint }),
+            Ok(Err(refused @ ChoiceRefused::UnknownPeer(_))) => {
+                Err(RpcError::caused(RpcErrorCode::NotFound, &refused))
+            }
+            Ok(Err(refused @ ChoiceRefused::WireGuard)) => {
+                Err(RpcError::caused(RpcErrorCode::Internal, &refused))
+            }
+            Err(_) => Err(unavailable("WireGuard is not running on this Server")),
+        }
     }
 
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
@@ -265,6 +304,17 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetPushTarget>(request)?;
         finish(self.local.set_push_target(request).await)
+    }
+
+    async fn select_endpoint(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SelectEndpoint>(request)?;
+        match self.select(request).await {
+            Ok(selected) => respond(selected),
+            Err(error) => respond(error),
+        }
     }
 
     async fn list_machines(

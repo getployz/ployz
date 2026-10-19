@@ -1517,17 +1517,19 @@ mod set_volume_copy {
         let plugin = cutting_plugin();
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        running_holder(&service, &fake).await;
+        let holder = running_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
 
-        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                set_copy(&service, floor(1)),
-            )
-            .await
-            .expect("the floor want waited on the draining cut")
-        });
+        let (cut, during) =
+            tokio::join!(set_copy(&service, at_gen(draining_cut(3000), 1)), async {
+                drain_started(&fake, &holder, seen).await;
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(2000),
+                    set_copy(&service, floor(1)),
+                )
+                .await
+                .expect("the floor want waited on the draining cut")
+            });
         assert_eq!(
             serde_json::to_value(reply(&during)).unwrap(),
             json!({"copy": writer_root(0, None)["Ok"]})
@@ -3058,4 +3060,87 @@ mod serving_pointer {
         task.abort();
         std::fs::remove_dir_all(dir).ok();
     }
+}
+
+async fn select_endpoint(
+    service: &MachineService,
+    peer: MachineId,
+) -> Result<ployz_core::EndpointSelected, ployz_core::RpcError> {
+    let response = service
+        .select_endpoint(Request::new(
+            op::SelectEndpoint::into_request(ployz_core::SelectEndpointRequest {
+                peer,
+                endpoint: ployz_core::SelectedEndpoint("198.51.100.7:51820".parse().unwrap()),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    if let RpcResponseBody::EndpointSelected(selected) = response.body {
+        return Ok(selected);
+    }
+    let RpcResponseBody::Error(error) = response.body else {
+        panic!("unexpected response {:?}", response.body);
+    };
+    Err(error)
+}
+
+#[tokio::test]
+async fn an_operator_endpoint_reaches_this_machines_wireguard_and_never_names_itself() {
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-select-endpoint-{}", MachineId::random()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let own_id = store.record().id();
+    let without_mesh = MachineService::with_cluster(store.clone(), None);
+    assert_eq!(
+        select_endpoint(&without_mesh, MachineId::random())
+            .await
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Unavailable
+    );
+
+    let (chooser, mut choices) = tokio::sync::mpsc::channel(1);
+    let mut service = MachineService::with_cluster(store, None);
+    service.endpoint_chooser = Some(chooser);
+    let known = MachineId::random();
+    let plane = tokio::spawn(async move {
+        let mut taken = Vec::new();
+        while let Some(choice) = choices.recv().await {
+            let crate::network::EndpointChoice {
+                peer,
+                endpoint,
+                applied,
+            } = choice;
+            let outcome = if peer == known {
+                taken.push((peer, endpoint));
+                Ok(())
+            } else {
+                Err(crate::network::ChoiceRefused::UnknownPeer(peer))
+            };
+            applied.send(outcome).unwrap();
+        }
+        taken
+    });
+
+    assert_eq!(
+        select_endpoint(&service, own_id).await.unwrap_err().code,
+        RpcErrorCode::InvalidArgument
+    );
+    let selected = select_endpoint(&service, known).await.unwrap();
+    assert_eq!(selected.peer, known);
+    assert_eq!(
+        select_endpoint(&service, MachineId::random())
+            .await
+            .unwrap_err()
+            .code,
+        RpcErrorCode::NotFound
+    );
+    drop(service);
+    assert_eq!(plane.await.unwrap(), [(known, selected.endpoint)]);
+    std::fs::remove_dir_all(data_dir).ok();
 }
