@@ -674,3 +674,62 @@ async fn a_rolling_failure_on_the_first_machine_leaves_the_second_untouched() {
     assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
     client.assert_done();
 }
+
+#[tokio::test]
+async fn a_failed_new_copy_retires_the_ones_already_in_and_restores_the_held_copies() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let (new_first, new_second) = (container('c'), container('d'));
+    let plan = vec![
+        swap(&first, &old_first, UpdateOrder::StopFirst),
+        swap(&second, &old_second, UpdateOrder::StopFirst),
+    ];
+    let client = Scripted {
+        unhealthy_in: BTreeMap::from([(
+            new_second,
+            HealthVerdict::Failed {
+                observation: unhealthy(),
+                last_check: None,
+            },
+        )]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(first, old_first), running()),
+            observed(Call::Inspect(second, old_second), running()),
+            ok(Call::Stop(first, old_first)),
+            created(
+                Call::Run(first, ContainerKind::ServiceContainer),
+                &new_first,
+            ),
+            ok(Call::Stop(second, old_second)),
+            created(
+                Call::Run(second, ContainerKind::ServiceContainer),
+                &new_second,
+            ),
+            ok(Call::Remove(first, new_first)),
+            ok(Call::Discard(second, new_second)),
+            ok(Call::Restart(first, old_first)),
+            ok(Call::Restart(second, old_second)),
+        ])
+    }
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(old_first, CopyRotation::Held(run_id())),
+            Move::To(old_second, CopyRotation::Held(run_id())),
+            Move::To(new_first, CopyRotation::In),
+            Move::To(new_first, CopyRotation::Out),
+            Move::Gone(new_first),
+            Move::Gone(new_second),
+            Move::To(old_first, CopyRotation::In),
+            Move::To(old_second, CopyRotation::In),
+        ],
+        "a new copy already In leaves through Out before it is removed"
+    );
+    client.assert_done();
+}
