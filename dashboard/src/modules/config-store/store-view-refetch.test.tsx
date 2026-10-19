@@ -22,6 +22,8 @@ function history(revision: number): HistoryShown {
     environment: { id: "env", project: "shop", name: "production", revision },
     revisions: [{ revision, message: `Merged #${revision}`, saved_by: null, saved_at: null, predecessor: null, changes: [], total_count: 0, linked: {} }],
     more: false,
+    live: null,
+    failed: null,
   } };
 }
 
