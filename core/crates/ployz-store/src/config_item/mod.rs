@@ -219,7 +219,12 @@ pub(crate) fn put_file(
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &put.environment)?;
     let names = environment.names();
-    let content = parts(&put.file, &put.content, &names)?;
+    let old = environment
+        .config(&put.config)?
+        .files
+        .get(&put.file)
+        .map_or(&[][..], |file| file.content.as_slice());
+    let content = parts(&put.file, &put.content, &names, old)?;
     let config = environment.config_mut(&put.config)?;
     let id = config.resource_id.clone();
     let old = config.files.get(&put.file);
@@ -574,6 +579,7 @@ fn parts(
     file: &ConfigFileName,
     text: &str,
     names: &BTreeMap<String, String>,
+    old: &[ValuePart],
 ) -> Result<Vec<ValuePart>, RpcError> {
     if text.len() > MAX_FILE_BYTES {
         return Err(error::invalid(
@@ -590,12 +596,7 @@ fn parts(
             json!({ "file": file }),
         ));
     }
-    let template = parse_variable_template(text, |name| {
-        names
-            .iter()
-            .find(|(_, slug)| slug.as_str() == name)
-            .map(|(lineage, _)| lineage.clone())
-    });
+    let template = parse_variable_template(text, crate::variables::lineage_of(names, old));
     if template.unterminated {
         return Err(error::invalid(
             format!(

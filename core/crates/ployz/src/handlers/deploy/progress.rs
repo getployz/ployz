@@ -175,8 +175,6 @@ fn ingress_unchecked(view: &DeploymentView) -> impl Iterator<Item = &str> {
             DeploymentWarning::Fragile { .. }
             | DeploymentWarning::NotSet { .. }
             | DeploymentWarning::NotSetInFile { .. }
-            | DeploymentWarning::Broken { .. }
-            | DeploymentWarning::BrokenInFile { .. }
             | DeploymentWarning::IngressNotServing { .. } => None,
         })
 }
@@ -188,23 +186,25 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
         .iter()
         .filter_map(|warning| {
             Some(match warning {
-                DeploymentWarning::Broken { service, left_out } => {
-                    format!("Left {left_out} out of {service}: it has a broken reference.")
-                }
-                DeploymentWarning::BrokenInFile {
-                    config,
-                    file,
-                    reference,
-                } => {
-                    format!("Left {reference} empty in {config}/{file}: it is a broken reference.")
-                }
-                DeploymentWarning::NotSet { service, variable } => {
-                    format!("Left {variable} out of {service}: it is not set.")
-                }
+                DeploymentWarning::NotSet {
+                    service,
+                    variable,
+                    broken: true,
+                } => format!("Left {variable} out of {service}: it has a broken reference."),
                 DeploymentWarning::NotSetInFile {
                     config,
                     file,
                     secret,
+                    broken: true,
+                } => format!("Left {secret} empty in {config}/{file}: it is a broken reference."),
+                DeploymentWarning::NotSet {
+                    service, variable, ..
+                } => format!("Left {variable} out of {service}: it is not set."),
+                DeploymentWarning::NotSetInFile {
+                    config,
+                    file,
+                    secret,
+                    ..
                 } => format!("Left {secret} empty in {config}/{file}: it is not set."),
                 DeploymentWarning::Fragile {
                     config,

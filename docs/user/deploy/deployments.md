@@ -38,8 +38,8 @@ Everything else keeps running as it is. A secret that is **Not set** never stops
 deploy skips it, and any variable that references it, and warns. A
 [broken reference](../services/variables.md#reference-another-services-variable), to a service or
 variable that isn't there, doesn't either: the deploy leaves that variable out the same way, or
-leaves the reference empty in a config file, and the deployment's page and `ployz deploy` name
-each one.
+leaves the reference empty in a config file, along with any reference that reads it, and the
+deployment's page and `ployz deploy` name each one.
 
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not

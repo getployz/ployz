@@ -158,7 +158,7 @@ pub fn render_variable_parts(parts: &[ValuePart], slugs: &BTreeMap<String, Strin
                 let slug = slugs
                     .get(lineage_id)
                     .map(String::as_str)
-                    .unwrap_or("<deleted>");
+                    .unwrap_or(super::DELETED_OWNER);
                 format!("${{{{ {slug}.{key} }}}}")
             }
         })

@@ -91,15 +91,17 @@ impl std::fmt::Display for BrokenReference {
 }
 
 /// Each reference in `working` to a Service or variable that isn't there: Services'
-/// variables, then Config files, a removed Service once per variable or file. A
-/// Service `live` holds is there; `names` names a removed one by lineage.
+/// variables, then Config files, each once, a removed Service once per variable or
+/// file. A Service `live` holds is there, with the variables `live_keys` gives it
+/// where it is deployed; `names` names a removed or live one by lineage.
 pub(crate) fn broken(
     working: &SavedEnvironmentIntent,
     live: &BTreeMap<String, String>,
+    live_keys: &BTreeMap<String, BTreeSet<String>>,
     names: &BTreeMap<String, String>,
 ) -> Vec<BrokenReference> {
     let named = |slug: &str| ServiceName::parse(slug).ok();
-    dangling(working, live)
+    dangling(working, live, live_keys)
         .into_iter()
         .filter_map(|Dangling { at, reads, wants }| {
             Some(BrokenReference {
@@ -118,17 +120,22 @@ pub(crate) fn broken(
                     Wants::Service(lineage) => Missing::Service {
                         from: names.get(&lineage).and_then(|name| named(name)),
                     },
-                    Wants::Variable { owner, .. } => Missing::Variable {
-                        from: named(&service(working, &owner)?.slug)?,
+                    Wants::Variable { owner } => Missing::Variable {
+                        from: named(service(working, &owner).map_or_else(
+                            || names.get(&owner).map(String::as_str),
+                            |owner| Some(owner.slug.as_str()),
+                        )?)?,
                     },
                 },
             })
         })
         .fold(Vec::new(), |mut found, reference| {
-            let repeat = matches!(reference.missing, Missing::Service { .. })
-                && found.iter().any(|seen: &BrokenReference| {
-                    seen.at == reference.at && seen.missing == reference.missing
-                });
+            let repeat = found.iter().any(|seen: &BrokenReference| {
+                seen.at == reference.at
+                    && seen.missing == reference.missing
+                    && (seen.reads == reference.reads
+                        || matches!(reference.missing, Missing::Service { .. }))
+            });
             if !repeat {
                 found.push(reference);
             }
@@ -143,20 +150,57 @@ pub(crate) fn broken_in(
     environment: &Environment,
     mut names: BTreeMap<String, String>,
 ) -> Result<Vec<BrokenReference>, RpcError> {
-    let found = broken(&environment.working, &environment.live, &names);
-    let unnamed = Missing::Service { from: None };
-    if !found.iter().any(|reference| reference.missing == unnamed) {
-        return Ok(found);
+    let working = &environment.working;
+    let live = &environment.live;
+    for (lineage, name) in live {
+        names.entry(lineage.clone()).or_insert_with(|| name.clone());
     }
-    for row in tx.query(
-        "SELECT intent FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC",
-        &[environment.summary.id.as_str().into()],
-    )? {
-        for service in row.intent(0, "Saved State")?.services {
-            names.entry(service.lineage_id).or_insert(service.slug);
+    let live_keys = crate::branch::live_keys(tx, &environment.summary.id, working)?;
+    let mut unnamed: BTreeSet<String> = dangling(working, live, &live_keys)
+        .into_iter()
+        .filter_map(|dangling| match dangling.wants {
+            Wants::Service(lineage) if !names.contains_key(&lineage) => Some(lineage),
+            Wants::Service(_) | Wants::Variable { .. } => None,
+        })
+        .collect();
+    if !unnamed.is_empty() {
+        let id = environment.summary.id.as_str();
+        let revisions = tx.query(
+            "SELECT revision FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC",
+            &[id.into()],
+        )?;
+        for revision in revisions {
+            if unnamed.is_empty() {
+                break;
+            }
+            let rows = tx.query(
+                "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
+                &[id.into(), revision.int(0)?.into()],
+            )?;
+            let Some(row) = rows.first() else {
+                continue;
+            };
+            for service in row.json::<SavedNames>(0, "Saved State")?.services {
+                if unnamed.remove(&service.lineage_id) {
+                    names.insert(service.lineage_id, service.slug);
+                }
+            }
         }
     }
-    Ok(broken(&environment.working, &environment.live, &names))
+    Ok(broken(working, live, &live_keys, &names))
+}
+
+/// The Service names a save holds, read without the rest of it.
+#[derive(Deserialize)]
+struct SavedNames {
+    services: Vec<SavedName>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedName {
+    lineage_id: String,
+    slug: String,
 }
 
 /// What the rules read of one Environment.
@@ -295,10 +339,11 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
 }
 
 /// Each reference of `working` to a Service neither in it nor in `live`, or to a
-/// variable its Service doesn't have.
+/// variable its Service doesn't have, a live one where `live_keys` has it deployed.
 fn dangling<'a>(
     working: &'a SavedEnvironmentIntent,
     live: &BTreeMap<String, String>,
+    live_keys: &BTreeMap<String, BTreeSet<String>>,
 ) -> Vec<Dangling<'a>> {
     let variables = working.services.iter().flat_map(|referrer| {
         references(referrer).map(move |(key, owner, reads)| {
@@ -327,7 +372,18 @@ fn dangling<'a>(
             (ValuePartOwner::Self_, None) => continue,
             (ValuePartOwner::Service { lineage_id }, _) => match service(working, lineage_id) {
                 Some(owner) => owner,
-                None if live.contains_key(lineage_id) => continue,
+                None if live.contains_key(lineage_id) => {
+                    let lacks = live_keys.get(lineage_id).is_some_and(|keys| {
+                        !keys.contains(reads) && !BUILT_IN_VARIABLES.contains(&reads)
+                    });
+                    if lacks {
+                        let wants = Wants::Variable {
+                            owner: lineage_id.clone(),
+                        };
+                        found.push(Dangling { at, reads, wants });
+                    }
+                    continue;
+                }
                 None => {
                     let wants = Wants::Service(lineage_id.clone());
                     found.push(Dangling { at, reads, wants });
@@ -857,6 +913,7 @@ pub(crate) mod tests {
                 ("db.env.PASS", json!("pw")),
                 ("redis.env.DB_HOST", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
                 ("redis.env.DB_PASS", json!("${{ db.PASS }}")),
+                ("redis.env.TWICE", json!("${{ db.PASS }}-${{ db.PASS }}")),
             ],
         )
         .unwrap();
@@ -869,6 +926,7 @@ pub(crate) mod tests {
             reported(&store, &who),
             [
                 "redis.env.DB_PASS references db.PASS, which doesn't exist",
+                "redis.env.TWICE references db.PASS, which doesn't exist",
                 "redis.env.X references db.NOPE, which doesn't exist",
             ]
         );
@@ -887,6 +945,7 @@ pub(crate) mod tests {
             [
                 "redis.env.DB_HOST references db, which was removed",
                 "redis.env.DB_PASS references db, which was removed",
+                "redis.env.TWICE references db, which was removed",
                 "redis.env.X references db, which was removed",
             ]
         );

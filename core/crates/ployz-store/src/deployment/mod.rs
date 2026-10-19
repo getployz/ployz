@@ -148,33 +148,28 @@ pub enum DeploymentWarning {
         /// The variable as the file references it, such as `api.TOKEN`.
         variable: String,
     },
-    /// A Service variable left out: it is, or reads, a secret without a value.
+    /// A Service variable left out: it is, or reads, a secret without a value, or
+    /// with `broken`, directly or through another variable, a Service or variable
+    /// that isn't there.
     NotSet {
         service: ServiceName,
         /// The variable's key, such as `TOKEN`.
         variable: String,
+        /// Clients before broken references read it as Not set.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        broken: bool,
     },
-    /// A Config file reference left empty: it is, or reads, a secret without a value.
+    /// A Config file reference left empty: it is, or reads, a secret without a
+    /// value, or with `broken`, a Service or variable that isn't there.
     NotSetInFile {
         config: ConfigName,
         file: ConfigFileName,
         /// The variable as the file references it, such as `api.TOKEN`.
         secret: String,
-    },
-    /// A Service variable left out: it references, directly or through another
-    /// variable, a Service or variable that isn't there.
-    Broken {
-        service: ServiceName,
-        /// The key of the variable left out, such as `REDIS_URL`.
-        left_out: String,
-    },
-    /// A Config file reference left empty: the Service or variable it reads isn't
-    /// there.
-    BrokenInFile {
-        config: ConfigName,
-        file: ConfigFileName,
-        /// The reference as the file writes it, such as `redis.URL`.
-        reference: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        broken: bool,
     },
     /// A Server's Ingress Proxy the Deploy created or started isn't running.
     IngressNotServing {

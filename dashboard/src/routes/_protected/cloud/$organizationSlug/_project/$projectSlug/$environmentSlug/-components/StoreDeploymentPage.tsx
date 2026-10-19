@@ -141,7 +141,7 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
           {variableWarnings.map((warning) => (
             <li key={deploymentWarningText(warning)}>
               <Badge variant="warning">
-                {"left_out" in warning || "reference" in warning ? <TriangleAlertIcon /> : <LockIcon />}
+                {"broken" in warning && warning.broken ? <TriangleAlertIcon /> : <LockIcon />}
                 {deploymentWarningText(warning)}
               </Badge>
             </li>

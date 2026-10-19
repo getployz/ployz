@@ -608,15 +608,8 @@ fn a_reference_names_a_service_that_exists() {
     let unfinished = refused(put(&store, &who, "sentry", "a.yml", "x: ${{ web.KEY"));
     assert_eq!(unfinished.code, RpcErrorCode::InvalidArgument);
 
-    let no_variable = refused(put(&store, &who, "sentry", "a.yml", "x: ${{ web.NOPE }}"));
-    assert_eq!(no_variable.code, RpcErrorCode::InvalidArgument);
-    assert!(
-        no_variable.message.contains("NOPE"),
-        "{}",
-        no_variable.message
-    );
-
     assert!(item(&store, &who, "sentry").unwrap().contents.is_empty());
+    put(&store, &who, "sentry", "a.yml", "x: ${{ web.NOPE }}").unwrap();
     put(
         &store,
         &who,
@@ -747,6 +740,32 @@ fn removing_what_a_config_references_stages_and_reports_it_broken() {
         broken,
         ["sentry/a.yml references worker, which was removed"]
     );
+
+    let shown = item(&store, &who, "sentry").unwrap().contents[&file("a.yml")].clone();
+    assert_eq!(
+        shown,
+        "key: ${{ <deleted>.KEY }}\nhost: ${{ <deleted>.PLOYZ_PRIVATE_DOMAIN }}"
+    );
+    put(
+        &store,
+        &who,
+        "sentry",
+        "a.yml",
+        &format!("{shown}\nmode: x"),
+    )
+    .unwrap();
+    assert_eq!(
+        item(&store, &who, "sentry").unwrap().contents[&file("a.yml")],
+        format!("{shown}\nmode: x")
+    );
+    let invented = refused(put(
+        &store,
+        &who,
+        "sentry",
+        "a.yml",
+        &format!("{shown}\nother: ${{{{ <deleted>.OTHER }}}}"),
+    ));
+    assert_eq!(invented.code, RpcErrorCode::InvalidArgument);
 }
 
 #[test]

@@ -975,7 +975,8 @@ fn a_deploy_leaves_out_what_reads_a_broken_reference_and_warns() {
                 environment: EnvironmentRef::default(),
                 config: ConfigName::parse("sentry").unwrap(),
                 file: ConfigFileName::parse("config.yml").unwrap(),
-                content: "pass: ${{ web.PASS }}\nmode: ${{ api.MODE }}\n".into(),
+                content: "pass: ${{ web.PASS }}\nmode: ${{ api.MODE }}\nurl: ${{ api.URL }}\n"
+                    .into(),
                 mode: None,
                 uid: None,
                 gid: None,
@@ -999,16 +1000,123 @@ fn a_deploy_leaves_out_what_reads_a_broken_reference_and_warns() {
     let config = spec.configs().first().unwrap();
     assert_eq!(
         String::from_utf8(config.content.clone()).unwrap(),
-        "pass: \nmode: fast\n"
+        "pass: \nmode: fast\nurl: \n"
     );
+    let warnings = json!(claimed.deployment.warnings);
     assert_eq!(
-        json!(claimed.deployment.warnings),
+        warnings,
         json!([
-            { "service": "api", "left_out": "DB" },
-            { "service": "api", "left_out": "URL" },
-            { "config": "sentry", "file": "config.yml", "reference": "web.PASS" },
+            { "service": "api", "variable": "DB", "broken": true },
+            { "service": "api", "variable": "URL", "broken": true },
+            { "config": "sentry", "file": "config.yml", "secret": "web.PASS", "broken": true },
+            { "config": "sentry", "file": "config.yml", "secret": "api.URL", "broken": true },
         ])
     );
+    let before: Vec<WarningBefore> = serde_json::from_value(warnings).unwrap();
+    assert_eq!(
+        before.iter().map(WarningBefore::text).collect::<Vec<_>>(),
+        [
+            "DB not set in api",
+            "URL not set in api",
+            "web.PASS not set in sentry/config.yml",
+            "api.URL not set in sentry/config.yml",
+        ]
+    );
+}
+
+#[test]
+fn editing_a_broken_variable_keeps_its_reference() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.PASS", json!("pw")),
+            ("api.env.URL", json!("db://${{ web.PASS }}")),
+        ],
+    )
+    .unwrap();
+    store
+        .write(
+            &who(),
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        value(&store, "api.env.URL"),
+        json!("db://${{ <deleted>.PASS }}")
+    );
+    set(
+        &store,
+        &[("api.env.URL", json!("pg://${{ <deleted>.PASS }}"))],
+    )
+    .unwrap();
+    assert_eq!(
+        value(&store, "api.env.URL"),
+        json!("pg://${{ <deleted>.PASS }}")
+    );
+    let refused = set(&store, &[("api.env.URL", json!("${{ <deleted>.OTHER }}"))]).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    let diff = store
+        .read(
+            &who(),
+            &DiffQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    let broken: Vec<String> = diff.broken.iter().map(ToString::to_string).collect();
+    assert_eq!(broken, ["api.env.URL references a removed Service"]);
+}
+
+/// `DeploymentWarning` before broken references, as older clients still read it.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum WarningBefore {
+    Fragile {
+        config: String,
+        file: String,
+        variable: String,
+    },
+    NotSet {
+        service: String,
+        variable: String,
+    },
+    NotSetInFile {
+        config: String,
+        file: String,
+        secret: String,
+    },
+    IngressNotServing {
+        server: String,
+        ingress: Value,
+    },
+    IngressUnchecked {
+        cause: String,
+    },
+}
+
+impl WarningBefore {
+    fn text(&self) -> String {
+        match self {
+            Self::Fragile {
+                config,
+                file,
+                variable,
+            } => format!("{variable} may break {config}/{file}"),
+            Self::NotSet { service, variable } => format!("{variable} not set in {service}"),
+            Self::NotSetInFile {
+                config,
+                file,
+                secret,
+            } => format!("{secret} not set in {config}/{file}"),
+            Self::IngressNotServing { server, ingress } => format!("{server}: {ingress}"),
+            Self::IngressUnchecked { cause } => cause.clone(),
+        }
+    }
 }
 
 #[test]

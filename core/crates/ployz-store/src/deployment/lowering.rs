@@ -487,28 +487,30 @@ pub(super) fn lower(
         .iter()
         .filter_map(|(config, snapshot)| {
             let id = snapshot.service_id.as_deref()?;
-            let service = &config.settings.private_dns;
+            let service = saved
+                .services
+                .iter()
+                .find(|service| service.id == id)
+                .and_then(|service| ServiceName::parse(service.slug.as_str()).ok())
+                .unwrap_or_else(|| config.settings.private_dns.clone());
             let not_set = resolved.not_set.remove(id).unwrap_or_default();
             let broken = resolved.broken.remove(id).unwrap_or_default();
-            let not_set = not_set.into_iter().map(|variable| {
-                (
-                    vec![service],
-                    DeploymentWarning::NotSet {
-                        service: service.clone(),
-                        variable,
-                    },
-                )
-            });
-            let broken = broken.into_iter().map(|left_out| {
-                (
-                    vec![service],
-                    DeploymentWarning::Broken {
-                        service: service.clone(),
-                        left_out,
-                    },
-                )
-            });
-            Some(not_set.chain(broken).collect::<Vec<_>>())
+            let left_out = not_set
+                .into_iter()
+                .map(|variable| (variable, false))
+                .chain(broken.into_iter().map(|variable| (variable, true)))
+                .map(|(variable, broken)| {
+                    (
+                        vec![&config.settings.private_dns],
+                        DeploymentWarning::NotSet {
+                            service: service.clone(),
+                            variable,
+                            broken,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            Some(left_out)
         })
         .flatten()
         .collect();
@@ -564,23 +566,16 @@ pub(super) fn lower(
                         },
                     )
                 }));
-                warnings.extend(resolved.not_set.iter().map(|reference| {
+                let not_set = resolved.not_set.iter().map(|reference| (reference, false));
+                let broken = resolved.broken.iter().map(|reference| (reference, true));
+                warnings.extend(not_set.chain(broken).map(|(reference, broken)| {
                     (
                         mounts.clone(),
                         DeploymentWarning::NotSetInFile {
                             config: config.name.clone(),
                             file: name.clone(),
                             secret: shown(reference),
-                        },
-                    )
-                }));
-                warnings.extend(resolved.broken.iter().map(|reference| {
-                    (
-                        mounts.clone(),
-                        DeploymentWarning::BrokenInFile {
-                            config: config.name.clone(),
-                            file: name.clone(),
-                            reference: shown(reference),
+                            broken,
                         },
                     )
                 }));

@@ -51,7 +51,8 @@ pub struct TemplateWarning {
 }
 
 /// Resolved text with secret provenance, a reference to a secret without a value,
-/// or the cycle that prevents resolution.
+/// or the cycle that prevents resolution. Text that reads a missing producer
+/// anywhere resolves empty, with a warning for each one.
 #[derive(Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResolveVariablesResult {
@@ -60,7 +61,12 @@ pub enum ResolveVariablesResult {
         secret: bool,
         warnings: Vec<TemplateWarning>,
     },
-    NotSet,
+    NotSet {
+        /// The missing producers it also reads.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(optional, as = "Option<Vec<TemplateWarning>>")]
+        warnings: Vec<TemplateWarning>,
+    },
     Cycle {
         path: Vec<String>,
     },
@@ -72,6 +78,8 @@ enum Taint {
     #[default]
     Plain,
     Secret,
+    /// It reads a missing producer.
+    Broken,
     NotSet,
 }
 
@@ -89,7 +97,7 @@ pub fn resolve_variables(input: &ResolveVariablesInput) -> ResolveVariablesResul
         &mut memo,
         &mut stack,
     ) {
-        Ok((_, Taint::NotSet)) => ResolveVariablesResult::NotSet,
+        Ok((_, Taint::NotSet)) => ResolveVariablesResult::NotSet { warnings },
         Ok((value, taint)) => ResolveVariablesResult::Resolved {
             value,
             secret: taint == Taint::Secret,
@@ -199,10 +207,14 @@ pub fn resolve_config_file(
             file.fragile.push(reference);
         }
         file.content.push_str(&value);
-        file.secret |= taint != Taint::Plain;
+        file.secret |= matches!(taint, Taint::Secret | Taint::NotSet);
     }
     Ok(file)
 }
+
+/// How a reference renders the Service it reads once that Service is gone, as in
+/// `${{ <deleted>.URL }}`.
+pub const DELETED_OWNER: &str = "<deleted>";
 
 /// A display template parsed into parts, and the Service names that matched no producer.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -217,13 +229,13 @@ pub struct ParsedTemplate {
 }
 
 /// Parse display text into template parts: `${{ KEY }}` reads the owner's own
-/// variable, `${{ name.KEY }}` Service `name`'s (by the lineage `lineage` returns),
-/// and `$${{` is a literal `${{`. Anything malformed stays text. Inverse of
-/// [`super::render_variable_parts`].
+/// variable, `${{ name.KEY }}` Service `name`'s (by the lineage `lineage` returns
+/// for `name` and `KEY`, [`DELETED_OWNER`] included), and `$${{` is a literal
+/// `${{`. Anything malformed stays text. Inverse of [`super::render_variable_parts`].
 #[must_use]
 pub fn parse_variable_template(
     text: &str,
-    lineage: impl Fn(&str) -> Option<String>,
+    mut lineage: impl FnMut(&str, &str) -> Option<String>,
 ) -> ParsedTemplate {
     let mut parts = Vec::new();
     let mut unresolved = Vec::new();
@@ -254,7 +266,9 @@ pub fn parse_variable_template(
         };
         let resolved = match owner {
             None => Some(ValuePartOwner::Self_),
-            Some(name) => lineage(name).map(|lineage_id| ValuePartOwner::Service { lineage_id }),
+            Some(name) => {
+                lineage(name, key).map(|lineage_id| ValuePartOwner::Service { lineage_id })
+            }
         };
         match (resolved, owner) {
             (Some(owner), _) => {
@@ -290,9 +304,14 @@ pub fn parse_variable_template(
 /// Returns the owner name, the key and the text after the token.
 fn template_token(text: &str) -> Option<(Option<&str>, &str, &str)> {
     let body = text.trim_start();
-    let (first, after) = identifier(body, '-');
+    let (first, after) = match body.strip_prefix(DELETED_OWNER) {
+        Some(after) => (DELETED_OWNER, after),
+        None => identifier(body, '-'),
+    };
     let (owner, key, after) = match after.strip_prefix('.') {
-        Some(after) if first.starts_with(|c: char| c.is_ascii_alphanumeric()) => {
+        Some(after)
+            if first == DELETED_OWNER || first.starts_with(|c: char| c.is_ascii_alphanumeric()) =>
+        {
             let (key, after) = identifier(after, '_');
             (Some(first), key, after)
         }
@@ -344,6 +363,7 @@ fn resolve_parts(
                 owner_id: matches!(owner, ValuePartOwner::Self_).then(|| self_owner_id.into()),
                 key: key.clone(),
             });
+            taint = taint.max(Taint::Broken);
             continue;
         };
         let id = (found.owner_id.clone(), key.clone());
@@ -375,6 +395,9 @@ fn resolve_parts(
         value.push_str(&resolved.0);
         taint = taint.max(resolved.1);
     }
+    if taint >= Taint::Broken {
+        value.clear();
+    }
     Ok((value, taint))
 }
 
@@ -383,7 +406,9 @@ mod tests {
     use super::*;
 
     fn parse(text: &str) -> ParsedTemplate {
-        parse_variable_template(text, |name| (name == "db").then(|| "lineage-db".to_owned()))
+        parse_variable_template(text, |name, _| {
+            (name == "db").then(|| "lineage-db".to_owned())
+        })
     }
 
     fn text(value: &str) -> ValuePart {
@@ -423,6 +448,11 @@ mod tests {
         let ghost = parse("x=${{ ghost.Y }}");
         assert_eq!(ghost.parts, [text("x=${{ ghost.Y }}")]);
         assert_eq!(ghost.unresolved, ["ghost"]);
+        let gone = parse("${{ <deleted>.Y }}");
+        assert_eq!(
+            (gone.unresolved, gone.malformed),
+            (vec![DELETED_OWNER.to_owned()], false)
+        );
         assert_eq!(parse("echo $${{ FOO }}").parts, [text("echo ${{ FOO }}")]);
         for malformed in [
             "${{ not-valid",

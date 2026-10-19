@@ -464,6 +464,52 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
 }
 
 #[test]
+fn a_live_reference_breaks_once_its_parent_deploys_without_the_variable() {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("db.env.PASS", json!("pw"))]);
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.DB_PASS", json!("${{ db.PASS }}"))],
+    );
+    let broken = || {
+        let diff = store
+            .read(
+                &who,
+                &DiffQuery {
+                    environment: at("fix-web"),
+                },
+            )
+            .unwrap();
+        texts(&diff.broken)
+    };
+    assert!(broken().is_empty());
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("db.env.PASS").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    assert!(broken().is_empty());
+    deploy(&store, &who, "production", 2, true);
+    assert_eq!(
+        broken(),
+        ["web.env.DB_PASS references db.PASS, which doesn't exist"]
+    );
+}
+
+#[test]
 fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);

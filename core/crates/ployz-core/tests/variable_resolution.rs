@@ -95,6 +95,43 @@ fn a_secret_without_a_value_leaves_whatever_reads_it_not_set() {
 }
 
 #[test]
+fn a_value_that_reads_a_missing_variable_resolves_empty_as_a_whole() {
+    let missing = json!([{"kind":"missing","ownerId":"db","key":"PASS"}]);
+    let producers = json!([
+        producer("TOKEN", json!({"kind":"not_set"})),
+        producer(
+            "URL",
+            json!({"kind":"template","parts":[{"kind":"text","value":"db://"},reference("PASS")]})
+        ),
+        producer(
+            "BOTH",
+            json!({"kind":"template","parts":[reference("PASS"),reference("TOKEN")]})
+        ),
+    ]);
+    let url = run(
+        json!([{"kind":"text","value":"x"}, reference("URL")]),
+        producers.clone(),
+    );
+    assert_eq!(url["value"], "");
+    assert_eq!(url["warnings"], missing);
+    assert_eq!(
+        run(json!([reference("BOTH")]), producers.clone()),
+        json!({"status":"not_set","warnings":missing})
+    );
+    let file = file("app.env", "U=${{ db.URL }}\nB=${{ db.BOTH }}\n", producers);
+    assert_eq!(file.content, "U=\nB=\n");
+    let keys = |references: &[ployz_core::config::FragileReference]| -> Vec<String> {
+        references
+            .iter()
+            .map(|reference| reference.key.clone())
+            .collect()
+    };
+    assert_eq!(keys(&file.broken), ["URL", "BOTH"]);
+    assert_eq!(keys(&file.not_set), ["BOTH"]);
+    assert!(file.secret);
+}
+
+#[test]
 fn cycle_reports_only_owner_keys_even_after_a_secret_was_resolved() {
     for chain in [vec!["B", "A"], vec!["B", "C", "A"]] {
         let mut producers = vec![producer(
@@ -120,7 +157,7 @@ fn cycle_reports_only_owner_keys_even_after_a_secret_was_resolved() {
 }
 
 fn file(name: &str, text: &str, producers: Value) -> ployz_core::config::ResolvedConfigFile {
-    let parsed = parse_variable_template(text, |service| {
+    let parsed = parse_variable_template(text, |service, _| {
         (service == "db").then(|| "db-lineage".to_owned())
     });
     let producers: Vec<VariableProducer> = serde_json::from_value(producers).unwrap();
@@ -198,7 +235,7 @@ fn a_config_file_reports_the_cycle_it_reads() {
         producer("B", json!({"kind":"template","parts":[reference("A")]})),
     ]))
     .unwrap();
-    let parsed = parse_variable_template("${{ db.A }}", |_| Some("db-lineage".to_owned()));
+    let parsed = parse_variable_template("${{ db.A }}", |_, _| Some("db-lineage".to_owned()));
     assert_eq!(
         resolve_config_file("x", &parsed.parts, &producers).unwrap_err(),
         ["db::A", "db::B", "db::A"]

@@ -8,10 +8,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use ployz_core::config::{
-    CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput, ResolveVariablesResult,
-    ResolvedConfigFile, ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
-    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, parse_variable_template,
-    render_variable_parts, resolve_config_file, resolve_variables,
+    CompiledEnvironmentIntent, CompiledNodeConfig, DELETED_OWNER, ResolveVariablesInput,
+    ResolveVariablesResult, ResolvedConfigFile, ResolverValue, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, ServiceEnvValue, ValuePart, ValuePartOwner,
+    VariableProducer, parse_variable_template, render_variable_parts, resolve_config_file,
+    resolve_variables,
 };
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
 use serde_json::{Map, Value, json};
@@ -197,7 +198,8 @@ pub(crate) fn set(
             ));
         }
         (Some(Input::Text(text)), _) => {
-            let (parts, fingerprint) = text_parts(key, &text, &names)?;
+            let old = current.map_or(&[][..], |current| current.value.parts());
+            let (parts, fingerprint) = text_parts(key, &text, &names, old)?;
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
@@ -381,20 +383,46 @@ fn referrers(
     Ok(found)
 }
 
-/// Text as a variable's parts, referencing Services by their names in `names`
-/// (lineage → name), with its fingerprint.
-pub(crate) fn text_parts(
-    key: &VariableKey,
-    text: &str,
-    names: &BTreeMap<String, String>,
-) -> Result<(Vec<ValuePart>, String), RpcError> {
-    validate_text(key, text)?;
-    let template = parse_variable_template(text, |name| {
+/// The lineage each `${{ name.KEY }}` of an edit reads: the Service `names`
+/// (lineage → name) calls `name`, or for `${{ <deleted>.KEY }}` the next removed
+/// Service whose `KEY` the edited value, `old`, reads. An edit keeps the references
+/// it had and adds none to a removed Service.
+pub(crate) fn lineage_of<'a>(
+    names: &'a BTreeMap<String, String>,
+    old: &[ValuePart],
+) -> impl FnMut(&str, &str) -> Option<String> + 'a {
+    let mut removed: Vec<(String, String)> = old
+        .iter()
+        .filter_map(|part| match part {
+            ValuePart::Ref {
+                owner: ValuePartOwner::Service { lineage_id },
+                key,
+            } if !names.contains_key(lineage_id) => Some((lineage_id.clone(), key.clone())),
+            ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
+        })
+        .collect();
+    move |name, key| {
+        if name == DELETED_OWNER {
+            let at = removed.iter().position(|(_, reads)| reads == key)?;
+            return Some(removed.remove(at).0);
+        }
         names
             .iter()
             .find(|(_, slug)| slug.as_str() == name)
             .map(|(lineage, _)| lineage.clone())
-    });
+    }
+}
+
+/// Text as a variable's parts, referencing Services as [`lineage_of`] reads them,
+/// with its fingerprint.
+pub(crate) fn text_parts(
+    key: &VariableKey,
+    text: &str,
+    names: &BTreeMap<String, String>,
+    old: &[ValuePart],
+) -> Result<(Vec<ValuePart>, String), RpcError> {
+    validate_text(key, text)?;
+    let template = parse_variable_template(text, lineage_of(names, old));
     if template.unterminated {
         return Err(invalid(
             key,
@@ -664,8 +692,11 @@ pub(crate) fn resolve(
                         }
                         (unseal.is_some() || !is_secret).then_some(value)
                     }
-                    ResolveVariablesResult::NotSet => {
+                    ResolveVariablesResult::NotSet { warnings } => {
                         not_set.push(key.clone());
+                        if !warnings.is_empty() {
+                            broken.push(key.clone());
+                        }
                         None
                     }
                     ResolveVariablesResult::Cycle { path } => {
@@ -748,7 +779,7 @@ mod tests {
     fn a_config_file_that_reads_a_secret_is_empty_without_the_key() {
         let key = SealingKey::new(b"test-encryption-secret").unwrap();
         let file = |text: &str| SavedConfigFile {
-            content: parse_variable_template(text, |_| Some("web-lineage".to_owned())).parts,
+            content: parse_variable_template(text, |_, _| Some("web-lineage".to_owned())).parts,
             mode: FileMode::READ_ONLY,
             uid: 0,
             gid: 0,

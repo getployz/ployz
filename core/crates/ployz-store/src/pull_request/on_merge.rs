@@ -435,8 +435,21 @@ pub(crate) fn set_merge_value(
         let cell = if planned.from.is_secret() || planned.into.is_secret() {
             SealedCell::Secret(crate::branch::seal_secret(sealing, &row, &label, value)?)
         } else {
-            let (parts, fingerprint) =
-                variables::text_parts(&VariableKey::parse(key)?, value, &landing.into.names())?;
+            let old: Vec<ValuePart> = [&planned.from, &planned.into]
+                .into_iter()
+                .filter_map(|cell| match cell {
+                    Cell::Value(value) => value.get("parts").cloned(),
+                    Cell::Absent | Cell::Secret { .. } | Cell::SecretWithoutValue => None,
+                })
+                .filter_map(|parts| serde_json::from_value::<Vec<ValuePart>>(parts).ok())
+                .flatten()
+                .collect();
+            let (parts, fingerprint) = variables::text_parts(
+                &VariableKey::parse(key)?,
+                value,
+                &landing.into.names(),
+                &old,
+            )?;
             let mut value = json!(variables::stored(parts));
             if let Some(object) = value.as_object_mut() {
                 object.insert("fingerprint".into(), json!(fingerprint));
