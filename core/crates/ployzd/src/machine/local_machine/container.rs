@@ -24,7 +24,9 @@ use ployz_core::{
 use self::rotation::RotationWant;
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
-use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, RotationTurn, same_creation};
+use crate::docker::{
+    ContainerCreated, ContainerRequest, ImageIngest, RotationTurn, Withdrawal, same_creation,
+};
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
@@ -323,18 +325,21 @@ impl LocalMachine {
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, VolumeGen>, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        self.stop_checked(installation, container, drain, stop, || async move {
+        let withdraw = || async move { Ok(Ok(containers.withdraw(*container))) };
+        let admit = || async move {
             let Some((name, r#gen)) = fence else {
                 return Ok(Ok(None));
             };
             let mut floor = containers.floor_turn().await;
             Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
-        })
-        .await
+        };
+        self.stop_checked(installation, container, drain, stop, withdraw, admit)
+            .await
     }
 
-    /// The rotation is read again under the turn: an In write that won the turn since
-    /// the stop was planned keeps the copy running.
+    /// The rotation is read before the withdrawal, so a copy In is never taken out of
+    /// routing, and again under the turn: an In write that won the turn since the
+    /// stop was planned keeps the copy running.
     async fn stop_out_of_rotation(
         &self,
         installation: &crate::mutation::MutationGuard,
@@ -344,23 +349,32 @@ impl LocalMachine {
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, ContainerRefusal>, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        self.stop_checked(installation, container, drain, stop, || {
-            leave_rotation(containers, container, &target)
+        let target = &target;
+        let withdraw = || async move {
+            Ok(leave_rotation(containers, container, target)
+                .await?
+                .map(|_turn| containers.withdraw(*container)))
+        };
+        self.stop_checked(installation, container, drain, stop, withdraw, || {
+            leave_rotation(containers, container, target)
         })
         .await
     }
 
     /// Drains before the exclusive turn, then stops under it while holding what
-    /// `check` returned. A refusal stops nothing.
-    async fn stop_checked<G, R, F, Fut>(
+    /// `check` returned. A refusal from `withdraw` or `check` stops nothing.
+    async fn stop_checked<G, R, W, WFut, F, Fut>(
         &self,
         installation: &crate::mutation::MutationGuard,
         container: &ContainerId,
         drain: Drain,
         stop: &StopOptions,
+        withdraw: W,
         check: F,
     ) -> Result<Result<ContainerObservation, R>, Error>
     where
+        W: FnOnce() -> WFut,
+        WFut: std::future::Future<Output = Result<Result<Withdrawal, R>, Error>>,
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Result<G, R>, Error>>,
     {
@@ -371,7 +385,10 @@ impl LocalMachine {
         if !is_running(&observed) {
             return Ok(Ok(observed));
         }
-        let _withdrawal = containers.withdraw(*container);
+        let _withdrawal = match withdraw().await? {
+            Ok(withdrawal) => withdrawal,
+            Err(refused) => return Ok(Err(refused)),
+        };
         tokio::time::sleep(drain.as_duration()).await;
         let turn = self.owner.admission_lock().write_owned().await;
         let held = match check().await? {

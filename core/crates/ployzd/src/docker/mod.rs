@@ -330,6 +330,13 @@ impl ContainerRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn subscribe_stopping_for_test(
+        &self,
+    ) -> watch::Receiver<BTreeMap<ContainerId, usize>> {
+        self.stopping.subscribe()
+    }
+
+    #[cfg(test)]
     pub(crate) fn spec_store_path_for_test(&self) -> &std::path::Path {
         self.specs.path_for_test()
     }

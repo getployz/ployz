@@ -280,6 +280,14 @@ impl Node {
         started.notified().await;
     }
 
+    /// Hold this Machine's next Container inspect until the gate is waited on twice:
+    /// once to see it held, once to release it.
+    fn hold_inspect(&self) -> Arc<tokio::sync::Barrier> {
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *self.fake.inspect_hold.lock().unwrap() = Some(Arc::clone(&gate));
+        gate
+    }
+
     /// Withdrawn means the stop was planned and is draining or waiting for the turn.
     async fn withdrawn(&self, container: ContainerId) {
         tokio::time::timeout(SETTLE, async {
@@ -960,6 +968,45 @@ async fn refused_in_starts_nothing() {
     refused(&reply, ContainerRefusalReason::RotationMismatch);
     assert!(!node.running(a), "the refused In started nothing");
     assert_eq!(node.rotation(a).await, CopyRotation::Held(run("run-b")));
+}
+
+/// An In that lands after a Stopped want planned its stop, but before it withdrew the
+/// copy, keeps the copy routed: the refused stop never withdraws it.
+#[tokio::test]
+async fn refused_stopped_never_withdraws_the_copy() {
+    // No rescan, so only the wants under test inspect the Container.
+    let fleet = Fleet::rescanning(Duration::from_secs(3600)).await;
+    let node = fleet.node(0);
+    let a = present(
+        &ensure(
+            node,
+            ContainerWant::Running {
+                container: RunTarget::New(new_copy("a", spec("api"), 1)),
+                rotation: RunRotation::Pending,
+            },
+        )
+        .await,
+    );
+    let stopping = node.runtime.subscribe_stopping_for_test();
+    let planning = node.hold_inspect();
+
+    let (reply, ()) = tokio::join!(ensure(node, stopped(a)), async {
+        planning.wait().await;
+        let stopping_read = node.hold_inspect();
+        planning.wait().await;
+        stopping_read.wait().await;
+        let routed = ensure(node, into(a, None, Some(CopyRotation::Pending))).await;
+        assert_eq!(rotation_of(&routed), CopyRotation::In, "{routed:?}");
+        stopping_read.wait().await;
+    });
+
+    refused(&reply, ContainerRefusalReason::InRotation);
+    assert!(node.running(a));
+    assert_eq!(node.rotation(a).await, CopyRotation::In);
+    assert!(
+        !stopping.has_changed().unwrap(),
+        "the refused stop never withdrew the copy"
+    );
 }
 
 #[tokio::test]
