@@ -6,7 +6,7 @@ import { prefetchOrgStore, prefetchRemote, requireOrganization } from "#/collect
 import { githubWebQueryOptions } from "#/modules/github/github.queries";
 import { DashboardShell } from "#/components/dashboard-shell";
 import type { DashboardScope } from "#/components/dashboard-navigation-model";
-import { rememberSelectedOrganization } from "#/modules/organization/organization-state.queries";
+import { rememberSelectedOrganization, useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
 import { setPostHogOrganization } from "#/modules/analytics/posthog";
 
@@ -20,7 +20,7 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
     const organization = await requireOrganization(context, params.organizationSlug);
     await prefetchOrgStore(context, params.organizationSlug);
     await prefetchRemote(context, githubWebQueryOptions());
-    return { organizationId: organization.id, organizationName: organization.name, access: organization.access };
+    return { organizationId: organization.id, access: organization.access };
   },
   component: RouteComponent,
 });
@@ -28,7 +28,8 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
 function RouteComponent() {
   const params = Route.useParams();
   const { queryClient, session } = Route.useRouteContext();
-  const { organizationId, organizationName, access } = Route.useLoaderData();
+  const { organizationId, access } = Route.useLoaderData();
+  const organizationName = useOrganizationName(params.organizationSlug);
   useOrganizationChanges(params.organizationSlug);
   useEffect(() => {
     // A support visit isn't the customer's usage.
@@ -50,7 +51,8 @@ function OrganizationLayout() {
   const { organizationSlug } = Route.useParams();
   const { projectSlug, environmentSlug } = useParams({ strict: false });
   const { chat } = Route.useSearch();
-  const { organizationName, access } = Route.useLoaderData();
+  const { access } = Route.useLoaderData();
+  const organizationName = useOrganizationName(organizationSlug);
   const navigate = useNavigate();
   const scope: DashboardScope = projectSlug && environmentSlug
     ? { kind: "environment", organizationSlug, projectSlug, environmentSlug }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { getRouteApi, useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { LinkIcon, MailIcon, UserIcon } from "lucide-react";
 import { toast } from "sonner";
 import { CopyButton } from "#/components/copy-button";
@@ -31,6 +31,7 @@ import {
   setMemberRoleServerFn,
 } from "#/modules/organization/members.functions";
 import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { can } from "#/modules/organization/permissions";
 
 type Role = "owner" | "admin" | "member";
@@ -38,7 +39,6 @@ type InviteRole = Exclude<Role, "owner">;
 
 const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
 
-const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
@@ -48,7 +48,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data } = useSuspenseQuery(organizationMembersQueryOptions(organizationSlug));
-  const { organizationName } = organizationRoute.useLoaderData();
+  const organizationName = useOrganizationName(organizationSlug);
   const [inviting, setInviting] = useState(false);
   const [confirming, setConfirming] = useState<Pending>(null);
   const queryKey = membersKey(organizationSlug);
