@@ -44,7 +44,9 @@ A service's numbers add up all of its replicas, on every server that runs one.
 | Net in, Net out | Bytes per second, all of the replica's interfaces together |
 | Disk read, Disk write | Bytes per second the replicas read and write. A managed volume's reads and writes come from ZFS and count once per service, however many replicas share it. |
 
-Below the table, Ployz counts the OOM kills, exits and restarts in the range. When the range holds no readings at all, as for a misspelled name or a service deployed seconds ago, Ployz prints **No readings** instead of a table.
+Below the table, Ployz counts the OOM kills, exits and restarts in the range. When the range holds no readings at all, as for a service deployed seconds ago, Ployz prints **No readings** instead of a table.
+
+A removed service still shows the readings its servers kept. A name the environment doesn't have, and that has no readings, fails with `No Service named nosvc in Environment production` and lists the services you can name. It exits with code 1. This holds whether Ployz reads your servers or Ployz Cloud reads them for a token without server access. When a server doesn't answer, Ployz reports that server instead, since the readings may be on it.
 
 ## Spot trouble on the canvas
 

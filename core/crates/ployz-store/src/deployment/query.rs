@@ -59,6 +59,10 @@ pub struct NamespaceView {
     /// has it), by the name it has now: a renamed Service's containers keep the name
     /// it was created with, and a staged Private DNS change isn't live yet.
     pub services: std::collections::BTreeMap<ServiceName, ServiceName>,
+    /// Every Service in Working State, deployed or not. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub authored: Option<std::collections::BTreeSet<ServiceName>>,
 }
 
 /// Every Namespace the Organization's Environments own on the Servers.
@@ -243,10 +247,17 @@ pub(crate) fn namespace(
             Some((name, applied.config.private_dns.clone()))
         })
         .collect();
+    let authored = environment
+        .working
+        .services
+        .iter()
+        .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
+        .collect::<std::collections::BTreeSet<_>>();
     Ok(NamespaceView {
         environment: environment.summary,
         namespace,
         services,
+        authored: Some(authored),
     })
 }
 

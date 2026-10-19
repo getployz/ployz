@@ -142,9 +142,9 @@ pub enum OperatorError {
     #[error("invalid log tail {0:?}: expected a non-negative integer or all")]
     InvalidTail(String),
     #[error(
-        "invalid log time {0:?}: expected a relative duration, RFC 3339 date, or Unix timestamp"
+        "invalid time {value:?} for --{flag}: expected a relative duration, RFC 3339 date, or Unix timestamp"
     )]
-    InvalidLogTime(String),
+    InvalidTime { flag: &'static str, value: String },
     #[error("invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT")]
     InvalidProxyPort,
     #[error("invalid local port {0:?}: expected 0-65535")]
@@ -305,9 +305,13 @@ pub fn parse_tail(value: &str) -> Result<i32, OperatorError> {
 ///
 /// # Errors
 ///
-/// Returns [`OperatorError::InvalidLogTime`] when the value is not one of those
-/// forms.
-pub fn parse_log_time(value: &str, now_unix_seconds: i64) -> Result<Option<i64>, OperatorError> {
+/// Returns [`OperatorError::InvalidTime`], naming `flag`, when the value is not one
+/// of those forms.
+pub fn parse_log_time(
+    flag: &'static str,
+    value: &str,
+    now_unix_seconds: i64,
+) -> Result<Option<i64>, OperatorError> {
     if value.is_empty() {
         return Ok(None);
     }
@@ -339,7 +343,10 @@ pub fn parse_log_time(value: &str, now_unix_seconds: i64) -> Result<Option<i64>,
         });
     timestamp
         .map(Some)
-        .ok_or_else(|| OperatorError::InvalidLogTime(value.to_owned()))
+        .ok_or_else(|| OperatorError::InvalidTime {
+            flag,
+            value: value.to_owned(),
+        })
 }
 
 /// Go duration syntax plus days, such as `1m30s`, `500ms` or `30d`.

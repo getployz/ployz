@@ -66,7 +66,22 @@ async fn a_bare_service_name_means_the_selected_environments_service() {
     ]);
     let (address, server) = listening(service).await;
     let address = address.to_string();
-    for args in [&["project", "new", "shop"][..], &["env", "new", "staging"]] {
+    for args in [
+        &["project", "new", "shop"][..],
+        &["env", "new", "staging"],
+        &[
+            "service",
+            "add",
+            "web",
+            "--image",
+            "nginx:1",
+            "--env",
+            "production",
+        ],
+        &[
+            "service", "add", "web", "--image", "nginx:1", "--env", "staging",
+        ],
+    ] {
         assert_eq!(ployz(Some(&db), &address, args).await.0, 0, "{args:?}");
     }
 
