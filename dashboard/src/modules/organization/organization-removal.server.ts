@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import type { Gate } from "#/modules/approvals/approvals.server";
+import type { Gate, OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import { lacks, requireAccess } from "#/modules/organization/access.server";
@@ -15,6 +15,15 @@ import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { organization, organizationChange } from "./tables";
 import { Database } from "#/server/database.server";
+
+/** Removing an Organization as a human approves it, named by the slug `ployz org rm` confirms. */
+export const organizationRemovalAsked = ({ id, slug }: { id: string; slug: string }): OperationAsked => ({
+  subject: `organization:${id}`,
+  verb: "remove",
+  name: slug,
+  preview: { organization: slug },
+  effects: [{ kind: "removes_organization", name: slug, node: id, path: `organizations/${id}` }],
+});
 
 /**
  * `ployz org rm`: remove the Caller's Organization, named by its ID, once it has no Project, whose Environments all left the Servers
@@ -44,13 +53,7 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* <E 
   if (gate !== undefined) {
     const { projects } = yield* storeTry(() => store.read(id, { query: "projects" })).pipe(Effect.orDie);
     if (projects.length === 0) {
-      const gated = yield* gate({
-        subject: `organization:${id}`,
-        verb: "remove",
-        name: slug,
-        preview: { organization: slug },
-        effects: [{ kind: "removes_organization", name: slug, node: id, path: `organizations/${id}` }],
-      });
+      const gated = yield* gate(organizationRemovalAsked(caller.organization));
       if (!gated.ok) return refused(gated.refusal);
     }
   }

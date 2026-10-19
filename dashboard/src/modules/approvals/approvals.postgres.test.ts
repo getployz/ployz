@@ -23,8 +23,11 @@ import { permissionsOf } from "#/modules/organization/permissions";
 import { writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
-import { cleanPlan, drainPlan, freshApproval, freshPendingApprovals, removePlan } from "#/modules/machines/server-operations.server";
+import { forgetServersAsked } from "#/modules/machines/forget-servers.server";
+import { cleanPlan, drainPlan, freshApproval, freshOperationDigest, freshPendingApprovals, removePlan } from "#/modules/machines/server-operations.server";
+import { organizationRemovalAsked } from "#/modules/organization/organization-removal.server";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
+import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { member, user } from "#/modules/identity/tables";
@@ -1034,6 +1037,27 @@ for (const [read, stillWaiting] of Object.entries(freshReads)) {
       expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("superseded");
     }));
 }
+
+it.live("an org rm or forget-servers approval stays approvable while the Cluster answers, and its retry runs", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate } = yield* operationCloud();
+    const frame = asTestDouble<RuntimeWatchView>()({ machines: [{ machine: { id: MACHINE, name: "fra-1" } }], services: [] });
+    const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) => provided(effect.pipe(Effect.provideService(
+      OrganizationRuntime,
+      asTestDouble<OrganizationRuntimeService>()({
+        open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({ watchFirstFrame: () => Effect.succeed(frame) }) }),
+      }),
+    )));
+    const servers = { servers: [{ id: MACHINE, name: "fra-1", reach: "didnt_answer" as const }], volumes: [] };
+    for (const asked of [organizationRemovalAsked(caller.organization), forgetServersAsked(caller.organization, servers)]) {
+      const waiting = refusedWith(yield* gate(asked));
+      expect((yield* cluster(freshApproval(ORGANIZATION, waiting.approval_id))).status).toBe("pending");
+      const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
+      expect(yield* cluster(decideApproval(person, waiting.approval_id, { approve: { digest: waiting.approval } }, freshOperationDigest)))
+        .toMatchObject({ ok: true });
+      expect(yield* gate(asked, waiting.approval_id)).toMatchObject({ ok: true, approvalId: waiting.approval_id });
+    }
+  }));
 
 it("a removal that resets the Server and one that keeps its data are different approvals", () => {
   expect(operationDigest(removePlan(MACHINE, "fra-1", []))).not.toBe(operationDigest(removePlan(MACHINE, "fra-1", null)));
