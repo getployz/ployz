@@ -1570,6 +1570,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     log: Some(LogText::Withheld {
                         why: Withheld::Unanswered
                     }),
+                    unanswered: false,
                 }
             ),
             ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
@@ -3844,6 +3845,7 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
             log: Some(LogText::Withheld {
                 why: Withheld::NoSecretContext
             }),
+            unanswered: false,
         }
     );
     let reserialized = serde_json::to_string(&state).unwrap();

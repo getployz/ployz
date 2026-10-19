@@ -217,11 +217,19 @@ fn succeed(store: &ConfigStore, id: &DeploymentId, services: &[&str], removed: V
 
 /// Run Deployment `id` for `services` to a failure on Server `a…`.
 fn fail(store: &ConfigStore, id: &DeploymentId, services: &[&str]) {
+    let busy = RpcError {
+        code: RpcErrorCode::Internal,
+        message: "busy".into(),
+        details: json!({}),
+        cause: Vec::new(),
+    };
+    fail_with(store, id, services, busy);
+}
+
+/// Fail `id` on Server `a…` with `error`.
+fn fail_with(store: &ConfigStore, id: &DeploymentId, services: &[&str], error: RpcError) {
     prepare(store, id, services);
-    let error = json!({
-        "type": "machine", "action": "RemoveContainer",
-        "error": {"code": "internal", "message": "busy", "details": {}}
-    });
+    let error = json!({ "type": "machine", "action": "RemoveContainer", "error": error });
     let rows: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{
         "index": 0, "machine_id": "a".repeat(32), "service_name": services[0],
         "operation": operation(0), "status": {"type": "failed", "error": error}
@@ -1167,6 +1175,53 @@ fn a_removal_that_failed_on_a_silent_server_goes_again_once_it_answers() {
     let admitted = admit_removal(&store, &who, "fix", 3, &answers).unwrap();
     run(&store, &admitted.id, &["web"], Vec::new());
     assert_eq!(names(&sweep(&store, &who).removed), ["fix"]);
+}
+
+#[test]
+fn a_removal_that_failed_on_a_server_silent_since_admission_goes_again_once_it_answers() {
+    let (store, who) = branched();
+    let all_answer = Trusted {
+        servers: Some(2),
+        unanswered: Some(Vec::new()),
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &all_answer).unwrap();
+    // Every Server answered Cloud before it ran, then `a` went silent while it ran.
+    let silence = RpcError::unanswered_target(
+        RpcErrorCode::Unavailable,
+        format!(
+            "Machine {} did not answer: deadline has elapsed",
+            server('a')
+        ),
+    );
+    fail_with(&store, &taking_off(&removing, "fix"), &["web"], silence);
+
+    let a_silent = Trusted {
+        unanswered: Some(vec![server('a')]),
+        ..all_answer.clone()
+    };
+    let stalled = refusal(admit_removal(&store, &who, "fix", 3, &a_silent));
+    assert!(stalled.message.contains("stalled"), "{}", stalled.message);
+
+    // `a` answers: the hourly admission takes it off.
+    let admitted = admit_removal(&store, &who, "fix", 3, &all_answer).unwrap();
+    run(&store, &admitted.id, &["web"], Vec::new());
+    assert_eq!(names(&sweep(&store, &who).removed), ["fix"]);
+}
+
+#[test]
+fn a_removal_that_failed_on_a_server_that_answered_stalls_while_every_server_answers() {
+    let (store, who) = branched();
+    let all_answer = Trusted {
+        servers: Some(2),
+        unanswered: Some(Vec::new()),
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &all_answer).unwrap();
+    fail(&store, &taking_off(&removing, "fix"), &["web"]);
+
+    let stalled = refusal(admit_removal(&store, &who, "fix", 3, &all_answer));
+    assert!(stalled.message.contains("stalled"), "{}", stalled.message);
 }
 
 #[test]

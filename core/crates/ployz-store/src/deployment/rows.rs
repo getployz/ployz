@@ -39,6 +39,11 @@ pub enum RowState {
         step: Option<FailedAt>,
         #[serde(default, deserialize_with = "stored_log")]
         log: Option<LogText>,
+        /// The Server didn't answer, so it may succeed once it does. False when it
+        /// answered with this failure.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        unanswered: bool,
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
@@ -527,6 +532,7 @@ fn state(
             log: container.then_some(LogText::Withheld {
                 why: Withheld::Unanswered,
             }),
+            unanswered: matches!(error, ExecutionError::Machine { error, .. } if error.target_unanswered()),
         };
     }
     if let Some(phase) = running {

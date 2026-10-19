@@ -593,6 +593,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         cause: Vec::new(),
         step: None,
         log: None,
+        unanswered: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -626,6 +627,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         cause: Vec::new(),
         step: None,
         log: None,
+        unanswered: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {

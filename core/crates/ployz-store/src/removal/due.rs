@@ -475,14 +475,20 @@ fn stalled(
     else {
         return Ok(());
     };
-    let fresh = unanswered(trusted);
-    let changed = mark.evidence.get(id).is_some_and(|before| {
-        before
-            .unanswered
-            .iter()
-            .any(|server| fresh.as_ref().is_some_and(|fresh| !fresh.contains(server)))
-            || matches!((before.servers, trusted.servers), (Some(then), Some(now)) if now < then)
-    });
+    let before = mark.evidence.get(id);
+    // Silent before it was admitted, or when it ran: a Server silent since admission
+    // is in the failure, not the evidence.
+    let silent: BTreeSet<_> = before
+        .iter()
+        .flat_map(|before| before.unanswered.iter().copied())
+        .chain(deployment::unanswered_on(tx, &failed.id)?)
+        .collect();
+    let answers = unanswered(trusted)
+        .is_some_and(|fresh| silent.iter().any(|server| !fresh.contains(server)));
+    let left = before.is_some_and(
+        |before| matches!((before.servers, trusted.servers), (Some(then), Some(now)) if now < then),
+    );
+    let changed = answers || left;
     if mark.retried > failed.ended_at.unwrap_or(i64::MAX) || changed {
         return Ok(());
     }

@@ -215,6 +215,7 @@ fn row_state(state: &str) -> RowState {
             cause: Vec::new(),
             step: None,
             log: None,
+            unanswered: false,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),
