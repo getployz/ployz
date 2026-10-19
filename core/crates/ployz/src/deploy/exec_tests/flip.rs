@@ -1614,3 +1614,49 @@ async fn a_slow_retirement_does_not_hold_up_another_services_flip() {
     assert_eq!(client.rotation(&old), Some(CopyRotation::Out));
     client.assert_done();
 }
+
+#[tokio::test]
+async fn global_with_no_matching_machine_keeps_last_copy_serving() {
+    let machine = machine('1');
+    let last = container('a');
+    let plan = vec![DeployOperation::RemoveContainer {
+        machine_id: machine,
+        container_id: last,
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
+    }];
+    let client = Scripted::new(vec![observed(Call::Inspect(machine, last), running())]).with_copy(
+        &machine,
+        &last,
+        CopyRotation::In,
+    );
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::RemoveContainer,
+                        error,
+                    },
+                    ..
+                },
+                ..
+            } if error.code == RpcErrorCode::Conflict
+        ),
+        "{outcome:?}"
+    );
+    assert!(client.moves().is_empty(), "{:?}", client.moves());
+    assert_eq!(client.rotation(&last), Some(CopyRotation::In));
+    assert_eq!(
+        warnings,
+        [left_running(
+            "machine-1",
+            "no other In copy is acked by every live proxy"
+        )]
+    );
+    client.assert_done();
+}

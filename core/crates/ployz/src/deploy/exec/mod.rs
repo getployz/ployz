@@ -1550,6 +1550,7 @@ async fn execute_operation<C: MachineOperations>(
             {
                 Ok(cleanup::Step::Done) => Ok(Ran::default()),
                 Ok(cleanup::Step::Refused(refusal)) => {
+                    rows.leave_running(progress, &copy, Left::Refused(refusal.clone()));
                     Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())
                 }
                 Ok(cleanup::Step::NotConfirmed(machines)) => {
