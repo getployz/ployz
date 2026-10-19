@@ -168,7 +168,8 @@ function HealthcheckGroup({ check, change, set, close }: HealthcheckSetting & { 
         </ToggleGroup>
       } />
       <SettingsField label={KINDS[kind].field} commit="confirm" control={
-        <ConfirmableInput aria-label={KINDS[kind].label} aria-invalid={draft?.error ? true : undefined} error={draft?.error}
+        // A kind picked on the toggle mounts a fresh field with focus, so leaving it blank blurs back to the stored check.
+        <ConfirmableInput key={kind} autoFocus={draft !== null} aria-label={KINDS[kind].label} aria-invalid={draft?.error ? true : undefined} error={draft?.error}
           isChanged={change !== undefined} isDirty={isDirty} title={change ? `Deployed: ${shown(change.before)}` : undefined}
           placeholder={kind === "path" ? "/health" : "pg_isready"}
           value={text} onValueChange={(next) => setDraft({ kind, text: next, error: null })}

@@ -2,7 +2,7 @@
 import type { JsonValue } from "@ployz/sdk";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HealthcheckField } from "./HealthcheckField";
+import { HealthcheckField, HealthcheckSettings } from "./HealthcheckField";
 
 const saved = { isPersisted: { promise: Promise.resolve() } };
 
@@ -83,5 +83,22 @@ describe("HealthcheckField", () => {
 
     expect(set).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "HTTP path" })).toBeTruthy();
+  });
+});
+
+describe("HealthcheckSettings", () => {
+  afterEach(cleanup);
+
+  it("puts focus in the field a kind switch empties, and leaving it blank keeps the stored check", () => {
+    const set = vi.fn((_: JsonValue | null) => saved);
+    render(<HealthcheckSettings value={{ path: "/up", timeoutSeconds: 30 }} change={undefined} set={set} />);
+    fireEvent.click(screen.getByRole("button", { name: "Command" }));
+
+    const command = screen.getByLabelText("Healthcheck command");
+    expect(document.activeElement).toBe(command);
+    fireEvent.blur(command);
+
+    expect(set).not.toHaveBeenCalled();
+    expect((screen.getByLabelText("Healthcheck path") as HTMLInputElement).value).toBe("/up");
   });
 });
