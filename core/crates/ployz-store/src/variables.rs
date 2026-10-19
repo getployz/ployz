@@ -36,7 +36,7 @@ impl VariableKey {
             && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if !valid {
             return Err(error::invalid(
-                "A variable name is letters, digits and _, not starting with a digit",
+                "A variable name is letters, digits and _, not starting with a digit, at most 128 characters",
                 json!({ "example": "DATABASE_URL" }),
             ));
         }
@@ -354,7 +354,7 @@ pub(crate) fn rename(
         let summary = &environment.summary;
         return Err(error::conflict(
             format!(
-                "{service}.{key} is used by {}; rename it with update_references to switch them to {to}",
+                "{service}.{key} is used by {}; rename it with updated references to switch them to {to}",
                 names(&referrers).join(", ")
             ),
             json!({

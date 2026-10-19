@@ -87,6 +87,12 @@ pub(crate) fn named_cloud(
     let cloud = cloud.filter(|cloud| !cloud.trim().is_empty());
     let named = match cloud {
         Some(cloud) if token => Some(cloud),
+        None if token => match store.cloud() {
+            Err(LoginError::Corrupt { path, .. }) => {
+                return Err(LoginError::TokenCloudUnreadable(path));
+            }
+            stored => stored?,
+        },
         cloud => store.cloud()?.or(cloud),
     };
     Ok(named.map(|cloud| cloud_origin(&cloud)))
@@ -1236,6 +1242,26 @@ mod tests {
             Some("http://other.test"),
             "signed out, the Cloud URL still names where commands are read"
         );
+    }
+
+    #[tokio::test]
+    async fn ployz_token_never_guesses_a_cloud_past_an_unreadable_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::beside(&dir.path().join("config.yaml"));
+        std::fs::write(dir.path().join("cloud.json"), "{not json").unwrap();
+        let token = || Some("ployz_secret".to_owned());
+        let refused = credential(&store, token(), None).await.err();
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|error| error.to_string().contains("PLOYZ_CLOUD_URL")),
+            "{refused:?}"
+        );
+        let chosen = credential(&store, token(), Some("http://cloud.test".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(chosen.cloud(), "http://cloud.test");
+        assert!(named_cloud(&store, false, None).is_err());
     }
 
     #[tokio::test]
