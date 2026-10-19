@@ -372,14 +372,20 @@ pub(super) fn org_new(root: &ArgMatches) -> Result<(), Error> {
         let credential = cloud_account::from_env(&store).await?;
         cloud_account::new_organization(&store, &credential, name, slug)
             .await
-            .map_err(|error| match error {
+            .map_err(|error| {
                 // Connected, so the request may have landed and only the reply was lost.
-                LoginError::Unreachable {
-                    error: ref cause, ..
-                } if !cause.is_connect() => Error::from(error)
-                    .context("Cloud may have made the Organization; check before retrying.")
-                    .hint(Hint::Inspect("ployz org ls".to_owned())),
-                error => error.into(),
+                let reply_lost = matches!(
+                    &error,
+                    LoginError::Unreachable { error: cause, .. } if !cause.is_connect()
+                );
+                let error = Error::from(error);
+                if reply_lost {
+                    error
+                        .context("Cloud may have made the Organization; check before retrying.")
+                        .hint(Hint::Inspect("ployz org ls".to_owned()))
+                } else {
+                    error
+                }
             })
     })?;
     crate::ui::finish(&serde_json::json!({ "organization": organization }), || {

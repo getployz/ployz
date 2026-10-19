@@ -323,10 +323,10 @@ pub(crate) async fn new_organization(
     struct Reply {
         organization: NewOrganization,
     }
-    let mut body = serde_json::json!({ "name": name });
-    if let Some(slug) = slug {
-        body["slug"] = slug.into();
-    }
+    let body = match slug {
+        Some(slug) => serde_json::json!({ "name": name, "slug": slug }),
+        None => serde_json::json!({ "name": name }),
+    };
     let reply: Reply = call(credential, Method::POST, "organizations", Some(&body)).await?;
     let made = reply.organization;
     store.set_organization(
