@@ -744,7 +744,7 @@ pub(crate) struct OrganizationRemoval {
     pub(crate) servers: ServerClears,
 }
 
-/// Remove the credential's Organization, named `slug`, once it has no Project.
+/// Remove the credential's Organization, by its ID, once it has no Project.
 /// Rerun while a Server hasn't confirmed, it retries the Clears.
 ///
 /// # Errors
@@ -753,9 +753,9 @@ pub(crate) struct OrganizationRemoval {
 /// for another Organization than the credential's), or a Cloud failure.
 pub(crate) async fn remove_organization(
     credential: &Credential,
-    slug: &str,
+    id: &str,
 ) -> Result<OrganizationRemoval, StoreCallError> {
-    let url = format!("{}/api/cli/organizations/{slug}", credential.cloud());
+    let url = format!("{}/api/cli/organizations/{id}", credential.cloud());
     store_answer(
         credential,
         send(credential, Method::DELETE, &url, None).await?,
