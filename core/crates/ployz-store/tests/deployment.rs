@@ -2358,13 +2358,33 @@ fn a_redeploy_rolls_back_every_newer_deployment_that_may_have_changed_the_server
     admit(&store, &who, 4, &[], None).unwrap();
     admit(&store, &who, 5, &[], None).unwrap();
     assert_eq!(rolls_back(&store, &who, 1), [2]);
+    let waiting = rollback(&store, &who, (6, 1), &[2]).unwrap_err();
+    assert_eq!(waiting.code, RpcErrorCode::Conflict);
+    assert_eq!(waiting.message, "Wait for #5 to finish, then redeploy.");
+    cancel(&store, &who, 5).unwrap();
 
     // What the caller confirmed must still be what it rolls back.
     let stale = rollback(&store, &who, (6, 1), &[]).unwrap_err();
     assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(stale.details["rolls_back"], json!([2]));
-    assert_eq!(status(&store, &who, 5), DeploymentStatus::Queued);
     assert_eq!(rollback(&store, &who, (6, 1), &[2]).unwrap().number, 6);
+}
+
+#[test]
+fn redeploying_an_older_deployment_waits_for_a_newer_one_in_flight() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
+
+    // Applied State may yet change under #2, so nothing older redeploys meanwhile.
+    let waiting = retry(&store, &who, 3, 1).unwrap_err();
+    assert_eq!(waiting.code, RpcErrorCode::Conflict);
+    assert_eq!(waiting.message, "Wait for #2 to finish, then redeploy.");
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
 }
 
 #[test]

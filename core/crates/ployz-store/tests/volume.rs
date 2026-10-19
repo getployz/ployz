@@ -783,10 +783,19 @@ fn run_both(store: &ConfigStore, n: u8, api_fails: bool, removed: Vec<VolumeRemo
         .unwrap();
 }
 
-/// #2 deleted `data`, then #3 brought it back, applying it fully or only partly
-/// before it failed. Redeploying #2 rolls #3 back: its data is reviewed afresh and
-/// deleted only once a person accepts it again.
-fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(api_fails: bool) {
+/// How the Deployment that brought `data` back ended.
+#[derive(Clone, Copy, PartialEq)]
+enum Ended {
+    Applied,
+    Failed,
+    /// It prepared, then lost track, so Applied State never lists `data` again.
+    Unknown,
+}
+
+/// #2 deleted `data`, then #3 brought it back, and ended as `ended`. Redeploying #2
+/// rolls #3 back: its data is reviewed afresh and deleted only once a person
+/// accepts it again.
+fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(ended: Ended) {
     let (store, who) = shop();
     store
         .write(
@@ -849,8 +858,20 @@ fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(
         )
         .unwrap();
     admit(&store, &who, 3, &[], None).unwrap();
-    run_both(&store, 3, api_fails, Vec::new());
-    assert!(listed(&store, &who)[0].deployed);
+    match ended {
+        Ended::Applied | Ended::Failed => {
+            run_both(&store, 3, ended == Ended::Failed, Vec::new());
+            assert!(listed(&store, &who)[0].deployed);
+        }
+        Ended::Unknown => {
+            let runner = RunnerId::parse("runner").unwrap();
+            prepare(&store, 3, &["web", "api"]);
+            store
+                .record(&id(3), &runner, RunEvidence::Abandoned)
+                .unwrap();
+            assert!(!listed(&store, &who)[0].deployed);
+        }
+    }
 
     let rolled_back = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
@@ -896,12 +917,18 @@ fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(
 
 #[test]
 fn rolling_back_past_a_deployment_that_brought_a_volume_back_asks_before_deleting_it() {
-    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(false);
+    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(Ended::Applied);
 }
 
 #[test]
 fn rolling_back_past_a_partly_applied_deployment_asks_before_deleting_what_it_brought_back() {
-    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(true);
+    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(Ended::Failed);
+}
+
+#[test]
+fn rolling_back_past_a_deployment_that_lost_track_asks_before_deleting_what_it_may_have_brought_back()
+ {
+    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(Ended::Unknown);
 }
 
 #[test]
