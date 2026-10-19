@@ -448,6 +448,11 @@ impl FrameScrub {
         out
     }
 
+    /// Drop what `channel` holds, for a frame hidden whole: a form begun there is hidden with it.
+    pub fn discard(&mut self, channel: Channel) {
+        self.carry(channel).clear();
+    }
+
     /// End the stream: scrub what is held and hide any trailing prefix of a form.
     #[must_use]
     pub fn finish(self, forms: &SealedForms) -> Vec<(Channel, Vec<u8>)> {

@@ -14,7 +14,13 @@ struct Frames(mpsc::Sender<Result<OpaquePayload, tonic::Status>>);
 
 impl Frames {
     async fn line(&self, timestamp: i64, text: &str) {
-        self.send(frame(timestamp, text)).await;
+        self.send(frame(timestamp, LogBody::Stdout(text.as_bytes().to_vec())))
+            .await;
+    }
+
+    async fn err(&self, timestamp: i64, text: &str) {
+        self.send(frame(timestamp, LogBody::Stderr(text.as_bytes().to_vec())))
+            .await;
     }
 
     async fn rows(&self, rows: impl IntoIterator<Item = HistoryRow>) {
@@ -130,7 +136,7 @@ fn machine_id() -> MachineId {
     MachineId::parse("a".repeat(32)).unwrap()
 }
 
-fn frame(timestamp: i64, text: &str) -> OpaquePayload {
+fn frame(timestamp: i64, body: LogBody) -> OpaquePayload {
     LogEntry {
         metadata: LogMetadata {
             origin: LogOrigin::Service {
@@ -143,7 +149,7 @@ fn frame(timestamp: i64, text: &str) -> OpaquePayload {
             machine_name: machine('a', "one").name,
         },
         timestamp_unix_nanos: timestamp,
-        body: LogBody::Stdout(text.as_bytes().to_vec()),
+        body,
     }
     .encode()
     .unwrap()
@@ -379,9 +385,78 @@ async fn a_names_read_after_a_failure_shows_lines_again() {
 
     *fake.answer.lock().unwrap() = Ok(sealed("TOKEN"));
     fake.names.begin().done(sealed("TOKEN"));
-    frames.line(2, &format!("after {VALUE}\n")).await;
+    frames
+        .line(2, "the first line after a failed read is veiled\n")
+        .await;
+    frames.line(3, &format!("after {VALUE}\n")).await;
     drop(frames);
     assert_eq!(messages(&shown(&reader).await), "after [secret TOKEN]\n");
+}
+
+/// The next record's line, which the test expects to arrive.
+async fn next(reader: &ScrubbedLogStream) -> LogLine {
+    reader.next().await.unwrap().unwrap().line
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_value_begun_in_a_hidden_frame_at_stream_start_stays_hidden() {
+    let (head, tail) = VALUE.split_at(10);
+    let (started, [frames]) = fake(Some(VALUE)).await;
+    *started.answer.lock().unwrap() = Err(());
+    let reader = live(&started).await;
+    frames.line(1, &format!("start TOKEN={head}")).await;
+    assert!(matches!(next(&reader).await, LogLine::Hidden));
+    *started.answer.lock().unwrap() = Ok(sealed("TOKEN"));
+    started.names.begin().done(sealed("TOKEN"));
+    frames.line(2, &format!("{tail}\n")).await;
+    frames.line(3, "the line the veil ends in\n").await;
+    frames.line(4, &format!("after {VALUE}\n")).await;
+    drop(frames);
+    let joined = messages(&shown(&reader).await);
+    assert_eq!(joined, "after [secret TOKEN]\n");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_value_begun_in_a_hidden_frame_after_a_failed_read_stays_hidden() {
+    let (head, tail) = VALUE.split_at(10);
+    let (recovered, [frames]) = fake(Some(VALUE)).await;
+    *recovered.answer.lock().unwrap() = Ok(sealed("TOKEN"));
+    let reader = live(&recovered).await;
+    frames.line(1, "before\n").await;
+    assert_eq!(messages(&[next(&reader).await]), "before\n");
+    *recovered.answer.lock().unwrap() = Err(());
+    recovered.names.begin().failed();
+    frames.line(2, &format!("TOKEN={head}")).await;
+    assert!(matches!(next(&reader).await, LogLine::Hidden));
+    *recovered.answer.lock().unwrap() = Ok(sealed("TOKEN"));
+    recovered.names.begin().done(sealed("TOKEN"));
+    frames.line(3, &format!("{tail}\n")).await;
+    frames.line(4, "the line the veil ends in\n").await;
+    frames.line(5, "later\n").await;
+    drop(frames);
+    let joined = messages(&shown(&reader).await);
+    assert_eq!(joined, "later\n");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hidden_frame_on_one_channel_keeps_the_other_channel_scrubbing() {
+    let (head, tail) = VALUE.split_at(10);
+    let (fake, [frames]) = fake(Some(VALUE)).await;
+    *fake.answer.lock().unwrap() = Ok(sealed("TOKEN"));
+    let reader = live(&fake).await;
+    frames.err(1, &format!("err {head}")).await;
+    frames.line(2, "out\n").await;
+    assert_eq!(messages(&[next(&reader).await]), "out\n");
+    *fake.answer.lock().unwrap() = Err(());
+    fake.names.begin().failed();
+    frames.line(3, "gone\n").await;
+    assert!(matches!(next(&reader).await, LogLine::Hidden));
+    *fake.answer.lock().unwrap() = Ok(sealed("TOKEN"));
+    fake.names.begin().done(sealed("TOKEN"));
+    frames.err(4, &format!("{tail} done\n")).await;
+    drop(frames);
+    let joined = messages(&shown(&reader).await);
+    assert_eq!(joined, "err [secret TOKEN] done\n");
 }
 
 #[tokio::test(start_paused = true)]

@@ -347,6 +347,21 @@ fn channels_do_not_mix() {
 }
 
 #[test]
+fn discard_drops_one_channel_only() {
+    let value = "abcdefghij0123456789";
+    let forms = SealedForms::compile(&secrets(&[("TOKEN", value)]));
+    let (head, tail) = split_at_byte(value, 10);
+    let mut scrub = FrameScrub::new();
+    assert!(scrub.push(Channel::Stdout, &head, &forms).is_empty());
+    assert!(scrub.push(Channel::Stderr, &head, &forms).is_empty());
+    scrub.discard(Channel::Stdout);
+    assert_eq!(scrub.push(Channel::Stdout, b"\n", &forms), b"\n");
+    assert!(scrub.push(Channel::Stderr, &tail, &forms).is_empty());
+    let out = scrub.finish(&forms);
+    assert_eq!(out, [(Channel::Stderr, b"[secret TOKEN]".to_vec())]);
+}
+
+#[test]
 fn finish_hides_a_proper_prefix_of_a_form() {
     let value = "abcdefghij0123456789";
     let forms = SealedForms::compile(&secrets(&[("TOKEN", value)]));
