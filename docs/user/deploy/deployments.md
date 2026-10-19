@@ -61,7 +61,7 @@ ployz deploy
 Open **Deployments** in the sidebar, then **Versions**, to see this environment's saved versions.
 Each version is titled from what it changed unless it was saved with a message, and lists its
 changes one per row, folding past three. **Live** marks the version the latest fully applied
-deployment shipped, which is what your servers run. **Failed** marks the newest version when its
+deployment shipped. **Failed** marks the newest version when its
 latest deployment failed; a later deployment of it clears it. A version saved but
 not deployed yet has no badge. The version's **⋮** menu:
 
