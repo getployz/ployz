@@ -487,15 +487,11 @@ fn references_and_exports_round_trip_through_get_and_patch() {
     let error = set(&store, &[("api.env.URL", json!("${{ web.HOST"))]).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(error.message.contains("$${{"), "{}", error.message);
-    // A variable web doesn't have is refused, naming what it has; a built-in isn't.
-    let error = set(&store, &[("api.env.URL", json!("${{ web.HOST }}"))]).unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert!(
-        error.message.contains("PLOYZ_PRIVATE_DOMAIN"),
-        "{}",
-        error.message
-    );
-    assert_eq!(error.details["service"], "web");
+    // A variable web doesn't have is taken and reported broken; a built-in isn't broken.
+    set(&store, &[("api.env.URL", json!("${{ web.HOST }}"))]).unwrap();
+    let diff = store.read(&who(), &DiffQuery::default()).unwrap();
+    let broken: Vec<String> = diff.broken.iter().map(ToString::to_string).collect();
+    assert_eq!(broken, ["api.env.URL references web.HOST, which doesn't exist"]);
     set(
         &store,
         &[("api.env.PEER", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"))],

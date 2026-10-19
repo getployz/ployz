@@ -555,13 +555,13 @@ fn a_config_file_reading_a_secret_the_merge_left_not_set_warns() {
 fn a_merge_reported_after_newer_facts_still_reads_merged_on_the_check() {
     let (store, who) = shop();
     keep(&store, &who);
-    // A reads C, which production made read A since: the merge would close a cycle.
-    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ C }}"))]);
+    // A reads B, which production made read A since: the merge would close a cycle.
+    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ B }}"))]);
     set(
         &store,
         &who,
         "production",
-        &[("web.env.C", json!("${{ A }}"))],
+        &[("web.env.B", json!("${{ A }}"))],
     );
     system(
         &store,

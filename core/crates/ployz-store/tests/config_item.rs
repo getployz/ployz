@@ -608,15 +608,24 @@ fn a_reference_names_a_service_that_exists() {
     let unfinished = refused(put(&store, &who, "sentry", "a.yml", "x: ${{ web.KEY"));
     assert_eq!(unfinished.code, RpcErrorCode::InvalidArgument);
 
-    let no_variable = refused(put(&store, &who, "sentry", "a.yml", "x: ${{ web.NOPE }}"));
-    assert_eq!(no_variable.code, RpcErrorCode::InvalidArgument);
-    assert!(
-        no_variable.message.contains("NOPE"),
-        "{}",
-        no_variable.message
-    );
-
     assert!(item(&store, &who, "sentry").unwrap().contents.is_empty());
+    // A variable web doesn't have is taken and reported broken.
+    put(&store, &who, "sentry", "a.yml", "x: ${{ web.NOPE }}").unwrap();
+    let diff = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        json!(diff.broken),
+        json!([{
+            "config": "sentry", "file": "a.yml", "reads": "NOPE",
+            "missing": "variable", "from": "web",
+        }])
+    );
     put(
         &store,
         &who,

@@ -653,13 +653,13 @@ fn a_merge_into_a_branch_nothing_deploys_keeps_the_preview() {
 #[test]
 fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
     let (store, who) = shop();
-    // A reads C, which production made read A since: the merge would close a cycle.
-    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ C }}"))]);
+    // A reads B, which production made read A since: the merge would close a cycle.
+    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ B }}"))]);
     set(
         &store,
         &who,
         "production",
-        &[("web.env.C", json!("${{ A }}"))],
+        &[("web.env.B", json!("${{ A }}"))],
     );
     let before = history(&store, &who).len();
     assert_eq!(listed_merged(&store, &who), Some(false));
@@ -688,7 +688,7 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
     assert!(
         stuck
             .summary
-            .contains("web.A and web.C reference each other in a cycle"),
+            .contains("web.A and web.B reference each other in a cycle"),
         "{stuck:?}"
     );
     // It links production's History: the PR Environment may be gone.
