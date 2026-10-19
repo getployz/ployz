@@ -684,6 +684,13 @@ describe("volume runs", () => {
       expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
     });
 
+    it("a move onto the Server holding the writer is settled, so nothing offers it again", async () => {
+      expect(await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "move", args: { to: "fsn-1" } }))).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data's writer is already on fsn-1", details: { settled: true } },
+      });
+    });
+
     it("a Volume renamed during a run is refused by its new name, so the hints run as printed", async () => {
       const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
       storeVolumes = storeVolumes.map((volume) => volume.id === volumeId ? { ...volume, name: "files" } : volume);

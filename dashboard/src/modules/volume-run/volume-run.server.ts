@@ -365,6 +365,7 @@ const refusalCode = {
   unanswered: "unavailable",
   confirm_required: "confirmation_required",
   invalid: "invalid_argument",
+  already_on: "conflict",
   no_writer: "conflict",
   two_writers: "conflict",
   volume_switching: "conflict",
@@ -374,6 +375,12 @@ const refusalCode = {
   another_copy: "conflict",
   server_lacks: "unsupported",
 } satisfies Record<RefusalCode, string>;
+
+/** A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry. */
+const storeRefusal = ({ code, message, next }: Refusal): StoreRefusal => {
+  if (code === "already_on") return { code: refusalCode[code], message, details: { settled: true } };
+  return { code: refusalCode[code], message, details: next === undefined ? null : { next } };
+};
 
 const deletesCopy = (volume: ResolvedVolume, member: AnsweredMember): DestructiveEffect => ({
   kind: "deletes_volume",
@@ -473,8 +480,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
   if (!planned.ok) {
-    const { code, message, next } = planned.refusal;
-    return { ok: false, refusal: { code: refusalCode[code], message, details: next === undefined ? null : { next } } } satisfies VolumeRunPlan;
+    return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies VolumeRunPlan;
   }
   const verb = VERBS[input.kind];
   const { phase } = planned;
@@ -482,8 +488,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.option);
     if (Option.isNone(source)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
     if (source.value === null) {
-      const { code, message } = alreadyOn(volume.volumeName, phase.target.machine.name);
-      return { ok: false, refusal: { code: refusalCode[code], message, details: null } } satisfies VolumeRunPlan;
+      return { ok: false, refusal: storeRefusal(alreadyOn(volume.volumeName, phase.target.machine.name)) } satisfies VolumeRunPlan;
     }
   }
   const from = phase.kind === "release" ? phase.from : null;
