@@ -348,10 +348,10 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
     }
 }
 
-/// Stop, then start, the addressed Environment's Services. Every Container is started
-/// again even when stopping one failed, so a failed restart never leaves a Service down.
+/// Restart the addressed Environment's Services. Every Container is started again
+/// even when stopping one failed, so a failed restart never leaves a Service down.
 pub(super) fn restart(root: &ArgMatches) -> Result<(), Error> {
-    lifecycle(root, &[ContainerAction::Stop, ContainerAction::Start])
+    lifecycle(root, &[ContainerAction::Restart])
 }
 
 pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
@@ -386,24 +386,23 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             let services = select_services(&observed, &selectors)?;
             // A restart rolls: each Container is stopped, then started and serving, before the next one stops,
             // so a Service with more than one replica keeps serving throughout.
-            let rolling: Vec<ServiceObservation> =
-                if actions == [ContainerAction::Stop, ContainerAction::Start] {
-                    services
-                        .iter()
-                        .flat_map(|service| {
-                            service
-                                .containers
-                                .iter()
-                                .map(|container| ServiceObservation {
-                                    containers: vec![container.clone()],
-                                    hook_containers: Vec::new(),
-                                    ..(*service).clone()
-                                })
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+            let rolling: Vec<ServiceObservation> = if actions == [ContainerAction::Restart] {
+                services
+                    .iter()
+                    .flat_map(|service| {
+                        service
+                            .containers
+                            .iter()
+                            .map(|container| ServiceObservation {
+                                containers: vec![container.clone()],
+                                hook_containers: Vec::new(),
+                                ..(*service).clone()
+                            })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let batches: Vec<Vec<&ServiceObservation>> = if rolling.is_empty() {
                 vec![services]
             } else {
@@ -413,7 +412,9 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             for services in &batches {
                 for &action in actions {
                     let (signal, timeout) = match action {
-                        ContainerAction::Stop => (signal.clone(), timeout),
+                        ContainerAction::Stop | ContainerAction::Restart => {
+                            (signal.clone(), timeout)
+                        }
                         ContainerAction::Start | ContainerAction::Remove => (None, None),
                     };
                     let step = apply_service_action(
@@ -555,7 +556,7 @@ async fn apply_service_action(
     }
     let cancellation = cancellation_on_ctrl_c();
     let _parent = cancellation.clone().drop_guard();
-    if action == ContainerAction::Start {
+    if matches!(action, ContainerAction::Start | ContainerAction::Restart) {
         // A start waits for each healthcheck the way a Deploy does.
         let waits = join_all(changed.iter().map(|(machine_id, container_id)| async {
             client
@@ -635,7 +636,10 @@ fn stop_options(
     matches: &ArgMatches,
     actions: &[ContainerAction],
 ) -> Result<(Option<String>, Option<u16>), Error> {
-    if !actions.contains(&ContainerAction::Stop) {
+    if !actions
+        .iter()
+        .any(|action| matches!(action, ContainerAction::Stop | ContainerAction::Restart))
+    {
         return Ok((None, None));
     }
     let signal = matches.get_one::<String>("signal").cloned();
@@ -658,6 +662,7 @@ const fn past(action: ContainerAction) -> &'static str {
     match action {
         ContainerAction::Start => "Started",
         ContainerAction::Stop => "Stopped",
+        ContainerAction::Restart => "Restarted",
         ContainerAction::Remove => "Removed",
     }
 }

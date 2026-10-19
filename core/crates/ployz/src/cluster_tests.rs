@@ -8,6 +8,7 @@ use ployz_core::{
 use serde_json::{Value, json};
 
 use super::*;
+use crate::connect::stop_rpc_timeout;
 
 #[test]
 fn unspecified_stop_timeout_has_no_rpc_deadline() {

@@ -67,7 +67,7 @@ fn stop_options_are_only_read_for_stop_actions() {
 
     for (command, actions) in [
         ("stop", &[ContainerAction::Stop][..]),
-        ("restart", &[ContainerAction::Stop, ContainerAction::Start]),
+        ("restart", &[ContainerAction::Restart]),
     ] {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "service", command, "api"])
