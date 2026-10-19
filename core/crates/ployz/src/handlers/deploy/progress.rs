@@ -8,8 +8,8 @@ use crate::ui::{
 };
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
 use ployz_store::{
-    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, DeploymentWarning, IngressAction,
-    IngressFailure, NodeStatus, RowState,
+    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, DeploymentWarning, FailedAt,
+    IngressAction, IngressFailure, NodeStatus, RowState,
 };
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -336,10 +336,12 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             view.runtime_names.get(name).unwrap_or(name).clone(),
         );
         let mut failed = false;
+        let mut ran = false;
         for row in &node.rows {
             let RowState::Failed {
                 reason: row_reason,
                 cause: row_cause,
+                step,
                 log,
                 ..
             } = &row.state
@@ -361,18 +363,26 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 log: log.clone(),
             });
             failed = true;
+            ran |= *step != Some(FailedAt::Pull);
         }
+        let scope = [
+            "--project",
+            view.environment.project.as_str(),
+            "--env",
+            view.environment.name.as_str(),
+        ];
         // One hint per Service, by its config name: it reads every Server's logs, and a
-        // token that reads through Cloud can serve it too.
-        if failed {
-            hints.push(Hint::Inspect(command(&[
-                "logs",
-                name.as_str(),
-                "--project",
-                view.environment.project.as_str(),
-                "--env",
-                view.environment.name.as_str(),
-            ])));
+        // token that reads through Cloud can serve it too. A failed pull started no
+        // Container, so an image Service shows its image instead.
+        if ran {
+            hints.push(Hint::Inspect(command(
+                &[&["logs", name.as_str()][..], &scope].concat(),
+            )));
+        } else if failed && !view.builds.iter().any(|build| build.service == *name) {
+            let image = format!("{name}.image");
+            hints.push(Hint::Inspect(command(
+                &[&["get", image.as_str()][..], &scope].concat(),
+            )));
         }
     }
     let mut failure = Failure::from(RpcError {
@@ -474,6 +484,67 @@ mod tests {
                 "production"
             ]]
         );
+    }
+
+    /// The step of every failed row.
+    fn failed_rows(view: &mut DeploymentView) -> impl Iterator<Item = &mut Option<FailedAt>> {
+        view.nodes
+            .iter_mut()
+            .flat_map(|node| node.rows.iter_mut())
+            .filter_map(|row| {
+                if let RowState::Failed { step, .. } = &mut row.state {
+                    Some(step)
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn inspects(failure: &Failure) -> Vec<String> {
+        failure
+            .hints()
+            .iter()
+            .filter_map(|hint| {
+                if let Hint::Inspect(command) = hint {
+                    Some(command.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_pull_failure_inspects_the_image_instead_of_logs_no_container_wrote() {
+        let mut view = view();
+        for row in failed_rows(&mut view) {
+            *row = Some(FailedAt::Pull);
+        }
+        assert_eq!(
+            inspects(&failure(&view, command)),
+            ["ployz get web.image --project shop --env production"]
+        );
+
+        if let Some(row) = failed_rows(&mut view).nth(1) {
+            *row = Some(FailedAt::Start);
+        }
+        assert_eq!(
+            inspects(&failure(&view, command)),
+            ["ployz logs web --project shop --env production"]
+        );
+    }
+
+    #[test]
+    fn a_built_service_that_failed_to_pull_has_no_image_setting_to_inspect() {
+        let mut view = view();
+        for row in failed_rows(&mut view) {
+            *row = Some(FailedAt::Pull);
+        }
+        view.builds = serde_json::from_value(json!([
+            {"service": "web", "commit": null, "status": "built", "message": null}
+        ]))
+        .unwrap();
+        assert!(inspects(&failure(&view, command)).is_empty());
     }
 
     #[test]
