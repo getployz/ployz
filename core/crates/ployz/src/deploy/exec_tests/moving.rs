@@ -183,6 +183,26 @@ async fn a_failed_run_removes_its_slot() {
     client.assert_done();
 }
 
+/// Only a missing source copy falls back to the first gen; an unreadable one would start
+/// the replacement at a gen older than the copy it replaces.
+#[tokio::test]
+async fn an_unreadable_source_copy_starts_no_replacement() {
+    let client = Scripted::new(vec![failed(
+        Call::Inspect(machine(FROM), container('a')),
+        "daemon unreachable",
+    )]);
+    let Err(MoveContainerError::NotServing {
+        error: ExecutionError::Machine { action, .. },
+        replacement_removed,
+    }) = move_with(&client).await
+    else {
+        panic!("the move stops at the inspect");
+    };
+    assert_eq!(action, MachineAction::InspectContainer);
+    assert!(replacement_removed);
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn a_cancelled_global_move_removes_its_replacement() {
     let mut global = spec(Some(0), None, None);
