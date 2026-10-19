@@ -42,8 +42,9 @@ pub struct Edit {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
     /// Set a value. Text is accepted for any Setting type. A variable
-    /// (`SERVICE.env.KEY`) takes text, `{"secret": true}` to keep its secret, or
-    /// `{"secret": "…"}` to seal a new one.
+    /// (`SERVICE.env.KEY`) takes text, `{"secret": true}` to keep its secret,
+    /// `{"secret": "…"}` to seal a new one, or `{"secret": {"generate": true}}` to
+    /// seal a random one the Store makes.
     Set {
         /// The Setting.
         path: SettingPath,

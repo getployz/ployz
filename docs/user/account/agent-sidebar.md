@@ -19,10 +19,12 @@ a queued one now, and cancel one, like the
 [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 
-The agent never sees or sends a secret's value. It can give a variable a new random secret,
-sealed, such as a database password that other services then reference. A secret you already
-have, like an API key, you set yourself under **Variables** or with
-`printf %s "$VALUE" | ployz set web.env.API_KEY --secret`; the agent names the exact command.
+The agent never sees or sends a secret's value. It can ask Ployz to give a variable a new
+random secret, such as a database password that other services then reference. Ployz makes the
+value and seals it in the same step, so it never appears in the agent's chat, its tool calls or
+their results. A secret you already have, like an API key, you set yourself under **Variables**
+or with `printf %s "$VALUE" | ployz set web.env.API_KEY --secret`; the agent names the exact
+command.
 
 ## What it can do on your servers
 

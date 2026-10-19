@@ -2,6 +2,8 @@
 //! text, where `${{ KEY }}` and `${{ service.KEY }}` reference other variables, or
 //! a secret. Reads show a secret as `{"secret": true}`, and writing that back keeps
 //! it; a new secret arrives as `{"secret": "…"}` and is sealed before it is stored.
+//! `{"secret": {"generate": true}}` has the Store make a random secret and seal it, so
+//! its value never leaves the Store.
 //! `exported` marks a variable other Services are meant to reference.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +16,7 @@ use ployz_core::config::{
     render_variable_parts, resolve_config_file, resolve_variables,
 };
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
+use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Map, Value, json};
 
 use crate::error;
@@ -491,6 +494,11 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
             Some(Value::String(plaintext)) if !plaintext.is_empty() => {
                 Ok(Input::Seal(plaintext.clone()))
             }
+            Some(Value::Object(asked))
+                if asked.len() == 1 && asked.get("generate") == Some(&Value::Bool(true)) =>
+            {
+                Ok(Input::Seal(generated_secret()?))
+            }
             Some(_) | None => Err(invalid(key, "expected {\"secret\": true} or a new secret")),
         },
         Value::Null => Err(invalid(key, "null never deletes a variable; unset it")),
@@ -498,6 +506,29 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
             Err(invalid(key, "expected text or {\"secret\": true}"))
         }
     }
+}
+
+/// 32 random letters, the shape of the dashboard's database passwords.
+fn generated_secret() -> Result<String, RpcError> {
+    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    // 208 is the largest multiple of 52 a byte holds, so every letter is equally likely.
+    const LIMIT: u8 = 208;
+    let random = SystemRandom::new();
+    let mut secret = String::with_capacity(32);
+    let mut bytes = [0_u8; 64];
+    while secret.len() < 32 {
+        random
+            .fill(&mut bytes)
+            .map_err(|_| error::unavailable("No randomness to make a secret from"))?;
+        secret.extend(
+            bytes
+                .iter()
+                .filter(|byte| **byte < LIMIT)
+                .filter_map(|byte| LETTERS.get(usize::from(byte % 52)).copied().map(char::from))
+                .take(32_usize.saturating_sub(secret.len())),
+        );
+    }
+    Ok(secret)
 }
 
 fn exported_flag(key: &VariableKey, value: Value) -> Result<bool, RpcError> {

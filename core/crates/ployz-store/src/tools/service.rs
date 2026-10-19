@@ -1,7 +1,6 @@
 //! Tools on one Service: read it, create it, change its Settings, rename it and
 //! remove it.
 
-use ring::rand::{SecureRandom as _, SystemRandom};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -410,7 +409,7 @@ impl ServiceUpdate {
             }
             changes.push(Change::Set {
                 path: path(&field, generate)?,
-                value: json!({ "secret": random_secret()? }),
+                value: json!({ "secret": { "generate": true } }),
             });
         }
         if changes.is_empty() {
@@ -479,29 +478,6 @@ fn plaintext_secret(call: &Call, service: &str, path: &str) -> Refusal {
     .with_fix(&Fix::OpenDashboard {
         page: DashboardPage::Variables,
     })
-}
-
-/// 32 random letters, the shape of the dashboard's database passwords.
-fn random_secret() -> Result<String, Stop> {
-    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    // 208 is the largest multiple of 52 a byte holds, so every letter is equally likely.
-    const LIMIT: u8 = 208;
-    let random = SystemRandom::new();
-    let mut secret = String::with_capacity(32);
-    let mut bytes = [0_u8; 64];
-    while secret.len() < 32 {
-        random
-            .fill(&mut bytes)
-            .map_err(|_| Refusal::internal("No randomness to make a secret from"))?;
-        secret.extend(
-            bytes
-                .iter()
-                .filter(|byte| **byte < LIMIT)
-                .filter_map(|byte| LETTERS.get(usize::from(byte % 52)).copied().map(char::from))
-                .take(32_usize.saturating_sub(secret.len())),
-        );
-    }
-    Ok(secret)
 }
 
 /// A rename the variables referencing it block, retried with `update_references`.

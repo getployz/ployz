@@ -2190,8 +2190,10 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
 
     let input = json!({ "service": "db", "generate_secret": ["env.POSTGRES_PASSWORD"] });
     let (mut step, mut state) = start("service_update", input, &place(in_org()), "secret-1");
-    let mut minted = None;
+    let mut seen = vec![serde_json::to_string(&state).unwrap()];
     let result = loop {
+        seen.push(serde_json::to_string(&step).unwrap());
+        seen.push(format!("{step:?}"));
         let answers = match step {
             Step::Read { asks } => asks
                 .into_iter()
@@ -2201,10 +2203,6 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 let Write::Store(command) = *write else {
                     panic!("an edit is a Store write");
                 };
-                let sent = serde_json::to_value(&command).unwrap();
-                minted = sent["changes"][0]["value"]["secret"]
-                    .as_str()
-                    .map(str::to_owned);
                 vec![
                     store
                         .write(&who(), &command)
@@ -2215,21 +2213,46 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
             Step::Done { result } => break result,
         };
         (step, state) = resume(state, answers);
+        seen.push(serde_json::to_string(&state).unwrap());
     };
-    let minted = minted.expect("the edit seals a new secret");
-    assert_eq!(minted.len(), 32);
-    assert!(minted.chars().all(|c| c.is_ascii_alphabetic()), "{minted}");
     let ToolResult::Ok(updated) = result else {
         panic!("refused: {result:?}");
     };
     assert_eq!(updated["changed"], json!(["env.POSTGRES_PASSWORD"]));
-    for (what, text) in [
-        ("result", updated.to_string()),
-        ("state", serde_json::to_string(&state).unwrap()),
-    ] {
+    seen.push(updated.to_string());
+
+    // Only a Deployment's claim unseals it, so that is where the value is read.
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write(
+            &who(),
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+        )
+        .unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let db = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "db")
+        .unwrap();
+    let minted = db.container.environment["POSTGRES_PASSWORD"].clone();
+    assert_eq!(minted.len(), 32);
+    assert!(minted.chars().all(|c| c.is_ascii_alphabetic()), "{minted}");
+    for text in &seen {
         assert!(
             !text.contains(&minted),
-            "the {what} shows the secret: {text}"
+            "the agent's call shows the secret: {text}"
         );
     }
     let db = call(
