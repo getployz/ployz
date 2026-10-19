@@ -10,7 +10,7 @@ use std::{
 use base64::Engine as _;
 use serde::Deserialize;
 
-use crate::{BuildStep, Progress};
+use crate::{BuildError, BuildStep, Progress};
 
 /// Longest unterminated line held back before it is passed on as plain
 /// output. A first vertex report can list every step of a large graph.
@@ -61,6 +61,7 @@ pub(crate) struct SolveParser {
     pending: Vec<u8>,
     partial: HashMap<StreamKey, Vec<u8>>,
     started: HashSet<String>,
+    failed: Option<BuildError>,
 }
 
 impl SolveParser {
@@ -73,6 +74,12 @@ impl SolveParser {
         if self.pending.len() > MAX_LINE {
             progress(Progress::Output(std::mem::take(&mut self.pending)));
         }
+    }
+
+    /// The first step BuildKit reported failing. Steps it cancelled because of
+    /// that failure report theirs later.
+    pub(crate) fn failure(&mut self) -> Option<BuildError> {
+        self.failed.take()
     }
 
     pub(crate) fn finish(&mut self, progress: &dyn Fn(Progress)) {
@@ -93,6 +100,14 @@ impl SolveParser {
         // after the status's final logs. Repeated completions must not reopen rows.
         let mut completed = Vec::new();
         for vertex in status.vertexes {
+            if self.failed.is_none()
+                && let Some(error) = &vertex.error
+            {
+                self.failed = Some(BuildError::Step {
+                    step: vertex.name.clone(),
+                    error: error.clone(),
+                });
+            }
             let step = BuildStep {
                 id: vertex.digest,
                 name: vertex.name,

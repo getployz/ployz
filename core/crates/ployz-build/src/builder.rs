@@ -211,11 +211,15 @@ impl<'a> Builder<'a> {
             ..*self.docker
         }
         .run_started("the build", &borrowed, Streams::Inherited, started);
-        parser
+        let mut parser = parser
             .lock()
-            .expect("parsing never panics while holding the parser")
-            .finish(progress);
-        result.map(|_| ())
+            .expect("parsing never panics while holding the parser");
+        parser.finish(progress);
+        match result {
+            Ok(_) => Ok(()),
+            Err(error @ BuildError::Docker { .. }) => Err(parser.failure().unwrap_or(error)),
+            Err(error) => Err(error),
+        }
     }
 
     /// Fence the running worker's own traffic, or refuse to solve.
