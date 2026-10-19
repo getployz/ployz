@@ -1135,7 +1135,130 @@ fn removed_services_shown_alike_are_told_apart_by_number() {
     .unwrap();
     assert_eq!(
         value(&store, "api.env.HOSTS"),
-        json!("${{ <deleted web>.URL }}")
+        json!("${{ <deleted web#2>.URL }}")
+    );
+}
+
+/// `web` removed twice, `web.env.FIRST` referencing the first and `api.env.SECOND`
+/// the second.
+fn two_removed_webs(store: &ConfigStore) {
+    let remove = || {
+        store
+            .write(
+                &who(),
+                &ployz_store::RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap();
+    };
+    set(
+        store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("api.env.FIRST", json!("${{ web.URL }}")),
+        ],
+    )
+    .unwrap();
+    remove();
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("api.env.SECOND", json!("${{ web.URL }}")),
+        ],
+    )
+    .unwrap();
+    remove();
+}
+
+#[test]
+fn a_bulk_edit_dropping_one_removed_service_keeps_the_others_number() {
+    let store = backend::open();
+    shop(&store);
+    two_removed_webs(&store);
+    assert_eq!(
+        value(&store, "api.env.SECOND"),
+        json!("${{ <deleted web#2>.URL }}")
+    );
+
+    set(
+        &store,
+        &[
+            ("api.env.FIRST", json!("plain")),
+            ("api.env.SECOND", json!("${{ <deleted web#2>.URL }}/v2")),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        value(&store, "api.env.SECOND"),
+        json!("${{ <deleted web#2>.URL }}/v2")
+    );
+}
+
+#[test]
+fn discard_brings_a_reference_back_on_the_removed_service_it_read() {
+    let store = backend::open();
+    shop(&store);
+    two_removed_webs(&store);
+    store
+        .write_trusted(
+            &who(),
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &ployz_store::Trusted {
+                approval: ployz_store::Approval::NotRequired,
+                ..ployz_store::Trusted::default()
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &[
+            ("api.env.FIRST", json!("plain")),
+            ("api.env.SECOND", json!("plain")),
+        ],
+    )
+    .unwrap();
+
+    store
+        .write(
+            &who(),
+            &ployz_store::Discard {
+                environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Saved,
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            value(&store, "api.env.FIRST"),
+            value(&store, "api.env.SECOND")
+        ),
+        (
+            json!("${{ <deleted web>.URL }}"),
+            json!("${{ <deleted web#2>.URL }}")
+        )
     );
 }
 

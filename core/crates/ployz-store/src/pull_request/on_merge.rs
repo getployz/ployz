@@ -22,6 +22,7 @@ use crate::branch::{
     share, shown,
 };
 use crate::id::ServiceLineageId;
+use crate::scope::RemovedServices;
 use crate::storage;
 use crate::variables::{self, VariableKey};
 
@@ -197,7 +198,8 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
     let way = Move::merge(tx, from, &into)?;
     let plan = way.plan(&saved);
     let stored = edits(tx, &from.summary.id, &into.summary.id)?;
-    let (from_names, into_names) = (from.shown_names(), into.shown_names());
+    let removed = landed_removals(from, &into);
+    let (from_names, into_names) = (from.shown_with(&removed), into.shown_with(&removed));
     let edit_names = edit_names(from, &into);
     let mut rows = Vec::new();
     for row in plan.rows() {
@@ -312,11 +314,26 @@ fn edited_values(
     stored
 }
 
+/// The removals `into` records once `from` merges into it: its own, then `from`'s
+/// after them. Both sides of a merge show removed Services by these, so one shown
+/// name is one Service across the list.
+fn landed_removals(from: &Environment, into: &Environment) -> RemovedServices {
+    let mut removed = into.removed.clone();
+    removed.append(&from.removed, |_| true);
+    for side in [into, from] {
+        for lineage in crate::rules::removed_lineages(&side.working, &side.live) {
+            removed.record(&lineage, None);
+        }
+    }
+    removed
+}
+
 /// The names an Edit into `into` shows and reads Services by: `into`'s, and each
-/// Service removed in `from` that `into` doesn't name, as `from` shows it.
+/// Service removed in `from` that `into` doesn't name, as the merge shows it.
 fn edit_names(from: &Environment, into: &Environment) -> BTreeMap<String, String> {
-    let mut names = into.shown_names();
-    for (lineage, name) in from.shown_names() {
+    let removed = landed_removals(from, into);
+    let mut names = into.shown_with(&removed);
+    for (lineage, name) in from.shown_with(&removed) {
         if is_deleted_owner(&name) {
             names.entry(lineage).or_insert(name);
         }
@@ -842,12 +859,7 @@ fn land_one(
     }
     let consumed = end_included(tx, &into, Some(&from.summary.id))?;
     if working != destination.working {
-        for (lineage, name) in &from.removed {
-            destination
-                .removed
-                .entry(lineage.clone())
-                .or_insert_with(|| name.clone());
-        }
+        destination.removed.append(&from.removed, |_| true);
         let carried = Carried::of(tx, &from.summary.id, &from.working)?;
         crate::branch::land(
             tx,

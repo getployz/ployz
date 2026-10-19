@@ -972,3 +972,60 @@ fn an_edit_dropping_one_of_two_removed_services_keeps_the_other() {
         (json!("${{ <deleted cache>.URL }}"), Ride::Edited)
     );
 }
+
+#[test]
+fn an_edit_reads_a_removed_service_by_the_name_both_sides_share() {
+    let (store, who) = shop();
+    for (n, environment) in [(9, "pr-5"), (10, "production")] {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at(environment),
+                    name: ServiceName::parse("redis").unwrap(),
+                    image: Some("redis:7".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        set(
+            &store,
+            &who,
+            environment,
+            &[
+                ("redis.env.URL", json!("r")),
+                ("web.env.HOSTS", json!("${{ redis.URL }}")),
+            ],
+        );
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at(environment),
+                    service: ServiceName::parse("redis").unwrap(),
+                },
+            )
+            .unwrap();
+        save(&store, &who, environment);
+    }
+    let hosts = row(&store, &who, "web.env.HOSTS");
+    assert_eq!(
+        (hosts.production, hosts.preview),
+        (
+            json!("${{ <deleted redis>.URL }}"),
+            json!("${{ <deleted redis#2>.URL }}")
+        )
+    );
+
+    store
+        .write(
+            &who,
+            &merge_value("web.env.HOSTS", Some("${{ <deleted redis#2>.URL }}!")),
+        )
+        .unwrap();
+    assert_eq!(
+        row(&store, &who, "web.env.HOSTS").lands,
+        json!("${{ <deleted redis#2>.URL }}!")
+    );
+}

@@ -55,9 +55,107 @@ pub(crate) struct Environment {
     /// The name of each node a Branch uses live, by lineage: its variables
     /// reference them by these names.
     pub(crate) live: BTreeMap<String, String>,
-    /// The last name of each removed Service its Working State references, by
-    /// lineage, as stored when the Service left it.
-    pub(crate) removed: BTreeMap<String, String>,
+    /// Every Service that ever left its Working State, by lineage. Only grows, so
+    /// how a reference shows a removed Service never changes under an edit.
+    pub(crate) removed: RemovedServices,
+}
+
+/// A Service that left an Environment's Working State: its name when it left, if
+/// any record has one, and its place among the Environment's removals.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Removed {
+    pub(crate) name: Option<String>,
+    pub(crate) order: u64,
+}
+
+/// The [`Removed`] Services of an Environment, by lineage.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RemovedServices(BTreeMap<String, Removed>);
+
+impl RemovedServices {
+    /// Record that `lineage` left, called `name`. One recorded already keeps its
+    /// place and name, and only takes a name it lacked.
+    pub(crate) fn record(&mut self, lineage: &str, name: Option<&str>) {
+        let order = self.next();
+        let entry = self
+            .0
+            .entry(lineage.to_owned())
+            .or_insert(Removed { name: None, order });
+        if entry.name.is_none() {
+            entry.name = name.map(str::to_owned);
+        }
+    }
+
+    /// Append each of `other`'s removals this doesn't record, after its own, in
+    /// `other`'s order. `keep` picks the lineages to take.
+    pub(crate) fn append(&mut self, other: &Self, keep: impl Fn(&str) -> bool) {
+        for (lineage, removed) in other.in_order() {
+            if keep(lineage) && !self.0.contains_key(lineage) {
+                let order = self.next();
+                self.0.insert(
+                    lineage.to_owned(),
+                    Removed {
+                        name: removed.name.clone(),
+                        order,
+                    },
+                );
+            }
+        }
+    }
+
+    /// The last name of each removed Service that has one, by lineage.
+    pub(crate) fn names(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.0
+            .iter()
+            .filter_map(|(lineage, removed)| Some((lineage, removed.name.as_ref()?)))
+    }
+
+    fn next(&self) -> u64 {
+        self.0
+            .values()
+            .map(|removed| removed.order + 1)
+            .max()
+            .unwrap_or(1)
+    }
+
+    fn in_order(&self) -> Vec<(&String, &Removed)> {
+        let mut removals: Vec<_> = self.0.iter().collect();
+        removals.sort_by_key(|(lineage, removed)| (removed.order, *lineage));
+        removals
+    }
+
+    /// `names`, and each removed Service as reads show it, such as `<deleted redis>`:
+    /// the nth removal shown alike adds `#n`, counting every recorded removal, so a
+    /// shown name keeps meaning the same Service. `referenced` names lineages read
+    /// that no record holds yet; they number after the recorded ones.
+    pub(crate) fn shown(
+        &self,
+        mut names: BTreeMap<String, String>,
+        referenced: impl IntoIterator<Item = String>,
+    ) -> BTreeMap<String, String> {
+        let unrecorded: Vec<String> = referenced
+            .into_iter()
+            .filter(|lineage| !self.0.contains_key(lineage))
+            .collect();
+        let removals = self
+            .in_order()
+            .into_iter()
+            .map(|(lineage, removed)| (lineage, removed.name.as_deref()))
+            .chain(unrecorded.iter().map(|lineage| (lineage, None)));
+        let mut alike = BTreeMap::new();
+        for (lineage, name) in removals {
+            let nth = alike.entry(name).or_insert(0);
+            *nth += 1;
+            if !names.contains_key(lineage) {
+                names.insert(
+                    lineage.clone(),
+                    ployz_core::config::deleted_owner(name, *nth),
+                );
+            }
+        }
+        names
+    }
 }
 
 impl Environment {
@@ -74,19 +172,18 @@ impl Environment {
         names
     }
 
-    /// [`Self::names`], and each removed Service a reference reads as reads show
-    /// it, such as `<deleted redis>`: one name per Service, so an edit reads each
-    /// back as the Service it was.
+    /// [`Self::names`], and each removed Service as reads show it: one name per
+    /// Service, so an edit reads each back as the Service it was.
     pub(crate) fn shown_names(&self) -> BTreeMap<String, String> {
-        let mut names = self.names();
-        let mut alike = BTreeMap::new();
-        for lineage in crate::rules::removed_lineages(&self.working, &self.live) {
-            let name = self.removed.get(&lineage).map(String::as_str);
-            let nth = alike.entry(name).or_insert(0);
-            *nth += 1;
-            names.insert(lineage, ployz_core::config::deleted_owner(name, *nth));
-        }
-        names
+        self.shown_with(&self.removed)
+    }
+
+    /// [`Self::shown_names`], numbering removed Services by `removed`.
+    pub(crate) fn shown_with(&self, removed: &RemovedServices) -> BTreeMap<String, String> {
+        removed.shown(
+            self.names(),
+            crate::rules::removed_lineages(&self.working, &self.live),
+        )
     }
 
     /// Refuse with `conflict` unless Working State is still at `expect`.
@@ -510,6 +607,17 @@ pub(crate) fn load_by_id(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Environm
     load(tx, project, id)
 }
 
+/// The [`RemovedServices`] Environment `id` records.
+pub(crate) fn removed_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<RemovedServices, RpcError> {
+    tx.query(
+        "SELECT removed FROM config_environment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Environment"))?
+    .json(0, "removed Services")
+}
+
 fn load(
     tx: &mut dyn Tx,
     project: ProjectName,
@@ -565,7 +673,7 @@ pub(crate) fn persist_working(
     )?;
     let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
     let before = row.intent(0, "Working State")?;
-    let mut removed: BTreeMap<String, String> = row.json(1, "removed Services")?;
+    let mut removed: RemovedServices = row.json(1, "removed Services")?;
     crate::storage::admit_protect(tx, |tx| {
         crate::review::touches_source(
             tx,
@@ -574,17 +682,22 @@ pub(crate) fn persist_working(
             &environment.working.services,
         )
     })?;
-    for (lineage, name) in std::mem::take(&mut environment.removed) {
-        removed.entry(lineage).or_insert(name);
-    }
-    removed.extend(
-        before
+    removed.append(&environment.removed, |_| true);
+    let stays = |lineage: &str| {
+        environment
+            .working
             .services
             .iter()
-            .map(|service| (service.lineage_id.clone(), service.slug.clone())),
-    );
-    let referenced = crate::rules::removed_lineages(&environment.working, &environment.live);
-    removed.retain(|lineage, _| referenced.contains(lineage));
+            .any(|service| service.lineage_id == lineage)
+    };
+    for service in &before.services {
+        if !stays(&service.lineage_id) {
+            removed.record(&service.lineage_id, Some(&service.slug));
+        }
+    }
+    for lineage in crate::rules::removed_lineages(&environment.working, &environment.live) {
+        removed.record(&lineage, None);
+    }
     environment.removed = removed;
     environment.summary.revision = environment.summary.revision.next();
     tx.execute(
@@ -654,11 +767,13 @@ pub(crate) fn validate_and_refresh_working_from(
     )?;
     environment.working = working;
     environment.live = live;
+    let read = crate::rules::removed_lineages(&environment.working, &environment.live);
     for service in from.into_iter().flat_map(|from| &from.services) {
-        environment
-            .removed
-            .entry(service.lineage_id.clone())
-            .or_insert_with(|| service.slug.clone());
+        if read.contains(&service.lineage_id) {
+            environment
+                .removed
+                .record(&service.lineage_id, Some(&service.slug));
+        }
     }
     Ok(())
 }

@@ -114,7 +114,8 @@ reference to any variable either way.
   `ployz diff` and `ployz status`. Deploys leave the variable out, and any variable that
   references it, and warn, until you change it.
 - A reference to a deleted service shows its last name, as `${{ <deleted redis>.KEY }}`. Two
-  deleted services of one name show as `<deleted redis>` and `<deleted redis#2>`. A service
+  deleted services of one name show as `<deleted redis>` and `<deleted redis#2>`, in the order
+  you deleted them, and keep those names. A service
   deleted before Ployz recorded names shows as `<deleted>`. Edit the rest of the value or file
   around it and it stays; you can't write a new one.
 - Write `$${{` for a literal `${{`.
