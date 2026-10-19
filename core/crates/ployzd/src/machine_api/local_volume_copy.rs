@@ -314,6 +314,7 @@ impl MachineService {
                 namespace,
                 resolved_spec,
                 creation_key,
+                ..
             } => {
                 let record = self.local.record();
                 let machine = record

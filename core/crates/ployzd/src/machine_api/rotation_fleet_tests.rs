@@ -1746,3 +1746,6 @@ async fn out_want_p95() {
     let p95 = *took.get(took.len() * 95 / 100 - 1).unwrap();
     println!("out_want_p95 p95 {:.3} ms", p95.as_secs_f64() * 1e3);
 }
+
+#[path = "volume_move_tests.rs"]
+mod volume_move;
