@@ -663,3 +663,26 @@ fn losing_cloud_while_following_says_the_deployment_keeps_running() {
         "ployz deployment show 7 --project shop --env production"
     );
 }
+
+#[test]
+fn losing_cloud_after_a_replacement_names_the_deployment_being_followed() {
+    let (output, _) = run(vec![
+        admitted(),
+        observed(7, DeploymentStatus::Superseded),
+        replacement(),
+        hung_up(observed(8, DeploymentStatus::Running)),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "Stopped following Deployment #8; it keeps running in Ployz Cloud."
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment show 8 --project shop --env production"
+    );
+}
