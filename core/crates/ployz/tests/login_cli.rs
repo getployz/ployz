@@ -52,6 +52,10 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                     .unwrap()
                     .push(format!("org_leave input {}", sent.get("input").unwrap()));
             }
+            if route == "POST /api/auth/organization/set-active" {
+                let sent: Value = serde_json::from_slice(&sent).unwrap();
+                routes.lock().unwrap().push(format!("set-active {sent}"));
+            }
             let (status, body) = match route.as_str() {
                 "POST /api/auth/device/code" => (
                     200,
@@ -120,6 +124,14 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                 "POST /api/auth/organization/set-active" => {
                     (200, json!({ "id": "o2", "slug": "dev" }))
                 }
+                "DELETE /api/cli/organizations/o1" => (
+                    200,
+                    json!({
+                        "organization": "acme",
+                        "removed": true,
+                        "servers": { "confirmed": [], "unconfirmed": [] },
+                    }),
+                ),
                 _ => (404, json!({})),
             };
             let body = body.to_string();
@@ -392,13 +404,67 @@ fn org_leave_with_yes_leaves_then_moves_the_device_to_another_organization() {
         at("POST /api/cli/run/org_leave") < at("POST /api/auth/organization/set-active"),
         "moves only once it left"
     );
-    at(r#"org_leave input {"organization":"acme"}"#);
+    at(r#"org_leave input {"organization":"o1"}"#);
+    at(r#"set-active {"organizationId":"o2"}"#);
     let human = ployz(&config, &["org", "leave", "--yes"]);
     assert!(
         String::from_utf8_lossy(&human.stderr)
             .contains("This device now acts in Organization dev."),
         "{}",
         String::from_utf8_lossy(&human.stderr)
+    );
+}
+
+#[test]
+fn org_rm_removes_the_acting_organization_by_its_id_then_moves_the_device() {
+    let routes = Arc::new(Mutex::new(Vec::new()));
+    let (_dir, config) = signed_in(routes.clone());
+    routes.lock().unwrap().clear();
+
+    let removed = ployz(
+        &config,
+        &["org", "rm", "acme", "--confirm", "acme", "--json"],
+    );
+
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let removed = json_of(&removed);
+    assert_eq!(removed.get("organization"), Some(&json!("acme")));
+    assert_eq!(removed.get("removed"), Some(&json!(true)));
+    assert_eq!(removed.get("acting"), Some(&json!("dev")));
+    let routes = routes.lock().unwrap().clone();
+    let at = |route: &str| {
+        routes
+            .iter()
+            .position(|seen| seen == route)
+            .unwrap_or_else(|| panic!("{route} in {routes:?}"))
+    };
+    assert!(
+        at("DELETE /api/cli/organizations/o1") < at("POST /api/auth/organization/set-active"),
+        "moves only once it is gone"
+    );
+    at(r#"set-active {"organizationId":"o2"}"#);
+}
+
+#[test]
+fn org_rm_of_another_organization_refuses_before_cloud_removes_anything() {
+    let routes = Arc::new(Mutex::new(Vec::new()));
+    let (_dir, config) = signed_in(routes.clone());
+
+    let refused = ployz(&config, &["org", "rm", "dev", "--confirm", "dev", "--json"]);
+
+    assert_eq!(refused.status.code(), Some(2));
+    let refused = json_of(&refused);
+    assert_eq!(refused.pointer("/error/code").unwrap(), "invalid_argument");
+    assert!(
+        !routes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|route| route.starts_with("DELETE "))
     );
 }
 

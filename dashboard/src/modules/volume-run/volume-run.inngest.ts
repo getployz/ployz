@@ -46,6 +46,7 @@ import {
   takeEpoch,
 } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
+import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
 
 type StepTools = Pick<PloyzStepTools, "run" | "sleep" | "sleepUntil">;
@@ -71,10 +72,11 @@ type RunSteps = {
   readonly runEffect: EffectRunner;
   readonly run: RunContext;
   readonly runId: string;
+  readonly attempt: number;
 };
 
 export async function runVolume(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId, attempt }: { event: { data: unknown }; step: StepTools; runId: string; attempt: number },
   runEffect: EffectRunner,
 ) {
   const request = await step.run("normalize-request", () => {
@@ -87,7 +89,7 @@ export async function runVolume(
   const run: RunContext = claim.run;
 
   if (request.took !== undefined) await step.run("01-fence", () => runEffect(fenceTaken(run, runId)));
-  const steps: RunSteps = { step, runEffect, run, runId };
+  const steps: RunSteps = { step, runEffect, run, runId, attempt };
   if (run.kind === "release" && run.phase === "committed" && run.current !== null) return finishRelease(steps, run.current, run.args.plan);
   if (run.kind === "release" && run.args.plan?.forward !== undefined) {
     return fail(steps, "01-changed", releaseChangedMessage(run.volumeName));
@@ -169,12 +171,15 @@ const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: 
 
 /**
  * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
- * sleeps and asks again with the same request, which spends no retry.
+ * sleeps and asks again with the same request, which spends no retry. `at` is when the Machine answered, in ms. A
+ * retried attempt has none: the attempt before may have made the change and lost the answer, so this answer is late.
+ * A step an older version of this function memoized has none either.
  */
-async function settle({ step, runEffect, run, runId }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
+async function settle({ step, runEffect, run, runId, attempt }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
   for (let check = 0; check < BUSY_CHECKS; check += 1) {
     if (check > 0) await step.sleep(`${id}-wait-${check}`, BUSY_WAIT);
-    const answer = await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(ask));
+    const answer: CopyAnswer & { readonly at?: number } = await step.run(check === 0 ? id : `${id}-${check}`, () =>
+      runEffect(ask).then((answered) => (attempt === 0 ? { ...answered, at: Date.now() } : answered)));
     if (!answer.ok && answer.reason === "stale") {
       await step.run(`${id}-stale`, () => runEffect(endRun(run, runId, "failed", answer.message)));
       throw new Stale(answer.message);
@@ -493,6 +498,10 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   const name = run.volumeName;
   let source = phase.writer.view.copy;
   let copy = phase.target.view.copy;
+  let service = "the Service";
+  let stoppedAt: number | null = null;
+  let downtime: string | null = null;
+  const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)));
 
   if (phase.start === "rounds") {
     const found = await step.run("02-service", () => runEffect(findHolder(run, runId, A)));
@@ -500,6 +509,8 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
       return { runId: run.id, refused: found.refusal };
     }
+    service = found.holder.redactedSpec.name;
+    await note("02-copying", `Copying to ${B.name}`);
     try {
       ({ copy } = await runRounds(steps, { A: phase.writer, B, copy, epoch }));
     } catch (error) {
@@ -513,16 +524,22 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
         Effect.tap((found) => (found.ok ? copyImage(run, runId, A, found.holder, B) : Effect.void)),
       )));
       if (!imaged.ok) throw new NonRetriableError(imaged.refusal.message);
-      source = await mustSet(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
+      service = imaged.holder.redactedSpec.name;
+      const stopped = await setCopy(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
         kind: "mirror",
         from: null,
         target: `f-${epoch}`,
         drain: DRAIN_MS,
       }, `${A.name} is still stopping ${name}'s Service`);
+      if (!stopped.ok) throw new NonRetriableError(stopped.message);
+      source = stopped.copy;
+      stoppedAt = stopped.at ?? null;
+      await note("05-stopped", `${service} stopped for the final copy`);
     }
     const cut = slotAt(source);
     if (cut === null) throw new NonRetriableError(`${copyName(name, A.name)} holds no final snapshot`);
     if (phase.start !== "start") copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest });
+    await note("07-starting", `Starting ${service} on ${B.name}`);
     const started = await settle(steps, "07-start", commitAndStart(run, runId, {
       to: B,
       from: A,
@@ -532,10 +549,11 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
     await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
+    downtime = stoppedAt === null || started.at === undefined ? null : `${service} was stopped ${formatDuration((started.at - stoppedAt) / 1000)}`;
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }
-  await finish(steps, "09-finish");
+  await finish(steps, "09-finish", downtime);
   return { runId: run.id, moved: B.name };
 }
 

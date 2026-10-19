@@ -4,14 +4,14 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import type { Actor } from "#/modules/identity/actor";
+import type { Actor, SessionActor } from "#/modules/identity/actor";
 import { claimSecretFor, hashClaimSecret, tokenRuns } from "#/modules/identity/claim-required.server";
 import { takeClaimSignInOrganization } from "#/modules/identity/claim-sign-in.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { countOrganizationMachines } from "#/modules/machines/connections.server";
 import { machineEnrollmentToken, machineRemoveAttempt, serverAccess } from "#/modules/machines/tables";
 import { fleetToken, serverEnrollment } from "#/modules/machines/waiting/tables";
-import { updateActorSessionsOrganization } from "#/modules/organization/organization-state.server";
+import { openOrganizationInSession } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -99,11 +99,12 @@ export const readClaim = Effect.fn("Identity.readClaim")(function* (secret: stri
 
 /**
  * The person keeps the Organization in one transaction: they become its sole owner, every row the anonymous agent
- * made now names them, the agent's token runs 90 more days, the anonymous user goes, and their sessions act in it.
+ * made now names them, the agent's token runs 90 more days, the anonymous user goes, and the session they claim
+ * through acts in it.
  * When their account came from a sign-in this claim page started, the empty Organization that sign-in made goes too. The secret keeps
  * naming the Organization, so the owner claiming again changes nothing and anyone else hears it was kept.
  */
-export const claimOrganization = Effect.fn("Identity.claimOrganization")(function* (actor: Actor, secret: string) {
+export const claimOrganization = Effect.fn("Identity.claimOrganization")(function* (actor: SessionActor, secret: string) {
   // The Store makes its tables when it opens, and the cleanup reads them.
   yield* cloudStore;
   const database = yield* Database;
@@ -141,7 +142,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
     yield* drizzle.update(serverEnrollment).set({ requestedByUserId: actor.userId })
       .where(inArray(serverEnrollment.requestedByUserId, anonymousIds));
     yield* drizzle.delete(user).where(inArray(user.id, anonymousIds));
-    yield* updateActorSessionsOrganization(actor, id, found.slug);
+    yield* openOrganizationInSession(actor, id, found.slug);
     yield* removeSignInOrganization(actor, id, secret);
     return { slug: found.slug };
   }));
@@ -151,7 +152,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
  * Back from the GitHub sign-in the claim page started: the person keeps the sandbox without a second click. A claim
  * that cannot go through (taken, expired, unknown) leaves the page to say so.
  */
-export const finishClaimSignIn = Effect.fn("Identity.finishClaimSignIn")(function* (secret: string, actor: Actor) {
+export const finishClaimSignIn = Effect.fn("Identity.finishClaimSignIn")(function* (secret: string, actor: SessionActor) {
   yield* claimOrganization(actor, secret).pipe(
     Effect.catchTags({ NotFound: () => Effect.void, Conflict: () => Effect.void }),
   );

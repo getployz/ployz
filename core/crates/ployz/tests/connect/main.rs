@@ -969,6 +969,8 @@ async fn observing_containers_past_tonic_s_default_4_mib_succeeds() {
             .unwrap(),
             address: None,
             labels: BTreeMap::new(),
+            rotation: None,
+            r#gen: None,
         })
         .unwrap();
     service.listed_containers.lock().unwrap().push(container);

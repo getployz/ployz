@@ -21,7 +21,7 @@ use crate::{
     cloud_account::{self, Credential, StoreCallError},
     cloud_login::{CredentialStore, LoginError},
     cluster::RoleWaitError,
-    connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
+    connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
 };
@@ -196,6 +196,50 @@ pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result
     connect(matches, context).await.map(Reach::Dial)
 }
 
+/// What a forget reaches.
+pub(super) enum Reached {
+    Client(Client),
+    /// Through Cloud, whose Servers all failed to answer.
+    Unanswered(Credential),
+}
+
+/// Reach the Cluster the way [`connect`] does, except that through Cloud a Cluster none of
+/// whose Servers answers comes back with the credential, for Cloud to act alone.
+pub(super) async fn connect_or_unanswered(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Reached, Error> {
+    if matches.get_one::<String>("connect").is_none() && context.is_none() {
+        let store = CredentialStore::beside(&super::config_path(matches)?);
+        if let Ok(credential) = cloud_account::from_env(&store).await {
+            let access = cloud_account::server_access(&credential).await?;
+            return Ok(match answering(matches, access).await? {
+                Some(client) => Reached::Client(client),
+                None => Reached::Unanswered(credential),
+            });
+        }
+    }
+    connect(matches, context).await.map(Reached::Client)
+}
+
+/// Dial through Cloud's Server Access; `None` when Cloud knows Servers and none answers.
+async fn answering(
+    matches: &ArgMatches,
+    access: cloud_account::ServerAccess,
+) -> Result<Option<Client>, Error> {
+    if access.connections.is_empty() {
+        return match access.unreachable.is_empty() {
+            true => Err(no_servers()),
+            false => Ok(None),
+        };
+    }
+    match dial_connections(matches, access.connections).await {
+        Ok(client) => Ok(Some(client)),
+        Err(ConnectError::AllFailed { reached: false, .. }) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
 async fn dial(
     matches: &ArgMatches,
@@ -205,30 +249,53 @@ async fn dial(
         if access.unreachable.is_empty() {
             return Ok(None);
         }
-        return Err(no_reachable_server(&access.unreachable));
+        return Err(no_reachable_server(access.unreachable, None));
     }
+    // Cloud hands back the connections it holds without probing their Servers.
+    let mut unreachable = access
+        .connections
+        .iter()
+        .filter_map(|connection| connection.machine_id().copied())
+        .collect::<Vec<_>>();
+    unreachable.extend(access.unreachable);
+    match dial_connections(matches, access.connections).await {
+        Ok(client) => Ok(Some(client)),
+        Err(error @ ConnectError::AllFailed { reached: false, .. }) if !unreachable.is_empty() => {
+            Err(no_reachable_server(unreachable, Some(error)))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn dial_connections(
+    matches: &ArgMatches,
+    connections: Vec<crate::context::Connection>,
+) -> Result<Client, ConnectError> {
     let selected = SelectedConnections {
         source: ConnectionSource::Cloud,
-        connections: access.connections,
+        connections,
     };
     let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(Some(
-        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
-    ))
+    crate::connect::connect_selected_with(selected, Arc::new(connector)).await
 }
 
 fn no_servers() -> Error {
     Error::not_found("this Organization has no Servers").hint(Hint::Next("ployz server add".into()))
 }
 
-fn no_reachable_server(unreachable: &[ployz_core::MachineId]) -> Error {
-    Error::detailed(
+/// None of `unreachable` answered; `cause` says how the last attempt failed.
+fn no_reachable_server(
+    unreachable: Vec<ployz_core::MachineId>,
+    cause: Option<ConnectError>,
+) -> Error {
+    Error::detailed_caused(
         RpcErrorCode::Unavailable,
         format!(
             "no Server of this Organization is reachable now: {}",
-            super::joined(unreachable)
+            super::joined(&unreachable)
         ),
         json!({ "unreachable": unreachable }),
+        cause,
     )
 }
 
@@ -638,6 +705,29 @@ mod tests {
     }
 
     #[test]
+    fn enrolling_pins_only_the_addresses_the_operator_names() {
+        let pinned = |flags: &[&str]| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(
+                    ["ployz", "server", "add", "--standalone", "root@host"]
+                        .iter()
+                        .chain(flags),
+                )
+                .unwrap();
+            helpers::pinned(&helpers::token_request(leaf_matches(&matches)).unwrap())
+        };
+        let pins = |public_ip, advertised_endpoints| ployz_core::PinnedAddresses {
+            public_ip,
+            advertised_endpoints,
+        };
+        assert_eq!(pinned(&[]), pins(false, false));
+        assert_eq!(pinned(&["--public-ip=auto"]), pins(false, false));
+        assert_eq!(pinned(&["--public-ip=none"]), pins(true, false));
+        assert_eq!(pinned(&["--public-ip=192.0.2.9"]), pins(true, false));
+        assert_eq!(pinned(&["--wg-endpoint=192.0.2.1"]), pins(false, true));
+    }
+
+    #[test]
     fn set_cli_rejects_an_empty_patch_and_maps_none_to_public_ip_removal() {
         let command = crate::cli::command();
         let empty = command
@@ -765,5 +855,54 @@ mod tests {
             error.details.get("unreachable"),
             Some(&json!(["b".repeat(32)]))
         );
+    }
+
+    #[tokio::test]
+    async fn held_connections_that_reach_no_server_name_the_unreachable_servers() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "ls"])
+            .unwrap();
+        let (held, gone) = ("a".repeat(32), "b".repeat(32));
+        let access = cloud_account::ServerAccess {
+            connections: serde_json::from_value(json!([
+                { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
+            ]))
+            .unwrap(),
+            unreachable: vec![ployz_core::MachineId::parse(gone.clone()).unwrap()],
+        };
+        let Err(error) = dial(leaf_matches(&matches), access).await else {
+            panic!("dialed a Server that is not there");
+        };
+        assert!(
+            !error.causes().is_empty(),
+            "the connect error stays the cause"
+        );
+        let error = error.report();
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.details.get("unreachable"), Some(&json!([held, gone])));
+    }
+
+    #[tokio::test]
+    async fn a_cluster_whose_servers_all_fail_to_answer_comes_back_unanswered() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "forget", "web-1"])
+            .unwrap();
+        let matches = leaf_matches(&matches);
+        let unprovisioned = cloud_account::ServerAccess {
+            connections: Vec::new(),
+            unreachable: vec![ployz_core::MachineId::parse("b".repeat(32)).unwrap()],
+        };
+        assert!(answering(matches, unprovisioned).await.unwrap().is_none());
+
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let held: cloud_account::ServerAccess = serde_json::from_value(json!({
+            "connections": [{ "machine_id": "a".repeat(32), "tcp": closed.to_string() }],
+            "unreachable": [],
+        }))
+        .unwrap();
+        assert!(answering(matches, held).await.unwrap().is_none());
     }
 }

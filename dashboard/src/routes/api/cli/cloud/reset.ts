@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
+import { CliResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollment } from "#/modules/machines/enrollment.server";
 import { handleCliRequest, serveCli } from "#/routes/api/cli/-handlers";
 
@@ -8,7 +8,7 @@ export const Route = createFileRoute("/api/cli/cloud/reset")({
   server: {
     handlers: {
       POST: async ({ request }) =>
-        serveCli(request, handleCliRequest(request, ResetPendingEnrollmentInput, resetPendingOrganizationEnrollment)),
+        serveCli(request, handleCliRequest(request, CliResetPendingEnrollmentInput, resetPendingOrganizationEnrollment)),
     },
   },
 });

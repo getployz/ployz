@@ -160,7 +160,21 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         for line in &lines {
             crate::ui::stream(line);
         }
+        for note in noted(view.settings.iter().filter_map(|row| row.note.as_ref())) {
+            ui::note(note);
+        }
     })
+}
+
+/// Each distinct note once, in order: Settings that share a caveat say it once.
+fn noted<'a>(notes: impl Iterator<Item = &'a String>) -> Vec<&'a String> {
+    let mut seen = Vec::new();
+    for note in notes {
+        if !seen.contains(&note) {
+            seen.push(note);
+        }
+    }
+    seen
 }
 
 /// Whether the domains were read in another Environment or at another revision than
@@ -317,19 +331,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    if let Some(path) = repeated(&changes) {
-        return Err(Error::usage(format!("{path} is given twice; set it once")));
-    }
     edit(root, changes)
-}
-
-/// A path two of `changes` set: only the last would land, without a word.
-fn repeated(changes: &[Change]) -> Option<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    changes.iter().find_map(|change| match change {
-        Change::Set { path, .. } => (!seen.insert(path.to_string())).then(|| path.to_string()),
-        Change::Unset { .. } | Change::Patch { .. } | Change::Rename { .. } => None,
-    })
 }
 
 /// The one positional a flag applies to.
@@ -356,7 +358,18 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     } else {
         std::fs::read_to_string(file).map_err(|_| Error::usage("Can't read the env file"))?
     };
-    let variables = env_file(&text)?;
+    // A key the file repeats takes its last value, in its first place; variables are
+    // uppercase, so case doesn't make a new key.
+    let mut variables: Vec<(String, String)> = Vec::new();
+    for (key, value) in env_file(&text)? {
+        match variables
+            .iter_mut()
+            .find(|(seen, _)| seen.eq_ignore_ascii_case(&key))
+        {
+            Some((_, seen)) => *seen = value,
+            None => variables.push((key, value)),
+        }
+    }
     let seal_all = matches.get_flag("secret");
     let secret = if seal_all {
         Vec::new()
@@ -464,6 +477,9 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         }
         for typed in &edited.typed_addresses {
             say_typed_addresses(matches, typed);
+        }
+        for note in noted(edited.notes.iter().map(|noted| &noted.note)) {
+            ui::note(note);
         }
         if let Some(hint) = hint {
             ui::hint(&Hint::Next(hint));
@@ -590,22 +606,6 @@ mod tests {
         elsewhere.environment.id =
             ployz_store::EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap();
         assert!(torn(&(view, Some(elsewhere))));
-    }
-
-    #[test]
-    fn a_path_set_twice_is_named() {
-        let set = |path: &str, value: &str| Change::Set {
-            path: SettingPath::parse(path).unwrap(),
-            value: json!(value),
-        };
-        assert_eq!(
-            repeated(&[set("web.replicas", "2"), set("web.image", "a")]),
-            None
-        );
-        assert_eq!(
-            repeated(&[set("web.replicas", "2"), set("WEB.replicas", "3")]).as_deref(),
-            Some("web.replicas")
-        );
     }
 
     #[test]

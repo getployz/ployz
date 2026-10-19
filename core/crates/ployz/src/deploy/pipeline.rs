@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLossConfirmation, DeploymentLogId, MachineId, MachineObservation, Namespace,
+    DataLossConfirmation, DeploymentLogId, IngressHost, MachineId, MachineObservation, Namespace,
     ObservedDataLoss, PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
 };
 use thiserror::Error;
@@ -356,7 +356,7 @@ async fn preview_gathered(
     intent: &DeployIntent,
 ) -> Result<DeployPlan, DeployError> {
     let mut preview = plan_deploy(intent, &snapshot)?;
-    let warnings = hostname_warnings(&preview, &snapshot).await;
+    let warnings = hostname_warnings(&preview, &snapshot, intent.cluster_domain.as_ref()).await;
     preview.prepend_warnings(warnings);
     Ok(preview)
 }
@@ -412,6 +412,7 @@ async fn gather_deploy_snapshot(
 async fn hostname_warnings(
     preview: &DeployPreview,
     snapshot: &DeploySnapshot,
+    cluster_domain: Option<&IngressHost>,
 ) -> Vec<DeployWarning> {
     let machines = &snapshot.machines;
     let machine_ids: Vec<_> = machines.iter().map(|machine| machine.machine.id).collect();
@@ -420,6 +421,7 @@ async fn hostname_warnings(
         &machine_ids,
         &machine_public_addresses(machines),
         &snapshot.ingress_returning(),
+        cluster_domain,
     )
     .await
     .into_iter()

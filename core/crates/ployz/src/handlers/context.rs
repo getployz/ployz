@@ -13,6 +13,19 @@ use crate::context::{
 
 use super::{Error, leaf_matches, required};
 
+/// Where a signed-in user with no contexts finds their Servers instead,
+/// keeping a config file named on the command line.
+fn no_contexts_next(leaf: &ArgMatches) -> String {
+    let mut args = vec!["ployz"];
+    if leaf.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine)
+        && let Some(path) = leaf.get_one::<String>("ployz-config")
+    {
+        args.extend(["--ployz-config", path]);
+    }
+    args.extend(["server", "ls"]);
+    shell_words::join(args)
+}
+
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
     if matches
         .get_one::<String>("connect")
@@ -55,7 +68,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
         .collect::<Vec<_>>();
     let mut table = Table::new(
         ["NAME", "CURRENT", "DEFAULT", "CONNECTIONS"],
-        "No contexts yet.",
+        "No contexts yet. Contexts reach Clusters outside Ployz Cloud; your Cloud Servers need none.",
     );
     for context in &contexts {
         table.row([
@@ -69,7 +82,13 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
             Cell::from(context.connections.len().to_string()),
         ]);
     }
-    ui::list(&json!({ "contexts": contexts }), &table)
+    if !contexts.is_empty() {
+        return ui::list(&json!({ "contexts": contexts }), &table);
+    }
+    let next = no_contexts_next(leaf_matches(matches));
+    ui::list(&json!({ "contexts": contexts, "next": next }), &table)?;
+    ui::hint(&Hint::Next(next));
+    Ok(())
 }
 
 /// `ployz ctx use CONTEXT`, keeping a config file named on the command line;
@@ -92,7 +111,8 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
         return Err(Error::not_found(format!(
             "no contexts found in Ployz config {}",
             config.path().display()
-        )));
+        ))
+        .hint(Hint::Next(no_contexts_next(leaf))));
     }
     let requested_connection = leaf.get_one::<String>("connection");
     let selected = match leaf.get_one::<String>("context-name") {

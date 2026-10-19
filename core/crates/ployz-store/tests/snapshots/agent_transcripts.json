@@ -3452,7 +3452,6 @@
                     "project": "shop",
                     "environment": null
                   },
-                  "target": "head",
                   "path": "web",
                   "version": null
                 }
@@ -3527,7 +3526,6 @@
                     "project": "shop",
                     "environment": null
                   },
-                  "target": "head",
                   "path": "web",
                   "version": null
                 }
@@ -5420,7 +5418,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_show",
                 "input": {
@@ -5523,7 +5521,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_logs",
                 "input": {
@@ -5643,7 +5641,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_metrics",
                 "input": {
@@ -5906,17 +5904,6 @@
             {
               "at": "store",
               "ask": {
-                "query": "service",
-                "environment": {
-                  "project": "shop",
-                  "environment": null
-                },
-                "service": "web"
-              }
-            },
-            {
-              "at": "store",
-              "ask": {
                 "query": "numbered_deployment",
                 "environment": {
                   "project": "shop",
@@ -5939,15 +5926,6 @@
               "namespace": "shop-production",
               "services": {},
               "view": "namespace"
-            }
-          },
-          {
-            "error": {
-              "code": "not_found",
-              "message": "No Service named web in Environment production",
-              "details": {
-                "valid_children": []
-              }
             }
           },
           {
@@ -6771,7 +6749,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_set",
                 "input": {
@@ -6876,7 +6854,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_drain",
                 "input": {
@@ -6980,7 +6958,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_upgrade",
                 "input": {
@@ -8117,7 +8095,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_remove",
                 "input": {
@@ -8218,7 +8196,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_forget",
                 "input": {
