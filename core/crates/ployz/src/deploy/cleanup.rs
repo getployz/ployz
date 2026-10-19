@@ -290,13 +290,14 @@ pub(crate) async fn retire<C: MachineOperations>(
     client: &C,
     copy: &Copy,
     allow_empty: bool,
+    anonymous_volumes: AnonymousVolumes,
     cancellation: &CancellationToken,
 ) -> Result<Step, RpcError> {
     if copy.rotation == CopyRotation::Pending {
-        return remove(client, copy).await;
+        return remove(client, copy, anonymous_volumes).await;
     }
     match take_out(client, copy, allow_empty, cancellation).await? {
-        Step::Done => remove(client, copy).await,
+        Step::Done => remove(client, copy, anonymous_volumes).await,
         step => Ok(step),
     }
 }
@@ -305,11 +306,12 @@ pub(crate) async fn retire<C: MachineOperations>(
 pub(crate) async fn remove<C: MachineOperations>(
     client: &C,
     copy: &Copy,
+    anonymous_volumes: AnonymousVolumes,
 ) -> Result<Step, RpcError> {
     let want = ContainerWant::Gone {
         container: copy.locator(),
         drain: Drain::DEFAULT,
-        anonymous_volumes: AnonymousVolumes::Remove,
+        anonymous_volumes,
     };
     match client
         .ensure_unsettled(&copy.machine_id, want, None)

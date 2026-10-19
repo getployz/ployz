@@ -1005,16 +1005,19 @@ async fn publish_group<C: MachineOperations>(
             progress.warn(rows.left_running(&copy, "interrupted".into()));
             continue;
         }
-        let reason = match cleanup::retire(client, &copy, false, cancellation).await {
-            Ok(cleanup::Step::Done) => continue,
-            Ok(cleanup::Step::Refused(refusal)) => refusal.message,
-            Ok(cleanup::Step::NotConfirmed(machines)) => rows.not_confirmed(&machines),
-            Ok(cleanup::Step::Cancelled) => {
-                interrupted = true;
-                "interrupted".into()
-            }
-            Err(error) => error.message,
-        };
+        let reason =
+            match cleanup::retire(client, &copy, false, AnonymousVolumes::Remove, cancellation)
+                .await
+            {
+                Ok(cleanup::Step::Done) => continue,
+                Ok(cleanup::Step::Refused(refusal)) => refusal.message,
+                Ok(cleanup::Step::NotConfirmed(machines)) => rows.not_confirmed(&machines),
+                Ok(cleanup::Step::Cancelled) => {
+                    interrupted = true;
+                    "interrupted".into()
+                }
+                Err(error) => error.message,
+            };
         progress.warn(rows.left_running(&copy, reason));
     }
     Published::Listed
@@ -1431,7 +1434,8 @@ async fn execute_operation<C: MachineOperations>(
             };
             progress.set_running(index, OperationPhase::RemovingContainer);
             let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
-            match cleanup::retire(client, &copy, allow_empty, cancellation).await {
+            match cleanup::retire(client, &copy, allow_empty, (*purpose).into(), cancellation).await
+            {
                 Ok(cleanup::Step::Done) => Ok(Ran::default()),
                 Ok(cleanup::Step::Refused(refusal)) => {
                     Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())
