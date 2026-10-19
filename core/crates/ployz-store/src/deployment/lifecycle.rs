@@ -551,6 +551,7 @@ pub(crate) fn claim(
         mut intent,
         secret_env,
         warnings,
+        ..
     } = lower(
         &stored.summary.environment_id,
         &saved,
