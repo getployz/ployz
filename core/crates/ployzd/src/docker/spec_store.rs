@@ -90,27 +90,6 @@ impl MachineSpecStore {
             .transpose()
     }
 
-    /// Record a copy's rotation and wake the observation publisher. The caller checks the edge first.
-    pub async fn set_rotation(
-        &self,
-        container_id: &ContainerId,
-        rotation: &CopyRotation,
-    ) -> Result<(), Error> {
-        let path = self.path.clone();
-        let container_id = container_id.to_string();
-        let rotation = serde_json::to_string(rotation)?;
-        blocking(move || {
-            connect(&path)?.execute(
-                "INSERT INTO rotations (id, rotation) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET rotation = excluded.rotation",
-                params![container_id, rotation],
-            )?;
-            Ok(())
-        })
-        .await?;
-        self.rotations.send_replace(());
-        Ok(())
-    }
-
     #[must_use]
     pub fn subscribe_rotations(&self) -> watch::Receiver<()> {
         self.rotations.subscribe()
@@ -169,6 +148,28 @@ impl MachineSpecStore {
 }
 
 impl ConfigOperation<'_> {
+    /// Record a copy's rotation and wake the observation publisher. The caller checks
+    /// the edge first. Under this lock, so a removal cannot slip between the two.
+    pub async fn set_rotation(
+        &mut self,
+        container_id: &ContainerId,
+        rotation: &CopyRotation,
+    ) -> Result<(), Error> {
+        let path = self.store.path.clone();
+        let container_id = container_id.to_string();
+        let rotation = serde_json::to_string(rotation)?;
+        blocking(move || {
+            connect(&path)?.execute(
+                "INSERT INTO rotations (id, rotation) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET rotation = excluded.rotation",
+                params![container_id, rotation],
+            )?;
+            Ok(())
+        })
+        .await?;
+        self.store.rotations.send_replace(());
+        Ok(())
+    }
+
     pub async fn put(
         &mut self,
         container_id: &ContainerId,
@@ -581,7 +582,13 @@ mod tests {
         assert_eq!(observed.r#gen, Some(Gen::FIRST));
 
         let held = CopyRotation::Held(DeploymentLogId::parse("d1").unwrap());
-        runtime.set_rotation(&id, &held).await.unwrap();
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&held)
+            .await
+            .unwrap();
         let restarted = ContainerRuntime::new(
             runtime.local_docker(),
             MachineSpecStore::open(runtime.spec_store_path_for_test())
@@ -599,7 +606,13 @@ mod tests {
         use ployz_core::CopyRotation;
 
         let (runtime, _fake, id) = runtime_with_running_container().await;
-        runtime.set_rotation(&id, &CopyRotation::Out).await.unwrap();
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&CopyRotation::Out)
+            .await
+            .unwrap();
         runtime.remove(&id, false, true).await.unwrap();
         let store = MachineSpecStore::open(runtime.spec_store_path_for_test())
             .await

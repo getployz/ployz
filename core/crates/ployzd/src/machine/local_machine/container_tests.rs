@@ -396,8 +396,8 @@ mod plan {
         AnonymousVolumes, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
         ContainerNow, ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
         ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
-        LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
-        SlotKey, StopOptions,
+        LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunRotation,
+        RunTarget, SlotKey, StopOptions,
     };
     use serde_json::json;
 
@@ -485,6 +485,7 @@ mod plan {
                 slot: hook_slot(),
                 ..new_container("img")
             }),
+            rotation: RunRotation::Pending,
         }
     }
 
@@ -509,12 +510,14 @@ mod plan {
     fn run_new(image: &str) -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::New(new_container(image)),
+            rotation: RunRotation::Pending,
         }
     }
 
     fn run_existing() -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::Existing(ContainerLocator::Id(id('a'))),
+            rotation: RunRotation::Pending,
         }
     }
 
@@ -741,7 +744,7 @@ mod settled {
     use ployz_core::{
         ConfiguredHealthcheck, ContainerNow, ContainerRuntimeObservation, ContainerWant,
         EnsuredContainer, HealthObservation, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
-        MachineName, NewContainer, RunTarget,
+        MachineName, NewContainer, RunRotation, RunTarget,
     };
     use serde_json::{Value, json};
 
@@ -801,6 +804,7 @@ mod settled {
     fn run(new: NewContainer) -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::New(new),
+            rotation: RunRotation::Pending,
         }
     }
 

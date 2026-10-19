@@ -306,6 +306,7 @@ impl MachineOperations for Scripted {
         let (call, of) = match want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
+                ..
             } => {
                 let call = Call::Run(machine, new.slot.kind);
                 settled = new.answer == AnswerWhen::Settled;
@@ -316,6 +317,7 @@ impl MachineOperations for Scripted {
             }
             ContainerWant::Running {
                 container: RunTarget::Existing(locator),
+                ..
             } => (Call::Restart(machine, id_of(&locator)), locator),
             ContainerWant::Stopped {
                 container,
@@ -343,6 +345,9 @@ impl MachineOperations for Scripted {
                     other => panic!("unscripted removal {other:?}"),
                 };
                 (call, container)
+            }
+            want @ (ContainerWant::Out { .. } | ContainerWant::Held { .. }) => {
+                panic!("unscripted rotation {want:?}")
             }
         };
         if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall) {
@@ -459,10 +464,7 @@ impl MachineOperations for Scripted {
         )
     }
 
-    async fn read_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError> {
+    async fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         let pointer = self.pointers.lock().unwrap().get(service).cloned();
         if self.unreadable_flip && pointer.as_ref().is_some_and(|row| row.deploy == run_id()) {
             return Err(error("read timed out"));
@@ -491,10 +493,11 @@ impl MachineOperations for Scripted {
             _ => BTreeMap::new(),
         };
         let all_routed = pointer.is_some() && routed && lagging.is_none();
-        Ok(ServingPointerRead {
+        Ok(RoutesRead {
             pointer,
             acks,
             all_routed,
+            ..RoutesRead::default()
         })
     }
 

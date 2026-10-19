@@ -431,7 +431,7 @@ mod rpc {
 
     use ployz_core::{
         MachineList, MachineObservation, MembershipObservation, NotPointerPublisher, OpaquePayload,
-        RpcRequestBody, RpcResponse, ServingPointerRead,
+        RoutesRead, RpcRequestBody, RpcResponse,
     };
     use tonic::{Request, Response};
 
@@ -501,11 +501,11 @@ mod rpc {
                                 })
                                 .collect(),
                         }),
-                        RpcRequestBody::ReadServingPointer(_) => {
+                        RpcRequestBody::ReadRoutes(_) => {
                             calls.lock().unwrap().push(("read", target));
                             match refusal {
                                 Some(refusal) => RpcResponse::from(refusal.rpc_error()),
-                                None => RpcResponse::from(ServingPointerRead {
+                                None => RpcResponse::from(RoutesRead {
                                     pointer: row.lock().unwrap().clone(),
                                     ..Default::default()
                                 }),

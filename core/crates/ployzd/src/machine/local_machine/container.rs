@@ -13,13 +13,15 @@ use ployz_core::{
     ContainerWant, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason,
     ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
     NewContainer, PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest,
-    ResolvedServiceSpec, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
+    ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget,
+    Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, Gen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict,
     HealthcheckSpec, ReadyWait, health_monitor,
 };
 
+use self::rotation::RotationWant;
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, same_creation};
@@ -590,8 +592,42 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<EnsuredContainer, Error> {
+        match want {
+            ContainerWant::Out {
+                container,
+                allow_empty,
+                expect,
+            } => {
+                self.rotate(container, RotationWant::Out { allow_empty }, expect)
+                    .await
+            }
+            ContainerWant::Held {
+                container,
+                run,
+                expect,
+            } => {
+                self.rotate(container, RotationWant::Held(run), expect)
+                    .await
+            }
+            ContainerWant::Running {
+                container,
+                rotation: RunRotation::In { run, expect },
+            } => self.route_in(container, run, expect).await,
+            want @ (ContainerWant::Running {
+                rotation: RunRotation::Pending,
+                ..
+            }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Gone { .. }) => self.ensure_docker(want).await,
+        }
+    }
+
+    /// Converge Docker to a want that moves no rotation, settling health when a new
+    /// creation asks for it.
+    async fn ensure_docker(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         let settled_spec = if let ContainerWant::Running {
             container: RunTarget::New(new),
+            ..
         } = &want
             && new.answer == AnswerWhen::Settled
         {
@@ -976,6 +1012,7 @@ fn plan_container(
         }
         ContainerWant::Running {
             container: RunTarget::New(new),
+            ..
         } => match present {
             None => ContainerStep::CreateAndStart(new),
             Some(observed)
@@ -1004,6 +1041,7 @@ fn plan_container(
         },
         ContainerWant::Running {
             container: RunTarget::Existing(locator),
+            ..
         } => present.map_or_else(|| not_found(&locator), run_step),
         ContainerWant::Stopped {
             container,
@@ -1011,6 +1049,9 @@ fn plan_container(
             stop,
         } => match present {
             None => not_found(&container),
+            Some(observed) if in_rotation(observed, &RotationTarget::Stopped) => {
+                ContainerStep::Refuse(in_rotation_refusal(observed))
+            }
             Some(observed) if is_running(observed) => ContainerStep::Stop {
                 id: observed.container_id,
                 drain,
@@ -1029,6 +1070,9 @@ fn plan_container(
                 ContainerLocator::Id(id) => ContainerStep::Remove(id, anonymous_volumes),
                 ContainerLocator::Key(_) => ContainerStep::Done,
             },
+            Some(observed) if in_rotation(observed, &RotationTarget::Gone) => {
+                ContainerStep::Refuse(in_rotation_refusal(observed))
+            }
             Some(observed) if is_running(observed) => ContainerStep::StopThenRemove {
                 id: observed.container_id,
                 drain,
@@ -1036,7 +1080,30 @@ fn plan_container(
             },
             Some(observed) => ContainerStep::Remove(observed.container_id, anonymous_volumes),
         },
+        ContainerWant::Out { .. } | ContainerWant::Held { .. } => {
+            unreachable!("a rotation want moves no Docker state")
+        }
     }
+}
+
+/// Whether the edge table keeps a copy in routing against `target`. The copy must
+/// leave routing first, through an Out want.
+fn in_rotation(observed: &ContainerObservation, target: &RotationTarget) -> bool {
+    matches!(
+        observed.rotation().edge(target),
+        RotationEdge::Refused(RotationRefusal::InRotation)
+    )
+}
+
+fn in_rotation_refusal(observed: &ContainerObservation) -> ContainerRefusal {
+    refuse(
+        ContainerRefusalReason::InRotation,
+        format!(
+            "Container {} is {}; take it out of routing first",
+            observed.container_id,
+            rotation::describe(observed.rotation())
+        ),
+    )
 }
 
 fn run_step(observed: &ContainerObservation) -> ContainerStep {
@@ -1048,6 +1115,10 @@ fn run_step(observed: &ContainerObservation) -> ContainerStep {
 }
 
 fn not_found(locator: &ContainerLocator) -> ContainerStep {
+    ContainerStep::Refuse(not_found_refusal(locator))
+}
+
+fn not_found_refusal(locator: &ContainerLocator) -> ContainerRefusal {
     let message = match locator {
         ContainerLocator::Id(id) => format!("Container {id} does not exist on this Machine"),
         ContainerLocator::Key(slot) => format!(
@@ -1056,7 +1127,7 @@ fn not_found(locator: &ContainerLocator) -> ContainerStep {
             slot.creation_key.as_str()
         ),
     };
-    ContainerStep::Refuse(refuse(ContainerRefusalReason::NotFound, message))
+    refuse(ContainerRefusalReason::NotFound, message)
 }
 
 fn refuse(reason: ContainerRefusalReason, message: impl Into<String>) -> ContainerRefusal {
@@ -1070,14 +1141,22 @@ fn want_locator(want: &ContainerWant) -> ContainerLocator {
     match want {
         ContainerWant::Running {
             container: RunTarget::New(new),
+            ..
         } => ContainerLocator::Key(new.slot.clone()),
         ContainerWant::Running {
             container: RunTarget::Existing(locator),
+            ..
         }
         | ContainerWant::Stopped {
             container: locator, ..
         }
         | ContainerWant::Gone {
+            container: locator, ..
+        }
+        | ContainerWant::Out {
+            container: locator, ..
+        }
+        | ContainerWant::Held {
             container: locator, ..
         } => locator.clone(),
     }
@@ -1107,6 +1186,9 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     };
     Ok(refuse(reason, ployz_core::error_chain::inline(&error)))
 }
+
+#[path = "rotation.rs"]
+mod rotation;
 
 #[cfg(test)]
 #[path = "container_tests.rs"]

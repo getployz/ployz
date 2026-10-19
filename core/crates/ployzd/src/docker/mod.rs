@@ -176,6 +176,32 @@ impl LocalDocker {
     }
 }
 
+/// One existing copy's rotation, read under the lock `remove` takes and held for its write.
+pub struct RotationTurn<'a> {
+    operation: spec_store::ConfigOperation<'a>,
+    container_id: ContainerId,
+    rotation: ployz_core::CopyRotation,
+}
+
+impl RotationTurn<'_> {
+    #[must_use]
+    pub fn rotation(&self) -> &ployz_core::CopyRotation {
+        &self.rotation
+    }
+
+    /// Record `rotation` and republish observations at once, without a Docker event.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be written.
+    pub async fn write(mut self, rotation: &ployz_core::CopyRotation) -> Result<(), Error> {
+        Ok(self
+            .operation
+            .set_rotation(&self.container_id, rotation)
+            .await?)
+    }
+}
+
 #[derive(Clone)]
 pub struct ContainerRuntime {
     docker: LocalDocker,
@@ -207,17 +233,37 @@ impl ContainerRuntime {
         Ok(self.specs.clear_floors().await?)
     }
 
-    /// Record a copy's rotation. Observations republish at once, without a Docker event.
+    /// Take the lock `remove` takes and read a copy's rotation under it, so the
+    /// Container cannot go between the read and a write.
     ///
     /// # Errors
     ///
-    /// Returns when the Machine database cannot be written.
-    pub async fn set_rotation(
+    /// Returns [`Error::ContainerNotFound`] when Docker no longer has the Container,
+    /// and when the Machine database cannot be read.
+    pub async fn rotation_turn(
         &self,
         container_id: &ContainerId,
-        rotation: &ployz_core::CopyRotation,
-    ) -> Result<(), Error> {
-        Ok(self.specs.set_rotation(container_id, rotation).await?)
+    ) -> Result<RotationTurn<'_>, Error> {
+        let operation = self.specs.config_operation().await;
+        self.ensure_managed(container_id).await?;
+        let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
+        Ok(RotationTurn {
+            operation,
+            container_id: *container_id,
+            rotation,
+        })
+    }
+
+    /// A copy's recorded rotation, `Pending` when it has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be read.
+    pub async fn rotation(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<ployz_core::CopyRotation, Error> {
+        Ok(self.specs.rotation(container_id).await?.unwrap_or_default())
     }
 
     /// Report this Container as `stopping` until the returned Withdrawal drops,

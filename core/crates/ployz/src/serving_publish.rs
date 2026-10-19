@@ -11,8 +11,7 @@ use ployz_core::rpc::op;
 use ployz_core::{
     ContainerId, ContainerObservation, DeploymentLogId, LiveServices, MachineObservation,
     MachineTarget, NotPointerPublisher, PublishServingPointerRequest, QualifiedService,
-    ReadServingPointerRequest, RpcError, ServingPointer, ServingPointerPublication,
-    ServingPointerRead,
+    ReadRoutesRequest, RoutesRead, RpcError, ServingPointer, ServingPointerPublication,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -96,7 +95,7 @@ impl Client {
     pub(crate) async fn serving_pointer_read(
         &mut self,
         service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError> {
+    ) -> Result<RoutesRead, RpcError> {
         let mut at = self.publisher().await?;
         self.read_at(&mut at, service).await
     }
@@ -106,18 +105,15 @@ impl Client {
         &mut self,
         at: &mut MachineTarget,
         service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError> {
-        let request = ReadServingPointerRequest {
+    ) -> Result<RoutesRead, RpcError> {
+        let request = ReadRoutesRequest {
             service: service.clone(),
         };
-        match self
-            .read::<op::ReadServingPointer>(request.clone(), at)
-            .await
-        {
+        match self.read::<op::ReadRoutes>(request.clone(), at).await {
             Err(error) => match NotPointerPublisher::from_error(&error) {
                 Some(refusal) => {
                     *at = MachineTarget::from(&refusal.publisher);
-                    self.read::<op::ReadServingPointer>(request, at).await
+                    self.read::<op::ReadRoutes>(request, at).await
                 }
                 None => Err(error),
             },

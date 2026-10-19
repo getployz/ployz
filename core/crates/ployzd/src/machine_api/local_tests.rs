@@ -2188,7 +2188,7 @@ mod ensure_container {
     }
 
     fn run_new(key: &str, spec: Value) -> Value {
-        json!({"want":{"state":"running", "container":{"new":{"slot":slot(key), "resolved_spec":spec, "gen":1}}}})
+        json!({"want":{"state":"running", "rotation":"pending", "container":{"new":{"slot":slot(key), "resolved_spec":spec, "gen":1}}}})
     }
 
     async fn ensure(service: &MachineService, request: Value) -> EnsuredContainer {
@@ -2342,7 +2342,7 @@ mod ensure_container {
 
         let reply = ensure(
             &service,
-            json!({"want":{"state":"running", "container":{"existing":{"id":id}}}}),
+            json!({"want":{"state":"running", "rotation":"pending", "container":{"existing":{"id":id}}}}),
         )
         .await;
         assert!(matches!(
@@ -2461,7 +2461,7 @@ mod ensure_container {
     #[tokio::test]
     async fn a_resent_hook_want_after_the_hook_exited_runs_it_once_and_returns_its_exit() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-hook").await;
-        let hook = json!({"want":{"state":"running", "container":{"new":{
+        let hook = json!({"want":{"state":"running", "rotation":"pending", "container":{"new":{
             "slot":{"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
             "resolved_spec":spec("example.test/api:1"), "gen":1}}}});
         let id = present(&ensure(&service, hook.clone()).await).container_id;
@@ -2703,8 +2703,8 @@ mod serving_pointer {
     use futures_util::{SinkExt, StreamExt};
     use ployz_core::{
         ContainerId, DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload,
-        PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest, Rpc, RpcError,
-        ServingPointer, ServingPointerPublication, ServingPointerRead,
+        PublishServingPointerRequest, QualifiedService, ReadRoutesRequest, RoutesRead, Rpc,
+        RpcError, ServingPointer, ServingPointerPublication,
     };
     use serde_json::{Value, json};
     use tokio::net::UnixListener;
@@ -2850,12 +2850,11 @@ mod serving_pointer {
         )
     }
 
-    async fn read(service: &MachineService) -> Result<ServingPointerRead, RpcError> {
-        let request =
-            op::ReadServingPointer::into_request(ReadServingPointerRequest { service: api() });
-        answer::<op::ReadServingPointer>(
+    async fn read(service: &MachineService) -> Result<RoutesRead, RpcError> {
+        let request = op::ReadRoutes::into_request(ReadRoutesRequest { service: api() });
+        answer::<op::ReadRoutes>(
             service
-                .read_serving_pointer(Request::new(request.encode().unwrap()))
+                .read_routes(Request::new(request.encode().unwrap()))
                 .await
                 .unwrap(),
         )
@@ -2901,14 +2900,11 @@ mod serving_pointer {
         let refusal = NotPointerPublisher { publisher: one.id };
         assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
         let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(NotPointerPublisher::from_error(refused), Some(refusal));
         assert_eq!(
-            NotPointerPublisher::from_error(refused),
-            Some(refusal.clone())
-        );
-        let read_refused = read(&sees_one_up).await.unwrap_err();
-        assert_eq!(
-            NotPointerPublisher::from_error(&read_refused),
-            Some(refusal)
+            read(&sees_one_up).await.unwrap().pointer,
+            None,
+            "a Machine that may not publish still reads routes"
         );
         first.abort();
         second.abort();
