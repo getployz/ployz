@@ -102,6 +102,11 @@ impl RemovedServices {
         }
     }
 
+    /// Whether `lineage` is recorded.
+    pub(crate) fn contains(&self, lineage: &str) -> bool {
+        self.0.contains_key(lineage)
+    }
+
     /// The last name of each removed Service that has one, by lineage.
     pub(crate) fn names(&self) -> impl Iterator<Item = (&String, &String)> {
         self.0
@@ -166,12 +171,7 @@ impl Environment {
     /// [`Self::names`], and each removed Service as reads show it: one name per
     /// Service, so an edit reads each back as the Service it was.
     pub(crate) fn shown_names(&self) -> BTreeMap<String, String> {
-        self.shown_with(&self.removed)
-    }
-
-    /// [`Self::shown_names`], numbering removed Services by `removed`.
-    pub(crate) fn shown_with(&self, removed: &RemovedServices) -> BTreeMap<String, String> {
-        removed.shown(
+        self.removed.shown(
             self.names(),
             crate::rules::removed_lineages(&self.working, &self.live),
         )
@@ -621,7 +621,11 @@ fn load(
     let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
     let working = row.intent(2, "Working State")?;
     let live = crate::branch::live_names(tx, id, &working)?;
-    let removed = row.json(3, "removed Services")?;
+    let mut removed: RemovedServices = row.json(3, "removed Services")?;
+    // As reads show them, so the next save stores the labels shown before it.
+    for lineage in crate::rules::removed_lineages(&working, &live) {
+        removed.record(&lineage, None);
+    }
     Ok(Environment {
         summary: EnvironmentSummary {
             id: id.clone(),

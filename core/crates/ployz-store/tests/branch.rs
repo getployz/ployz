@@ -933,3 +933,79 @@ fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
         json!({ "sentinel": "/etc/sentry" })
     );
 }
+
+#[test]
+fn a_branch_keeps_the_numbers_it_showed_for_services_its_parent_removed() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("jobs").unwrap(),
+                image: Some("jobs:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "web.env.JOBS_URL",
+            json!("${{ jobs.PLOYZ_PRIVATE_DOMAIN }}"),
+        )],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db"), node("jobs")];
+    store.write(&who, &create).unwrap();
+    for service in ["db", "jobs"] {
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at("production"),
+                    service: ServiceName::parse(service).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+    deploy(&store, &who, "production", 2, true);
+    let env = ||values(&store, &who, "fix-web", "web")["env"].clone();
+    assert_eq!(
+        (env()["DB_URL"].clone(), env()["JOBS_URL"].clone()),
+        (
+            json!("${{ <deleted>.PLOYZ_PRIVATE_DOMAIN }}"),
+            json!("${{ <deleted #2>.PLOYZ_PRIVATE_DOMAIN }}")
+        )
+    );
+
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.env.DB_URL", json!("plain")),
+            (
+                "web.env.JOBS_URL",
+                json!("${{ <deleted #2>.PLOYZ_PRIVATE_DOMAIN }}/v2"),
+            ),
+        ],
+    );
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[(
+            "web.env.JOBS_URL",
+            json!("${{ <deleted #2>.PLOYZ_PRIVATE_DOMAIN }}/v3"),
+        )],
+    );
+    assert_eq!(
+        env()["JOBS_URL"],
+        json!("${{ <deleted #2>.PLOYZ_PRIVATE_DOMAIN }}/v3")
+    );
+}

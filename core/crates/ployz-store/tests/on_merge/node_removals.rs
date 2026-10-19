@@ -1414,7 +1414,7 @@ fn a_merge_that_removes_a_mounted_config_takes_it_out_with_the_service() {
 }
 
 #[test]
-fn an_edit_reads_a_service_by_the_name_the_preview_shows_it_after_production_removed_it() {
+fn an_edit_keeps_the_service_the_preview_read_after_production_replaced_it() {
     let (store, who) = shop_with_nodes();
     set(
         &store,
@@ -1426,18 +1426,12 @@ fn an_edit_reads_a_service_by_the_name_the_preview_shows_it_after_production_rem
         )],
     );
     remove_service(&store, &who, "production", "db");
-    let shown = json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432");
-    let url = row(&store, &who, "web.env.DB_URL");
-    assert_eq!((url.preview, url.lands), (shown.clone(), shown));
+    image_service(&store, &who, "production", 30, "db");
+    let shown = row(&store, &who, "web.env.DB_URL").lands;
+    let edited = shown.as_str().unwrap().replace(":5432", ":6432");
 
     store
-        .write(
-            &who,
-            &merge_value(
-                "web.env.DB_URL",
-                Some("${{ db.PLOYZ_PRIVATE_DOMAIN }}:6432"),
-            ),
-        )
+        .write(&who, &merge_value("web.env.DB_URL", Some(edited.as_str())))
         .unwrap();
     assert_eq!(
         row(&store, &who, "web.env.DB_URL").lands,
