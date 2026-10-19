@@ -342,9 +342,9 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                     if let Some(context) = latest.contexts.get_mut(&context_name) {
                         context.drop_machine(&selected.id);
                     }
-                    Ok(())
+                    Ok::<_, Error>(())
                 })
-                .map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
+                .map_err(|error| error.context("Server removed; local context cleanup failed."))?;
         }
         if reset_failure.is_some() {
             return Err(Error::partial());

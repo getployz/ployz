@@ -105,7 +105,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 connections: vec![connection.clone()],
             },
         );
-        Ok(latest.set_current_context(Some(context_name.clone()))?)
+        Ok::<_, Error>(latest.set_current_context(Some(context_name.clone()))?)
     })?;
     crate::ui::note(format_args!("Switched context to {context_name}."));
     crate::ui::stream(format_args!("Initialised Server {}.", machine.name));

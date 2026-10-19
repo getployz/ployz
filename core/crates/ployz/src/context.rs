@@ -279,10 +279,10 @@ impl Config {
     ///
     /// # Errors
     /// Returns lock, load or atomic save failures, or the error from `update`.
-    pub fn update(
+    pub fn update<E: From<ConfigError>>(
         &self,
-        update: impl FnOnce(&mut Self) -> Result<(), ConfigError>,
-    ) -> Result<(), ConfigError> {
+        update: impl FnOnce(&mut Self) -> Result<(), E>,
+    ) -> Result<(), E> {
         let write_error = |source| ConfigError::Write {
             path: self.path.clone(),
             source,
@@ -300,7 +300,7 @@ impl Config {
             .map_err(|error| write_error(error.into()))?;
         let mut latest = Self::load_or_empty(&self.path)?;
         update(&mut latest)?;
-        latest.save()
+        Ok(latest.save()?)
     }
 
     #[must_use]

@@ -87,7 +87,7 @@ fn a_stale_config_update_keeps_a_rotation_saved_meanwhile() {
                     connections: vec![unix.clone()],
                 },
             );
-            Ok(latest.set_current_context(Some("second".into()))?)
+            Ok::<_, ConfigError>(latest.set_current_context(Some("second".into()))?)
         })
         .unwrap();
     let saved = Config::load(config.path()).unwrap();
@@ -109,7 +109,7 @@ fn update_founds_a_missing_config_and_its_directory() {
     Config::new(&path, None, BTreeMap::new())
         .update(|latest| {
             latest.contexts.insert("default".into(), Context::default());
-            Ok(latest.set_current_context(Some("default".into()))?)
+            Ok::<_, ConfigError>(latest.set_current_context(Some("default".into()))?)
         })
         .unwrap();
     assert_eq!(
@@ -137,7 +137,7 @@ fn connection_sources_are_plain_text() {
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-use super::{Config, Context, ContextError, RemovedContext};
+use super::{Config, ConfigError, Context, ContextError, RemovedContext};
 
 #[test]
 fn removing_a_non_current_context_leaves_current_and_the_other_entry() {

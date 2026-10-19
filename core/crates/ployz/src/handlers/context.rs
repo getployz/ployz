@@ -160,34 +160,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
         }
     };
     config.set_current_context(Some(selected.clone()))?;
-    let chosen = match requested_connection {
-        Some(requested) => {
-            let connections = config
-                .contexts
-                .get(&selected)
-                .map(|context| context.connections.as_slice())
-                .unwrap_or_default();
-            let index = connection_index(&selected, connections, requested)?;
-            connections.get(index).cloned()
-        }
-        None => None,
-    };
-    let mut connection = None;
-    config.update(|latest| {
-        latest.set_current_context(Some(selected.clone()))?;
-        let context = latest
-            .contexts
-            .get_mut(&selected)
-            .expect("set_current_context accepted a known context");
-        if let Some(index) = chosen
-            .as_ref()
-            .and_then(|chosen| context.connections.iter().position(|saved| saved == chosen))
-        {
-            context.select_connection(index);
-        }
-        connection = context.connections.first().map(ToString::to_string);
-        Ok(())
-    })?;
+    let connection = save_selection(&config, &selected, requested_connection.map(String::as_str))?;
     crate::ui::finish(
         &json!({ "context": selected, "connection": connection }),
         || {
@@ -207,13 +180,37 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
     )
 }
 
+/// Save `selected` as the current context, and `requested` as its default
+/// connection, in the latest config. Returns the default connection.
+fn save_selection(
+    config: &Config,
+    selected: &str,
+    requested: Option<&str>,
+) -> Result<Option<String>, Error> {
+    let mut connection = None;
+    config.update(|latest| {
+        latest.set_current_context(Some(selected.to_owned()))?;
+        let context = latest
+            .contexts
+            .get_mut(selected)
+            .expect("set_current_context accepted a known context");
+        if let Some(requested) = requested {
+            let index = connection_index(selected, &context.connections, requested)?;
+            context.select_connection(index);
+        }
+        connection = context.connections.first().map(ToString::to_string);
+        Ok::<_, Error>(())
+    })?;
+    Ok(connection)
+}
+
 pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
     let mut config = config(matches)?;
     let name = required(leaf_matches(matches), "context-name")?;
     let mut removed = config.remove_context(&name)?;
     config.update(|latest| {
         removed = latest.remove_context(&name)?;
-        Ok(())
+        Ok::<_, Error>(())
     })?;
     let was_current = removed == RemovedContext::Current;
     crate::ui::finish(
@@ -290,4 +287,68 @@ pub(super) fn select_command(command: Command) -> Command {
 
 pub(super) fn remove_command(command: Command) -> Command {
     base(command, "Remove a local context").arg(positional("context-name", true))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
+
+    use ployz_core::{ManagementCapability, ManagementIdentity};
+
+    use super::save_selection;
+    use crate::context::{Config, Connection, Context};
+
+    fn saved(dir: &tempfile::TempDir, connections: Vec<Connection>) -> Config {
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = Config::new(
+            dir.path().join("config.yaml"),
+            None,
+            BTreeMap::from([("first".into(), Context { connections })]),
+        );
+        config.save().unwrap();
+        config
+    }
+
+    #[test]
+    fn a_connection_removed_since_load_fails_and_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let unix = Connection::unix("/tmp/ployz.sock").unwrap();
+        let ssh: Connection = "ssh://root@example.com".parse().unwrap();
+        let label = ssh.to_string();
+        let stale = saved(&dir, vec![unix.clone(), ssh]);
+        // Another command drops the requested connection before the update.
+        let mut latest = Config::load(stale.path()).unwrap();
+        latest.contexts.get_mut("first").unwrap().connections = vec![unix];
+        latest.save().unwrap();
+        let error = save_selection(&stale, "first", Some(&label)).unwrap_err();
+        assert!(error.to_string().contains("not found"), "{error}");
+        assert_eq!(Config::load(stale.path()).unwrap(), latest);
+    }
+
+    #[test]
+    fn a_connection_rotated_since_load_is_still_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = ManagementCapability::new(ManagementIdentity::from_bytes([1; 32]), [2; 32]);
+        let new = ManagementCapability::new(*old.machine(), [3; 32]);
+        let unix = Connection::unix("/tmp/ployz.sock").unwrap();
+        let stale = saved(
+            &dir,
+            vec![
+                unix.clone(),
+                Connection::management(old.to_secret_string()).unwrap(),
+            ],
+        );
+        stale.save_management_capability(&new).unwrap();
+        let rotated = Connection::management(new.to_secret_string()).unwrap();
+        assert_eq!(
+            save_selection(&stale, "first", Some("2")).unwrap(),
+            Some(rotated.to_string())
+        );
+        let saved = Config::load(stale.path()).unwrap();
+        assert_eq!(saved.current_context(), Some("first"));
+        assert_eq!(
+            saved.contexts.get("first").unwrap().connections,
+            vec![rotated, unix]
+        );
+    }
 }
