@@ -1234,6 +1234,10 @@ fn remove_refuses_a_destructive_target_without_its_version() {
     let unversioned = refusal(store.write(&who, &request(Some("fix"))));
     assert_eq!(unversioned.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(unversioned.details["effects"][0]["kind"], "removes_service");
+    assert_eq!(
+        unversioned.details["effects_by_environment"]["fix"],
+        unversioned.details["effects"]
+    );
     let stale = refusal(store.write(
         &who,
         &Remove {

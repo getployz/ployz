@@ -157,7 +157,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
         <ol className="flex flex-col gap-3" aria-label="Saved versions">
           {history.revisions.map((revision) => {
             const changes = lines(changeGroups({ ...diff, changes: revision.changes }, []));
-            const current = revision.revision === diff.saved;
+            const latest = revision.revision === diff.saved;
             const after = later(history.revisions, revision.revision);
             const open = unfolded.has(revision.revision);
             const shown = open ? changes : changes.slice(0, SHOWN_CHANGES);
@@ -172,14 +172,15 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
                   <div className="min-w-0">
                     <p className="flex flex-wrap items-center gap-2 font-medium">
                       {revision.message ?? saveTitle(changes, revision.revision)}
-                      {current ? <Badge variant="secondary">Current</Badge> : null}
+                      {revision.revision === history.live ? <Badge variant="success">Live</Badge> : null}
+                      {revision.revision === history.failed ? <Badge variant="destructive">Failed</Badge> : null}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       #{revision.revision}{revision.saved_by ? ` · ${revision.saved_by}` : ""}
                       {revision.saved_at !== null ? <> · <RelativeTime date={new Date(revision.saved_at * 1000)} /></> : null}
                     </p>
                   </div>
-                  {changes.length || !current ? (
+                  {changes.length || !latest ? (
                     <DropdownMenu>
                       <DropdownMenuTrigger disabled={restoring} render={<Button size="icon-sm" variant="ghost" aria-label={`Actions for version ${revision.revision}`} />}>
                         <MoreVerticalIcon />
@@ -195,7 +196,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
                             </span>
                           </DropdownMenuItem>
                         ) : null}
-                        {current ? null : (
+                        {latest ? null : (
                           <DropdownMenuItem onClick={() => void choose(revision.revision, "restore")}>
                             <HistoryIcon />
                             <span>

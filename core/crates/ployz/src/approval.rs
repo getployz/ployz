@@ -216,7 +216,7 @@ fn things(count: usize) -> String {
     format!("{count} thing{}", if count == 1 { "" } else { "s" })
 }
 
-fn line(effect: &DestructiveEffect) -> String {
+pub(crate) fn line(effect: &DestructiveEffect) -> String {
     let name = &effect.name;
     match effect.kind {
         DestructiveKind::RemovesService => format!("removes Service {name}"),
