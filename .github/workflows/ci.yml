@@ -39,6 +39,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       jobs: ${{ steps.select.outputs.jobs }}
+      postgres: ${{ steps.select.outputs.postgres }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,6 +155,7 @@ jobs:
           cargo test --doc --workspace --all-features --locked
       # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres
+        if: needs.changes.outputs.postgres == 'true'
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
         run: cargo nextest run --workspace --all-features --locked -E 'package(ployz-store)'
