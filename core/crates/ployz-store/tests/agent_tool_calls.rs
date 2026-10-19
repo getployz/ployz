@@ -1950,6 +1950,148 @@ fn the_newest_applied_deployment_redeploys_and_rolls_nothing_back() {
     assert_eq!(replayed["rolls_back"], json!([2]));
 }
 
+/// #1 shipped `web` alone, then #2 added Volume `data`, whose data Server a holds.
+/// Redeploying #1 rolls #2 back and deletes that data. An agent's Store calls ask.
+fn rolled_back_volume() -> (ConfigStore, Trusted) {
+    let (store, _) = ended(
+        json!({ "type": "completed" }),
+        json!({ "type": "success", "completed": [remove_container()] }),
+    );
+    store
+        .write(
+            &who(),
+            &CreateVolume {
+                storage_locked: false,
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                storage: ployz_core::config::VolumeKind::Docker {},
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+                shared_writes: false,
+            },
+        )
+        .unwrap();
+    let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
+    store
+        .write(
+            &who(),
+            &Admit::Deploy(Deploy {
+                id: second.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+        )
+        .unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&second, &runner).unwrap();
+    let operation = json!({
+        "index": 0, "machine_id": machine('a'), "service_name": "web",
+        "operation": remove_container(), "status": { "type": "pending" },
+    });
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace, "operations": [operation],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    store
+        .record(&second, &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    store
+        .record(
+            &second,
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(
+                    serde_json::from_value(
+                        json!({ "type": "success", "completed": [remove_container()] }),
+                    )
+                    .unwrap(),
+                ),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    let docker = ployz_core::DockerVolumeName::parse(format!(
+        "{}_vol-00000000-0000-4000-8000-000000000005",
+        claimed.intent.namespace
+    ))
+    .unwrap();
+    let trusted = Trusted {
+        volumes: Some(ployz_store::VolumeObservation {
+            sought: vec![docker.clone()],
+            held: vec![ployz_core::DockerVolumeId {
+                machine_id: ployz_core::MachineId::parse(machine('a')).unwrap(),
+                name: docker,
+            }],
+            unanswered: Vec::new(),
+        }),
+        approval: ployz_store::Approval::Required,
+        asks: ployz_store::Asks::EveryDeploy,
+        ..Trusted::default()
+    };
+    (store, trusted)
+}
+
+#[test]
+fn an_agent_rollback_that_deletes_data_asks_the_member_to_accept_it() {
+    let (store, trusted) = rolled_back_volume();
+    let refused = drive_as(
+        &store,
+        (&who(), &trusted),
+        in_org(),
+        "deployment_retry",
+        json!({ "deployment": 1 }),
+        "retry-1",
+        &mut no_cloud,
+    )
+    .refused();
+    assert_eq!(
+        refused.code,
+        RpcErrorCode::ConfirmationRequired,
+        "{refused:?}"
+    );
+    assert_eq!(refused.retry.input["accept_volume_loss"], json!(["data"]));
+}
+
+#[test]
+fn an_agent_rollback_with_accepted_volume_loss_goes_to_a_human_for_approval() {
+    let (store, trusted) = rolled_back_volume();
+    let confirm = drive_as(
+        &store,
+        (&who(), &trusted),
+        in_org(),
+        "deployment_retry",
+        json!({ "deployment": 1 }),
+        "retry-1",
+        &mut no_cloud,
+    )
+    .refused()
+    .retry;
+    let asked = drive_as(
+        &store,
+        (&who(), &trusted),
+        in_org(),
+        "deployment_retry",
+        confirm.input,
+        "retry-2",
+        &mut no_cloud,
+    )
+    .refused();
+    assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
+    assert_eq!(
+        asked.message,
+        "A human must approve rolling back to #1 first: it undoes #2 and deletes the data of data."
+    );
+}
+
 /// Cloud's metrics answer with `events`, one CPU row and nothing unanswered.
 fn metrics_answer(events: Value) -> Value {
     json!({

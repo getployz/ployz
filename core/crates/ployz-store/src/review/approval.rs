@@ -11,7 +11,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
-use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname};
+use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname, VolumeName};
 use crate::review::{DiffView, Head, Review, Shipping};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
@@ -401,17 +401,29 @@ pub(crate) fn approve_retry(
         "retry": source,
         "number": rollback.number,
         "rolls_back": rollback.rolls_back,
+        "deletes": rollback.deletes,
     });
     // The retry ships its source's frozen state: none of the staged changes, and it
-    // destroys only what its source's review already accepted.
+    // destroys only what its source's review or the caller's acceptance covered.
     let mut diff = review.view.clone();
     diff.effects.clear();
     diff.changes.clear();
     diff.total_count = 0;
     let undoes = crate::deployment::numbered(&rollback.rolls_back);
+    let deletes = match rollback.deletes.as_slice() {
+        [] => String::new(),
+        names => format!(
+            " and deletes the data of {}",
+            names
+                .iter()
+                .map(VolumeName::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
     let message = gate.message(&diff, "deploy", || match &undoes {
         Some(undoes) => format!(
-            "A human must approve rolling back to #{} first: it undoes {undoes}.",
+            "A human must approve rolling back to #{} first: it undoes {undoes}{deletes}.",
             rollback.number
         ),
         None => "A human must approve this redeploy first.".to_owned(),

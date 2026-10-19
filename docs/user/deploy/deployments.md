@@ -159,11 +159,15 @@ their recorded outcomes.
   failed partway. Ployz asks first, in **Roll back to #4**, and names what it undoes, such as
   **Undoes #5 and #6**. The rollback ships #4's commit and settings. Services added after #4 stop,
   and they and the other settings saved after #4 show as staged changes again. A volume #4 deleted
-  that a later deployment brought back is deleted again only after you type its name in **Deletes
-  data**. If another deployment runs while you confirm, Ployz asks again with the new list.
+  that a later deployment brought back is deleted again only after you accept it. In **Deletes
+  data**, type the project and environment, such as `shop/production`. The CLI refuses and prints
+  the command that accepts it with `--accept-volume-loss`. If another deployment runs while you
+  confirm, Ployz asks again with the new list.
   While a newer deployment is running, Redeploy on an older one refuses with "Wait for #5 to
-  finish, then redeploy." A queued one gives way, as when you deploy again.
-- A finished removal or shutdown can't be redeployed: there is nothing left to ship.
+  finish, then redeploy." A queued one gives way, as when you deploy again, and so does one whose
+  runner stopped reporting.
+- An applied removal or shutdown can't be redeployed: there is nothing left to ship. One that
+  failed, was cancelled or reads `unknown` can.
 - **A rollback lasts until your next push or deploy**, which ships your latest commit and saved
   settings again. To keep it, revert the commit in Git and change the settings back.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays

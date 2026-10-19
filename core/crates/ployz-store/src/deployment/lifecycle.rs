@@ -290,16 +290,18 @@ pub(crate) fn retry(
         crate::removal::guard_removal(tx, &environment)?;
     }
     // What a rollback retires is frozen against Applied State now, which a newer
-    // running Deployment may yet change. A queued one is superseded, as by a Deploy.
+    // running Deployment may yet change. A queued one is superseded, as by a Deploy,
+    // and one whose lease lapsed is unknown: its runner is gone.
     if let Some(newer) = tx
         .query(
             "SELECT MAX(number) FROM config_deployment WHERE environment_id = ?1 \
-             AND number > ?2 AND status IN ('running', 'cancelling')",
+             AND number > ?2 AND status IN ('running', 'cancelling') AND lease > ?3",
             &[
                 stored.summary.environment_id.as_str().into(),
                 i64::try_from(stored.summary.number)
                     .map_err(|_| error::corrupt("Deployment number"))?
                     .into(),
+                now().into(),
             ],
         )?
         .first()
@@ -311,9 +313,10 @@ pub(crate) fn retry(
             json!({ "deployment": source, "waiting_for": newer }),
         ));
     }
-    let rollback = Rollback {
+    let mut rollback = Rollback {
         number: stored.summary.number,
         rolls_back: undone(tx, &stored.summary)?,
+        deletes: Vec::new(),
     };
     if let Some(confirmed) = &retry.rolls_back
         && *confirmed != rollback.rolls_back
@@ -340,6 +343,13 @@ pub(crate) fn retry(
         true => None,
         false => Some(rollback_losses(tx, who, &stored, retry, trusted)?),
     };
+    if let Some((_, losses)) = &fresh {
+        rollback.deletes = losses
+            .iter()
+            .filter(|loss| !loss.deletes.is_empty())
+            .map(|loss| loss.volume.name.clone())
+            .collect();
+    }
     let (services, nodes) = retried(tx, &stored, fresh)?;
     let admitted_at = now();
     let number = queue(tx, &stored.summary.environment_id, |tx, number| {
@@ -395,12 +405,13 @@ pub(crate) fn retry(
     Ok((summary, rollback))
 }
 
-/// What a redeploy rolls back: the Deployment it ships again, by number, and the
-/// newer ones it undoes.
+/// What a redeploy rolls back: the Deployment it ships again, by number, the
+/// newer ones it undoes, and the Volumes whose data it deletes.
 #[derive(Clone, Debug)]
 pub(crate) struct Rollback {
     pub(crate) number: u64,
     pub(crate) rolls_back: Vec<u64>,
+    pub(crate) deletes: Vec<VolumeName>,
 }
 
 /// The Deployments of `deployment`'s Environment after it that may have changed

@@ -23,7 +23,10 @@ const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 const VALUE_CHARS: usize = 80;
 
 /// Refuse loss accepted without the version a confirmation handed back.
-fn version_for_loss(accept: &[VolumeName], version: Option<&String>) -> Result<(), Stop> {
+pub(crate) fn version_for_loss(
+    accept: &[VolumeName],
+    version: Option<&String>,
+) -> Result<(), Stop> {
     AcceptedLoss::from_input(
         accept.iter().map(ToString::to_string).collect(),
         version.cloned(),

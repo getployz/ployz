@@ -2393,6 +2393,22 @@ fn redeploying_an_older_deployment_waits_for_a_newer_one_in_flight() {
 }
 
 #[test]
+fn a_newer_deployment_whose_runner_is_gone_does_not_hold_up_a_redeploy() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    backend::execute(&url, "UPDATE config_deployment SET lease = 0");
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+
+    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, 3);
+}
+
+#[test]
 fn a_full_rollback_retires_the_services_added_since() {
     let (store, who) = shop();
     store

@@ -10,13 +10,13 @@ use serde_json::{Value, json};
 
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
-use super::release::place;
+use super::release::{place, version_for_loss};
 use super::step::{Gate, RequestKey};
 use crate::catalog::NODE_NAME;
 use crate::{
     Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
     DeploymentsQuery, DeploymentsView, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start,
+    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start, VolumeName,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
@@ -339,11 +339,16 @@ pub(crate) struct DeploymentRetry {
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
     request_key: Option<RequestKey>,
-    /// Project name. Omit for the one you are in.
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    #[schemars(with = "Vec<String>")]
+    accept_volume_loss: Vec<VolumeName>,
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -351,7 +356,7 @@ pub(crate) struct DeploymentRetry {
 
 impl Tool for DeploymentRetry {
     const NAME: &'static str = "deployment_retry";
-    const DESCRIPTION: &'static str = "Ship an ended Deployment's commit and settings again; an older one rolls back the newer ones in rolls_back. Every redeploy waits for a human to approve.";
+    const DESCRIPTION: &'static str = "Ship an ended Deployment's commit and settings again; an older one rolls back newer ones. A human approves every redeploy.";
     const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
 
@@ -360,6 +365,7 @@ impl Tool for DeploymentRetry {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        version_for_loss(&self.accept_volume_loss, self.version.as_ref())?;
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let id: DeploymentId = cx.mint(self.request_key)?;
         let number = match self.deployment {
@@ -400,8 +406,8 @@ impl Tool for DeploymentRetry {
             id,
             deployment: source.deployment.id.clone(),
             rolls_back: None,
-            version: None,
-            accept_volume_loss: Vec::new(),
+            version: self.version,
+            accept_volume_loss: self.accept_volume_loss,
         });
         let summary = cx.write(&retry)?;
         let retries = Some(source.deployment.number);
