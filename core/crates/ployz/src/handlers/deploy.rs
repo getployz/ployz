@@ -1,5 +1,5 @@
 //! `ployz deploy` and `ployz deployment`: ship an Environment from the Config Store,
-//! and read, retry, start and cancel its Deployments. Cloud's runner runs a
+//! and read, redeploy, start and cancel its Deployments. Cloud's runner runs a
 //! Deployment admitted over HTTPS, and `deploy` follows it until it ends. With the
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
@@ -101,7 +101,7 @@ pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 const UNCLAIMED: Duration = Duration::from_secs(30);
 
 pub(super) fn deployment_group(command: Command) -> Command {
-    command.about("Read, retry, start and cancel Deployments")
+    command.about("Read, redeploy, start and cancel Deployments")
 }
 
 pub(super) fn ls_command(command: Command) -> Command {
@@ -118,12 +118,19 @@ pub(super) fn show_command(command: Command) -> Command {
     scoped(command.about("Show a Deployment with its Deploy Preview and Node Outcomes")).arg(id())
 }
 
-pub(super) fn retry_command(command: Command) -> Command {
+pub(super) fn redeploy_command(command: Command) -> Command {
     following(scoped(base(
         command,
-        "Deploy again exactly what a failed, unknown or cancelled Deployment froze, and follow it",
+        "Deploy an ended Deployment's commit and settings again, and follow it. Redeploying \
+         one older than a Deployment that ran rolls that back until the next deploy, so it \
+         asks first; --yes skips the ask. Outside a terminal without --yes it fails with \
+         confirmation_required. A rollback that deletes Volume data needs \
+         --accept-volume-loss.",
     )))
     .arg(id())
+    .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
+    .arg(crate::cli::volume_acceptance())
+    .arg(crate::cli::reviewed_version())
 }
 
 pub(super) fn start_command(command: Command) -> Command {
@@ -291,7 +298,12 @@ fn ship(
     admitted: &DeploymentSummary,
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<(), Error> {
-    execute(matches, store, admitted, None, events)?.finish()
+    let shipped = execute(matches, store, admitted, None, events)?;
+    let again = progress::removal_retry(&shipped.view, |words| super::rerun(matches, words));
+    shipped.finish().map_err(|error| match again {
+        Some(again) => error.hint(again),
+        None => error,
+    })
 }
 
 /// A Deployment that ended, or was left to run: its view, the command to run next,
@@ -955,7 +967,7 @@ pub(super) fn deployment_id(
     Ok(found.deployment.id)
 }
 
-/// A refused retry, start or cancel points at the Deployment's current state.
+/// A refused redeploy, start or cancel points at the Deployment's current state.
 fn refused<'a>(
     matches: &'a ArgMatches,
     store: &'a Store,
@@ -990,19 +1002,82 @@ fn id_hint(id: &DeploymentId) -> String {
     shell_words::join(["ployz", "deployment", "show", id.as_str()])
 }
 
-pub(super) fn retry(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
+    let yes = matches.get_flag("yes");
+    // A refusal to delete data names this command again, with the same answer.
+    let mut words: Vec<&str> = matches
+        .get_one::<String>("id")
+        .map(String::as_str)
+        .into_iter()
+        .collect();
+    if yes {
+        words.push("--yes");
+    }
+    let store = store(root)?.args(words);
     let source = deployment_id(matches, &store, "id")?;
     refuse_local_detach(matches, &store)?;
+    // The Store refuses when what it rolls back changed after the ask.
+    let rolls_back = match yes {
+        true => None,
+        false => Some(confirm_rollback(&store, &source)?),
+    };
     let events = open_events(matches)?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
             id: DeploymentId::parse(mint())?,
             deployment: source.clone(),
+            rolls_back,
+            version: matches.get_one::<String>("expect-version").cloned(),
+            accept_volume_loss: super::teardown::accepted(matches)?,
         }))
-        .map_err(refused(matches, &store, &source))?;
+        .map_err(|error| {
+            let asks = matches!(&error, StoreCallError::Refused(refusal)
+                if refusal.code == RpcErrorCode::ConfirmationRequired);
+            match asks {
+                true => store.accepting(store.at_review(error, "diff")),
+                false => refused(matches, &store, &source)(error),
+            }
+        })?;
     ship(matches, &store, &admitted, events)
+}
+
+/// Ask before redeploying `source` rolls back the Deployments that ran after it.
+/// Returns what the person confirmed it rolls back.
+fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Error> {
+    let view = store.read(&ployz_store::DeploymentQuery { id: source.clone() })?;
+    let Some(undoes) = rolls_back(&view.rolls_back) else {
+        return Ok(Vec::new());
+    };
+    let number = view.deployment.number;
+    ui::note(format!("Redeploying #{number} undoes {undoes}."));
+    ui::confirm(
+        &format!("Roll back to #{number}?"),
+        || {
+            Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                format!("Rolling back to #{number} needs confirmation. Nothing deployed."),
+                serde_json::json!({ "deployment": number, "rolls_back": view.rolls_back }),
+            )
+            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+        },
+        "Cancelled. Nothing deployed.",
+    )?;
+    Ok(view.rolls_back)
+}
+
+/// `#5 and #6`, the Deployments a redeploy undoes; none when it undoes nothing.
+fn rolls_back(numbers: &[u64]) -> Option<String> {
+    let (last, rest) = numbers.split_last()?;
+    let named = |number: &u64| format!("#{number}");
+    Some(match rest {
+        [] => named(last),
+        _ => format!(
+            "{} and {}",
+            rest.iter().map(named).collect::<Vec<_>>().join(", "),
+            named(last)
+        ),
+    })
 }
 
 pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {

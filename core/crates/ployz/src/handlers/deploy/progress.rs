@@ -223,6 +223,31 @@ pub(super) fn completion(
     Ok(())
 }
 
+/// How to retry a removal or shutdown that ended without applying when the command that
+/// ran it is `deployment retry` or `start`: retry this Deployment in its own Environment.
+/// A Deploy can't.
+pub(super) fn removal_retry(
+    view: &DeploymentView,
+    command: impl Fn(&[&str]) -> String,
+) -> Option<Hint> {
+    // The statuses `deployment retry` accepts.
+    let ended = matches!(
+        view.deployment.status,
+        DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled
+    );
+    (view.deployment.remove && ended).then(|| {
+        Hint::Retry(command(&[
+            "deployment",
+            "retry",
+            &view.deployment.number.to_string(),
+            "--project",
+            view.environment.project.as_str(),
+            "--env",
+            view.environment.name.as_str(),
+        ]))
+    })
+}
+
 fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failure {
     let (reason, cause) = match &view.deployment.outcome {
         Some(
@@ -298,6 +323,10 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     .with_diagnostic(diagnostic);
     for hint in hints {
         failure = failure.hint(hint);
+    }
+    // A Deploy can't retry a removal or shutdown: the command that ran it names its own retry.
+    if view.deployment.remove {
+        return failure;
     }
     failure.hint(Hint::Retry(command(&[
         "deploy",
@@ -385,6 +414,50 @@ mod tests {
             ]]
         );
     }
+
+    #[test]
+    fn a_failed_removal_never_says_to_retry_with_deploy() {
+        let retries = |view: &DeploymentView| {
+            failure(view, command)
+                .hints()
+                .iter()
+                .filter(|hint| matches!(hint, Hint::Retry(_)))
+                .count()
+        };
+        let mut removal = view();
+        assert_eq!(retries(&removal), 1);
+        removal.deployment.remove = true;
+        assert_eq!(retries(&removal), 0);
+    }
+
+    #[test]
+    fn a_failed_removal_retried_by_deployment_says_to_retry_it_again() {
+        let mut removal = view();
+        assert_eq!(removal_retry(&removal, command), None);
+        removal.deployment.remove = true;
+        let retry = Some(Hint::Retry(
+            "ployz deployment retry 7 --project shop --env production".to_owned(),
+        ));
+        for status in [
+            DeploymentStatus::Failed,
+            DeploymentStatus::Unknown,
+            DeploymentStatus::Cancelled,
+        ] {
+            removal.deployment.status = status;
+            assert_eq!(removal_retry(&removal, command), retry, "{status:?}");
+        }
+        for status in [
+            DeploymentStatus::Applied,
+            DeploymentStatus::Queued,
+            DeploymentStatus::Running,
+            DeploymentStatus::Cancelling,
+            DeploymentStatus::Superseded,
+        ] {
+            removal.deployment.status = status;
+            assert_eq!(removal_retry(&removal, command), None, "{status:?}");
+        }
+    }
+
     #[test]
     fn applied_result_with_a_qualified_gap_is_partial_without_changing_its_status() {
         use ployz_core::{

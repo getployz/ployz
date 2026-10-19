@@ -270,11 +270,11 @@ pub(crate) const DEPLOYMENT_CANCEL: Verb = Verb::cloud(
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_LS: Verb =
     Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls).docs("cli/overview.md");
-pub(crate) const DEPLOYMENT_RETRY: Verb = Verb::cloud(
-    "deployment retry",
-    Never,
-    deploy::retry_command,
-    deploy::retry,
+pub(crate) const DEPLOYMENT_REDEPLOY: Verb = Verb::cloud(
+    "deployment redeploy",
+    Depends,
+    deploy::redeploy_command,
+    deploy::redeploy,
 )
 .docs("deploy/deployments.md")
 .needs(Permission::ChangesDeploy);
@@ -360,7 +360,8 @@ pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
     Always,
     env::shutdown_command,
     env::pr::shutdown,
-);
+)
+.docs("account/organizations.md");
 pub(crate) const ENV_SYNC: Verb =
     Verb::cloud("env sync", Depends, env::sync_command, env::branch::sync)
         .stdin(&[("--value", Stdin::Only)])
@@ -790,7 +791,7 @@ pub(crate) const VERBS: &[Verb] = &[
     DEPLOY,
     DEPLOYMENT_CANCEL,
     DEPLOYMENT_LS,
-    DEPLOYMENT_RETRY,
+    DEPLOYMENT_REDEPLOY,
     DEPLOYMENT_SHOW,
     DEPLOYMENT_START,
     DIFF,

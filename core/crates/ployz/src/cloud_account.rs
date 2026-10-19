@@ -262,6 +262,12 @@ pub(crate) async fn organizations(
     Ok(reply.organizations)
 }
 
+/// The Organization to switch to: a slug the user typed, or one Cloud listed, sent by ID.
+pub(crate) enum Target<'a> {
+    Slug(&'a str),
+    Listed(&'a OrganizationEntry),
+}
+
 /// Switch this device's sign-in to another of the user's Organizations.
 ///
 /// # Errors
@@ -271,17 +277,24 @@ pub(crate) async fn organizations(
 pub(crate) async fn use_organization(
     store: &CredentialStore,
     credential: &Credential,
-    slug: &str,
+    target: Target<'_>,
 ) -> Result<Organization, LoginError> {
     let Credential::Device(signed_in) = credential else {
         return Err(LoginError::TokenBound);
+    };
+    let (body, slug) = match target {
+        Target::Slug(slug) => (serde_json::json!({ "organizationSlug": slug }), slug),
+        Target::Listed(listed) => (
+            serde_json::json!({ "organizationId": listed.id }),
+            listed.slug.as_str(),
+        ),
     };
     // better-auth's own endpoint moves the session's active Organization, checking membership.
     let response = send(
         credential,
         Method::POST,
         &format!("{}/api/auth/organization/set-active", signed_in.cloud),
-        Some(&serde_json::json!({ "organizationSlug": slug })),
+        Some(&body),
     )
     .await?;
     let status = response.status();
@@ -787,20 +800,15 @@ pub(crate) async fn check_forget_servers(
 ///
 /// # Errors
 ///
-/// As [`check_forget_servers`], and `invalid_argument` for another Organization than
-/// the credential's.
+/// As [`check_forget_servers`], `invalid_argument` for another Organization than the
+/// credential's, and `approval_required` until a human approves it.
 pub(crate) async fn forget_servers(
     credential: &Credential,
     organization: &str,
+    approval: Option<&str>,
 ) -> Result<ServersForgotten, StoreCallError> {
-    let url = format!("{}/api/cli/forget-servers", credential.cloud());
     let body = serde_json::json!({ "organization": organization });
-    store_answer(
-        credential,
-        send(credential, Method::POST, &url, Some(&body)).await?,
-        cloud_login::unreachable,
-    )
-    .await
+    approved_answer(credential, Method::POST, "forget-servers", &body, approval).await
 }
 
 /// What `org rm` did: whether the Organization is gone, and which Servers confirmed
@@ -818,16 +826,20 @@ pub(crate) struct OrganizationRemoval {
 /// # Errors
 ///
 /// Returns Cloud's refusal (`conflict` while it has a Project, `invalid_argument`
-/// for another Organization than the credential's), or a Cloud failure.
+/// for another Organization than the credential's, `approval_required` until a human
+/// approves it), or a Cloud failure.
 pub(crate) async fn remove_organization(
     credential: &Credential,
     id: &str,
+    approval: Option<&str>,
 ) -> Result<OrganizationRemoval, StoreCallError> {
-    let url = format!("{}/api/cli/organizations/{id}", credential.cloud());
-    store_answer(
+    let path = format!("organizations/{id}");
+    approved_answer(
         credential,
-        send(credential, Method::DELETE, &url, None).await?,
-        cloud_login::unreachable,
+        Method::DELETE,
+        &path,
+        &serde_json::json!({}),
+        approval,
     )
     .await
 }
@@ -1274,31 +1286,50 @@ mod tests {
 
     #[tokio::test]
     async fn org_use_moves_the_device_among_its_own_organizations() {
-        let cloud = fake_cloud(|route, body| match route {
-            "POST /api/auth/organization/set-active" if body.contains("\"beta\"") => (
-                200,
-                serde_json::json!({ "id": "o2", "slug": "beta", "name": "Beta", "members": [] }),
-            ),
-            _ => (403, serde_json::json!({ "message": "not a member" })),
+        let cloud = fake_cloud(|route, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let beta = body == serde_json::json!({ "organizationSlug": "beta" })
+                || body == serde_json::json!({ "organizationId": "o2" });
+            match route {
+                "POST /api/auth/organization/set-active" if beta => (
+                    200,
+                    serde_json::json!({ "id": "o2", "slug": "beta", "name": "Beta", "members": [] }),
+                ),
+                _ => (403, serde_json::json!({ "message": "not a member" })),
+            }
         });
         let (_dir, store) = signed_in_store(&cloud);
         let device = credential(&store, None, None).await.unwrap();
-        let error = use_organization(&store, &device, "gamma")
+        let error = use_organization(&store, &device, Target::Slug("gamma"))
             .await
             .unwrap_err();
         assert!(
             matches!(error, LoginError::UnknownOrganization(_)),
             "{error}"
         );
-        let error = use_organization(&store, &token(&cloud), "beta")
+        let error = use_organization(&store, &token(&cloud), Target::Slug("beta"))
             .await
             .unwrap_err();
         assert!(matches!(error, LoginError::TokenBound), "{error}");
 
-        let organization = use_organization(&store, &device, "beta").await.unwrap();
+        let organization = use_organization(&store, &device, Target::Slug("beta"))
+            .await
+            .unwrap();
         assert_eq!(organization.slug, "beta");
         let stored = cloud_login::signed_in(&store).await.unwrap();
         assert_eq!(stored.organization.id, "o2");
+
+        // A listed Organization goes by its ID, so a slug Cloud no longer knows still moves.
+        let listed = OrganizationEntry {
+            id: "o2".to_owned(),
+            slug: "beta-renamed".to_owned(),
+            name: "Beta".to_owned(),
+            current: false,
+        };
+        let organization = use_organization(&store, &device, Target::Listed(&listed))
+            .await
+            .unwrap();
+        assert_eq!(organization.id, "o2");
     }
 
     #[tokio::test]

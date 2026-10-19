@@ -199,7 +199,7 @@ unprotected.
 To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
 `ployz env protect production --off` and `ployz env protect production`. Members see the switch
 disabled. `ployz env ls` shows which are Protected. Branches and preview environments can't be
-Protected. When an agent turns protection off, it waits for you to approve.
+Protected. Turning protection off from the CLI or an agent waits for you to approve.
 
 A member can still ask for changes in a Protected environment. Their buttons read **Request
 deploy**, **Request sync**, **Request restart** and **Request stop**, and clicking one shows
@@ -231,7 +231,8 @@ you make another one the default.
 
 Deleting returns at once. The environment stays listed until every server that ran it has taken it
 off, and then it's gone. A server that's offline holds its part until it answers or you remove the
-server, and Ployz names the server it waits on. A volume whose copies Ployz couldn't all check is
+server, and Ployz names the server it waits on. Ployz tries again each hour, so it finishes within the
+hour after that. A volume whose copies Ployz couldn't all check is
 deleted only if you chose to delete every copy. Then a mirror of it made after the delete started
 goes too.
 

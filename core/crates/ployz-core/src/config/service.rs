@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{RestartPolicy, ServiceName};
+use crate::{RestartPolicy, ServiceName, UpdateOrder};
 
 /// Authored Cloud settings. Runtime specs are compiled from this configuration;
 /// they cannot reconstruct repository authority, build policy, or credentials.
@@ -21,6 +21,11 @@ pub struct AuthoredServiceConfig {
     pub restart_policy: ServiceRestartPolicy,
     #[serde(default = "default_max_retries")]
     pub max_retries: u8,
+    /// None lets each deploy choose: stop-first with a Volume, else start-first.
+    /// Skipped when unset, so documents without it hash the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub update_order: Option<ServiceUpdateOrder>,
     #[serde(default = "default_replicas")]
     pub replicas: u8,
     #[serde(default)]
@@ -207,6 +212,25 @@ impl From<ServiceRestartPolicy> for String {
             RestartPolicy::OnFailure { .. } => "on-failure",
         }
         .into()
+    }
+}
+
+/// How a Deploy replaces a Service's containers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceUpdateOrder {
+    StartFirst,
+    StopFirst,
+    Rolling,
+}
+
+impl From<ServiceUpdateOrder> for UpdateOrder {
+    fn from(order: ServiceUpdateOrder) -> Self {
+        match order {
+            ServiceUpdateOrder::StartFirst => Self::StartFirst,
+            ServiceUpdateOrder::StopFirst => Self::StopFirst,
+            ServiceUpdateOrder::Rolling => Self::Rolling,
+        }
     }
 }
 

@@ -108,3 +108,19 @@ it("offers only an image to an empty Service in a Protected Environment", () => 
   expect(screen.getByRole("button", { name: /GitHub repository/ }).hasAttribute("disabled")).toBe(true);
   expect(screen.getByRole("button", { name: /Container image/ }).hasAttribute("disabled")).toBe(false);
 });
+
+it("says once, under Auto-deploy, that pushes from a public repository need the GitHub App", () => {
+  vi.spyOn(github, "useGithubWebOrigin").mockReturnValue("https://github.com");
+  vi.spyOn(gitFields, "useRepositoryRef").mockReturnValue(undefined);
+  vi.spyOn(gitFields, "useSourceLock").mockReturnValue(undefined);
+  const note = "Pushes reach Ployz only once the GitHub App is installed on ada/web.";
+  const policy = (value: boolean) => asTestDouble<SettingRow>()({ value, default: value, apply: "immediate", note });
+  const state = gitService("git");
+  state.rows.set("autoDeploy", policy(true));
+  state.rows.set("waitForCi", policy(true));
+
+  render(<StoreSourceSection state={state} />);
+
+  expect(screen.getAllByText(note)).toHaveLength(1);
+  expect(screen.getByText(/Hold an auto-deploy/)).toBeTruthy();
+});

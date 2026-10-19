@@ -181,7 +181,7 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
-shows each server's newest 200 lines at most, with secrets scrubbed, and can't use `--follow`,
+shows each server's newest 200 lines at most, with sealed variables scrubbed, and can't use `--follow`,
 `--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
 if the directory isn't linked. A `deploy` token reads only its own environment, so
 `ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
@@ -324,8 +324,10 @@ Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,
-and exits 3. Ployz finishes on its own once the server answers or you remove it with
-`ployz server rm`. With `--json` it reports `removal: removed` only once the environment is gone
+and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour after the server
+answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
+or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
+the first run did. With `--json` it reports `removal: removed` only once the environment is gone
 from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
