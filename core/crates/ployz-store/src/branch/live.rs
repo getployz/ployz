@@ -159,7 +159,8 @@ pub(crate) fn lowering(
 }
 
 /// The name of each node `working` uses live, by lineage, from the nearest
-/// Environment it comes from whose Working State names it. Empty for a root.
+/// Environment it comes from whose Working State names it, else whose Applied
+/// State holds it. Empty for a root.
 pub(crate) fn live_names(
     tx: &mut dyn Tx,
     id: &EnvironmentId,
@@ -186,6 +187,19 @@ pub(crate) fn live_names(
             }
             None => true,
         });
+    }
+    if !wanted.is_empty()
+        && let Some(row) = row(tx, id)?
+    {
+        for ancestor in chain(tx, &row.parent)? {
+            wanted.retain(|lineage| match name_of(&ancestor.applied, lineage) {
+                Some(name) => {
+                    names.insert(lineage.clone(), name);
+                    false
+                }
+                None => true,
+            });
+        }
     }
     Ok(names)
 }

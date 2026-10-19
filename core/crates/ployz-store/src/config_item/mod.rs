@@ -224,7 +224,7 @@ pub(crate) fn put_file(
         .files
         .get(&put.file)
         .map_or(&[][..], |file| file.content.as_slice());
-    let content = parts(&put.file, &put.content, &names, old)?;
+    let content = parts(&put.file, &put.content, &names, &environment.removed, old)?;
     let config = environment.config_mut(&put.config)?;
     let id = config.resource_id.clone();
     let old = config.files.get(&put.file);
@@ -579,6 +579,7 @@ fn parts(
     file: &ConfigFileName,
     text: &str,
     names: &BTreeMap<String, String>,
+    removed: &BTreeMap<String, String>,
     old: &[ValuePart],
 ) -> Result<Vec<ValuePart>, RpcError> {
     if text.len() > MAX_FILE_BYTES {
@@ -596,7 +597,7 @@ fn parts(
             json!({ "file": file }),
         ));
     }
-    let template = parse_variable_template(text, crate::variables::lineage_of(names, old));
+    let template = parse_variable_template(text, crate::variables::lineage_of(names, removed, old));
     if template.unterminated {
         return Err(error::invalid(
             format!(

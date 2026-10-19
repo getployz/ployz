@@ -7,6 +7,8 @@ import {
   parseDisplayToParts,
   partsToDisplay,
   partsToLiteralString,
+  referencesDeletedOwner,
+  renameReferences,
   type LookupLineage,
   type LookupSlug,
 } from "./variable-template";
@@ -91,6 +93,18 @@ describe("parseDisplayToParts", () => {
     const { parts } = parseDisplayToParts("${{ not-valid", lookupLineage);
     expect(isPureLiteral(parts)).toBe(true);
     expect(partsToLiteralString(parts)).toBe("${{ not-valid");
+  });
+
+  it("reads a removed service's token, named or not, as the Store shows it", () => {
+    const display = "${{ <deleted redis-2>.URL }},${{ <deleted>.URL }},${{ db.URL }}";
+    const { unresolved } = parseDisplayToParts(display, lookupLineage);
+    expect(unresolved).toEqual(["<deleted redis-2>", "<deleted>"]);
+    expect(renameReferences(display, "api", "db", "URL", "DSN")).toBe(
+      "${{ <deleted redis-2>.URL }},${{ <deleted>.URL }},${{ db.DSN }}",
+    );
+    expect(referencesDeletedOwner("${{ <deleted redis-2>.URL }}")).toBe(true);
+    expect(referencesDeletedOwner("${{<deleted>.URL}}")).toBe(true);
+    expect(referencesDeletedOwner("$${{ <deleted redis>.URL }}")).toBe(false);
   });
 });
 

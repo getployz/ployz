@@ -1072,6 +1072,115 @@ fn editing_a_broken_variable_keeps_its_reference() {
     assert_eq!(broken, ["api.env.URL references a removed Service"]);
 }
 
+#[test]
+fn an_edit_keeps_each_reference_on_the_removed_service_it_names() {
+    let store = backend::open();
+    shop(&store);
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("jobs").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("api.env.URL", json!("a")),
+            ("jobs.env.HOSTS", json!("${{ web.URL }},${{ api.URL }}")),
+        ],
+    )
+    .unwrap();
+    store
+        .write(
+            &who(),
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("db").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("jobs").unwrap(),
+                    dir: "/etc/db".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let put = |content: &str| {
+        store.write(
+            &who(),
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("db").unwrap(),
+                file: ConfigFileName::parse("db.yml").unwrap(),
+                content: content.into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+    };
+    put("primary: ${{ web.URL }}\nreplica: ${{ api.URL }}").unwrap();
+    admit(&store, 1).unwrap();
+    for gone in ["web", "api"] {
+        store
+            .write(
+                &who(),
+                &ployz_store::RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse(gone).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+    let file = || {
+        store
+            .read(
+                &who(),
+                &ployz_store::ConfigItemQuery {
+                    environment: EnvironmentRef::default(),
+                    config: ConfigName::parse("db").unwrap().into(),
+                },
+            )
+            .unwrap()
+            .contents[&ConfigFileName::parse("db.yml").unwrap()]
+            .clone()
+    };
+
+    assert_eq!(
+        value(&store, "jobs.env.HOSTS"),
+        json!("${{ <deleted web>.URL }},${{ <deleted api>.URL }}")
+    );
+    set(
+        &store,
+        &[("jobs.env.HOSTS", json!("${{ <deleted api>.URL }}"))],
+    )
+    .unwrap();
+    assert_eq!(
+        value(&store, "jobs.env.HOSTS"),
+        json!("${{ <deleted api>.URL }}")
+    );
+    let invented = set(
+        &store,
+        &[("jobs.env.HOSTS", json!("${{ <deleted web>.URL }}"))],
+    );
+    assert_eq!(invented.unwrap_err().code, RpcErrorCode::InvalidArgument);
+
+    assert_eq!(
+        file(),
+        "primary: ${{ <deleted web>.URL }}\nreplica: ${{ <deleted api>.URL }}"
+    );
+    put("replica: ${{ <deleted api>.URL }}").unwrap();
+    assert_eq!(file(), "replica: ${{ <deleted api>.URL }}");
+    let invented = put("primary: ${{ <deleted web>.URL }}");
+    assert_eq!(invented.unwrap_err().code, RpcErrorCode::InvalidArgument);
+}
+
 /// `DeploymentWarning` before broken references, as older clients still read it.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]

@@ -24,6 +24,7 @@ use ts_rs::TS;
 
 use crate::SetupCommand;
 use crate::error;
+use crate::id::EnvironmentId;
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 
@@ -92,16 +93,15 @@ impl std::fmt::Display for BrokenReference {
 
 /// Each reference in `working` to a Service or variable that isn't there: Services'
 /// variables, then Config files, each once, a removed Service once per variable or
-/// file. A Service `live` holds is there, with the variables `live_keys` gives it
-/// where it is deployed; `names` names a removed or live one by lineage.
+/// file. A Service `live_keys` holds is there where it is deployed, with the
+/// variables it gives it; `names` names a removed or live one by lineage.
 pub(crate) fn broken(
     working: &SavedEnvironmentIntent,
-    live: &BTreeMap<String, String>,
     live_keys: &BTreeMap<String, BTreeSet<String>>,
     names: &BTreeMap<String, String>,
 ) -> Vec<BrokenReference> {
     let named = |slug: &str| ServiceName::parse(slug).ok();
-    dangling(working, live, live_keys)
+    dangling(working, live_keys)
         .into_iter()
         .filter_map(|Dangling { at, reads, wants }| {
             Some(BrokenReference {
@@ -143,8 +143,8 @@ pub(crate) fn broken(
         })
 }
 
-/// [`broken`] in `environment`, naming a removed Service `names` lacks from the
-/// newest save that holds it.
+/// [`broken`] in `environment`, naming a removed Service as the newest save that
+/// holds it does, else as `names` does.
 pub(crate) fn broken_in(
     tx: &mut dyn Tx,
     environment: &Environment,
@@ -155,39 +155,78 @@ pub(crate) fn broken_in(
     for (lineage, name) in live {
         names.entry(lineage.clone()).or_insert_with(|| name.clone());
     }
+    names.extend(environment.removed.clone());
     let live_keys = crate::branch::live_keys(tx, &environment.summary.id, working)?;
-    let mut unnamed: BTreeSet<String> = dangling(working, live, &live_keys)
+    let mut unnamed = removed_lineages(working, live);
+    unnamed.retain(|lineage| !names.contains_key(lineage));
+    names.extend(saved_names(tx, &environment.summary.id, unnamed)?);
+    Ok(broken(working, &live_keys, &names))
+}
+
+/// The last name of each removed Service `working` references, from the newest
+/// save that holds it.
+pub(crate) fn removed_names(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+    working: &SavedEnvironmentIntent,
+    live: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, RpcError> {
+    saved_names(tx, id, removed_lineages(working, live))
+}
+
+/// The lineage of each Service a reference of `working` reads that is neither in
+/// it nor in `live`.
+fn removed_lineages(
+    working: &SavedEnvironmentIntent,
+    live: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
+    let named = live
+        .keys()
+        .map(|lineage| (lineage.clone(), BTreeSet::new()))
+        .collect();
+    dangling(working, &named)
         .into_iter()
         .filter_map(|dangling| match dangling.wants {
-            Wants::Service(lineage) if !names.contains_key(&lineage) => Some(lineage),
-            Wants::Service(_) | Wants::Variable { .. } => None,
+            Wants::Service(lineage) => Some(lineage),
+            Wants::Variable { .. } => None,
         })
-        .collect();
-    if !unnamed.is_empty() {
-        let id = environment.summary.id.as_str();
-        let revisions = tx.query(
-            "SELECT revision FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC",
-            &[id.into()],
+        .collect()
+}
+
+/// The name of each Service lineage in `unnamed` in the newest save of
+/// Environment `id` that holds it.
+fn saved_names(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+    mut unnamed: BTreeSet<String>,
+) -> Result<BTreeMap<String, String>, RpcError> {
+    let mut names = BTreeMap::new();
+    if unnamed.is_empty() {
+        return Ok(names);
+    }
+    let id = id.as_str();
+    let revisions = tx.query(
+        "SELECT revision FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC",
+        &[id.into()],
+    )?;
+    for revision in revisions {
+        if unnamed.is_empty() {
+            break;
+        }
+        let rows = tx.query(
+            "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
+            &[id.into(), revision.int(0)?.into()],
         )?;
-        for revision in revisions {
-            if unnamed.is_empty() {
-                break;
-            }
-            let rows = tx.query(
-                "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
-                &[id.into(), revision.int(0)?.into()],
-            )?;
-            let Some(row) = rows.first() else {
-                continue;
-            };
-            for service in row.json::<SavedNames>(0, "Saved State")?.services {
-                if unnamed.remove(&service.lineage_id) {
-                    names.insert(service.lineage_id, service.slug);
-                }
+        let Some(row) = rows.first() else {
+            continue;
+        };
+        for service in row.json::<SavedNames>(0, "Saved State")?.services {
+            if unnamed.remove(&service.lineage_id) {
+                names.insert(service.lineage_id, service.slug);
             }
         }
     }
-    Ok(broken(working, live, &live_keys, &names))
+    Ok(names)
 }
 
 /// The Service names a save holds, read without the rest of it.
@@ -338,11 +377,11 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
     found
 }
 
-/// Each reference of `working` to a Service neither in it nor in `live`, or to a
-/// variable its Service doesn't have, a live one where `live_keys` has it deployed.
+/// Each reference of `working` to a Service neither in it nor deployed in
+/// `live_keys`, or to a variable its Service doesn't have, a live one where
+/// `live_keys` has it deployed.
 fn dangling<'a>(
     working: &'a SavedEnvironmentIntent,
-    live: &BTreeMap<String, String>,
     live_keys: &BTreeMap<String, BTreeSet<String>>,
 ) -> Vec<Dangling<'a>> {
     let variables = working.services.iter().flat_map(|referrer| {
@@ -372,20 +411,18 @@ fn dangling<'a>(
             (ValuePartOwner::Self_, None) => continue,
             (ValuePartOwner::Service { lineage_id }, _) => match service(working, lineage_id) {
                 Some(owner) => owner,
-                None if live.contains_key(lineage_id) => {
-                    let lacks = live_keys.get(lineage_id).is_some_and(|keys| {
-                        !keys.contains(reads) && !BUILT_IN_VARIABLES.contains(&reads)
-                    });
-                    if lacks {
-                        let wants = Wants::Variable {
-                            owner: lineage_id.clone(),
-                        };
-                        found.push(Dangling { at, reads, wants });
-                    }
-                    continue;
-                }
                 None => {
-                    let wants = Wants::Service(lineage_id.clone());
+                    let wants = match live_keys.get(lineage_id) {
+                        Some(keys)
+                            if keys.contains(reads) || BUILT_IN_VARIABLES.contains(&reads) =>
+                        {
+                            continue;
+                        }
+                        Some(_) => Wants::Variable {
+                            owner: lineage_id.clone(),
+                        },
+                        None => Wants::Service(lineage_id.clone()),
+                    };
                     found.push(Dangling { at, reads, wants });
                     continue;
                 }

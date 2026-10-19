@@ -109,7 +109,7 @@ pub(crate) fn config(
             ),
         });
     };
-    let names = environment.names();
+    let names = environment.shown_names();
     Ok(ConfigItemView {
         environment: environment.summary,
         lineage: ConfigId::parse(node.resource_lineage_id.as_str())

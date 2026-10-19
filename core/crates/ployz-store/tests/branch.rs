@@ -510,6 +510,44 @@ fn a_live_reference_breaks_once_its_parent_deploys_without_the_variable() {
 }
 
 #[test]
+fn a_live_reference_holds_while_its_parent_only_stages_the_removal() {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("db.env.PASS", json!("pw"))]);
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.live = vec![node("db")];
+    store.write(&who, &create).unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.DB_PASS", json!("${{ db.PASS }}"))],
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("production"),
+                service: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    let diff = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    assert!(diff.broken.is_empty(), "{:?}", texts(&diff.broken));
+    assert_eq!(
+        values(&store, &who, "fix-web", "web")["env"]["DB_PASS"],
+        json!("${{ db.PASS }}")
+    );
+}
+
+#[test]
 fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);

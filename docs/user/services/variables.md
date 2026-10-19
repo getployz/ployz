@@ -113,8 +113,9 @@ reference to any variable either way.
   reference**: Ployz doesn't stop you, and shows it in red on the variable, in **Details**,
   `ployz diff` and `ployz status`. Deploys leave the variable out, and any variable that
   references it, and warn, until you change it.
-- A reference to a deleted service shows as `${{ <deleted>.KEY }}`. Edit the rest of the value
-  or file around it and it stays; you can't write a new one.
+- A reference to a deleted service shows its last name, as `${{ <deleted redis>.KEY }}`, or
+  `${{ <deleted>.KEY }}` when no save names it. Edit the rest of the value or file around it and
+  it stays; you can't write a new one.
 - Write `$${{` for a literal `${{`.
 
 ## Variables Ployz provides

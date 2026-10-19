@@ -190,6 +190,7 @@ pub(crate) fn refuse_new_taken(
         summary: environment.summary.clone(),
         working: target.clone(),
         live: environment.live.clone(),
+        removed: environment.removed.clone(),
     };
     let mut others = None;
     for (owner, name) in claims {

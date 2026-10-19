@@ -8,11 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use ployz_core::config::{
-    CompiledEnvironmentIntent, CompiledNodeConfig, DELETED_OWNER, ResolveVariablesInput,
-    ResolveVariablesResult, ResolvedConfigFile, ResolverValue, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, ServiceEnvValue, ValuePart, ValuePartOwner,
-    VariableProducer, parse_variable_template, render_variable_parts, resolve_config_file,
-    resolve_variables,
+    CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput, ResolveVariablesResult,
+    ResolvedConfigFile, ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
+    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, deleted_owner_name,
+    parse_variable_template, render_variable_parts, resolve_config_file, resolve_variables,
 };
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
 use serde_json::{Map, Value, json};
@@ -199,7 +198,7 @@ pub(crate) fn set(
         }
         (Some(Input::Text(text)), _) => {
             let old = current.map_or(&[][..], |current| current.value.parts());
-            let (parts, fingerprint) = text_parts(key, &text, &names, old)?;
+            let (parts, fingerprint) = text_parts(key, &text, &names, &environment.removed, old)?;
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
@@ -384,14 +383,16 @@ fn referrers(
 }
 
 /// The lineage each `${{ name.KEY }}` of an edit reads: the Service `names`
-/// (lineage → name) calls `name`, or for `${{ <deleted>.KEY }}` the next removed
-/// Service whose `KEY` the edited value, `old`, reads. An edit keeps the references
-/// it had and adds none to a removed Service.
+/// (lineage → name) calls `name`, or for `${{ <deleted NAME>.KEY }}` the next
+/// removed Service called `NAME` in `removed` whose `KEY` the edited value, `old`,
+/// reads. `${{ <deleted>.KEY }}` reads the next such Service of no known name, else
+/// of any. An edit keeps the references it had and adds none to a removed Service.
 pub(crate) fn lineage_of<'a>(
     names: &'a BTreeMap<String, String>,
+    removed: &'a BTreeMap<String, String>,
     old: &[ValuePart],
 ) -> impl FnMut(&str, &str) -> Option<String> + 'a {
-    let mut removed: Vec<(String, String)> = old
+    let mut gone: Vec<(String, String)> = old
         .iter()
         .filter_map(|part| match part {
             ValuePart::Ref {
@@ -402,9 +403,18 @@ pub(crate) fn lineage_of<'a>(
         })
         .collect();
     move |name, key| {
-        if name == DELETED_OWNER {
-            let at = removed.iter().position(|(_, reads)| reads == key)?;
-            return Some(removed.remove(at).0);
+        if let Some(called) = deleted_owner_name(name) {
+            let reads = |(lineage, reads): &(String, String), wanted: Option<&str>| {
+                reads == key && removed.get(lineage).map(String::as_str) == wanted
+            };
+            let at = match called {
+                Some(_) => gone.iter().position(|old| reads(old, called)),
+                None => gone
+                    .iter()
+                    .position(|old| reads(old, None))
+                    .or_else(|| gone.iter().position(|(_, reads)| reads == key)),
+            }?;
+            return Some(gone.remove(at).0);
         }
         names
             .iter()
@@ -419,10 +429,11 @@ pub(crate) fn text_parts(
     key: &VariableKey,
     text: &str,
     names: &BTreeMap<String, String>,
+    removed: &BTreeMap<String, String>,
     old: &[ValuePart],
 ) -> Result<(Vec<ValuePart>, String), RpcError> {
     validate_text(key, text)?;
-    let template = parse_variable_template(text, lineage_of(names, old));
+    let template = parse_variable_template(text, lineage_of(names, removed, old));
     if template.unterminated {
         return Err(invalid(
             key,

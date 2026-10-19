@@ -448,6 +448,7 @@ pub(crate) fn set_merge_value(
                 &VariableKey::parse(key)?,
                 value,
                 &landing.into.names(),
+                &landing.into.removed,
                 &old,
             )?;
             let mut value = json!(variables::stored(parts));

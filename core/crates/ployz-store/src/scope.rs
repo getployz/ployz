@@ -55,6 +55,9 @@ pub(crate) struct Environment {
     /// The name of each node a Branch uses live, by lineage: its variables
     /// reference them by these names.
     pub(crate) live: BTreeMap<String, String>,
+    /// The last name of each removed Service its Working State references, by
+    /// lineage, from the newest save that holds it.
+    pub(crate) removed: BTreeMap<String, String>,
 }
 
 impl Environment {
@@ -68,6 +71,18 @@ impl Environment {
                 .iter()
                 .map(|service| (service.lineage_id.clone(), service.slug.clone())),
         );
+        names
+    }
+
+    /// [`Self::names`], and each removed Service a reference reads as reads show
+    /// it, such as `<deleted redis>`.
+    pub(crate) fn shown_names(&self) -> BTreeMap<String, String> {
+        let mut names = self.names();
+        for (lineage, name) in &self.removed {
+            names
+                .entry(lineage.clone())
+                .or_insert_with(|| ployz_core::config::deleted_owner(name));
+        }
         names
     }
 
@@ -504,6 +519,7 @@ fn load(
     let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
     let working = row.intent(2, "Working State")?;
     let live = crate::branch::live_names(tx, id, &working)?;
+    let removed = crate::rules::removed_names(tx, id, &working, &live)?;
     Ok(Environment {
         summary: EnvironmentSummary {
             id: id.clone(),
@@ -513,6 +529,7 @@ fn load(
         },
         working,
         live,
+        removed,
     })
 }
 
