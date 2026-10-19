@@ -59,7 +59,7 @@ agent-browser --session $S screenshot "$PWD/.verify/evidence/<name>.png"
 - If a click reports that an element is "covered by" another, a sheet or dialog is open. Close it first, with `press Escape` or its **Close** button.
 - Pass `screenshot` an **absolute** path. A relative path lands in agent-browser's temp dir.
 - Single-quote URLs that contain `~` or `$` (`'/cloud/ada/~/servers'`).
-- Inspector textboxes save on Enter, not on blur. A `fill` that you never commit is gone after a reload.
+- Inspector textboxes save on Enter or when focus leaves them (`press Tab`). A name, a new file name or a registry token waits for its ✓ (or Enter). A `fill` with focus still in the field is not saved yet.
 - After any write, `reload` and snapshot again. That proves the write persisted rather than living only in optimistic UI.
 - To see a page as another role, run `scripts/verify/as.sh ada|grace|linus`. It sets that person's cookie in the session and opens Ada's Projects page, `/cloud/ada/~`. Their cookies stay valid across reseeds, and Ada's `up.sh` lines still sign her back in. For the CLI, set `PLOYZ_TOKEN=$(jq -r .graceToken .verify/run/seed.json)` (or `.linusToken`, `.cliToken`) and `PLOYZ_CLOUD_URL` to the instance.
 - Grace and Linus each belong to two organizations, their personal one and `ada`. A visit to their personal one makes it the session's active organization, and `/cloud` then lands there. Rerun `as.sh`, or pick "Ada Lovelace's Projects" in the switcher, before you trust what the page shows.
