@@ -496,12 +496,14 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     // command finishes it once the removal applied, or queues it again.
     let store = store.args(["--confirm", typed.as_str()]);
     let environment = inventory.environment.clone();
+    let mut shown = None;
     confirm(matches, &typed, "Environment", store.again(&[]), || {
+        shown = Some(teardown::Shown::of([&inventory]));
         Ok(unconfirmed(inventory, &store.again(&[])))
     })?;
     let events = deploy::open_events(matches)?;
     let target = (&environment.project, Some(&name));
-    let Some(removed) = teardown::remove(matches, &store, target, events)? else {
+    let Some(removed) = teardown::remove(matches, &store, target, shown.as_ref(), events)? else {
         return Ok(());
     };
     crate::ui::finish(
