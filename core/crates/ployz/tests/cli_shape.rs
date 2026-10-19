@@ -623,6 +623,8 @@ struct WaitingCloud {
     rows: Vec<serde_json::Value>,
     list: &'static str,
     unreachable: Vec<String>,
+    /// The connections Server Access hands back, held before any Server was probed.
+    connections: Vec<serde_json::Value>,
     rejects: Vec<(&'static str, Option<usize>)>,
     /// The body of every reject answered with an error status, instead of a count.
     refusal: Option<serde_json::Value>,
@@ -653,6 +655,7 @@ impl WaitingCloud {
             rows,
             list: "200 OK",
             unreachable: Vec::new(),
+            connections: Vec::new(),
             rejects: Vec::new(),
             refusal: None,
             enrollment_refusal: None,
@@ -673,6 +676,7 @@ fn waiting_cloud(
         rows,
         list,
         unreachable,
+        connections,
         rejects,
         refusal,
         enrollment_refusal,
@@ -708,7 +712,7 @@ fn waiting_cloud(
                 "GET /api/cli/waiting-servers" => (list, listed.clone()),
                 "POST /api/cli/server-access" => (
                     "200 OK",
-                    serde_json::json!({ "connections": [], "unreachable": unreachable }),
+                    serde_json::json!({ "connections": connections, "unreachable": unreachable }),
                 ),
                 "GET /api/cli/enrollments" => {
                     if enrollment_reads > 0 {
@@ -1178,6 +1182,49 @@ fn server_show_falls_back_to_the_waiting_list_when_no_server_answers() {
         json.pointer("/error/code").unwrap(),
         "unavailable",
         "{json}"
+    );
+}
+
+#[test]
+fn server_show_falls_back_to_the_waiting_list_when_a_held_connection_reaches_nothing() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let offline = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes.clone(),
+        WaitingCloud {
+            connections: vec![serde_json::json!({
+                "machine_id": offline,
+                "unix": "/nonexistent/ployz-test/daemon.sock",
+            })],
+            ..WaitingCloud::six()
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "show", "web-1", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "web-1");
+
+    routes.lock().unwrap().clear();
+    let (code, json, _) = run_json_with(&["server", "show", "nobody", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unavailable",
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/details/unreachable").unwrap(),
+        &serde_json::json!([offline]),
+        "{json}"
+    );
+    assert!(
+        routes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|route| route.contains("waiting-servers")),
+        "the waiting list is read: {routes:?}"
     );
 }
 
