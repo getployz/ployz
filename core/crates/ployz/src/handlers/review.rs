@@ -194,14 +194,23 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         "{}/{}",
         discarded.environment.project, discarded.environment.name
     );
-    let reversed = if path.is_none() {
-        discarded.reversed.as_slice()
+    let backs: Vec<Back> = if path.is_none() {
+        discarded
+            .reversed
+            .iter()
+            .map(|reversal| Back::new(matches, reversal))
+            .collect()
     } else {
-        &[]
+        Vec::new()
+    };
+    let saved = discarded.saved.map_or(0, |saved| saved.0);
+    let result = DiscardResult {
+        discarded: &discarded,
+        comes_back: &backs,
     };
     if !discarded.changed {
-        return crate::ui::finish(&Next::new(&discarded, None), || {
-            if reversed.is_empty() {
+        return crate::ui::finish(&Next::new(&result, None), || {
+            if backs.is_empty() {
                 crate::ui::stream(format_args!(
                     "Nothing staged{} in {where_}; nothing to discard.",
                     path.map_or_else(String::new, |path| format!(" at {path}"))
@@ -211,27 +220,58 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
                     "Nothing differs from what is deployed in {where_}."
                 ));
             }
-            comes_back(matches, &discarded, reversed);
+            comes_back(&backs, saved);
         });
     }
     let hint = next(matches, &["diff"]);
-    crate::ui::finish(&Next::new(&discarded, Some(hint.clone())), || {
+    crate::ui::finish(&Next::new(&result, Some(hint.clone())), || {
         crate::ui::stream(format_args!(
             "Discarded {} in {where_} (revision {}).",
             path.map_or_else(|| "every staged change".to_owned(), |path| path.to_string()),
             discarded.environment.revision
         ));
-        comes_back(matches, &discarded, reversed);
+        comes_back(&backs, saved);
         crate::ui::hint(&crate::ui::Hint::Inspect(hint));
     })
 }
 
+#[derive(Serialize)]
+struct DiscardResult<'a> {
+    #[serde(flatten)]
+    discarded: &'a Discarded,
+    comes_back: &'a [Back<'a>],
+}
+
+/// A saved change the draft no longer holds, and the command that brings it back.
+#[derive(Serialize)]
+struct Back<'a> {
+    #[serde(skip)]
+    change: &'a ployz_store::NodeChange,
+    name: &'a str,
+    command: String,
+    drops_unsaved: bool,
+}
+
+impl<'a> Back<'a> {
+    fn new(matches: &ArgMatches, reversal: &'a ployz_store::Reversal) -> Self {
+        let command = match &reversal.way_back.path {
+            Some(path) => next(matches, &["discard", &path.to_string()]),
+            None => next(matches, &["discard", "--target", "saved"]),
+        };
+        Self {
+            change: &reversal.change,
+            name: &reversal.change.name,
+            command,
+            drops_unsaved: reversal.way_back.drops_unsaved,
+        }
+    }
+}
+
 /// One line per saved change the draft no longer holds, with the discard that brings it back.
-fn comes_back(matches: &ArgMatches, discarded: &Discarded, reversed: &[ployz_store::NodeChange]) {
-    let saved = discarded.saved.map_or(0, |saved| saved.0);
-    for change in reversed {
-        let name = &change.name;
-        let (what, back) = match change.lifecycle {
+fn comes_back(backs: &[Back<'_>], saved: u64) {
+    for back in backs {
+        let (name, command) = (back.name, &back.command);
+        let (what, again) = match back.change.lifecycle {
             ReviewLifecycleKind::Delete => (
                 format!("is in saved #{saved} but was never deployed, so discarding removes it"),
                 "Bring it back",
@@ -247,22 +287,17 @@ fn comes_back(matches: &ArgMatches, discarded: &Discarded, reversed: &[ployz_sto
                 "Bring them back",
             ),
         };
-        match discarded.way_back(change) {
-            Some(path) => {
-                let command = next(matches, &["discard", &path.to_string()]);
-                crate::ui::stream(format_args!("{name} {what}. {back}: {command}"));
-            }
-            None => {
-                let command = next(matches, &["discard", "--target", "saved"]);
-                crate::ui::stream(format_args!(
-                    "{name} {what}. Another {kind} is named {name} too, so return everything to saved #{saved}, which also drops your unsaved changes: {command}",
-                    kind = match change.node.node_type {
-                        EnvironmentNodeType::Service => "Service",
-                        EnvironmentNodeType::Volume => "Volume",
-                        EnvironmentNodeType::Config => "Config",
-                    }
-                ));
-            }
+        if back.drops_unsaved {
+            crate::ui::stream(format_args!(
+                "{name} {what}. Another {kind} is named {name} too, so return everything to saved #{saved}, which also drops your unsaved changes: {command}",
+                kind = match back.change.node.node_type {
+                    EnvironmentNodeType::Service => "Service",
+                    EnvironmentNodeType::Volume => "Volume",
+                    EnvironmentNodeType::Config => "Config",
+                }
+            ));
+        } else {
+            crate::ui::stream(format_args!("{name} {what}. {again}: {command}"));
         }
     }
 }

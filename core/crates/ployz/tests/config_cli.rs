@@ -2067,6 +2067,17 @@ fn discarding_a_save_never_deployed_says_how_to_bring_it_back() {
         let second = discard();
         assert!(!second.contains("nothing to discard"), "{second}");
         assert!(second.contains(back), "{second}");
+        let json = ok(store, &["discard"]);
+        assert_eq!(
+            json["comes_back"],
+            json!([{ "name": "web", "command": "ployz discard web", "drops_unsaved": false }]),
+            "{json}"
+        );
+        assert_eq!(
+            json["reversed"][0]["way_back"],
+            json!({ "path": "web", "drops_unsaved": false }),
+            "{json}"
+        );
 
         let restored = ok(store, &["discard", "web"]);
         assert_eq!(restored["changed"], json!(true), "{restored}");

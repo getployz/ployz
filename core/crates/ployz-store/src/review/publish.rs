@@ -96,31 +96,49 @@ pub struct Discarded {
     pub saved: Option<Revision>,
     /// False when nothing it names was staged.
     pub changed: bool,
-    /// The draft reversals left after it; [`Self::way_back`] says how each comes back.
+    /// The draft reversals left after it, each with the discard that brings it back.
     #[serde(default)]
-    #[ts(as = "Option<Vec<super::NodeChange>>", optional)]
-    pub reversed: Vec<super::NodeChange>,
+    #[ts(as = "Option<Vec<Reversal>>", optional)]
+    pub reversed: Vec<Reversal>,
 }
 
-impl Discarded {
-    /// The path whose discard brings back `change`, one of [`Self::reversed`]. `None`
-    /// when another of them has its type and name: one path can bring back neither
-    /// without the other, so only a discard to Saved brings it back.
-    #[must_use]
-    pub fn way_back(&self, change: &super::NodeChange) -> Option<SettingPath> {
-        if self.reversed.iter().any(|other| {
-            other.node.node_type == change.node.node_type
+/// A Saved change the draft no longer holds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Reversal {
+    #[serde(flatten)]
+    pub change: super::NodeChange,
+    pub way_back: WayBack,
+}
+
+/// The discard that brings a [`Reversal`] back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct WayBack {
+    /// The path to discard. `None` when another node in the draft has its type and
+    /// name, so its path names that node too: only a discard to Saved brings it back.
+    pub path: Option<SettingPath>,
+    /// True when it also drops the draft's other unsaved changes.
+    pub drops_unsaved: bool,
+}
+
+impl WayBack {
+    fn of(change: &super::NodeChange, draft: &[super::NodeChange]) -> Self {
+        // A same-named node in the draft is never in Saved, so it is a draft change.
+        let named_twice = draft.iter().any(|other| {
+            other.node != change.node
+                && other.node.node_type == change.node.node_type
                 && other.name == change.name
-                && other.node != change.node
-        }) {
-            return None;
+        });
+        let path = (!named_twice)
+            .then(|| match change.node.node_type {
+                EnvironmentNodeType::Service => change.name.clone(),
+                EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
+                EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
+            })
+            .and_then(|path| SettingPath::parse(&path).ok());
+        Self {
+            drops_unsaved: path.is_none(),
+            path,
         }
-        let path = match change.node.node_type {
-            EnvironmentNodeType::Service => change.name.clone(),
-            EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
-            EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
-        };
-        SettingPath::parse(&path).ok()
     }
 }
 
@@ -232,13 +250,20 @@ pub(crate) fn discard(
         scope::persist_working(tx, &mut whole)?;
         environment = whole.summary;
     }
-    let reversed = if changed {
+    let view = if changed {
         let after = scope::load_by_id(tx, &environment.id)?;
         review::review(tx, &after)?.view
     } else {
         reviewed.view
-    }
-    .reversals();
+    };
+    let reversed = view
+        .reversals()
+        .into_iter()
+        .map(|change| Reversal {
+            way_back: WayBack::of(&change, &view.draft_changes),
+            change,
+        })
+        .collect();
     Ok(Discarded {
         environment,
         saved: reviewed.saved.as_ref().map(|saved| saved.revision),

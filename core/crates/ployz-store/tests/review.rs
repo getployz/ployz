@@ -721,7 +721,7 @@ fn discard_of_a_never_deployed_save_lists_it_and_its_path_brings_it_back() {
         let mut names: Vec<_> = discarded
             .reversed
             .iter()
-            .map(|change| (change.name.clone(), change.lifecycle))
+            .map(|reversal| (reversal.change.name.clone(), reversal.change.lifecycle))
             .collect();
         names.sort_by(|a, b| a.0.cmp(&b.0));
         names
@@ -799,20 +799,43 @@ fn a_replaced_service_of_the_same_name_comes_back_only_by_returning_to_saved() {
     let webs: Vec<_> = discarded
         .reversed
         .iter()
-        .filter(|change| change.name == "web")
+        .filter(|reversal| reversal.change.name == "web")
         .collect();
     assert_eq!(webs.len(), 2, "{:?}", discarded.reversed);
     for web in webs {
-        assert_eq!(
-            discarded.way_back(web),
-            None,
-            "`discard web` picks one of two"
-        );
+        assert_eq!(web.way_back.path, None, "`discard web` picks one of two");
+        assert!(web.way_back.drops_unsaved);
     }
 
     assert!(discard_all(&store, &who, Some(ployz_store::DiscardTarget::Saved)).changed);
     assert_eq!(value(&store, &who, "web.image"), Some(json!("postgres:16")));
     assert!(diff(&store, &who).reversals().is_empty());
+}
+
+#[test]
+fn a_saved_service_whose_name_a_staged_one_took_has_no_path_back() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "web");
+    add_service(&store, &who, 5, "web");
+
+    let discarded = discard(&store, &who, Some("api"), None).unwrap();
+    assert!(discarded.changed);
+    let way_back = |name: &str| {
+        discarded
+            .reversed
+            .iter()
+            .find(|reversal| reversal.change.name == name)
+            .map(|reversal| reversal.way_back.clone())
+            .unwrap_or_else(|| panic!("{name} is reversed: {:?}", discarded.reversed))
+    };
+    assert_eq!(
+        way_back("api").path.map(|path| path.to_string()),
+        Some("api".to_owned())
+    );
+    let web = way_back("web");
+    assert_eq!(web.path, None, "`discard web` names the staged web");
+    assert!(web.drops_unsaved);
 }
 
 #[test]
@@ -884,22 +907,18 @@ fn a_config_comes_back_by_its_id_and_a_replaced_one_only_by_returning_to_saved()
     let back = discarded
         .reversed
         .iter()
-        .find(|change| change.node.id == errors)
-        .and_then(|change| discarded.way_back(change))
+        .find(|reversal| reversal.change.node.id == errors)
+        .and_then(|reversal| reversal.way_back.path.clone())
         .expect("errors has a way back");
     assert_eq!(back.to_string(), format!("configs.@{errors}"));
     let sentries: Vec<_> = discarded
         .reversed
         .iter()
-        .filter(|change| change.name == "sentry")
+        .filter(|reversal| reversal.change.name == "sentry")
         .collect();
     assert_eq!(sentries.len(), 2, "{:?}", discarded.reversed);
     for sentry in sentries {
-        assert_eq!(
-            discarded.way_back(sentry),
-            None,
-            "one path brings back neither"
-        );
+        assert_eq!(sentry.way_back.path, None, "one path brings back neither");
     }
     let alone = store
         .write(
