@@ -20,6 +20,7 @@ class FakeNames {
   reads: Landed[] = [];
   // Like the native handle, a reader that asks before anyone waits is still heard.
   asked = false;
+  closed = false;
   wake?: () => void;
   want() { if (this.wake) this.wake(); else this.asked = true; }
   begin() {
@@ -28,9 +29,10 @@ class FakeNames {
     return { done: (names: readonly string[] | null) => { read.names = names; }, failed: () => { read.failed = true; } };
   }
   wanted() {
-    if (this.asked) { this.asked = false; return Promise.resolve(); }
+    if (this.closed || this.asked) { this.asked = false; return Promise.resolve(); }
     return new Promise<void>(resolve => { this.wake = () => { this.wake = undefined; resolve(); }; });
   }
+  close() { this.closed = true; this.wake?.(); }
 }
 
 it("withholds a page's text when the Store can't say what is Sealed", async () => {
