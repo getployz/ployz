@@ -28,15 +28,17 @@ CREATE TABLE new_config_deployment (
     push_branch TEXT,
     push_head TEXT,
     push_services TEXT,
-    UNIQUE (environment_id, number)
+    listed BIGINT NOT NULL,
+    UNIQUE (environment_id, number),
+    UNIQUE (environment_id, listed)
 );
 INSERT INTO new_config_deployment
     (id, organization_id, environment_id, number, status, saved_revision, services, nodes,
      namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, runner, lease,
-     started, ended, message)
+     started, ended, message, listed)
 SELECT id, organization_id, environment_id, number, status, saved_revision, services, nodes,
      namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, runner, lease,
-     started, ended, message
+     started, ended, message, number
 FROM config_deployment;
 DROP TABLE config_deployment;
 ALTER TABLE new_config_deployment RENAME TO config_deployment;

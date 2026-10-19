@@ -165,13 +165,14 @@ pub(crate) fn admit(
                 )
                 .map(|_| ());
         }
+        let listed = next_listed(tx, environment)?;
         tx.execute(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, push_repository_id, push_branch, push_head) \
+              message, push_repository_id, push_branch, push_head, listed) \
              VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-              ?16, ?17, ?18)",
+              ?16, ?17, ?18, ?19)",
             &[
                 id.as_str().into(),
                 who.organization.as_str().into(),
@@ -193,6 +194,7 @@ pub(crate) fn admit(
                     .into(),
                 push.as_ref().map(|push| push.branch.as_str()).into(),
                 push.as_ref().map(|push| push.head.as_str()).into(),
+                listed.into(),
             ],
         )
         .map(|_| ())
@@ -355,6 +357,19 @@ pub(super) fn queue(
     Ok(number)
 }
 
+/// The list position the next Deployment of `environment` takes: one past the
+/// last. Read under the Environment's lock, as every insert of one is, so two never
+/// take the same.
+pub(super) fn next_listed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<i64, RpcError> {
+    tx.query(
+        "SELECT COALESCE(MAX(listed), 0) + 1 FROM config_deployment WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Deployment list position"))?
+    .int(0)
+}
+
 fn next_number(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<u64, RpcError> {
     let number = tx
         .query(
@@ -414,13 +429,14 @@ pub(crate) fn hold(
     )?;
     let namespace = namespace(tx, who, environment, false)?;
     let deployment = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let listed = next_listed(tx, id)?;
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, status, saved_revision, services, nodes, \
           namespace, run, credentials, admitted, push_repository_id, push_branch, push_head, \
-          push_services) \
+          push_services, listed) \
          VALUES (?1, ?2, ?3, 'waiting_for_ci', ?4, ?5, '[]', ?6, ?7, '{}', ?8, ?9, ?10, ?11, \
-          ?12)",
+          ?12, ?13)",
         &[
             deployment.as_str().into(),
             who.organization.as_str().into(),
@@ -434,6 +450,7 @@ pub(crate) fn hold(
             push.branch.as_str().into(),
             push.head.as_str().into(),
             json_text(&ids).as_str().into(),
+            listed.into(),
         ],
     )?;
     Ok(())
@@ -623,15 +640,16 @@ pub(crate) fn retry(
     let (services, nodes) = retried(tx, &stored, fresh)?;
     let admitted_at = now();
     let number = queue(tx, &stored.summary.environment_id, false, |tx, number| {
+        let listed = next_listed(tx, &stored.summary.environment_id)?;
         // Every other frozen column comes from the source, so a retry never re-reads
         // authored state.
         tx.execute(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message) \
+              message, listed) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
-              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
+              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -644,6 +662,7 @@ pub(crate) fn retry(
                 who.principal.as_ref().map(Principal::as_str).into(),
                 json_text(&services).as_str().into(),
                 json_text(&nodes).as_str().into(),
+                listed.into(),
             ],
         )?;
         // A retry builds the commits its source pinned.

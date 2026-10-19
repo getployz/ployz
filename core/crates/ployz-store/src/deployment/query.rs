@@ -106,6 +106,10 @@ pub struct DeploymentsView {
     pub deployments: Vec<DeploymentSummary>,
     /// Pass as `cursor` for the next page; none on the last.
     pub next_cursor: Option<String>,
+    /// The Environment's newest numbered Deployment, whatever page it falls on:
+    /// holds waiting for CI take no number, so a burst of them never hides it.
+    /// None before the first Deploy.
+    pub latest: Option<DeploymentSummary>,
 }
 
 /// One Deployment, by ID.
@@ -298,9 +302,11 @@ pub(crate) fn page(
     let environment = scope::environment(tx, who, &query.environment)?;
     let (deployments, next) =
         deployment::page(tx, &environment.summary.id, limit, cursor.as_ref())?;
+    let latest = deployment::latest_numbered(tx, &environment.summary.id)?;
     Ok(DeploymentsView {
         environment: environment.summary,
         deployments,
         next_cursor: next.map(|cursor| cursor.encode()),
+        latest,
     })
 }

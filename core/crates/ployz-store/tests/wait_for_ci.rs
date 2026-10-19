@@ -305,7 +305,7 @@ fn holds_number_in_the_order_they_pass_ci() {
             changed: None,
         }),
     );
-    // Pushed within one second, the two list in no fixed order: pick each by its commit.
+    // The two list newest push first; pick each by its commit all the same.
     let holds = held(&store, &who);
     assert_eq!(holds.len(), 2);
     let by_head = |head: &str| {
@@ -341,6 +341,8 @@ fn holds_number_in_the_order_they_pass_ci() {
     let web_saved = find(&store, &who, &web_hold).saved;
     assert!(web_saved > api_saved);
 
+    // The list keeps the order the holds were pushed in, api's last; the numbers
+    // say which ran first, and the list shows them.
     let numbers: Vec<_> = deployments(&store, &who)
         .iter()
         .map(|deployment| (deployment.id.clone(), deployment.number))
@@ -348,8 +350,8 @@ fn holds_number_in_the_order_they_pass_ci() {
     assert_eq!(
         numbers,
         [
-            (web_hold.id.clone(), Some(2)),
-            (api_hold.id.clone(), Some(1))
+            (api_hold.id.clone(), Some(1)),
+            (web_hold.id.clone(), Some(2))
         ]
     );
     let history = store
@@ -937,16 +939,26 @@ fn pages_reach_holds_past_the_first_page() {
     };
     let first = page(None);
     assert_eq!(first.deployments.len(), 20);
+    // No Deployment was ever numbered: a page of holds leads with none.
+    assert_eq!(first.latest, None);
     let second = page(first.next_cursor.clone());
     assert_eq!(second.deployments.len(), 1);
     assert_eq!(second.next_cursor, None);
-    // Pushed within one second, the rows tie on admitted; whatever order they take,
-    // the two pages cover all twenty-one once, the waiting hold among them.
+    // Pushed within one second, the rows still list in push order, newest first:
+    // the two pages cover all twenty-one once, the waiting hold leading.
     let rows: Vec<_> = first
         .deployments
         .iter()
         .chain(&second.deployments)
         .collect();
+    assert_eq!(
+        rows.iter().map(|row| row.label()).collect::<Vec<_>>(),
+        heads
+            .iter()
+            .rev()
+            .map(|head| &head[..7])
+            .collect::<Vec<_>>()
+    );
     let seen: std::collections::BTreeSet<_> = rows.iter().map(|row| row.id.clone()).collect();
     assert_eq!(seen.len(), 21);
     assert!(rows.iter().all(|row| row.number.is_none()));
@@ -978,10 +990,10 @@ fn pages_reach_holds_past_the_first_page() {
     assert_eq!(bad.unwrap_err().code, RpcErrorCode::InvalidArgument);
 }
 
-/// Deployments #1 to #3, then a hold on `H2`, which leads the list: within a second
-/// a hold sorts before numbered rows, and later it is newer. A page of one ends on
-/// the hold; `between` then changes the Store before the pages after it are read.
-/// The hold, and what those pages list in order.
+/// Deployments #1 to #3, then a hold on `H2`, which leads the list: a Deployment
+/// lists where it was created, and the hold came last. A page of one ends on the
+/// hold; `between` then changes the Store before the pages after it are read. The
+/// hold, and what those pages list in order.
 fn paged_past_a_hold(
     between: impl FnOnce(&ConfigStore, &DeploymentSummary),
 ) -> (DeploymentSummary, Vec<DeploymentSummary>) {
@@ -1008,6 +1020,8 @@ fn paged_past_a_hold(
     let first = page(None);
     let [hold] = <[_; 1]>::try_from(first.deployments).unwrap();
     assert_eq!(hold.status, DeploymentStatus::WaitingForCi);
+    // The hold leads the page, and #3 is still the latest numbered Deployment.
+    assert_eq!(first.latest.map(|latest| latest.number), Some(Some(3)));
     between(&store, &hold);
     let mut rest = Vec::new();
     let mut cursor = first.next_cursor;
@@ -1049,4 +1063,71 @@ fn pages_past_a_promoted_hold() {
     assert!(rest.iter().all(|row| row.id != hold.id));
     let numbered: Vec<_> = rest.iter().map(|row| row.number).collect();
     assert_eq!(numbered, [Some(3), Some(2), Some(1)]);
+}
+
+/// A cancelled hold `C` on `H2`, then a hold `H` on `H3` above it, both pushed within
+/// a second. A page of one ends on H; H then promotes to #4, which once moved it
+/// below C in the list and had a later page repeat it. A Deployment lists where it
+/// was created, so the pages after reach C, then #3 to #1, and H never again. The
+/// list's latest numbered Deployment is H all the same.
+#[test]
+fn pages_past_a_promoted_hold_above_a_cancelled_one() {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    publish(&store, &who);
+    for n in 1..=3 {
+        let id = backend::admit(&store, &who, "production", n);
+        backend::run(&store, &id);
+    }
+    system(&store, &push(None, Some(H2), None));
+    let [cancelled] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
+    store
+        .write(
+            &who,
+            &Cancel {
+                deployment: cancelled.id.clone(),
+            },
+        )
+        .unwrap();
+    system(&store, &push(Some(H2), Some(H3), None));
+    let page = |cursor: Option<String>| {
+        store
+            .read(
+                &who,
+                &DeploymentsQuery {
+                    limit: Some(1),
+                    cursor,
+                    ..DeploymentsQuery::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = page(None);
+    let [hold] = <[_; 1]>::try_from(first.deployments).unwrap();
+    assert_eq!(hold.label(), &H3[..7]);
+    let promoted = passed(&store, H3, 10);
+    assert_eq!(promoted.admitted[0].deployment.number, Some(4));
+    let mut rest = Vec::new();
+    let mut cursor = first.next_cursor;
+    while let Some(word) = cursor {
+        let next = page(Some(word));
+        assert_eq!(
+            next.latest.as_ref().map(|latest| &latest.id),
+            Some(&hold.id)
+        );
+        rest.extend(next.deployments);
+        cursor = next.next_cursor;
+    }
+    assert_eq!(
+        rest.iter()
+            .map(|row| (row.id == cancelled.id, row.number))
+            .collect::<Vec<_>>(),
+        [
+            (true, None),
+            (false, Some(3)),
+            (false, Some(2)),
+            (false, Some(1))
+        ]
+    );
+    assert!(rest.iter().all(|row| row.id != hold.id));
 }

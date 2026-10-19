@@ -407,74 +407,35 @@ pub(crate) fn build_log(
 /// burst of them would push real Deployments off the first page.
 const LISTED: &str = "(number IS NOT NULL OR status <> 'superseded')";
 
-/// A number no Deployment reaches, standing in for none: within one second a
-/// hold (unnumbered) leads, and numbered ones keep their number order.
-const UNNUMBERED: i64 = i64::MAX;
-
-/// The order a list reads in: by admission, newest first, then by number, then
-/// by id. Every row has each key, so a page cursor can't skip one.
-const LIST_KEY: &str = "admitted DESC, COALESCE(number, 9223372036854775807) DESC, id DESC";
-
-/// Where a page ended: the [`LIST_KEY`] of its last row, as it read when the page
-/// was handed out. The next page starts after that key whatever became of the row
-/// since. Superseded, it leaves the list but its key still bounds the page.
-/// Promoted, it re-admits as a numbered Deployment with a new key, so the next
-/// page leaves it out by id: the previous page already showed it.
+/// Where a page ended: the list position of its last row. A position is taken once,
+/// at insert, and never moves, so the next page starts below it whatever became of
+/// the row since: superseded, it leaves the list; promoted, it keeps its place, and
+/// the page that showed it as a hold stays the only one that shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Cursor {
-    admitted: i64,
-    number: Option<u64>,
-    id: DeploymentId,
-}
+pub(crate) struct Cursor(i64);
 
 impl Cursor {
-    fn of(last: &DeploymentSummary) -> Self {
-        Self {
-            admitted: last.admitted_at,
-            number: last.number,
-            id: last.id.clone(),
-        }
-    }
-
-    /// An opaque word for the API: the key, base64 without padding.
+    /// An opaque word for the API: the position, base64 without padding.
     pub(crate) fn encode(&self) -> String {
         use base64::Engine as _;
-        let number = self
-            .number
-            .map(|number| number.to_string())
-            .unwrap_or_default();
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
-            "{}:{number}:{}",
-            self.admitted,
-            self.id.as_str()
-        ))
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.0.to_string())
     }
 
-    /// The key an [`encode`](Self::encode)d word carries; none for any other text.
+    /// The position an [`encode`](Self::encode)d word carries; none for any other text.
     pub(crate) fn decode(word: &str) -> Option<Self> {
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(word)
             .ok()?;
         let text = String::from_utf8(bytes).ok()?;
-        let mut parts = text.splitn(3, ':');
-        let admitted = parts.next()?.parse().ok()?;
-        let number = match parts.next()? {
-            "" => None,
-            number => Some(number.parse().ok()?),
-        };
-        let id = DeploymentId::parse(parts.next()?).ok()?;
-        Some(Self {
-            admitted,
-            number,
-            id,
-        })
+        let listed: i64 = text.parse().ok()?;
+        (listed > 0 && listed.to_string() == text).then_some(Self(listed))
     }
 }
 
-/// One page of `environment`'s [`LISTED`] Deployments in [`LIST_KEY`] order, after
-/// the key `after` carries: where the previous page ended. The second element says
-/// where this page ended when another follows.
+/// One page of `environment`'s [`LISTED`] Deployments, newest position first, after
+/// the position `after` carries: where the previous page ended. The second element
+/// says where this page ended when another follows.
 pub(crate) fn page(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -488,35 +449,46 @@ pub(crate) fn page(
     ];
     let mut after_sql = "";
     if let Some(after) = after {
-        let number = after
-            .number
-            .and_then(|number| i64::try_from(number).ok())
-            .unwrap_or(UNNUMBERED);
-        params.push(after.admitted.into());
-        params.push(number.into());
-        params.push(after.id.as_str().into());
-        // Rows later than the bound in LIST_KEY order, each key compared in turn,
-        // never the bound row itself under a key it took on since.
-        after_sql = " AND id <> ?5 \
-             AND (admitted, COALESCE(number, 9223372036854775807), id) < (?3, ?4, ?5)";
+        params.push(after.0.into());
+        after_sql = " AND listed < ?3";
     }
     let rows = tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
              WHERE environment_id = ?1 AND {LISTED}{after_sql} \
-             ORDER BY {LIST_KEY} LIMIT ?2"
+             ORDER BY listed DESC LIMIT ?2"
         ),
         &params,
     )?;
     let mut page = rows
         .iter()
-        .map(|row| stored(row).map(|stored| stored.summary))
+        .map(|row| stored(row).map(|stored| (stored.summary, Cursor(stored.listed))))
         .collect::<Result<Vec<_>, _>>()?;
     let next = (page.len() > limit).then(|| {
         page.truncate(limit);
-        page.last().map(Cursor::of)
+        page.last().map(|(_, cursor)| cursor.clone())
     });
+    let page = page.into_iter().map(|(summary, _)| summary).collect();
     Ok((page, next.flatten()))
+}
+
+/// `environment`'s newest numbered Deployment, whatever page of its list it falls
+/// on: holds take no number, so a burst of them never hides it.
+pub(crate) fn latest_numbered(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    let columns = COLUMNS.as_str();
+    let rows = tx.query(
+        &format!(
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND number IS NOT NULL ORDER BY number DESC LIMIT 1"
+        ),
+        &[environment.as_str().into()],
+    )?;
+    rows.first()
+        .map(|row| stored(row).map(|stored| stored.summary))
+        .transpose()
 }
 
 /// The Servers Deployment `id` failed on, by name, sorted.

@@ -731,6 +731,9 @@ pub(crate) struct Stored {
     run: Run,
     /// Until when, in Unix seconds, its runner holds it without recording anything.
     lease: i64,
+    /// Where it lists among its Environment's Deployments: taken once, at insert,
+    /// and never moved, so a page cursor can hold it.
+    pub(crate) listed: i64,
 }
 
 impl Stored {
@@ -768,9 +771,10 @@ impl Stored {
     }
 }
 
-/// What a Deployment row reads as, from an unaliased `config_deployment`. The last
-/// column is the [`CiVerdict`] of one waiting for CI: failed once a check suite of its
-/// commit completed without passing, by the rule that lets it go.
+/// What a Deployment row reads as, from an unaliased `config_deployment`. The
+/// second-last column is the [`CiVerdict`] of one waiting for CI: failed once a
+/// check suite of its commit completed without passing, by the rule that lets it go.
+/// The last is where it lists among its Environment's Deployments.
 static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let passing = crate::automation::CheckConclusion::PASSING
         .iter()
@@ -789,7 +793,7 @@ static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
              AND s.head = config_deployment.push_head AND s.status = '{completed}' \
              AND COALESCE(s.conclusion, '') NOT IN ({passing})) \
            THEN 'failed' ELSE 'pending' END \
-         END"
+         END, listed"
     )
 });
 
@@ -984,6 +988,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         run,
         cluster_domain: row.parse_optional(10, "identity")?,
         lease,
+        listed: row.int(22)?,
     })
 }
 

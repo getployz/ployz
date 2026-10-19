@@ -85,8 +85,9 @@ fn replacement() -> Reply {
         status: 200,
         body: serde_json::to_value(View::Deployments(DeploymentsView {
             environment: newer.environment,
-            deployments: vec![newer.deployment],
+            deployments: vec![newer.deployment.clone()],
             next_cursor: None,
+            latest: Some(newer.deployment),
         }))
         .unwrap(),
         interrupt: None,
