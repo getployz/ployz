@@ -344,7 +344,18 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     } else {
         std::fs::read_to_string(file).map_err(|_| Error::usage("Can't read the env file"))?
     };
-    let variables = env_file(&text)?;
+    // A key the file repeats takes its last value, in its first place; variables are
+    // uppercase, so case doesn't make a new key.
+    let mut variables: Vec<(String, String)> = Vec::new();
+    for (key, value) in env_file(&text)? {
+        match variables
+            .iter_mut()
+            .find(|(seen, _)| seen.eq_ignore_ascii_case(&key))
+        {
+            Some((_, seen)) => *seen = value,
+            None => variables.push((key, value)),
+        }
+    }
     let seal_all = matches.get_flag("secret");
     let secret = if seal_all {
         Vec::new()

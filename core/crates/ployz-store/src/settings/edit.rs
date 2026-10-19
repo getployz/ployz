@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::git::GitSetting;
-use crate::id::{Revision, VolumeName};
+use crate::id::{ConfigId, Revision, VolumeName};
 use crate::policy::{self, Policy};
 use crate::registry;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
@@ -133,21 +133,9 @@ pub(crate) fn edit(
         ));
     }
     let mut steps = expand(&edit.changes)?;
-    // Two changes to one path: only the last would land, without a word.
-    if let Some(path) = steps.iter().enumerate().find_map(|(index, (path, _))| {
-        steps
-            .iter()
-            .take(index)
-            .any(|(earlier, _)| earlier == path)
-            .then_some(path)
-    }) {
-        return Err(error::invalid(
-            format!("{path} is changed twice in one edit; change it once"),
-            json!({ "path": path }),
-        ));
-    }
     let environment = scope::lock(tx, who, &edit.environment)?;
     environment.expect(edit.expect)?;
+    refuse_twice(&steps, &environment)?;
     let before = environment.working.clone();
     // Each Setting set, judged against the source the whole edit leaves.
     let mut set = Vec::new();
@@ -210,6 +198,48 @@ pub(crate) fn edit(
         immediate,
         typed_addresses,
     })
+}
+
+/// Two changes to one path: only the last would land, without a word. A rename writes
+/// where it moves from and where it moves to, and a Config by name and by ID is one
+/// Config.
+fn refuse_twice(steps: &[(SettingPath, Step)], environment: &Environment) -> Result<(), RpcError> {
+    let mut written: Vec<SettingPath> = Vec::new();
+    for (path, step) in steps {
+        let mut writes = vec![(identity(path, environment), path.clone())];
+        if let Step::Rename { to, .. } = step {
+            let to = SettingPath::at(path.settings_of()?, Target::Variable(to.clone()));
+            if to != *path {
+                writes.push((to.clone(), to));
+            }
+        }
+        for (identity, named) in writes {
+            if written.contains(&identity) {
+                return Err(error::invalid(
+                    format!("{named} is changed twice in one edit; change it once"),
+                    json!({ "path": named }),
+                ));
+            }
+            written.push(identity);
+        }
+    }
+    Ok(())
+}
+
+/// `path`, with a Config it mounts named by ID. A Config no ID matches stays as named;
+/// applying the change refuses it.
+fn identity(path: &SettingPath, environment: &Environment) -> SettingPath {
+    let (Some(service), Some(Target::ConfigMount(config))) = (path.service(), path.target()) else {
+        return path.clone();
+    };
+    config
+        .resolve([&environment.working])
+        .ok()
+        .and_then(|config| ConfigId::parse(&config.resource_id).ok())
+        .map_or_else(
+            || path.clone(),
+            |id| SettingPath::at(service, Target::ConfigMount(id.into())),
+        )
 }
 
 /// Whether `setting` chooses the Service's source.
