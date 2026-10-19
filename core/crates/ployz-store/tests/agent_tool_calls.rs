@@ -3054,3 +3054,14 @@ fn every_read_tool_explains_what_it_cannot_find() {
         bare.join("\n")
     );
 }
+
+#[test]
+fn turning_pull_request_environments_off_needs_no_repository() {
+    let store = shop();
+    let run = call(&store, "environment_pr", json!({ "enabled": false }), "call-1");
+    assert_eq!(run.writes, 0);
+    let off = run.ok();
+    assert_eq!(off["pull_request_environments"], json!(false));
+    let refusal = call(&store, "environment_pr", json!({ "enabled": true }), "call-2").refused();
+    assert_eq!(refusal.field.as_deref(), Some("repository"));
+}
