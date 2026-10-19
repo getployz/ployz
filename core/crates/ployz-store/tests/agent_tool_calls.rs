@@ -650,7 +650,7 @@ fn a_service_goes_from_staged_to_deployed() {
     let review = call(&store, "review", json!({}), "review-1");
     assert_eq!(review.writes, 0);
     let review = review.ok();
-    assert_eq!(review["asks_approval"], false);
+    assert_eq!(review["asks_approval"], true);
     assert!(
         review["lines"]
             .as_array()
@@ -3097,4 +3097,24 @@ fn an_unknown_environment_lists_the_real_ones_instead_of_creating_it() {
         refusal.next,
         vec![Call::new("environment_show", json!({ "project": "shop" }))]
     );
+}
+
+#[test]
+fn review_says_every_agent_deploy_asks_on_cloud_and_none_does_locally() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let on_cloud = call(&store, "review", json!({}), "review-1").ok();
+    assert_eq!(on_cloud["asks_approval"], json!(true), "{on_cloud}");
+    assert_eq!(on_cloud["destroys"], json!([]), "{on_cloud}");
+    let local = drive(
+        &store,
+        StoreAt::Local,
+        "review",
+        json!({}),
+        "review-2",
+        &mut no_cloud,
+    )
+    .ok();
+    assert_eq!(local["asks_approval"], json!(false), "{local}");
 }
