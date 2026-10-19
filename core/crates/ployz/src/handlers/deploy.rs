@@ -305,15 +305,20 @@ pub(super) fn open_events(
         use std::io::ErrorKind;
         let kind = error.kind();
         let reason = if kind == ErrorKind::NotFound {
-            "no such directory".to_owned()
+            "no such directory"
         } else if kind == ErrorKind::IsADirectory {
-            "it is a directory".to_owned()
+            "it is a directory"
         } else if kind == ErrorKind::PermissionDenied {
-            "permission denied".to_owned()
+            "permission denied"
         } else {
-            error.to_string()
+            "it can't be created"
         };
-        Error::usage(format!("Can't write --events file {path}: {reason}"))
+        Error::detailed_caused(
+            RpcErrorCode::InvalidArgument,
+            format!("Can't write --events file {path}: {reason}"),
+            serde_json::Value::Null,
+            Some(error),
+        )
     })?;
     Ok(Some(std::io::BufWriter::new(file)))
 }
@@ -1267,6 +1272,7 @@ mod tests {
         };
         let missing = refused("/nonexistent/dir/ev.ndjson");
         assert_eq!(missing.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(missing.cause.len(), 1, "{missing:?}");
         assert_eq!(
             missing.message,
             "Can't write --events file /nonexistent/dir/ev.ndjson: no such directory"
