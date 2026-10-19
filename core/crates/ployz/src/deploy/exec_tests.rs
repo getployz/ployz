@@ -106,35 +106,6 @@ enum Reply {
 
 struct Step(Call, Reply);
 
-struct AmendmentStall {
-    requested: tokio::sync::Notify,
-    released: tokio::sync::Notify,
-    spent: std::sync::atomic::AtomicBool,
-}
-
-impl AmendmentStall {
-    fn new() -> Self {
-        Self {
-            requested: tokio::sync::Notify::new(),
-            released: tokio::sync::Notify::new(),
-            spent: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    async fn hold_amendment(&self) {
-        self.requested.notify_one();
-        self.released.notified().await;
-    }
-
-    async fn release_on_first_start(&self) {
-        if self.spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
-        self.requested.notified().await;
-        self.released.notify_one();
-    }
-}
-
 /// A copy as its owner records it.
 #[derive(Clone, Debug)]
 struct Recorded {
@@ -216,7 +187,6 @@ enum Decision {
 
 struct Scripted {
     steps: Mutex<VecDeque<Step>>,
-    amendment_stall: Option<AmendmentStall>,
     observations: Option<Vec<ContainerObservation>>,
     slots: Mutex<Vec<SlotKey>>,
     answers: Mutex<Vec<AnswerWhen>>,
@@ -252,7 +222,6 @@ impl Scripted {
     fn new(steps: Vec<Step>) -> Self {
         Self {
             steps: Mutex::new(steps.into()),
-            amendment_stall: None,
             observations: None,
             slots: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
@@ -705,9 +674,6 @@ impl Scripted {
                 panic!("a rotation ask goes through ensure_unsettled: {want:?}")
             }
         };
-        if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall) {
-            stall.release_on_first_start().await;
-        }
         if let Some((at, cancel)) = &self.cancel_on
             && *at == call
         {
@@ -1028,8 +994,8 @@ fn id_of(locator: &ContainerLocator) -> ContainerId {
 
 #[path = "exec_tests/dispatch.rs"]
 mod dispatch;
-// DISABLED #[path = "exec_tests/flip.rs"]
-// DISABLED mod flip;
+#[path = "exec_tests/flip.rs"]
+mod flip;
 #[path = "exec_tests/health.rs"]
 mod health;
 #[path = "exec_tests/hooks.rs"]
