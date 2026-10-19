@@ -351,6 +351,12 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
         let RpcError { code, details, .. } = error.to_rpc_error();
         return (code, details);
     }
+    if let Some(LoginError::Unanswered { .. }) = error.downcast_ref::<LoginError>() {
+        return (
+            RpcErrorCode::Unavailable,
+            serde_json::json!({ "writes": "unknown" }),
+        );
+    }
     if let Some(MachineSelectorError::NotFound(_)) = error.downcast_ref::<MachineSelectorError>() {
         return (
             RpcErrorCode::NotFound,
@@ -934,6 +940,7 @@ impl From<LoginError> for Failure {
             LoginError::UnknownOrganization(_) => Some("ployz org ls"),
             LoginError::UnknownCredential(_) => Some("ployz token ls"),
             LoginError::Unreachable { .. }
+            | LoginError::Unanswered { .. }
             | LoginError::Unsupported(_)
             | LoginError::Status { .. }
             | LoginError::Reply(_)
@@ -946,7 +953,7 @@ impl From<LoginError> for Failure {
 
 pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
     match error {
-        LoginError::Unreachable { .. } => RpcErrorCode::Unavailable,
+        LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => RpcErrorCode::Unavailable,
         LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
         LoginError::TokenBound => RpcErrorCode::InvalidArgument,
         LoginError::Status { status, .. } => http_status_code(*status),

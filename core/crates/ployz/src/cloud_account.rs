@@ -476,12 +476,23 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
 ) -> Result<T, StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
     let url = format!("{}/api/config/{operation}", credential.cloud());
-    let response =
-        send_approved(credential, via, Method::POST, &url, &body, approval, None).await?;
-    store_answer(credential, response).await
+    let lost = if operation == "write" {
+        cloud_login::lost
+    } else {
+        cloud_login::unreachable
+    };
+    let response = approved_request(credential, via, Method::POST, &url, &body, approval, None)?
+        .send()
+        .await
+        .map_err(|error| lost(credential.cloud(), error))?;
+    store_answer(credential, response, lost).await
 }
 
-async fn send_approved(
+/// How a request that failed in flight becomes a [`LoginError`]: [`cloud_login::lost`]
+/// for a write, else [`cloud_login::unreachable`].
+type Lost = fn(&str, reqwest::Error) -> LoginError;
+
+fn approved_request(
     credential: &Credential,
     via: Via,
     method: Method,
@@ -489,7 +500,7 @@ async fn send_approved(
     body: &serde_json::Value,
     approval: Option<&str>,
     request_key: Option<&str>,
-) -> Result<reqwest::Response, LoginError> {
+) -> Result<reqwest::RequestBuilder, LoginError> {
     let mut request = request(credential, method, url, Some(body))?.timeout(OPERATION_TIMEOUT);
     if via == Via::Agent {
         request = request.header("x-ployz-via", "agent");
@@ -500,10 +511,7 @@ async fn send_approved(
     if let Some(key) = request_key {
         request = request.header("x-ployz-request-key", key);
     }
-    request
-        .send()
-        .await
-        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))
+    Ok(request)
 }
 
 /// Start a durable Cloud run at `/api/cli/<path>`, carrying `approval` when Cloud asked
@@ -581,13 +589,21 @@ pub(crate) async fn keyed_reply<T: DeserializeOwned>(
     request_key: Option<&str>,
 ) -> (Result<T, StoreCallError>, Option<String>) {
     let url = format!("{}/api/cli/{path}", credential.cloud());
-    let response =
-        match send_approved(credential, via, method, &url, body, approval, request_key).await {
-            Ok(response) => response,
-            Err(error) => return (Err(error.into()), None),
-        };
+    let sent = async {
+        approved_request(credential, via, method, &url, body, approval, request_key)?
+            .send()
+            .await
+            .map_err(|error| cloud_login::unreachable(credential.cloud(), error))
+    };
+    let response = match sent.await {
+        Ok(response) => response,
+        Err(error) => return (Err(error.into()), None),
+    };
     let revision = revision_of(response.headers());
-    (store_answer(credential, response).await, revision)
+    (
+        store_answer(credential, response, cloud_login::unreachable).await,
+        revision,
+    )
 }
 
 /// Read the Cloud run at `/api/cli/<path>` every second until its `state` is neither
@@ -698,13 +714,14 @@ impl<T> Settled<T> {
 async fn store_answer<T: DeserializeOwned>(
     credential: &Credential,
     response: reqwest::Response,
+    lost: Lost,
 ) -> Result<T, StoreCallError> {
     let status = response.status();
     notice_revision(&response);
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+        .map_err(|error| lost(credential.cloud(), error))?;
     if !status.is_success() {
         if let Some(refused) = refusal(&bytes) {
             return Err(StoreCallError::Refused(refused));
@@ -770,7 +787,12 @@ pub(crate) async fn check_forget_servers(
     credential: &Credential,
 ) -> Result<ForgetCheck, StoreCallError> {
     let url = format!("{}/api/cli/forget-servers", credential.cloud());
-    store_answer(credential, send(credential, Method::GET, &url, None).await?).await
+    store_answer(
+        credential,
+        send(credential, Method::GET, &url, None).await?,
+        cloud_login::unreachable,
+    )
+    .await
 }
 
 /// Forget the Servers of the credential's Organization, named `organization`: Cloud
@@ -948,7 +970,12 @@ pub(crate) async fn refusable<T: DeserializeOwned>(
     body: Option<&serde_json::Value>,
 ) -> Result<T, StoreCallError> {
     let url = format!("{}/api/cli/{path}", credential.cloud());
-    store_answer(credential, send(credential, method, &url, body).await?).await
+    store_answer(
+        credential,
+        send(credential, method, &url, body).await?,
+        cloud_login::unreachable,
+    )
+    .await
 }
 
 /// The most compressed source one upload may hold, the same as Cloud's cap. It stays
@@ -986,14 +1013,14 @@ pub(crate) async fn upload(
         .body(archive)
         .send()
         .await
-        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+        .map_err(|error| cloud_login::lost(credential.cloud(), error))?;
     // A proxy in front of Cloud with a lower cap refuses the body before Cloud sees it.
     if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
         return Err(StoreCallError::Refused(too_big(&format!(
             "Cloud refused the {mib} MiB compressed source as too large."
         ))));
     }
-    store_answer::<serde_json::Value>(credential, response).await?;
+    store_answer::<serde_json::Value>(credential, response, cloud_login::lost).await?;
     Ok(())
 }
 
