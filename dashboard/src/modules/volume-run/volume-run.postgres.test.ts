@@ -665,6 +665,16 @@ describe("volume runs", () => {
       expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
     });
 
+    it("a Volume renamed during a run is refused by its new name, so the hints run as printed", async () => {
+      const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      storeVolumes = storeVolumes.map((volume) => volume.id === volumeId ? { ...volume, name: "files" } : volume);
+
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({
+        ok: false,
+        refusal: { message: `files is busy with a mirror; ployz volume runs files ${first.id} follows it, and ployz volume release files stops it` },
+      });
+    });
+
     it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
       const removal = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
 

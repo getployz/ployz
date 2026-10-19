@@ -182,15 +182,16 @@ const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string
 
 const deploying = (lane: Pick<VolumeRunRow, "kind" | "heldBy">) => lane.kind === "deploy" || lane.heldBy !== null;
 
-const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind) {
+/** `volumeName` is the Volume's name now, which the hints must use: the run keeps the name it started under. */
+const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind, volumeName: string) {
   const run = volumeRunView(lane);
-  if (deploying(lane)) return { code: "conflict", message: `${lane.volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
+  if (deploying(lane)) return { code: "conflict", message: `${volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
   const refuse = (message: string, details: JsonValue = { run }) => ({ code: "conflict", message, details }) satisfies StoreRefusal;
   const input = laneInputOf(lane);
-  if (input.kind === "seed") return refuse(`${lane.volumeName} is being copied into ${input.args.into.name}; it finishes on its own`);
-  if (!pastReturn(lane)) return refuse(volumeBusyMessage(lane));
+  if (input.kind === "seed") return refuse(`${volumeName} is being copied into ${input.args.into.name}; it finishes on its own`);
+  if (!pastReturn(lane)) return refuse(volumeBusyMessage({ id: lane.id, kind: lane.kind, volumeName }));
   const target = yield* laneTarget(lane);
-  const finishes = finishesThere(lane.volumeName, target ?? "its new Server");
+  const finishes = finishesThere(volumeName, target ?? "its new Server");
   // A restore's target is the copy it restores from, not a move's destination.
   if (kind === "release" && target !== null && lane.kind !== "restore") return refuse(finishes, { run, move_to: target });
   return refuse(finishes);
@@ -430,7 +431,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const lane = yield* activeLane(input.volumeId);
   if (lane !== undefined && (input.kind !== "release" || keepsLane(lane, "cancelled", "release"))) {
-    return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
+    return { ok: false, refusal: yield* laneRefusal(lane, input.kind, volume.volumeName) } satisfies VolumeRunPlan;
   }
   const { owed: pending } = yield* commitment(input.volumeId);
   if (pending !== null && input.kind !== "delete_mirror" && refusedWhileOwed(input, pending)) {
@@ -568,7 +569,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
     if (only !== undefined && lane?.id !== only) return yield* new LaneMoved({ active: lane });
     let taken: VolumeRunRow | undefined;
     if (lane !== undefined && end !== null) {
-      if (keepsLane(lane, end, input.kind)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind), busy: volumeRunView(lane) });
+      if (keepsLane(lane, end, input.kind)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind, volume.volumeName), busy: volumeRunView(lane) });
       [taken] = yield* drizzle.update(volumeRun).set(ended(end, TAKEN_BY[end]))
         .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.phase, "warm")))
         .returning();
@@ -593,7 +594,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       const [held] = input.kind === "deploy" ? [] : yield* drizzle.select().from(volumeRun)
         .where(and(eq(volumeRun.volumeId, input.volumeId), isNotNull(volumeRun.heldBy)))
         .limit(1);
-      if (held !== undefined) return yield* new LaneRefused({ refusal: yield* laneRefusal(held, input.kind), busy: volumeRunView(held) });
+      if (held !== undefined) return yield* new LaneRefused({ refusal: yield* laneRefusal(held, input.kind, volume.volumeName), busy: volumeRunView(held) });
       const admitted = yield* admitOwed(inserted, input);
       // A release floors and plans on its own; only a yielding run fences the lane it took before it plans.
       if (inngestRunId === null) yield* enqueueRun(admitted, end === "yielded" ? taken?.kind ?? fences : undefined);
@@ -604,7 +605,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
     const active = yield* activeLane(input.volumeId, true);
     if (active === undefined && round < TAKE_ROUNDS) continue;
     if (active === undefined) return yield* new LaneChurn({ message: `runs on ${volume.volumeName} keep landing and ending; try again` });
-    return yield* new LaneRefused({ refusal: yield* laneRefusal(active, input.kind), busy: volumeRunView(active) });
+    return yield* new LaneRefused({ refusal: yield* laneRefusal(active, input.kind, volume.volumeName), busy: volumeRunView(active) });
   }
 });
 
