@@ -2034,6 +2034,60 @@ fn mistakes_fail_with_their_codes() {
 }
 
 #[test]
+fn discarding_a_save_never_deployed_says_how_to_bring_it_back() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        ok(store, &["deploy", "--skip-deploy"]);
+        let discard = || {
+            let home = tempfile::tempdir().unwrap();
+            let output = store
+                .command(home.path())
+                .arg("discard")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(0), "{}", said(&output));
+            said(&output)
+        };
+        let back = "web is in saved #1 but was never deployed, so discarding removes it. Bring it back: ployz discard web";
+
+        let first = discard();
+        assert!(first.contains("Discarded every staged change"), "{first}");
+        assert!(first.contains(back), "{first}");
+        let diff = ok(store, &["diff"]);
+        assert_eq!(diff["draft_changes"][0]["name"], json!("web"), "{diff}");
+        let status = ok(store, &["status"]);
+        assert_ne!(
+            status.pointer("/staged/changes"),
+            Some(&json!(0)),
+            "status counts the row diff lists: {status}"
+        );
+
+        let second = discard();
+        assert!(!second.contains("nothing to discard"), "{second}");
+        assert!(second.contains(back), "{second}");
+        let json = ok(store, &["discard"]);
+        assert_eq!(
+            json["comes_back"],
+            json!([{ "name": "web", "command": "ployz discard web", "drops_unsaved": false }]),
+            "{json}"
+        );
+        assert_eq!(
+            json["reversed"][0]["way_back"],
+            json!({ "path": "web", "drops_unsaved": false }),
+            "{json}"
+        );
+
+        let restored = ok(store, &["discard", "web"]);
+        assert_eq!(restored["changed"], json!(true), "{restored}");
+        let diff = ok(store, &["diff"]);
+        assert_eq!(diff["changes"][0]["lifecycle"], json!("create"), "{diff}");
+        assert_eq!(diff["draft_count"], json!(0), "{diff}");
+    }
+}
+
+#[test]
 fn an_agent_reviews_saves_and_discards() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
