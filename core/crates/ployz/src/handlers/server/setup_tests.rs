@@ -93,6 +93,7 @@ fn founder_request(machine: &Machine) -> EnrollRequest {
             advertised_endpoints: Vec::new(),
         },
         wireguard_mtu: None,
+        pinned: Default::default(),
     }
 }
 

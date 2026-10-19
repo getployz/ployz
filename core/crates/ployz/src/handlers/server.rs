@@ -638,6 +638,29 @@ mod tests {
     }
 
     #[test]
+    fn enrolling_pins_only_the_addresses_the_operator_names() {
+        let pinned = |flags: &[&str]| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(
+                    ["ployz", "server", "add", "--standalone", "root@host"]
+                        .iter()
+                        .chain(flags),
+                )
+                .unwrap();
+            helpers::pinned(&helpers::token_request(leaf_matches(&matches)).unwrap())
+        };
+        let pins = |public_ip, advertised_endpoints| ployz_core::PinnedAddresses {
+            public_ip,
+            advertised_endpoints,
+        };
+        assert_eq!(pinned(&[]), pins(false, false));
+        assert_eq!(pinned(&["--public-ip=auto"]), pins(false, false));
+        assert_eq!(pinned(&["--public-ip=none"]), pins(true, false));
+        assert_eq!(pinned(&["--public-ip=192.0.2.9"]), pins(true, false));
+        assert_eq!(pinned(&["--wg-endpoint=192.0.2.1"]), pins(false, true));
+    }
+
+    #[test]
     fn set_cli_rejects_an_empty_patch_and_maps_none_to_public_ip_removal() {
         let command = crate::cli::command();
         let empty = command

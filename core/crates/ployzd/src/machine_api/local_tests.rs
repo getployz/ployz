@@ -709,6 +709,7 @@ async fn fake_docker_service(
                 )],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let store = RecordOwner::spawn(store).unwrap();
@@ -2756,6 +2757,7 @@ mod serving_pointer {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         local
