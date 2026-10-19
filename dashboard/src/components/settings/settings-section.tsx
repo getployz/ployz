@@ -4,9 +4,9 @@ import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemFooter, ItemHeader, ItemTitle } from "#/components/ui/item";
 
 /**
- * How a row's control saves. `confirm` is a draft input that saves on its check or Enter, `change` saves the moment it
- * is picked or flipped, `form` saves its fields together at one Save, and `none` saves nothing: a value, a link or a
- * button that opens something else.
+ * How a row's control saves. `confirm` is a draft input that saves on Enter or when you leave the field (a name or a
+ * new file waits for its check), `change` saves the moment it is picked or flipped, `form` saves its fields together at
+ * one Save, and `none` saves nothing: a value, a link or a button that opens something else.
  */
 export type SettingsCommit = "confirm" | "change" | "form" | "none";
 

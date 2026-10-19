@@ -33,6 +33,7 @@ agent-browser --session $S find role tab click --name Variables
 
 ## Gotchas
 
-- Inspector textboxes commit on Enter. Fill, press Enter, then check **Details** (a new row appears) and reload (the value stays).
+- Inspector textboxes commit on Enter or when focus leaves them. Fill, press Enter or Tab, then check **Details** (a new row appears) and reload (the value stays).
+- After a reload, wait until the page hydrates before typing: `eval 'Object.keys(document.body.firstElementChild||{}).some(k=>k.startsWith("__react"))'` reads `true`. Typing into the server-rendered page saves nothing.
 - Status always reads Queued · Can't reach servers, because no Server is running. Don't treat it as a bug.
 - Code: `ENV/-components/CanvasInspectorOverlay.tsx`, `ENV/-components/canvas/`, `ENV/services/`, `ENV/resources/$resourceId/-components/StoreConfigDrawer.tsx`.

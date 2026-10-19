@@ -75,4 +75,13 @@ describe("HealthcheckField", () => {
     expect(set).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "HTTP path" })).toBeTruthy();
   });
+
+  it("goes back to the buttons when the field is left blank right after adding", () => {
+    const { set } = field(null);
+    fireEvent.click(screen.getByRole("button", { name: "HTTP path" }));
+    fireEvent.blur(screen.getByLabelText("Healthcheck path"));
+
+    expect(set).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "HTTP path" })).toBeTruthy();
+  });
 });

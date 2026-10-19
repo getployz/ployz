@@ -66,8 +66,9 @@ function HealthcheckFields({ check, change, set, label = "Healthcheck", descript
 
   function confirm(kind: HealthcheckKind) {
     const next = text.trim();
+    // Clearing a check turns it off; a kind just picked and left blank was never set.
     if (next === "") {
-      if (check) set(null);
+      if (check?.kind === kind) set(null);
       return setDraft(null);
     }
     const error = KINDS[kind].validate(next);
@@ -143,7 +144,7 @@ function HealthcheckGroup({ check, change, set, close }: HealthcheckSetting & { 
   function confirm() {
     const next = text.trim();
     if (next === "") {
-      if (check) set(null);
+      if (check?.kind === kind) set(null);
       return setDraft(null);
     }
     const error = KINDS[kind].validate(next);

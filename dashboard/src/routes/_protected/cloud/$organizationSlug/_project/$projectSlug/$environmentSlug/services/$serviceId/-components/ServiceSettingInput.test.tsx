@@ -64,6 +64,60 @@ describe("ServiceSettingInput validation", () => {
 
 describe("ServiceSettingInput commit", () => {
   afterEach(cleanup);
+  const replicas: SettingSchema = { title: "Replicas", description: "", type: "integer", minimum: 0, maximum: 50 };
+  const saved = () => ({ isPersisted: { promise: Promise.resolve() } });
+
+  it("stages the typed value when focus leaves the field, with no check to press", () => {
+    const onCommit = vi.fn(saved);
+    render(<ServiceSettingInput ariaLabel="Replicas" value="1" isChanged={false} onCommit={onCommit} />);
+    const input = screen.getByLabelText("Replicas");
+    fireEvent.change(input, { target: { value: "2" } });
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    fireEvent.blur(input);
+
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("2");
+  });
+
+  it("keeps an invalid value and its reason when focus leaves, and stages nothing", () => {
+    const onCommit = vi.fn(saved);
+    render(<ServiceSettingInput ariaLabel="Replicas" value="1" isChanged={false}
+      validate={(next) => settingError(replicas, next)} onCommit={onCommit} />);
+    const input = screen.getByLabelText<HTMLInputElement>("Replicas");
+    fireEvent.change(input, { target: { value: "60" } });
+    fireEvent.blur(input);
+
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(input.value).toBe("60");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByRole("alert").textContent).toBe("Enter a whole number from 0 to 50.");
+  });
+
+  it("puts the stored value back on Escape, and leaving then stages nothing", () => {
+    const onCommit = vi.fn(saved);
+    render(<ServiceSettingInput ariaLabel="Replicas" value="1" isChanged={false} onCommit={onCommit} />);
+    const input = screen.getByLabelText<HTMLInputElement>("Replicas");
+    fireEvent.change(input, { target: { value: "2" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.blur(input);
+
+    expect(input.value).toBe("1");
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("doesn't overwrite a value changed elsewhere when focus leaves; Enter replaces it", () => {
+    const onCommit = vi.fn(saved);
+    const field = (value: string) => <ServiceSettingInput ariaLabel="Replicas" value={value} isChanged={false} onCommit={onCommit} />;
+    const { rerender } = render(field("1"));
+    const input = screen.getByLabelText("Replicas");
+    fireEvent.change(input, { target: { value: "5" } });
+    rerender(field("3"));
+    fireEvent.blur(input);
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(screen.getByText(/Changed elsewhere to 3/)).toBeTruthy();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("5");
+  });
 
   it("shows the committed text while the write runs, and the stored value again when it fails", async () => {
     let fail = (_error: Error) => {};
