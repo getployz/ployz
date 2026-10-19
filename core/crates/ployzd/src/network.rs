@@ -509,10 +509,27 @@ mod tests {
             None,
             "no handshake yet does not rotate back to the stale candidates"
         );
-        assert_eq!(peer.selected(), Some(seed));
+        assert_eq!(
+            peer.selection.state,
+            EndpointState::Chosen {
+                endpoint: seed,
+                since: start
+            }
+        );
+        assert_eq!(
+            peer.poll(refreshed, Some(start), Some(seed.0)),
+            None,
+            "a handshake from before the seed proves nothing"
+        );
+        assert!(matches!(peer.selection.state, EndpointState::Chosen { .. }));
 
         let handshake = refreshed + Duration::from_secs(1);
         assert_eq!(peer.poll(handshake, Some(handshake), Some(seed.0)), None);
+        assert_eq!(
+            peer.selection.state,
+            EndpointState::Established(seed),
+            "a handshake after the seed establishes it without a roam"
+        );
         let quiet = handshake + PEER_DOWN_INTERVAL / 2;
         assert_eq!(peer.poll(quiet, Some(handshake), Some(seed.0)), None);
         assert_eq!(peer.selected(), Some(seed), "a handshaking seed stays");

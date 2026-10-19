@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use futures_util::future::join_all;
 use ployz_core::{
-    Machine, MachineId, MachineName, MachineTarget, RpcError, SelectEndpointRequest,
+    Machine, MachineId, MachineName, MachineTarget, RpcError, RpcErrorCode, SelectEndpointRequest,
     SelectedEndpoint, op,
 };
 use serde::Serialize;
@@ -27,6 +27,12 @@ enum Entry {
         target: Machine,
         observer: Dialer,
     },
+    /// The entry answered but did not take the endpoint; it can still update the target.
+    Refused {
+        client: Client,
+        target: Machine,
+        missed: Missed,
+    },
     Missed(Missed),
 }
 
@@ -41,6 +47,18 @@ pub(super) struct Missed {
     /// The Server's name once reached, else the connection.
     pub(super) entry: String,
     pub(super) error: RpcError,
+}
+
+impl Missed {
+    pub(super) fn sentence(&self) -> String {
+        if self.error.code == RpcErrorCode::Unavailable {
+            format!("{} unreachable.", self.entry)
+        } else if self.error.code == RpcErrorCode::Unsupported {
+            format!("{} needs a daemon upgrade to take it.", self.entry)
+        } else {
+            format!("{} refused it: {}", self.entry, self.error.message)
+        }
+    }
 }
 
 /// The endpoint and the Servers that now dial the target at it.
@@ -113,6 +131,15 @@ pub(super) async fn seed(
                     seeding.dialed_by.push(observer);
                 }
             }
+            Entry::Refused {
+                client,
+                target,
+                missed,
+            } => {
+                seeding.target.get_or_insert(target);
+                fallback.get_or_insert(client);
+                seeding.failures.push(missed);
+            }
             Entry::Missed(missed) => seeding.failures.push(missed),
         }
     }
@@ -132,7 +159,14 @@ async fn enter(
     let missed = |entry: String, error| Entry::Missed(Missed { entry, error });
     let mut client = match connect_one(connection, source, connector).await {
         Ok(client) => client,
-        Err(error) => return missed(connection.to_string(), rpc_error(error)),
+        Err(error) => {
+            let unreachable = error.is_unreachable();
+            let mut error = rpc_error(error);
+            if unreachable {
+                error.code = RpcErrorCode::Unavailable;
+            }
+            return missed(connection.to_string(), error);
+        }
     };
     let observed = match (client.entry_id().await, client.machines().await) {
         (Ok(id), Ok(machines)) => machines
@@ -172,6 +206,13 @@ async fn enter(
             target,
             observer,
         },
-        Err(error) => missed(observer.name.to_string(), rpc_error(error)),
+        Err(error) => Entry::Refused {
+            client,
+            target,
+            missed: Missed {
+                entry: observer.name.to_string(),
+                error: rpc_error(error),
+            },
+        },
     }
 }

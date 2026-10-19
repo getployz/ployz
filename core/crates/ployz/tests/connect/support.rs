@@ -212,6 +212,8 @@ pub(super) struct DiscoveryService {
     pub(super) selected_endpoints: Arc<Mutex<Vec<ployz_core::SelectEndpointRequest>>>,
     /// UpdateMachine fails in transport, as when the target is off the mesh.
     pub(super) update_unavailable: bool,
+    /// SelectEndpoint is unimplemented, as on a daemon older than it.
+    pub(super) select_unimplemented: bool,
 }
 
 impl DiscoveryService {
@@ -273,6 +275,7 @@ impl DiscoveryService {
             lose_upgrade_reply: Arc::default(),
             selected_endpoints: Arc::default(),
             update_unavailable: false,
+            select_unimplemented: false,
         }
     }
 
@@ -1223,6 +1226,9 @@ impl FakeMachine for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self.select_unimplemented {
+            return Err(Status::unimplemented("SelectEndpoint"));
+        }
         let request = request.into_inner().decode_request().unwrap();
         let RpcRequestBody::SelectEndpoint(request) = request.body else {
             return Err(Status::invalid_argument("expected select_endpoint"));

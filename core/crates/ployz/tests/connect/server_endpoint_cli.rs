@@ -70,6 +70,10 @@ async fn a_new_endpoint_reaches_every_other_server_when_the_target_is_off_the_me
         stderr.contains("one unreachable; its record is unchanged."),
         "{stderr}"
     );
+    assert!(
+        stderr.contains(&format!("tcp://{one_address} unreachable.")),
+        "{stderr}"
+    );
     let wanted = ployz_core::SelectEndpointRequest {
         peer: machine_id('a'),
         endpoint: ployz_core::SelectedEndpoint("203.0.113.9:51820".parse().unwrap()),
@@ -104,4 +108,37 @@ async fn a_new_endpoint_reaches_every_other_server_when_the_target_is_off_the_me
         "{result}"
     );
     let _ = std::fs::remove_file(&config);
+}
+
+#[tokio::test]
+async fn an_older_entry_still_updates_the_target_it_could_not_seed() {
+    let mut older = entry('b');
+    older.update_unavailable = false;
+    older.select_unimplemented = true;
+    let (address, _older) = serve_discovery(older).await;
+    let config = std::env::temp_dir().join(format!("ployz-endpoint-{}.yaml", MachineId::random()));
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .args([
+            "server",
+            "set",
+            "one",
+            "--wg-endpoint",
+            "203.0.113.9:51820",
+            "--connect",
+            &format!("tcp://{address}"),
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stdout.trim(), "Updated Server one.", "{stderr}");
+    assert!(
+        stderr.contains("two needs a daemon upgrade to take it."),
+        "{stderr}"
+    );
 }

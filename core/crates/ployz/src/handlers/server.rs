@@ -455,6 +455,9 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         let Some(mut client) = seeding.updater.take() else {
             return Err(unseeded(&seeding));
         };
+        for missed in &seeding.failures {
+            crate::ui::warn(missed.sentence());
+        }
         apply_update(
             &mut client,
             selector,
