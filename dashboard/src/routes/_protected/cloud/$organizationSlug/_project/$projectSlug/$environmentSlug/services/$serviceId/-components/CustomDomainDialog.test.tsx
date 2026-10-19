@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustomDomainDialog } from "./CustomDomainDialog";
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   cleanup();
   document.body.replaceChildren();
   document.body.style.removeProperty("overflow");
@@ -79,6 +80,36 @@ describe("CustomDomainDialog", () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({ hostname: "xn--e1afmkfd.xn--p1ai" })
+      )
+    );
+  });
+
+  it("leaves a Unicode hostname the browser cannot convert to the Store", async () => {
+    vi.stubGlobal(
+      "URL",
+      class {
+        constructor() {
+          throw new TypeError("Invalid URL");
+        }
+      }
+    );
+    const onSubmit = vi.fn();
+    render(
+      <CustomDomainDialog
+        defaultTargetPort={3000}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+    fireEvent.change(screen.getByLabelText("Domain"), {
+      target: { value: "\u04C0.com" },
+    });
+    const save = screen.getByRole("button", { name: "Save route" });
+    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ hostname: "\u04C0.com" })
       )
     );
   });

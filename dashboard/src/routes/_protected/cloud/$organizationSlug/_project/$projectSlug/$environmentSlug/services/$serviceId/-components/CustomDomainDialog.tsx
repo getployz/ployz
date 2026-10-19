@@ -37,7 +37,14 @@ const toAscii = (hostname: string): string | null => {
   }
 };
 
-const isHostname = (hostname: string) => HOSTNAME.test(toAscii(hostname) ?? "");
+/**
+ * A browser's IDNA data can be older than the Store's, so a Unicode name the URL
+ * parser refuses goes to the Store as typed, and the Store decides.
+ */
+const isHostname = (hostname: string) => {
+  const ascii = toAscii(hostname);
+  return ascii !== null && (HOSTNAME.test(ascii) || (/[^\p{ASCII}]/u.test(ascii) && ascii.includes(".")));
+};
 
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
