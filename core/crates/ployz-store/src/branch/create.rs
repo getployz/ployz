@@ -175,6 +175,7 @@ pub(crate) fn create_branch(
         working: into,
         live: BTreeMap::new(),
         removed: parent.removed.clone(),
+        inherited: crate::scope::RemovedServices::default(),
     };
     // A Branch first, so what it lands uses its Parent's nodes live. What it is made
     // with is what it and its Parent share.

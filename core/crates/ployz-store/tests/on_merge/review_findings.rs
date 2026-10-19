@@ -1091,3 +1091,59 @@ fn a_merge_only_saved_names_the_removed_service_its_values_read() {
         Some(json!("${{ <deleted redis>.URL }}"))
     );
 }
+
+#[test]
+fn a_merge_keeps_the_label_the_list_showed_for_a_service_left_behind() {
+    let (store, who) = shop();
+    let db = |environment: &str, n: u8| {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at(environment),
+                    name: ServiceName::parse("db").unwrap(),
+                    image: Some("postgres:17".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    };
+    db("pr-5", 9);
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("db.env.URL", json!("d")),
+            ("web.env.HOSTS", json!("${{ db.URL }}")),
+        ],
+    );
+    db("production", 10);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.HOSTS", json!("draft"))],
+    );
+    exclude(&store, &who, "db", false);
+    let shown = json!("${{ <deleted db>.URL }}");
+    assert_eq!(row(&store, &who, "web.env.HOSTS").lands, shown);
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("production"),
+                target: ployz_store::DiscardTarget::Saved,
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        value(&store, &who, "production", "web.env.HOSTS"),
+        Some(shown)
+    );
+}

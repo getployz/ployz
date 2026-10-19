@@ -97,13 +97,14 @@ describe("parseDisplayToParts", () => {
 
   it("reads a removed service's token, named or not, as the Store shows it", () => {
     const display =
-      "${{ <deleted redis-2>.URL }},${{ <deleted redis-2#2>.URL }},${{ <deleted>.URL }},${{ <deleted #2>.URL }},${{ db.URL }}";
+      "${{ <deleted redis-2>.URL }},${{ <deleted redis-2#2>.URL }},${{ <deleted>.URL }},${{ <deleted #3f2a9c01>.URL }},${{ db.URL }}";
     const { unresolved } = parseDisplayToParts(display, lookupLineage);
-    expect(unresolved).toEqual(["<deleted redis-2>", "<deleted redis-2#2>", "<deleted>", "<deleted #2>"]);
+    expect(unresolved).toEqual(["<deleted redis-2>", "<deleted redis-2#2>", "<deleted>", "<deleted #3f2a9c01>"]);
     expect(renameReferences(display, "api", "db", "URL", "DSN")).toBe(
-      "${{ <deleted redis-2>.URL }},${{ <deleted redis-2#2>.URL }},${{ <deleted>.URL }},${{ <deleted #2>.URL }},${{ db.DSN }}",
+      "${{ <deleted redis-2>.URL }},${{ <deleted redis-2#2>.URL }},${{ <deleted>.URL }},${{ <deleted #3f2a9c01>.URL }},${{ db.DSN }}",
     );
-    expect(referencesDeletedOwner("${{ <deleted #3>.URL }}")).toBe(true);
+    expect(referencesDeletedOwner("${{ <deleted #3f2a9c01>.URL }}")).toBe(true);
+    expect(referencesDeletedOwner("${{ <deleted #3>.URL }}")).toBe(false);
     expect(referencesDeletedOwner("${{ <deleted redis#0>.URL }}")).toBe(false);
     expect(referencesDeletedOwner("${{ <deleted redis-2>.URL }}")).toBe(true);
     expect(referencesDeletedOwner("${{<deleted>.URL}}")).toBe(true);

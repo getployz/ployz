@@ -212,30 +212,51 @@ pub fn resolve_config_file(
     Ok(file)
 }
 
-/// How a reference renders the Service it reads once that Service is gone and no
-/// record names it, as in `${{ <deleted>.URL }}`.
+/// How a reference renders the Service it reads once that Service is gone and nothing
+/// at hand knows it, as in `${{ <deleted>.URL }}`.
 pub const DELETED_OWNER: &str = "<deleted>";
 
-/// How a reference renders a removed Service: `<deleted redis>` for one last called
-/// `name`, [`DELETED_OWNER`] for one no record names. The `nth` removed Service shown
-/// alike, from 2, adds `#nth`, as in `<deleted redis#2>` or `<deleted #2>`.
+/// How a reference renders a removed Service last called `name`: `<deleted redis>`,
+/// and from the second removed Service shown alike, `#nth`, as in `<deleted redis#2>`.
 #[must_use]
-pub fn deleted_owner(name: Option<&str>, nth: usize) -> String {
-    match (name, nth) {
-        (None, ..=1) => DELETED_OWNER.to_owned(),
-        (Some(name), ..=1) => format!("<deleted {name}>"),
-        (name, nth) => format!("<deleted {}#{nth}>", name.unwrap_or_default()),
+pub fn deleted_owner(name: &str, nth: usize) -> String {
+    if nth <= 1 {
+        format!("<deleted {name}>")
+    } else {
+        format!("<deleted {name}#{nth}>")
     }
 }
 
-/// Whether `token` is a removed Service as [`deleted_owner`] renders it.
+/// The hex digits of [`deleted_lineage`]'s label.
+const LINEAGE_DIGITS: usize = 8;
+
+/// How a reference renders a removed Service no record names: by the last hex digits
+/// of its lineage, as in `<deleted #3f2a9c01>`, so its label depends on nothing that
+/// changes. The `#` keeps it apart from a Service called `3f2a9c01`.
+#[must_use]
+pub fn deleted_lineage(lineage: &str) -> String {
+    let digits: Vec<char> = lineage
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .map(|digit| digit.to_ascii_lowercase())
+        .collect();
+    let tail: String = digits
+        .iter()
+        .skip(digits.len().saturating_sub(LINEAGE_DIGITS))
+        .collect();
+    format!("<deleted #{tail:0>LINEAGE_DIGITS$}>")
+}
+
+/// Whether `token` is a removed Service as [`deleted_owner`] or [`deleted_lineage`]
+/// renders it.
 #[must_use]
 pub fn is_deleted_owner(token: &str) -> bool {
     deleted_token(token).is_some_and(|(_, rest)| rest.is_empty())
 }
 
-/// The removed Service's token `text` starts with, as [`deleted_owner`] renders it,
-/// and the text after it. Reads no further than the token.
+/// The removed Service's token `text` starts with, as [`deleted_owner`] or
+/// [`deleted_lineage`] renders it, and the text after it. Reads no further than the
+/// token.
 fn deleted_token(text: &str) -> Option<(&str, &str)> {
     let mut rest = text.strip_prefix("<deleted")?;
     if let Some(label) = rest.strip_prefix(' ') {
@@ -244,6 +265,17 @@ fn deleted_token(text: &str) -> Option<(&str, &str)> {
             return None;
         }
         rest = match after.strip_prefix('#') {
+            Some(lineage) if name.is_empty() => {
+                let (digits, after) = lineage.split_at(
+                    lineage
+                        .find(|c: char| !matches!(c, '0'..='9' | 'a'..='f'))
+                        .unwrap_or(lineage.len()),
+                );
+                if digits.len() != LINEAGE_DIGITS {
+                    return None;
+                }
+                after
+            }
             Some(nth) => {
                 let (digits, after) =
                     nth.split_at(nth.find(|c: char| !c.is_ascii_digit()).unwrap_or(nth.len()));
@@ -491,10 +523,10 @@ mod tests {
         assert_eq!(ghost.parts, [text("x=${{ ghost.Y }}")]);
         assert_eq!(ghost.unresolved, ["ghost"]);
         let shown = [
-            deleted_owner(None, 1),
-            deleted_owner(Some("redis-2"), 1),
-            deleted_owner(Some("redis-2"), 2),
-            deleted_owner(None, 3),
+            DELETED_OWNER.to_owned(),
+            deleted_owner("redis-2", 1),
+            deleted_owner("redis-2", 2),
+            deleted_lineage("00000000-0000-4000-8000-00003F2A9C01"),
         ];
         assert_eq!(
             shown,
@@ -502,7 +534,7 @@ mod tests {
                 DELETED_OWNER,
                 "<deleted redis-2>",
                 "<deleted redis-2#2>",
-                "<deleted #3>"
+                "<deleted #3f2a9c01>"
             ]
         );
         let gone = parse(
@@ -518,6 +550,9 @@ mod tests {
             "<deleted >",
             "<deleted x#0>",
             "<deleted x#>",
+            "<deleted #2>",
+            "<deleted #3F2A9C01>",
+            "<deleted #3f2a9c012>",
         ] {
             assert!(
                 parse(&format!("${{{{ {malformed}.Y }}}}")).malformed,

@@ -155,8 +155,9 @@ pub(crate) fn broken_in(
     }
     names.extend(
         environment
-            .removed
+            .inherited
             .names()
+            .chain(environment.removed.names())
             .map(|(lineage, name)| (lineage.clone(), name.clone())),
     );
     let live_keys = crate::branch::live_keys(tx, &environment.summary.id, working)?;

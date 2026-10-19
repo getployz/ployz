@@ -115,8 +115,9 @@ reference to any variable either way.
   references it, and warn, until you change it.
 - A reference to a deleted service shows its last name, as `${{ <deleted redis>.KEY }}`. Two
   deleted services of one name show as `<deleted redis>` and `<deleted redis#2>`, in the order
-  you deleted them, and keep those names. A service
-  deleted before Ployz recorded names shows as `<deleted>`. Edit the rest of the value or file
+  you deleted them, and keep those names. A branch shows a service its parent deleted by the
+  parent's name for it. A service deleted before Ployz recorded names shows by the end of its
+  ID, as `<deleted #3f2a9c01>`. Edit the rest of the value or file
   around it and it stays; you can't write a new one.
 - Write `$${{` for a literal `${{`.
 

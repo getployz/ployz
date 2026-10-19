@@ -311,51 +311,55 @@ fn edited_values(
     stored
 }
 
-/// The removals `into` records once `from` merges into it: its own, then `from`'s
-/// after them. Both sides of a merge show removed Services by these, so one shown
-/// name is one Service across the list.
-fn landed_removals(from: &Environment, into: &Environment) -> RemovedServices {
+/// Each Service only `from` has that `into` shows another Service's name for, with
+/// that name.
+fn clashing(from: &Environment, into: &Environment) -> BTreeMap<String, String> {
+    let names = into.names();
+    let taken: BTreeSet<&String> = names.values().collect();
+    from.names()
+        .into_iter()
+        .filter(|(lineage, name)| {
+            !names.contains_key(lineage)
+                && !into.removed.contains(lineage)
+                && !into.inherited.contains(lineage)
+                && taken.contains(name)
+        })
+        .collect()
+}
+
+/// The removals `into` records once `from` merges into it: its own; then `from`'s
+/// after them; then each Service only `from` has whose name `into` shows another
+/// Service by, as a removal by that name. Both sides of a merge show removed
+/// Services by these, so one shown label is one Service across the list, and the
+/// merge records them so `into` keeps showing them so.
+fn merge_removals(from: &Environment, into: &Environment) -> RemovedServices {
     let mut removed = into.removed.clone();
     removed.append(&from.removed, |_| true);
+    for (lineage, name) in clashing(from, into) {
+        removed.record(&lineage, Some(&name));
+    }
     removed
 }
 
 /// How the On merge list shows each Service, by lineage, as `into` will see it:
 /// its own names; then each Service it removed; then each only `from` has, by its
-/// name there, or by a removal's numbered label when `into` names another
-/// Service so; then the rest of both sides' removals. One label per Service and
-/// one Service per label, so the list shows values and reads Edits by the same
-/// names.
+/// name there unless `into` shows another Service so; then the rest of
+/// [`merge_removals`]. One label per Service and one Service per label, so the list
+/// shows values and reads Edits by the same names.
 fn merge_names(from: &Environment, into: &Environment) -> BTreeMap<String, String> {
-    let mut removed = landed_removals(from, into);
+    let removals = merge_removals(from, into).shown(BTreeMap::new(), &into.inherited, []);
+    let clashing = clashing(from, into);
     let mut labels = into.names();
-    let from_names = from.names();
-    let taken: BTreeSet<&String> = labels.values().collect();
-    let clashing: BTreeSet<&String> = from_names
-        .iter()
-        .filter(|(lineage, name)| {
-            !labels.contains_key(*lineage)
-                && !into.removed.contains(lineage)
-                && taken.contains(name)
-        })
-        .map(|(lineage, _)| lineage)
-        .collect();
-    for lineage in &clashing {
-        removed.record(lineage, from_names.get(*lineage).map(String::as_str));
-    }
-    let removals = removed.shown(BTreeMap::new(), []);
     for (lineage, label) in &removals {
-        if into.removed.contains(lineage) {
+        if into.removed.contains(lineage) || into.inherited.contains(lineage) {
             labels
                 .entry(lineage.clone())
                 .or_insert_with(|| label.clone());
         }
     }
-    for (lineage, name) in &from_names {
-        if !clashing.contains(lineage) {
-            labels
-                .entry(lineage.clone())
-                .or_insert_with(|| name.clone());
+    for (lineage, name) in from.names() {
+        if !clashing.contains_key(&lineage) {
+            labels.entry(lineage).or_insert(name);
         }
     }
     for (lineage, label) in removals {
@@ -881,8 +885,18 @@ fn land_one(
         working = with_variable_ids_of(&saved, &working, next);
     }
     let consumed = end_included(tx, &into, Some(&from.summary.id))?;
-    // Saved took the merge whatever Working keeps, so the record takes its removals.
-    destination.removed.append(&from.removed, |_| true);
+    // Saved took the merge whatever Working keeps, so the record takes each removal
+    // the list showed, by the label it showed, and names each Service only the
+    // preview had that Saved reads.
+    destination.removed = merge_removals(from, &destination);
+    let read = crate::rules::removed_lineages(&saved, &destination.live);
+    for (lineage, name) in from.names() {
+        if read.contains(&lineage) {
+            destination
+                .removed
+                .record_beside(&lineage, Some(&name), &destination.inherited);
+        }
+    }
     if working != destination.working {
         let carried = Carried::of(tx, &from.summary.id, &from.working)?;
         crate::branch::land(

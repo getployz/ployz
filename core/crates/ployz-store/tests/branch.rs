@@ -935,7 +935,7 @@ fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
 }
 
 #[test]
-fn a_branch_keeps_the_numbers_it_showed_for_services_its_parent_removed() {
+fn a_branch_shows_a_service_its_parent_removed_by_the_parents_name_for_it() {
     let (store, who) = shop();
     store
         .write(
@@ -954,15 +954,15 @@ fn a_branch_keeps_the_numbers_it_showed_for_services_its_parent_removed() {
         &who,
         "production",
         &[(
-            "web.env.JOBS_URL",
-            json!("${{ jobs.PLOYZ_PRIVATE_DOMAIN }}"),
+            "web.env.HOSTS",
+            json!("${{ db.PLOYZ_PRIVATE_DOMAIN }},${{ jobs.PLOYZ_PRIVATE_DOMAIN }}"),
         )],
     );
     deploy(&store, &who, "production", 1, true);
     let mut create = branch("fix-web", "production", &["web"]);
     create.live = vec![node("db"), node("jobs")];
     store.write(&who, &create).unwrap();
-    for service in ["db", "jobs"] {
+    let remove = |service: &str, n: u8| {
         store
             .write(
                 &who,
@@ -972,40 +972,26 @@ fn a_branch_keeps_the_numbers_it_showed_for_services_its_parent_removed() {
                 },
             )
             .unwrap();
-    }
-    deploy(&store, &who, "production", 2, true);
-    let env = ||values(&store, &who, "fix-web", "web")["env"].clone();
-    assert_eq!(
-        (env()["DB_URL"].clone(), env()["JOBS_URL"].clone()),
-        (
-            json!("${{ <deleted>.PLOYZ_PRIVATE_DOMAIN }}"),
-            json!("${{ <deleted #2>.PLOYZ_PRIVATE_DOMAIN }}")
-        )
-    );
+        deploy(&store, &who, "production", n, true);
+    };
+    let hosts = || values(&store, &who, "fix-web", "web")["env"]["HOSTS"].clone();
+    remove("jobs", 2);
+    let shown = hosts();
+    // db sorts before jobs, so a label numbered as reads meet removals would move.
+    remove("db", 3);
 
+    let kept = shown
+        .as_str()
+        .unwrap()
+        .replace("${{ db.PLOYZ_PRIVATE_DOMAIN }},", "");
     set(
         &store,
         &who,
         "fix-web",
-        &[
-            ("web.env.DB_URL", json!("plain")),
-            (
-                "web.env.JOBS_URL",
-                json!("${{ <deleted #2>.PLOYZ_PRIVATE_DOMAIN }}/v2"),
-            ),
-        ],
-    );
-    set(
-        &store,
-        &who,
-        "fix-web",
-        &[(
-            "web.env.JOBS_URL",
-            json!("${{ <deleted #2>.PLOYZ_PRIVATE_DOMAIN }}/v3"),
-        )],
+        &[("web.env.HOSTS", json!(format!("{kept}/v2")))],
     );
     assert_eq!(
-        env()["JOBS_URL"],
-        json!("${{ <deleted #2>.PLOYZ_PRIVATE_DOMAIN }}/v3")
+        hosts(),
+        json!("${{ <deleted jobs>.PLOYZ_PRIVATE_DOMAIN }}/v2")
     );
 }

@@ -1372,7 +1372,7 @@ fn an_edit_keeps_each_reference_on_the_removed_service_it_names() {
 }
 
 #[test]
-fn a_nameless_removal_keeps_its_number_when_its_service_comes_back_and_goes() {
+fn a_service_removed_before_names_were_recorded_shows_by_its_lineage() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let store = ConfigStore::open(&url, backend::key()).unwrap();
@@ -1438,29 +1438,20 @@ fn a_nameless_removal_keeps_its_number_when_its_service_comes_back_and_goes() {
         )
     };
     let nameless = (
-        json!("${{ <deleted>.URL }}"),
-        json!("${{ <deleted #2>.URL }}"),
+        json!("${{ <deleted #00000003>.URL }}"),
+        json!("${{ <deleted #00000005>.URL }}"),
     );
     assert_eq!(shown(), nameless);
 
-    store
-        .write(
-            &who(),
-            &ployz_store::Discard {
-                environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Saved,
-                path: None,
-                version: None,
-            },
-        )
-        .unwrap();
-    remove_both();
-    assert_eq!(shown(), nameless);
     set(
         &store,
-        &[("api.env.SECOND", json!("${{ <deleted #2>.URL }}/v2"))],
+        &[("api.env.SECOND", json!("${{ <deleted #00000005>.URL }}/v2"))],
     )
     .unwrap();
+    assert_eq!(
+        shown(),
+        (nameless.0, json!("${{ <deleted #00000005>.URL }}/v2"))
+    );
 }
 
 /// Run `sql` on the database at `url`, beside the Store.
