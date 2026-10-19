@@ -10,7 +10,7 @@ use crate::{
     Actor, Admit, ConfigId, ConfigMountAt, ConfigStore, CreateConfig, CreateProject, CreateService,
     Deploy, DeploymentId, DeploymentStatus, DiffQuery, Edit, EnvironmentId, EnvironmentRef,
     NodeStatus, OrganizationId, ProjectId, ProjectName, PutConfigFile, RunEvidence, RunnerId,
-    ServiceLineageId, SettingPath, VolumeId, VolumeName,
+    ServiceLineageId, SettingPath, UploadedSource, VolumeId, VolumeName,
 };
 
 fn uuid(n: u8) -> String {
@@ -47,6 +47,11 @@ fn store() -> (ConfigStore, Actor) {
 }
 
 fn create(store: &ConfigStore, who: &Actor, n: u8, service: &str) {
+    create_from(store, who, n, service, Some("nginx:1"));
+}
+
+/// Create `service` pulling `image`, or, with none, built from an upload.
+fn create_from(store: &ConfigStore, who: &Actor, n: u8, service: &str, image: Option<&str>) {
     store
         .write(
             who,
@@ -54,7 +59,7 @@ fn create(store: &ConfigStore, who: &Actor, n: u8, service: &str) {
                 id: ServiceLineageId::parse(uuid(n)).unwrap(),
                 environment: EnvironmentRef::default(),
                 name: name(service),
-                image: Some("nginx:1".into()),
+                image: image.map(str::to_owned),
                 template: None,
             },
         )
@@ -82,6 +87,26 @@ fn set(store: &ConfigStore, who: &Actor, changes: &[(&str, Value)]) {
 
 /// Save Working State and deploy `services` of it (none: every Service).
 fn deploy(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> DeploymentId {
+    admit(store, who, n, services, None)
+}
+
+/// As `deploy`, with an upload for the Services without a source of their own.
+fn deploy_upload(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> DeploymentId {
+    let upload = UploadedSource {
+        digest: ployz_core::UploadDigest::parse("a".repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    };
+    admit(store, who, n, services, Some(upload))
+}
+
+fn admit(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    services: &[&str],
+    upload: Option<UploadedSource>,
+) -> DeploymentId {
     store
         .write(
             who,
@@ -90,7 +115,7 @@ fn deploy(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deploym
                 environment: EnvironmentRef::default(),
                 services: services.iter().map(|service| name(service)).collect(),
                 version: None,
-                upload: None,
+                upload,
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
@@ -165,6 +190,21 @@ fn nodes(store: &ConfigStore, who: &Actor, id: &DeploymentId) -> Vec<(String, No
         .into_iter()
         .map(|node| (node.node.name().to_owned(), node.outcome))
         .collect()
+}
+
+fn publish(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &crate::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+        )
+        .unwrap();
 }
 
 fn put_file(store: &ConfigStore, who: &Actor, content: &str) {
@@ -438,4 +478,86 @@ fn a_narrowed_deploy_records_a_changed_volume_a_service_it_references_mounts() {
         ]
     );
     assert_eq!(staged(&store, &who), 0, "the Volume change is applied");
+}
+
+#[test]
+fn a_narrowed_deploy_of_an_uploaded_service_records_a_service_it_references() {
+    let (store, who) = store();
+    create_from(&store, &who, 3, "client", None);
+    let first = deploy_upload(&store, &who, 1, &[]);
+    assert_eq!(run(&store, &first, &["client"]), DeploymentStatus::Applied);
+    create(&store, &who, 4, "postgres");
+    set(
+        &store,
+        &who,
+        &[(
+            "client.env.DB",
+            json!("${{ postgres.PLOYZ_PRIVATE_DOMAIN }}"),
+        )],
+    );
+    let narrowed = deploy_upload(&store, &who, 2, &["client"]);
+    assert_eq!(
+        run(&store, &narrowed, &["postgres", "client"]),
+        DeploymentStatus::Applied
+    );
+    assert_eq!(
+        services(&store, &who, &narrowed),
+        [
+            ("client".to_owned(), NodeStatus::Deployed),
+            ("postgres".to_owned(), NodeStatus::Deployed),
+        ]
+    );
+    assert_eq!(staged(&store, &who), 0, "nothing stays staged");
+}
+
+#[test]
+fn a_narrowed_deploy_of_an_uploaded_service_warns_of_its_secret_not_set() {
+    let (store, who) = store();
+    create_from(&store, &who, 3, "client", None);
+    set(
+        &store,
+        &who,
+        &[("client.env.KEY", json!({ "secret": "v" }))],
+    );
+    publish(&store, &who);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![crate::Change::Unset {
+                    path: SettingPath::parse("client.env.KEY").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    // Undoing the removal brings KEY back without its value.
+    let query = crate::HistoryPreviewQuery {
+        environment: EnvironmentRef::default(),
+        revision: crate::Revision(2),
+        action: crate::HistoryAction::Undo,
+        change: None,
+    };
+    let preview = store.read(&who, &query).unwrap();
+    store
+        .write(
+            &who,
+            &crate::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: query.revision,
+                action: query.action,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    let narrowed = deploy_upload(&store, &who, 1, &["client"]);
+    let claimed = store.claim(&narrowed, &runner()).unwrap();
+    assert_eq!(
+        json!(claimed.deployment.warnings),
+        json!([{ "service": "client", "variable": "KEY" }])
+    );
 }
