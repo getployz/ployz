@@ -342,7 +342,6 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                     ]
                 }),
         ),
-        "SELECT value FROM cluster WHERE key = ?" => events(&["value"], Vec::new()),
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }
