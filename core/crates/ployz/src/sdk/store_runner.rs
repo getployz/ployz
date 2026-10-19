@@ -215,6 +215,7 @@ pub async fn observe_copies(
 
 /// Every claim pair is kept, under its name: a name sealed after the claim
 /// still names a value this Deploy shipped, and the names are read again at each tail.
+/// A Container's Machine reports the rest, so a failed tail is scrubbed of both.
 struct Scrub {
     environment: EnvironmentId,
     sealed_at_claim: BTreeSet<String>,
@@ -236,20 +237,14 @@ impl Scrub {
         }
     }
 
-    fn values(
-        &self,
-        names: &BTreeSet<String>,
-        env: Option<BTreeMap<String, String>>,
-    ) -> SealedValues {
+    /// The values under `names` from the claim and from `env`, what the Container's
+    /// Machine reports: an image can supply a variable the claim never named.
+    fn values(&self, names: &BTreeSet<String>, env: BTreeMap<String, String>) -> SealedValues {
         self.claim
             .iter()
             .filter(|(key, _)| names.contains(key))
             .cloned()
-            .chain(
-                env.into_iter()
-                    .flatten()
-                    .filter(|(key, _)| names.contains(key)),
-            )
+            .chain(env.into_iter().filter(|(key, _)| names.contains(key)))
             .collect()
     }
 }
@@ -584,13 +579,7 @@ impl Run {
                     (&mut row.state, container, session.client())
                 {
                     *log = self
-                        .failed_log(
-                            &client,
-                            scrub,
-                            row.machine,
-                            container,
-                            tracker.created(container),
-                        )
+                        .failed_log(&client, scrub, row.machine, container)
                         .await;
                 }
                 pending.insert((row.service.clone(), row.machine), row);
@@ -720,17 +709,11 @@ impl Run {
         scrub: &Scrub,
         machine: MachineId,
         container: ContainerId,
-        created: bool,
     ) -> LogText {
-        let env = if created {
-            None
-        } else {
-            let Some(env) = super::container_env(client, machine, container).await else {
-                return LogText::Withheld {
-                    why: Withheld::NoSecretContext,
-                };
+        let Some(env) = super::container_env(client, machine, container).await else {
+            return LogText::Withheld {
+                why: Withheld::NoSecretContext,
             };
-            Some(env)
         };
         let Ok(mut names) = self.sealed_names(&scrub.environment).await else {
             return LogText::Withheld {

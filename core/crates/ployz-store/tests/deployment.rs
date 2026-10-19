@@ -1270,50 +1270,6 @@ fn replacement_failure_logs_follow_the_old_or_new_container_that_failed() {
 }
 
 #[test]
-fn a_tracker_knows_which_containers_this_deploy_created() {
-    let replacement: ployz_core::DeployOperation = serde_json::from_value(json!({
-        "type":"replace_container", "machine_id":"a".repeat(32), "old_container_id":"b".repeat(64),
-        "spec":{"service_id":"a".repeat(32),"name":"web","mode":{"mode":"replicated","replicas":1},"container":{"image":"nginx:1","pull_policy":"missing"}},
-        "skip_health_monitor": false
-    })).unwrap();
-    let old: ployz_core::ContainerId = "b".repeat(64).parse().unwrap();
-    let new: ployz_core::ContainerId = "c".repeat(64).parse().unwrap();
-    let mut tracker = RowTracker::default();
-    let mut snapshot = progress(&[("web", "alpha", waiting(0))]);
-    snapshot[0].operation = replacement.clone();
-    for phase in [
-        "stopping_container",
-        "removing_container",
-        "creating_container",
-    ] {
-        snapshot[0].status =
-            serde_json::from_value(json!({"type":"running","phase":{"type":phase}})).unwrap();
-        tracker.changes(&snapshot);
-    }
-    snapshot[0].status = serde_json::from_value(json!({"type":"failed","error":{"type":"machine","action":"StopContainer","error":{"code":"internal","message":"failed","details":{}}}})).unwrap();
-    let changed = tracker.changes(&snapshot);
-    assert_eq!(tracker.container(&changed[0]), Some(old));
-    assert!(!tracker.created(old));
-    assert!(!tracker.created(new));
-
-    let mut tracker = RowTracker::default();
-    snapshot[0].status = serde_json::from_value(json!({"type":"failed","error":{
-        "type": "health", "container_id": "c".repeat(64), "failure": {"type": "cancelled"}
-    }}))
-    .unwrap();
-    let changed = tracker.changes(&snapshot);
-    assert_eq!(tracker.container(&changed[0]), Some(new));
-    assert!(tracker.created(new));
-    assert!(!tracker.created(old));
-
-    let mut tracker = RowTracker::default();
-    snapshot[0].status = serde_json::from_value(waiting(0)).unwrap();
-    tracker.changes(&snapshot);
-    assert!(tracker.created(new));
-    assert!(!tracker.created(old));
-}
-
-#[test]
 fn dependency_and_hook_failures_keep_nested_rpc_causes() {
     let rpc = json!({"code":"unavailable","message":"Observation failed","details":{},"cause":["transport unavailable","connection refused"]});
     for (error, expected) in [

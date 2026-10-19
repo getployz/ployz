@@ -325,7 +325,7 @@ fn seal(run: &Run, actor: &ployz_store::Actor, name: &str) {
 fn a_failed_log_is_scrubbed_of_sealed_values_only() {
     use ployz_store::tools::{LineCap, LogExcerpt};
     let scrub = scrub_target();
-    let sealed = scrub.values(&scrub.sealed_at_claim, None);
+    let sealed = scrub.values(&scrub.sealed_at_claim, BTreeMap::new());
     let line = "npm warn config production; login hunter2-long at debug-verbose with tok-worker-9 password=open-sesame\n";
     let excerpt = LogExcerpt::scrub([line.to_owned()], &sealed, LineCap::default());
     assert_eq!(
@@ -344,7 +344,7 @@ fn an_older_containers_log_is_scrubbed_of_its_own_sealed_values_too() {
         ("LOG_LEVEL".to_owned(), "debug-verbose".to_owned()),
     ]);
     let scrub = scrub_target();
-    let sealed = scrub.values(&scrub.sealed_at_claim, Some(env));
+    let sealed = scrub.values(&scrub.sealed_at_claim, env);
     let line = "was old-rotated-out now hunter2-long at debug-verbose\n";
     let excerpt = LogExcerpt::scrub([line.to_owned()], &sealed, LineCap::default());
     assert_eq!(
@@ -393,13 +393,10 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
     };
 
     let older = run
-        .failed_log(&client, &scrub, machine, container_id('c'), false)
-        .await;
-    let created = run
-        .failed_log(&client, &scrub, machine, container_id('c'), true)
+        .failed_log(&client, &scrub, machine, container_id('c'))
         .await;
     let unreadable = run
-        .failed_log(&client, &scrub, machine, container_id('d'), false)
+        .failed_log(&client, &scrub, machine, container_id('d'))
         .await;
     session.close().await;
     server.abort();
@@ -407,10 +404,6 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
     assert!(
         lines(&older).contains(&"plain [secret PLAIN]".to_owned()),
         "{older:?}"
-    );
-    assert!(
-        lines(&created).contains(&"plain from-docker".to_owned()),
-        "{created:?}"
     );
     assert!(
         matches!(
@@ -424,8 +417,7 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
 }
 
 // Catches a failed tail scrubbed under the names Sealed at the claim alone: a name sealed
-// after the claim and before the tail is read must be scrubbed too, under the claim's value
-// for a Container this Deploy created and under its Machine's value for an older one.
+// after the claim and before the tail is read must be scrubbed too.
 #[tokio::test]
 async fn a_name_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
     use crate::global_fixtures::container_id;
@@ -439,24 +431,64 @@ async fn a_name_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
     };
     seal(&run, &actor, "PLAIN");
 
-    let older = run
-        .failed_log(&client, &scrub, machine, container_id('c'), false)
-        .await;
-    let created = run
-        .failed_log(&client, &scrub, machine, container_id('c'), true)
+    let log = run
+        .failed_log(&client, &scrub, machine, container_id('c'))
         .await;
     session.close().await;
     server.abort();
 
-    for (tail, log) in [("older", older), ("created", created)] {
-        let lines = lines(&log);
-        assert!(
-            lines.contains(&"plain [secret PLAIN]".to_owned()),
-            "{tail}: {lines:?}"
-        );
-        assert!(
-            !lines.iter().any(|line| line.contains("from-docker")),
-            "{tail}: {lines:?}"
-        );
-    }
+    let lines = lines(&log);
+    assert!(
+        lines.contains(&"plain [secret PLAIN]".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("from-docker")),
+        "{lines:?}"
+    );
+}
+
+// Catches a failed tail scrubbed of the claim's values alone: an image can supply a
+// variable the claim never named, and a Machine reports it. Sealed after the claim, its
+// value must be scrubbed, and withheld when the Machine cannot report it.
+#[tokio::test]
+async fn an_image_supplied_value_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
+    use crate::global_fixtures::container_id;
+    let (run, actor) = run();
+    let (session, server, machine) = mock_machine().await;
+    let client = session.client().unwrap();
+    let scrub = Scrub {
+        environment: environment(),
+        sealed_at_claim: BTreeSet::new(),
+        claim: BTreeSet::new(),
+    };
+    seal(&run, &actor, "PLAIN");
+
+    let log = run
+        .failed_log(&client, &scrub, machine, container_id('c'))
+        .await;
+    let unreadable = run
+        .failed_log(&client, &scrub, machine, container_id('d'))
+        .await;
+    session.close().await;
+    server.abort();
+
+    let lines = lines(&log);
+    assert!(
+        lines.contains(&"plain [secret PLAIN]".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("from-docker")),
+        "{lines:?}"
+    );
+    assert!(
+        matches!(
+            unreadable,
+            LogText::Withheld {
+                why: Withheld::NoSecretContext
+            }
+        ),
+        "{unreadable:?}"
+    );
 }
