@@ -103,8 +103,9 @@ setting turns it off.
 How you answer depends on where the command runs:
 
 - In a terminal, it lists what it would remove and asks you to type the environment's name. A
-  server command asks for the server's name, or for `server clean` the name you passed it. Type
-  it and the command carries on. Anything else, or Ctrl-C, leaves the approval pending and
+  server command asks for the server's name, or for `server clean` the name you passed it.
+  `ployz org rm`, and `ployz server forget` with no server named, ask for the organization's
+  slug. Type it and the command carries on. Anything else, or Ctrl-C, leaves the approval pending and
   changes nothing.
 - Without a terminal, such as in a script, it prints the same list and waits until someone
   approves or denies it in Ployz Cloud. It then carries on, or fails naming what was denied and
