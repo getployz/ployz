@@ -506,16 +506,27 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
     inputs.observations = observations;
     assert!(inputs.down.update(Ok(down_machines.clone())));
     assert!(!inputs.down.update(Ok(down_machines)));
-    assert!(
-        !inputs
-            .down
-            .update(Err(CorrosionError::Protocol("unavailable".into())))
-    );
     assert!(inputs.down.contains(&down));
     assert!(!inputs.down.contains(&local));
     assert_eq!(
         answers(&mut inputs),
         vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
+    );
+
+    // A failed sample is unknown evidence, so the stale Down set does not stay.
+    assert!(
+        inputs
+            .down
+            .update(Err(CorrosionError::Protocol("unavailable".into())))
+    );
+    assert!(!inputs.down.contains(&down));
+    assert_eq!(
+        answers(&mut inputs),
+        vec![
+            Ipv4Addr::new(10, 210, 1, 2),
+            Ipv4Addr::new(10, 210, 2, 2),
+            Ipv4Addr::new(10, 210, 3, 2),
+        ]
     );
 }
 
