@@ -95,6 +95,16 @@ impl MachineApiBuilder {
         self
     }
 
+    /// Where an operator's Selected Endpoint goes: the running WireGuard mesh.
+    #[must_use]
+    pub(crate) fn with_endpoint_chooser(
+        mut self,
+        chooser: crate::network::EndpointChooser,
+    ) -> Self {
+        self.service.endpoint_chooser = Some(chooser);
+        self
+    }
+
     #[must_use]
     pub(crate) fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.service = self.service.with_image_ingest(ingest);
