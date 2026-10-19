@@ -1144,9 +1144,30 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
                     &["env", "rm", "staging", "--confirm", "shop/staging"],
                 );
                 assert_eq!(code, Some(3), "{admitted}");
-                assert_eq!(admitted["remove"], true, "{admitted}");
+                assert_eq!(admitted["environment"]["name"], "staging", "{admitted}");
+                assert_eq!(admitted["removal"], "removing", "{admitted}");
+                assert_eq!(admitted["deployments"][0]["remove"], true, "{admitted}");
+                assert_eq!(
+                    admitted["left"][0]["deployment"]["id"], admitted["deployments"][0]["id"],
+                    "{admitted}"
+                );
                 // A removal that didn't apply still names what the name confirmed.
                 assert_eq!(admitted["effects"][0]["name"], "web", "{admitted}");
+                assert_eq!(
+                    admitted["next"], "ployz env rm staging --confirm shop/staging",
+                    "{admitted}"
+                );
+                let (code, admitted) =
+                    ployz(Some(store), &["project", "rm", "shop", "--confirm", "shop"]);
+                assert_eq!(code, Some(3), "{admitted}");
+                assert_eq!(admitted["project"]["name"], "shop", "{admitted}");
+                assert_eq!(
+                    admitted["environments"],
+                    json!(["production", "staging"]),
+                    "{admitted}"
+                );
+                assert_eq!(admitted["removal"], "removing", "{admitted}");
+                assert_eq!(admitted["deployments"][0]["remove"], true, "{admitted}");
             }
             // This fake Cloud never sweeps, so `--detach` returns once the removal is
             // under way rather than waiting for the sweep.
