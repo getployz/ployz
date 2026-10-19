@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
@@ -190,6 +190,31 @@ it("counts the secrets the Deploy leaves out beside the changes", async () => {
   notSet = 2;
   open(canvasUrl, [replicas], 1);
   expect((await bar()).getByText("1 change · 2 not set")).toBeTruthy();
+});
+
+it("closes Discard all's confirm on a double click, discarding once", async () => {
+  onDiscardAll.mockClear();
+  const created = asTestDouble<ChangeGroup>()({ ...replicas, nodeId: "worker", nodeName: "worker", lifecycle: "create" });
+  open(canvasUrl, [created], 1);
+  fireEvent.click((await bar()).getByRole("button", { name: "More change actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Discard all changes" }));
+  const confirm = await screen.findByRole("alertdialog", { name: "Discard all changes?" });
+  const discard = within(confirm).getByRole("button", { name: "Discard all" });
+  // A browser keeps the dialog up through its exit animation, so the second click lands on it.
+  let exited = () => {};
+  const exit = new Promise<Animation>((resolve) => { exited = () => resolve(asTestDouble<Animation>()({})); });
+  let exiting = true;
+  HTMLElement.prototype.getAnimations = () => exiting ? [asTestDouble<Animation>()({ finished: exit, playState: "finished", pending: false })] : [];
+  try {
+    await act(async () => { fireEvent.click(discard); });
+    await act(async () => { fireEvent.click(discard); });
+    exiting = false;
+    exited();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  } finally {
+    Reflect.deleteProperty(HTMLElement.prototype, "getAnimations");
+  }
+  expect(onDiscardAll).toHaveBeenCalledOnce();
 });
 
 it("keeps the review open through Discard all so its inverse draft stays reviewable", async () => {

@@ -30,11 +30,11 @@ function RunNodeDetail({ deployment, node }: { deployment: DeploymentView; node:
   return (
     <>
       <div className="flex shrink-0 flex-col gap-1 border-b p-4">
-        <div className="flex min-w-0 items-center gap-2 [&_svg]:size-4">
+        <div className="flex min-w-0 items-center gap-2 [&_svg]:size-4 [&_svg]:shrink-0">
           <DeploymentStatusIcon status={node.light} />
           <h2 className="truncate font-medium">{node.name}</h2>
-          <span className={cn("text-sm", deleted ? "text-destructive" : "text-muted-foreground")}>{deleted ? "Deleted" : status}</span>
-          <span className="ml-auto text-sm"><RunTime timing={node.timing} /></span>
+          <span className={cn("shrink-0 whitespace-nowrap text-sm", deleted ? "text-destructive" : "text-muted-foreground")}>{deleted ? "Deleted" : status}</span>
+          <span className="ml-auto shrink-0 whitespace-nowrap text-sm"><RunTime timing={node.timing} /></span>
         </div>
         <p className="flex items-center gap-1.5 text-sm text-muted-foreground [&_svg]:size-3.5">
           <Icon aria-hidden />{runNodeKinds[node.type]}

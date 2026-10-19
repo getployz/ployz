@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use clap::ArgMatches;
+use clap::parser::ValueSource;
 use ployz_core::{RpcError, RpcErrorCode};
 use reqwest::Method;
 use serde_json::{Map, Value};
@@ -81,9 +82,9 @@ pub(crate) fn run(
             _ => None,
         };
         let Some(asked) = asked else {
-            break ran.map_err(|error| refused(error, command, setup))?;
+            break ran.map_err(|error| refused(error, root, command, setup))?;
         };
-        let retry = format!("ployz {} --approval {}", command.path(), asked.id);
+        let retry = retry(root, command, &asked.id);
         approval = Some(
             crate::approval::settle(&runtime, &credential, asked.verb(), &asked, retry)
                 .map_err(Failure::from)?,
@@ -114,7 +115,12 @@ pub(crate) async fn run_on(
     .await
 }
 
-fn refused(error: StoreCallError, command: &PublishedCommand, setup: &Setup) -> Failure {
+fn refused(
+    error: StoreCallError,
+    root: &ArgMatches,
+    command: &PublishedCommand,
+    setup: &Setup,
+) -> Failure {
     match error {
         StoreCallError::Refused(RpcError { code, .. }) if code.as_str() == UNKNOWN_COMMAND => {
             setup.evict(&command.name);
@@ -131,13 +137,60 @@ fn refused(error: StoreCallError, command: &PublishedCommand, setup: &Setup) -> 
         }
         StoreCallError::Refused(refusal) => match crate::approval::Asked::of(&refusal) {
             Some(asked) => {
-                let retry = format!("ployz {} --approval {}", command.path(), asked.id);
+                let retry = retry(root, command, &asked.id);
                 Failure::from(refusal).hint(Hint::Retry(retry))
             }
             None => StoreCallError::Refused(refusal).into(),
         },
         error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_)) => error.into(),
     }
+}
+
+/// This command again as typed, carrying approval `id`, in the same output mode. A
+/// value that starts with `-` still reads as a value: a flag's joins it with `=`,
+/// and positionals move behind `--`.
+fn retry(root: &ArgMatches, command: &PublishedCommand, id: &str) -> String {
+    let leaf = leaf(root);
+    let typed = |id: &str| root.value_source(id) == Some(ValueSource::CommandLine);
+    let mut words = vec!["ployz".to_owned()];
+    words.extend(
+        crate::handlers::config_flag(root)
+            .into_iter()
+            .flatten()
+            .map(ToOwned::to_owned),
+    );
+    if typed("json") {
+        words.push("--json".to_owned());
+    }
+    if typed("color")
+        && let Some(color) = root.get_one::<String>("color")
+    {
+        words.extend(["--color".to_owned(), color.clone()]);
+    }
+    words.extend(command.path.iter().cloned());
+    let (mut positionals, mut named) = (Vec::new(), Vec::new());
+    for arg in &command.args {
+        for value in leaf.get_raw(&arg.name).into_iter().flatten() {
+            let value = value.to_string_lossy().into_owned();
+            if arg.positional {
+                positionals.push(value);
+            } else if value.starts_with('-') {
+                named.push(format!("--{}={value}", arg.name));
+            } else {
+                named.extend([format!("--{}", arg.name), value]);
+            }
+        }
+    }
+    named.extend(["--approval".to_owned(), id.to_owned()]);
+    if positionals.iter().any(|value| value.starts_with('-')) {
+        words.extend(named);
+        words.push("--".to_owned());
+        words.extend(positionals);
+    } else {
+        words.extend(positionals);
+        words.extend(named);
+    }
+    shell_words::join(words)
 }
 
 fn leaf(mut matches: &ArgMatches) -> &ArgMatches {
@@ -404,6 +457,117 @@ mod tests {
                     .collect(),
             ),
             kind => panic!("{name} is a {kind}"),
+        }
+    }
+
+    /// The fixture manifest, with `server upgrade-policy set` and `org approval deny`
+    /// behind approval so a gated entry takes named flags too.
+    fn gated() -> crate::published::Published {
+        let mut published = crate::published::Published::parse(include_bytes!(
+            "../../tests/fixtures/published-manifest.json"
+        ))
+        .unwrap();
+        for command in &mut published.commands {
+            if ["server upgrade-policy set", "org approval deny"].contains(&command.path().as_str())
+            {
+                command.effect = crate::published::Effect::Write {
+                    ask: true,
+                    removes: false,
+                };
+            }
+        }
+        published
+    }
+
+    fn parsed(published: &crate::published::Published, argv: &[&str]) -> ArgMatches {
+        crate::published::attach(crate::cli::compiled(), published)
+            .try_get_matches_from(argv)
+            .unwrap_or_else(|error| panic!("{argv:?}: {error}"))
+    }
+
+    #[test]
+    fn an_approval_retry_parses_with_every_argument_typed() {
+        let published = gated();
+        for (path, argv) in [
+            (
+                "org member role",
+                vec!["ployz", "org", "member", "role", "Linus Torvalds", "admin"],
+            ),
+            (
+                "server upgrade-policy set",
+                vec![
+                    "ployz",
+                    "--ployz-config",
+                    "/tmp/ployz config.toml",
+                    "server",
+                    "upgrade-policy",
+                    "set",
+                    "--channel",
+                    "beta",
+                    "--automatic",
+                    "false",
+                ],
+            ),
+            (
+                "org member role",
+                vec![
+                    "ployz",
+                    "--json",
+                    "org",
+                    "member",
+                    "role",
+                    "Linus Torvalds",
+                    "admin",
+                ],
+            ),
+            (
+                "org member role",
+                vec![
+                    "ployz", "org", "member", "role", "Linus", "admin", "--color", "always",
+                ],
+            ),
+            (
+                "org member rm",
+                vec!["ployz", "org", "member", "rm", "--", "--json"],
+            ),
+            (
+                "org approval deny",
+                vec![
+                    "ployz",
+                    "org",
+                    "approval",
+                    "deny",
+                    "--reason=-no",
+                    "--",
+                    "-a7",
+                ],
+            ),
+        ] {
+            let command = published.find(path).unwrap();
+            let root = parsed(&published, &argv);
+            let again = retry(&root, command, "a7e572f3");
+            let words = shell_words::split(&again).unwrap();
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
+            let again = parsed(&published, &words);
+            assert_eq!(
+                input(leaf(&again), command),
+                input(leaf(&root), command),
+                "{path}"
+            );
+            assert_eq!(
+                leaf(&again)
+                    .get_one::<String>("approval")
+                    .map(String::as_str),
+                Some("a7e572f3")
+            );
+            for flag in ["ployz-config", "json", "color"] {
+                assert_eq!(again.value_source(flag), root.value_source(flag), "{flag}");
+                assert_eq!(
+                    again.get_raw(flag).map(Iterator::collect::<Vec<_>>),
+                    root.get_raw(flag).map(Iterator::collect::<Vec<_>>),
+                    "{flag}"
+                );
+            }
         }
     }
 

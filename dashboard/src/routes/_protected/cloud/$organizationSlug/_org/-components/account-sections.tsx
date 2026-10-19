@@ -12,6 +12,7 @@ import { SettingsSection } from "#/components/settings/settings-section";
 import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
+import { distinctNames } from "#/lib/distinct-names";
 import { accountSessionsRead, getAccountSessionsCollection, getLinkedAccountsCollection, linkedAccountsRead, revokeAccountSession, type AccountSessionRow } from "#/modules/account/account.collection";
 import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/modules/notifications/notifications.queries";
 import { formatRelativeTime } from "#/utils/relative-time";
@@ -79,29 +80,44 @@ function SessionsSection() {
   return (
     <SettingsSection id="sessions" title="Sessions"
       description={<>CLI devices sign out with <code className="font-mono">ployz logout</code>.</>}>
-      <SettingsList label="Sessions">
-        {sessions.map((row) => (
-          <SettingsListItem
-            key={row.id}
-            media={row.cli ? <TerminalIcon /> : <MonitorIcon />}
-            label={deviceLabel(row)}
-            hint={[row.ipAddress, `Active ${formatRelativeTime(new Date(row.lastActiveAt))}`].filter(Boolean).join(" · ")}
-            commit={row.id === scope.sessionId || row.cli ? "none" : "change"}
-            actions={row.id === scope.sessionId
-              ? <Badge variant="success">This device</Badge>
-              : row.cli
-                ? <Badge variant="outline">CLI</Badge>
-                : (
-                  <Button variant="outline" size="sm" onClick={() => {
-                    revokeAccountSession(scope, row.id).catch(() => toast.error("Couldn't sign out that session."));
-                  }}>
-                    Sign out
-                  </Button>
-                )}
-          />
-        ))}
-      </SettingsList>
+      <SessionList sessions={sessions} currentSessionId={scope.sessionId} onSignOut={(id) => {
+        revokeAccountSession(scope, id).catch(() => toast.error("Couldn't sign out that session."));
+      }} />
     </SettingsSection>
+  );
+}
+
+export function SessionList({ sessions, currentSessionId, onSignOut }: {
+  sessions: readonly AccountSessionRow[];
+  currentSessionId: string;
+  onSignOut: (session: string) => void;
+}) {
+  const signOutable = sessions.filter((row) => row.id !== currentSessionId && !row.cli);
+  const names = distinctNames(signOutable.map((row) =>
+    [deviceLabel(row), row.ipAddress, `active ${formatRelativeTime(new Date(row.lastActiveAt))}`]));
+  const signOutNames = new Map(signOutable.map((row, index) => [row.id, names[index]]));
+  return (
+    <SettingsList label="Sessions">
+      {sessions.map((row) => (
+        <SettingsListItem
+          key={row.id}
+          media={row.cli ? <TerminalIcon /> : <MonitorIcon />}
+          label={deviceLabel(row)}
+          hint={[row.ipAddress, `Active ${formatRelativeTime(new Date(row.lastActiveAt))}`].filter(Boolean).join(" · ")}
+          commit={row.id === currentSessionId || row.cli ? "none" : "change"}
+          actions={row.id === currentSessionId
+            ? <Badge variant="success">This device</Badge>
+            : row.cli
+              ? <Badge variant="outline">CLI</Badge>
+              : (
+                <Button variant="outline" size="sm" aria-label={`Sign out ${signOutNames.get(row.id)}`}
+                  onClick={() => onSignOut(row.id)}>
+                  Sign out
+                </Button>
+              )}
+        />
+      ))}
+    </SettingsList>
   );
 }
 

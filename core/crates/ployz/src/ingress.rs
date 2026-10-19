@@ -6,7 +6,7 @@ use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant,
     DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineObservation,
-    PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError, RunTarget,
+    PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError, RunRotation, RunTarget,
     caddy_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
@@ -110,6 +110,7 @@ pub(crate) async fn fill_slots(
                         &shown.machine,
                         ContainerWant::Running {
                             container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+                            rotation: RunRotation::Pending,
                         },
                         Some(TARGET_RPC_TIMEOUT),
                     ),

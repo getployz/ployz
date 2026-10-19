@@ -436,6 +436,7 @@ pub struct EnsureContainerRequest {
 pub enum ContainerWant {
     Running {
         container: RunTarget,
+        rotation: RunRotation,
     },
     Stopped {
         container: ContainerLocator,
@@ -448,6 +449,37 @@ pub enum ContainerWant {
         drain: crate::Drain,
         #[serde(default)]
         anonymous_volumes: AnonymousVolumes,
+    },
+    /// Take the copy out of routing for good. The Container keeps running.
+    Out {
+        container: ContainerLocator,
+        /// Allow the Service to lose its last routed copy. Without it, an In copy
+        /// goes Out only while another In copy is acked by every live proxy.
+        allow_empty: bool,
+        /// The rotation the caller read; `None` checks nothing.
+        expect: Option<crate::CopyRotation>,
+    },
+    /// Take the copy out of routing for `run`, which alone may route it again. The
+    /// Container keeps running until a `Stopped` want stops it.
+    Held {
+        container: ContainerLocator,
+        run: crate::DeploymentLogId,
+        /// The rotation the caller read; `None` checks nothing.
+        expect: Option<crate::CopyRotation>,
+    },
+}
+
+/// The rotation a `Running` want asks for.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RunRotation {
+    /// Write no rotation: a new copy stays Pending, an existing copy keeps its own.
+    Pending,
+    /// Route the copy once it is healthy. `run` is the run that holds it, when it is Held.
+    In {
+        run: Option<crate::DeploymentLogId>,
+        /// The rotation the caller read; `None` checks nothing.
+        expect: Option<crate::CopyRotation>,
     },
 }
 
@@ -1175,7 +1207,12 @@ impl ContainerRefusal {
             ContainerRefusalReason::InvalidIngress => RpcErrorCode::InvalidArgument,
             ContainerRefusalReason::NotEligible
             | ContainerRefusalReason::SlotOccupied
-            | ContainerRefusalReason::VolumesNotPrepared => RpcErrorCode::Conflict,
+            | ContainerRefusalReason::VolumesNotPrepared
+            | ContainerRefusalReason::LastIn
+            | ContainerRefusalReason::OlderThanIn
+            | ContainerRefusalReason::HeldByOtherRun
+            | ContainerRefusalReason::RotationMismatch
+            | ContainerRefusalReason::InRotation => RpcErrorCode::Conflict,
             ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
                 RpcErrorCode::Internal
             }
@@ -1201,6 +1238,15 @@ pub enum ContainerRefusalReason {
     ImagePullFailed,
     VolumesNotPrepared,
     NotFound,
+    /// No other In copy of the Service is acked by every live proxy.
+    LastIn,
+    /// A newer copy of the Service is already In.
+    OlderThanIn,
+    HeldByOtherRun,
+    /// The copy's rotation is not the one the want expected, or no move leads from it.
+    RotationMismatch,
+    /// The copy is routed, or held by a run that may route it again.
+    InRotation,
     #[serde(other)]
     Unrecognized,
 }
@@ -1259,14 +1305,29 @@ pub enum ServingPointerPublication {
     },
 }
 
-/// Read one Service's Serving Pointer from the target Machine's replicated store.
+/// Read which copies of one Service each live proxy routes, from the target
+/// Machine's replicated store.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ReadServingPointerRequest {
+pub struct ReadRoutesRequest {
     pub service: QualifiedService,
+    /// Any participating Machine answers, and `pointer` may lag. Without it only the
+    /// Serving Pointer publisher answers; others refuse with [`NotPointerPublisher`].
+    #[serde(default)]
+    pub routes_only: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ServingPointerRead {
+pub struct RoutesRead {
+    /// Each Machine not reported Down and the copies its proxy acks. `None` when its
+    /// row for the Service has not arrived or does not decode: unknown, not empty.
+    #[serde(default)]
+    pub routes: BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>,
+    /// The Machine list replicated in full, so `routes` names every live Machine.
+    #[serde(default)]
+    pub complete: bool,
+    /// Machines the membership sample reported Down; their routes no longer count.
+    #[serde(default)]
+    pub down: BTreeSet<MachineId>,
     pub pointer: Option<ServingPointer>,
     /// Machines whose ingress_routes row routes `pointer`'s deploy and every
     /// Container it names, and which deploy that is. Empty without a pointer.
@@ -1420,7 +1481,7 @@ define_responses! {
     BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     ServingPointerPublication(ServingPointerPublication) => "serving_pointer_publication";
-    ServingPointerRead(ServingPointerRead) => "serving_pointer_read";
+    RoutesRead(RoutesRead) => "routes_read";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     Left(Left) => "left";

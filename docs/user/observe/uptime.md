@@ -4,7 +4,7 @@ description: See whether visitors can reach each service, check it after a deplo
 ---
 
 Ployz checks every service with a public address from outside your servers, the way a visitor
-reaches it. When the check can't get through, the service shows a red ⚠ and an incident opens.
+reaches it. When the check can't get through, the service shows a red **⚠ Unreachable** and an incident opens.
 
 ## See a service's uptime
 
