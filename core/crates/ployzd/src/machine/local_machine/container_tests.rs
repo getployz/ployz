@@ -432,6 +432,8 @@ mod plan {
     ) -> ContainerNow {
         ContainerNow::Present(
             ContainerObservation::try_from(ContainerObservationParts {
+                rotation: None,
+                r#gen: None,
                 container_id: id('a'),
                 display_name: "api-a".into(),
                 created_at_unix_nanos: 0,
@@ -475,6 +477,7 @@ mod plan {
     fn run_hook() -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::New(NewContainer {
+                r#gen: ployz_core::Gen::FIRST,
                 slot: hook_slot(),
                 ..new_container("img")
             }),
@@ -489,6 +492,7 @@ mod plan {
 
     fn new_container(image: &str) -> NewContainer {
         NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
             slot: slot(),
             resolved_spec: spec(image),
             deployment_id: None,
@@ -586,6 +590,7 @@ mod plan {
                 run_hook(),
                 hook(ContainerRuntimeObservation::Created),
                 ContainerStep::CreateAndStart(NewContainer {
+                    r#gen: ployz_core::Gen::FIRST,
                     slot: hook_slot(),
                     ..new_container("img")
                 }),
@@ -694,6 +699,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     let new: NewContainer = serde_json::from_value(json!({
         "slot": {"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
         "resolved_spec": spec_with_sources(vec![]),
+        "gen": 1,
     }))
     .unwrap();
     let starts = || {
@@ -780,6 +786,7 @@ mod settled {
         serde_json::from_value(json!({
             "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
             "resolved_spec": spec_with_sources(vec![]),
+            "gen": 1,
             "answer": answer,
         }))
         .unwrap()

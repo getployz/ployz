@@ -66,8 +66,8 @@ it("names the Project, so two Deploys to production read apart", () => {
 
 it("approves exactly the digest shown, then settles", async () => {
   decide.mockResolvedValue(answered("approved"));
-  const { card, onSettled } = show(approval);
-  fireEvent.keyDown(card(), { key: "Enter", metaKey: true });
+  const { onSettled } = show(approval);
+  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
   await waitFor(() => expect(onSettled).toHaveBeenCalled());
   expect(decide).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "a1", decision: { approve: { digest: "sha256:plan" } } } });
   expect(screen.getByText(/Approved/)).toBeTruthy();
@@ -78,7 +78,7 @@ it("denies with the reason typed, for the agent to read", async () => {
   const { onSettled } = show(approval);
   fireEvent.click(screen.getByRole("button", { name: "Deny with a reason…" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: " keep the data " } });
-  fireEvent.click(screen.getByRole("button", { name: /^Deny/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
   await waitFor(() => expect(onSettled).toHaveBeenCalled());
   expect(decide).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "a1", decision: { reject: { reason: "keep the data" } } } });
   expect(screen.getByText("Denied: keep the data")).toBeTruthy();
@@ -86,10 +86,27 @@ it("denies with the reason typed, for the agent to read", async () => {
 
 it("shows Cloud's refusal and keeps the card when the answer doesn't land", async () => {
   decide.mockResolvedValue({ ok: false, message: "The plan changed since this was asked; run the command again to review it." } as never);
-  const { card, onSettled } = show(approval);
-  fireEvent.keyDown(card(), { key: "Escape" });
+  const { onSettled } = show(approval);
+  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
   expect((await screen.findByRole("alert")).textContent).toBe("The plan changed since this was asked; run the command again to review it.");
   expect(onSettled).not.toHaveBeenCalled();
+});
+
+it("decides only by its buttons: Esc and ⌘↵ neither approve nor deny", () => {
+  const { card, onSettled } = show(approval);
+  const approve = screen.getByRole("button", { name: "Approve" });
+  fireEvent.keyDown(card(), { key: "Escape" });
+  fireEvent.keyDown(approve, { key: "Escape" });
+  fireEvent.keyDown(card(), { key: "Enter", metaKey: true });
+  fireEvent.keyDown(approve, { key: "Enter", ctrlKey: true });
+  fireEvent.click(screen.getByRole("button", { name: "Deny with a reason…" }));
+  const reason = screen.getByRole("textbox", { name: "Reason" });
+  fireEvent.change(reason, { target: { value: "keep the data" } });
+  fireEvent.keyDown(reason, { key: "Escape" });
+  fireEvent.keyDown(reason, { key: "Enter", metaKey: true });
+  expect(decide).not.toHaveBeenCalled();
+  expect(onSettled).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy();
 });
 
 it("names a Server operation by its verb and Server, with nothing folded", () => {
@@ -160,7 +177,7 @@ it("says who asked, and shows the change their ask saves apart from what else it
   });
   show(asTestDouble<ApprovalView>()({ ...approval, protected: true, yours: false, asker: "Linus Torvalds", review: { effects: [], diff } }));
   const card = within(screen.getByLabelText("Deploy shop/production needs approval"));
-  expect(card.getByText("Asked by Linus Torvalds")).toBeTruthy();
+  expect(card.getByText(/^Asked by Linus Torvalds ·/)).toBeTruthy();
   expect(card.getByRole("list", { name: "Saves" }).textContent).toBe("+ api LINUS_CHANGE requested");
   expect(card.getByText("Saves")).toBeTruthy();
   fireEvent.click(card.getByText("2 other changes"));
@@ -193,4 +210,17 @@ it("leaves the asker's own card unsigned, waiting on someone who can protect it"
   expect(card.queryByText(/Asked by/)).toBeNull();
   expect(card.getByText("Waiting on an owner or admin.")).toBeTruthy();
   expect(card.queryByRole("button", { name: /Approve/ })).toBeNull();
+});
+
+it("says how long ago it was asked, so a stale ask reads apart from a fresh one", () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-08T12:09:00.000Z"));
+  try {
+    show(asTestDouble<ApprovalView>()({ ...approval, yours: false, asker: "Linus Torvalds" }));
+    show(asTestDouble<ApprovalView>()({ ...approval, id: "a2", created_at: "2026-10-08T12:08:30.000Z", yours: true, asker: null }));
+    const ages = [...document.querySelectorAll("[data-slot=card-description]")].map((line) => line.textContent);
+    expect(ages).toEqual(["Asked by Linus Torvalds · 9 minutes ago", "30 seconds ago"]);
+  } finally {
+    vi.useRealTimers();
+  }
 });

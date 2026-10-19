@@ -397,6 +397,8 @@ fn container(
     }))
     .unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(id).unwrap(),
         display_name: display_name.into(),
         created_at_unix_nanos: 0,

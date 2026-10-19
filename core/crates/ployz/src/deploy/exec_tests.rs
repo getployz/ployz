@@ -698,6 +698,8 @@ fn observation(
 ) -> ContainerObservation {
     let spec = spec(None, None, None);
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: *container_id,
         display_name: container_id.to_string(),
         created_at_unix_nanos: 0,

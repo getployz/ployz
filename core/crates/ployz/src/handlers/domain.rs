@@ -241,10 +241,9 @@ fn staged<T: serde::Serialize>(
     ui::done(
         &Next::new(written, Some(hint.clone())),
         format_args!(
-            "{what} {} on {} in {where_} (revision {}).",
+            "{what} {} on {} in {where_}.",
             result.domain.shown(),
-            result.domain.service,
-            result.environment.revision
+            result.domain.service
         ),
     )?;
     say_next(Some(hint));

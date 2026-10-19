@@ -18,7 +18,9 @@ CREATE TABLE containers
     machine_id         TEXT      NOT NULL DEFAULT '',
     service_id         TEXT AS (json_extract(container, '$.resolved_spec.service_id')),
     namespace       TEXT AS (json_extract(container, '$.namespace')),
-    service_name       TEXT AS (json_extract(container, '$.resolved_spec.name'))
+    service_name       TEXT AS (json_extract(container, '$.resolved_spec.name')),
+    rotation           TEXT AS (json_extract(container, '$.rotation')),
+    gen                INTEGER AS (json_extract(container, '$.gen'))
 );
 
 CREATE TABLE certificates

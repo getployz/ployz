@@ -1976,6 +1976,7 @@ async fn run_new<C: MachineOperations>(
     progress.set_running(index, OperationPhase::CreatingContainer);
     let want = ContainerWant::Running {
         container: RunTarget::New(NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
             slot: slot.clone(),
             resolved_spec: spec.clone(),
             deployment_id: deploy.cloned(),

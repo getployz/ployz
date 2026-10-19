@@ -1341,6 +1341,8 @@ fn created_container(
     resolved_spec: ployz_core::ResolvedServiceSpec,
 ) -> ployz_core::ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse("1".repeat(64)).unwrap(),
         display_name: "web-1".into(),
         created_at_unix_nanos: 1,

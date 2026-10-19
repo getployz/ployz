@@ -311,17 +311,17 @@ impl LocalMachine {
             .ok_or(Error::ClusterStoreUnavailable)?;
         let machines = cluster.replicated.machines().await?;
         let membership =
-            crate::retire::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
+            crate::route_acks::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
         Ok(match membership.ackers {
-            crate::retire::Ackers::Known(machines) if !machines.is_empty() => Some(
+            crate::route_acks::Ackers::Known(machines) if !machines.is_empty() => Some(
                 machines
                     .into_iter()
                     .map(|(id, name)| ployz_core::IngressMachine { id, name })
                     .collect(),
             ),
-            crate::retire::Ackers::Known(_)
-            | crate::retire::Ackers::Incomplete { .. }
-            | crate::retire::Ackers::Unread => None,
+            crate::route_acks::Ackers::Known(_)
+            | crate::route_acks::Ackers::Incomplete { .. }
+            | crate::route_acks::Ackers::Unread => None,
         })
     }
 

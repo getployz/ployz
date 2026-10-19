@@ -247,11 +247,8 @@ fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<()
             return;
         }
         crate::ui::stream(format_args!(
-            "{what} {} in {}/{} (revision {}).",
-            result.service.name,
-            result.environment.project,
-            result.environment.name,
-            result.environment.revision
+            "{what} {} in {}/{}.",
+            result.service.name, result.environment.project, result.environment.name
         ));
         if let Some(hint) = hint.clone() {
             crate::ui::hint(&Hint::Next(hint));

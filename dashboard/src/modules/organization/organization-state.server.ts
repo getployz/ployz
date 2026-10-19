@@ -7,13 +7,14 @@ import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound } from "#/server/public-error";
+import { Conflict, Forbidden, NotFound } from "#/server/public-error";
 import { allocateUnique, getSlugWithSuffix } from "#/utils/slug";
 import {
   type CreateOrganization,
   personalOrganizationBaseSlug,
   personalOrganizationName,
   type PersonalOrganizationUser,
+  type RenameOrganization,
   type SyncOrganizationSlug,
 } from "./organization-state";
 import { organization } from "./tables";
@@ -107,6 +108,16 @@ export const createOrganization = Effect.fn("Organization.create")(function* (ac
   const created = yield* database.transaction(insertOrganization(actor.userId, input.name, input.slug));
   yield* updateActorSessionsOrganization(actor, created.id, created.slug);
   return created.slug;
+});
+
+/** A new name, by an owner or admin, never by a support visit. The slug, and so every address and URL, stays. */
+export const renameOrganization = Effect.fn("Organization.rename")(function* (actor: Actor, input: RenameOrganization) {
+  const access = yield* requireAccess(actor, input.organizationSlug, "org:settings");
+  if (access.kind === "support") return yield* new Forbidden({ message: "Only an owner or admin of this Organization can do this." });
+  const { id } = access.organization;
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(organization).set({ name: input.name }).where(eq(organization.id, id));
+  return { name: input.name };
 });
 
 export const updateActorSessionsOrganization = Effect.fn(
