@@ -987,7 +987,12 @@ async fn publish_group<C: MachineOperations>(
                 };
                 let left = match error {
                     ExecutionError::Machine { error, .. } => Left::Failed(error),
-                    error => Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error)),
+                    error @ (ExecutionError::Health { .. }
+                    | ExecutionError::DependencyHealth { .. }
+                    | ExecutionError::Hook { .. }
+                    | ExecutionError::Cancelled) => {
+                        Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error))
+                    }
                 };
                 rows.leave_running(progress, &copy, left);
                 continue;
@@ -1091,7 +1096,14 @@ fn old_copies(
             DeployOperation::ReplaceContainer(replacement) => {
                 Some((replacement.machine_id.clone(), replacement.old_container_id))
             }
-            _ => None,
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::RunContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect()
 }

@@ -319,7 +319,7 @@ pub(crate) async fn user_stop<C: MachineOperations>(
     if routable(&observed) && copy.rotation != CopyRotation::Out {
         let run = match &copy.rotation {
             CopyRotation::Held(run) => run.clone(),
-            _ => fresh_run(),
+            CopyRotation::Pending | CopyRotation::In | CopyRotation::Out => fresh_run(),
         };
         let step = hold(client, &copy, run, &CancellationToken::new()).await?;
         left_running(&copy, "Held", step)?;

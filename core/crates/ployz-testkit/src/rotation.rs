@@ -63,7 +63,7 @@ pub fn decide(
                 format!("no move leads from {rotation:?} to {target:?}"),
             ),
         }),
-        edge => Ok(edge),
+        edge @ (RotationEdge::Write(_) | RotationEdge::Keep | RotationEdge::Remove) => Ok(edge),
     }
 }
 
