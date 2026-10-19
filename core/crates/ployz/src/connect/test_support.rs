@@ -83,6 +83,31 @@ where
     connected_client(service).await
 }
 
+pub(crate) async fn rpc_bidi_client<F, Fut, S>(
+    rpc: F,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+)
+where
+    F: Fn(Request<tonic::Streaming<OpaquePayload>>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<S>, Status>> + Send + 'static,
+    S: Stream<Item = Result<OpaquePayload, Status>> + Send + 'static,
+{
+    let rpc = tower::service_fn(rpc);
+    let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
+        let rpc = rpc.clone();
+        async move {
+            Ok::<_, Infallible>(
+                tonic::server::Grpc::new(ProstCodec::default())
+                    .streaming(rpc, request)
+                    .await,
+            )
+        }
+    });
+    connected_client(service).await
+}
+
 async fn connected_client<S>(
     service: S,
 ) -> (
