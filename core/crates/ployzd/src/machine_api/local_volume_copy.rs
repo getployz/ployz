@@ -2,8 +2,10 @@
 //! through the routes in [`crate::volume_copy`].
 
 use ployz_core::{
-    ContainerKind, ContainerRuntimeObservation, CopyPlan, CopyRefusal, CopyTransition,
-    DockerVolumeName, OpaquePayload, SetVolumeCopyRefused, SetVolumeCopyReply,
+    ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
+    ContainerRuntimeObservation, ContainerWant, CopyPlan, CopyRefusal, CopyRotation,
+    CopyTransition, DockerVolumeName, EnsuredContainer, HealthVerdict, OpaquePayload, RpcError,
+    RpcErrorCode, RunRotation, RunTarget, SetVolumeCopyRefused, SetVolumeCopyReply,
     SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
@@ -97,7 +99,15 @@ impl MachineService {
         };
         let start_running = start == Some(StartState::Running);
         let transition = match ployz_core::plan(copy.as_ref(), start_running, &expect, &want) {
-            CopyPlan::AtWant => return Ok(copy),
+            CopyPlan::AtWant => {
+                if let WantedCopy::Writer {
+                    start: Some(start), ..
+                } = &want
+                {
+                    self.route_created(start).await?;
+                }
+                return Ok(copy);
+            }
             CopyPlan::Refuse(reason) => return Err(refused(reason, copy, &name)),
             CopyPlan::Transition(_) if start == Some(StartState::Gone) => {
                 return Err(refused(CopyRefusal::NoTransition, copy, &name));
@@ -135,8 +145,9 @@ impl MachineService {
                         StartState::Gone => {
                             return Err(refused(CopyRefusal::NoTransition, copy, &name));
                         }
-                        StartState::Stopped => self.run_start(start, &name, r#gen).await?,
+                        StartState::Stopped => self.run_start(start.clone(), &name, r#gen).await?,
                     }
+                    self.route_created(&start).await?;
                 }
                 Ok(copy)
             }
@@ -157,7 +168,8 @@ impl MachineService {
                     }),
                 );
                 if let Some(start) = start {
-                    self.run_start(start, &name, r#gen).await?;
+                    self.run_start(start.clone(), &name, r#gen).await?;
+                    self.route_created(&start).await?;
                 }
                 Ok(copy)
             }
@@ -306,6 +318,27 @@ impl MachineService {
         start: &Start,
         name: &DockerVolumeName,
     ) -> Result<StartState, LocalMachineError> {
+        let observed = self.start_container(start).await?;
+        if observed.as_ref().is_some_and(|observed| {
+            matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            )
+        }) || self.local.volume_holder_running(name).await?
+        {
+            return Ok(StartState::Running);
+        }
+        Ok(match (start, observed) {
+            (Start::Kept { .. }, None) => StartState::Gone,
+            _ => StartState::Stopped,
+        })
+    }
+
+    /// The Container `start` names, as Docker shows it, or `None` when it has none.
+    async fn start_container(
+        &self,
+        start: &Start,
+    ) -> Result<Option<ContainerObservation>, LocalMachineError> {
         let containers = self.containers()?;
         let machine_id = self.local.record().id();
         let container_id = match start {
@@ -332,29 +365,63 @@ impl MachineService {
                     .map(|created| created.container_id)
             }
         };
-        let observed = match container_id {
-            Some(container_id) => {
-                match containers.inspect_managed(&container_id, &machine_id).await {
-                    Ok(observed) => Some(observed),
-                    Err(crate::docker::Error::ContainerNotFound(_)) => None,
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            None => None,
+        let Some(container_id) = container_id else {
+            return Ok(None);
         };
-        if observed.as_ref().is_some_and(|observed| {
-            matches!(
-                observed.runtime,
-                ContainerRuntimeObservation::Running { .. }
-            )
-        }) || self.local.volume_holder_running(name).await?
-        {
-            return Ok(StartState::Running);
+        match containers.inspect_managed(&container_id, &machine_id).await {
+            Ok(observed) => Ok(Some(observed)),
+            Err(crate::docker::Error::ContainerNotFound(_)) => Ok(None),
+            Err(error) => Err(error.into()),
         }
-        Ok(match (start, observed) {
-            (Start::Kept { .. }, None) => StartState::Gone,
-            _ => StartState::Stopped,
-        })
+    }
+
+    /// A Move's Create that asks for In routes the copy it made once healthy, as an In
+    /// want does. A copy left unrouted fails the request, so the Move keeps its source
+    /// Container and a resend tries again. A newer copy already In serves the Service,
+    /// so that refusal is no failure.
+    async fn route_created(&self, start: &Start) -> Result<(), LocalMachineError> {
+        let Start::Create {
+            rotation: rotation @ RunRotation::In { .. },
+            ..
+        } = start
+        else {
+            return Ok(());
+        };
+        // A resend lands here too when another holder runs; only this Create's own copy is routed.
+        let Some(created) = self.start_container(start).await? else {
+            return Ok(());
+        };
+        if !matches!(created.runtime, ContainerRuntimeObservation::Running { .. }) {
+            return Ok(());
+        }
+        // Boxed: the In future is large, and inline it overflows the SetVolumeCopy task's stack.
+        let ensured = Box::pin(self.local.ensure_container(ContainerWant::Running {
+            container: RunTarget::Existing(ContainerLocator::Id(created.container_id)),
+            rotation: rotation.clone(),
+        }))
+        .await?;
+        let error = match ensured {
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Present(observed),
+                ..
+            } if *observed.rotation() == CopyRotation::In => return Ok(()),
+            EnsuredContainer::Refused { refusal, .. }
+                if refusal.reason == ContainerRefusalReason::OlderThanIn =>
+            {
+                return Ok(());
+            }
+            EnsuredContainer::Refused { refusal, .. } => refusal.into_error(),
+            EnsuredContainer::Ensured { health, .. } => RpcError {
+                code: RpcErrorCode::Conflict,
+                message: match health.and_then(HealthVerdict::into_failure) {
+                    Some(failure) => format!("the moved Service is not routed: {failure}"),
+                    None => "the moved Service stopped before it was routed".to_owned(),
+                },
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        };
+        Err(LocalMachineError::StoragePreparation(error))
     }
 
     /// Create the Container when `start` asks for one and it is absent, then start it.

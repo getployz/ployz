@@ -48,6 +48,15 @@ impl Fleet {
 }
 
 async fn set_copy(service: &MachineService, request: Value) -> SetVolumeCopyReply {
+    try_set_copy(service, request)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+async fn try_set_copy(
+    service: &MachineService,
+    request: Value,
+) -> Result<SetVolumeCopyReply, String> {
     let response = service
         .set_volume_copy(Request::new(
             op::SetVolumeCopy::into_request(serde_json::from_value(request).unwrap())
@@ -62,7 +71,7 @@ async fn set_copy(service: &MachineService, request: Value) -> SetVolumeCopyRepl
     response
         .clone()
         .decode::<op::SetVolumeCopy>()
-        .unwrap_or_else(|error| panic!("{error}: {response:?}"))
+        .map_err(|error| format!("{error}: {response:?}"))
 }
 
 /// The cut: the source stops its holder and parks the root in a slot.
@@ -134,6 +143,54 @@ async fn moved_service_stays_routed() {
         ),
         "{removed:?}"
     );
+}
+
+/// The moved copy's health fails: the Writer start fails instead of answering done, so
+/// the Move never removes its source, which stays In. A resend once the copy is healthy
+/// routes it.
+#[tokio::test]
+async fn unhealthy_destination_keeps_source_and_fails_run() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    cut(&fleet, 0).await;
+
+    let mut checked = checked_spec("api");
+    if let Some(HealthcheckSpec::Configured(check)) = &mut checked.container.healthcheck {
+        check.deadline_millis = Some(100);
+    }
+    let destination = fleet.with_plugin(
+        1,
+        &plugin(
+            slot(Some(snapshot())),
+            WRITER_ROUTE,
+            writer_root(1, Some(snapshot())),
+        ),
+    );
+    let create = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+        "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+            "kind":"create", "namespace":"app", "resolved_spec":checked,
+            "creation_key":"move-1", "gen":2,
+            "rotation":{"in":{"run":null, "expect":"pending"}}}}});
+
+    let failed = try_set_copy(&destination, create.clone())
+        .await
+        .expect_err("an unrouted copy fails the start");
+    assert!(failed.contains("not routed"), "{failed}");
+    let moved = only_container(fleet.node(1));
+    assert!(fleet.node(1).running(moved));
+    assert_eq!(fleet.node(1).rotation(moved).await, CopyRotation::Pending);
+    assert!(
+        fleet.node(0).container(source).is_some(),
+        "the source is kept"
+    );
+    assert_eq!(fleet.node(0).rotation(source).await, CopyRotation::In);
+
+    fleet.node(1).set_state(
+        moved,
+        json!({"Status": "running", "Health": {"Status": "healthy"}}),
+    );
+    set_copy(&destination, create).await;
+    fleet.published(moved, Some(CopyRotation::In)).await;
 }
 
 /// A Release before the commit starts the cut's holder again. The cut left its
