@@ -348,7 +348,7 @@ pub(super) fn execute(
                 progress: None,
             })
     } else {
-        follow(store, admitted, events, runner.as_ref(), &signal)
+        follow(matches, store, admitted, events, runner.as_ref(), &signal)
     };
     let mut followed = match followed {
         Ok(followed) => followed,
@@ -369,13 +369,6 @@ pub(super) fn execute(
             };
             return Err(if signal.is_cancelled() {
                 error.interrupted()
-            } else if runner.is_none() && error.report().code == RpcErrorCode::Unavailable {
-                error
-                    .context(format!(
-                        "Stopped following Deployment #{}; it keeps running in Ployz Cloud.",
-                        admitted.number
-                    ))
-                    .hint(Hint::Inspect(hint))
             } else {
                 error
             });
@@ -596,6 +589,7 @@ fn tap(
 }
 
 fn follow(
+    matches: &ArgMatches,
     store: &Store,
     admitted: &DeploymentSummary,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
@@ -606,6 +600,18 @@ fn follow(
     let mut last = None;
     let mut followed: Option<Followed> = None;
     let mut id = admitted.id.clone();
+    let mut number = admitted.number;
+    // A Cloud Deployment runs on without this process; a lost read says which one and where to watch it.
+    let lost = |error: Error, number: u64| {
+        if runner.is_some() || error.report().code != RpcErrorCode::Unavailable {
+            return error;
+        }
+        error
+            .context(format!(
+                "Stopped following Deployment #{number}; it keeps running in Ployz Cloud."
+            ))
+            .hint(Hint::Inspect(show_hint(matches, number)))
+    };
     let mut unclaimed = Some(std::time::Instant::now() + UNCLAIMED);
     loop {
         if signal.is_cancelled() {
@@ -626,7 +632,7 @@ fn follow(
             }
             return followed.ok_or_else(Error::cancelled);
         }
-        let view = read?;
+        let view = read.map_err(|error| lost(error, number))?;
         let frame = progress::frame(&view);
         if let Some(followed) = followed.as_mut() {
             if let Some(progress) = followed.progress.as_mut() {
@@ -650,8 +656,9 @@ fn follow(
             if signal.is_cancelled() {
                 return followed.ok_or_else(Error::cancelled);
             }
-            if let Some(newer) = newer? {
+            if let Some(newer) = newer.map_err(|error| lost(error, number))? {
                 id = newer.id;
+                number = newer.number;
                 last = None;
                 continue;
             }
