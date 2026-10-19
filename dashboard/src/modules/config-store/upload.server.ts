@@ -8,8 +8,11 @@ import { Database, isUniqueViolation } from "#/server/database.server";
 import { StoreRefused } from "./store.contract";
 import { refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 
-/** The most compressed source one Deployment may upload: the same cap as a repository archive's download. */
-const UPLOAD_LIMIT = 256 * 1024 * 1024;
+/**
+ * The most compressed source one Deployment may upload. Cloudflare in front of Cloud, or of a self-host behind a
+ * Tunnel, drops request bodies over 100 MB; this stays under it. The CLI refuses at the same size before it sends.
+ */
+export const UPLOAD_LIMIT = 95 * 1024 * 1024;
 /** Each stored chunk holds at most this much of the upload. */
 const CHUNK_SIZE = 1024 * 1024;
 

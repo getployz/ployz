@@ -675,6 +675,16 @@ async fn tools_list_serves_the_catalog_with_its_hints_and_schemas() {
             "{tool}"
         );
     }
+    let hints = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .map(|tool| tool["annotations"].clone())
+            .unwrap_or_else(|| panic!("{name} is listed"))
+    };
+    assert_eq!(hints("volume_restore")["destructiveHint"], true);
+    assert_eq!(hints("service_remove")["destructiveHint"], false);
+    assert_eq!(hints("service_stop")["destructiveHint"], false);
 }
 
 #[tokio::test]

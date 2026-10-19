@@ -67,6 +67,20 @@ impl Tool for EnvironmentShow {
         ];
         let mut answers = cx.read(asks)?.into_iter();
         let projects = cx.view::<ProjectsQuery>(answers.next())?;
+        // An Organization with no Project yet is an empty list, not a refusal; its scoped reads all failed for it.
+        if projects.projects.is_empty() && self.project.is_none() {
+            return Ok(json!({
+                "at": null,
+                "revision": null,
+                "projects": [],
+                "services": [],
+                "volumes": [],
+                "configs": [],
+                "staged": 0,
+                "latest_deployment": null,
+                "next": Call::new("project_create", json!({})),
+            }));
+        }
         let services = cx.view::<ServicesQuery>(answers.next())?;
         let volumes = cx.view::<VolumesQuery>(answers.next())?;
         let configs = cx.view::<ConfigsQuery>(answers.next())?;

@@ -66,7 +66,10 @@ changes one per row, folding past three. The version's **⋮** menu:
 - **Undo these N changes** reverses that version's changed fields and keeps the versions saved
   after it. The first recorded version has no earlier version to undo.
 - **Roll back to #N** stages that version's complete configuration, undoing every later version.
-  The current version has nothing to roll back to.
+  The current version has nothing to roll back to. After a failed deploy, rolling back to the
+  version your servers still run deploys too: **Deploy** saves it, and services that already
+  match are left running. Like every deploy, it moves GitHub services to the newest commit on
+  their branch, so a branch that moved on since ships its newer code.
 
 Each row's **⋮** undoes that one change. A change the same save tied to others undoes with them,
 and the menu says how many: adding a Service together with another Service's reference to it,
@@ -91,7 +94,7 @@ values has nothing to undo, so its Undo is disabled and says **Sealed. Nothing t
 An accepted deployment and its redeploys keep their original snapshot while you edit the draft.
 
 From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
-Restore without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
+rollback without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
 after reviewing the named draft fields. Both list each variable that came back Not set, and
 `--json` carries them as `not_set`. The agent's `history` tool does the same by revision
 number; one that would overwrite draft changes refuses and names them first.

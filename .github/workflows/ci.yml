@@ -206,17 +206,16 @@ jobs:
       # The Postgres tests start their own postgres:16-alpine containers through the Docker CLI.
       - run: docker pull --quiet postgres:16-alpine
       - run: cargo nextest run --locked
-      - name: Build the Railway image
-        working-directory: .
-        run: docker build --file dashboard/uptime/Dockerfile --tag ployz-uptime:ci .
-      - name: Publish the Railway image
+      # Main builds and publishes the image for every commit, so PRs skip the 3-4 minute release build.
+      - name: Build and publish the Railway image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ghcr.io/getployz/ployz-uptime:${{ github.sha }}
         run: |
+          docker build --file dashboard/uptime/Dockerfile --tag "$IMAGE" .
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker tag ployz-uptime:ci "$IMAGE"
           docker push "$IMAGE"
 
   macos-cli:

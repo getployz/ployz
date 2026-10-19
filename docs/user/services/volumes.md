@@ -14,9 +14,10 @@ runs on that server.
 
 1. Open your environment and click **Create**, then **Volume**. Right-clicking the canvas
    works too.
-2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. It's
-   [fixed once you deploy](#choose-the-storage-limit), so leave room to grow. Click
-   **Create volume**.
+2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. Names use lowercase letters,
+   digits and hyphens. Anything else is converted, and the field shows the name it saves as. The
+   storage limit is [fixed once you deploy](#choose-the-storage-limit), so leave room to grow.
+   Click **Create volume**.
 3. Click the new volume, then **Mount on a service**. Pick the service, enter a **Directory** inside
    its containers, like `/app/uploads`, and click **Mount**.
 4. Click **Deploy**.
@@ -138,6 +139,10 @@ Deleting a deployed volume deletes its data from your servers for good.
 2. Click **Delete data**, or **Deploy**.
 3. Ployz shows **Deletes data** with what goes. Type your `project/environment`, like
    `my-app/production`, and click **Deploy**.
+
+If that deploy fails, deploying again deletes the data without asking again, because your
+confirmation stays with the change. See
+[Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
 
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.
 

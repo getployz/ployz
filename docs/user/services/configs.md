@@ -10,7 +10,9 @@ Several services can share the same config.
 ## Create a config
 
 1. Open your environment and choose **Create** → **Config**.
-2. Enter a **Name**, such as `app-settings`, and click **Create config**.
+2. Enter a **Name**, such as `app-settings`, and click **Create config**. Names use lowercase
+   letters, digits and hyphens. Anything else is converted, and the field shows the name it saves
+   as.
 3. In **Files**, click **Add file**, enter a **File name**, such as `app.conf`, and click **Add**.
 4. Write the file's text and click **Save**.
 

@@ -149,7 +149,7 @@ Ployz Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org appr
 refuses with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog,
 in the sidebar, or with `ployz org approval approve`. The dialog and the command answer with this
 computer's `ployz` login, so it must be signed in to the agent's Ployz Cloud and acting in the
-organization that owns the request. Otherwise they refuse: run `ployz org use ORG` to switch,
+organization that owns the request. Otherwise they refuse: run `ployz org use ORGANIZATION` to switch,
 then answer again. If you run the same change yourself with `ployz`, typing the name in your terminal
 approves it. Anyone in the organization can deny any request, from the dashboard or a terminal.
 
@@ -198,7 +198,7 @@ If a server is offline, the organization stays, disabled, until that server is b
 
 With no organization left, the dashboard offers **Create an organization**.
 
-From the CLI, `ployz org rm SLUG` does the same. If this device was signed in to that
+From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,
 then `ployz login`.
 
