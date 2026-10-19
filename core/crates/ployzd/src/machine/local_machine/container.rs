@@ -659,7 +659,7 @@ impl LocalMachine {
         }
     }
 
-    /// Only for wants that move no rotation.
+    /// Moves no rotation. An In want only re-checks itself before a start.
     async fn ensure_docker(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         let settled_spec = if let ContainerWant::Running {
             container: RunTarget::New(new),
@@ -766,6 +766,7 @@ impl LocalMachine {
 
     async fn converge_now(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
+        let fence = start_fence(&want);
         let now = self.container_now(&locator).await?;
         let refusal = match plan_container(want, &now, &self.record().phase()) {
             ContainerStep::Done => {
@@ -781,10 +782,13 @@ impl LocalMachine {
                 });
             }
             ContainerStep::CreateAndStart(new) => self.create_and_start(new).await?,
-            ContainerStep::Start(id) => {
-                self.start_container(id).await?;
-                None
-            }
+            ContainerStep::Start(id) => match fence.zip(now.present()) {
+                Some(((run, expect), observed)) => self.start_routed(observed, run, expect).await?,
+                None => {
+                    self.start_container(id).await?;
+                    None
+                }
+            },
             ContainerStep::Stop { id, drain, stop } => {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
@@ -1134,6 +1138,26 @@ fn plan_container(
         ContainerWant::Out { .. } | ContainerWant::Held { .. } => {
             unreachable!("a rotation want moves no Docker state")
         }
+    }
+}
+
+/// The run and rotation an In want's start must still match.
+fn start_fence(
+    want: &ContainerWant,
+) -> Option<(Option<ployz_core::DeploymentLogId>, Option<CopyRotation>)> {
+    match want {
+        ContainerWant::Running {
+            rotation: RunRotation::In { run, expect },
+            ..
+        } => Some((run.clone(), expect.clone())),
+        ContainerWant::Running {
+            rotation: RunRotation::Pending,
+            ..
+        }
+        | ContainerWant::Stopped { .. }
+        | ContainerWant::Gone { .. }
+        | ContainerWant::Out { .. }
+        | ContainerWant::Held { .. } => None,
     }
 }
 

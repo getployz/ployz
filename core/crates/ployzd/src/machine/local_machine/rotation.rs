@@ -132,7 +132,7 @@ impl LocalMachine {
         run: Option<DeploymentLogId>,
         expect: Option<CopyRotation>,
     ) -> Result<EnsuredContainer, Error> {
-        let want = RotationWant::In { run };
+        let want = RotationWant::In { run: run.clone() };
         let locator = match &container {
             RunTarget::New(new) => ContainerLocator::Key(new.slot.clone()),
             RunTarget::Existing(locator) => locator.clone(),
@@ -169,7 +169,10 @@ impl LocalMachine {
         let started = self
             .ensure_docker(ContainerWant::Running {
                 container,
-                rotation: RunRotation::Pending,
+                rotation: RunRotation::In {
+                    run,
+                    expect: expect.clone(),
+                },
             })
             .await?;
         if met {
@@ -204,6 +207,35 @@ impl LocalMachine {
         }
         self.write(CopyState::of(observed), want, expect, Some(health))
             .await
+    }
+
+    /// Starts an In want's copy only if the want still holds against this Machine's
+    /// record, so a refused In starts nothing.
+    pub(super) async fn start_routed(
+        &self,
+        observed: &ContainerObservation,
+        run: Option<DeploymentLogId>,
+        expect: Option<CopyRotation>,
+    ) -> Result<Option<ContainerRefusal>, Error> {
+        let id = observed.container_id;
+        let copy = CopyState::of(observed);
+        let local = self.clone();
+        self.finish_mutation(async move {
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let turn = containers.rotation_turn(&id).await?;
+            let copy = CopyState {
+                rotation: turn.rotation().clone(),
+                ..copy
+            };
+            match decide(&copy, &RotationWant::In { run }, expect.as_ref()) {
+                Checked::Refused(refusal) => return Ok(Some(refusal)),
+                Checked::Met | Checked::Allowed(_) => {}
+            }
+            containers.start(&id).await?;
+            drop(turn);
+            Ok(None)
+        })
+        .await
     }
 
     /// Re-checks `want` under the exclusive turn against this Machine's record,

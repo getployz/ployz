@@ -938,6 +938,30 @@ async fn older_than_in_relists_local_copies_under_the_turn() {
     assert_eq!(node.rotation(b).await, CopyRotation::In);
 }
 
+/// A Held and a Stopped that land while an In want reads its guard rows leave the
+/// copy stopped: the In is refused before it starts anything.
+#[tokio::test]
+async fn refused_in_starts_nothing() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.pending(0, "a", "api", 1).await;
+    let reading = fleet.cluster.hold_query(CLUSTER_CONTAINERS, 1);
+
+    let (reply, ()) = tokio::join!(
+        ensure(node, into(a, None, Some(CopyRotation::Pending))),
+        async {
+            reading.wait().await;
+            ensured(&ensure(node, held(a, "run-b", Some(CopyRotation::Pending))).await);
+            ensured(&ensure(node, stopped(a)).await);
+            reading.wait().await;
+        }
+    );
+
+    refused(&reply, ContainerRefusalReason::RotationMismatch);
+    assert!(!node.running(a), "the refused In started nothing");
+    assert_eq!(node.rotation(a).await, CopyRotation::Held(run("run-b")));
+}
+
 #[tokio::test]
 async fn in_on_an_in_copy_starts_it() {
     let fleet = Fleet::start().await;
