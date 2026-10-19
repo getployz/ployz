@@ -38,7 +38,7 @@ pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
-    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, StopAttempt,
+    ReplacementCompensation, ReplacementOperation, RestoreAttempt, ServiceAttempt, StopAttempt,
 };
 pub use schedule::{ServiceGroup, Step};
 

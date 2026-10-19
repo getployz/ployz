@@ -6,10 +6,10 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerLocator, ContainerNow, ContainerObservation,
-    ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
-    EnsuredContainer, HealthVerdict, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead,
-    RpcError, RunRotation, RunTarget,
+    AnonymousVolumes, ContainerId, ContainerLocator, ContainerObservation, ContainerRefusal,
+    ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain, EnsuredContainer,
+    HealthVerdict, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead, RpcError,
+    RunRotation, RunTarget,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -23,6 +23,7 @@ pub(crate) const ACK_POLL: Duration = Duration::from_secs(1);
 pub(crate) const ACK_WAIT: Duration = Duration::from_secs(300);
 
 /// A run id for a hold or a bring-in outside a Deploy.
+#[expect(dead_code, reason = "the user commands mint their run with it")]
 pub(crate) fn fresh_run() -> DeploymentLogId {
     DeploymentLogId::parse(uuid::Uuid::new_v4().simple().to_string())
         .expect("a simple uuid is a deployment log id")
@@ -59,7 +60,6 @@ pub(crate) enum BroughtIn {
     In,
     /// The owner answered but the copy is not In: it failed health.
     NotIn {
-        now: ContainerNow,
         health: Option<HealthVerdict>,
     },
     Refused(ContainerRefusal),
@@ -87,7 +87,7 @@ pub(crate) async fn bring_in<C: MachineOperations>(
     match answer {
         Ok(EnsuredContainer::Ensured { now, health }) => Ok(match now.present() {
             Some(observed) if *observed.rotation() == CopyRotation::In => BroughtIn::In,
-            _ => BroughtIn::NotIn { now, health },
+            _ => BroughtIn::NotIn { health },
         }),
         Ok(EnsuredContainer::Refused { refusal, .. }) => Ok(BroughtIn::Refused(refusal)),
         Err(error) if error.target_unanswered() => {
@@ -98,10 +98,7 @@ pub(crate) async fn bring_in<C: MachineOperations>(
             if *details.container.rotation() == CopyRotation::In {
                 Ok(BroughtIn::In)
             } else {
-                Ok(BroughtIn::NotIn {
-                    now: ContainerNow::Present(details.container),
-                    health: None,
-                })
+                Ok(BroughtIn::NotIn { health: None })
             }
         }
         Err(error) => Err(error),

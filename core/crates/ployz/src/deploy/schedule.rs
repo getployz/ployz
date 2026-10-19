@@ -91,6 +91,10 @@ pub(crate) enum Event {
     PublishFailed(usize),
     PublishUnconfirmed(usize),
     /// `machine` routes `service` at this Deploy's pointer.
+    #[expect(
+        dead_code,
+        reason = "the executor now reports a Service Routed only after every live proxy lists it; R4 drops the per-Machine gate"
+    )]
     Acked {
         service: ServiceName,
         machine: MachineId,
@@ -251,12 +255,6 @@ impl Schedule {
             .find(|tasks| !tasks.is_empty())
             .into_iter()
             .flatten()
-    }
-
-    pub(crate) fn first_task(&self, group: usize) -> usize {
-        self.tasks_of(group)
-            .min()
-            .expect("a publishing group has a task of its own or after it")
     }
 
     /// The row a failed publish of `group` is reported under: the Service's last
