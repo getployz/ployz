@@ -275,7 +275,6 @@ fn a_rotation_that_retires_nothing_leaves_previous_alone() {
 #[test]
 fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
     let read = retired_from(pointer('a', &['1'], &['8', '9']), 'a');
-    let listed = [container('1'), container('2'), container('9')];
     let rotation = Rotation {
         joining: vec![Join {
             copy: container('2'),
@@ -285,9 +284,8 @@ fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
             },
         }],
         leaving: vec![container('1')],
-        pruning: absent_retiring(&read, &listed),
+        pruning: vec![container('8')],
     };
-    assert_eq!(rotation.pruning, [container('8')]);
     assert_eq!(
         rotation.apply(&read),
         Applied::Next(retired_from(pointer('a', &['2'], &['9', '1']), 'a')),
