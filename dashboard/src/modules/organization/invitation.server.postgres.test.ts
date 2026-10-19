@@ -7,6 +7,7 @@ import type { JsonValue } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
 import { invitation, member, user } from "#/modules/identity/tables";
+import { operationApprovals } from "#/modules/approvals/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { acceptInvite, readInvite, revokeInvite } from "#/modules/organization/invitation.server";
 import { orgInviteLs, orgInviteRevoke, orgLeave, orgMemberInvite, orgMemberRm, orgMemberRole } from "#/modules/organization/members.commands.server";
@@ -45,14 +46,14 @@ const COMMANDS = {
 };
 
 /** Runs a member command as `who`, holding whatever role they have in Acme now. */
-const as = async (who: keyof typeof ids, name: keyof typeof COMMANDS, input: JsonValue) => {
+const as = async (who: keyof typeof ids, name: keyof typeof COMMANDS, input: JsonValue, via: Caller["via"] = "dashboard") => {
   const caller: Caller = {
     userId: ids[who],
     organization: { id: ACME, slug: "acme" },
     credential: { kind: "session", id: `${who}-session` },
     role: await roleOf(ids[who]),
     support: null,
-    via: "dashboard",
+    via,
   };
   const command: { invoke: (caller: Caller, raw: JsonValue, call: { approvalId: null; key: null }) => Effect.Effect<
     { ok: true; output: unknown } | { ok: false; refusal: { code: string; message: string } },
@@ -136,6 +137,14 @@ describe("invite links", () => {
     expect(await outcome(acceptInvite(tokenOf(revoked.link), ids.dan))).toBe("Conflict");
     expect(await roleOf(ids.dan)).toBeNull();
     expect(await pendingIds()).not.toContain(revoked.id);
+  });
+
+  it("asks to revoke a link invite by its role, not its id", async () => {
+    const { id } = await invite("ada", { role: "admin" });
+    expect(await as("carol", "org_invite_revoke", { invite: id }, "cli")).toMatchObject({ ok: false });
+    const [asked] = await harness.db.select({ review: operationApprovals.review }).from(operationApprovals)
+      .where(eq(operationApprovals.organizationId, ACME));
+    expect(asked?.review).toMatchObject({ effects: [{ kind: "revokes_invite", name: "admin link" }] });
   });
 
   it("refuses to revoke a link someone joins through while the revoke runs", async () => {

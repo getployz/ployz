@@ -149,8 +149,8 @@ export function CustomDomainDialog({
                     }
                     description={
                       defaultTargetPort === null
-                        ? "Leave blank to use PORT, 8080 unless set."
-                        : "Leave blank to use PORT."
+                        ? "The port your app listens on. Blank uses PORT, 8080 unless set."
+                        : `The port your app listens on. Blank uses PORT, set to ${defaultTargetPort}.`
                     }
                   />
                 )}

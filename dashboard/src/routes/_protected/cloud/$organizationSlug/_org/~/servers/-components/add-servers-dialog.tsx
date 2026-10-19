@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
@@ -51,6 +51,7 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
   const max = Number(maxServers);
   const maxOk = !autoEnroll || (Number.isInteger(max) && max >= 1 && max <= 1000);
   const nameOk = name.trim() === "" || NAME_PATTERN.test(name.trim());
+  const nameRule = useId();
 
   if (mint.data !== undefined && mint.variables !== undefined) {
     return (
@@ -81,8 +82,10 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
           placeholder="Picked for you"
           spellCheck={false}
           aria-invalid={!nameOk}
+          aria-describedby={nameOk ? undefined : nameRule}
           className="font-mono"
         />
+        {nameOk ? null : <span id={nameRule} className="text-xs text-destructive">Lowercase letters, digits and hyphens, up to 63.</span>}
       </label>
       <div className="flex flex-col gap-1.5 text-sm">
         <span className="text-muted-foreground">Expires</span>
@@ -145,7 +148,7 @@ function MintDone({ organizationSlug, minted, onDone }: { organizationSlug: stri
       <InstallTabs lines={lines} />
       <div className="flex flex-col gap-0.5 text-sm">
         <p className="text-muted-foreground">{minted.autoEnroll === null ? "Installs Docker and Ployz. Nothing joins until you say so." : `Installs Docker and Ployz. Up to ${minted.autoEnroll.maxServers} servers join your existing cluster when ready.`}</p>
-        {minted.autoEnroll === null ? <p className="text-muted-foreground">To deploy now, add a server with <code className="font-mono text-foreground">ployz server add --command</code>.</p> : null}
+        {minted.autoEnroll === null ? <p className="text-muted-foreground">To skip the review, run <code className="font-mono text-foreground">ployz server add --command</code> instead. It enrolls one server now.</p> : null}
         <p className="text-warning">Shown once. Expires in {cliLifetimeLabel(minted.expiresIn)}.</p>
       </div>
       <Arrivals organizationSlug={organizationSlug} token={minted.name} auto={minted.autoEnroll !== null} onDone={onDone} />

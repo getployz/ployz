@@ -114,6 +114,12 @@ describe("DeletionDialog", () => {
     expect(screen.queryByText("New")).toBeNull();
   });
 
+  it("ends no sentence on a colon while there is nothing to list yet", () => {
+    render(<DeletionDialog open onOpenChange={vi.fn()} title="Delete empty?" place="empty" confirmLabel="Delete" items={[]}
+      callbacks={{ load: () => new Promise<ReturnType<typeof check>>(() => {}), confirm: vi.fn() }} />);
+    expect(screen.getByRole("alertdialog").textContent).toContain("You're deleting empty.");
+  });
+
   it("says what failed and retries the servers", async () => {
     const load = vi.fn()
       .mockRejectedValueOnce(new Error("Can't reach your servers. Check they're online, then try again."))

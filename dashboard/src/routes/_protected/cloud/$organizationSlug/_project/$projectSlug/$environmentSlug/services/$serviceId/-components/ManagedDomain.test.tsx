@@ -28,7 +28,7 @@ it("says a blank port follows PORT, 8080 unless set, and names that in a refused
     <ManagedDomainDialog managed={{ prefix: "web", targetPort: null }} clusterDomain="example.ployz.app" takenPrefixes={[]}
       defaultTargetPort={null} onClose={vi.fn()} onSubmit={vi.fn()} />,
   );
-  expect(screen.getByText("Leave blank to use PORT, 8080 unless set.")).toBeTruthy();
+  expect(screen.getByText("The port your app listens on. Blank uses PORT, 8080 unless set.")).toBeTruthy();
   const port = screen.getByLabelText(/port/iu);
   fireEvent.change(port, { target: { value: "70000" } });
   fireEvent.blur(port);
