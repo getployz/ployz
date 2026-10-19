@@ -2409,7 +2409,8 @@ fn server_token_create_prints_the_secret_once_with_its_install_line() {
         "Created blue-heron\n",
         "Anyone with this token can add servers. Keep it secret.",
         &format!(
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' PLOYZ_ENROLL_TOKEN=pflt_secret sh"
+            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' PLOYZ_ENROLL_TOKEN=pflt_secret sh -s -- {}\n",
+            env!("CARGO_PKG_VERSION")
         ),
         "Shown once. Expires in 7d.",
     ] {
@@ -2449,7 +2450,10 @@ fn server_token_create_json_carries_the_secret_and_install_line() {
         json.pointer("/install")
             .and_then(serde_json::Value::as_str)
             .unwrap()
-            .ends_with("PLOYZ_ENROLL_TOKEN=pflt_secret sh"),
+            .ends_with(&format!(
+                "PLOYZ_ENROLL_TOKEN=pflt_secret sh -s -- {}",
+                env!("CARGO_PKG_VERSION")
+            )),
         "{json}"
     );
 }
