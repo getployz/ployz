@@ -335,6 +335,7 @@ describe("volume runs", () => {
         namespace: "shop-production",
         resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
         runtime: { state: container.running ? "running" : "exited" },
+        rotation: container.rotation,
         created_at_unix_nanos: container.created ?? 0,
       })),
       incomplete_ids: { machines: [] },
@@ -1617,6 +1618,24 @@ describe("volume runs", () => {
 
       expect(verbs).toEqual(["remove@fsn-1(web-fsn-1)"]);
       expect(containers).toEqual([{ machine: "fsn-2", id: "created-1", running: true }]);
+    });
+
+    it("unhealthy_destination_keeps_source_and_fails_run: a B running the Service unrouted while A's copy is routed is asked again, and its failure fails the run before A's stopped Container goes", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) Object.assign(container, { running: false, rotation: "in" });
+      machines[1] = { name: "fsn-2", pool: true, copy: writerCopy(G, 4) };
+      containers.push({ machine: "fsn-2", id: "created-1", running: true, rotation: "pending" });
+      await owned("committed");
+      failNext.set("writer@fsn-2", new RawFault({ code: "conflict", message: "the moved Service is not routed: unhealthy", details: null }));
+
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const failed = await execute((await releaseRow()).id, "run-2");
+
+      expect(failed.error).toMatchObject({ message: expect.stringContaining("not routed") });
+      expect(verbs).toEqual(["writer@fsn-2(create)"]);
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", rotation: { in: { run: null, expect: "pending" } } } });
+      expect(containers.map(({ id }) => id)).toEqual(["web-fsn-1", "created-1"]);
     });
 
     it("on a committed row whose forward release fails before B starts, a later release inherits the commitment, finishes on B and removes A's stopped Container", async () => {
