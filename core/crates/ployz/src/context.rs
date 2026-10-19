@@ -575,6 +575,18 @@ impl Connection {
     pub fn machine_id(&self) -> Option<&MachineId> {
         self.machine_id.as_ref()
     }
+
+    /// Whether `other` is this connection, allowing for a rotated Management Capability.
+    #[must_use]
+    pub fn is_same(&self, other: &Self) -> bool {
+        self.machine_id == other.machine_id
+            && match (&self.transport, &other.transport) {
+                (Transport::Management(left), Transport::Management(right)) => {
+                    left.machine() == right.machine()
+                }
+                (left, right) => left == right,
+            }
+    }
 }
 
 impl fmt::Display for Connection {

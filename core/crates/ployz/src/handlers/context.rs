@@ -187,6 +187,20 @@ fn save_selection(
     selected: &str,
     requested: Option<&str>,
 ) -> Result<Option<String>, Error> {
+    let loaded = &config
+        .contexts
+        .get(selected)
+        .expect("set_current_context accepted a known context")
+        .connections;
+    let requested = requested
+        .map(|requested| {
+            connection_index(selected, loaded, requested).map(|index| {
+                loaded
+                    .get(index)
+                    .expect("connection_index checks the range")
+            })
+        })
+        .transpose()?;
     let mut connection = None;
     config.update(|latest| {
         latest.set_current_context(Some(selected.to_owned()))?;
@@ -195,7 +209,13 @@ fn save_selection(
             .get_mut(selected)
             .expect("set_current_context accepted a known context");
         if let Some(requested) = requested {
-            let index = connection_index(selected, &context.connections, requested)?;
+            let index = context
+                .connections
+                .iter()
+                .position(|connection| connection.is_same(requested))
+                .ok_or_else(|| {
+                    Error::not_found(format!("connection {:?} not found", requested.to_string()))
+                })?;
             context.select_connection(index);
         }
         connection = context.connections.first().map(ToString::to_string);
@@ -323,6 +343,31 @@ mod tests {
         let error = save_selection(&stale, "first", Some(&label)).unwrap_err();
         assert!(error.to_string().contains("not found"), "{error}");
         assert_eq!(Config::load(stale.path()).unwrap(), latest);
+    }
+
+    #[test]
+    fn a_connection_reordered_since_load_is_still_the_one_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let unix = Connection::unix("/tmp/ployz.sock").unwrap();
+        let ssh: Connection = "ssh://root@example.com".parse().unwrap();
+        let stale = saved(&dir, vec![unix.clone(), ssh.clone()]);
+        // Another `ctx use --connection` moves ssh to the front before the update.
+        let mut latest = Config::load(stale.path()).unwrap();
+        latest.contexts.get_mut("first").unwrap().connections = vec![ssh.clone(), unix.clone()];
+        latest.save().unwrap();
+        assert_eq!(
+            save_selection(&stale, "first", Some("2")).unwrap(),
+            Some(ssh.to_string())
+        );
+        assert_eq!(
+            Config::load(stale.path())
+                .unwrap()
+                .contexts
+                .get("first")
+                .unwrap()
+                .connections,
+            vec![ssh, unix]
+        );
     }
 
     #[test]
