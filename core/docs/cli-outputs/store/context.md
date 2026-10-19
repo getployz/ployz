@@ -363,7 +363,7 @@ NAME	CURRENT	DEFAULT	CONNECTIONS
 
 stderr:
 ```
-No contexts yet. Contexts reach Clusters run without Ployz Cloud; your Cloud Servers need none.
+No contexts yet. Contexts reach Clusters outside Ployz Cloud; your Cloud Servers need none.
 next: ployz server ls
 ```
 
@@ -603,7 +603,7 @@ NAME	CURRENT	DEFAULT	CONNECTIONS
 
 stderr:
 ```
-No contexts yet. Contexts reach Clusters run without Ployz Cloud; your Cloud Servers need none.
+No contexts yet. Contexts reach Clusters outside Ployz Cloud; your Cloud Servers need none.
 next: ployz server ls
 ```
 
