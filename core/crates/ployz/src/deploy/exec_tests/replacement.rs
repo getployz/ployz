@@ -676,7 +676,7 @@ async fn a_rolling_failure_on_the_first_machine_leaves_the_second_untouched() {
 }
 
 #[tokio::test]
-async fn a_failed_new_copy_retires_the_ones_already_in_and_restores_the_held_copies() {
+async fn a_failed_group_stops_its_new_copies_before_it_restores_the_held_ones() {
     let (first, second) = (machine('1'), machine('2'));
     let (old_first, old_second) = (container('a'), container('b'));
     let (new_first, new_second) = (container('c'), container('d'));
@@ -705,10 +705,11 @@ async fn a_failed_new_copy_retires_the_ones_already_in_and_restores_the_held_cop
                 Call::Run(second, ContainerKind::ServiceContainer),
                 &new_second,
             ),
-            ok(Call::Remove(first, new_first)),
+            ok(Call::Stop(first, new_first)),
             ok(Call::Discard(second, new_second)),
             ok(Call::Restart(first, old_first)),
             ok(Call::Restart(second, old_second)),
+            ok(Call::Remove(first, new_first)),
         ])
     }
     .with_copy(&first, &old_first, CopyRotation::In)
@@ -723,13 +724,15 @@ async fn a_failed_new_copy_retires_the_ones_already_in_and_restores_the_held_cop
             Move::To(old_first, CopyRotation::Held(run_id())),
             Move::To(old_second, CopyRotation::Held(run_id())),
             Move::To(new_first, CopyRotation::In),
-            Move::To(new_first, CopyRotation::Out),
-            Move::Gone(new_first),
+            Move::To(new_first, CopyRotation::Held(run_id())),
             Move::Gone(new_second),
             Move::To(old_first, CopyRotation::In),
             Move::To(old_second, CopyRotation::In),
+            Move::To(new_first, CopyRotation::Out),
+            Move::Gone(new_first),
         ],
-        "a new copy already In leaves through Out before it is removed"
+        "a new copy already In is held and stopped, the old copies come back In, \
+         and only then does the new copy leave"
     );
     client.assert_done();
 }
@@ -909,6 +912,35 @@ async fn a_removed_service_retires_every_copy_through_out_and_ends_empty() {
             Move::Gone(two),
         ],
         "the last In copy leaves too: a removal may empty the Service"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn stop_error_restores_the_healthy_held_copy() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, old), running()),
+        failed(
+            Call::Stop(machine, old),
+            "Docker stop failed before stopping the process",
+        ),
+    ])
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert!(!client.copies.lock().unwrap().get(&old).unwrap().stopped);
+    assert_eq!(
+        client.rotation(&old),
+        Some(CopyRotation::In),
+        "a failed stop-first Deploy restores its healthy running copy to In"
     );
     client.assert_done();
 }

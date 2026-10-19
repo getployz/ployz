@@ -206,6 +206,13 @@ struct Scripted {
     unhealthy_in: BTreeMap<ContainerId, HealthVerdict>,
     /// An In ask on this copy lands, but its reply never arrives.
     unanswered_in: BTreeSet<ContainerId>,
+    /// A Held ask on this copy lands, but no reply to it, or to a resend,
+    /// ever arrives.
+    unanswered_held: BTreeSet<ContainerId>,
+    /// This many route reads fail before the next one answers.
+    failed_route_reads: Mutex<usize>,
+    /// A route read takes a scheduler turn, as an RPC does.
+    read_latency: bool,
     /// Another writer moves this copy here just before the run's next ask of
     /// this kind on it.
     moved: Mutex<BTreeMap<(ContainerId, Ask), CopyRotation>>,
@@ -239,6 +246,9 @@ impl Scripted {
             down: BTreeSet::new(),
             unhealthy_in: BTreeMap::new(),
             unanswered_in: BTreeSet::new(),
+            unanswered_held: BTreeSet::new(),
+            failed_route_reads: Mutex::new(0),
+            read_latency: false,
             moved: Mutex::new(BTreeMap::new()),
             withheld: BTreeMap::new(),
             lingering: Mutex::new(BTreeMap::new()),
@@ -548,6 +558,15 @@ impl Scripted {
             expect.as_ref(),
             allow_empty,
         ) {
+            Decision::Met
+                if matches!(target, RotationTarget::Held(_))
+                    && self.unanswered_held.contains(&container_id) =>
+            {
+                return Err(RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    "no answer before the deadline".into(),
+                ));
+            }
             Decision::Met => {
                 return Ok(EnsuredContainer::Ensured {
                     now: self.now(machine_id, &container_id),
@@ -604,8 +623,11 @@ impl Scripted {
         if let Some(reads) = left_in.and_then(|service| self.withheld.get(&service)) {
             self.lingering.lock().unwrap().insert(container_id, *reads);
         }
+        let holding = matches!(to, CopyRotation::Held(_));
         self.applied(Move::To(container_id, to));
-        if routing && self.unanswered_in.contains(&container_id) {
+        if routing && self.unanswered_in.contains(&container_id)
+            || holding && self.unanswered_held.contains(&container_id)
+        {
             return Err(RpcError::unanswered_target(
                 RpcErrorCode::Unavailable,
                 "no answer before the deadline".into(),
@@ -935,6 +957,16 @@ impl MachineOperations for Scripted {
         _machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<RoutesRead, RpcError> {
+        if self.read_latency {
+            tokio::task::yield_now().await;
+        }
+        {
+            let mut failing = self.failed_route_reads.lock().unwrap();
+            if *failing > 0 {
+                *failing -= 1;
+                return Err(error("the route query failed"));
+            }
+        }
         Ok(RoutesRead {
             routes: self.routes(service, true),
             complete: true,
