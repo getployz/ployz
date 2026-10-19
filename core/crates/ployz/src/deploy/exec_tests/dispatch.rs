@@ -1,4 +1,5 @@
 use super::*;
+use ployz_core::RunRotation;
 use ployz_core::labels::CREATION_KEY;
 
 #[tokio::test]
@@ -625,7 +626,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     use ployz_core::{
         BridgeEndpointCapacity, ContainerDetails, ContainerList, EnsuredContainer, Machine,
         MachineList, MachineName, MachineObservation, MembershipObservation, OpaquePayload,
-        RequestedServiceSpec, RpcRequestBody, RpcResponse, ServiceMode, ServingPointerRead,
+        RequestedServiceSpec, RoutesRead, RpcRequestBody, RpcResponse, ServiceMode,
         WireGuardPublicKey,
     };
     use std::{collections::BTreeMap, sync::Arc};
@@ -705,13 +706,12 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                             MembershipObservation::Up,
                         )],
                     }),
-                    RpcRequestBody::ReadServingPointer(_) => {
-                        RpcResponse::from(ServingPointerRead {
-                            all_routed: row.is_some(),
-                            pointer: row.clone(),
-                            acks: BTreeMap::new(),
-                        })
-                    }
+                    RpcRequestBody::ReadRoutes(_) => RpcResponse::from(RoutesRead {
+                        all_routed: row.is_some(),
+                        pointer: row.clone(),
+                        acks: BTreeMap::new(),
+                        ..RoutesRead::default()
+                    }),
                     RpcRequestBody::PublishServingPointer(publish) => {
                         *row = Some(publish.pointer);
                         RpcResponse::from(ServingPointerPublication::Published)
@@ -741,9 +741,11 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         // Restoring v1 fails too, so the retry replans the candidate as a run.
                         ContainerWant::Running {
                             container: RunTarget::Existing(_),
+                            ..
                         } => RpcResponse::from(error("start failed")),
                         ContainerWant::Running {
                             container: RunTarget::New(new),
+                            ..
                         } => {
                             let key = new.slot.creation_key.as_str().to_owned();
                             captured.lock().unwrap().push(key.clone());
@@ -844,6 +846,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 image_prepared: true,
                 answer: ployz_core::AnswerWhen::Started,
             }),
+            rotation: RunRotation::Pending,
         },
     )
     .await
