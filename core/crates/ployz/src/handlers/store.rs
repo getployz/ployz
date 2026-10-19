@@ -929,7 +929,7 @@ fn names<T>(
         .map(|name| {
             parse(name).ok_or_else(|| {
                 Error::usage(format!(
-                    "Expected {what} names: lowercase letters, digits and -, starting and ending with a letter or digit"
+                    "Expected {what} names: each up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
                 ))
             })
         })

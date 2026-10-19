@@ -225,6 +225,13 @@ seconds after the new one starts, ready or not. Off also ignores a `HEALTHCHECK`
 - **Command.** Enter a command like `pg_isready -h 127.0.0.1`. It runs in a shell inside the
   container and passes when it exits 0. The databases Ployz creates come with one.
 
+In the CLI, `ployz set web.healthcheck=/up` sets a path. A command, or a timeout, takes an object:
+
+```sh
+ployz set web --patch '{"healthcheck":{"command":"pg_isready -h 127.0.0.1","timeoutSeconds":60}}'
+ployz set web --patch '{"healthcheck":{"path":"/up","timeoutSeconds":60}}'
+```
+
 Services whose variables reference this one wait until it passes. Click **×** to turn it off. See
 [Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
 

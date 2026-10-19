@@ -103,11 +103,13 @@ can show here.
 This service references another in its variables, and that one didn't come up healthy, so
 Ployz didn't start this one. Fix the service the message names first; its **Logs** say why.
 
-## My pre-deploy command failed
+## My setup or pre-deploy command failed
 
-`hook container … failed: exited with code 1`, or `failed: timed out`
+`The setup or pre-deploy command failed` with `exited with code 1`, or `timed out`
 
-None of the service's replicas were replaced, so the old version keeps running.
+None of the service's replicas were replaced, so the old version keeps running. Before a service
+starts, Ployz runs its pre-deploy command, then, the first time a new environment deploys it, its
+setup commands. The first one that fails stops the deploy.
 
 - Read the **Deploy** log: the command's output is there.
 - `timed out` means it ran longer than 5 minutes. Make it faster, or run the slow part outside

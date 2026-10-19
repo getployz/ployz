@@ -347,7 +347,7 @@ impl Failure {
                 },
             ),
             ExecutionError::Hook { failure, .. } => (
-                "The pre-deploy command failed".to_owned(),
+                "The setup or pre-deploy command failed".to_owned(),
                 match failure {
                     HookFailure::Cancelled {
                         stop_error: Some(error),
@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_hook_is_named_as_the_pre_deploy_command() {
+    fn a_failed_hook_names_both_commands_it_can_run() {
         let failed = Failure::of(
             &ExecutionError::Hook {
                 container_id: ContainerId::parse("a".repeat(64)).unwrap(),
@@ -894,7 +894,7 @@ mod tests {
             },
             &[],
         );
-        assert_eq!(failed.reason, "The pre-deploy command failed");
+        assert_eq!(failed.reason, "The setup or pre-deploy command failed");
         assert_eq!(failed.cause, ["exited with code 3"]);
     }
 
