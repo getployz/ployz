@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { createResourceServerChallenge } from "@better-auth/oauth-provider";
-import { type CallToolResult, createMcpHandler, fromJsonSchema, type jsonSchemaValidator, McpServer } from "@modelcontextprotocol/server";
+import { type CallToolResult, createMcpHandler, fromJsonSchema, type JsonSchemaValidator, type jsonSchemaValidator, McpServer } from "@modelcontextprotocol/server";
 import { APIError } from "better-auth/api";
 import { Effect, Option, Schema } from "effect";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
@@ -53,7 +53,10 @@ const APPROVAL = {
 
 /** Every argument reaches the tool, which refuses a bad one in the same shape as any other refusal. */
 const toolValidates: jsonSchemaValidator = {
-  getValidator: <T>() => (input: unknown) => ({ valid: true, data: input as T, errorMessage: undefined }),
+  getValidator<T>(): JsonSchemaValidator<T> {
+    // SAFETY: nothing reads `data` as `T`; the handler parses the arguments and the tool validates them.
+    return (input) => ({ valid: true, data: input as T, errorMessage: undefined });
+  },
 };
 
 const toolSchema = (tool: AgentTool): JsonObject => {
