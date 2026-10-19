@@ -17,12 +17,11 @@ import {
   validateOnChangeOrBlur,
 } from "#/form";
 import { strictParseOptions } from "#/lib/schema";
+import { NOT_A_HOSTNAME, storedHostname } from "#/modules/config-store/store-hostname";
 import { domainPortSchema } from "./domain-port";
 
 /** A public DNS name with a dot: labels of letters, digits and inner hyphens. The Store checks the rest. */
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/u;
-
-const NOT_A_HOSTNAME = /[\p{Cc}\s/\\?#@:%]/u;
 
 const isAscii = (hostname: string) => /^\p{ASCII}*$/u.test(hostname);
 
@@ -38,16 +37,6 @@ export type CustomDomain = { hostname: string; targetPort: number | null };
 
 /** ASCII lowercase; the Store turns the rest to punycode itself. */
 const submittedHostname = (hostname: string) => isAscii(hostname) ? hostname.toLowerCase() : hostname;
-
-/** A hostname as the Store keeps it: IDNA's lowercase punycode, else lowercase where IDNA refuses it. */
-const storedHostname = (hostname: string) => {
-  if (NOT_A_HOSTNAME.test(hostname)) return hostname.toLowerCase();
-  try {
-    return new URL(`http://${hostname}`).hostname;
-  } catch {
-    return hostname.toLowerCase();
-  }
-};
 
 const customDomainFormSchema = (taken: ReadonlySet<string>) => Schema.toStandardSchemaV1(
   Schema.Struct({
@@ -99,7 +88,7 @@ export function CustomDomainDialog({
   refusal?: string;
   /** Editing changes only the port: a Store domain is addressed by its hostname. */
   hostnameFixed?: boolean;
-  /** The service's other custom domains: adding one again would change nothing. */
+  /** The service's other custom domains, listed or still being added: adding one again would change nothing. */
   takenHostnames?: readonly string[];
   defaultTargetPort: number | null;
   onClose: () => void;
@@ -112,7 +101,7 @@ export function CustomDomainDialog({
         port: (route ?? initial)?.targetPort == null ? "" : String((route ?? initial)?.targetPort),
       },
       errorVisibility: showErrorsAfterBlurOrSubmit,
-      validators: [validateOnChangeOrBlur(customDomainFormSchema(new Set(takenHostnames)))],
+      validators: [validateOnChangeOrBlur(customDomainFormSchema(new Set(takenHostnames.map(storedHostname))))],
     }),
     onSubmit: ({ schemaOutputs }) => {
       onSubmit(schemaOutputs[0]);

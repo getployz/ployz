@@ -205,8 +205,10 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
         <CustomDomainDialog
           route={edited?.kind === "custom" ? { hostname: edited.hostname, targetPort: edited.port } : undefined}
           hostnameFixed
-          takenHostnames={domains.flatMap((domain) =>
-            domain.kind === "custom" && domain.hostname !== edited?.hostname ? [domain.hostname] : [])}
+          takenHostnames={[
+            ...domains.flatMap((domain) => domain.kind === "custom" && domain.hostname !== edited?.hostname ? [domain.hostname] : []),
+            ...adding.flatMap((name) => name === null ? [] : [name]),
+          ]}
           defaultTargetPort={null}
           onClose={() => setEditor(null)}
           initial={editor.kind === "add" ? editor.draft : undefined}
