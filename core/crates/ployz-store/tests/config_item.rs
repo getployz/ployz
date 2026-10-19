@@ -947,6 +947,29 @@ fn the_config_list_shows_files_sizes_and_mounts_but_never_resolved_values() {
 }
 
 #[test]
+fn a_config_mount_set_by_name_and_by_id_in_one_edit_is_refused() {
+    let (store, who) = shop();
+    create(&store, &who, 10, "sentry", &[]).unwrap();
+    let by_id = format!("web.configs.@{}", uuid(10));
+    let before = values(&store, &who, "web");
+    let refused = edit(
+        &store,
+        &who,
+        vec![
+            set("web.configs.sentry", json!("/first")),
+            set(&by_id, json!("/second")),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        refused.message,
+        format!("{by_id} is changed twice in one edit; change it once")
+    );
+    assert_eq!(values(&store, &who, "web"), before);
+}
+
+#[test]
 fn exact_config_mount_paths_follow_identity_after_rename() {
     let (store, who) = shop();
     create(&store, &who, 10, "sentry", &[]).unwrap();

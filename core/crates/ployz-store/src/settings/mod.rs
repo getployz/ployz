@@ -206,6 +206,26 @@ impl ServiceSetting {
         }
     }
 
+    /// A caveat on this Setting for a Service with `config`: why its value may not act.
+    pub(crate) fn note(self, config: &AuthoredServiceConfig) -> Option<String> {
+        match self {
+            Self::Policy(policy) => policy.note(config),
+            Self::CpuLimit
+            | Self::Healthcheck
+            | Self::Image
+            | Self::MaxRetries
+            | Self::MemLimit
+            | Self::PreDeployCommand
+            | Self::PrivateDns
+            | Self::RegistryCredential
+            | Self::Replicas
+            | Self::RestartPolicy
+            | Self::StartCommand
+            | Self::Template
+            | Self::Git(_) => None,
+        }
+    }
+
     /// The core config field this Setting writes, as change rows and restores name it.
     pub(crate) const fn field(self) -> &'static str {
         match self {

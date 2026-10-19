@@ -347,8 +347,11 @@ function StoreSettingInput({ state, name, setting, row, onCommit }: {
   );
 }
 
-/** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
-function StoreSettingField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
+/**
+ * One scalar Setting as the catalog describes it: its title, help, bounds and choices. With `noted`, the Store's note on
+ * the Setting, when it has one, replaces the help.
+ */
+function StoreSettingField({ state, name, noted = false }: { state: StoreService; name: ServiceSettingName; noted?: boolean }) {
   const { setting, refusal, edit } = useSettingEdit(state, name);
   const row = state.rows.get(name);
   const [current, hold] = useCommitHold(settingText(row?.value ?? row?.default));
@@ -358,7 +361,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
 
   if (setting.type === "boolean") {
     return (
-      <SettingsRow label={setting.title} hint={hint(name, setting)} commit="change" control={
+      <SettingsRow label={setting.title} hint={(noted && row.note) || hint(name, setting)} commit="change" control={
         <Switch id={`setting-${name}`} aria-label={setting.title} checked={current === "true"}
           onCheckedChange={(next) => hold(String(next), state.set(name, next))} />
       } />
@@ -630,8 +633,8 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
         <StoreBranchField organizationSlug={state.organizationSlug} repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
           change={state.changes.get("branch")} locked={locked} onSet={(branch) => set("branch", branch)} />
         <StoreOptionalField state={state} name="rootDir" addLabel="Root directory" unset="/" />
-        {/* Its Deployment Policy: when a push to the branch deploys. */}
-        <StoreSettingField state={state} name="autoDeploy" />
+        {/* Its Deployment Policy: when a push to the branch deploys. Both Settings share one note, said once. */}
+        <StoreSettingField state={state} name="autoDeploy" noted />
         <StoreSettingField state={state} name="waitForCi" />
         <StoreOptionalField state={state} name="watchPaths" addLabel="Watch paths" />
       </>

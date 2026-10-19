@@ -478,6 +478,10 @@ even if it still shows as up, type `dead` instead:
 ployz server forget web-2 --confirm dead
 ```
 
+When it is your only server, Ployz Cloud forgets it as it [forgets servers you
+deleted](#forget-servers-you-deleted). When none of several servers answers, forget them all that
+way.
+
 Ployz refuses to forget a server that answers and holds a copy of any volume. Remove it with
 `ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.
 

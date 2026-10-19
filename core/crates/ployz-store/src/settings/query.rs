@@ -64,6 +64,10 @@ pub struct SettingRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub row: Option<crate::RowId>,
+    /// Why its value may not act, such as push policy on a repository Ployz may not hear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
 }
 
 pub(crate) fn environment(
@@ -94,18 +98,21 @@ pub(crate) fn environment(
             .map_err(|_| crate::error::corrupt("Service name"))?;
         let mut row = |target: Target, value: Value, default: Value, apply: Apply| {
             if only.is_none_or(|only| *only == target) && !(whole && value == default) {
-                let row = match &target {
-                    Target::Variable(key) => Some(crate::branch::row_id(
-                        &service.lineage_id,
-                        &format!("variables.{key}"),
-                    )?),
-                    Target::Setting(_)
-                    | Target::Source
+                let (row, note) = match &target {
+                    Target::Variable(key) => (
+                        Some(crate::branch::row_id(
+                            &service.lineage_id,
+                            &format!("variables.{key}"),
+                        )?),
+                        None,
+                    ),
+                    Target::Setting(setting) => (None, setting.note(&service.config)),
+                    Target::Source
                     | Target::Domains
                     | Target::Exported(_)
                     | Target::Description(_)
                     | Target::Mount(_)
-                    | Target::ConfigMount(_) => None,
+                    | Target::ConfigMount(_) => (None, None),
                 };
                 settings.push(SettingRow {
                     path: SettingPath::at(&name, target),
@@ -113,6 +120,7 @@ pub(crate) fn environment(
                     default,
                     apply,
                     row,
+                    note,
                 });
             }
             Ok::<_, RpcError>(())

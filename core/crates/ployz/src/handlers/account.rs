@@ -353,7 +353,7 @@ pub(super) fn org_use(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("organization")
         .expect("organization is required");
     let organization = in_cloud(root, async |store, credential| {
-        cloud_account::use_organization(store, credential, slug).await
+        cloud_account::use_organization(store, credential, cloud_account::Target::Slug(slug)).await
     })?;
     crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
         crate::ui::stream(format_args!(
@@ -447,10 +447,14 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
         .0?;
         let acting = match others.first() {
             Some(other) => Some(
-                cloud_account::use_organization(&store, &credential, &other.slug)
-                    .await
-                    .map(|organization| organization.slug)
-                    .map_err(|error| (other.slug.clone(), error)),
+                cloud_account::use_organization(
+                    &store,
+                    &credential,
+                    cloud_account::Target::Listed(other),
+                )
+                .await
+                .map(|organization| organization.slug)
+                .map_err(|error| (other.slug.clone(), error)),
             ),
             None => None,
         };
@@ -543,10 +547,14 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         let removal = cloud_account::remove_organization(&credential, &removing.id).await?;
         let acting = match others.first() {
             Some(other) if removal.removed => Some(
-                cloud_account::use_organization(&store, &credential, &other.slug)
-                    .await
-                    .map(|organization| organization.slug)
-                    .map_err(|error| (other.slug.clone(), error)),
+                cloud_account::use_organization(
+                    &store,
+                    &credential,
+                    cloud_account::Target::Listed(other),
+                )
+                .await
+                .map(|organization| organization.slug)
+                .map_err(|error| (other.slug.clone(), error)),
             ),
             _ => None,
         };
