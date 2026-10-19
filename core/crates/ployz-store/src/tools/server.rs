@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::LineCap;
-use super::act::{Run, latest, operate, operations, resolve, server_show, servers};
+use super::act::{Run, latest, operate, operations, resolve, roster, server_show, servers};
 use super::cloud::{LogsAnswer, OperationsAnswer, ServersAnswer};
 use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
@@ -64,7 +64,10 @@ impl Tool for ServerShow {
             .read(vec![store(&NamespacesQuery {})?, servers()])?
             .into_iter();
         let owned = cx.view::<NamespacesQuery>(answers.next())?;
-        let mut answer = cx.cloud::<ServersAnswer>(answers.next())?;
+        let mut answer = match &self.server {
+            Some(_) => roster(cx, answers.next())?,
+            None => cx.cloud::<ServersAnswer>(answers.next())?,
+        };
         if let Some(name) = &self.server {
             let machine = resolve(&answer, name, "server", false)?.machine;
             answer.servers.retain(|server| server.machine == machine);
@@ -118,9 +121,13 @@ impl Tool for ServerShow {
                 }))
             })
             .collect::<Result<Vec<_>, Stop>>()?;
-        Ok(json!({ "servers": shown, "seen": answer.seen }))
+        let next = answer.servers.is_empty().then_some(NO_SERVERS_NEXT);
+        Ok(json!({ "servers": shown, "seen": answer.seen, "next": next }))
     }
 }
+
+/// What an Organization with no Servers does next; its agent can't add one.
+const NO_SERVERS_NEXT: &str = "Add a server from a terminal; staging still works without one.";
 
 /// An act on one Server that answers, by name.
 fn on_server(
@@ -132,7 +139,7 @@ fn on_server(
 ) -> Result<Value, Stop> {
     cx.cloud_only()?;
     let mut answers = cx.read(vec![servers()])?.into_iter();
-    let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+    let answer = roster(cx, answers.next())?;
     let server = resolve(&answer, name, "server", true)?;
     let run = Run {
         at: server.name.as_str().to_owned(),
@@ -196,7 +203,7 @@ impl Tool for ServerLogs {
         let server = match &self.server {
             Some(name) => {
                 let mut answers = cx.read(vec![servers()])?.into_iter();
-                let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+                let answer = roster(cx, answers.next())?;
                 Some(resolve(&answer, name, "server", false)?.reference())
             }
             None => None,
@@ -466,7 +473,7 @@ impl Tool for ServerRemove {
         cx.cloud_only()?;
         let loss = AcceptedLoss::from_input(self.accept_volume_loss, self.version)?;
         let mut answers = cx.read(vec![servers()])?.into_iter();
-        let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+        let answer = roster(cx, answers.next())?;
         // A server that does not answer is the one most often removed.
         let server = resolve(&answer, &self.server, "server", false)?;
         let run = Run {
@@ -507,7 +514,7 @@ impl Tool for ServerForget {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
         let mut answers = cx.read(vec![servers()])?.into_iter();
-        let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+        let answer = roster(cx, answers.next())?;
         let server = resolve(&answer, &self.server, "server", false)?;
         let run = Run {
             at: server.name.as_str().to_owned(),

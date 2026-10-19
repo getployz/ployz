@@ -283,6 +283,7 @@ fn owned(at: &At) -> Option<Why> {
         | Setting::Healthcheck
         | Setting::RestartPolicy
         | Setting::MaxRetries
+        | Setting::UpdateOrder
         | Setting::BuildMethod
         | Setting::DockerfilePath
         | Setting::BuildCommand => None,

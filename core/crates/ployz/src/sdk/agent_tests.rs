@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use ployz_core::metrics::{
     HostPoint, MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
@@ -8,9 +12,11 @@ use ployz_core::{
     MachineFailure, MachineSuccess, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId,
     ServiceName,
 };
+use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
-use ployz_store::tools::{LineCap, LogText, LogsQuery, ServerName, ServerRef, Timestamp, Withheld};
-use ployz_store::{DeploymentId, EnvironmentId};
+use ployz_store::tools::{
+    LineCap, LogText, LogsQuery, SealedValues, ServerName, ServerRef, Timestamp, Withheld,
+};
 use tokio::time::Instant;
 
 use super::{
@@ -358,21 +364,20 @@ async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline(
     );
 }
 
-fn logs_query(server: Option<ServerRef>, plain: &[(&str, &str)]) -> LogsQuery {
-    LogsQuery {
-        environment: EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap(),
+fn logs_query(server: Option<ServerRef>, sealed: Option<&[&str]>) -> LogsAsk {
+    let query = LogsQuery {
         namespace: Namespace::parse("app").unwrap(),
         service: ServiceName::parse("web").unwrap(),
         deployment: None,
         server,
         lines: LineCap::new(3).unwrap(),
         since: Some(Duration::from_secs(600)),
-        plain: plain
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-            .collect(),
-    }
+    };
+    let sealed = sealed.map(|names| names.iter().map(|name| (*name).to_owned()).collect());
+    (query, sealed)
 }
+
+type LogsAsk = (LogsQuery, Option<BTreeSet<String>>);
 
 fn shown(answer: &LogsAnswer) -> Vec<(String, Vec<String>)> {
     answer
@@ -387,7 +392,7 @@ fn shown(answer: &LogsAnswer) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-async fn ask_logs(service: support::DeployService, queries: Vec<LogsQuery>) -> Vec<LogsAnswer> {
+async fn ask_logs(service: support::DeployService, queries: Vec<LogsAsk>) -> Vec<LogsAnswer> {
     let (address, server) = support::listening(service).await;
     let session = crate::sdk::connect_connections(
         vec![crate::context::Connection::tcp(address)],
@@ -396,24 +401,24 @@ async fn ask_logs(service: support::DeployService, queries: Vec<LogsQuery>) -> V
     .await
     .unwrap();
     let mut answers = Vec::new();
-    for query in queries {
-        answers.push(logs(&session, query).await.unwrap());
+    for (query, sealed) in queries {
+        answers.push(logs(&session, query, sealed.as_ref()).await.unwrap());
     }
     session.close().await;
     server.abort();
     answers
 }
 
-// Catches a logs ask that leaks a Container's env value, scrubs one the Store shows as
-// plain, caps lines per Container rather than per Server, ignores `lines`, `since` or the
-// Service, or reads Servers the ask didn't name.
+// Catches a logs ask that leaks a Sealed value, scrubs a value that is not Sealed, caps
+// lines per Container rather than per Server, ignores `lines`, `since` or the Service, or
+// reads Servers the ask didn't name.
 #[tokio::test]
 async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
     let one = support::machine('a', "one");
     let two = support::machine('b', "two");
     let service = support::DeployService::new(one.clone()).with_machines(vec![one.clone(), two]);
     let requests = Arc::clone(&service.history_requests);
-    let plain = [("PLAIN", "from-docker")];
+    let sealed: Option<&[&str]> = Some(&["TOKEN"]);
     let only = ServerRef {
         machine: one.machine.id,
         name: one.machine.name.clone(),
@@ -421,7 +426,7 @@ async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
 
     let [every, only] = ask_logs(
         service,
-        vec![logs_query(None, &plain), logs_query(Some(only), &plain)],
+        vec![logs_query(None, sealed), logs_query(Some(only), sealed)],
     )
     .await
     .try_into()
@@ -430,7 +435,7 @@ async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
     let tail = vec![
         "line 10".to_owned(),
         "plain from-docker".to_owned(),
-        "token [secret TOKEN]".to_owned(),
+        "token=[secret TOKEN]".to_owned(),
     ];
     assert_eq!(
         shown(&every),
@@ -462,35 +467,101 @@ async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
     }
 }
 
-// Catches a logs ask that shows an env value the Store does not show as plain with that
-// same value.
+// Catches a logs ask that scrubs env values when the Store names nothing Sealed, drops the
+// secret-shaped pass, or shows any env value when the Store could not say what is Sealed.
 #[tokio::test]
-async fn a_logs_ask_scrubs_env_values_the_store_does_not_show_as_plain() {
+async fn a_logs_ask_scrubs_only_sealed_values_unless_the_store_could_not_say() {
     let one = support::machine('a', "one");
     let service = support::DeployService::new(one.clone());
 
-    let answers = ask_logs(
+    let [nothing_sealed, unknown] = ask_logs(
         service,
-        vec![
-            logs_query(None, &[]),
-            logs_query(None, &[("PLAIN", "staged-value")]),
-        ],
+        vec![logs_query(None, Some(&[])), logs_query(None, None)],
+    )
+    .await
+    .try_into()
+    .unwrap();
+
+    let tail = |plain: &str, token: &str| {
+        vec![(
+            "one".to_owned(),
+            vec!["line 10".to_owned(), plain.to_owned(), token.to_owned()],
+        )]
+    };
+    assert_eq!(
+        shown(&nothing_sealed),
+        tail("plain from-docker", "token=[redacted]")
+    );
+    assert_eq!(
+        shown(&unknown),
+        tail("plain [secret PLAIN]", "token=[secret TOKEN]")
+    );
+}
+
+#[tokio::test]
+async fn a_logs_ask_scrubs_every_name_the_store_holds_sealed_whatever_the_ask_says() {
+    let one = support::machine('a', "one");
+    let service = support::DeployService::new(one.clone());
+    let decoded: Result<LogsQuery, _> = serde_json::from_value(serde_json::json!({
+        "namespace": "app",
+        "service": "web",
+        "lines": 3,
+        "sealed": [],
+    }));
+    assert!(decoded.is_err(), "an ask cannot carry its own scrub set");
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["PLAIN", "TOKEN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 10".to_owned(),
+                "plain [secret PLAIN]".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+}
+
+// Catches a direct apply's failed tail scrubbing env values it has no Sealed reason to,
+// or showing secret-shaped text.
+#[tokio::test]
+async fn a_failed_tail_without_sealed_values_shows_env_values_and_redacts_secret_shaped_text() {
+    let one = support::machine('a', "one");
+    let (address, server) = support::listening(support::DeployService::new(one.clone())).await;
+    let session = crate::sdk::connect_connections(
+        vec![crate::context::Connection::tcp(address)],
+        Arc::new(crate::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+
+    let log = crate::sdk::failed_tail(
+        &session.client().unwrap(),
+        one.machine.id,
+        container_id('c'),
+        &SealedValues::none(),
     )
     .await;
+    session.close().await;
+    server.abort();
 
-    for answer in &answers {
-        assert_eq!(
-            shown(answer),
-            [(
-                "one".to_owned(),
-                vec![
-                    "line 10".to_owned(),
-                    "plain [secret PLAIN]".to_owned(),
-                    "token [secret TOKEN]".to_owned(),
-                ]
-            )]
-        );
-    }
+    let LogText::Shown(excerpt) = log else {
+        panic!("a read tail is shown: {log:?}");
+    };
+    assert!(
+        excerpt.lines().ends_with(&[
+            "plain from-docker".to_owned(),
+            "token=[redacted]".to_owned()
+        ]),
+        "{:?}",
+        excerpt.lines()
+    );
 }
 
 // Catches a logs ask that drops why a Server's Log Store did not answer, or that lets the
@@ -505,7 +576,7 @@ async fn a_server_whose_log_store_fails_is_unanswered_with_its_reason() {
         .history_failures
         .insert(two.machine.id, "log store is rebuilding".to_owned());
 
-    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
         .await
         .try_into()
         .unwrap();
@@ -535,7 +606,7 @@ async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
         .uninspectable
         .insert(ContainerId::parse("d".repeat(64)).unwrap());
 
-    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["TOKEN"]))])
         .await
         .try_into()
         .unwrap();
@@ -547,28 +618,35 @@ async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
             vec![
                 "line 8".to_owned(),
                 "line 10".to_owned(),
-                "token [secret TOKEN]".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
             ]
         )]
     );
 }
 
-// Catches a logs ask that shows lines when no Container's env could be read to scrub them.
+// Catches a logs ask that shows lines when no Container's env could be read to scrub its
+// Sealed values, or withholds them from a Service with none.
 #[tokio::test]
-async fn a_server_whose_containers_cannot_be_inspected_withholds_its_lines() {
+async fn a_server_whose_containers_cannot_be_inspected_withholds_only_sealed_lines() {
     let one = support::machine('a', "one");
     let mut service = support::DeployService::new(one.clone());
     service
         .uninspectable
         .extend(["c", "d"].map(|id| ContainerId::parse(id.repeat(64)).unwrap()));
 
-    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
-        .await
-        .try_into()
-        .unwrap();
+    let [sealed, nothing_sealed] = ask_logs(
+        service,
+        vec![
+            logs_query(None, Some(&["TOKEN"])),
+            logs_query(None, Some(&[])),
+        ],
+    )
+    .await
+    .try_into()
+    .unwrap();
 
     assert_eq!(
-        answer
+        sealed
             .servers
             .iter()
             .map(|log| (log.server.to_string(), log.text.clone()))
@@ -580,4 +658,5 @@ async fn a_server_whose_containers_cannot_be_inspected_withholds_its_lines() {
             }
         )]
     );
+    assert_eq!(shown(&nothing_sealed).len(), 1);
 }

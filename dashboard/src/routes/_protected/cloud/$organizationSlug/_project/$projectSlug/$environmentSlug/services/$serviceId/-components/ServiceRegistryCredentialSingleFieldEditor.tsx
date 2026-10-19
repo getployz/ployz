@@ -39,6 +39,8 @@ export function ServiceRegistryCredentialSingleFieldEditor({
         placeholder={secretLabel}
         rows={rows}
         type={multiline ? undefined : "password"}
+        // Cancel sits beside the field: leaving it for Cancel must not save the token being discarded.
+        commit="check"
         onCommit={onCommit}
       />
       <div>

@@ -588,7 +588,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             .collect();
     }
     let staged = diff.as_ref().map(|diff| Staged {
-        changes: diff.total_count,
+        changes: diff.review_count(),
         saved: diff.published,
         version: diff.version.clone(),
     });

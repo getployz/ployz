@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ployz-core", "crates/ployz-build", "crates/ployz", "crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployz-store", "crates/ployzd", "crates/ployz-testkit"]
+members = ["crates/ployz-core", "crates/ployz-build", "crates/ployz", "crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployz-store", "crates/ployzd", "crates/ployz-testkit", "crates/ployz-verify"]
 default-members = ["crates/ployz-core", "crates/ployz-build", "crates/ployz", "crates/ployz-sdk", "crates/ployz-store", "crates/ployzd"]
 resolver = "3"
 
@@ -31,6 +31,13 @@ must_use_candidate = "deny"
 [profile.dev]
 # Line tables keep backtraces readable; full DWARF made each test binary ~85% debug info.
 debug = "line-tables-only"
+
+# Model checks explore hundreds of thousands of states; unoptimized they take minutes.
+[profile.dev.package.ployz-verify]
+opt-level = 3
+
+[profile.dev.package.stateright]
+opt-level = 3
 
 [profile.release]
 # ponytail: DWARF only; keeps the symbol table so release backtraces stay readable.

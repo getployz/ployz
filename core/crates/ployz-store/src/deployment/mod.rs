@@ -10,6 +10,8 @@ mod lifecycle;
 mod lowering;
 pub(crate) mod query;
 #[cfg(test)]
+mod reference_tests;
+#[cfg(test)]
 mod retire_tests;
 mod rows;
 pub(crate) use history::*;
@@ -272,6 +274,10 @@ pub struct DeploymentView {
     /// Each Service's runtime name (its Private DNS name) by its name when admitted,
     /// for finding its containers.
     pub runtime_names: BTreeMap<ServiceName, ServiceName>,
+    /// The numbers of the Deployments after it that may have changed the Servers,
+    /// oldest first: what redeploying it rolls back. Empty when it rolls nothing back.
+    #[serde(default)]
+    pub rolls_back: Vec<u64>,
 }
 
 /// What a Deployment did to one of its target nodes.
@@ -402,10 +408,10 @@ pub struct Claimed {
     /// Services without a source of their own are left out; they build from
     /// `deployment.upload` through the SDK's preparation of `input`.
     pub intent: DeployIntent,
-    /// The environment keys of each Service in `intent` that hold a secret, by runtime
-    /// name. Every other key of its environment is plain. A failed Container's log is
-    /// scrubbed of these values before anyone sees it.
-    pub secret_env: BTreeMap<ServiceName, BTreeSet<String>>,
+    /// Every environment variable name under which any Container of the Environment,
+    /// present or past, may hold a Sealed value. A failed Container's log is scrubbed
+    /// of its values under these names before anyone sees it.
+    pub sealed_names: BTreeSet<String>,
     /// The lowering input `intent` came from: what SDK preparation takes.
     pub input: Value,
     /// Every build receipt of each Service, by runtime name, its Environment's own
@@ -591,6 +597,13 @@ impl Frozen {
     /// Whether this Deployment targets node `id`.
     pub(crate) fn targets(&self, id: &str) -> bool {
         self.nodes.iter().any(|node| node.id() == id)
+    }
+
+    /// Whether this Deployment ships Service `name`, named or referenced.
+    pub(crate) fn ships(&self, name: &ServiceName) -> bool {
+        self.nodes.iter().any(
+            |node| matches!(node, TargetNode::Service { name: service, .. } if service == name),
+        )
     }
 }
 

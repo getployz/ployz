@@ -110,6 +110,19 @@ it("shows changes to deploy first, in one row like Railway's: the count, Details
   expect(onDiscardAll).toHaveBeenCalledOnce();
 });
 
+it("deploys a rollback to the version the Servers already run, which only has something to save", async () => {
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
+  const staged = await bar();
+  const deployButton = staged.getByRole("button", { name: /^Deploy/ });
+  expect(deployButton).toHaveProperty("disabled", false);
+  fireEvent.click(deployButton);
+  expect(onDeploy).toHaveBeenCalledOnce();
+  fireEvent.click(staged.getByRole("button", { name: "Details" }));
+  fireEvent.click(screen.getByRole("button", { name: /^Deploy changes/ }));
+  expect(onDeploy).toHaveBeenCalledTimes(2);
+});
+
 it("saves without deploying from Alt+click on Deploy and from Save only under ⋮", async () => {
   onSave.mockResolvedValue(true);
   open(canvasUrl, [replicas], 1, true);

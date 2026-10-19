@@ -195,9 +195,10 @@ impl<'m> Store<'m> {
     /// Cloud gathers its own evidence.
     pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
         let volumes = match &self.backend {
-            Backend::Local(..) => {
-                self.observe(std::slice::from_ref(&publish.environment), false)?
-            }
+            Backend::Local(..) => self.observe([RemovalsQuery {
+                environment: publish.environment.clone(),
+                ..RemovalsQuery::default()
+            }])?,
             Backend::Cloud(..) => None,
         };
         self.approved(
@@ -212,16 +213,25 @@ impl<'m> Store<'m> {
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
     /// Servers this CLI observes; over HTTPS, Cloud gathers its own evidence.
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
+        let removing = |environment: &EnvironmentRef, remove| RemovalsQuery {
+            environment: environment.clone(),
+            remove,
+            deployment: None,
+        };
         let volumes = match (&self.backend, admit) {
             (Backend::Local(..), Admit::Deploy(deploy)) if deploy.services.is_empty() => {
-                self.observe(std::slice::from_ref(&deploy.environment), false)?
+                self.observe([removing(&deploy.environment, false)])?
             }
             (Backend::Local(..), Admit::Remove(removal)) => {
-                self.observe(std::slice::from_ref(&removal.environment), true)?
+                self.observe([removing(&removal.environment, true)])?
             }
             (Backend::Local(..), Admit::ShutDown(shut_down)) => {
-                self.observe(std::slice::from_ref(&shut_down.environment), true)?
+                self.observe([removing(&shut_down.environment, true)])?
             }
+            (Backend::Local(..), Admit::Retry(retry)) => self.observe([RemovalsQuery {
+                deployment: Some(retry.deployment.clone()),
+                ..RemovalsQuery::default()
+            }])?,
             _ => None,
         };
         self.approved(
@@ -241,7 +251,13 @@ impl<'m> Store<'m> {
         members: &[EnvironmentRef],
     ) -> Result<Removal, StoreCallError> {
         let volumes = match &self.backend {
-            Backend::Local(..) => self.observe(members, true)?,
+            Backend::Local(..) => {
+                self.observe(members.iter().map(|environment| RemovalsQuery {
+                    environment: environment.clone(),
+                    remove: true,
+                    deployment: None,
+                }))?
+            }
             Backend::Cloud(..) => None,
         };
         self.approved(
@@ -261,20 +277,16 @@ impl<'m> Store<'m> {
         }
     }
 
-    /// Which Servers hold the data of the Volumes a Deploy (or a removal: `remove`)
-    /// of `environments` deletes. A Cluster this can't reach leaves the evidence out,
-    /// so the Store refuses.
+    /// Which Servers hold the data of the Volumes each of `queries` removes: a
+    /// Deploy, removal or rollback. A Cluster this can't reach leaves the evidence
+    /// out, so the Store refuses.
     fn observe(
         &self,
-        environments: &[EnvironmentRef],
-        remove: bool,
+        queries: impl IntoIterator<Item = RemovalsQuery>,
     ) -> Result<Option<VolumeObservation>, StoreCallError> {
         let mut sought = Vec::new();
-        for environment in environments {
-            let removals = self.backend.read(&RemovalsQuery {
-                environment: environment.clone(),
-                remove,
-            })?;
+        for query in queries {
+            let removals = self.backend.read(&query)?;
             sought.extend(
                 removals
                     .volumes
@@ -426,11 +438,24 @@ impl<'m> Store<'m> {
     }
 
     /// The flag this command passes a reviewed version with: `discard`'s and
-    /// `history`'s `--version`, or `--expect-version` elsewhere.
+    /// `history`'s `--version`, or `--expect-version` elsewhere. Read from the
+    /// command tree: `ArgMatches` refuses unknown ids only in debug builds.
     fn version_flag(&self) -> (&'static str, &'static str) {
-        match self.matches.try_get_one::<String>("version") {
-            Ok(_) => ("version", "--version"),
-            Err(_) => ("expect-version", "--expect-version"),
+        let root = crate::cli::compiled();
+        let mut command = &root;
+        for word in &self.words {
+            let Some(child) = command.find_subcommand(word) else {
+                break;
+            };
+            command = child;
+        }
+        let takes_version = command
+            .get_arguments()
+            .any(|arg| arg.get_id() == "version" && arg.get_action().takes_values());
+        if takes_version {
+            ("version", "--version")
+        } else {
+            ("expect-version", "--expect-version")
         }
     }
 
@@ -969,6 +994,7 @@ mod tests {
             default: serde_json::Value::Null,
             apply: serde_json::from_value(json!("staged")).unwrap(),
             row: None,
+            note: None,
         };
         assert_eq!(
             valued(&row("web.startCommand", json!("npm start"))),
@@ -1103,6 +1129,48 @@ mod tests {
             reparsed(&approval),
             ["deploy", "true", "shop", "production", "3:1:0.1", "apr_2"]
         );
+    }
+
+    #[test]
+    fn a_volume_loss_retry_passes_the_version_with_the_flag_its_command_takes() {
+        for words in [
+            &["deploy"][..],
+            &["project", "rm", "shop", "--confirm", "shop"],
+            &["env", "rm", "br", "--confirm", "shop/br"],
+        ] {
+            let root = crate::cli::command()
+                .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
+                .unwrap();
+            let key = SealingKey::new(&[7; 32]).unwrap();
+            let store = Store {
+                backend: Backend::Local(
+                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+                ),
+                matches: leaf_matches(&root),
+                words: words.iter().map(|word| (*word).to_owned()).collect(),
+            };
+            let refused = ployz_core::RpcError {
+                code: RpcErrorCode::ConfirmationRequired,
+                message: "This permanently deletes the data of data".into(),
+                details: json!({ "version": "3:1:0.1", "accept": ["data"] }),
+                cause: Vec::new(),
+            };
+            let hints = store.accepting(StoreCallError::Refused(refused)).hints();
+            let [Hint::Retry(retry)] = &hints[..] else {
+                panic!("{words:?} names no retry");
+            };
+            let reparsed = crate::cli::command()
+                .try_get_matches_from(shell_words::split(retry).unwrap())
+                .unwrap_or_else(|error| panic!("{retry}: {error}"));
+            assert_eq!(
+                leaf_matches(&reparsed)
+                    .get_one::<String>("expect-version")
+                    .map(String::as_str),
+                Some("3:1:0.1"),
+                "{retry}"
+            );
+        }
     }
 
     #[test]

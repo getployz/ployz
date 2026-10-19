@@ -137,6 +137,29 @@ pub fn refusal_reason(
     }
 }
 
+/// Why a generated domain does not reach this Cluster yet. Ployz Cloud owns its record and
+/// writes it once it reaches an ingress Server on port 80, so the fix is never a record.
+#[must_use]
+pub fn generated_refusal_reason(
+    hostname: &IngressHost,
+    refusal: Refusal,
+    cluster_addresses: &[IpAddr],
+) -> String {
+    match refusal {
+        Refusal::DoesNotResolve => format!(
+            "{hostname} is not published yet. Ployz Cloud publishes it once it reaches port 80 on {}.",
+            join_addresses(cluster_addresses)
+        ),
+        Refusal::ReachesElsewhere => format!(
+            "{hostname} still points at another server. Ployz Cloud moves it once it reaches port 80 on {}.",
+            join_addresses(cluster_addresses)
+        ),
+        Refusal::Unreachable | Refusal::RedirectsToHttps => {
+            refusal_reason(hostname, refusal, cluster_addresses)
+        }
+    }
+}
+
 fn join_addresses(addresses: &[IpAddr]) -> String {
     if addresses.is_empty() {
         return "this Cluster's Machine addresses (none are published)".into();

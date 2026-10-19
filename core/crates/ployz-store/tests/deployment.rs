@@ -10,7 +10,7 @@ use ployz_core::{
     ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, MachineId,
     OperationRow, RpcError, RpcErrorCode, ServiceName,
 };
-use ployz_store::tools::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
+use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Asks, AttachConfig, Cancel, Change, Command, ConfigId,
     ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,
@@ -513,6 +513,36 @@ fn a_config_deploys_with_the_services_that_mount_it() {
 }
 
 #[test]
+fn a_deploy_refuses_config_that_expands_past_what_a_service_mounts() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("api.env.BIG").unwrap(),
+                    value: json!("x".repeat(64 * 1024)),
+                }],
+            },
+        )
+        .unwrap();
+    sentry(&store, &who);
+    put_sentry(&store, &who, &"${{ api.BIG }}\n".repeat(13));
+
+    let refused = admit(&store, &who, 1, &[], None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert!(refused.message.contains("web"), "{}", refused.message);
+    assert!(
+        refused.message.contains("Config sentry"),
+        "{}",
+        refused.message
+    );
+    assert!(refused.message.contains("768 KB"), "{}", refused.message);
+}
+
+#[test]
 fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
     let (store, who) = shop();
     sentry(&store, &who);
@@ -585,7 +615,7 @@ fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -1570,6 +1600,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     log: Some(LogText::Withheld {
                         why: Withheld::Unanswered
                     }),
+                    unanswered: false,
                 }
             ),
             ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
@@ -1649,13 +1680,11 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
         let mut changes = RowTracker::default().changes(&snapshot);
         for row in &mut changes {
             if let RowState::Failed { log, .. } = &mut row.state {
-                let mut secrets = SecretSet::from_store([], []);
-                secrets.add_machine_env(Some(&Default::default()));
-                *log = Some(LogExcerpt::scrub(
+                *log = Some(LogText::Shown(LogExcerpt::scrub(
                     ["alpha disk log\n".to_owned()],
-                    &secrets,
+                    &SealedValues::none(),
                     LineCap::default(),
-                ));
+                )));
             }
         }
         store
@@ -2136,6 +2165,9 @@ fn retry(
         &Admit::Retry(Retry {
             id: id(n),
             deployment: id(source),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         }),
         &ployz_store::Trusted::default(),
     )
@@ -2211,7 +2243,15 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
             .as_str(),
         "shop-production"
     );
-    // A cancelled Deployment can be retried too, with its own Saved revision.
+    // A cancelled Deployment can be retried too, with its own Saved revision, once
+    // the newer #3 ends.
+    let b = runner("runner-b");
+    store
+        .record(&id(3), &b, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &b, succeeded(&["web", "api"]))
+        .unwrap();
     let newer = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
         .unwrap()
@@ -2221,29 +2261,62 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     assert_eq!(retry(&store, &who, 4, 2).unwrap().saved, newer);
 }
 
-#[test]
-fn a_retry_is_refused_once_a_newer_deployment_applied() {
-    let (store, who) = shop();
-    admit(&store, &who, 1, &[], None).unwrap();
-    fail_api(&store, 1);
-    admit(&store, &who, 2, &[], None).unwrap();
+/// Deployment `n` claimed by `runner-a` and applied; the Deploy Intent it ran.
+fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
     let a = runner("runner-a");
-    store.claim(&id(2), &a).unwrap();
+    let intent = store.claim(&id(n), &a).unwrap().intent;
     store
-        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
     store
-        .record(&id(2), &a, succeeded(&["web", "api"]))
+        .record(&id(n), &a, succeeded(&["web", "api"]))
         .unwrap();
-    // Shipping #1's revision now would undo #2.
-    let refused = retry(&store, &who, 3, 1).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert!(refused.message.contains("#2"), "{}", refused.message);
-    assert_eq!(code(start(&store, &who, 3)), RpcErrorCode::NotFound);
+    intent
+}
+
+fn rolls_back(store: &ConfigStore, who: &Actor, n: u8) -> Vec<u64> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .rolls_back
 }
 
 #[test]
-fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
+fn redeploying_an_older_deployment_rolls_back_to_what_it_froze() {
+    let (store, who) = shop();
+    let first = admit(&store, &who, 1, &[], None).unwrap();
+    let frozen = apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+    assert_ne!(second.saved, first.saved);
+    assert_eq!(rolls_back(&store, &who, 1), [2]);
+    assert!(rolls_back(&store, &who, 2).is_empty());
+
+    // #1 applied and #2 applied after it: redeploying #1 ships #1's revision again.
+    let rolled_back = retry(&store, &who, 3, 1).unwrap();
+    assert_eq!(
+        (rolled_back.number, rolled_back.status, rolled_back.saved),
+        (3, DeploymentStatus::Queued, first.saved)
+    );
+    assert_eq!(apply(&store, 3), frozen);
+    assert_eq!(rolls_back(&store, &who, 1), [2, 3]);
+    // What #2 saved is still the latest Saved revision, so it shows as a change to
+    // deploy, and the next Deploy moves forward to it.
+    assert_eq!(changed(&store, &who), ["web"]);
+    assert_eq!(
+        admit(&store, &who, 4, &[], None).unwrap().saved,
+        second.saved
+    );
+
+    // The newest applied Deployment redeploys too, rolling nothing back.
+    apply(&store, 4);
+    assert!(rolls_back(&store, &who, 4).is_empty());
+    assert_eq!(retry(&store, &who, 5, 4).unwrap().saved, second.saved);
+}
+
+#[test]
+fn a_redeploy_is_refused_unless_its_deployment_ended() {
     let (store, who) = shop();
     let other = Actor::system(OrganizationId::parse("other").unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
@@ -2259,18 +2332,17 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
         .unwrap();
     cancel(&store, &who, 1).unwrap();
     assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
-    // Its runner finished before it saw the cancel: it applied, so nothing to retry.
+    // Its runner finished before it saw the cancel: it applied, and redeploys.
     store
         .record(&id(1), &a, succeeded(&["web", "api"]))
         .unwrap();
     assert_eq!(status(&store, &who, 1), DeploymentStatus::Applied);
-    assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
     // A superseded one never ran: deploy again instead.
     admit(&store, &who, 2, &[], None).unwrap();
     admit(&store, &who, 3, &[], None).unwrap();
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Superseded);
     assert_eq!(code(retry(&store, &who, 9, 2)), RpcErrorCode::Conflict);
-    // A refused retry queued nothing, and an accepted one supersedes what's queued.
+    // A refused redeploy queued nothing, and an accepted one supersedes what's queued.
     fail_api(&store, 3);
     assert_eq!(retry(&store, &who, 9, 3).unwrap().number, 4);
     assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
@@ -2278,6 +2350,133 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
     retry(&store, &who, 6, 3).unwrap();
     assert_eq!(status(&store, &who, 5), DeploymentStatus::Superseded);
     assert_eq!(status(&store, &who, 9), DeploymentStatus::Superseded);
+    assert_eq!(retry(&store, &who, 7, 1).unwrap().number, 7);
+    assert_eq!(status(&store, &who, 6), DeploymentStatus::Superseded);
+}
+
+/// Redeploy `source` as `n`, confirming that it rolls back `confirmed`.
+fn rollback(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, source): (u8, u8),
+    confirmed: &[u64],
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Retry(Retry {
+            id: id(n),
+            deployment: id(source),
+            rolls_back: Some(confirmed.to_vec()),
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        &ployz_store::Trusted::default(),
+    )
+}
+
+#[test]
+fn a_redeploy_rolls_back_every_newer_deployment_that_may_have_changed_the_servers() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    // #2 lost track after preparing: it may have changed the Servers.
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+    // #3 was cancelled before it started, #4 superseded and #5 still queued: none ran.
+    admit(&store, &who, 3, &[], None).unwrap();
+    cancel(&store, &who, 3).unwrap();
+    admit(&store, &who, 4, &[], None).unwrap();
+    admit(&store, &who, 5, &[], None).unwrap();
+    assert_eq!(rolls_back(&store, &who, 1), [2]);
+
+    // What the caller confirmed must still be what it rolls back.
+    let stale = rollback(&store, &who, (6, 1), &[]).unwrap_err();
+    assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(stale.details["rolls_back"], json!([2]));
+    assert_eq!(status(&store, &who, 5), DeploymentStatus::Queued);
+    assert_eq!(rollback(&store, &who, (6, 1), &[2]).unwrap().number, 6);
+}
+
+#[test]
+fn redeploying_an_older_deployment_waits_for_a_newer_one_in_flight() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
+
+    // Applied State may yet change under #2, so nothing older redeploys meanwhile.
+    let waiting = retry(&store, &who, 3, 1).unwrap_err();
+    assert_eq!(waiting.code, RpcErrorCode::Conflict);
+    assert_eq!(waiting.message, "Wait for #2 to finish, then redeploy.");
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
+}
+
+#[test]
+fn a_newer_deployment_whose_runner_is_gone_does_not_hold_up_a_redeploy() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    backend::execute(&url, "UPDATE config_deployment SET lease = 0");
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+
+    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, 3);
+}
+
+#[test]
+fn a_full_rollback_retires_the_services_added_since() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    // #2 adds `cron`.
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+    assert!(changed(&store, &who).is_empty());
+
+    // Rolling back to #1 takes `cron` off, and its saved settings show as staged.
+    retry(&store, &who, 3, 1).unwrap();
+    assert!(
+        nodes(&store, &who, 3)
+            .iter()
+            .any(|(name, _)| name == "cron")
+    );
+    apply(&store, 3);
+    assert_eq!(changed(&store, &who), ["cron"]);
 }
 
 #[test]
@@ -2502,7 +2701,7 @@ fn renaming_a_deployed_service_is_a_staged_change_discard_undoes() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("front").unwrap()),
                 version: None,
             },
@@ -2664,6 +2863,9 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         Some(upload.clone())
     );
     // A retry ships the failed one's upload, not the Environment's latest.
+    store
+        .record(&id(2), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
     let mut newer = upload.clone();
     newer.digest = ployz_core::UploadDigest::parse("e".repeat(64)).unwrap();
     with(3, Some(newer)).unwrap();
@@ -2844,6 +3046,9 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
             &Admit::Retry(ployz_store::Retry {
                 id: id(2),
                 deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -3139,7 +3344,7 @@ fn deleted_config_discard_does_not_target_same_name_replacement() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -3238,7 +3443,7 @@ fn discard_config_mount_preserves_same_name_replacement() {
         &who,
         &Discard {
             environment: EnvironmentRef::default(),
-            target: ployz_store::DiscardTarget::Head,
+            target: Some(ployz_store::DiscardTarget::Head),
             path: Some(SettingPath::parse(&removed.path).unwrap()),
             version: Some(review.version.clone()),
         },
@@ -3250,7 +3455,7 @@ fn discard_config_mount_preserves_same_name_replacement() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("web.configs.sentry").unwrap()),
                 version: None,
             },
@@ -3399,6 +3604,9 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
             &Admit::Retry(Retry {
                 id: id(4),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &Trusted {
                 approval: Approval::Required,
@@ -3546,6 +3754,9 @@ fn agent_retries(
         &Admit::Retry(Retry {
             id: id(n),
             deployment: id(source),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -3576,6 +3787,9 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &staging,
         )
@@ -3594,7 +3808,7 @@ fn an_agent_approval_admits_one_retry() {
     set_replicas(&store, &who, "web", 3);
     let refused = agent_retries(&store, &who, 3, 2, Approval::Required).unwrap_err();
     assert_eq!(refused.code.as_str(), "approval_required");
-    assert_eq!(refused.message, "A human must approve this retry first.");
+    assert_eq!(refused.message, "A human must approve this redeploy first.");
     assert_eq!(refused.details["effects"], json!([]));
     assert_eq!(
         refused.details["diff"]["changes"],
@@ -3719,16 +3933,19 @@ fn a_newer_queued_deployment_keeps_a_running_ones_creates_deployed() {
 #[test]
 fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
     let (store, who) = shop();
-    admit(&store, &who, 1, &["api"], None).unwrap();
-    cancel(&store, &who, 1).unwrap();
-    admit(&store, &who, 2, &[], None).unwrap();
-    store.claim(&id(2), &runner("runner-a")).unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &runner("runner-a")).unwrap();
+    admit(&store, &who, 2, &["api"], None).unwrap();
+    cancel(&store, &who, 2).unwrap();
     store
         .write(
             &who,
             &Admit::Retry(Retry {
                 id: id(3),
-                deployment: id(1),
+                deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -3778,6 +3995,35 @@ fn failed_row(snapshots: &[Vec<OperationRow>]) -> RowState {
         }
     }
     last.unwrap()
+}
+
+#[test]
+fn a_missing_image_reads_as_one_sentence_at_the_pull_step() {
+    let docker = "Docker responded with status code 404: failed to resolve reference \"docker.io/library/nginx:doesnotexist-soak\": docker.io/library/nginx:doesnotexist-soak: not found";
+    let pull = json!({"type": "failed", "error": {
+        "type": "machine", "action": "PullImage",
+        "error": {
+            "code": "not_found",
+            "message": "image pull failed",
+            "details": {"missing_image": "nginx:doesnotexist-soak"},
+            "cause": [docker],
+        }
+    }});
+    let RowState::Failed {
+        reason,
+        cause,
+        step,
+        ..
+    } = failed_row(&[progress(&[("web", "alpha", pull)])])
+    else {
+        panic!("expected a failed row");
+    };
+    assert_eq!(
+        reason,
+        "Image nginx:doesnotexist-soak not found, or its registry needs credentials"
+    );
+    assert_eq!(cause, vec![docker.to_owned()]);
+    assert_eq!(step, Some(FailedAt::Pull));
 }
 
 #[test]
@@ -3844,6 +4090,7 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
             log: Some(LogText::Withheld {
                 why: Withheld::NoSecretContext
             }),
+            unanswered: false,
         }
     );
     let reserialized = serde_json::to_string(&state).unwrap();
@@ -3910,6 +4157,9 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &unprotecting(approval),
         )
@@ -3917,4 +4167,94 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
     let refused = retry(Approval::NotRequired).unwrap_err();
     assert_admin_asked(&refused);
     retry(approved(&refused)).unwrap();
+}
+
+/// History's (live, failed) marks.
+fn marks(store: &ConfigStore, who: &Actor) -> (Option<Revision>, Option<Revision>) {
+    let view = store
+        .read(who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    (view.live, view.failed)
+}
+
+fn save(store: &ConfigStore, who: &Actor) -> Revision {
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap()
+        .saved
+        .unwrap()
+}
+
+#[test]
+fn history_marks_the_last_applied_revision_live_and_a_newest_one_that_failed() {
+    let (store, who) = shop();
+    let first = save(&store, &who);
+    assert_eq!(marks(&store, &who), (None, None), "saved, never deployed");
+
+    apply_both(&store, &who, 1);
+    assert_eq!(marks(&store, &who), (Some(first), None));
+
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    fail_api(&store, 2);
+    assert_eq!(
+        marks(&store, &who),
+        (Some(first), Some(second)),
+        "the Servers still run the version before the failed one"
+    );
+
+    retry(&store, &who, 3, 2).unwrap();
+    assert_eq!(
+        marks(&store, &who),
+        (Some(first), None),
+        "a later run of the failed version clears Failed"
+    );
+    let a = runner("runner-a");
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(marks(&store, &who), (Some(second), None));
+
+    set_replicas(&store, &who, "web", 4);
+    let third = save(&store, &who);
+    assert_ne!(third, second);
+    assert_eq!(
+        marks(&store, &who),
+        (Some(second), None),
+        "a newer version not deployed yet has no mark"
+    );
+}
+
+#[test]
+fn a_superseded_retry_of_the_failed_version_clears_failed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    fail_api(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    fail_api(&store, 2);
+    assert_eq!(marks(&store, &who).1, Some(second));
+
+    retry(&store, &who, 3, 2).unwrap();
+    retry(&store, &who, 4, 1).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Superseded);
+    assert_eq!(
+        marks(&store, &who).1,
+        None,
+        "the newest version's latest attempt was superseded, not failed"
+    );
 }

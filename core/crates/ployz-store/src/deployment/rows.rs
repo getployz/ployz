@@ -39,6 +39,11 @@ pub enum RowState {
         step: Option<FailedAt>,
         #[serde(default, deserialize_with = "stored_log")]
         log: Option<LogText>,
+        /// The Server didn't answer, so it may succeed once it does. False when it
+        /// answered with this failure.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        unanswered: bool,
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
@@ -60,6 +65,7 @@ impl RowState {
 #[serde(rename_all = "snake_case")]
 pub enum FailedAt {
     Build,
+    Pull,
     Create,
     Start,
     Health,
@@ -89,7 +95,7 @@ impl FailedAt {
                 MachineAction::StartContainer => Some(Self::Start),
                 MachineAction::StopContainer => Some(Self::Stop),
                 MachineAction::RemoveContainer => Some(Self::Remove),
-                MachineAction::PullImage => Some(Self::Create),
+                MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
                 | MachineAction::ListContainers
                 | MachineAction::ReadServingPointer
@@ -287,6 +293,13 @@ impl Failure {
                 };
                 (refusal.to_string(), Vec::new())
             }
+            ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
+            } if let Some(image) = error.missing_image() => (
+                format!("Image {image} not found, or its registry needs credentials"),
+                ployz_core::error_chain::causes(error),
+            ),
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
@@ -527,6 +540,7 @@ fn state(
             log: container.then_some(LogText::Withheld {
                 why: Withheld::Unanswered,
             }),
+            unanswered: matches!(error, ExecutionError::Machine { error, .. } if error.target_unanswered()),
         };
     }
     if let Some(phase) = running {

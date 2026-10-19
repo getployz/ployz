@@ -25,7 +25,8 @@ again, or `brew upgrade ployz`.
 3. On **Sign in the Ployz CLI**, check that the code matches your terminal, then click
    **Approve**.
 
-`ployz logout` signs this computer out.
+This computer starts in the organization the page names. Switching organization in the dashboard
+later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
@@ -91,10 +92,10 @@ Some things are not tools. Run these yourself in a terminal:
 
 Tools that can delete something when they run are marked destructive: `deploy`,
 `deployment_retry`, `deployment_start`, `discard`, `environment_remove`, `project_remove`, the
-server commands that drain, clean, forget or remove a server, the Volume commands that move, mirror
-or release a copy or remove a mirror, and removing an organization member or invite. Staging a
-removal, such as `service_remove`, deletes nothing until the next deploy, so it isn't marked. When
-one of them needs your approval (see
+server commands that drain, clean, forget or remove a server, the Volume commands that move,
+mirror, release or restore a copy or remove a mirror, and removing an organization member or
+invite. Staging a removal, such as `service_remove`, deletes nothing until the next deploy, so it
+isn't marked. When one of them needs your approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Your answer
 goes to Ployz Cloud with your own sign-in, not the agent's token. Removing a
@@ -104,12 +105,11 @@ agent, which is told nothing changed. Declining or closing the dialog denies it 
 reason. Answer within 30 minutes of the agent's call; a later answer isn't recorded and the
 approval stays pending in Ployz Cloud.
 
-In an app that can't show this dialog, the call waits for you to approve or deny it in the
-Ployz Cloud sidebar, and the agent hears nothing until you answer. Approve and the call goes
-ahead; deny and the agent hears your reason. If nobody answers within 30 minutes, the agent
-hears what the call would remove and that the approval is still pending. Once you approve it,
-the agent calls the tool again with that approval. The agent can never answer the approval
-itself.
+In an app that can't show this dialog, the call fails right away with `approval_required`,
+what it would remove, the approval's ID and a link to your organization. Open the link,
+approve or deny it under **Waiting on you** in the Ployz agent, then tell the agent to try
+again. It calls the tool again with that approval: an approved call goes ahead, and a denied
+one fails, with your reason if you gave one. The agent can never answer the approval itself.
 
 `ployz mcp` stops a call that runs for more than 30 minutes. A deployment or Volume run it
 started keeps going in Cloud, and the error names the tool that shows where it stands. A call
@@ -181,7 +181,7 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
-shows each server's newest 200 lines at most, with secrets scrubbed, and can't use `--follow`,
+shows each server's newest 200 lines at most, with sealed variables scrubbed, and can't use `--follow`,
 `--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
 if the directory isn't linked. A `deploy` token reads only its own environment, so
 `ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
@@ -217,7 +217,7 @@ ployz up
 The first time, Ployz creates a project named after the directory, adds a service with an https
 address, builds your app, deploys it and prints the address.
 
-An upload can be at most 256 MiB compressed. To deploy on every push instead, see
+An upload can be at most 95 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
 
 `ployz github ls` lists the GitHub accounts your organization is connected to, and the link to
@@ -319,8 +319,10 @@ Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,
-and exits 3. Ployz finishes on its own once the server answers or you remove it with
-`ployz server rm`. With `--json` it reports `removal: removed` only once the environment is gone
+and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour after the server
+answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
+or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
+the first run did. With `--json` it reports `removal: removed` only once the environment is gone
 from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in

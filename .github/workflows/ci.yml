@@ -39,6 +39,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       jobs: ${{ steps.select.outputs.jobs }}
+      postgres: ${{ steps.select.outputs.postgres }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -152,10 +153,12 @@ jobs:
           EOF
           cargo nextest run --workspace --all-features --locked
           cargo test --doc --workspace --all-features --locked
+      # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres
+        if: needs.changes.outputs.postgres == 'true'
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: cargo nextest run --package ployz-store --locked
+        run: cargo nextest run --workspace --all-features --locked -E 'package(ployz-store)'
       - name: Check the missing SSH prerequisite
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
@@ -206,17 +209,16 @@ jobs:
       # The Postgres tests start their own postgres:16-alpine containers through the Docker CLI.
       - run: docker pull --quiet postgres:16-alpine
       - run: cargo nextest run --locked
-      - name: Build the Railway image
-        working-directory: .
-        run: docker build --file dashboard/uptime/Dockerfile --tag ployz-uptime:ci .
-      - name: Publish the Railway image
+      # Main builds and publishes the image for every commit, so PRs skip the 3-4 minute release build.
+      - name: Build and publish the Railway image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ghcr.io/getployz/ployz-uptime:${{ github.sha }}
         run: |
+          docker build --file dashboard/uptime/Dockerfile --tag "$IMAGE" .
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker tag ployz-uptime:ci "$IMAGE"
           docker push "$IMAGE"
 
   macos-cli:

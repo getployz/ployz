@@ -39,6 +39,7 @@ fn an_unanswered_call_names_the_machine_in_its_deepest_line() {
         format!("Machine {machine} did not answer: deadline has elapsed")
     );
     assert!(error.cause.is_empty(), "{:?}", error.cause);
+    assert!(error.target_unanswered());
     let row = ployz_store::Failure::of(
         &crate::deploy::ExecutionError::Machine {
             action: ployz_core::MachineAction::CreateContainer,
@@ -72,6 +73,7 @@ fn a_machine_that_sends_unavailable_itself_is_not_called_silent() {
 
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(error.message, "Cluster is not available");
+    assert!(!error.target_unanswered());
 }
 
 #[test]
@@ -317,6 +319,8 @@ fn observation(id: char, machine: char) -> ContainerObservation {
     let service_id = ServiceId::parse(id.to_string().repeat(32)).unwrap();
     let service_name = ServiceName::parse("api").unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: "api".into(),
         created_at_unix_nanos: 0,

@@ -32,7 +32,7 @@ export function dnsLabelError(name: string): string | null {
 export const randomName = () => uniqueNamesGenerator({ dictionaries: [adjectives, animals], separator: "-", length: 2, style: "lowerCase" });
 
 /**
- * A new Service's name: a DNS label from its repository or image, with a random suffix when a Service here has it as a
+ * A new Service's name: a DNS label from its repository or image, numbered (`web-2`) when a Service here has it as a
  * name or Private DNS. The Store refuses a name taken meanwhile.
  */
 export function newServiceName(source: NewServiceSource, services: readonly ServiceListing[]) {
@@ -40,36 +40,40 @@ export function newServiceName(source: NewServiceSource, services: readonly Serv
 }
 
 /**
- * A new Project's name: its first Service's, from that Service's repository or image, with a random suffix when a
+ * A new Project's name: its first Service's, from that Service's repository or image, numbered (`nginx-2`) when a
  * Project has it. The Store refuses a name taken meanwhile.
  */
 export function newProjectName(source: NewServiceSource & { type: "git" | "image" }, projects: readonly ProjectListing[]) {
   return uniqueName(sourceName(source), projects.map((project) => project.name));
 }
 
-/** `wanted` as a new Service's name: a random suffix when a Service here has it as a name or Private DNS. */
+/** `wanted` as a new Service's name: numbered when a Service here has it as a name or Private DNS. */
 export function serviceName(wanted: string, services: readonly ServiceListing[]) {
   return uniqueName(wanted, services.flatMap((service) => [service.name, service.private_dns]));
 }
 
-// ponytail: `byte % alphabet.length` slightly favours the first letters; fine for names and a 32-letter password.
+// ponytail: `byte % alphabet.length` slightly favours the first letters; fine for a 32-letter password.
 /** `length` random characters of `alphabet`. */
 export function randomText(alphabet: string, length: number) {
   return Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => alphabet[byte % alphabet.length]).join("");
 }
 
-const SUFFIX = "abcdefghijklmnopqrstuvwxyz0123456789";
-
-/** `wanted` as a DNS label, given a random suffix (`postgres-x7kd`) until it is none of `taken`. */
-export function uniqueName(wanted: string, taken: Iterable<string>) {
+/**
+ * The first of `wanted`, `wanted-2`, `wanted-3`… that is none of `taken`, as a DNS label: the stem is trimmed so the
+ * number fits in 63 characters. A `tail` (`-1413`) is kept whole between the stem and the number; one that leaves no
+ * room for a stem throws.
+ */
+export function uniqueName(wanted: string, taken: Iterable<string>, { tail = "" }: { tail?: string } = {}) {
+  if (tail.endsWith("-")) throw new Error(`uniqueName: tail ${JSON.stringify(tail)} ends in "-"`);
   const used = new Set(taken);
   const base = slugifySegment(wanted).slice(0, MAX_NAME).replace(/-+$/u, "") || "service";
-  const stem = base.slice(0, MAX_NAME - 5).replace(/-+$/u, "");
-  let name = base;
-  while (used.has(name)) {
-    name = `${stem}-${randomText(SUFFIX, 4)}`;
+  for (let n = 1; ; n++) {
+    const end = `${tail}${n === 1 ? "" : `-${n}`}`;
+    const room = MAX_NAME - end.length;
+    if (room < 1) throw new Error(`uniqueName: tail ${JSON.stringify(tail)} leaves no room for a stem before ${JSON.stringify(end)}`);
+    const name = `${base.slice(0, room).replace(/-+$/u, "")}${end}`;
+    if (!used.has(name)) return name;
   }
-  return name;
 }
 
 /** The command that creates a Service from a source, with the id the caller minted. */

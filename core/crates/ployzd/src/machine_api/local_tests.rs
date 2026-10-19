@@ -709,6 +709,7 @@ async fn fake_docker_service(
                 )],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let store = RecordOwner::spawn(store).unwrap();
@@ -1516,17 +1517,19 @@ mod set_volume_copy {
         let plugin = cutting_plugin();
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        running_holder(&service, &fake).await;
+        let holder = running_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
 
-        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                set_copy(&service, floor(1)),
-            )
-            .await
-            .expect("the floor want waited on the draining cut")
-        });
+        let (cut, during) =
+            tokio::join!(set_copy(&service, at_gen(draining_cut(3000), 1)), async {
+                drain_started(&fake, &holder, seen).await;
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(2000),
+                    set_copy(&service, floor(1)),
+                )
+                .await
+                .expect("the floor want waited on the draining cut")
+            });
         assert_eq!(
             serde_json::to_value(reply(&during)).unwrap(),
             json!({"copy": writer_root(0, None)["Ok"]})
@@ -2185,7 +2188,7 @@ mod ensure_container {
     }
 
     fn run_new(key: &str, spec: Value) -> Value {
-        json!({"want":{"state":"running", "container":{"new":{"slot":slot(key), "resolved_spec":spec}}}})
+        json!({"want":{"state":"running", "container":{"new":{"slot":slot(key), "resolved_spec":spec, "gen":1}}}})
     }
 
     async fn ensure(service: &MachineService, request: Value) -> EnsuredContainer {
@@ -2438,7 +2441,7 @@ mod ensure_container {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-hook").await;
         let hook = json!({"want":{"state":"running", "container":{"new":{
             "slot":{"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
-            "resolved_spec":spec("example.test/api:1")}}}});
+            "resolved_spec":spec("example.test/api:1"), "gen":1}}}});
         let id = present(&ensure(&service, hook.clone()).await).container_id;
         // The hook ran and exited, and the reply was lost.
         set_state(&fake, &id, json!({"Status":"exited", "ExitCode":3}));
@@ -2569,6 +2572,48 @@ mod ensure_container {
             matches!(inspected, Err(crate::docker::Error::SpecNotFound(lost)) if lost == id),
             "the spec row outlived Gone: {inspected:?}"
         );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture edits")]
+    async fn a_request_past_tonic_s_default_4_mib_still_creates_the_container() {
+        use std::os::unix::fs::MetadataExt;
+        let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-ensure-large").await;
+        let owner = std::fs::metadata(&data_dir).unwrap();
+        let mut spec = spec("example.test/api:1");
+        spec["configs"] = json!([{"name":"bulk/a", "content":vec![b'x'; 2 * 1024 * 1024]}]);
+        spec["container"]["config_mounts"] = json!([{
+            "config_name":"bulk/a", "target":"/etc/bulk/a", "uid":owner.uid(), "gid":owner.gid()
+        }]);
+        let request =
+            op::EnsureContainer::into_request(serde_json::from_value(run_new("k1", spec)).unwrap())
+                .encode()
+                .unwrap();
+        assert!(request.json.len() > 4 * 1024 * 1024);
+        let api = crate::machine_api::MachineApi::from_local(service);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)),
+        );
+        let mut client = MachineRpcClient::connect(format!("http://{address}"))
+            .await
+            .unwrap()
+            .max_decoding_message_size(ployz_core::RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
+
+        let reply = client
+            .ensure_container(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::EnsureContainer>()
+            .unwrap();
+
+        present(&reply);
+        server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -2714,6 +2759,7 @@ mod serving_pointer {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         local

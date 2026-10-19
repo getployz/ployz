@@ -10,6 +10,7 @@ export const PublicError = Schema.Union([
       "CONFLICT",
       "RATE_LIMITED",
       "BUILD_GRANT_UNAVAILABLE",
+      "UNAVAILABLE",
       "INTERNAL",
     ]),
     message: Schema.String,

@@ -40,6 +40,7 @@ fn initialize_request() -> EnrollRequest {
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         },
         wireguard_mtu: None,
+        pinned: Default::default(),
     }
 }
 
@@ -110,6 +111,7 @@ fn join_request(record: &crate::machine::LocalMachineRecord) -> EnrollRequest {
             },
         },
         wireguard_mtu: None,
+        pinned: Default::default(),
     }
 }
 

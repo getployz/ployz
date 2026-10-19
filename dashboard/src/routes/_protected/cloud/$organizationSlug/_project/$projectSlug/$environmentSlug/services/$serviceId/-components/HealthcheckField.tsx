@@ -66,8 +66,9 @@ function HealthcheckFields({ check, change, set, label = "Healthcheck", descript
 
   function confirm(kind: HealthcheckKind) {
     const next = text.trim();
+    // Clearing a check turns it off; a kind just picked and left blank was never set.
     if (next === "") {
-      if (check) set(null);
+      if (check?.kind === kind) set(null);
       return setDraft(null);
     }
     const error = KINDS[kind].validate(next);
@@ -143,7 +144,7 @@ function HealthcheckGroup({ check, change, set, close }: HealthcheckSetting & { 
   function confirm() {
     const next = text.trim();
     if (next === "") {
-      if (check) set(null);
+      if (check?.kind === kind) set(null);
       return setDraft(null);
     }
     const error = KINDS[kind].validate(next);
@@ -154,7 +155,9 @@ function HealthcheckGroup({ check, change, set, close }: HealthcheckSetting & { 
 
   return (
     <SettingsGroup id="healthcheck" label="Healthcheck" hint={HINT} commit="change" control={
-      <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove healthcheck" onClick={() => (check ? set(null) : close())}>
+      // Keeps focus in the field, whose blur would save its draft before the click removes it.
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove healthcheck" onMouseDown={(event) => event.preventDefault()}
+        onClick={() => (check ? set(null) : close())}>
         <XIcon />
       </Button>
     }>
@@ -167,7 +170,8 @@ function HealthcheckGroup({ check, change, set, close }: HealthcheckSetting & { 
         </ToggleGroup>
       } />
       <SettingsField label={KINDS[kind].field} commit="confirm" control={
-        <ConfirmableInput aria-label={KINDS[kind].label} aria-invalid={draft?.error ? true : undefined} error={draft?.error}
+        // A kind picked on the toggle mounts a fresh field with focus, so leaving it blank blurs back to the stored check.
+        <ConfirmableInput key={kind} autoFocus={draft !== null} aria-label={KINDS[kind].label} aria-invalid={draft?.error ? true : undefined} error={draft?.error}
           isChanged={change !== undefined} isDirty={isDirty} title={change ? `Deployed: ${shown(change.before)}` : undefined}
           placeholder={kind === "path" ? "/health" : "pg_isready"}
           value={text} onValueChange={(next) => setDraft({ kind, text: next, error: null })}

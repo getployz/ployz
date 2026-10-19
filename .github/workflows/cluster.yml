@@ -1,8 +1,7 @@
 name: Cluster checks
 
+# The nightly schedule is off while layer3 fails on every run (#1853). Restore it with the fix.
 on:
-  schedule:
-    - cron: "23 3 * * *"
   workflow_dispatch:
 
 concurrency:

@@ -491,6 +491,61 @@ fn a_file_holds_at_most_256_kb() {
 }
 
 #[test]
+fn a_service_mounts_at_most_768_kb_across_its_configs() {
+    let (store, who) = shop();
+    let file = 256 * 1024;
+    create(&store, &who, 10, "bulk", &[("web", "/etc/bulk")]).unwrap();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        put(&store, &who, "bulk", name, &"x".repeat(file)).unwrap();
+    }
+
+    let over = refused(put(&store, &who, "bulk", "d.txt", "x"));
+    assert_eq!(over.code, RpcErrorCode::InvalidArgument);
+    assert!(over.message.contains("web"), "{}", over.message);
+    assert!(over.message.contains("Config bulk"), "{}", over.message);
+    assert!(over.message.contains("768 KB"), "{}", over.message);
+    assert_eq!(over.details["configs"], json!(["bulk"]));
+    assert_eq!(over.details["bytes"], json!(3 * file + 1));
+    assert_eq!(over.details["max_bytes"], json!(3 * file));
+    assert_eq!(item(&store, &who, "bulk").unwrap().contents.len(), 3);
+
+    create(&store, &who, 11, "more", &[]).unwrap();
+    put(&store, &who, "more", "e.txt", "x").unwrap();
+    let over = refused(attach(&store, &who, "more", "web", "/etc/more"));
+    assert_eq!(over.details["configs"], json!(["bulk", "more"]));
+    attach(&store, &who, "more", "worker", "/etc/more").unwrap();
+    put(&store, &who, "bulk", "a.txt", &"y".repeat(file)).unwrap();
+}
+
+#[test]
+fn an_unmounted_config_edits_while_another_service_mounts_too_much() {
+    let (store, who) = shop();
+    let reference = "${{ web.KEY }}";
+    let text = reference.repeat(256 * 1024 / reference.len());
+    create(&store, &who, 10, "bulk", &[("web", "/etc/bulk")]).unwrap();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        put(&store, &who, "bulk", name, &text).unwrap();
+    }
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: EnvironmentRef::default(),
+                service: service("web"),
+                name: service("storefront"),
+            },
+        )
+        .unwrap();
+
+    create(&store, &who, 11, "other", &[]).unwrap();
+    put(&store, &who, "other", "a.txt", "ok").unwrap();
+    assert_eq!(
+        refused(put(&store, &who, "bulk", "d.txt", "x")).details["configs"],
+        json!(["bulk"])
+    );
+}
+
+#[test]
 fn a_file_name_is_a_relative_path_of_at_most_four_segments() {
     for bad in [
         "/etc/a",
@@ -860,6 +915,29 @@ fn the_config_list_shows_files_sizes_and_mounts_but_never_resolved_values() {
     let one = serde_json::to_string(&item(&store, &who, "sentry").unwrap()).unwrap();
     assert!(!one.contains("worker-key"), "{one}");
     assert!(one.contains("${{ worker.KEY }}"), "{one}");
+}
+
+#[test]
+fn a_config_mount_set_by_name_and_by_id_in_one_edit_is_refused() {
+    let (store, who) = shop();
+    create(&store, &who, 10, "sentry", &[]).unwrap();
+    let by_id = format!("web.configs.@{}", uuid(10));
+    let before = values(&store, &who, "web");
+    let refused = edit(
+        &store,
+        &who,
+        vec![
+            set("web.configs.sentry", json!("/first")),
+            set(&by_id, json!("/second")),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        refused.message,
+        format!("{by_id} is changed twice in one edit; change it once")
+    );
+    assert_eq!(values(&store, &who, "web"), before);
 }
 
 #[test]

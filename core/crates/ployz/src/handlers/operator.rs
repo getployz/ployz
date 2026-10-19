@@ -117,7 +117,8 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
 /// names they have now.
 #[derive(Clone)]
 pub(super) struct Scoped {
-    pub(super) environment: ployz_store::EnvironmentSummary,
+    /// The Environment's name, for a refusal that names it.
+    pub(super) environment: ployz_store::EnvironmentName,
     pub(super) namespace: Namespace,
     pub(super) services:
         std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::ServiceName>,
@@ -129,7 +130,7 @@ pub(super) struct Scoped {
 impl From<ployz_store::NamespaceView> for Scoped {
     fn from(view: ployz_store::NamespaceView) -> Self {
         Self {
-            environment: view.environment,
+            environment: view.environment.name,
             namespace: view.namespace,
             services: view.services,
             authored: view.authored,
@@ -158,7 +159,7 @@ impl Scoped {
             .collect::<std::collections::BTreeSet<_>>();
         Error::not_found(format!(
             "No Service named {name} in Environment {}",
-            self.environment.name
+            self.environment
         ))
         .hint((!valid.is_empty()).then(|| Hint::valid(valid)))
     }
@@ -298,7 +299,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         (Some(id), Some(store)) => {
             let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
             Some(Scoped {
-                environment: view.environment,
+                environment: view.environment.name,
                 namespace: view.namespace,
                 services: view.runtime_names,
                 authored: None,
@@ -434,7 +435,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         })
     })?;
     credential.map_or(Ok(()), |credential| {
-        super::cloud_read::logs(root, &credential, fallback)
+        super::cloud_read::logs(&credential, fallback)
     })
 }
 

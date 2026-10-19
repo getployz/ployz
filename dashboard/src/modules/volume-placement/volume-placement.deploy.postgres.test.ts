@@ -59,7 +59,7 @@ describe("deploying a Volume placement", () => {
       })),
     }),
   ));
-  const placement = async () => (await run(listPlacements(organizationId)))[0];
+  const placement = async (id = volumeId) => (await run(listPlacements(organizationId))).find((row) => row.volumeId === id);
   // A restore request still writing to the Store holds this lock until its write commits or fails.
   const whileStoreWriting = async <A>(body: () => Promise<A>) => {
     const stager = await harness.pool.connect();
@@ -598,7 +598,7 @@ describe("deploying a Volume placement", () => {
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
 
     expect(await whileStoreWriting(() => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
-    expect(await placement()).toMatchObject({ volumeId: "vol3", staged: { seed }, deploymentId: null });
+    expect(await placement("vol3")).toMatchObject({ staged: { seed }, deploymentId: null });
   });
 
   it("refuses to seed a restored Volume whose storage no longer matches its source", async () => {

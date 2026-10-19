@@ -10,7 +10,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { branchSetupCommands, ownLineages } from "#/modules/config-store/branch-picks";
 import { nodeName } from "#/modules/config-store/store-branches";
-import { dnsLabelError } from "#/modules/config-store/store-services";
+import { dnsLabelError, uniqueName } from "#/modules/config-store/store-services";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -108,7 +108,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   const { plan, parent } = picking;
   const own = ownLineages(plan);
   const nameOf = nodeName;
-  const branchName = (name ?? freeName(fix && focus ? `fix-${focus}` : "new-branch", taken)).trim();
+  const branchName = (name ?? uniqueName(fix && focus ? `fix-${focus}` : "new-branch", taken)).trim();
   const nameError = nameProblem(branchName, taken);
   const blocked = own.length === 0 && !fix ? "Pick something to change" : null;
 
@@ -184,12 +184,4 @@ function nameProblem(name: string, taken: ReadonlySet<string>) {
   if (!name) return "Name the branch.";
   if (taken.has(name)) return `${name} is taken in this project.`;
   return dnsLabelError(name);
-}
-
-/** The first free name: `base`, then `base-2`, `base-3`… */
-function freeName(base: string, taken: ReadonlySet<string>) {
-  for (let n = 1; ; n++) {
-    const name = n === 1 ? base : `${base}-${n}`;
-    if (!taken.has(name)) return name;
-  }
 }

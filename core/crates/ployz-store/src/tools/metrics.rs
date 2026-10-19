@@ -9,8 +9,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::act::{resolve, servers};
-use super::cloud::{MetricEvent, MetricsAnswer, ServersAnswer};
+use super::act::{resolve, roster, servers};
+use super::cloud::{MetricEvent, MetricsAnswer};
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
@@ -237,7 +237,7 @@ impl Tool for ServerMetrics {
             .read(vec![store(&NamespacesQuery {})?, servers()])?
             .into_iter();
         let owned = cx.view::<NamespacesQuery>(answers.next())?;
-        let listed = cx.cloud::<ServersAnswer>(answers.next())?;
+        let listed = roster(cx, answers.next())?;
         let server = resolve(&listed, &self.server, "server", false)?.reference();
         let answer = ask(
             cx,

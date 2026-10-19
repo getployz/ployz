@@ -15,6 +15,7 @@ pub use crate::deployment::query::{
 };
 pub use crate::review::diff::DiffQuery;
 pub use crate::review::history::{HistoryPreview, HistoryPreviewQuery, HistoryQuery, HistoryView};
+pub use crate::review::sealed::{SealedNamesQuery, SealedNamesView};
 pub use crate::service::query::{
     ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
 };
@@ -169,6 +170,8 @@ queries! {
     History(HistoryQuery) -> HistoryView => crate::review::history::history(tx, who, q);
     /// What Restore or Undo would stage and overwrite in the draft.
     HistoryPreview(HistoryPreviewQuery) -> HistoryPreview => crate::review::history::preview(tx, who, q);
+    /// The variable names under which an Environment's Containers may hold Sealed values.
+    SealedNames(SealedNamesQuery) -> SealedNamesView => crate::review::sealed::names_view(tx, who, q);
     /// What a Deploy would ship, from authored state alone.
     Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, trusted, q);
     /// One page of an Environment's Deployments.

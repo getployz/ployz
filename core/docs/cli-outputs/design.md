@@ -219,7 +219,7 @@ Both options end with the same summary footer, taken from Uncloud:
 
 ```
 ───────────────────────────────────────────────
-2 updated · 1 unchanged · 1 failed · across 2 servers
+2 deployed · 1 unchanged · 1 failed · across 2 servers
 ```
 
 ## 6. Exit codes

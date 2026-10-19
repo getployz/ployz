@@ -15,6 +15,9 @@ use crate::failure::Failure;
 
 const POLL: Duration = Duration::from_secs(1);
 
+/// The code of Cloud's refusal that waits for a person to approve the call.
+pub(crate) const APPROVAL_REQUIRED: &str = "approval_required";
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct Asked {
     #[serde(rename = "approval_id")]
@@ -68,7 +71,7 @@ impl Verb {
         match self {
             Self::Publish => "save",
             Self::Deploy => "deploy",
-            Self::Retry => "retry",
+            Self::Retry => "redeploy",
             Self::Drain => "drain",
             Self::Set => "change",
             Self::Clean => "cleanup",
@@ -122,7 +125,7 @@ impl Verb {
 
 impl Asked {
     pub(crate) fn of(error: &RpcError) -> Option<Self> {
-        if error.code.as_str() != "approval_required" {
+        if error.code.as_str() != APPROVAL_REQUIRED {
             return None;
         }
         serde_json::from_value(error.details.clone()).ok()
@@ -213,7 +216,7 @@ fn things(count: usize) -> String {
     format!("{count} thing{}", if count == 1 { "" } else { "s" })
 }
 
-fn line(effect: &DestructiveEffect) -> String {
+pub(crate) fn line(effect: &DestructiveEffect) -> String {
     let name = &effect.name;
     match effect.kind {
         DestructiveKind::RemovesService => format!("removes Service {name}"),
@@ -230,6 +233,7 @@ fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::StopsService => format!("stops Service {name} until started again"),
         DestructiveKind::RestartsService => format!("restarts Service {name}"),
         DestructiveKind::UnprotectsEnvironment => format!("unprotects Environment {name}"),
+        DestructiveKind::RemovesOrganization => format!("removes Organization {name}"),
     }
 }
 

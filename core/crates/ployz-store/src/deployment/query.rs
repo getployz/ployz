@@ -189,9 +189,7 @@ pub(crate) fn plan(
         .changes
         .into_iter()
         .filter_map(|mut change| {
-            change
-                .restarts
-                .retain(|service| query.services.is_empty() || query.services.contains(service));
+            change.restarts.retain(|service| frozen.ships(service));
             (frozen.targets(&change.node.id) || !change.restarts.is_empty()).then_some(change)
         })
         .collect();

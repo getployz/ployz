@@ -24,6 +24,7 @@ import { TokensSettings } from "#/routes/_protected/cloud/$organizationSlug/_org
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { MembersSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/members-settings";
 import { SupportAccessSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/support-access-section";
+import { OrganizationNameSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/organization-name-section";
 import { StoreOrganizationDanger } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger";
 
 const settingsSectionSchema = Schema.Literals(["general", "members", "tokens", "github", "builds"]);
@@ -68,6 +69,7 @@ function RouteComponent() {
         />
       ) : (
         <div className="flex flex-col gap-6">
+          <OrganizationNameSection organizationSlug={organizationSlug} />
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />
           {supportAvailable ? <SupportAccessSection organizationSlug={organizationSlug} /> : null}

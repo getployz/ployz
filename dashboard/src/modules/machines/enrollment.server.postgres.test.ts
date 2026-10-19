@@ -50,6 +50,7 @@ import { fakeGithubApi } from "#/test/fake-github";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
+import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import {
   makeSecretEncryption,
   SecretEncryption,
@@ -175,9 +176,9 @@ function enrollmentTestClient(
           completeMachineEnrollment(input),
         ),
       ),
-    mintCli: () => runtime.runPromise(mintCliMachineEnrollment({ userId }, { organizationSlug: "enroll" })),
+    mintCli: () => runtime.runPromise(mintCliMachineEnrollment({ userId }, { organizationId })),
     read: (id: string, actor = userId) => runtime.runPromise(
-      Effect.result(readMachineEnrollment({ userId: actor }, { organizationSlug: "enroll", id })),
+      Effect.result(readMachineEnrollment({ userId: actor }, { organizationId, id })),
     ),
     resetPendingEnrollment: (_organizationId: string) =>
       runtime.runPromise(
@@ -825,7 +826,7 @@ describe("organization enrollment coordinator", () => {
       .toMatchObject({ success: { machineId: candidate.machineId } });
 
     fake.connection.error = new Error("Joining candidate unavailable");
-    expect(await fake.coordinator.completeFounding(candidate)).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect(await fake.coordinator.completeFounding(candidate)).toMatchObject({ failure: { _tag: "Unavailable" } });
     fake.connection.error = null;
     expect(await fake.coordinator.completeFounding(candidate)).toMatchObject({ success: { machineId: candidate.machineId } });
     expect(await fake.coordinator.completeFounding(candidate)).toMatchObject({ success: { machineId: candidate.machineId } });
@@ -892,7 +893,7 @@ describe("organization enrollment coordinator", () => {
     const attempt = await pendingFounder(fake);
     await fake.coordinator.publish({ ...attempt, capability });
     fake.connection.error = new Error(message);
-    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Unavailable" } });
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows).toEqual([{ founder_machine_id: null }]);
     expect(await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(0) })).toMatchObject({ success: { kind: "initialize", resumed: true } });
     expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({ success: { kind: "not_yet" } });
@@ -999,7 +1000,7 @@ describe("organization enrollment coordinator", () => {
       : fake.coordinator.completeFounding(attempt);
     await dialing;
     await fake.coordinator.disable();
-    expect(await pending).toMatchObject({ failure: { _tag: phase === "join" ? "Conflict" : "PloyzProviderError" } });
+    expect(await pending).toMatchObject({ failure: { _tag: phase === "join" ? "Conflict" : "Unavailable" } });
     expect(aborted).toBe(true);
     expect(fake.registerCalls()).toBe(0);
     expect(fake.observations()).toBe(0);
@@ -1289,6 +1290,23 @@ describe("organization enrollment coordinator", () => {
       expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
       expect(await enrollIn(fake, second, 2)).toMatchObject({ success: { kind: "join" } });
       expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
+    });
+
+    it("answers completion with a retryable 503 while the joining Machine is unreachable, then completes", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const token = await issueToken();
+      expect(await enrollIn(fake, token, 1)).toMatchObject({ success: { kind: "join" } });
+      const attempt = { token, machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+      await fake.coordinator.publish({ ...attempt, capability: keyed(1) });
+
+      fake.connection.error = new Error("Candidate unreachable");
+      const unreachable = await fake.coordinator.completeFounding(attempt);
+      if (!Result.isFailure(unreachable)) throw new Error("Completion succeeded without reaching the Machine");
+      expect(statusForPublicError(encodePublicError(unreachable.failure))).toBe(503);
+
+      fake.connection.error = null;
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
     });
 
     it("never gates a Machine resuming its own claim", async () => {

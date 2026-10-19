@@ -19,7 +19,8 @@ import { usePendingMarks, showPending } from "./store-pending";
 const refreshedBy = {
   environment: ["store_environment"],
   diff: ["store_environment", "store_deployment"],
-  history: ["store_environment"],
+  // Live and Failed follow Deployments.
+  history: ["store_environment", "store_deployment"],
   history_preview: ["store_environment", "store_deployment"],
   plan: ["store_environment", "store_deployment"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.
@@ -32,6 +33,7 @@ const refreshedBy = {
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
   namespaces: ["store_environment", "store_deployment"],
+  sealed_names: ["store_environment"],
   // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, which
   // change with no Store write, so a domains view also polls while one is on its way (`DOMAIN_POLL_MS`).
   domains: ["store_environment", "store_deployment"],
@@ -68,10 +70,18 @@ const refreshedBy = {
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
 const DOMAIN_POLL_MS = 30_000;
 
+/** How often a Deployment view rereads while it may still run, in case the change stream missed its progress. */
+const DEPLOYMENT_POLL_MS = 5_000;
+
 /** A domains view with a domain that time, Ployz or the user's DNS will move on: certificates, DNS, the Cluster Domain. */
 function settling(result: StoreResult<ConfigView> | undefined) {
   return result?.ok === true && result.value.view === "domains"
     && result.value.domains.some((domain) => domain.status !== "ready" && domain.action?.type !== "deploy");
+}
+
+function pollEvery(result: StoreResult<ConfigView> | undefined) {
+  if (settling(result)) return DOMAIN_POLL_MS;
+  return result?.ok === true && result.value.view === "deployment" && result.value.in_flight ? DEPLOYMENT_POLL_MS : false;
 }
 
 export const storeViewPrefix = (organizationSlug: string) => ["store-view", organizationSlug] as const;
@@ -80,7 +90,7 @@ export const storeViewPrefix = (organizationSlug: string) => ["store-view", orga
  * One bounded Store view: an Environment's Settings, its diff or plan, one page of its Deployments, one Deployment.
  * A refusal (`not_found`, `ambiguous`) is the view's answer, not a failed read; a busy Store (`unavailable`) is a
  * failed read. The Organization change stream refetches it when a table behind it changes; only a settling domains
- * view polls.
+ * view and an in-flight Deployment poll.
  */
 export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
   const queryFn = async ({ signal }: { signal: AbortSignal }) => {
@@ -92,7 +102,7 @@ export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string
   return queryOptions({
     queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, query] as const,
     staleTime: Infinity,
-    refetchInterval: (cached) => settling(cached.state.data) ? DOMAIN_POLL_MS : false,
+    refetchInterval: (cached) => pollEvery(cached.state.data),
     structuralSharing: keepNewer,
     queryFn,
   });

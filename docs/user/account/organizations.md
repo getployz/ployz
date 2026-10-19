@@ -20,9 +20,23 @@ To make another organization, open the account menu and click **Switch organizat
 organization**. Name it, change its URL if you like, and click **Create**. You land in the new
 organization, and you own it. Switch between your organizations under **Switch organization**.
 
+From the CLI, run `ployz org new` with a name:
+
+```sh
+ployz org new "Acme Corp"
+ployz org new "Acme Corp" --slug acme
+```
+
+The slug comes from `--slug`, or from the name when you leave it out. If another organization
+already has that slug, Ployz adds a short suffix, and the command prints the slug it picked. The
+CLI then acts in the new organization. Your browser and your other signed-in CLIs stay where they
+were. An organization token can't make an organization, so sign in with `ployz login` first.
+
 In the sidebar, click **Organization** for its settings:
 
-- **General**: your organization's **Domain**, which your services' free addresses live under.
+- **General**: your organization's **Display name**. Owners and admins can change it: type a new
+  one and press Enter or click the check. Its URL stays the same. Below it, your organization's
+  **Domain**, which your services' free addresses live under.
   It appears with your first deploy. Below it, **Allow support access**, and **Forget all
   servers** for when your servers were deleted.
 - **Members**: who's in the organization, their roles, and, for owners and admins, pending
@@ -93,22 +107,25 @@ else you can, including a value it can't read, but it can't delete the organizat
 A coding agent working through the CLI can save or deploy a change that removes a running
 service, deletes a volume and its data, detaches a volume from a service, or removes a domain. It
 can also drain or remove a server, or clean up what a deleted environment left on your servers.
-Ployz refuses that command with `approval_required`, naming what it would remove and the approval
-it opened for you. Every organization works this way, and no setting turns it off.
+It can remove a project, an environment or the whole organization, forget every server, or turn
+an environment's protection off. Ployz refuses that command with `approval_required`, naming what
+it would remove and the approval it opened for you. Every organization works this way, and no
+setting turns it off.
 
 How you answer depends on where the command runs:
 
 - In a terminal, it lists what it would remove and asks you to type the environment's name. A
-  server command asks for the server's name, or for `server clean` the name you passed it. Type
-  it and the command carries on. Anything else, or Ctrl-C, leaves the approval pending and
-  changes nothing.
+  server command asks for the server's name, or for `server clean` the name you passed it.
+  `ployz org rm`, and `ployz server forget` with no server named, ask for the organization's
+  slug. Type it and the command carries on. Anything else, or Ctrl-C, leaves the approval
+  pending and changes nothing.
 - Without a terminal, such as in a script, it prints the same list and waits until someone
   approves or denies it in Ployz Cloud. It then carries on, or fails naming what was denied and
   the reason given. Ctrl-C stops waiting and leaves the approval pending.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
-- In an agent that uses `ployz mcp`, the agent's app asks you. An app that can't ask waits
-  until someone approves or denies it in Ployz Cloud. See
+- In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
+  call fails with a link, as for a connected agent below. See
   [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).
 - In the [Ployz agent](agent-sidebar.md) in the dashboard, you approve or deny right in its
   panel, and the agent waits for you.
@@ -122,6 +139,9 @@ How you answer depends on where the command runs:
   [connected to Ployz Cloud](connect-an-agent.md). An agent's save still asks only when it removes
   something, and one approval covers one deploy or redeploy. Redeploying from the CLI or the
   dashboard never asks.
+- `ployz project rm`, `ployz env rm` and `ployz env shutdown` ask when they would take something
+  off the servers. `ployz org rm`, `ployz server forget` with no server named and
+  `ployz env protect --off` always ask.
 - Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
   would stop a service or delete volume data. `ployz server upgrade` never asks.
@@ -149,7 +169,7 @@ Ployz Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org appr
 refuses with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog,
 in the sidebar, or with `ployz org approval approve`. The dialog and the command answer with this
 computer's `ployz` login, so it must be signed in to the agent's Ployz Cloud and acting in the
-organization that owns the request. Otherwise they refuse: run `ployz org use ORG` to switch,
+organization that owns the request. Otherwise they refuse: run `ployz org use ORGANIZATION` to switch,
 then answer again. If you run the same change yourself with `ployz`, typing the name in your terminal
 approves it. Anyone in the organization can deny any request, from the dashboard or a terminal.
 
@@ -198,7 +218,7 @@ If a server is offline, the organization stays, disabled, until that server is b
 
 With no organization left, the dashboard offers **Create an organization**.
 
-From the CLI, `ployz org rm SLUG` does the same. If this device was signed in to that
+From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,
 then `ployz login`.
 

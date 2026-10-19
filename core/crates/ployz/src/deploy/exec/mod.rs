@@ -472,8 +472,18 @@ where
     Fut: Future<Output = Result<T, RpcError>>,
 {
     let deadline = Instant::now() + RESTART_WAIT;
+    // A Machine that answered on an earlier attempt was not silent throughout: its
+    // answer stands in for a later silence, as `call_retried` keeps it.
+    let mut answer: Option<RpcError> = None;
     loop {
-        match op().await {
+        let outcome = op().await.map_err(|error| {
+            if error.target_unanswered() {
+                return answer.clone().unwrap_or(error);
+            }
+            answer = Some(error.clone());
+            error
+        });
+        match outcome {
             Ok(value) => return Ok(value),
             Err(error)
                 if error.code.retry() != Retry::Never
@@ -1940,6 +1950,7 @@ async fn run_new<C: MachineOperations>(
     progress.set_running(index, OperationPhase::CreatingContainer);
     let want = ContainerWant::Running {
         container: RunTarget::New(NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
             slot: slot.clone(),
             resolved_spec: spec.clone(),
             deployment_id: deploy.cloned(),

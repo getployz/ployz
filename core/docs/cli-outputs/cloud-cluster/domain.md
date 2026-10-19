@@ -147,7 +147,7 @@ $ ployz domain set web shopweb
 
 stdout:
 ```
-Staged generated domain shopweb.ada.ployz.test on web in shop/production (revision 39).
+Staged generated domain shopweb.ada.ployz.test on web in shop/production.
 ```
 
 ### domain ls with a staged change
@@ -174,7 +174,7 @@ stdout:
 ```
 web (update)
   web.managedHostnames: [{"prefix":"web","targetPort":80}] -> [{"prefix":"shopweb","targetPort":80}]
-next: ployz deploy --expect-version 39:27:0.54
+next: ployz deploy
 ```
 
 ### deploy
@@ -275,7 +275,7 @@ $ ployz domain add api
 
 stdout:
 ```
-Staged domain api.ada.ployz.test on api in shop/production (revision 41).
+Staged domain api.ada.ployz.test on api in shop/production.
 ```
 
 ### deploy
@@ -323,7 +323,7 @@ $ ployz domain rm api.ada.ployz.test
 
 stdout:
 ```
-Staged removal of domain api.ada.ployz.test on api in shop/production (revision 42).
+Staged removal of domain api.ada.ployz.test on api in shop/production.
 ```
 
 ### deploy
@@ -417,7 +417,7 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production (revision 44).
+Discarded every staged change in shop/production.
 ```
 
 ## Remove a custom domain, then discard
@@ -431,7 +431,7 @@ $ ployz domain rm acme.com
 
 stdout:
 ```
-Staged removal of domain acme.com on web in shop/production (revision 45).
+Staged removal of domain acme.com on web in shop/production.
 ```
 
 ### domain ls with a staged removal
@@ -455,7 +455,7 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production (revision 46).
+Discarded every staged change in shop/production.
 ```
 
 ### domain add a custom domain that exists
@@ -467,6 +467,6 @@ $ ployz domain add web acme.com
 
 stdout:
 ```
-Staged domain acme.com on web in shop/production (revision 46).
+Staged domain acme.com on web in shop/production.
 ```
 

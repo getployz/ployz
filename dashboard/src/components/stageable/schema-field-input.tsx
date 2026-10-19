@@ -45,6 +45,8 @@ type SchemaFieldInputProps = {
   type?: React.ComponentProps<"input">["type"];
   multiline?: boolean;
   rows?: number;
+  /** When a draft stages: as focus leaves (the default), or only on Enter or its check. */
+  commit?: "blur" | "check";
   onCommit: (value: string) => PersistableTransaction;
 };
 
@@ -58,6 +60,7 @@ export function SchemaFieldInput({
   disabled,
   placeholder,
   type,
+  commit,
   multiline = false,
   rows,
   onCommit,
@@ -94,6 +97,7 @@ export function SchemaFieldInput({
           <ConfirmableInput
             aria-label={label}
             aria-invalid={!!error}
+            commit={commit}
             disabled={disabled}
             error={error}
             isChanged={isChanged}

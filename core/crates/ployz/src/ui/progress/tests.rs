@@ -98,7 +98,7 @@ fn completion_at_deadline_wins_over_stale_heartbeat() {
         vec![(30_000, Message::Finish(done, Disposition::Settled))],
     );
     assert!(!text.contains("still waiting:"), "{text}");
-    assert!(text.contains("1 updated · across 1 server"), "{text}");
+    assert!(text.contains("1 deployed · across 1 server"), "{text}");
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn replacement_run_resets_row_deduplication() {
         vec![(1, Message::Update(replacement)), (2, Message::Abandon)],
     );
     assert_eq!(text.matches("alpha: pending").count(), 2);
-    assert!(!text.contains("updated"));
+    assert!(!text.contains("deployed"));
 }
 
 #[test]
@@ -275,10 +275,42 @@ fn interactive_finish_retains_full_frame_once_and_preserves_earlier_output() {
         "{visible}"
     );
     assert!(
-        visible.ends_with("1 updated · across 1 server"),
+        visible.ends_with("1 deployed · across 1 server"),
         "{visible}"
     );
     assert!(!visible.contains("starting"), "{visible}");
+}
+
+fn unsized_pty() -> (usize, usize) {
+    window(Ok((0, 0)))
+}
+
+#[test]
+fn an_unsized_terminal_still_names_each_row() {
+    let terminal = InMemoryTerm::new(20, 90);
+    let initial = frame(State::Running(RowPhase::Starting));
+    let mut failed = initial.clone();
+    failed.rows.first_mut().unwrap().state = State::Failed;
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+        unsized_pty,
+    );
+    drive(
+        Script {
+            now: Duration::ZERO,
+            events: VecDeque::from([(
+                Duration::from_millis(250),
+                Message::Finish(failed, Disposition::Settled),
+            )]),
+        },
+        initial,
+        backend,
+        &mut TerminalWriter(terminal.clone()),
+        false,
+    );
+    let visible = terminal.contents();
+    assert!(visible.contains("✘ web on alpha  failed"), "{visible}");
 }
 
 #[test]
@@ -421,7 +453,7 @@ fn producer_does_not_wait_for_slow_sink_and_finish_joins_after_all_transitions()
     progress.finish(next, Disposition::Settled);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert_eq!(text.matches("alpha:").count(), 6, "{text}");
-    assert!(text.ends_with("1 updated · across 1 server\n"));
+    assert!(text.ends_with("1 deployed · across 1 server\n"));
 }
 
 #[test]
@@ -470,7 +502,7 @@ fn progress_drop_joins_its_worker_without_a_summary() {
     drop(progress);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert!(text.ends_with("alpha: starting\n"), "{text}");
-    assert!(!text.contains("updated"));
+    assert!(!text.contains("deployed"));
 }
 
 #[test]
@@ -593,6 +625,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         cause: Vec::new(),
         step: None,
         log: None,
+        unanswered: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -626,6 +659,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         cause: Vec::new(),
         step: None,
         log: None,
+        unanswered: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {

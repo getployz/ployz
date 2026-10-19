@@ -49,7 +49,7 @@ $ ployz service add web --image nginx:1.27
 
 stdout:
 ```
-Staged new Service web in shop/production (revision 2).
+Staged new Service web in shop/production.
 ```
 
 stderr:
@@ -103,7 +103,7 @@ $ ployz service add worker
 
 stdout:
 ```
-Staged new Service worker in shop/production (revision 4).
+Staged new Service worker in shop/production.
 ```
 
 stderr:
@@ -248,7 +248,7 @@ $ ployz service rename worker jobs
 
 stdout:
 ```
-Staged rename of Service jobs in shop/production (revision 5).
+Staged rename of Service jobs in shop/production.
 ```
 
 stderr:
@@ -306,7 +306,7 @@ $ ployz service rm worker
 
 stdout:
 ```
-Staged removal of Service worker in shop/production (revision 7).
+Staged removal of Service worker in shop/production.
 ```
 
 stderr:
