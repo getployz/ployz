@@ -18,9 +18,13 @@ export function storeEnvironmentTree(environments: readonly EnvironmentListing[]
   return tree;
 }
 
-/** A removal from the Servers that hasn't ended. */
-export const removing = (environment: EnvironmentListing) =>
-  environment.removal !== null && environment.removal.in_flight;
+/** The Deployment that removes an Environment from the Servers, running or ended; null while none started. */
+export const removalDeployment = ({ removal }: Pick<EnvironmentListing, "removal">) =>
+  removal?.kind === "deployment" ? removal : null;
+
+/** A removal from the Servers that hasn't ended: waiting for the sweep to start it, or running. */
+export const removing = ({ removal }: Pick<EnvironmentListing, "removal">) =>
+  removal !== null && (removal.kind === "pending" || removal.in_flight);
 
 /** What an Environment has, in a few words, wherever the tree is listed: "default", "merged", "deleting". */
 export function storeEnvironmentNotes(environment: EnvironmentListing) {
@@ -28,7 +32,8 @@ export function storeEnvironmentNotes(environment: EnvironmentListing) {
   return [
     environment.default && "default",
     environment.merged && "merged",
-    removal && (removing(environment) ? "deleting" : removal.status === "applied" ? "off your servers" : `deletion ${removal.status}`),
+    removal && (removal.kind === "pending" ? "deletion pending" : removal.in_flight ? "deleting"
+      : removal.status === "applied" ? "off your servers" : `deletion ${removal.status}`),
   ].filter((note): note is string => typeof note === "string");
 }
 
