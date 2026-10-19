@@ -3,7 +3,7 @@
 //! stale version; neither rebases.
 
 use ployz_core::RpcError;
-use ployz_core::config::canonicalize_environment_intent;
+use ployz_core::config::{EnvironmentNodeType, canonicalize_environment_intent};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -65,7 +65,7 @@ pub struct Discard {
     /// abandons a draft reversal; Review discards the server-derived visible rows.
     /// `None` returns everything to Head, and a path to its row's baseline: Saved
     /// when only a draft reversal lists it, else Head.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub target: Option<DiscardTarget>,
     /// `SERVICE`, `volumes.VOLUME`, `configs.CONFIG`, `SERVICE.SETTING`,
@@ -96,10 +96,32 @@ pub struct Discarded {
     pub saved: Option<Revision>,
     /// False when nothing it names was staged.
     pub changed: bool,
-    /// The draft reversals left after it, which a discard naming each node brings back.
+    /// The draft reversals left after it; [`Self::way_back`] says how each comes back.
     #[serde(default)]
     #[ts(as = "Option<Vec<super::NodeChange>>", optional)]
     pub reversed: Vec<super::NodeChange>,
+}
+
+impl Discarded {
+    /// The path whose discard brings back `change`, one of [`Self::reversed`]. `None`
+    /// when another of them has its type and name: one path can bring back neither
+    /// without the other, so only a discard to Saved brings it back.
+    #[must_use]
+    pub fn way_back(&self, change: &super::NodeChange) -> Option<SettingPath> {
+        if self.reversed.iter().any(|other| {
+            other.node.node_type == change.node.node_type
+                && other.name == change.name
+                && other.node != change.node
+        }) {
+            return None;
+        }
+        let path = match change.node.node_type {
+            EnvironmentNodeType::Service => change.name.clone(),
+            EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
+            EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
+        };
+        SettingPath::parse(&path).ok()
+    }
 }
 
 pub(crate) fn publish(

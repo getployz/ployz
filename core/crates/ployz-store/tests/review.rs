@@ -764,6 +764,177 @@ fn discard_of_a_never_deployed_save_lists_it_and_its_path_brings_it_back() {
     assert_eq!(view.reversals().len(), 1);
 }
 
+fn discard_all(
+    store: &ConfigStore,
+    who: &Actor,
+    target: Option<ployz_store::DiscardTarget>,
+) -> Discarded {
+    store
+        .write(
+            who,
+            &Discard {
+                target,
+                ..Discard::default()
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_plain_discard_sends_no_target_so_an_older_store_still_reads_it() {
+    let wire = serde_json::to_value(Discard::default()).unwrap();
+    assert_eq!(wire.get("target"), None, "{wire}");
+}
+
+#[test]
+fn a_replaced_service_of_the_same_name_comes_back_only_by_returning_to_saved() {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    remove_service(&store, &who, "web");
+    add_service(&store, &who, 5, "web");
+    publish(&store, &who, None).unwrap();
+
+    let discarded = discard_all(&store, &who, None);
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("nginx:1")));
+    let webs: Vec<_> = discarded
+        .reversed
+        .iter()
+        .filter(|change| change.name == "web")
+        .collect();
+    assert_eq!(webs.len(), 2, "{:?}", discarded.reversed);
+    for web in webs {
+        assert_eq!(
+            discarded.way_back(web),
+            None,
+            "`discard web` picks one of two"
+        );
+    }
+
+    assert!(discard_all(&store, &who, Some(ployz_store::DiscardTarget::Saved)).changed);
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("postgres:16")));
+    assert!(diff(&store, &who).reversals().is_empty());
+}
+
+#[test]
+fn a_config_comes_back_by_its_id_and_a_replaced_one_only_by_returning_to_saved() {
+    let (store, who) = shop();
+    let sentry = ployz_core::ConfigName::parse("sentry").unwrap();
+    let create = |n: u8, name: &ployz_core::ConfigName| {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateConfig {
+                    id: ployz_store::ConfigId::parse(format!(
+                        "00000000-0000-4000-8000-0000000000{n:02}"
+                    ))
+                    .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: name.clone(),
+                    mounts: Vec::new(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &ployz_store::PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: name.clone(),
+                    file: ployz_core::ConfigFileName::parse("sentry.yml").unwrap(),
+                    content: format!("version: {n}"),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    };
+    let working_config = || {
+        let view = store
+            .read(&who, &ployz_store::ConfigsQuery::default())
+            .unwrap();
+        let mut ids: Vec<_> = view
+            .configs
+            .into_iter()
+            .filter(|listing| listing.change != Some(ReviewLifecycleKind::Delete))
+            .map(|listing| listing.config.id.to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    create(10, &sentry);
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: sentry.clone(),
+            },
+        )
+        .unwrap();
+    create(11, &sentry);
+    create(12, &ployz_core::ConfigName::parse("errors").unwrap());
+    publish(&store, &who, None).unwrap();
+    let replacement = "00000000-0000-4000-8000-000000000011";
+
+    let errors = "00000000-0000-4000-8000-000000000012";
+    let discarded = discard_all(&store, &who, None);
+    assert_eq!(working_config(), ["00000000-0000-4000-8000-000000000010"]);
+    let back = discarded
+        .reversed
+        .iter()
+        .find(|change| change.node.id == errors)
+        .and_then(|change| discarded.way_back(change))
+        .expect("errors has a way back");
+    assert_eq!(back.to_string(), format!("configs.@{errors}"));
+    let sentries: Vec<_> = discarded
+        .reversed
+        .iter()
+        .filter(|change| change.name == "sentry")
+        .collect();
+    assert_eq!(sentries.len(), 2, "{:?}", discarded.reversed);
+    for sentry in sentries {
+        assert_eq!(
+            discarded.way_back(sentry),
+            None,
+            "one path brings back neither"
+        );
+    }
+    let alone = store
+        .write(
+            &who,
+            &Discard {
+                path: Some(SettingPath::parse(&format!("configs.@{replacement}")).unwrap()),
+                ..Discard::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        alone.code,
+        RpcErrorCode::Conflict,
+        "two Configs named sentry"
+    );
+
+    let restored = store
+        .write(
+            &who,
+            &Discard {
+                path: Some(back),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert!(restored.changed);
+    assert_eq!(
+        working_config(),
+        ["00000000-0000-4000-8000-000000000010", errors]
+    );
+
+    assert!(discard_all(&store, &who, Some(ployz_store::DiscardTarget::Saved)).changed);
+    assert_eq!(working_config(), [replacement, errors]);
+}
+
 #[test]
 fn discard_inverse_returns_to_saved_without_history_and_save_records_reversal() {
     let (store, who) = shop();

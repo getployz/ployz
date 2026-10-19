@@ -230,23 +230,39 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
 fn comes_back(matches: &ArgMatches, discarded: &Discarded, reversed: &[ployz_store::NodeChange]) {
     let saved = discarded.saved.map_or(0, |saved| saved.0);
     for change in reversed {
-        let path = match change.node.node_type {
-            EnvironmentNodeType::Service => change.name.clone(),
-            EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
-            EnvironmentNodeType::Config => format!("configs.{}", change.name),
-        };
-        let command = next(matches, &["discard", &path]);
         let name = &change.name;
-        match change.lifecycle {
-            ReviewLifecycleKind::Delete => crate::ui::stream(format_args!(
-                "{name} is in saved #{saved} but was never deployed, so discarding removes it. Bring it back: {command}"
-            )),
-            ReviewLifecycleKind::Create => crate::ui::stream(format_args!(
-                "{name} is removed in saved #{saved} but still deployed, so discarding keeps it. Remove it again: {command}"
-            )),
-            ReviewLifecycleKind::Update => crate::ui::stream(format_args!(
-                "{name} has changes in saved #{saved} that were never deployed, so discarding undoes them. Bring them back: {command}"
-            )),
+        let (what, back) = match change.lifecycle {
+            ReviewLifecycleKind::Delete => (
+                format!("is in saved #{saved} but was never deployed, so discarding removes it"),
+                "Bring it back",
+            ),
+            ReviewLifecycleKind::Create => (
+                format!("is removed in saved #{saved} but still deployed, so discarding keeps it"),
+                "Remove it again",
+            ),
+            ReviewLifecycleKind::Update => (
+                format!(
+                    "has changes in saved #{saved} that were never deployed, so discarding undoes them"
+                ),
+                "Bring them back",
+            ),
+        };
+        match discarded.way_back(change) {
+            Some(path) => {
+                let command = next(matches, &["discard", &path.to_string()]);
+                crate::ui::stream(format_args!("{name} {what}. {back}: {command}"));
+            }
+            None => {
+                let command = next(matches, &["discard", "--target", "saved"]);
+                crate::ui::stream(format_args!(
+                    "{name} {what}. Another {kind} is named {name} too, so return everything to saved #{saved}: {command}",
+                    kind = match change.node.node_type {
+                        EnvironmentNodeType::Service => "Service",
+                        EnvironmentNodeType::Volume => "Volume",
+                        EnvironmentNodeType::Config => "Config",
+                    }
+                ));
+            }
         }
     }
 }
