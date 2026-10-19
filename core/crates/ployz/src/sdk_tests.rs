@@ -51,6 +51,24 @@ fn build_failures_show_readable_messages_and_keep_structured_evidence() {
     }
 }
 #[test]
+fn a_failed_build_says_build_failed_once_before_its_diagnosis() {
+    let error = preparation_error(
+        crate::sdk::prepare::PreparationError::Build(crate::build::Error::RemoteBuild {
+            outcome: Box::new(crate::build::RemoteBuildFailure::Failed {
+                stage: ployz_build::Stage::Building,
+                message: r#"npm run build: process "npm run build" did not complete successfully: exit code: 3"#.into(),
+                work: ployz_build::WorkEvidence::default(),
+            }),
+        }),
+        false,
+    );
+    assert_eq!(
+        error.message,
+        r#"The Build failed, so no Service, hook, or volume change was attempted: npm run build: process "npm run build" did not complete successfully: exit code: 3"#
+    );
+}
+
+#[test]
 fn selection_failure_is_known_and_does_not_expose_provider_details() {
     let error = preparation_error(
         crate::sdk::prepare::PreparationError::Selection(ConnectError::Remote(RpcError {
