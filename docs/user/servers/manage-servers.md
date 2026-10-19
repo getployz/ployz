@@ -379,7 +379,7 @@ When a server's release can't serve a feature, the feature names that server:
 - **Drain** in Ployz Cloud names the servers to upgrade before it changes anything:
   "Drains need a newer Ployz on web-1".
 - **Deploy** of a service with a domain fails at once, before it changes anything, while any
-  server runs Ployz 0.2.4, 0.3.0-beta.1 or 0.3.0-beta.2. The message names the server to upgrade:
+  server runs Ployz 0.2.4 or 0.3.0-beta.1. The message names the server to upgrade:
   "Deploys need a newer Ployz on web-2". When newer servers don't route the new version within 5
   minutes, the Deploy fails and names those servers.
 - **Upgrade** off Ployz 0.2.4 that stops partway while the old Ployz keeps running looks like it's

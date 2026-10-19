@@ -1236,8 +1236,7 @@ pub struct ServingPointerRead {
 pub struct IngressMachine {
     pub id: MachineId,
     pub name: MachineName,
-    /// Its record lacks `ployz.serving.read.v1`, so it runs a Ployz that
-    /// never acks.
+    /// Its record names a Ployz older than 0.3.0-beta.2, which never acks.
     pub predates_acks: bool,
 }
 

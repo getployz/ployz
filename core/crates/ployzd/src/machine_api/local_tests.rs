@@ -3016,14 +3016,23 @@ mod serving_pointer {
     }
 
     #[tokio::test]
-    async fn read_names_the_machines_that_have_not_acked_and_which_never_will() {
+    async fn read_names_unacked_machines_and_flags_only_releases_older_than_acks() {
         use crate::corrosion::{IngressRouteAck, IngressRouteChange};
 
         let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
         std::fs::create_dir_all(&dir).unwrap();
         let local = enrolled(&dir);
         let mut current = local.record().machine().unwrap().clone();
-        current.runtime.capabilities = ployz_core::served_capabilities();
+        current.runtime.daemon_version = env!("CARGO_PKG_VERSION").to_owned();
+        let registering: Machine = serde_json::from_value(json!({
+            "id": "c".repeat(32),
+            "name": "machine-3",
+            "subnet": "10.210.3.0/24",
+            "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+            "public_key": crate::network::WireGuardPrivateKey::from_bytes([3; 32]).public_key(),
+            "advertised_endpoints": ["192.0.2.3:51820"],
+        }))
+        .unwrap();
         let mut lagging: Machine = serde_json::from_value(json!({
             "id": "e".repeat(32),
             "name": "machine-4",
@@ -3033,8 +3042,8 @@ mod serving_pointer {
             "advertised_endpoints": ["192.0.2.4:51820"],
         }))
         .unwrap();
-        lagging.runtime.capabilities = ployz_core::served_capabilities();
-        let old: Machine = serde_json::from_value(json!({
+        lagging.runtime.daemon_version = "0.3.0-beta.2".to_owned();
+        let mut old: Machine = serde_json::from_value(json!({
             "id": "f".repeat(32),
             "name": "machine-5",
             "subnet": "10.210.5.0/24",
@@ -3043,11 +3052,17 @@ mod serving_pointer {
             "advertised_endpoints": ["192.0.2.5:51820"],
         }))
         .unwrap();
+        old.runtime.daemon_version = "0.2.4".to_owned();
         let (service, task) = serve(
             &dir,
             local,
             corrosion_db(),
-            &[current.clone(), lagging.clone(), old.clone()],
+            &[
+                current.clone(),
+                registering.clone(),
+                lagging.clone(),
+                old.clone(),
+            ],
             Vec::new(),
         )
         .await;
@@ -3076,6 +3091,11 @@ mod serving_pointer {
         assert_eq!(
             read.unrouted,
             [
+                ployz_core::IngressMachine {
+                    id: registering.id,
+                    name: registering.name,
+                    predates_acks: false,
+                },
                 ployz_core::IngressMachine {
                     id: lagging.id,
                     name: lagging.name,
