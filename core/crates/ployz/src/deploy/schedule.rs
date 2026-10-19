@@ -91,9 +91,12 @@ pub(crate) enum Event {
     PublishFailed(usize),
     PublishUnconfirmed(usize),
     /// `machine` routes `service` at this Deploy's pointer.
-    #[expect(
-        dead_code,
-        reason = "the executor now reports a Service Routed only after every live proxy lists it; R4 drops the per-Machine gate"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the executor now reports a Service Routed only after every live proxy lists it; R4 drops the per-Machine gate"
+        )
     )]
     Acked {
         service: ServiceName,
@@ -401,10 +404,9 @@ impl Schedule {
                 actions.push(Action::Publish(group));
             }
         }
-        // An ack admits one round. A same-Deploy amendment can change what a
-        // row names, so a later round reads the acks again.
+        // An ack admits one round. Routed holds for the run: a Service is
+        // Routed once every live proxy lists its new copies.
         self.acked.clear();
-        self.routed.clear();
         actions
     }
 
@@ -478,7 +480,8 @@ impl Schedule {
             self.published.contains(*dependency)
                 && match kind {
                     TaskKind::Start | TaskKind::Hook => {
-                        !self.acked.contains(&((*dependency).clone(), *machine))
+                        !self.routed.contains(*dependency)
+                            && !self.acked.contains(&((*dependency).clone(), *machine))
                     }
                     TaskKind::Unroute => !self.routed.contains(*dependency),
                     TaskKind::Other => false,
