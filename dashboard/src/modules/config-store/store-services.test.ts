@@ -38,6 +38,18 @@ describe("uniqueName", () => {
     expect(first).toBe(`${"d".repeat(58)}-1413`);
     expect(uniqueName(stem, [first], { tail: "-1413" })).toBe(`${"d".repeat(56)}-1413-2`);
   });
+
+  it("keeps one stem character when the tail fills the rest of the label", () => {
+    const tail = `-${"x".repeat(61)}`;
+    expect(uniqueName("d".repeat(63), [], { tail })).toBe(`d${tail}`);
+  });
+
+  it("throws on a tail that leaves no stem or ends in a hyphen", () => {
+    expect(() => uniqueName("web", [], { tail: `-${"x".repeat(62)}` })).toThrow(/no room for a stem/u);
+    const tail = `-${"x".repeat(61)}`;
+    expect(() => uniqueName("web", [`w${tail}`], { tail })).toThrow(/no room for a stem/u);
+    expect(() => uniqueName("web", [], { tail: "-1413-" })).toThrow(/ends in "-"/u);
+  });
 });
 
 describe("catalog fields", () => {
