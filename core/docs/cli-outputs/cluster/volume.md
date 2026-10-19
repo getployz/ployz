@@ -222,12 +222,7 @@ $ ployz volume set data --shared-writes
 
 stdout:
 ```
-Staged shared writes on for Volume data in shop/production.
-```
-
-stderr:
-```
-next: ployz deploy --env production --project shop
+Shared writes on for Volume data in shop/production; this applies now.
 ```
 
 ### volume set --docker (managed -> docker)
