@@ -525,6 +525,9 @@ fn def<T: Tool>() -> ToolDef {
 }
 
 fn run<T: Tool>(cx: &mut Cx<'_>, input: &Value) -> Result<Value, Stop> {
+    if let Some((field, reason)) = schema::out_of_range(&schema::input::<T>(), input) {
+        return Err(Refusal::invalid(format!("This input does not fit: {reason}"), &field).into());
+    }
     let input = decode::<T>(input).map_err(|error| {
         let field = error.path().unwrap_or_default();
         Refusal::invalid(
