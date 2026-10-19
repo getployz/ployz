@@ -798,6 +798,47 @@ async fn builder_selection_reports_missing_capability() {
 }
 
 #[tokio::test]
+async fn failed_builder_selection_records_why_each_machine_was_rejected() {
+    let (root, mut service, _builds) = fixture();
+    service.builds = None;
+    let mut disabled = machine('b', "disabled");
+    disabled.machine.accepts_builds = false;
+    let (mut client, server) =
+        connected(service.with_machines(vec![machine('a', "builder"), disabled])).await;
+    let visible = client.machines().await.unwrap();
+    let selection = crate::sdk::prepare::select_build_machine(
+        &mut client,
+        &build_targets(&["linux/amd64"]),
+        &visible,
+        Default::default(),
+        &Default::default(),
+    )
+    .await
+    .err()
+    .unwrap();
+    let error = crate::sdk::preparation_error(
+        crate::sdk::prepare::PreparationError::Selection(selection),
+        false,
+    );
+    let recorded = ployz_store::Failure::from(&error);
+    assert_eq!(
+        recorded.reason,
+        "No eligible Build Machine was selected; no build was started."
+    );
+    let cause = recorded.cause.last().expect("a cause names the rejections");
+    for reason in [
+        "Machine builder",
+        "does not support remote Builds",
+        "Machine disabled",
+        "does not accept Builds",
+    ] {
+        assert!(cause.contains(reason), "{cause}");
+    }
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn builder_selection_requires_one_worker_for_every_command_target_before_upload() {
     let (root, service, builds) = fixture();
     let amd = machine('a', "amd");
