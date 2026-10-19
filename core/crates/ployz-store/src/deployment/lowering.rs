@@ -545,6 +545,8 @@ pub(super) fn lower(
         selected: Some(selected.clone()),
         configs: configs.clone(),
         removals: removals.clone(),
+        cluster_domain: cluster_domain
+            .and_then(|cluster| ployz_core::IngressHost::parse(cluster.as_str()).ok()),
     };
     let with = |built_later: bool| {
         snapshots
