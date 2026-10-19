@@ -409,19 +409,17 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
         ..Diagnostic::default()
     };
     if let FailedOperation::Replacement { compensation, .. } = failed {
-        let stop = |attempt: &StopAttempt<ExecutionError>| match attempt {
-            StopAttempt::Stopped => Detail {
-                message: "Stopped the new Container.".into(),
-                causes: Vec::new(),
-            },
-            StopAttempt::Failed { error } => Detail {
-                message: "Could not stop the new Container.".into(),
-                causes: failure_causes(error),
+        let causes = |error: &ExecutionError| failure_causes(error);
+        let stop = |attempt: &StopAttempt<ExecutionError>| Detail {
+            message: attempt.line().into(),
+            causes: match attempt {
+                StopAttempt::Stopped => Vec::new(),
+                StopAttempt::Failed { error } => causes(error),
             },
         };
         match compensation {
             ReplacementCompensation::OldUntouched { stop_new_container } => {
-                diagnostic.compensation.push(stop(stop_new_container))
+                diagnostic.compensation.push(stop(stop_new_container));
             }
             ReplacementCompensation::OldStopped {
                 stop_new_container,
@@ -430,24 +428,13 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
                 diagnostic
                     .compensation
                     .extend(stop_new_container.iter().map(stop));
-                diagnostic.compensation.push(match restore_old_container {
-                    RestoreAttempt::Restored => Detail {
-                        message: "Restored the old Container; it serves again.".into(),
-                        causes: Vec::new(),
-                    },
-                    RestoreAttempt::LeftHeld => Detail {
-                        message: "The old Container is left Held by another Deploy.".into(),
-                        causes: Vec::new(),
-                    },
-                    RestoreAttempt::NotServing => Detail {
-                        message:
-                            "The old Container was not serving before this Deploy; nothing to restore."
-                                .into(),
-                        causes: Vec::new(),
-                    },
-                    RestoreAttempt::Failed { error } => Detail {
-                        message: "Could not restore the old Container.".into(),
-                        causes: failure_causes(error),
+                diagnostic.compensation.push(Detail {
+                    message: restore_old_container.line().into(),
+                    causes: match restore_old_container {
+                        RestoreAttempt::Failed { error } => causes(error),
+                        RestoreAttempt::Restored
+                        | RestoreAttempt::LeftHeld
+                        | RestoreAttempt::NotServing => Vec::new(),
                     },
                 });
             }

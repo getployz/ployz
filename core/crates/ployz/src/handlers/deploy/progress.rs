@@ -335,6 +335,15 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         ),
     };
     let mut diagnostic = Diagnostic::default();
+    if let Some(ployz_store::Outcome::Executed { compensation, .. }) = &view.deployment.outcome {
+        diagnostic.compensation = compensation
+            .iter()
+            .map(|line| Detail {
+                message: line.clone(),
+                causes: Vec::new(),
+            })
+            .collect();
+    }
     let mut hints = Vec::new();
     let mut primary_seen = false;
     for node in &view.nodes {
@@ -509,6 +518,31 @@ mod tests {
         assert_eq!(
             failure.json().pointer("/details/progress/logs/0/service"),
             Some(&json!("shop-production/private-web"))
+        );
+    }
+
+    #[test]
+    fn a_failed_deploy_prints_what_became_of_the_old_container() {
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(serde_json::json!({
+                "type": "executed",
+                "summary": {},
+                "reason": "web: CreateContainer failed",
+                "cause": ["pull failed", "denied"],
+                "compensation": [
+                    "Stopped the new Container.",
+                    "Restored the old Container; it serves again.",
+                ],
+            }))
+            .unwrap(),
+        );
+        let text = crate::ui::plain(&failure(&view, command));
+        assert!(
+            text.contains(
+                "  Stopped the new Container.\n  Restored the old Container; it serves again."
+            ),
+            "{text}"
         );
     }
 
