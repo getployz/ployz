@@ -46,16 +46,16 @@ pub(crate) fn branch_plan(
             .collect()
     };
     let owned = own(&planned);
-    let only = own(&plan(&BranchPicks::Preset {
-        preset: BranchPreset::Only,
-    })?);
-    let uses = own(&plan(&BranchPicks::Preset {
-        preset: BranchPreset::Uses,
-    })?);
-    let presets = match uses == only {
-        true => vec![BranchPreset::Only, BranchPreset::All],
-        false => vec![BranchPreset::Only, BranchPreset::Uses, BranchPreset::All],
-    };
+    // Each preset copies at least what the one before it does; one copying no more is no choice.
+    let mut presets = Vec::new();
+    let mut copied = None;
+    for preset in [BranchPreset::Only, BranchPreset::Uses, BranchPreset::All] {
+        let copies = Some(own(&plan(&BranchPicks::Preset { preset })?));
+        if copies != copied {
+            presets.push(preset);
+            copied = copies;
+        }
+    }
     let role = |role: &BranchNodeRole| match role {
         BranchNodeRole::Own { .. } => PlannedRole::Own,
         BranchNodeRole::Live => PlannedRole::Live,

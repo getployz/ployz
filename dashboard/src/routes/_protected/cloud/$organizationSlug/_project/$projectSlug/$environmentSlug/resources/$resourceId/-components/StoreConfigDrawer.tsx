@@ -208,6 +208,12 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   );
 }
 
+/** A file's path in its Config: 1 to 4 segments, none empty, `.` or `..`. The Store checks the rest. */
+const isConfigFileName = (name: string) => {
+  const segments = name.split("/");
+  return segments.length <= 4 && segments.every((segment) => !["", ".", ".."].includes(segment) && !/\p{Cc}/u.test(segment));
+};
+
 function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf, hidden, targets, serviceNames, values, readOnly,
   broken, onDraft, onSave, onRemove, onAdd, footer }: {
   fileNames: readonly string[]; current: string | null; onSelect: (file: string) => void; item: ConfigItemView;
@@ -228,6 +234,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
     if (!adding) return;
     const name = adding.name.trim();
     const error = name === "" ? "Enter a file name."
+      : !isConfigFileName(name) ? "Use a relative path, like nginx/site.conf."
       : fileNames.includes(name) ? `${name} already exists.` : null;
     if (error) return setAdding({ ...adding, error });
     onAdd(name);

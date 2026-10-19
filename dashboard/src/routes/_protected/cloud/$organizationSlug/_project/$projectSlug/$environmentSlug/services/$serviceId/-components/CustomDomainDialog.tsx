@@ -36,12 +36,17 @@ const isHostname = (hostname: string) =>
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
 
-const customDomainFormSchema = Schema.toStandardSchemaV1(
+/** The Store keeps ASCII hostnames lowercase. */
+const storedHostname = (hostname: string) => isAscii(hostname) ? hostname.toLowerCase() : hostname;
+
+const customDomainFormSchema = (taken: ReadonlySet<string>) => Schema.toStandardSchemaV1(
   Schema.Struct({
     hostname: Schema.Trim.check(
       Schema.isNonEmpty({ message: "Enter a hostname." }),
       Schema.makeFilter<string>((hostname) => isHostname(hostname)
         ? undefined : "Enter a domain you own, like api.example.com."),
+      Schema.makeFilter<string>((hostname) => taken.has(storedHostname(hostname))
+        ? "Already on this service." : undefined),
     ),
     port: domainPortSchema,
   }).pipe(
@@ -54,8 +59,7 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
       }),
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
-          // The Store keeps hostnames lowercase; the staged row should match it.
-          hostname: isAscii(hostname) ? hostname.toLowerCase() : hostname,
+          hostname: storedHostname(hostname),
           targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({
@@ -68,17 +72,12 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
   { parseOptions: strictParseOptions }
 );
 
-const customDomainFormOptions = appFormOptions.strictSchema({
-  defaultValues: { hostname: "", port: "" },
-  errorVisibility: showErrorsAfterBlurOrSubmit,
-  validators: [validateOnChangeOrBlur(customDomainFormSchema)],
-});
-
 export function CustomDomainDialog({
   route,
   initial,
   refusal,
   hostnameFixed = false,
+  takenHostnames = [],
   defaultTargetPort,
   onClose,
   onSubmit,
@@ -90,16 +89,21 @@ export function CustomDomainDialog({
   refusal?: string;
   /** Editing changes only the port: a Store domain is addressed by its hostname. */
   hostnameFixed?: boolean;
+  /** The service's other custom domains: adding one again would change nothing. */
+  takenHostnames?: readonly string[];
   defaultTargetPort: number | null;
   onClose: () => void;
   onSubmit: (next: CustomDomain) => void;
 }) {
   const form = useAppForm({
-    ...customDomainFormOptions,
-    defaultValues: {
-      hostname: (route ?? initial)?.hostname ?? "",
-      port: (route ?? initial)?.targetPort == null ? "" : String((route ?? initial)?.targetPort),
-    },
+    ...appFormOptions.strictSchema({
+      defaultValues: {
+        hostname: (route ?? initial)?.hostname ?? "",
+        port: (route ?? initial)?.targetPort == null ? "" : String((route ?? initial)?.targetPort),
+      },
+      errorVisibility: showErrorsAfterBlurOrSubmit,
+      validators: [validateOnChangeOrBlur(customDomainFormSchema(new Set(takenHostnames)))],
+    }),
     onSubmit: ({ schemaOutputs }) => {
       onSubmit(schemaOutputs[0]);
       onClose();
