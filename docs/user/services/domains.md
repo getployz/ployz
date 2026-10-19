@@ -107,7 +107,7 @@ A live domain shows no status.
 | **Live after your next deploy** | Click **Deploy**. |
 | **Deploying**, **Setting up**, **Issuing certificate** | Nothing. It goes live on its own. |
 | **Waiting for DNS**, **DNS doesn't point here yet**, **DNS points to another server** | [Fix your DNS records](../troubleshooting/app-not-reachable.md#my-custom-domain-is-waiting-for-dns). |
-| **Port 80 is closed on …** (shown only when no server takes the traffic) | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) on that server. |
+| **Port 80 is closed on …** (shown only when no server takes the traffic) | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) in that server's firewall, for example `ufw allow 80/tcp`. |
 | **Something else answers on port 80 of …** (shown only when no server takes the traffic) | [Free port 80](../troubleshooting/app-not-reachable.md#something-else-answers-on-port-80) on that server. |
 | **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |

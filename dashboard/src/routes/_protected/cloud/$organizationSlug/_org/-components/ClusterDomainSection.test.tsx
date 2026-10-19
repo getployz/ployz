@@ -42,7 +42,7 @@ describe("ClusterDomainSection", () => {
     const { rerender } = render(<ClusterDomainSection organizationSlug="acme" domain={blocked} onCheck={onCheck} />);
 
     expect(screen.getByText("Needs attention")).toBeTruthy();
-    expect(screen.getByText("Traffic can’t reach 203.0.113.1. Make sure port 80 is open.")).toBeTruthy();
+    expect(screen.getByText("Traffic can’t reach 203.0.113.1. Open port 80 in the Server’s firewall (for example ufw allow 80/tcp).")).toBeTruthy();
     const button = () => screen.getByText("Check again").closest("button") as HTMLButtonElement;
     await act(async () => { fireEvent.click(button()); });
     expect(onCheck).toHaveBeenCalledOnce();
