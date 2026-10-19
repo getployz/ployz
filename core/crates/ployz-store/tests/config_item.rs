@@ -608,8 +608,15 @@ fn a_reference_names_a_service_that_exists() {
     let unfinished = refused(put(&store, &who, "sentry", "a.yml", "x: ${{ web.KEY"));
     assert_eq!(unfinished.code, RpcErrorCode::InvalidArgument);
 
+    let no_variable = refused(put(&store, &who, "sentry", "a.yml", "x: ${{ web.NOPE }}"));
+    assert_eq!(no_variable.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        no_variable.message.contains("NOPE"),
+        "{}",
+        no_variable.message
+    );
+
     assert!(item(&store, &who, "sentry").unwrap().contents.is_empty());
-    put(&store, &who, "sentry", "a.yml", "x: ${{ web.NOPE }}").unwrap();
     put(
         &store,
         &who,

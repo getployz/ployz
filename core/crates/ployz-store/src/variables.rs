@@ -301,6 +301,39 @@ pub(crate) fn rename(
             .map(|(service, key)| format!("{service}.{key}"))
             .collect::<Vec<_>>()
     };
+    // A Config file doesn't follow a rename, and the rename would break it.
+    let reads = |part: &ValuePart| {
+        matches!(
+            part,
+            ValuePart::Ref {
+                owner: ValuePartOwner::Service { lineage_id },
+                key: reads,
+            } if *lineage_id == lineage && reads == key.as_str()
+        )
+    };
+    let files: Vec<String> = environment
+        .working
+        .configs
+        .iter()
+        .flat_map(|config| {
+            config.files.iter().filter_map(move |(file, content)| {
+                content
+                    .content
+                    .iter()
+                    .any(reads)
+                    .then(|| format!("{}/{file}", config.name))
+            })
+        })
+        .collect();
+    if !files.is_empty() {
+        return Err(error::conflict(
+            format!(
+                "{} references {service}.{key}; change those references first",
+                files.join(", ")
+            ),
+            json!({ "files": files, "references": format!("{service}.{key}") }),
+        ));
+    }
     let referrers = referrers(environment, service, &lineage, key)?;
     if !referrers.is_empty() && !update_references {
         let summary = &environment.summary;
@@ -401,8 +434,8 @@ pub(crate) struct Shown<'a> {
 /// `name`. A removed Service's, such as `${{ <deleted redis>.KEY }}`, only where the
 /// edited value, `old`, reads that `KEY` of it: an edit keeps the references it had
 /// and adds none to a removed Service. A `<deleted NAME>` no label matches reads the
-/// one Service `old` references that was last called `NAME`, as reads showed it
-/// before another removal of that name made both show by lineage.
+/// one Service `old` reads that `KEY` of and that was last called `NAME`, as reads
+/// showed it before another removal of that name made both show by lineage.
 pub(crate) fn lineage_of<'a>(
     shown: Shown<'a>,
     old: &'a [ValuePart],
@@ -431,6 +464,7 @@ pub(crate) fn lineage_of<'a>(
         }
         let last_called = name.strip_prefix("<deleted ")?.strip_suffix('>')?;
         let mut alike: Vec<&String> = referenced()
+            .filter(|(_, reads)| *reads == key)
             .map(|(lineage, _)| lineage)
             .filter(|lineage| shown.removed.get(*lineage).map(String::as_str) == Some(last_called))
             .collect();

@@ -443,6 +443,9 @@ fn each_destination_takes_a_removal_its_references_never_hold() {
         .unwrap();
     image_service(&store, &who, "production", 20, "db");
     save(&store, &who, "production");
+    // production runs db, so a Branch without its copy reads it live.
+    let id = deploy_by_hand(&store, &who, &["db"]);
+    run(&store, &id, &["db"]);
     for (n, name) in [(30, "staging"), (31, "qa")] {
         store
             .write(

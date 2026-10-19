@@ -196,8 +196,8 @@ pub(crate) struct Facts<'a> {
 /// # Errors
 /// The first problem the write adds, naming what breaks the rule and how to fix
 /// it: `conflict` for a second writer of a Volume, or a Setup Command's Service the
-/// write removed; `invalid_argument` for a reference cycle; `not_found` for a Setup
-/// Command naming no Service.
+/// write removed; `invalid_argument` for a reference cycle, or a reference the write
+/// adds to what isn't there; `not_found` for a Setup Command naming no Service.
 pub(crate) fn check_write(
     environment: &EnvironmentSummary,
     before: Facts<'_>,
@@ -212,13 +212,28 @@ pub(crate) fn check_write(
         .into_iter()
         .filter(|problem| !known.iter().any(|old| old.covers(problem)))
         .collect();
-    let Some(first) = added.first() else {
-        return Ok(());
-    };
     let refusing = Refusing {
         environment,
         before,
         after,
+    };
+    // A reference that breaks once what it reads leaves is reported, not refused;
+    // one the write adds to a Service must read a variable it has. An edit names
+    // only Services that are there, or removed ones its value already read, so a
+    // new reference to a Service that isn't there is restored, not written.
+    let mut had = written(before.working);
+    if let Some(working) = inherited {
+        had.extend(written(working));
+    }
+    if let Some(new) = dangling(after.working, &BTreeMap::new())
+        .into_iter()
+        .filter(|dangling| matches!(dangling.wants, Wants::Variable { .. }))
+        .find(|dangling| !had.contains(&dangling.written()))
+    {
+        return Err(refusing.broken(&new));
+    }
+    let Some(first) = added.first() else {
+        return Ok(());
     };
     Err(match first {
         Problem::Writers { volume, replicas } => refusing.writers(volume, *replicas),
@@ -245,6 +260,69 @@ struct Dangling<'a> {
     /// The variable it reads.
     reads: &'a str,
     wants: Wants,
+}
+
+/// A reference as written: what holds it (a lineage) and where (a variable key or
+/// file name), the Service it reads (a lineage), and the variable it reads.
+type Written = (String, String, String, String);
+
+impl Dangling<'_> {
+    /// The Service it reads, by lineage.
+    fn owner(&self) -> &str {
+        match &self.wants {
+            Wants::Service(lineage) | Wants::Variable { owner: lineage } => lineage,
+        }
+    }
+
+    fn written(&self) -> Written {
+        let (holder, at) = self.at.place();
+        (holder, at, self.owner().to_owned(), self.reads.to_owned())
+    }
+}
+
+impl Referrer<'_> {
+    /// What holds it, by lineage, and where.
+    fn place(&self) -> (String, String) {
+        match self {
+            Self::Variable(service, key) => (service.lineage_id.clone(), (*key).to_owned()),
+            Self::File(config, file) => (config.resource_lineage_id.clone(), file.to_string()),
+        }
+    }
+}
+
+/// Every reference `working` holds, as written.
+fn written(working: &SavedEnvironmentIntent) -> BTreeSet<Written> {
+    let variables = working.services.iter().flat_map(|referrer| {
+        references(referrer).map(move |(key, owner, reads)| {
+            let owner = match owner {
+                ValuePartOwner::Self_ => referrer.lineage_id.clone(),
+                ValuePartOwner::Service { lineage_id } => lineage_id.clone(),
+            };
+            (
+                referrer.lineage_id.clone(),
+                key.to_owned(),
+                owner,
+                reads.to_owned(),
+            )
+        })
+    });
+    let files = working.configs.iter().flat_map(|config| {
+        config.files.iter().flat_map(move |(file, content)| {
+            content.content.iter().filter_map(move |part| match part {
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Service { lineage_id },
+                    key,
+                } => Some((
+                    config.resource_lineage_id.clone(),
+                    file.to_string(),
+                    lineage_id.clone(),
+                    key.clone(),
+                )),
+                ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
+            })
+        })
+    });
+    variables.chain(files).collect()
 }
 
 /// What holds a reference: a Service's variable, or a Config's file.
@@ -502,6 +580,42 @@ impl<'a> Refusing<'a> {
                     })
             })
             .unwrap_or_else(|| "a removed Service".to_owned())
+    }
+
+    /// A reference the write adds to a variable its Service doesn't have, naming
+    /// those it has.
+    fn broken(&self, new: &Dangling<'_>) -> RpcError {
+        let at = match &new.at {
+            Referrer::Variable(_, key) => (*key).to_owned(),
+            Referrer::File(config, file) => format!("{}/{file}", config.name),
+        };
+        let owner = self.name(new.owner());
+        let has: Vec<&str> = service(self.after.working, new.owner())
+            .map(|service| {
+                crate::variables::sorted(service)
+                    .into_iter()
+                    .map(|variable| variable.key.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        error::invalid(
+            format!(
+                "{at}: {owner} has no variable {}; it has {}, and the built-ins {}",
+                new.reads,
+                if has.is_empty() {
+                    "none of its own".to_owned()
+                } else {
+                    has.join(", ")
+                },
+                BUILT_IN_VARIABLES.join(", "),
+            ),
+            json!({
+                "variable": at,
+                "service": owner,
+                "keys": has,
+                "built_ins": BUILT_IN_VARIABLES,
+            }),
+        )
     }
 
     /// A second writer of Volume `volume` (lineage): turning Shared Writes off over
