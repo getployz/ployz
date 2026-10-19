@@ -558,12 +558,17 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             limit: Some(RECENT),
             cursor: None,
         })?;
-        // Numbered Deployments list in number order: the first numbered one that
-        // ended is the newest to, behind any queued since and holds that ended.
+        // The latest numbered one, when it ended; else, behind work queued since, the
+        // first numbered one on the page that ended, as numbered ones list in number order.
         let ended = page
-            .deployments
-            .iter()
-            .find(|deployment| deployment.number.is_some() && deployment.status.ended());
+            .latest
+            .as_ref()
+            .filter(|latest| latest.status.ended())
+            .or_else(|| {
+                page.deployments
+                    .iter()
+                    .find(|deployment| deployment.number.is_some() && deployment.status.ended())
+            });
         if let Some(ended) = ended {
             let reason = match ended.status {
                 DeploymentStatus::Failed => Some("deployment_failed"),
