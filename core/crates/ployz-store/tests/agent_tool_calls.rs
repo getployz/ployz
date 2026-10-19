@@ -575,6 +575,24 @@ fn a_bad_input_names_the_field_and_an_example() {
 }
 
 #[test]
+fn a_new_volume_on_a_second_replica_is_refused_in_a_whole_sentence() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let replicas = json!({ "service": "web", "set": { "replicas": 2 } });
+    call(&store, "service_update", replicas, "update-1").ok();
+
+    let volume = json!({ "name": "data", "service": "web", "path": "/data" });
+    let refusal = call(&store, "volume_add", volume, "volume-1").refused();
+    assert_eq!(refusal.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refusal.message,
+        "data would be attached to web; set replicas to 1, or add it with shared writes on"
+    );
+    assert!(refusal.next.is_empty(), "{refusal:?}");
+}
+
+#[test]
 fn review_reads_domain_changes_as_domains() {
     let store = shop();
     let service = json!({ "name": "web", "image": "traefik/whoami" });

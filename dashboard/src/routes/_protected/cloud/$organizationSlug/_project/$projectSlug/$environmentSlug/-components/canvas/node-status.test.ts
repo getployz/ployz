@@ -8,7 +8,7 @@ const service: ServiceListing = { source: "image", change: null, template: null,
 const container = (state: string, health?: string): RuntimeContainerRecord =>
   ({ id: state, displayName: "web", machineId: "m", namespace: "n", kind: "service", runtime: health ? { state, health } : { state } });
 const runtime = (...containers: RuntimeContainerRecord[]) => ({ containers });
-const observed: RuntimeLens = { status: "observed", incomplete: false, observedAt: "2026-09-30T10:00:00Z", noServers: false };
+const observed: RuntimeLens = { status: "observed", incomplete: false, observedAt: "2026-09-30T10:00:00Z", noServers: false, offline: new Set() };
 const seen = { lens: observed, desiredReplicas: null, deploying: false };
 /** The Runtime Watch saying something other than `observed`. */
 const watch = (lens: Partial<RuntimeLens>) => ({ ...seen, lens: { ...observed, ...lens } });
@@ -84,6 +84,15 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2, deploying: true }).word).toBe("Online");
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 1 }).word).toBe("Online");
     expect(runtimeLine(service, one, { ...watch({ incomplete: true }), desiredReplicas: 2 }).word).toBe("Online");
+  });
+  it("reads containers an offline Server last reported as gone: Server offline when they were all it had, Degraded when others serve", () => {
+    const on = (machineId: string) => ({ ...container("running", "healthy"), id: machineId, machineId });
+    const offline = watch({ offline: new Set(["m2"]) });
+    expect(runtimeLine(service, runtime(on("m2")), offline)).toMatchObject({ word: "Server offline", tone: "bad", down: true });
+    expect(runtimeLine(service, runtime(on("m1"), on("m2")), { ...offline, desiredReplicas: 2 })).toMatchObject({ word: "Degraded", tone: "warn" });
+    expect(runtimeLine(service, runtime(on("m1"), on("m2")), { ...seen, desiredReplicas: 2 }).word).toBe("Online");
+    expect(runtimeLine(service, runtime(on("m2")), { ...offline, lens: { ...offline.lens, status: "unavailable" } })).toMatchObject({ word: "Server offline", tone: "quiet", down: false });
+    expect(runtimeLine(service, runtime(on("m2")), watch({ offline: new Set(["m2"]), incomplete: true }))).toMatchObject({ word: "Server offline", tone: "quiet", down: false });
   });
 });
 
