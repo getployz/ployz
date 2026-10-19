@@ -2054,12 +2054,7 @@ fn an_agent_reviews_saves_and_discards() {
             diff.pointer("/changes/0/settings/0/path"),
             Some(&json!("web.replicas"))
         );
-        assert_eq!(
-            diff.get("next"),
-            Some(&json!(format!(
-                "ployz deploy --skip-deploy --expect-version {version}"
-            )))
-        );
+        assert_eq!(diff.get("next"), Some(&json!("ployz deploy")));
 
         // A review taken before another edit is stale.
         ok(store, &["set", "web.startCommand=nginx"]);
@@ -2089,10 +2084,9 @@ fn an_agent_reviews_saves_and_discards() {
         assert_eq!(saved.get("next"), Some(&json!("ployz deploy")));
         let diff = ok(store, &["diff"]);
         assert_eq!(diff.get("holds_staged"), Some(&json!(true)));
-        let version = diff["version"].as_str().unwrap();
         assert_eq!(
             diff.get("next"),
-            Some(&json!(format!("ployz deploy --expect-version {version}"))),
+            Some(&json!("ployz deploy")),
             "saved is not yet deployed"
         );
 
@@ -2110,9 +2104,7 @@ fn an_agent_reviews_saves_and_discards() {
         let version = inverse["version"].as_str().unwrap();
         assert_eq!(
             inverse.get("next"),
-            Some(&json!(format!(
-                "ployz deploy --skip-deploy --expect-version {version}"
-            )))
+            Some(&json!("ployz deploy --skip-deploy"))
         );
         assert_eq!(
             ok(store, &["history"])["revisions"]

@@ -311,11 +311,8 @@ fn staged(matches: &ArgMatches, result: &ConfigStaged, what: &str) -> Result<(),
     let hint = store::next(matches, &["diff"]);
     crate::ui::finish(&Next::new(result, Some(hint)), || {
         crate::ui::stream(format_args!(
-            "{what} {} in {}/{} (revision {}).",
-            result.config.name,
-            result.environment.project,
-            result.environment.name,
-            result.environment.revision
+            "{what} {} in {}/{}.",
+            result.config.name, result.environment.project, result.environment.name
         ));
         for file in &result.config.files {
             crate::ui::stream(format_args!(

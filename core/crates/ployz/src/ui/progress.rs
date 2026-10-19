@@ -937,7 +937,7 @@ fn finish(
         ));
     }
     for (state, word) in [
-        (State::Completed, "updated"),
+        (State::Completed, "deployed"),
         (State::ObservedRunning, "running"),
         (State::Unchanged, "unchanged"),
         (State::Failed, "failed"),

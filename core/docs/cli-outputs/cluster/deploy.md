@@ -19,7 +19,7 @@ $ ployz service add web --image alpine:3.23.3
 
 stdout:
 ```
-Staged new Service web in shop/production (revision 2).
+Staged new Service web in shop/production.
 ```
 
 ### set web.startCommand
@@ -31,7 +31,7 @@ $ ployz set web.startCommand=sh\ -c\ \'echo\ started\;\ while\ true\;\ do\ echo\
 
 stdout:
 ```
-Staged web.startCommand in shop/production (revision 3).
+Staged web.startCommand in shop/production.
 ```
 
 ### set web.replicas
@@ -43,7 +43,7 @@ $ ployz set web.replicas=2
 
 stdout:
 ```
-Staged web.replicas in shop/production (revision 4).
+Staged web.replicas in shop/production.
 ```
 
 ### service add api
@@ -55,7 +55,7 @@ $ ployz service add api --image alpine:3.23.3
 
 stdout:
 ```
-Staged new Service api in shop/production (revision 5).
+Staged new Service api in shop/production.
 ```
 
 ### set api.startCommand
@@ -67,7 +67,7 @@ $ ployz set api.startCommand=sh\ -c\ \'echo\ api\ up\;\ sleep\ 100000\'
 
 stdout:
 ```
-Staged api.startCommand in shop/production (revision 6).
+Staged api.startCommand in shop/production.
 ```
 
 ### deploy --plan
@@ -188,7 +188,7 @@ $ ployz set web.env.GREETING=hello
 
 stdout:
 ```
-Staged web.env.GREETING in shop/production (revision 7).
+Staged web.env.GREETING in shop/production.
 ```
 
 ### deploy (live progress) (TTY)
@@ -218,7 +218,7 @@ $ ployz set api.env.MODE=fast
 
 stdout:
 ```
-Staged api.env.MODE in shop/production (revision 8).
+Staged api.env.MODE in shop/production.
 ```
 
 ### deploy --json --events (result + NDJSON progress)
@@ -937,7 +937,7 @@ $ ployz set web.image=alpine:does-not-exist
 
 stdout:
 ```
-Staged web.image in shop/production (revision 9).
+Staged web.image in shop/production.
 ```
 
 ### deploy that fails (bad image, live progress) (TTY)
@@ -984,7 +984,7 @@ $ ployz set web.image=alpine:3.23.3
 
 stdout:
 ```
-Staged web.image in shop/production (revision 10).
+Staged web.image in shop/production.
 ```
 
 ### deploy restore
