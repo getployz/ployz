@@ -212,6 +212,7 @@ pub(crate) fn admit(
         message,
         push,
         ci: None,
+        held: false,
         in_flight: DeploymentStatus::Queued.in_flight(),
         outcome: None,
         warnings: Vec::new(),
@@ -369,15 +370,17 @@ fn next_number(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<u64, RpcE
 
 /// Hold `push` of `environment` until its commit's CI passes: a Deployment waiting
 /// for CI of `services` (none: every one) at Saved revision `saved`, numbered next.
-/// It freezes, builds and supersedes nothing; passing CI admits it in place. A hold
-/// of the same head is kept as is, one of an older head of the branch is superseded.
-/// The caller holds the Environment's lock.
+/// `ids` are the same Services by ID, which promotion selects by: a name may change
+/// while it waits. It freezes, builds and supersedes nothing; passing CI admits it in
+/// place. A hold of the same head is kept as is, one of an older head of the branch
+/// is superseded. The caller holds the Environment's lock.
 pub(crate) fn hold(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentSummary,
     push: &GitPush,
     services: &[ServiceName],
+    ids: &[String],
     saved: Revision,
 ) -> Result<(), RpcError> {
     let id = &environment.id;
@@ -416,8 +419,10 @@ pub(crate) fn hold(
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, admitted, push_repository_id, push_branch, push_head) \
-         VALUES (?1, ?2, ?3, ?4, 'waiting_for_ci', ?5, ?6, '[]', ?7, ?8, '{}', ?9, ?10, ?11, ?12)",
+          namespace, run, credentials, admitted, push_repository_id, push_branch, push_head, \
+          push_services) \
+         VALUES (?1, ?2, ?3, ?4, 'waiting_for_ci', ?5, ?6, '[]', ?7, ?8, '{}', ?9, ?10, ?11, ?12, \
+          ?13)",
         &[
             deployment.as_str().into(),
             who.organization.as_str().into(),
@@ -433,6 +438,7 @@ pub(crate) fn hold(
             push.repository_id.into(),
             push.branch.as_str().into(),
             push.head.as_str().into(),
+            json_text(&ids).as_str().into(),
         ],
     )?;
     Ok(())
@@ -544,6 +550,13 @@ pub(crate) fn retry(
             ));
         }
         DeploymentStatus::Superseded => return Err(superseded(source)),
+    }
+    // Cancelled while waiting for CI: it never froze what it ships.
+    if stored.summary.held {
+        return Err(error::conflict(
+            "This push was cancelled before its CI passed, so nothing was frozen to redeploy: push again",
+            json!({ "deployment": source }),
+        ));
     }
     if stored.summary.remove {
         if stored.summary.status == DeploymentStatus::Applied {
@@ -664,6 +677,7 @@ pub(crate) fn retry(
         ingress: Vec::new(),
         push: None,
         ci: None,
+        held: false,
         ..stored.summary
     };
     Ok((summary, rollback))

@@ -362,10 +362,10 @@ export type DeploymentAction = "add_server" | "redeploy" | "start" | "cancel";
 
 /**
  * Redeploy an ended Deployment, start a queued one, cancel one before it ends; with no Server, adding one comes first.
- * One waiting for CI only cancels: passing CI queues it.
+ * One waiting for CI only cancels: passing CI queues it. Cancelled while it waited, it froze nothing to redeploy.
  */
-function primaryAction(status: DeploymentStatus, noServers: boolean): DeploymentAction | null {
-  const redeploy = status === "applied" || status === "failed" || status === "unknown" || status === "cancelled";
+function primaryAction(status: DeploymentStatus, held: boolean, noServers: boolean): DeploymentAction | null {
+  const redeploy = status === "applied" || status === "failed" || status === "unknown" || (status === "cancelled" && !held);
   if (noServers && (redeploy || status === "queued")) return "add_server";
   if (redeploy) return "redeploy";
   if (status === "queued") return "start";
@@ -398,8 +398,8 @@ const decodeRollback = Schema.decodeUnknownOption(Schema.Struct({ rolls_back: Sc
  * The action a Deployment page shows, and whether Cancel waits in its menu beside another one. A removal that applied
  * left nothing to redeploy.
  */
-export function deploymentActions(deployment: Pick<DeploymentSummary, "status" | "remove">, noServers: boolean) {
+export function deploymentActions(deployment: Pick<DeploymentSummary, "status" | "remove" | "held">, noServers: boolean) {
   const { status } = deployment;
-  const primary = deployment.remove && status === "applied" ? null : primaryAction(status, noServers);
+  const primary = deployment.remove && status === "applied" ? null : primaryAction(status, deployment.held, noServers);
   return { primary, cancelInMenu: (status === "queued" || status === "running") && primary !== "cancel" };
 }

@@ -161,6 +161,10 @@ pub struct DeploymentSummary {
     pub push: Option<GitPush>,
     /// What its commit's CI says, exactly while it waits for CI.
     pub ci: Option<CiVerdict>,
+    /// Whether it waits for CI, or was cancelled while it did: it never froze what
+    /// it ships, so it can't be redeployed.
+    #[serde(default)]
+    pub held: bool,
     /// Whether it may still run: queued, or claimed by a runner still there.
     pub in_flight: bool,
     /// What its runner recorded at its end; none while it hasn't ended.
@@ -894,6 +898,23 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         true => DeploymentStatus::Unknown,
         false => status,
     };
+    let nodes: Vec<TargetNode> = row.json(6, "Deployment")?;
+    let push = match (
+        row.optional_int(18)?,
+        row.optional_text(19)?,
+        row.optional_text(20)?,
+    ) {
+        (Some(_), Some(_), Some(_)) => Some(GitPush {
+            repository_id: row.number(18, "Deployment push")?,
+            branch: row.parse(19, "Deployment push")?,
+            head: row.parse(20, "Deployment push")?,
+        }),
+        (None, None, None) => None,
+        _ => return Err(error::corrupt("Deployment push")),
+    };
+    // Only a push holds, and a push that admitted a Deployment froze what it ships,
+    // at least one node: a hold, cancelled or not, froze none.
+    let held = push.is_some() && nodes.is_empty();
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
@@ -914,19 +935,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             started_at: row.optional_int(15)?,
             ended_at: row.optional_int(16)?,
             message: row.optional_text(17)?.map(str::to_owned),
-            push: match (
-                row.optional_int(18)?,
-                row.optional_text(19)?,
-                row.optional_text(20)?,
-            ) {
-                (Some(_), Some(_), Some(_)) => Some(GitPush {
-                    repository_id: row.number(18, "Deployment push")?,
-                    branch: row.parse(19, "Deployment push")?,
-                    head: row.parse(20, "Deployment push")?,
-                }),
-                (None, None, None) => None,
-                _ => return Err(error::corrupt("Deployment push")),
-            },
+            push,
             ci: row
                 .optional_text(21)?
                 .map(|verdict| {
@@ -934,12 +943,13 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
                         .map_err(|_| error::corrupt("CI verdict"))
                 })
                 .transpose()?,
+            held,
             in_flight: status.in_flight(),
             outcome: run.outcome.clone(),
             warnings: run.summary_warnings(),
             ingress: run.ingress.clone(),
         },
-        nodes: row.json(6, "Deployment")?,
+        nodes,
         namespace: row.parse::<Namespace>(7, "Namespace")?,
         run,
         cluster_domain: row.parse_optional(10, "identity")?,

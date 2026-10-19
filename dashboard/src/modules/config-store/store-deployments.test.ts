@@ -132,22 +132,26 @@ it("reads a pending node as its Deployment does, and a vanished runner's node as
 });
 
 it("shows one action: redeploy once a Deployment ended, start while queued, cancel before it ends", () => {
-  expect(deploymentActions({ status: "failed", remove: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
-  expect(deploymentActions({ status: "queued", remove: false }, false)).toEqual({ primary: "start", cancelInMenu: true });
-  expect(deploymentActions({ status: "running", remove: false }, false)).toEqual({ primary: "cancel", cancelInMenu: false });
-  expect(deploymentActions({ status: "cancelling", remove: false }, false)).toEqual({ primary: null, cancelInMenu: false });
-  expect(deploymentActions({ status: "applied", remove: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
-  expect(deploymentActions({ status: "superseded", remove: false }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "failed", remove: false, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "queued", remove: false, held: false }, false)).toEqual({ primary: "start", cancelInMenu: true });
+  expect(deploymentActions({ status: "running", remove: false, held: false }, false)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "cancelling", remove: false, held: false }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "applied", remove: false, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "superseded", remove: false, held: false }, false)).toEqual({ primary: null, cancelInMenu: false });
   // With no Server nothing can run it, so adding one comes first; a running one can still be cancelled.
-  expect(deploymentActions({ status: "failed", remove: false }, true)).toEqual({ primary: "add_server", cancelInMenu: false });
-  expect(deploymentActions({ status: "queued", remove: false }, true)).toEqual({ primary: "add_server", cancelInMenu: true });
-  expect(deploymentActions({ status: "running", remove: false }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "failed", remove: false, held: false }, true)).toEqual({ primary: "add_server", cancelInMenu: false });
+  expect(deploymentActions({ status: "queued", remove: false, held: false }, true)).toEqual({ primary: "add_server", cancelInMenu: true });
+  expect(deploymentActions({ status: "running", remove: false, held: false }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
   // One waiting for CI queues once its CI passes; only Cancel is left to do.
-  expect(deploymentActions({ status: "waiting_for_ci", remove: false }, false)).toEqual({ primary: "cancel", cancelInMenu: false });
-  expect(deploymentActions({ status: "waiting_for_ci", remove: false }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "waiting_for_ci", remove: false, held: true }, false)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "waiting_for_ci", remove: false, held: true }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  // Cancelled while it waited, it froze nothing to redeploy, Server or not.
+  expect(deploymentActions({ status: "cancelled", remove: false, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "cancelled", remove: false, held: true }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "cancelled", remove: false, held: true }, true)).toEqual({ primary: null, cancelInMenu: false });
   // A removal that applied left nothing to redeploy; one that failed redeploys.
-  expect(deploymentActions({ status: "applied", remove: true }, false)).toEqual({ primary: null, cancelInMenu: false });
-  expect(deploymentActions({ status: "failed", remove: true }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "applied", remove: true, held: false }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "failed", remove: true, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
 });
 
 it("asks before a redeploy that rolls back Deployments that ran after it, and only then", () => {

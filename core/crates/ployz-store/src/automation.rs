@@ -333,10 +333,9 @@ fn check_suite(
         ],
     )?;
     let mut automated = Automated::default();
-    // Until every suite passed, what waits keeps waiting: its CI verdict reads the suites.
-    if !passed(tx, who, repository_id, &event.head)? {
-        return Ok(automated);
-    }
+    // Whether every suite passed is read under each Environment's lock (`admit`): two
+    // suites of the head completing at once each see the other's row committed there,
+    // where either read before the lock could find the other still pending.
     for (held, environment, push) in deployment::held_for_head(tx, who, repository_id, &event.head)?
     {
         deploy(
@@ -642,13 +641,20 @@ fn admit(
     trusted: &Trusted,
 ) -> Result<Option<Deploy>, RpcError> {
     let environment = scope::lock_id(tx, who, id)?;
-    // Cancelled before its CI passed: nothing ships.
-    let held = match select {
+    // Cancelled before its CI passed: nothing ships. Until every suite of its commit
+    // passed, it keeps waiting: read under the lock, so a suite that completed in
+    // another transaction is committed, or will promote the hold itself.
+    let (held, held_services) = match select {
         Select::Held(held) => match deployment::load(tx, held)?.summary {
-            hold if hold.status == DeploymentStatus::WaitingForCi => Some(hold),
+            hold if hold.status == DeploymentStatus::WaitingForCi => {
+                if !passed(tx, who, push.repository_id, &push.head)? {
+                    return Ok(None);
+                }
+                (Some(hold), deployment::held_services(tx, held)?)
+            }
             _ => return Ok(None),
         },
-        Select::Changed(_) => None,
+        Select::Changed(_) => (None, Vec::new()),
     };
     // Being removed: a push leaves it be. A shut-down PR Environment (its removal
     // applied) comes back on: the push deploys all of it again.
@@ -688,13 +694,10 @@ fn admit(
                 (Select::Changed(changed), _) => {
                     changed.is_none_or(|changed| policy.watches(changed))
                 }
-                // None selected is a shut-down Environment's: all of it.
-                (Select::Held(_), Some(hold)) => {
-                    hold.services.is_empty()
-                        || hold
-                            .services
-                            .iter()
-                            .any(|name| name.as_str() == service.slug)
+                // None selected is a shut-down Environment's: all of it. By ID: a
+                // Service renamed while it waited is still the one it selected.
+                (Select::Held(_), Some(_)) => {
+                    held_services.is_empty() || held_services.contains(&service.id)
                 }
                 (Select::Held(_), None) => false,
             };
@@ -728,7 +731,22 @@ fn admit(
             .map_err(|_| error::corrupt("Service name"))?,
     };
     if wait && !passed(tx, who, push.repository_id, &push.head)? {
-        deployment::hold(tx, who, &environment.summary, push, &names, saved.revision)?;
+        let ids: Vec<String> = match shut_down {
+            true => Vec::new(),
+            false => selected
+                .iter()
+                .map(|(service, _)| service.id.clone())
+                .collect(),
+        };
+        deployment::hold(
+            tx,
+            who,
+            &environment.summary,
+            push,
+            &names,
+            &ids,
+            saved.revision,
+        )?;
         return Ok(None);
     }
     // A Service that builds the head is pinned to it; another Git Service to the

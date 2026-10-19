@@ -7,10 +7,11 @@
 
 use std::collections::BTreeMap;
 
+use ployz_core::ServiceName;
 use ployz_store::{
     Actor, Automated, Cancel, CiVerdict, ConfigStore, DeploymentQuery, DeploymentStatus,
     DeploymentSummary, DeploymentsQuery, DiffQuery, EnvironmentName, EnvironmentRef, GitPush,
-    Outcome, ProjectName, Remove, Sweep, SystemEvent, Trusted,
+    Outcome, ProjectName, Remove, RenameService, Sweep, SystemEvent, Trusted,
 };
 use serde_json::json;
 
@@ -116,6 +117,7 @@ fn passing_suite_promotes_in_place() {
     let promoted = find(&store, &who, &hold);
     assert_eq!(promoted.status, DeploymentStatus::Queued);
     assert_eq!(promoted.ci, None);
+    assert!(!promoted.held);
     // Frozen against the Saved revision when it passed, not when it was pushed.
     assert_eq!(
         deployed(&store, &who, &automated),
@@ -551,4 +553,85 @@ fn verdict_sql_matches_passed_rule() {
             "{conclusion:?}: went {went}, failed {failed}"
         );
     }
+}
+
+/// A hold remembers the Services it selected by ID: renaming one while it waits
+/// still promotes it.
+#[test]
+fn renamed_service_still_promotes() {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    set(&store, &who, "api.watchPaths", json!(["api/**"]));
+    publish(&store, &who);
+    system(&store, &push(None, Some(H1), None));
+    system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    let [hold] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
+    let services: Vec<_> = hold.services.iter().map(ToString::to_string).collect();
+    assert_eq!(services, ["web"]);
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("frontend").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let automated = passed(&store, H2, 10);
+    assert_eq!(automated.admitted[0].deployment.id, hold.id);
+    let targets: Vec<_> = deployed(&store, &who, &automated)
+        .into_iter()
+        .map(|(services, _)| services)
+        .collect();
+    assert_eq!(targets, [vec!["frontend".to_owned()]]);
+    // Sources go by private DNS name, which a rename keeps.
+    let pins: Vec<_> = store
+        .sources(&hold.id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|source| source.commit.map(String::from))
+        .collect();
+    assert_eq!(pins, [H2]);
+}
+
+/// A hold never froze what it ships, so a cancelled one has nothing to redeploy.
+#[test]
+fn cancelled_hold_cannot_be_retried() {
+    let (store, who, hold) = waiting();
+    assert!(hold.held);
+    store
+        .write(
+            &who,
+            &Cancel {
+                deployment: hold.id.clone(),
+            },
+        )
+        .unwrap();
+    let cancelled = find(&store, &who, &hold);
+    assert!(cancelled.held);
+    let refused = store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Retry(ployz_store::Retry {
+                id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000199")
+                    .unwrap(),
+                deployment: hold.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap_err();
+    assert!(
+        refused.message.contains("cancelled before its CI passed"),
+        "{refused:?}"
+    );
+    assert_eq!(deployments(&store, &who).len(), 1);
 }

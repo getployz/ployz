@@ -213,6 +213,7 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
   const [loss, setLoss] = useState<VolumeLossCheck | null>(null);
   const lossOf = useVolumeLossCheck(params.organizationSlug);
   const { primary, cancelInMenu } = deploymentActions(deployment, noServers);
+  const waiting = deployment.status === "waiting_for_ci";
   const rollsBack = fresh ?? deployment.rolls_back;
   const rollback = rollbackConfirm({ number: deployment.number, rolls_back: [...rollsBack] });
   const copiesWait = useCopiesWait(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).environmentId);
@@ -311,20 +312,21 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
       <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel deployment?</AlertDialogTitle>
+            <AlertDialogTitle>{waiting ? "Cancel this push?" : "Cancel deployment?"}</AlertDialogTitle>
             <AlertDialogDescription>
-              {storage ? "The step under way finishes first. The rest waits for your next deploy."
+              {waiting ? "It won't deploy."
+                : storage ? "The step under way finishes first. The rest waits for your next deploy."
                 : deployment.status === "queued"
                 ? "It leaves the queue and never runs."
                 : "It stops at its next step. What it already changed stays until the next Deploy."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep deploying</AlertDialogCancel>
+            <AlertDialogCancel>{waiting ? "Keep waiting" : "Keep deploying"}</AlertDialogCancel>
             <Button variant="destructive" onClick={() => {
               setCancelOpen(false);
               onCancel();
-            }}>Cancel deployment</Button>
+            }}>{waiting ? "Cancel push" : "Cancel deployment"}</Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -291,6 +291,21 @@ pub(crate) fn held_by_push(
     .transpose()
 }
 
+/// The Services a Deployment waiting for CI selected, by ID; none selects every one.
+pub(crate) fn held_services(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String>, RpcError> {
+    tx.query(
+        "SELECT push_services FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .map(|row| match row.optional_text(0)? {
+        Some(_) => row.json(0, "Deployment"),
+        None => Ok(Vec::new()),
+    })
+    .transpose()
+    .map(Option::unwrap_or_default)
+}
+
 /// Every queued Deployment no runner claimed that was admitted before `before`
 /// (Unix seconds), oldest first: those whose dispatch may have been lost.
 pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, RpcError> {
