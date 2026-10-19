@@ -852,6 +852,31 @@ async fn an_install_records_what_cloud_said_only_for_the_token_it_keeps() {
     }
 }
 
+const ENROLL: &str = r#"{"kind":"enroll","attemptId":"att_1","token":"pmet_never_written_down","role":"join","name":"web-1","storage":{"kind":"none"},"policy":{"labels":{},"acceptsBuilds":true,"acceptsServices":true,"acceptsIngress":true}}"#;
+
+#[tokio::test]
+async fn an_install_cloud_already_enrolls_does_not_say_it_waits_for_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = temp_paths(&dir);
+    let ployzd = dir.path().join("bin/ployzd");
+    probing_daemon(&ployzd, "0.0.1");
+    let host = Chosen(System {
+        ployzd,
+        stale: Some("Older.".to_owned()),
+        cloud: String::new(),
+    });
+    let key = CheckinKey::load_or_create(&paths.key()).unwrap();
+    fs::create_dir_all(paths.status().parent().unwrap()).unwrap();
+    let (url, server) = answering_once("200 OK", ENROLL, || {}).await;
+    let mut client = CheckinClient::new(&url, FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
+
+    let pass = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
+    server.await.unwrap();
+    let answered = answer_install(pass, &client, &paths, PIPED).unwrap();
+
+    assert_ne!(answered, Answered::Waiting);
+}
+
 #[test]
 fn an_install_waits_for_another_to_finish_writing_the_token_before_it_reads_it() {
     let dir = tempfile::tempdir().unwrap();
