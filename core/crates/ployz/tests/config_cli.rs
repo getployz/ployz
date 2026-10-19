@@ -3917,6 +3917,48 @@ fn history_scope_flags_work_before_or_after_the_action() {
 }
 
 #[test]
+fn history_says_nothing_staged_when_the_next_deploy_already_matches() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["set", "web.image=web:2"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    assert_eq!(
+        human(&["history", "restore", "1"]),
+        "Staged a rollback to #1. Deploy to apply.\n"
+    );
+    assert_eq!(
+        human(&["history", "restore", "1"]),
+        "Already matches #1. Nothing staged.\n"
+    );
+    assert_eq!(
+        ok(&store, &["history", "restore", "1"])["changed"],
+        json!(false)
+    );
+    assert_eq!(
+        human(&["history", "undo", "2"]),
+        "Nothing to undo in #2. Nothing staged.\n"
+    );
+
+    ok(&store, &["deploy", "--skip-deploy"]);
+    assert_eq!(
+        human(&["history", "undo", "3"]),
+        "Staged an undo of #3. Deploy to apply.\n"
+    );
+    assert_eq!(
+        human(&["history", "undo", "3"]),
+        "Nothing to undo in #3. Nothing staged.\n"
+    );
+}
+
+#[test]
 fn an_agent_gets_the_approval_a_save_needs_and_retries_with_it() {
     let (target, approvals) = approving(&[("apr_1", "approved")]);
     let refused = error(&target, &["deploy", "--skip-deploy"]);

@@ -93,7 +93,7 @@ values has nothing to undo, so its Undo is disabled and says **Sealed. Nothing t
 An accepted deployment and its retries keep their original snapshot while you edit the draft.
 
 From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
-Restore without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
+rollback without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
 after reviewing the named draft fields. Both list each variable that came back Not set, and
 `--json` carries them as `not_set`. The agent's `history` tool does the same by revision
 number; one that would overwrite draft changes refuses and names them first.
