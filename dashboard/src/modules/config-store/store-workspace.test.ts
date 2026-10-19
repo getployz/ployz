@@ -74,6 +74,6 @@ it("notes a close waiting for the sweep apart from a removal that runs or ended"
     listing(null),
   ];
   expect(listings.map(storeEnvironmentNotes)).toEqual([["deletion pending"], ["deleting"], ["off your servers"], ["deletion failed"], []]);
-  expect(listings.map(removing)).toEqual([true, true, false, false, false]);
+  expect(listings.map(removing)).toEqual([false, true, false, false, false]);
   expect(listings.map((one) => removalDeployment(one)?.status ?? null)).toEqual([null, "running", "applied", "failed", null]);
 });

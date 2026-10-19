@@ -15,7 +15,7 @@ use ployz_store::{
     Actor, Admit, AdmitRemoval, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject,
     CreateService, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
     EnvironmentRemoval, EnvironmentsQuery, KeepBranch, OrganizationId, Permission, ProjectId,
-    ProjectName, Publish, RemoveService, RemovedBecause, RenameService, SecretRow,
+    ProjectName, Publish, Removal, Remove, RemoveService, RemovedBecause, RenameService, SecretRow,
     ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery,
     SyncRow, SyncView, Synced, Trusted, UndoSync,
 };
@@ -940,6 +940,30 @@ fn a_branch_a_sync_closed_lists_its_removal_before_and_after_the_sweep_starts_it
         "{:?}",
         removal()
     );
+}
+
+#[test]
+fn removing_a_branch_whose_close_waits_for_the_sweep_needs_no_new_confirmation() {
+    let (store, who) = shop(true);
+    deploy(&store, &who, "fix-web", 30);
+    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+    let closing = SyncChanges {
+        close_after: true,
+        ..sync(&view(&store, &who), None)
+    };
+    assert!(store.write(&who, &closing).unwrap().closing);
+
+    let again = Remove {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: Some(EnvironmentName::parse("fix-web").unwrap()),
+        version: None,
+        accept_volume_loss: BTreeMap::new(),
+        every_copy: BTreeMap::new(),
+    };
+    assert!(matches!(
+        store.write_trusted(&who, &again, &Trusted::default()),
+        Ok(Removal::Removing { .. })
+    ));
 }
 
 #[test]

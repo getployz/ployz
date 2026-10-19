@@ -21,7 +21,7 @@ import {
   branchQuery, environmentsQuery, fetchStoreView, requireView, servicesQuery, syncQuery,
   useCachedStoreView, useStoreViews, volumesQuery,
 } from "#/modules/config-store/store-view.queries";
-import { removalDeployment, removing, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
+import { removalDeployment, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
 import { useLeaveWhenClosed, useStoreBranchClose } from "./branch-close";
@@ -95,7 +95,7 @@ function BranchSync({ params, store, branch, environments }: {
   const me = environments.find((environment) => environment.name === name);
   const removal = me?.removal ?? null;
   const deployment = me ? removalDeployment(me) : null;
-  const closed = me !== undefined && removing(me);
+  const closed = deployment?.in_flight === true;
   // Its main half syncs into the Parent.
   const state = syncButtonState(branch, removal);
   // Warm the main half's dialog.

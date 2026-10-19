@@ -22,9 +22,9 @@ export function storeEnvironmentTree(environments: readonly EnvironmentListing[]
 export const removalDeployment = ({ removal }: Pick<EnvironmentListing, "removal">) =>
   removal?.kind === "deployment" ? removal : null;
 
-/** A removal from the Servers that hasn't ended: waiting for the sweep to start it, or running. */
-export const removing = ({ removal }: Pick<EnvironmentListing, "removal">) =>
-  removal !== null && (removal.kind === "pending" || removal.in_flight);
+/** A removal Deployment that hasn't ended. A close still waiting for the sweep isn't one, so it can be asked again. */
+export const removing = (environment: Pick<EnvironmentListing, "removal">) =>
+  removalDeployment(environment)?.in_flight === true;
 
 /** What an Environment has, in a few words, wherever the tree is listed: "default", "merged", "deleting". */
 export function storeEnvironmentNotes(environment: EnvironmentListing) {

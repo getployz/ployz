@@ -147,14 +147,25 @@ it("shows a shutdown under way, and Off, ahead of the count", async () => {
   expect(items.getByRole("menuitem", { name: "Deploy fix-api" })).toBeTruthy();
 });
 
-it("reads Closing while a close waits for the sweep, and can't be closed again", async () => {
+it("reads Closing while a close waits for the sweep, and can close it again", async () => {
   open({ environments: [
     listing("production", { default: true }),
     listing("fix-api", { parent: "production", removal: { kind: "pending", because: "synced", since: 0 } }),
   ] });
   expect(await screen.findByRole("button", { name: "Closing" })).toBeTruthy();
   const items = await menu();
-  expect(items.getByRole("menuitem", { name: "Close fix-api…" }).getAttribute("aria-disabled")).toBe("true");
+  expect(items.getByRole("menuitem", { name: "Close fix-api…" }).getAttribute("aria-disabled")).toBeNull();
+});
+
+it("reads Shutting down while a closed pull request's close waits for the sweep, and can shut it down again", async () => {
+  open({ branch: branchView({ pull_request: { repository_id: 1, number: 142 } }), environments: [
+    listing("production", { default: true }),
+    listing("fix-api", { parent: "production", removal: { kind: "pending", because: "pull_request", since: 0 } }),
+  ] });
+  expect(await screen.findByRole("button", { name: "Shutting down" })).toBeTruthy();
+  const items = await menu();
+  expect(items.getByRole("menuitem", { name: "Shut down until the next push" }).getAttribute("aria-disabled")).toBeNull();
+  expect(items.getByRole("menuitem", { name: "Close fix-api…" }).getAttribute("aria-disabled")).toBeNull();
 });
 
 it("holds Keep, Closes in and Close in its menu", async () => {
