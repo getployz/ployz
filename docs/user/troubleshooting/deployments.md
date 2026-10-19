@@ -29,8 +29,8 @@ Service before the Deploy is planned, without a depth. A failure names the Serve
 where it happened.
 
 A failed deploy shows the deepest cause, available failed-container log tails, and
-`inspect:` and `retry:` commands. A Deployment result that did not fully succeed exits
-with code 3. A warning that names an incomplete Server observation also makes an
+`inspect:` and `retry:` commands, and exits with code 1. A Deployment that applied but
+whose result is missing a Server exits with code 3. A warning that names an incomplete Server observation also makes an
 otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
