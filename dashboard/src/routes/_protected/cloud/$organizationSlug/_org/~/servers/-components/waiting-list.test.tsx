@@ -440,3 +440,12 @@ it("names the first arrival on first run and enrolls it from the heading", async
   fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
   await vi.waitFor(() => expect(screen.getByRole("region", { name: "Enrollment preview" })).toBeTruthy());
 });
+
+it("says nothing joins on its own until the first server is enrolled by hand", () => {
+  const hint = "No cluster yet. Enroll one server to start it.";
+  const client = new QueryClient();
+  const { rerender } = render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={[host("one"), host("two")]} now={NOW} hasFirst={false} /></QueryClientProvider>);
+  expect(screen.getByText(hint)).toBeTruthy();
+  rerender(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={[host("one"), host("two")]} now={NOW} hasFirst /></QueryClientProvider>);
+  expect(screen.queryByText(hint)).toBeNull();
+});

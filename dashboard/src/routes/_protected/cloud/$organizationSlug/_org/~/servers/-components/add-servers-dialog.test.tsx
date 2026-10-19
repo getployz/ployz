@@ -166,3 +166,18 @@ it("lets go of a mint that never answers, so Escape closes the dialog", async ()
     vi.useRealTimers();
   }
 });
+
+it("describes a broken name with the rule and keeps its name Name", async () => {
+  await renderDialog();
+  fireEvent.click(screen.getByRole("button", { name: "Add servers" }));
+  const name = screen.getByRole("textbox", { name: "Name" });
+  expect(screen.queryByText("Lowercase letters, digits and hyphens, up to 63.")).toBeNull();
+  fireEvent.change(name, { target: { value: "Web Token" } });
+  expect(screen.getByRole("textbox", { name: "Name", description: "Lowercase letters, digits and hyphens, up to 63." })).toBe(name);
+});
+
+it("says what server add --command does differently from the token", async () => {
+  await mintWith();
+  expect((await screen.findByText(/ployz server add --command/)).closest("p")?.textContent)
+    .toBe("To skip the review, run ployz server add --command instead. It enrolls one server now.");
+});
