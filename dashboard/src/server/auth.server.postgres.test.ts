@@ -1,6 +1,6 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
-import { Cause, ConfigProvider, Effect, Layer, Schema } from "effect";
+import { Cause, ConfigProvider, Effect, Fiber, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -307,6 +307,68 @@ it.live(
 
         const device = yield* call("/get-session", { bearer: token });
         assert.strictEqual(device.json?.session?.activeOrganizationId, namedId);
+        assert.deepStrictEqual(
+          yield* drizzle.select().from(verification).where(like(verification.identifier, "device-organization:%")),
+          [],
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "keeps an approved device in its Organization when a duplicate approve naming another one lands mid-approval",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const cookie = yield* signUp("double");
+        const browser = (yield* auth.getSession(new Headers({ cookie }))) ?? assert.fail("no browser session");
+        const firstId = browser.session.activeOrganizationId ?? assert.fail("no first Organization");
+        const [other] = yield* drizzle.insert(organizationTable).values({ name: "other", slug: "other" })
+          .returning({ id: organizationTable.id });
+        const otherId = other?.id ?? assert.fail("no other Organization");
+        yield* drizzle.insert(member).values({ userId: browser.user.id, organizationId: otherId, role: "member" });
+        // Holds the first approval's write open, so the duplicate arrives while the code still reads as pending.
+        yield* drizzle.execute(sql`
+          create function slow_approval() returns trigger language plpgsql as $$
+          begin
+            if old.status = 'pending' and new.status = 'approved' then perform pg_sleep(1.5); end if;
+            return new;
+          end $$;
+          create trigger slow_approval before update on device_code
+            for each row execute function slow_approval();`, "objects");
+
+        const { userCode, poll } = yield* startDevice();
+        yield* call(`/device?user_code=${userCode}`, { cookie });
+        const first = yield* Effect.forkChild(call("/device/approve", { cookie, body: { userCode, organizationId: firstId } }));
+        const sleeping = sql`select 1 from pg_stat_activity where datname = current_database() and wait_event = 'PgSleep'`;
+        while ((yield* drizzle.execute(sleeping, "objects")).length === 0) yield* Effect.sleep("20 millis");
+        const duplicate = yield* call("/device/approve", { cookie, body: { userCode, organizationId: otherId } });
+        assert.strictEqual((yield* Fiber.join(first)).status, 200);
+        const token = (yield* poll()).json?.access_token ?? assert.fail("no access token");
+        assert.strictEqual((yield* call("/get-session", { bearer: token })).json?.session?.activeOrganizationId, firstId);
+        assert.notStrictEqual(duplicate.status, 200);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "refuses an approve that names no Organization and leaves the code pending",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const cookie = yield* signUp("stale");
+        const { userCode } = yield* startDevice();
+        yield* call(`/device?user_code=${userCode}`, { cookie });
+
+        assert.strictEqual((yield* call("/device/approve", { cookie, body: { userCode } })).status, 400);
+        assert.strictEqual((yield* call(`/device?user_code=${userCode}`, { cookie })).json?.status, "pending");
         assert.deepStrictEqual(
           yield* drizzle.select().from(verification).where(like(verification.identifier, "device-organization:%")),
           [],
