@@ -594,6 +594,13 @@ impl Frozen {
     pub(crate) fn targets(&self, id: &str) -> bool {
         self.nodes.iter().any(|node| node.id() == id)
     }
+
+    /// Whether this Deployment ships Service `name`, named or referenced.
+    pub(crate) fn ships(&self, name: &ServiceName) -> bool {
+        self.nodes.iter().any(
+            |node| matches!(node, TargetNode::Service { name: service, .. } if service == name),
+        )
+    }
 }
 
 /// The runner's evidence so far, stored as one document.

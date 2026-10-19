@@ -561,3 +561,80 @@ fn a_narrowed_deploy_of_an_uploaded_service_warns_of_its_secret_not_set() {
         json!([{ "service": "client", "variable": "KEY" }])
     );
 }
+
+/// The restarts the plan of `deploy services` shows for Config `app`, or none
+/// when the plan leaves it out.
+fn planned_restarts(store: &ConfigStore, who: &Actor, services: &[&str]) -> Option<Vec<String>> {
+    store
+        .read(
+            who,
+            &crate::PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: services.iter().map(|service| name(service)).collect(),
+            },
+        )
+        .unwrap()
+        .changes
+        .into_iter()
+        .find(|change| change.name == "app")
+        .map(|change| change.restarts.iter().map(ToString::to_string).collect())
+}
+
+/// Deploy `client` and `web`, `web` mounting Config `app` with `mode: slow`, then
+/// change the file and have `client` reference `web`.
+fn change_a_file_web_mounts(store: &ConfigStore, who: &Actor, also: &[&str]) {
+    create(store, who, 3, "client");
+    create(store, who, 4, "web");
+    for (n, service) in also.iter().enumerate() {
+        create(store, who, 6 + u8::try_from(n).unwrap(), service);
+    }
+    store
+        .write(
+            who,
+            &CreateConfig {
+                id: ConfigId::parse(uuid(5)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("app").unwrap(),
+                mounts: ["web"]
+                    .iter()
+                    .chain(also)
+                    .map(|service| ConfigMountAt {
+                        service: name(service),
+                        dir: "/etc/app".into(),
+                    })
+                    .collect(),
+            },
+        )
+        .unwrap();
+    put_file(store, who, "mode: slow\n");
+    let first = deploy(store, who, 1, &[]);
+    let ran: Vec<&str> = ["client", "web"].iter().chain(also).copied().collect();
+    assert_eq!(run(store, &first, &ran), DeploymentStatus::Applied);
+    put_file(store, who, "mode: fast\n");
+    set(
+        store,
+        who,
+        &[("client.env.WEB", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"))],
+    );
+}
+
+#[test]
+fn a_narrowed_plan_shows_the_restart_of_a_service_it_references() {
+    let (store, who) = store();
+    change_a_file_web_mounts(&store, &who, &[]);
+    assert_eq!(
+        planned_restarts(&store, &who, &["client"]),
+        Some(vec!["web".to_owned()])
+    );
+}
+
+#[test]
+fn a_narrowed_plan_shows_a_shared_file_change_a_service_it_references_restarts_for() {
+    let (store, who) = store();
+    change_a_file_web_mounts(&store, &who, &["api"]);
+    assert_eq!(
+        planned_restarts(&store, &who, &["client"]),
+        Some(vec!["web".to_owned()]),
+        "api, which this Deploy doesn't ship, keeps the old file"
+    );
+}
