@@ -269,7 +269,7 @@ pub(crate) const DEPLOYMENT_CANCEL: Verb = Verb::cloud(
 )
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_LS: Verb =
-    Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls);
+    Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls).docs("cli/overview.md");
 pub(crate) const DEPLOYMENT_RETRY: Verb = Verb::cloud(
     "deployment retry",
     Never,
@@ -279,7 +279,8 @@ pub(crate) const DEPLOYMENT_RETRY: Verb = Verb::cloud(
 .docs("deploy/deployments.md")
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_SHOW: Verb =
-    Verb::cloud("deployment show", Never, deploy::show_command, deploy::show);
+    Verb::cloud("deployment show", Never, deploy::show_command, deploy::show)
+        .docs("troubleshooting/deployments.md");
 pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
     "deployment start",
     Never,
