@@ -626,17 +626,18 @@ fn follow(
     let mut last = None;
     let mut followed: Option<Followed> = None;
     let mut id = admitted.id.clone();
-    let mut number = admitted.number;
+    let mut tracked = admitted.clone();
     // A Cloud Deployment runs on without this process; a lost read says which one and where to watch it.
-    let lost = |error: Error, number: u64| {
+    let lost = |error: Error, tracked: &DeploymentSummary| {
         if runner.is_some() || error.report().code != RpcErrorCode::Unavailable {
             return error;
         }
         error
             .context(format!(
-                "Stopped following Deployment #{number}; it keeps running in Ployz Cloud."
+                "Stopped following Deployment {}; it keeps running in Ployz Cloud.",
+                tracked.label()
             ))
-            .hint(Hint::Inspect(show_hint(matches, number)))
+            .hint(Hint::Inspect(hint_for(matches, tracked)))
     };
     let mut unclaimed = Some(std::time::Instant::now() + UNCLAIMED);
     loop {
@@ -658,7 +659,7 @@ fn follow(
             }
             return followed.ok_or_else(Error::cancelled);
         }
-        let view = read.map_err(|error| lost(error, number))?;
+        let view = read.map_err(|error| lost(error, &tracked))?;
         let frame = progress::frame(&view);
         if let Some(followed) = followed.as_mut() {
             if let Some(progress) = followed.progress.as_mut() {
@@ -688,13 +689,14 @@ fn follow(
                 }
                 error
                     .context(format!(
-                        "Deployment #{number} was superseded, and Ployz Cloud stopped answering before its replacement could be read."
+                        "Deployment {} was superseded, and Ployz Cloud stopped answering before its replacement could be read.",
+                        tracked.label()
                     ))
                     .hint(Hint::Inspect(next(matches, &["deployment", "ls"])))
             })?;
             if let Some(newer) = newer {
-                id = newer.id;
-                number = newer.number;
+                id = newer.id.clone();
+                tracked = newer;
                 last = None;
                 continue;
             }
