@@ -11,8 +11,8 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerPath,
     ContainerRuntimeObservation, ContainerWant, CreationKey, DockerVolumeName, Drain,
     EnsureContainerRequest, InspectContainerRequest, Machine, MachineId, MachineTarget, Namespace,
-    NewContainer, ResolvedServiceSpec, RunTarget, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, SlotKey, UpdateOrder, op,
+    NewContainer, ResolvedServiceSpec, RunRotation, RunTarget, ServiceId, ServiceMount,
+    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, SlotKey, UpdateOrder, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -587,6 +587,7 @@ async fn run_container(
                 image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
             }),
+            rotation: RunRotation::Pending,
         },
     )
     .await

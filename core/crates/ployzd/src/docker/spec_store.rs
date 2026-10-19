@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::{self, File, OpenOptions},
     io::Write as _,
     os::unix::fs::{self as unix_fs, OpenOptionsExt, PermissionsExt},
@@ -40,6 +40,9 @@ pub struct MachineSpecStore {
     config_operations: Arc<Mutex<()>>,
     floors: Arc<Mutex<()>>,
     rotations: watch::Sender<()>,
+    /// Never used: keeps SQLite from checkpointing the WAL each time a call's own
+    /// connection closes as the last one.
+    _open: Arc<std::sync::Mutex<Connection>>,
 }
 
 pub(super) struct ConfigOperation<'a> {
@@ -58,12 +61,13 @@ impl MachineSpecStore {
     pub async fn open(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let path = path.into();
         let init_path = path.clone();
-        blocking(move || initialize(&init_path)).await?;
+        let open = blocking(move || initialize(&init_path)).await?;
         Ok(Self {
             path,
             config_operations: Arc::new(Mutex::new(())),
             floors: Arc::new(Mutex::new(())),
             rotations: watch::Sender::new(()),
+            _open: Arc::new(std::sync::Mutex::new(open)),
         })
     }
 
@@ -90,25 +94,31 @@ impl MachineSpecStore {
             .transpose()
     }
 
-    /// Record a copy's rotation and wake the observation publisher. The caller checks the edge first.
-    pub async fn set_rotation(
+    pub async fn rotations(
         &self,
-        container_id: &ContainerId,
-        rotation: &CopyRotation,
-    ) -> Result<(), Error> {
+        container_ids: Vec<ContainerId>,
+    ) -> Result<BTreeMap<ContainerId, CopyRotation>, Error> {
         let path = self.path.clone();
-        let container_id = container_id.to_string();
-        let rotation = serde_json::to_string(rotation)?;
-        blocking(move || {
-            connect(&path)?.execute(
-                "INSERT INTO rotations (id, rotation) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET rotation = excluded.rotation",
-                params![container_id, rotation],
-            )?;
-            Ok(())
+        let encoded = blocking(move || {
+            let connection = connect(&path)?;
+            let mut statement =
+                connection.prepare("SELECT rotation FROM rotations WHERE id = ?1")?;
+            let mut encoded = Vec::new();
+            for container_id in container_ids {
+                if let Some(rotation) = statement
+                    .query_row([container_id.to_string()], |row| row.get::<_, String>(0))
+                    .optional()?
+                {
+                    encoded.push((container_id, rotation));
+                }
+            }
+            Ok(encoded)
         })
         .await?;
-        self.rotations.send_replace(());
-        Ok(())
+        encoded
+            .into_iter()
+            .map(|(container_id, encoded)| Ok((container_id, serde_json::from_str(&encoded)?)))
+            .collect()
     }
 
     #[must_use]
@@ -169,6 +179,28 @@ impl MachineSpecStore {
 }
 
 impl ConfigOperation<'_> {
+    /// Also wakes the observation publisher. The caller checks the edge under this
+    /// same lock, so no removal lands between check and write.
+    pub async fn set_rotation(
+        &mut self,
+        container_id: &ContainerId,
+        rotation: &CopyRotation,
+    ) -> Result<(), Error> {
+        let path = self.store.path.clone();
+        let container_id = container_id.to_string();
+        let rotation = serde_json::to_string(rotation)?;
+        blocking(move || {
+            connect(&path)?.execute(
+                "INSERT INTO rotations (id, rotation) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET rotation = excluded.rotation",
+                params![container_id, rotation],
+            )?;
+            Ok(())
+        })
+        .await?;
+        self.store.rotations.send_replace(());
+        Ok(())
+    }
+
     pub async fn put(
         &mut self,
         container_id: &ContainerId,
@@ -386,7 +418,7 @@ fn garbage_collect_config_files(
     Ok(())
 }
 
-fn initialize(path: &Path) -> Result<(), Error> {
+fn initialize(path: &Path) -> Result<Connection, Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -403,7 +435,7 @@ fn initialize(path: &Path) -> Result<(), Error> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.execute_batch(SCHEMA)?;
-    Ok(())
+    Ok(connection)
 }
 
 fn connect(path: &Path) -> Result<Connection, Error> {
@@ -581,7 +613,13 @@ mod tests {
         assert_eq!(observed.r#gen, Some(Gen::FIRST));
 
         let held = CopyRotation::Held(DeploymentLogId::parse("d1").unwrap());
-        runtime.set_rotation(&id, &held).await.unwrap();
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&held)
+            .await
+            .unwrap();
         let restarted = ContainerRuntime::new(
             runtime.local_docker(),
             MachineSpecStore::open(runtime.spec_store_path_for_test())
@@ -599,7 +637,13 @@ mod tests {
         use ployz_core::CopyRotation;
 
         let (runtime, _fake, id) = runtime_with_running_container().await;
-        runtime.set_rotation(&id, &CopyRotation::Out).await.unwrap();
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&CopyRotation::Out)
+            .await
+            .unwrap();
         runtime.remove(&id, false, true).await.unwrap();
         let store = MachineSpecStore::open(runtime.spec_store_path_for_test())
             .await

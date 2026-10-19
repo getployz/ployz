@@ -193,15 +193,45 @@ impl RunningDeploy {
     ///
     /// # Errors
     /// Returns unavailable when session closure interrupts execution; mutations may have completed.
+    /// Rejects a second await.
     pub async fn finished(&self) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let handle = self
             .join
             .lock()
             .await
             .take()
-            .expect("deploy already finished");
-        let outcome = handle.await.expect("deploy task joins");
+            .ok_or_else(|| invalid_argument("Deploy outcome already awaited".into()))?;
+        let outcome = handle.await.map_err(|_| RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Deploy task failed".into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        })?;
         while self.next().await.is_some() {}
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_second_finished_is_a_typed_error() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(tx);
+        let running = RunningDeploy {
+            cancel: tokio_util::sync::CancellationToken::new(),
+            events: Mutex::new(Some(rx)),
+            join: Mutex::new(Some(tokio::spawn(async {
+                Ok(DeployOutcome::Success {
+                    completed: Vec::new(),
+                    services: Vec::new(),
+                })
+            }))),
+        };
+        assert!(running.finished().await.is_ok());
+        let second = running.finished().await.unwrap_err();
+        assert_eq!(second.code, RpcErrorCode::InvalidArgument);
     }
 }
