@@ -22,29 +22,16 @@ import { domainPortSchema } from "./domain-port";
 /** A public DNS name with a dot: labels of letters, digits and inner hyphens. The Store checks the rest. */
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/u;
 
-/**
- * The name as the Store keeps it: lowercase, with Unicode labels in punycode, the
- * same UTS-46 mapping core applies, and ASCII-lowercase when that mapping refuses
- * it. The URL parser would split `/`, `?`, `#` or `@` off as other URL parts and
- * drop control characters, so a name with one is refused, never cut short.
- */
-const toAscii = (hostname: string): string | null => {
-  if (/[\p{Cc}\s/\\?#@:%]/u.test(hostname)) return null;
-  try {
-    return new URL(`http://${hostname}`).hostname;
-  } catch {
-    return hostname.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
-  }
-};
+const NOT_A_HOSTNAME = /[\p{Cc}\s/\\?#@:%]/u;
 
-/**
- * A browser's IDNA data can be older than the Store's, so a Unicode name the URL
- * parser refuses goes to the Store as typed, and the Store decides.
- */
-const isHostname = (hostname: string) => {
-  const ascii = toAscii(hostname);
-  return ascii !== null && (HOSTNAME.test(ascii) || (/[^\p{ASCII}]/u.test(ascii) && ascii.includes(".")));
-};
+const isAscii = (hostname: string) => /^\p{ASCII}*$/u.test(hostname);
+
+const isAsciiHostname = (hostname: string) => isAscii(hostname) && HOSTNAME.test(hostname.toLowerCase());
+
+const isUnicodeNameForTheStore = (hostname: string) => !isAscii(hostname) && hostname.includes(".");
+
+const isHostname = (hostname: string) =>
+  !NOT_A_HOSTNAME.test(hostname) && (isAsciiHostname(hostname) || isUnicodeNameForTheStore(hostname));
 
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
@@ -67,7 +54,8 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
       }),
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
-          hostname: toAscii(hostname) ?? hostname,
+          // The Store keeps hostnames lowercase; the staged row should match it.
+          hostname: isAscii(hostname) ? hostname.toLowerCase() : hostname,
           targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({

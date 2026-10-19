@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustomDomainDialog } from "./CustomDomainDialog";
 
 afterEach(() => {
-  vi.unstubAllGlobals();
   cleanup();
   document.body.replaceChildren();
   document.body.style.removeProperty("overflow");
@@ -62,7 +61,7 @@ describe("CustomDomainDialog", () => {
     );
   });
 
-  it("saves a Unicode hostname as its punycode", async () => {
+  it.each(["Пример.рф", "\u1E9E.de", "\u212Acme.com"])("leaves %s to the Store as typed", async (value) => {
     const onSubmit = vi.fn();
     render(
       <CustomDomainDialog
@@ -72,49 +71,19 @@ describe("CustomDomainDialog", () => {
       />
     );
     fireEvent.change(screen.getByLabelText("Domain"), {
-      target: { value: "Пример.рф" },
+      target: { value: ` ${value} ` },
     });
     const save = screen.getByRole("button", { name: "Save route" });
     await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
     fireEvent.click(save);
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({ hostname: "xn--e1afmkfd.xn--p1ai" })
+        expect.objectContaining({ hostname: value })
       )
     );
   });
 
-  it("leaves a Unicode hostname the browser cannot convert to the Store", async () => {
-    vi.stubGlobal(
-      "URL",
-      class {
-        constructor() {
-          throw new TypeError("Invalid URL");
-        }
-      }
-    );
-    const onSubmit = vi.fn();
-    render(
-      <CustomDomainDialog
-        defaultTargetPort={3000}
-        onClose={vi.fn()}
-        onSubmit={onSubmit}
-      />
-    );
-    fireEvent.change(screen.getByLabelText("Domain"), {
-      target: { value: "\u04C0.com" },
-    });
-    const save = screen.getByRole("button", { name: "Save route" });
-    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
-    fireEvent.click(save);
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({ hostname: "\u04C0.com" })
-      )
-    );
-  });
-
-  it.each(["has space.com", "under_score.com", "*.example.com", "a.com/x", "user@a.com", "api.example.com\u0000"])(
+  it.each(["has space.com", "under_score.com", "*.example.com", "a.com/x", "user@a.com", "api.example.com\u0000", "\u1E9E.de/x", "\u1E9Ede"])(
     "refuses %s",
     async (value) => {
       render(
