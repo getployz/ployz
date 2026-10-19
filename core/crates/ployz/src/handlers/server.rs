@@ -12,7 +12,7 @@ use crate::cli::{
 };
 use ployz_core::{
     AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineName, MachineTarget, MachineUpdate,
-    PublicIpUpdate, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest, op,
+    PublicIpUpdate, RpcError, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
@@ -361,6 +361,11 @@ fn no_reachable_server(
     )
 }
 
+/// Whether `report` is [`no_reachable_server`]'s: Servers Cloud knows that didn't answer.
+pub(super) fn servers_unanswered(report: &RpcError) -> bool {
+    report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some()
+}
+
 pub(super) struct ConnectionOptions {
     config_path: PathBuf,
     context: Option<String>,
@@ -512,34 +517,46 @@ async fn apply_update(
 ) -> Result<(), Error> {
     let accepts_ingress = update.accepts_ingress;
     let updated = client
-        .invoke::<op::UpdateMachine>(
+        .invoke_answered::<op::UpdateMachine>(
             UpdateMachineRequest { update },
             &selector,
             Some(TARGET_RPC_TIMEOUT),
         )
-        .await;
+        .await
+        .map_err(|error| (error.unreplied(), RpcError::from(error)));
     let machine = match (updated, &seeding) {
         (Ok(updated), _) => updated.machine,
-        (Err(error), Some(seeding))
+        (Err((unreplied, error)), Some(seeding))
             if error.code == RpcErrorCode::Unavailable && !seeding.dialed_by.is_empty() =>
         {
             let name = seeding.target.as_ref().map_or_else(
                 || selector.as_str().to_owned(),
                 |target| target.name.to_string(),
             );
-            crate::ui::warn(format!("{name} unreachable; its record is unchanged."));
+            crate::ui::warn(if unreplied {
+                format!("{name} didn't answer, so its record may or may not have changed.")
+            } else {
+                format!("{name} couldn't take the change; its record is unchanged.")
+            });
             return crate::ui::emit(&json!({
                 "server": null,
                 "endpoint": seeding,
                 "target_error": error,
             }));
         }
-        (Err(error), _) if error.code == RpcErrorCode::Unavailable => {
+        (Err((true, error)), _) => {
             return Err(Error::from(error).context(format!(
                 "Server {selector} didn't answer, so the change may or may not have landed. Check it with ployz server ls once it's back, or run this on the Server."
             )));
         }
-        (Err(error), _) => return Err(error.into()),
+        (Err((false, error)), _) if error.code == RpcErrorCode::Unavailable => {
+            return Err(Error::from(error)
+                .context(format!(
+                    "Server {selector} answered but couldn't take the change, so nothing changed."
+                ))
+                .hint(Hint::Retry(super::typed_with(&[]))));
+        }
+        (Err((_, error)), _) => return Err(error.into()),
     };
     crate::ui::stream(format_args!("Updated Server {}.", machine.name));
     // The update is committed; starting the Ingress Proxy for a new ingress role is a

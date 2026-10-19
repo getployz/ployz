@@ -17,7 +17,7 @@ use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
     Error,
     data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
-    leaf_matches, store,
+    leaf_matches, store, typed_with,
 };
 use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
@@ -39,16 +39,21 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Reset)
 }
 
-/// A reset needs its Server to answer; one that is gone is forgotten instead.
+/// A reset needs its Server to answer. Servers that didn't answer may be gone, and one that
+/// is gone is forgotten instead; a Cloud that couldn't hand out the connections is retried.
 fn unanswered_reset(error: Error, matches: &ArgMatches, selector: &str) -> Error {
-    if error.report().code != RpcErrorCode::Unavailable {
-        return error;
+    let report = error.report();
+    if super::servers_unanswered(&report) {
+        let forget = super::super::rerun(
+            matches,
+            &["server", "forget", selector, "--confirm", "dead"],
+        );
+        return error.hint(Hint::Next(forget));
     }
-    let forget = super::super::rerun(
-        matches,
-        &["server", "forget", selector, "--confirm", "dead"],
-    );
-    error.hint(Hint::Next(forget))
+    if report.code == RpcErrorCode::Unavailable {
+        return error.hint(Hint::Retry(typed_with(&[])));
+    }
+    error
 }
 
 pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {

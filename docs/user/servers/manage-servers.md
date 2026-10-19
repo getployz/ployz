@@ -479,7 +479,8 @@ ployz server forget web-2 --confirm dead
 ```
 
 `ployz server rm` on a server that doesn't answer stops before it changes anything and prints that
-command as its next step.
+command as its next step. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm`
+again instead.
 
 When it is your only server, Ployz Cloud forgets it as it [forgets servers you
 deleted](#forget-servers-you-deleted). When none of several servers answers, forget them all that

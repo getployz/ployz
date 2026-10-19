@@ -376,12 +376,20 @@ impl Client {
         target: &MachineTarget,
         timeout: Option<Duration>,
     ) -> Result<T::Response, RpcError> {
-        let payload = T::into_request(request)
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(timeout, self.call_once::<T>(payload, Some(target)))
+        self.invoke_answered::<T>(request, target, timeout)
             .await
             .map_err(rpc_error)
+    }
+
+    /// [`Self::invoke`], keeping whether the failure came back from a daemon or no reply came.
+    pub(crate) async fn invoke_answered<T: Rpc>(
+        &self,
+        request: T::Request,
+        target: &MachineTarget,
+        timeout: Option<Duration>,
+    ) -> Result<T::Response, ConnectError> {
+        let payload = T::into_request(request).encode()?;
+        apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
     }
 
     /// One unary RPC from an already-shaped request body. No retry, as [`Self::invoke`].

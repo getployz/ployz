@@ -67,7 +67,7 @@ async fn a_new_endpoint_reaches_every_other_server_when_the_target_is_off_the_me
         "two, three now dial one at 203.0.113.9:51820."
     );
     assert!(
-        stderr.contains("one unreachable; its record is unchanged."),
+        stderr.contains("one didn't answer, so its record may or may not have changed."),
         "{stderr}"
     );
     assert!(
@@ -146,6 +146,64 @@ async fn a_target_that_does_not_answer_is_named_with_an_unknown_outcome() {
         "{result}"
     );
     assert_eq!(result.pointer("/error/code"), Some(&json!("unavailable")));
+}
+
+#[tokio::test]
+async fn a_target_that_refuses_says_nothing_changed() {
+    let mut refusing = entry('b');
+    refusing.update_unavailable = false;
+    refusing.update_refusal = Some(RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "Cluster store is not available".into(),
+        details: Value::Null,
+        cause: Vec::new(),
+    });
+    let (address, _two) = serve_discovery(refusing).await;
+    let config = std::env::temp_dir().join(format!("ployz-endpoint-{}.yaml", MachineId::random()));
+    std::fs::write(
+        &config,
+        format!("contexts:\n  lab:\n    connections:\n      - tcp: {address}\n"),
+    )
+    .unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .args(["--ployz-config", config.to_str().unwrap(), "--json"])
+        .args([
+            "server",
+            "set",
+            "one",
+            "--label-add",
+            "a=b",
+            "--context",
+            "lab",
+        ])
+        .output()
+        .await
+        .unwrap();
+    let _ = std::fs::remove_file(&config);
+    assert!(!output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.pointer("/error/message"),
+        Some(&json!(
+            "Server one answered but couldn't take the change, so nothing changed."
+        )),
+        "{result}"
+    );
+    assert_eq!(
+        result.pointer("/error/cause/0"),
+        Some(&json!("Cluster store is not available")),
+        "{result}"
+    );
+    let retry = result
+        .pointer("/error/details/retry")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        retry.contains(" server set one --label-add 'a=b' --context lab"),
+        "{result}"
+    );
 }
 
 #[tokio::test]

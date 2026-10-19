@@ -1284,6 +1284,29 @@ fn removing_a_server_that_does_not_answer_points_to_forget() {
 }
 
 #[test]
+fn removing_a_server_when_cloud_does_not_answer_says_to_retry_not_forget() {
+    let token = [
+        ("PLOYZ_TOKEN", "ployz_secret"),
+        ("PLOYZ_CLOUD_URL", "http://127.0.0.1:9"),
+    ];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unavailable",
+        "{json}"
+    );
+    assert_eq!(json.pointer("/error/details/next"), None, "{json}");
+    let retry = json
+        .pointer("/error/details/retry")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(retry.starts_with("ployz server rm web-1 --json"), "{json}");
+}
+
+#[test]
 fn server_show_falls_back_to_the_waiting_list_when_a_held_connection_reaches_nothing() {
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let offline = "b".repeat(32);

@@ -699,7 +699,12 @@ it.live(
         yield* database.drizzle.insert(enrollmentAllocation).values({
           organizationId: alice.organization.id,
           clusterKey: createHash("sha256").update(pairingSecret).digest("hex"),
-          assignments: [{ machine: { id: later, name: "box-node-2" } }] as never,
+          // The column admits any array: a name that isn't text stays out of the reply, and costs no connection.
+          assignments: [
+            { machine: { id: later, name: "box-node-2" } },
+            { machine: { id: "c".repeat(32), name: null } },
+            { machine: { id: "d".repeat(32), name: 7 } },
+          ] as never,
         });
         const offline = (yield* cli("POST", "server-access", alice)).json;
         assert.deepStrictEqual(offline.unreachable, [later]);

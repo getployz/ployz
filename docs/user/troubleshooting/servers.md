@@ -388,8 +388,8 @@ web-1 now dials web-2 at 203.0.113.20:51820.
 Updated Server web-2.
 ```
 
-If `web-2` still can't be reached, the second line reads `! web-2 unreachable; its record is
-unchanged.` and the command still succeeds. Run it again once both servers show up in `ployz server
+If `web-2` still can't be reached, the second line reads `! web-2 didn't answer, so its record may
+or may not have changed.` and the command still succeeds. Run it again once both servers show up in `ployz server
 ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
 server that still shows as not answering.
 

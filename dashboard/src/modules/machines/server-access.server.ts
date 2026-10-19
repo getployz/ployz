@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { Connection } from "@ployz/sdk";
 import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
@@ -17,6 +17,8 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
 /** One dial or Clear per Server; a Server that doesn't answer in time is unreachable or unconfirmed. */
 const SERVER_TIMEOUT_MS = 10_000;
 const SERVER_CONCURRENCY = 4;
+/** The column's check admits any array, so an assignment without a text name is left out of `names`. */
+const isNamed = Schema.is(Schema.Struct({ machine: Schema.Struct({ id: Schema.String, name: Schema.String }) }));
 
 /** A credential's Management Client label on every Server: `cli-` and the first 28 hex digits of its id. */
 export function serverAccessLabel(credentialId: string) {
@@ -116,7 +118,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     connections: results.flatMap(({ machine_id, management }) => management === null ? [] : [{ machine_id, management }]),
     unreachable: results.flatMap(({ machine_id, management }) => management === null ? [machine_id] : []),
     // Cloud holds only the names enrollment gave, so a Server the CLI can't reach shows by name where it can.
-    names: Object.fromEntries((allocation?.assignments ?? []).map(({ machine }) => [machine.id, machine.name])),
+    names: Object.fromEntries((allocation?.assignments ?? []).filter(isNamed).map(({ machine }) => [machine.id, machine.name])),
   } };
 });
 
