@@ -219,6 +219,7 @@ enum Token {
 #[derive(Debug, PartialEq, Eq)]
 enum Answered {
     Waiting,
+    Enrolling,
     Held(Hold, String),
     Unconfirmed(String),
 }
@@ -290,7 +291,7 @@ fn keep_answered_token(
 ) -> Result<Answered, Error> {
     let answered = install_outcome(next, install_with)?;
     let unconfirmed = match &answered {
-        Answered::Waiting => None,
+        Answered::Waiting | Answered::Enrolling => None,
         Answered::Unconfirmed(why) | Answered::Held(_, why) => Some(why),
     };
     match install_with.token {
@@ -359,11 +360,10 @@ fn lock_token_file(token_file: &Path) -> Result<TokenFileLock, Error> {
 fn install_outcome(next: Next, install_with: Install<'_>) -> Result<Answered, Error> {
     let cloud_url = install_with.cloud_url;
     match next {
-        Next::Wait { log, .. } => {
-            if let Some(line) = log {
-                crate::ui::note(line);
-            }
-            Ok(Answered::Waiting)
+        Next::Wait { .. } => Ok(Answered::Waiting),
+        Next::Enrolling => {
+            crate::ui::note("Cloud is ready to enroll this server. The check-in loop runs it.");
+            Ok(Answered::Enrolling)
         }
         Next::Enrolled => unreachable!("an install pass leaves enrolling to the loop"),
         Next::Held { hold, why, .. } => Ok(Answered::Held(hold, why)),
