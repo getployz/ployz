@@ -995,3 +995,75 @@ fn a_branch_shows_a_service_its_parent_removed_by_the_parents_name_for_it() {
         json!("${{ <deleted jobs>.PLOYZ_PRIVATE_DOMAIN }}/v2")
     );
 }
+
+#[test]
+fn an_edit_reads_the_removed_service_it_showed_after_a_second_removal_shares_its_name() {
+    let (store, who) = shop();
+    let jobs = |environment: &str, n: u8| {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at(environment),
+                    name: ServiceName::parse("jobs").unwrap(),
+                    image: Some("jobs:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    };
+    let remove = |environment: &str, n: u8| {
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at(environment),
+                    service: ServiceName::parse("jobs").unwrap(),
+                },
+            )
+            .unwrap();
+        deploy(&store, &who, environment, n, true);
+    };
+    let reference = json!("${{ jobs.PLOYZ_PRIVATE_DOMAIN }}");
+    jobs("production", 6);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.FIRST", reference.clone())],
+    );
+    deploy(&store, &who, "production", 1, true);
+    let mut create = branch("b", "production", &["web"]);
+    create.live = vec![node("db"), node("jobs")];
+    store.write(&who, &create).unwrap();
+    remove("production", 2);
+    jobs("b", 7);
+    set(&store, &who, "b", &[("web.env.SECOND", reference)]);
+    deploy(&store, &who, "b", 3, true);
+    let mut create = branch("c", "b", &["web"]);
+    create.live = vec![node("jobs")];
+    store.write(&who, &create).unwrap();
+    let first = || values(&store, &who, "c", "web")["env"]["FIRST"].clone();
+    // c's own value, so b's edits to its copy stay b's.
+    let shown = json!("${{ <deleted jobs>.PLOYZ_PRIVATE_DOMAIN }}/c");
+    set(&store, &who, "c", &[("web.env.FIRST", shown.clone())]);
+    assert_eq!(first(), shown);
+
+    // b's own jobs leaves as `<deleted jobs>` too, so c shows both by lineage.
+    set(&store, &who, "b", &[("web.env.FIRST", json!("plain"))]);
+    remove("b", 4);
+    set(
+        &store,
+        &who,
+        "c",
+        &[(
+            "web.env.FIRST",
+            json!(format!("{}/v2", shown.as_str().unwrap())),
+        )],
+    );
+    assert_eq!(
+        first(),
+        json!("${{ <deleted #00000006>.PLOYZ_PRIVATE_DOMAIN }}/c/v2")
+    );
+}

@@ -224,13 +224,12 @@ pub(crate) fn put_file(
         .files
         .get(&put.file)
         .map_or(&[][..], |file| file.content.as_slice());
-    let content = parts(
-        &put.file,
-        &put.content,
-        &names,
-        &[&environment.shown_names()],
-        old,
-    )?;
+    let (labels, removed) = (environment.shown_names(), environment.removed_names());
+    let shown = crate::variables::Shown {
+        labels: &labels,
+        removed: &removed,
+    };
+    let content = parts(&put.file, &put.content, &names, shown, old)?;
     let config = environment.config_mut(&put.config)?;
     let id = config.resource_id.clone();
     let old = config.files.get(&put.file);
@@ -585,7 +584,7 @@ fn parts(
     file: &ConfigFileName,
     text: &str,
     names: &BTreeMap<String, String>,
-    shown: &[&BTreeMap<String, String>],
+    shown: crate::variables::Shown<'_>,
     old: &[ValuePart],
 ) -> Result<Vec<ValuePart>, RpcError> {
     if text.len() > MAX_FILE_BYTES {

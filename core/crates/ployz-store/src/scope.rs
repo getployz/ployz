@@ -240,6 +240,16 @@ impl Environment {
         )
     }
 
+    /// The name each removed Service it records or inherits was last called, by
+    /// lineage, where a record has one; its own record first.
+    pub(crate) fn removed_names(&self) -> BTreeMap<String, String> {
+        self.inherited
+            .names()
+            .chain(self.removed.names())
+            .map(|(lineage, name)| (lineage.clone(), name.clone()))
+            .collect()
+    }
+
     /// Refuse with `conflict` unless Working State is still at `expect`.
     pub(crate) fn expect(&self, expect: Option<Revision>) -> Result<(), RpcError> {
         match expect {

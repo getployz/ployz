@@ -198,8 +198,12 @@ pub(crate) fn set(
         }
         (Some(Input::Text(text)), _) => {
             let old = current.map_or(&[][..], |current| current.value.parts());
-            let (parts, fingerprint) =
-                text_parts(key, &text, &names, &[&environment.shown_names()], old)?;
+            let (labels, removed) = (environment.shown_names(), environment.removed_names());
+            let shown = Shown {
+                labels: &labels,
+                removed: &removed,
+            };
+            let (parts, fingerprint) = text_parts(key, &text, &names, shown, old)?;
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
@@ -383,35 +387,59 @@ fn referrers(
     Ok(found)
 }
 
-/// The lineage each `${{ name.KEY }}` of an edit reads: the Service the first of
-/// `shown` (lineage → name as reads show it) to call it `name` names. A removed
-/// Service's, such as `${{ <deleted redis>.KEY }}`, only where the edited value,
-/// `old`, reads that `KEY` of it: an edit keeps the references it had and adds
-/// none to a removed Service.
+/// How an edit reads the Services its references name.
+#[derive(Clone, Copy)]
+pub(crate) struct Shown<'a> {
+    /// Each Service by lineage, as reads show it.
+    pub(crate) labels: &'a BTreeMap<String, String>,
+    /// The name each removed Service was last called, by lineage, where a record
+    /// has one.
+    pub(crate) removed: &'a BTreeMap<String, String>,
+}
+
+/// The lineage each `${{ name.KEY }}` of an edit reads: the Service `shown` labels
+/// `name`. A removed Service's, such as `${{ <deleted redis>.KEY }}`, only where the
+/// edited value, `old`, reads that `KEY` of it: an edit keeps the references it had
+/// and adds none to a removed Service. A `<deleted NAME>` no label matches reads the
+/// one Service `old` references that was last called `NAME`, as reads showed it
+/// before another removal of that name made both show by lineage.
 pub(crate) fn lineage_of<'a>(
-    shown: &'a [&'a BTreeMap<String, String>],
+    shown: Shown<'a>,
     old: &'a [ValuePart],
 ) -> impl FnMut(&str, &str) -> Option<String> + 'a {
     move |name, key| {
         let removed = is_deleted_owner(name);
-        let read = |lineage: &str| {
-            old.iter().any(|part| {
-                matches!(
-                    part,
-                    ValuePart::Ref {
-                        owner: ValuePartOwner::Service { lineage_id },
-                        key: reads,
-                    } if lineage_id == lineage && reads == key
-                )
+        let referenced = || {
+            old.iter().filter_map(|part| match part {
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Service { lineage_id },
+                    key: reads,
+                } => Some((lineage_id, reads)),
+                ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
             })
         };
-        shown
+        let labelled = shown
+            .labels
             .iter()
-            .flat_map(|shown| shown.iter())
             .filter(|(_, shown)| shown.as_str() == name)
             .map(|(lineage, _)| lineage)
-            .find(|lineage| !removed || read(lineage))
-            .cloned()
+            .find(|lineage| {
+                !removed || referenced().any(|(read, reads)| read == *lineage && reads == key)
+            });
+        if let Some(lineage) = labelled {
+            return Some(lineage.clone());
+        }
+        let last_called = name.strip_prefix("<deleted ")?.strip_suffix('>')?;
+        let mut alike: Vec<&String> = referenced()
+            .map(|(lineage, _)| lineage)
+            .filter(|lineage| shown.removed.get(*lineage).map(String::as_str) == Some(last_called))
+            .collect();
+        alike.sort();
+        alike.dedup();
+        match alike.as_slice() {
+            [lineage] => Some((*lineage).clone()),
+            _ => None,
+        }
     }
 }
 
@@ -421,7 +449,7 @@ pub(crate) fn text_parts(
     key: &VariableKey,
     text: &str,
     names: &BTreeMap<String, String>,
-    shown: &[&BTreeMap<String, String>],
+    shown: Shown<'_>,
     old: &[ValuePart],
 ) -> Result<(Vec<ValuePart>, String), RpcError> {
     validate_text(key, text)?;

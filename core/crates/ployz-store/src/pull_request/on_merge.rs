@@ -502,11 +502,20 @@ pub(crate) fn set_merge_value(
                 .filter_map(|parts| serde_json::from_value::<Vec<ValuePart>>(parts).ok())
                 .flatten()
                 .collect();
+            let labels = merge_names(&from, &landing.into);
+            let mut removed = landing.into.removed_names();
+            for (lineage, name) in merge_removals(&from, &landing.into).names() {
+                removed.insert(lineage.clone(), name.clone());
+            }
+            let shown = variables::Shown {
+                labels: &labels,
+                removed: &removed,
+            };
             let (parts, fingerprint) = variables::text_parts(
                 &VariableKey::parse(key)?,
                 value,
                 &landing.into.names(),
-                &[&merge_names(&from, &landing.into)],
+                shown,
                 &old,
             )?;
             let mut value = json!(variables::stored(parts));
