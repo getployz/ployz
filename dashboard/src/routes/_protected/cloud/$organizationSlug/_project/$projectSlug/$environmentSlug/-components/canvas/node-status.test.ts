@@ -1,4 +1,4 @@
-import type { DomainRow, NodeOutcome, RowId, ServiceListing } from "@ployz/sdk";
+import type { BuildView, DeployPreview, DomainRow, NodeOutcome, RowId, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
 import { asTestDouble } from "#/lib/test-double";
@@ -271,10 +271,18 @@ describe("deployChip", () => {
 
 describe("restartedServices", () => {
   const node = (type: string, name: string, outcome: string) => asTestDouble<NodeOutcome>()({ type, id: name, name, outcome, rows: [] });
+  const build = (service: string, status: string) => asTestDouble<BuildView>()({ service, status });
+  const planned = asTestDouble<DeployPreview>()({ operations: [] });
 
   it("names the Service nodes the Deploy starts or stops, not the unchanged ones or other kinds", () => {
     const nodes = [node("service", "web", "pending"), node("service", "api", "unchanged"), node("service", "worker", "deployed"), node("volume", "data", "pending")];
-    expect([...restartedServices({ nodes })]).toEqual(["web", "worker"]);
+    expect([...restartedServices({ nodes, preview: planned, builds: [] })]).toEqual(["web", "worker"]);
+  });
+
+  it("names only the Services it builds anew until its plan is recorded", () => {
+    const nodes = ["api", "web", "static", "dockerfile"].map((name) => node("service", name, "pending"));
+    const builds = [build("api", "building"), build("static", "reused"), build("dockerfile", "reused")];
+    expect([...restartedServices({ nodes, preview: null, builds })]).toEqual(["api"]);
   });
 });
 
