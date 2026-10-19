@@ -131,7 +131,7 @@ read_fleet_token() {
     trap 'stty "$tty_mode" < "$TTY"; exit 130' HUP INT TERM
     stty -echo < "$TTY" || error "Could not turn off echo on the terminal, so the Fleet Token isn't read from it."
     # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
-    printf 'Fleet Token: ' >> "$TTY"
+    printf 'Fleet Token (Servers > Add servers in Ployz Cloud): ' >> "$TTY"
     read -r FLEET_TOKEN < "$TTY" || FLEET_TOKEN=
     stty "$tty_mode" < "$TTY"
     trap - HUP INT TERM

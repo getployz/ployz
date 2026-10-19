@@ -35,7 +35,7 @@ def run(shell, env, mode):
     os.close(script_write)
     output = b''
     deadline = time.monotonic() + 10
-    while b'Fleet Token: ' not in output:
+    while b'Fleet Token (Servers > Add servers in Ployz Cloud): ' not in output:
         assert time.monotonic() < deadline, (shell, mode, output)
         if select.select([master], [], [], .01)[0]:
             output += os.read(master, 65536)
