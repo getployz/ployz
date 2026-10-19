@@ -77,6 +77,7 @@ const customDomainFormOptions = appFormOptions.strictSchema({
 export function CustomDomainDialog({
   route,
   initial,
+  refusal,
   hostnameFixed = false,
   defaultTargetPort,
   onClose,
@@ -85,6 +86,8 @@ export function CustomDomainDialog({
   route?: CustomDomain;
   /** A new domain's typed values, as before the Store refused them. */
   initial?: CustomDomain;
+  /** Why the Store refused `initial`, shown until the hostname changes. */
+  refusal?: string;
   /** Editing changes only the port: a Store domain is addressed by its hostname. */
   hostnameFixed?: boolean;
   defaultTargetPort: number | null;
@@ -125,6 +128,7 @@ export function CustomDomainDialog({
                     className="font-mono"
                     disabled={hostnameFixed && route !== undefined}
                     placeholder="api.example.com"
+                    error={field.value === initial?.hostname ? refusal : undefined}
                   />
                 )}
               </form.Field>
