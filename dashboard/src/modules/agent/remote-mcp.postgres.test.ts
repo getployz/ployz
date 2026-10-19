@@ -337,6 +337,16 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
     expect(yield* agent.call("environment_show", SHOP)).toMatchObject({ isError: false, body: { ok: true } });
   }).pipe(Effect.scoped), 30_000);
 
+it.live("a call missing an argument is refused in the tools' own shape, not the transport's", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    for (const name of ["project_create", "docs"]) {
+      const refused = yield* Effect.promise(() => agent.client.callTool({ name, arguments: {} }));
+      expect(refused).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument", writes: "none" } } });
+    }
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
