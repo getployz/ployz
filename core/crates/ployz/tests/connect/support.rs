@@ -194,6 +194,8 @@ pub(super) struct DiscoveryService {
     /// Copies a want touched, with their rotation; removed copies leave. A listed
     /// Container no want touched keeps the rotation it was listed with.
     copies: Arc<Mutex<BTreeMap<ContainerId, ployz_core::ContainerObservation>>>,
+    /// What each proxy last routed, kept by the real rule.
+    served: Arc<Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>>,
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     /// Inspect fails, so who manages the Machine can't be read.
     pub(super) inspect_fails: bool,
@@ -270,6 +272,7 @@ impl DiscoveryService {
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             pointers: Arc::new(Mutex::new(BTreeMap::new())),
             copies: Arc::default(),
+            served: Arc::default(),
             management_clients: Arc::default(),
             inspect_fails: false,
             leave_unavailable: false,
@@ -381,7 +384,7 @@ impl DiscoveryService {
         Ok((ployz_core::ContainerNow::Present(copy), health))
     }
 
-    /// Every Machine's proxy routes exactly the Service's In copies.
+    /// Each Machine's proxy routes by the real proxy rule, seeing every copy addressed.
     fn routes(&self, service: &QualifiedService) -> RoutesRead {
         let mut copies: BTreeMap<ContainerId, ployz_core::ContainerObservation> = self
             .listed_containers
@@ -391,18 +394,40 @@ impl DiscoveryService {
             .map(|listed| (listed.container_id, listed.clone()))
             .collect();
         copies.extend(self.copies.lock().unwrap().clone());
-        let routed: std::collections::BTreeSet<ContainerId> = copies
-            .values()
-            .filter(|copy| {
-                copy.identity() == *service && *copy.rotation() == ployz_core::CopyRotation::In
-            })
-            .map(|copy| copy.container_id)
-            .collect();
+        let siblings = ployz_core::service_containers(
+            copies
+                .into_values()
+                .filter(|copy| copy.identity() == *service)
+                .map(|mut copy| {
+                    copy.try_update(|parts| {
+                        parts.address = parts.address.or(Some(ployz_core::ContainerAddress(
+                            "10.210.1.2".parse().unwrap(),
+                        )));
+                    })
+                    .unwrap();
+                    copy
+                }),
+        );
+        let mut served = self.served.lock().unwrap();
         RoutesRead {
             routes: self
                 .machines
                 .iter()
-                .map(|observed| (observed.machine.id, Some(routed.clone())))
+                .map(|observed| {
+                    let current = served.entry(observed.machine.id).or_default();
+                    let next = ployz_core::proxy_routes(&siblings, |_| false, current);
+                    let route = next.get(service).cloned().unwrap_or_default();
+                    let listed = route
+                        .iter()
+                        .map(|serving| serving.as_observation().container_id)
+                        .collect();
+                    if next.contains_key(service) {
+                        current.insert(service.clone(), route);
+                    } else {
+                        current.remove(service);
+                    }
+                    (observed.machine.id, Some(listed))
+                })
                 .collect(),
             complete: true,
             ..RoutesRead::default()
