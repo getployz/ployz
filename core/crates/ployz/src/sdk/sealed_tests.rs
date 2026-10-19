@@ -384,3 +384,20 @@ async fn a_names_read_after_a_failure_shows_lines_again() {
     assert_eq!(messages(&shown(&reader).await), "after [secret TOKEN]\n");
 }
 
+#[tokio::test(start_paused = true)]
+async fn close_ends_every_names_wait() {
+    let names = SealedNames::new();
+    let pending = tokio::spawn({
+        let names = names.clone();
+        async move { names.wanted().await }
+    });
+    tokio::task::yield_now().await;
+    names.close();
+    tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+        .await
+        .expect("a pending wait resolves on close")
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), names.wanted())
+        .await
+        .expect("a later wait resolves at once");
+}

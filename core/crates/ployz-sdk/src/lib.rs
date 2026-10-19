@@ -1030,7 +1030,7 @@ pub fn ployz_version() -> String {
 }
 
 /// The Sealed names one log request scrubs under. Feed it every read of the Store's
-/// `sealed_names`; readers given it wait for the first read and hide lines once a read fails.
+/// `sealed_names`; readers given it wait for the first read and hide lines while the last read failed.
 #[napi]
 pub struct SealedNames {
     inner: sdk::SealedNames,
@@ -1052,10 +1052,15 @@ impl SealedNames {
             read: std::sync::Mutex::new(Some(self.inner.begin())),
         }
     }
-    /// Resolves once a reader needs names newer than the last read.
+    /// Resolves once a reader needs names newer than the last read, or at once after `close`.
     #[napi]
     pub async fn wanted(&self) {
         self.inner.wanted().await;
+    }
+    /// End the request: every `wanted`, pending or later, resolves at once.
+    #[napi]
+    pub fn close(&self) {
+        self.inner.close();
     }
 }
 

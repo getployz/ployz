@@ -11,7 +11,7 @@ use ployz_store::tools::{Channel, FrameScrub, SealedForms, SealedValues};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, Notify, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -56,6 +56,7 @@ struct State {
     read: watch::Sender<Arc<Read>>,
     begun: AtomicU64,
     wanted: Notify,
+    closed: AtomicBool,
     envs: std::sync::Mutex<BTreeMap<(MachineId, ContainerId), EnvRead>>,
     none: Arc<SealedForms>,
 }
@@ -102,6 +103,7 @@ impl SealedNames {
                 })),
                 begun: AtomicU64::new(0),
                 wanted: Notify::new(),
+                closed: AtomicBool::new(false),
                 envs: std::sync::Mutex::default(),
                 none: Arc::new(SealedForms::none()),
             }),
@@ -117,9 +119,18 @@ impl SealedNames {
         }
     }
 
-    /// Resolves once a reader needs names newer than the last read.
+    /// Resolves once a reader needs names newer than the last read, or at once after `close`.
     pub async fn wanted(&self) {
-        self.shared.wanted.notified().await;
+        let wanted = self.shared.wanted.notified();
+        if !self.shared.closed.load(Ordering::SeqCst) {
+            wanted.await;
+        }
+    }
+
+    /// End the request: every `wanted`, pending or later, resolves at once.
+    pub fn close(&self) {
+        self.shared.closed.store(true, Ordering::SeqCst);
+        self.shared.wanted.notify_waiters();
     }
 
     fn want(&self) {
