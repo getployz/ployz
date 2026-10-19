@@ -202,8 +202,10 @@ impl Refusal {
         self
     }
 
+    /// Whether the same call can succeed later: not after a claim, nor when the
+    /// agent must first pick one of `valid`.
     pub(crate) fn retries(&self) -> bool {
-        !matches!(self.fix(), Some(Fix::Claim { .. }))
+        !matches!(self.fix(), Some(Fix::Claim { .. })) && self.code != RpcErrorCode::Ambiguous
     }
 
     /// The structured fix, if a human must act.

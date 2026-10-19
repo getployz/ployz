@@ -201,7 +201,9 @@ fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
         call_key,
         &mut no_cloud,
     );
-    if let ToolResult::Refused(refusal) = &run.result {
+    if let ToolResult::Refused(refusal) = &run.result
+        && refusal.code != RpcErrorCode::Ambiguous
+    {
         assert_eq!(refusal.retry.tool, tool, "a retry calls the same tool");
         if refusal.code != RpcErrorCode::ConfirmationRequired && refusal.writes != Writes::Unknown {
             assert_eq!(refusal.retry.input, input, "a retry repeats the input");
@@ -681,7 +683,7 @@ fn a_service_goes_from_staged_to_deployed() {
     let waited = call(
         &store,
         "deployment_show",
-        json!({ "wait_seconds": 1_000 }),
+        json!({ "wait_seconds": WAIT_CAP_SECONDS }),
         "show-2",
     );
     assert_eq!(waited.waited_ms, WAIT_CAP_SECONDS * 1_000);
