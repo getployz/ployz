@@ -671,6 +671,16 @@ pub enum PlanError {
         /// Each copy and its role, in Machine order.
         copies: Vec<ployz_core::KnownCopy>,
     },
+    /// No observed copy is a writer, and a silent Machine may hold it.
+    #[error(
+        "{machine} did not answer, so Volume {name}'s copies are unknown. Bring {machine} back, or deploy the other services by name"
+    )]
+    CopiesUnknown {
+        /// The Volume, as its owner named it.
+        name: String,
+        /// The Machine whose storage was not read.
+        machine: MachineName,
+    },
     /// The selected Machine has no usable ZFS storage preparation.
     #[error(
         "Server '{machine}' is Docker only and cannot host Managed volumes; pick a Server with Managed volumes, or keep this data in a Docker volume instead (ployz volume add NAME --docker)"
@@ -786,6 +796,7 @@ impl PlanError {
             error @ (Self::ConflictingHostPublications { .. }
             | Self::HostPortConflict { .. }
             | Self::CapacityUnknown
+            | Self::CopiesUnknown { .. }
             | Self::InsufficientCapacity
             | Self::NoEligibleMachines { .. }
             | Self::ServiceModeCannotChange

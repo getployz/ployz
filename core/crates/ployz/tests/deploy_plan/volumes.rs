@@ -767,7 +767,9 @@ fn a_silent_machine_leaves_the_writer_unknown_instead_of_naming_a_copy() {
         snapshot.machines.push(machine('3', "third"));
         match silent {
             None => snapshot.storage_capacity.remove(&machine_id('3')),
-            Some(error) => snapshot.storage_capacity.insert(machine_id('3'), Err(error)),
+            Some(error) => snapshot
+                .storage_capacity
+                .insert(machine_id('3'), Err(error)),
         };
 
         let error = preview_deploy(&intent, &snapshot).unwrap_err();
