@@ -2,6 +2,8 @@
 //! text, where `${{ KEY }}` and `${{ service.KEY }}` reference other variables, or
 //! a secret. Reads show a secret as `{"secret": true}`, and writing that back keeps
 //! it; a new secret arrives as `{"secret": "…"}` and is sealed before it is stored.
+//! `{"secret": {"generate": true}}` has the Store make a random secret and seal it, so
+//! its value never leaves the Store; a variable that already holds a sealed secret keeps it.
 //! `exported` marks a variable other Services are meant to reference.
 
 use std::collections::BTreeMap;
@@ -14,6 +16,7 @@ use ployz_core::config::{
     parse_variable_template, render_variable_parts, resolve_config_file, resolve_variables,
 };
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
+use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Map, Value, json};
 
 use crate::error;
@@ -57,6 +60,8 @@ enum Input {
     /// `{"secret": true}` or `{"secret": false}`: keep the stored secret.
     Keep,
     Seal(String),
+    /// `{"secret": {"generate": true}}`: a random secret, unless one is stored already.
+    Generate,
 }
 
 /// A variable's value as reads show it: text with references by Service name,
@@ -175,6 +180,21 @@ pub(crate) fn set(
         .variables
         .iter()
         .find(|variable| variable.key == key.as_str());
+    let seal = |plaintext: String| -> Result<_, RpcError> {
+        validate_text(key, &plaintext)?;
+        let typed = typed_address::in_sealed(&plaintext, key, &others)?;
+        let fingerprint = sealing.fingerprint(&plaintext);
+        let value = match current {
+            // Sealing the same secret again changes nothing.
+            Some(current) if secret(current) && current.value_fingerprint == fingerprint => {
+                current.value.clone()
+            }
+            Some(_) | None => SavedVariableValue::Secret {
+                encrypted_value: Some(sealing.seal(&plaintext)),
+            },
+        };
+        Ok((value, fingerprint, typed))
+    };
     let (value, fingerprint, typed) = match (input, current) {
         (None, None) => return Err(invalid(key, "a new variable needs a value")),
         (None, Some(current)) => (
@@ -188,6 +208,17 @@ pub(crate) fn set(
             None,
         ),
         (Some(Input::Keep), _) => return Err(invalid(key, "it holds no secret to keep")),
+        // A retried edit must not rotate a secret its referrers and a database already use.
+        (Some(Input::Generate), Some(current))
+            if matches!(current.value, SavedVariableValue::Secret { .. }) =>
+        {
+            (
+                current.value.clone(),
+                current.value_fingerprint.clone(),
+                None,
+            )
+        }
+        (Some(Input::Generate), _) => seal(generated_secret()?)?,
         (Some(Input::Text(_)), Some(current)) if secret(current) => {
             return Err(error::conflict(
                 format!(
@@ -207,21 +238,7 @@ pub(crate) fn set(
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
-        (Some(Input::Seal(plaintext)), current) => {
-            validate_text(key, &plaintext)?;
-            let typed = typed_address::in_sealed(&plaintext, key, &others)?;
-            let fingerprint = sealing.fingerprint(&plaintext);
-            let value = match current {
-                // Sealing the same secret again changes nothing.
-                Some(current) if secret(current) && current.value_fingerprint == fingerprint => {
-                    current.value.clone()
-                }
-                Some(_) | None => SavedVariableValue::Secret {
-                    encrypted_value: Some(sealing.seal(&plaintext)),
-                },
-            };
-            (value, fingerprint, typed)
-        }
+        (Some(Input::Seal(plaintext)), _) => seal(plaintext)?,
     };
     let next = SavedVariableIntent {
         id: current.map_or_else(
@@ -582,6 +599,11 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
             Some(Value::String(plaintext)) if !plaintext.is_empty() => {
                 Ok(Input::Seal(plaintext.clone()))
             }
+            Some(Value::Object(asked))
+                if asked.len() == 1 && asked.get("generate") == Some(&Value::Bool(true)) =>
+            {
+                Ok(Input::Generate)
+            }
             Some(_) | None => Err(invalid(key, "expected {\"secret\": true} or a new secret")),
         },
         Value::Null => Err(invalid(key, "null never deletes a variable; unset it")),
@@ -589,6 +611,29 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
             Err(invalid(key, "expected text or {\"secret\": true}"))
         }
     }
+}
+
+/// 32 random letters, the shape of the dashboard's database passwords.
+fn generated_secret() -> Result<String, RpcError> {
+    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    // 208 is the largest multiple of 52 a byte holds, so every letter is equally likely.
+    const LIMIT: u8 = 208;
+    let random = SystemRandom::new();
+    let mut secret = String::with_capacity(32);
+    let mut bytes = [0_u8; 64];
+    while secret.len() < 32 {
+        random
+            .fill(&mut bytes)
+            .map_err(|_| error::unavailable("No randomness to make a secret from"))?;
+        secret.extend(
+            bytes
+                .iter()
+                .filter(|byte| **byte < LIMIT)
+                .filter_map(|byte| LETTERS.get(usize::from(byte % 52)).copied().map(char::from))
+                .take(32_usize.saturating_sub(secret.len())),
+        );
+    }
+    Ok(secret)
 }
 
 fn exported_flag(key: &VariableKey, value: Value) -> Result<bool, RpcError> {
