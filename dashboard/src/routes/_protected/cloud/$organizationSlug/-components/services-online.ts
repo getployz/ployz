@@ -4,7 +4,7 @@ import { getRuntimeCollections, isIncompleteObservation, type RuntimeLensStatus,
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 
-/** Runtime evidence for services-online summaries; incomplete evidence counts as unavailable. `offline`: the Servers that read Offline. */
+/** Runtime evidence for services-online summaries; incomplete evidence counts as unavailable. */
 export function useRuntimeServices(organizationSlug: string) {
   const scope = useCollectionScope();
   const { data: runtimeServices } = useLiveQuery(getRuntimeCollections(organizationSlug, scope).services);
