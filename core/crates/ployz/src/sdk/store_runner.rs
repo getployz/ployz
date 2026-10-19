@@ -566,8 +566,16 @@ impl Run {
         let mut tracker = RowTracker::default();
         let mut pending = BTreeMap::new();
         while let Some(event) = running.next().await {
-            let ployz_core::DeployEvent::Progress { rows, .. } = event else {
-                continue;
+            let rows = match event {
+                ployz_core::DeployEvent::Progress { rows, .. } => rows,
+                ployz_core::DeployEvent::Warning { warning } => {
+                    if let Err(error) = self.record(RunEvidence::Warned(warning)).await {
+                        tracing::warn!(%error, "couldn't record a Deploy warning");
+                    }
+                    continue;
+                }
+                ployz_core::DeployEvent::Outcome { .. }
+                | ployz_core::DeployEvent::ImagesPruned { .. } => continue,
             };
             for mut row in tracker.changes(&rows) {
                 let container = tracker.container(&row);

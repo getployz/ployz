@@ -13,13 +13,14 @@ use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
-    DependencyHealthFailure, DeployEvent, DeploymentLogId, DockerVolumeId, Drain, ExecutionError,
-    FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, Hold, HookFailure,
-    InspectContainerRequest, ListContainersRequest, MachineAction, MachineId, MachineTarget,
-    MembershipObservation, Namespace, NewContainer, OperationPhase, PublishServingPointerRequest,
-    PullPolicy, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, Retry, RpcError,
-    RpcErrorCode, RunTarget, ServiceOutcome, ServingPointer, ServingPointerPublication,
-    ServingPointerRead, SlotKey, StopOptions, op,
+    DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain,
+    ExecutionError, ExposedPort, FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure,
+    HealthVerdict, Hold, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
+    MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
+    OperationPhase, PortPublication, PublishServingPointerRequest, PullPolicy, QualifiedService,
+    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RpcError, RpcErrorCode, RunTarget,
+    ServiceName, ServiceOutcome, ServingPointer, ServingPointerPublication, ServingPointerRead,
+    SlotKey, StopOptions, TransportProtocol, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -164,12 +165,12 @@ pub(super) trait MachineOperations {
         spec: &ResolvedServiceSpec,
     ) -> Result<bool, RpcError>;
     /// Make the image `spec` runs present on `machine_id`, pulled as its policy
-    /// asks, before any Container changes.
+    /// asks, before any Container changes, and answer what the Machine reports of it.
     async fn ensure_image(
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-    ) -> Result<(), RpcError>;
+    ) -> Result<ImagePulled, RpcError>;
     async fn read_pointer(
         &self,
         service: &QualifiedService,
@@ -185,7 +186,7 @@ impl MachineOperations for Client {
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-    ) -> Result<(), RpcError> {
+    ) -> Result<ImagePulled, RpcError> {
         crate::image::pull_cluster_image(
             self,
             machine_id,
@@ -458,7 +459,7 @@ restart_policy! {
     wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
     wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
     wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
-    wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<(), RpcError>;
+    wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<ImagePulled, RpcError>;
     wait fn read_pointer(&self, service: &QualifiedService) -> Result<ServingPointerRead, RpcError>;
     once("a compare-and-set: a resend after a lost reply reads its own write as Superseded")
     fn publish_pointer(&self, request: PublishServingPointerRequest) -> Result<ServingPointerPublication, RpcError>;
@@ -572,8 +573,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         .collect();
     let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
 
-    if let Err((index, error)) = pull_images(&client, operations).await {
-        return untouched(&progress, &schedule, operations, index, error);
+    match pull_images(&client, operations).await {
+        Ok(warnings) => warnings
+            .into_iter()
+            .for_each(|warning| progress.warn(warning)),
+        Err((index, error)) => return untouched(&progress, &schedule, operations, index, error),
     }
 
     let rows = Rows::new(plan, run);
@@ -1076,10 +1080,12 @@ enum Done {
     ),
 }
 
+/// Pull every image the plan runs, then warn about each Service whose image exposes
+/// TCP ports none of its domains send to.
 async fn pull_images<C: MachineOperations>(
     client: &C,
     operations: &[DeployOperation],
-) -> Result<(), (usize, ExecutionError)> {
+) -> Result<Vec<DeployWarning>, (usize, ExecutionError)> {
     // One pull per image on each Machine, under the strongest policy any of its
     // Services asks for: what `Always` pulls also satisfies `Missing` and `Never`.
     let mut pulls: BTreeMap<(MachineId, &str), (usize, &ResolvedServiceSpec)> = BTreeMap::new();
@@ -1105,11 +1111,75 @@ async fn pull_images<C: MachineOperations>(
             }),
     )
     .await;
-    results
+    let mut exposed = BTreeMap::new();
+    let mut failure: Option<(usize, ExecutionError)> = None;
+    for (key, result) in pulls.keys().zip(results) {
+        match result {
+            Ok(pulled) => {
+                exposed.insert(*key, pulled.exposed_ports);
+            }
+            Err(error) => {
+                if failure.as_ref().is_none_or(|(first, _)| error.0 < *first) {
+                    failure = Some(error);
+                }
+            }
+        }
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(port_mismatches(operations, &exposed)),
+    }
+}
+
+/// One warning per Service whose pulled image exposes TCP ports and whose domains
+/// send to none of them. A Machine that reports no ports claims nothing.
+fn port_mismatches(
+    operations: &[DeployOperation],
+    exposed: &BTreeMap<(MachineId, &str), Vec<ExposedPort>>,
+) -> Vec<DeployWarning> {
+    let mut services: BTreeMap<&ServiceName, (&str, BTreeSet<u16>, BTreeSet<u16>)> =
+        BTreeMap::new();
+    for operation in operations {
+        let Some(spec) = operation.spec() else {
+            continue;
+        };
+        let image = spec.container.image.as_str();
+        let tcp = exposed
+            .get(&(operation.machine_id(), image))
+            .into_iter()
+            .flatten()
+            .filter(|port| port.protocol == TransportProtocol::Tcp)
+            .map(|port| port.port.get())
+            .collect::<BTreeSet<_>>();
+        let routed = spec
+            .ports
+            .iter()
+            .filter_map(|port| match port {
+                PortPublication::Ingress { container_port, .. } => Some(container_port.get()),
+                PortPublication::Host { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if tcp.is_empty() || routed.is_empty() {
+            continue;
+        }
+        let service = services
+            .entry(&spec.name)
+            .or_insert_with(|| (image, BTreeSet::new(), BTreeSet::new()));
+        service.1.extend(tcp);
+        service.2.extend(routed);
+    }
+    services
         .into_iter()
-        .filter_map(Result::err)
-        .min_by_key(|(index, _)| *index)
-        .map_or(Ok(()), Err)
+        .filter(|(_, (_, exposed, routed))| exposed.is_disjoint(routed))
+        .map(
+            |(service, (image, exposed, routed))| DeployWarning::ImagePortMismatch {
+                service: service.clone(),
+                image: image.to_owned(),
+                exposed: exposed.into_iter().collect(),
+                routed: routed.into_iter().collect(),
+            },
+        )
+        .collect()
 }
 
 fn strength(policy: PullPolicy) -> u8 {

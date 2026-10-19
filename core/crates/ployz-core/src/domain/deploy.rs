@@ -732,6 +732,15 @@ pub enum DeployWarning {
         dependent: QualifiedService,
         dependency: QualifiedService,
     },
+    /// The pulled image exposes TCP ports, and none of them is a port the Service's
+    /// domains send traffic to. The Machines that pulled the image report `exposed`;
+    /// both lists are sorted without repeats.
+    ImagePortMismatch {
+        service: ServiceName,
+        image: String,
+        exposed: Vec<u16>,
+        routed: Vec<u16>,
+    },
 }
 
 impl DeployWarning {
@@ -750,7 +759,8 @@ impl DeployWarning {
             | Self::StorageObservationUnknown { .. }
             | Self::IngressHostname { .. }
             | Self::ObserverRelativeHostnameConflict
-            | Self::SkippedDependencyHealth { .. } => None,
+            | Self::SkippedDependencyHealth { .. }
+            | Self::ImagePortMismatch { .. } => None,
         }
     }
 }
@@ -783,8 +793,27 @@ impl Display for DeployWarning {
                 f,
                 "--skip-health treats dependency {dependent} -> {dependency} as service_started"
             ),
+            Self::ImagePortMismatch {
+                service,
+                image,
+                exposed,
+                routed,
+            } => write!(
+                f,
+                "{service}'s image {image} exposes {}; its domains send to {}. Set the domain port or PORT.",
+                join_ports(exposed),
+                join_ports(routed),
+            ),
         }
     }
+}
+
+fn join_ports(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Machine RPC invoked while executing one Deploy Operation.
@@ -980,6 +1009,8 @@ pub enum DeployEvent {
     },
     /// Image Cleanup after the Outcome; only when the caller left cleanup automatic.
     ImagesPruned { report: super::ImageCleanupReport },
+    /// Something the Deploy found while executing that it does not stop for.
+    Warning { warning: DeployWarning },
 }
 
 /// One planned operation plus its current execution status.

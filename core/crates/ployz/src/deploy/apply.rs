@@ -68,13 +68,12 @@ pub(crate) async fn apply_requested(
     tokio::pin!(confirm);
     let outcome = loop {
         tokio::select! {
-            event = rx.recv(), if !rx.is_closed() || !rx.is_empty() => if let Some(DeployEvent::Progress { rows, .. }) = event {
-                evidence.observe(&rows);
-                progress.update(evidence.frame());
+            event = rx.recv(), if !rx.is_closed() || !rx.is_empty() => if let Some(event) = event {
+                show(event, &mut evidence, &mut progress);
             },
             outcome = &mut confirm => {
                 while let Ok(event) = rx.try_recv() {
-                    if let DeployEvent::Progress { rows, .. } = event { evidence.observe(&rows); progress.update(evidence.frame()); }
+                    show(event, &mut evidence, &mut progress);
                 }
                 break outcome;
             }
@@ -125,6 +124,20 @@ pub(crate) async fn apply_requested(
         )
         .into()),
     }
+}
+
+/// Fold one live Deploy event into the progress display, recording any warning in
+/// the JSON result too.
+fn show(event: DeployEvent, evidence: &mut report::Direct, progress: &mut Progress) {
+    match event {
+        DeployEvent::Progress { rows, .. } => evidence.observe(&rows),
+        DeployEvent::Warning { warning } => {
+            ui::record_warning(warning.to_string());
+            evidence.notice(warning);
+        }
+        DeployEvent::Outcome { .. } | DeployEvent::ImagesPruned { .. } => return,
+    }
+    progress.update(evidence.frame());
 }
 
 /// A direct follow-up failure retains diagnostic evidence until the outer command adds context.

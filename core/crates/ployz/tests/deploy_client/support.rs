@@ -893,7 +893,7 @@ impl FakeMachine for DeployService {
             policy: pull.policy,
             mutations_before: self.mutating_rpcs.load(Ordering::SeqCst),
         });
-        encoded(RpcResponse::from(ployz_core::ImagePulled {}))
+        encoded(RpcResponse::from(ployz_core::ImagePulled::default()))
     }
     async fn pull_image_from_machine(
         &self,

@@ -12,8 +12,8 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, RemoveImageOptions},
 };
 use ployz_core::{
-    DiskSpace, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved, PullPolicy,
-    RegistryAuth,
+    DiskSpace, ExposedPort, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved,
+    PullPolicy, RegistryAuth,
 };
 
 use super::{ContainerRuntime, Error};
@@ -29,7 +29,8 @@ const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const PRESSURE_FREE_PERCENT: u64 = 20;
 
 impl ContainerRuntime {
-    /// Make `image` present as `policy` asks, then confirm Docker holds it.
+    /// Make `image` present as `policy` asks, confirm Docker holds it, and answer
+    /// the ports its config exposes.
     ///
     /// # Errors
     ///
@@ -39,16 +40,21 @@ impl ContainerRuntime {
         image: &str,
         policy: PullPolicy,
         auth: Option<&RegistryAuth>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<ExposedPort>, Error> {
         let docker = &self.docker.client;
         crate::docker_image::prepare_image(docker, image, policy, auth)
             .await
             .map_err(Error::ImagePull)?;
-        docker
+        let inspect = docker
             .inspect_image(image)
             .await
             .map_err(Error::ImagePull)?;
-        Ok(())
+        Ok(exposed_ports(
+            inspect
+                .config
+                .and_then(|config| config.exposed_ports)
+                .unwrap_or_default(),
+        ))
     }
 
     /// Unix seconds this Machine last tagged the image, when Docker recorded it.
@@ -163,6 +169,17 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         .collect()
 }
 
+/// The routable ports among Docker's exposed-port keys, in order and without repeats.
+fn exposed_ports(keys: Vec<String>) -> Vec<ExposedPort> {
+    let mut ports = keys
+        .iter()
+        .filter_map(|key| ExposedPort::from_docker(key))
+        .collect::<Vec<_>>();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
 fn under_pressure(space: Option<DiskSpace>) -> bool {
     space.is_some_and(|space| {
         u128::from(space.free_bytes) * 100
@@ -210,6 +227,30 @@ mod tests {
                     .to_owned()
             })
             .collect()
+    }
+
+    #[test]
+    fn exposed_ports_keep_tcp_and_udp_and_drop_the_rest() {
+        let ports = exposed_ports(vec![
+            "8080/tcp".into(),
+            "80/tcp".into(),
+            "53/udp".into(),
+            "80/tcp".into(),
+            "132/sctp".into(),
+            "junk".into(),
+        ]);
+        let ports = ports
+            .iter()
+            .map(|port| (port.port.get(), port.protocol))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ports,
+            [
+                (53, ployz_core::TransportProtocol::Udp),
+                (80, ployz_core::TransportProtocol::Tcp),
+                (8080, ployz_core::TransportProtocol::Tcp),
+            ]
+        );
     }
 
     #[test]

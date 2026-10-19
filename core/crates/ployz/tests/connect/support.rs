@@ -1179,7 +1179,7 @@ impl FakeMachine for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Ok(Response::new(
-            RpcResponse::from(ployz_core::ImagePulled {})
+            RpcResponse::from(ployz_core::ImagePulled::default())
                 .encode()
                 .unwrap(),
         ))
@@ -1207,7 +1207,7 @@ impl FakeMachine for DiscoveryService {
         }
         builds.delivered.store(true, Ordering::SeqCst);
         Ok(Response::new(
-            RpcResponse::from(ployz_core::ImagePulled {})
+            RpcResponse::from(ployz_core::ImagePulled::default())
                 .encode()
                 .unwrap(),
         ))
