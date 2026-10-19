@@ -10,10 +10,10 @@ type Landed = { names?: readonly string[] | null; failed?: true };
 /** Stands in for the native handle: records each read as it lands, and plays a reader asking for one. */
 class FakeNames {
   reads: Landed[] = [];
-  // Like the native handle, a reader that asks before anyone waits is still heard.
+  // Like the native handle: an ask before anyone waits is kept, and an ask wakes the oldest waiter only.
   asked = false;
-  wake?: () => void;
-  want() { if (this.wake) this.wake(); else this.asked = true; }
+  wakes: (() => void)[] = [];
+  want() { const wake = this.wakes.shift(); if (wake) wake(); else this.asked = true; }
   begin() {
     const read: Landed = {};
     this.reads.push(read);
@@ -21,7 +21,7 @@ class FakeNames {
   }
   wanted() {
     if (this.asked) { this.asked = false; return Promise.resolve(); }
-    return new Promise<void>(resolve => { this.wake = () => { this.wake = undefined; resolve(); }; });
+    return new Promise<void>(resolve => { this.wakes.push(resolve); });
   }
 }
 

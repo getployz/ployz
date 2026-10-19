@@ -19,7 +19,10 @@ export const sealedFeed = Effect.fn("Runtime.sealedFeed")(function* (organizatio
     if (Exit.isSuccess(names)) read.done(names.value);
     else read.failed();
   });
-  const wanted = Effect.promise(() => sealed.wanted());
+  // The native wait outlives a lost race, so one pending wait carries over until it resolves. A fresh wait each
+  // round would leave the old one holding the next ask.
+  let pending: Promise<void> | undefined;
+  const wanted = Effect.map(Effect.promise(() => (pending ??= sealed.wanted())), () => { pending = undefined; });
   yield* Effect.forkScoped(Effect.forever(Effect.andThen(Effect.race(wanted, Effect.sleep(RECHECK_MS)), refresh)));
   return sealed;
 });
