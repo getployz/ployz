@@ -5,7 +5,6 @@ import { useLoaderData } from "@tanstack/react-router";
 import { usePlaceNewNode } from "./useCanvasPositionMutation";
 import { createVolumeCommand } from "#/modules/config-store/store-volumes";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { slugifySegment } from "#/utils/slug";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { SERVICE_NODE_SIZE } from "./constants";
@@ -72,7 +71,7 @@ export function useVolumeCreator(
   }) {
     const id = crypto.randomUUID();
     place({ environmentId, resourceType: "volume", resourceId: id, ...input.position });
-    writer.commit(createVolumeCommand(id, store, slugifySegment(input.name) || "data", input.storage));
+    writer.commit(createVolumeCommand(id, store, input.name, input.storage));
   }
 
   return {
