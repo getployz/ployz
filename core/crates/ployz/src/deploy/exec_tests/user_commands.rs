@@ -470,3 +470,57 @@ async fn user_stop_start_restart_remove() {
         );
     }
 }
+
+/// After a partial recovery a gen 3 copy runs beside a gen 4 copy that is In. The owner
+/// refuses the older copy In, and the user rows of the caller table never retire a
+/// copy, so the command names the copy and the rotation it is left in.
+#[tokio::test(start_paused = true)]
+async fn a_start_or_restart_of_a_copy_older_than_an_in_copy_reports_it_left_unrouted() {
+    let theirs = DeploymentLogId::parse("stopped-before").unwrap();
+    let newer = container('2');
+    for (command, rotation, stopped, steps) in [
+        (
+            Command::Restart,
+            CopyRotation::In,
+            false,
+            vec![inspected(), copy_call(Call::Stop)],
+        ),
+        (
+            Command::Start,
+            CopyRotation::Held(theirs.clone()),
+            true,
+            vec![inspected()],
+        ),
+    ] {
+        let fake = Scripted::new(steps)
+            .with_copy_at(
+                &api(),
+                &machine('a'),
+                &container('1'),
+                rotation,
+                ployz_core::Gen::new(3),
+            )
+            .with_copy_at(
+                &api(),
+                &machine('b'),
+                &newer,
+                CopyRotation::In,
+                ployz_core::Gen::new(4),
+            );
+        fake.record(container('1'), |recorded| recorded.stopped = stopped);
+        let ran = run_command(command, Recording::of(fake)).await;
+        let error = ran.answer.as_ref().unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{command:?}: {error:?}");
+        assert!(
+            error.message.contains(&container('1').to_string())
+                && error.message.contains("left Held and not routed"),
+            "{command:?} must name the copy it left: {error:?}"
+        );
+        assert!(
+            matches!(ran.rotation, Some(CopyRotation::Held(_))),
+            "{command:?}: {:?}",
+            ran.rotation
+        );
+        assert_eq!(ran.fake.rotation(&newer), Some(CopyRotation::In));
+    }
+}
