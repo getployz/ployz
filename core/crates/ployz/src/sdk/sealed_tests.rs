@@ -460,6 +460,53 @@ async fn a_hidden_frame_on_one_channel_keeps_the_other_channel_scrubbing() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_multiline_value_begun_in_the_veil_stays_hidden() {
+    let value = "abcde\nfghij\nklmno";
+    let (recovered, [frames]) = fake(Some(value)).await;
+    *recovered.answer.lock().unwrap() = Err(());
+    let reader = live(&recovered).await;
+    frames.line(1, "hidden\n").await;
+    assert!(matches!(next(&reader).await, LogLine::Hidden));
+    *recovered.answer.lock().unwrap() = Ok(sealed("TOKEN"));
+    recovered.names.begin().done(sealed("TOKEN"));
+    frames
+        .line(2, &format!("{}{value}\n", "x".repeat(18)))
+        .await;
+    frames.line(3, "later\n").await;
+    drop(frames);
+    let joined = messages(&shown(&reader).await);
+    assert!(
+        !joined.contains("fghij") && !joined.contains("klmno"),
+        "{joined:?}"
+    );
+    assert_eq!(joined, "later\n");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_multiline_value_begun_in_the_veil_and_ending_in_the_next_frame_stays_hidden() {
+    let value = "abcde\nfghij\nklmno";
+    let (recovered, [frames]) = fake(Some(value)).await;
+    *recovered.answer.lock().unwrap() = Err(());
+    let reader = live(&recovered).await;
+    frames.line(1, "hidden\n").await;
+    assert!(matches!(next(&reader).await, LogLine::Hidden));
+    *recovered.answer.lock().unwrap() = Ok(sealed("TOKEN"));
+    recovered.names.begin().done(sealed("TOKEN"));
+    frames
+        .line(2, &format!("{}abcde\nfg", "x".repeat(18)))
+        .await;
+    frames.line(3, "hij\nklmno\n").await;
+    frames.line(4, "later\n").await;
+    drop(frames);
+    let joined = messages(&shown(&reader).await);
+    assert!(
+        !joined.contains("fghij") && !joined.contains("klmno"),
+        "{joined:?}"
+    );
+    assert_eq!(joined, "later\n");
+}
+
+#[tokio::test(start_paused = true)]
 async fn close_ends_every_names_wait() {
     let names = SealedNames::new();
     let pending = tokio::spawn({

@@ -402,19 +402,64 @@ pub enum Channel {
 ///
 /// Each channel has its own carry, since a value never continues from stdout to stderr.
 /// The carry holds raw bytes, so a frame may split a UTF-8 sequence or a base64 form and
-/// the match still lands.
+/// the match still lands. A channel whose frame was hidden whole veils what it shows next.
 #[derive(Default)]
 pub struct FrameScrub {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    stdout: Carry,
+    stderr: Carry,
+}
+
+#[derive(Default)]
+struct Carry {
+    held: Vec<u8>,
+    veil: Veil,
+}
+
+/// What a channel still hides after a frame hidden whole. A form begun in that frame may end
+/// in the next shown one, and the scrubber never saw the part it hid, so the first
+/// `longest - 1` bytes shown next are hidden too, then any form straddling that point and
+/// the rest of the line it ends in. The veil hides released bytes; it never holds any.
+#[derive(Default, Clone, Copy)]
+enum Veil {
+    #[default]
+    Off,
+    /// A frame was hidden; the forms at the next shown frame say how much to hide.
+    Pending,
+    /// Bytes still to hide, then the rest of the line they end in.
+    Bytes(usize),
+}
+
+impl Veil {
+    /// Where shown bytes begin in `text`, whose first `at` bytes are released now.
+    fn shown_from(&mut self, text: &[u8], at: usize, forms: &SealedForms) -> usize {
+        let bytes = match *self {
+            Self::Off => return 0,
+            Self::Pending => forms.longest().saturating_sub(1),
+            Self::Bytes(bytes) => bytes,
+        };
+        match veil_point(text, bytes, &forms.spans(text)) {
+            Ok(end) if end <= at => {
+                *self = Self::Off;
+                end
+            }
+            Ok(end) => {
+                *self = Self::Bytes(end - at);
+                at
+            }
+            Err(left) => {
+                *self = Self::Bytes(text.len() - at + left);
+                at
+            }
+        }
+    }
 }
 
 /// Prints how much each channel holds, never the held bytes.
 impl fmt::Debug for FrameScrub {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FrameScrub")
-            .field("stdout", &self.stdout.len())
-            .field("stderr", &self.stderr.len())
+            .field("stdout", &self.stdout.held.len())
+            .field("stderr", &self.stderr.held.len())
             .finish()
     }
 }
@@ -435,22 +480,26 @@ impl FrameScrub {
     /// a trailing proper prefix of a form that spans lines stays held; a label whose value has
     /// not arrived keeps its text held too. Held bytes never pass `CARRY_CAP` beyond that: the
     /// oldest are scrubbed and released. A released chunk never ends inside a form or a UTF-8
-    /// sequence the input had whole.
+    /// sequence the input had whole. After `discard`, the veil hides the start of what is
+    /// released.
     pub fn push(&mut self, channel: Channel, bytes: &[u8], forms: &SealedForms) -> Vec<u8> {
         let carry = self.carry(channel);
-        carry.extend_from_slice(bytes);
-        let text = std::mem::take(carry);
+        carry.held.extend_from_slice(bytes);
+        let text = std::mem::take(&mut carry.held);
         let at = release_point(&text, forms);
+        let from = carry.veil.shown_from(&text, at, forms);
         let (release, held) = text.split_at(at);
+        carry.held = held.to_vec();
         let mut redacted = 0;
-        let out = forms.scrub_bytes(release, &mut redacted);
-        *self.carry(channel) = held.to_vec();
-        out
+        forms.scrub_bytes(release.split_at(from).1, &mut redacted)
     }
 
-    /// Drop what `channel` holds, for a frame hidden whole: a form begun there is hidden with it.
+    /// Drop what `channel` holds and veil what it shows next, for a frame hidden whole: a form
+    /// begun there is hidden with it, wherever it ends.
     pub fn discard(&mut self, channel: Channel) {
-        self.carry(channel).clear();
+        let carry = self.carry(channel);
+        carry.held.clear();
+        carry.veil = Veil::Pending;
     }
 
     /// End the stream: scrub what is held and hide any trailing prefix of a form.
@@ -461,20 +510,45 @@ impl FrameScrub {
             (Channel::Stderr, self.stderr),
         ]
         .into_iter()
-        .filter(|(_, held)| !held.is_empty())
-        .map(|(channel, held)| {
+        .filter(|(_, carry)| !carry.held.is_empty())
+        .map(|(channel, mut carry)| {
+            let from = carry.veil.shown_from(&carry.held, carry.held.len(), forms);
             let mut redacted = 0;
-            let mut out = forms.scrub_bytes(&held, &mut redacted);
+            let mut out = forms.scrub_bytes(carry.held.split_at(from).1, &mut redacted);
             forms.hide_prefix(&mut out);
             (channel, out)
         })
         .collect()
     }
 
-    fn carry(&mut self, channel: Channel) -> &mut Vec<u8> {
+    fn carry(&mut self, channel: Channel) -> &mut Carry {
         match channel {
             Channel::Stdout => &mut self.stdout,
             Channel::Stderr => &mut self.stderr,
+        }
+    }
+}
+
+/// Where a veil of `bytes` ends in `text`: past those bytes, then past any form straddling
+/// the point, since it began in veiled bytes, and the rest of the line, until a line end
+/// outside every form. `Err` when `text` ends first, with the bytes still to hide after it.
+fn veil_point(text: &[u8], bytes: usize, spans: &[(usize, usize)]) -> Result<usize, usize> {
+    let mut at = bytes;
+    loop {
+        if at > text.len() {
+            return Err(at - text.len());
+        }
+        if let Some(&(_, end)) = spans.iter().find(|&&(start, end)| start < at && at < end) {
+            at = end;
+            continue;
+        }
+        let (hidden, rest) = text.split_at(at);
+        if hidden.ends_with(b"\n") {
+            return Ok(at);
+        }
+        match rest.iter().position(|&byte| byte == b'\n') {
+            Some(newline) => at += newline + 1,
+            None => return Err(0),
         }
     }
 }

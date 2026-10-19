@@ -355,7 +355,7 @@ fn discard_drops_one_channel_only() {
     assert!(scrub.push(Channel::Stdout, &head, &forms).is_empty());
     assert!(scrub.push(Channel::Stderr, &head, &forms).is_empty());
     scrub.discard(Channel::Stdout);
-    assert_eq!(scrub.push(Channel::Stdout, b"\n", &forms), b"\n");
+    assert!(scrub.push(Channel::Stdout, b"\n", &forms).is_empty());
     assert!(scrub.push(Channel::Stderr, &tail, &forms).is_empty());
     let out = scrub.finish(&forms);
     assert_eq!(out, [(Channel::Stderr, b"[secret TOKEN]".to_vec())]);
@@ -432,4 +432,15 @@ fn a_multiline_value_split_across_frames_is_one_marker() {
         assert_eq!(String::from_utf8(out).unwrap(), "a [secret CERT] b\n");
         assert!(scrub.finish(&forms).is_empty());
     }
+}
+
+#[test]
+fn a_discard_veils_a_multiline_value_begun_in_the_veiled_bytes() {
+    let forms = SealedForms::compile(&secrets(&[("TOKEN", "abcde\nfghij\nklmno")]));
+    let mut scrub = FrameScrub::new();
+    scrub.discard(Channel::Stdout);
+    let frame = format!("{}abcde\nfghij\nklmno\n", "x".repeat(18));
+    assert_eq!(scrub.push(Channel::Stdout, frame.as_bytes(), &forms), b"");
+    assert_eq!(scrub.push(Channel::Stdout, b"later\n", &forms), b"later\n");
+    assert!(scrub.finish(&forms).is_empty());
 }

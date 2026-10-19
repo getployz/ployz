@@ -307,26 +307,11 @@ pub struct ScrubbedLogStream {
 #[derive(Default)]
 struct LiveRead {
     scrub: FrameScrub,
-    stdout: Veil,
-    stderr: Veil,
     hiding: bool,
     /// The newest frame's source and time, which bytes released at the end carry.
     last: Option<(LogMetadata, i64)>,
     ready: VecDeque<Result<LiveLogRecord, RpcError>>,
     ended: bool,
-}
-
-/// What a channel still hides after a hidden frame. A form begun in that frame may end in
-/// the next shown one, and the scrubber cannot see the part it never got, so the first
-/// `longest - 1` bytes shown next are hidden too, with the rest of the line they end in.
-#[derive(Default, Clone, Copy)]
-enum Veil {
-    #[default]
-    Off,
-    /// A frame was hidden; the forms at the next shown frame say how much to hide.
-    Pending,
-    /// Bytes still to hide, then the rest of the line they end in.
-    Bytes(usize),
 }
 
 /// A history page reader that scrubs Sealed values and hides the lines it cannot check.
@@ -455,48 +440,13 @@ impl LiveRead {
         self.last = Some((entry.metadata.clone(), entry.timestamp_unix_nanos));
         match verdict {
             Verdict::Show(forms) => {
-                let bytes = self.veil(channel, &bytes, &forms);
-                let shown = self.scrub.push(channel, bytes, &forms);
+                let shown = self.scrub.push(channel, &bytes, &forms);
                 self.show(channel, shown, entry.metadata, entry.timestamp_unix_nanos);
             }
             Verdict::Wait | Verdict::Hide => {
                 self.scrub.discard(channel);
-                *self.veil_mut(channel) = Veil::Pending;
                 self.hide(channel, entry.metadata, entry.timestamp_unix_nanos);
             }
-        }
-    }
-
-    /// The part of `bytes` the channel's veil leaves to scrub and show.
-    fn veil<'a>(&mut self, channel: Channel, bytes: &'a [u8], forms: &SealedForms) -> &'a [u8] {
-        let veil = self.veil_mut(channel);
-        let left = match *veil {
-            Veil::Off => return bytes,
-            Veil::Pending => forms.longest().saturating_sub(1),
-            Veil::Bytes(left) => left,
-        };
-        let (hidden, rest) = bytes.split_at(left.min(bytes.len()));
-        let left = left - hidden.len();
-        if left > 0 {
-            *veil = Veil::Bytes(left);
-            return rest;
-        }
-        if hidden.ends_with(b"\n") {
-            *veil = Veil::Off;
-            return rest;
-        }
-        let Some(end) = rest.iter().position(|&byte| byte == b'\n') else {
-            *veil = Veil::Bytes(0);
-            return &[];
-        };
-        *veil = Veil::Off;
-        rest.split_at(end + 1).1
-    }
-
-    fn veil_mut(&mut self, channel: Channel) -> &mut Veil {
-        match channel {
-            Channel::Stdout => &mut self.stdout,
-            Channel::Stderr => &mut self.stderr,
         }
     }
 
