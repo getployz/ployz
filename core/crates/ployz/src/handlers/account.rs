@@ -550,13 +550,17 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         };
         Ok::<_, Error>((credential, removing, others))
     })?;
+    let mut approved = None;
     let removal = approval::approved(
         &runtime,
         &credential,
         approval::Verb::Remove,
         matches.get_one::<String>("approval").cloned(),
         |id| super::server::approved_rerun(matches, &again, id),
-        async |approval| cloud_account::remove_organization(&credential, &removing, approval).await,
+        async |approval| {
+            approved = approval.map(str::to_owned);
+            cloud_account::remove_organization(&credential, &removing, approval).await
+        },
     )?;
     let acting = runtime.block_on(async {
         match others.first() {
@@ -573,14 +577,17 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             _ => None,
         }
     });
-    let next = (!removal.removed).then_some(retry.as_str());
+    let next = (!removal.removed).then(|| match &approved {
+        Some(id) => super::server::approved_rerun(matches, &again, id),
+        None => retry,
+    });
     let value = serde_json::json!({
             "organization": removal.organization,
             "removed": removal.removed,
             "servers": removal.servers,
         "acting": acting.as_ref().and_then(|acting| acting.as_ref().ok()),
     });
-    let report = Next::new(&value, next.map(str::to_owned));
+    let report = Next::new(&value, next.clone());
     ui::finish(&report, || {
         if !removal.servers.confirmed.is_empty() {
             ui::note(format_args!(
@@ -588,7 +595,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                 removal.servers.confirmed.len()
             ));
         }
-        match next {
+        match &next {
             None => {
                 ui::stream(format_args!(
                     "Removed Organization {}.",
@@ -617,7 +624,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                     "{} did not confirm unpairing.",
                     super::joined(&removal.servers.unconfirmed)
                 ));
-                ui::hint(&Hint::Retry(next.to_owned()));
+                ui::hint(&Hint::Retry(next.clone()));
             }
         }
     })?;
