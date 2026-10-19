@@ -36,7 +36,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   useEffect(() => stream.view(), [stream]);
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
   const { opened, offline: streamOffline, refused: streamRefused, hidden, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
-  // The log stream connects on its own, so its failing to says the servers are offline only when the Runtime Watch agrees.
+  // The log stream connects apart from the Runtime Watch, so it says the servers are offline only when the watch agrees.
   const watched = useRuntimeLens(selection.organizationSlug).status === "observed";
   const offline = streamOffline && !watched;
   const refused = streamRefused || (streamOffline && watched);
