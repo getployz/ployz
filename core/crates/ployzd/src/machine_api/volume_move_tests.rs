@@ -184,6 +184,49 @@ async fn unhealthy_destination_keeps_source_and_fails_run() {
     fleet.published(moved, Some(CopyRotation::In)).await;
 }
 
+/// A destination that exits right after Docker starts it is not In, so the Move keeps
+/// its source: success here would let the run remove the only startable copy.
+#[tokio::test]
+async fn a_destination_that_exits_after_start_fails_and_keeps_the_source() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    cut(&fleet, 0).await;
+
+    fleet
+        .node(1)
+        .fake
+        .exit_on_start
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let destination = fleet.with_plugin(
+        1,
+        &plugin(
+            slot(Some(snapshot())),
+            WRITER_ROUTE,
+            writer_root(1, Some(snapshot())),
+        ),
+    );
+    let failed = try_set_copy(
+        &destination,
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec("api"),
+                "creation_key":"move-1", "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}}),
+    )
+    .await
+    .expect_err("a copy that exited is not In");
+    assert!(failed.contains("not routed"), "{failed}");
+
+    let moved = only_container(fleet.node(1));
+    assert!(!fleet.node(1).running(moved));
+    assert_eq!(fleet.node(1).rotation(moved).await, CopyRotation::Pending);
+    assert!(
+        fleet.node(0).container(source).is_some(),
+        "the source is kept"
+    );
+    assert_eq!(fleet.node(0).rotation(source).await, CopyRotation::In);
+}
+
 /// The cut left its rotation alone, so it routes again; an Out written by the cut
 /// would be final.
 #[tokio::test]

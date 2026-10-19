@@ -104,7 +104,7 @@ impl MachineService {
                     start: Some(start), ..
                 } = &want
                 {
-                    self.route_created(start).await?;
+                    self.route_created(start, &name).await?;
                 }
                 return Ok(copy);
             }
@@ -147,7 +147,7 @@ impl MachineService {
                         }
                         StartState::Stopped => self.run_start(start.clone(), &name, r#gen).await?,
                     }
-                    self.route_created(&start).await?;
+                    self.route_created(&start, &name).await?;
                 }
                 Ok(copy)
             }
@@ -169,7 +169,7 @@ impl MachineService {
                 );
                 if let Some(start) = start {
                     self.run_start(start.clone(), &name, r#gen).await?;
-                    self.route_created(&start).await?;
+                    self.route_created(&start, &name).await?;
                 }
                 Ok(copy)
             }
@@ -378,7 +378,11 @@ impl MachineService {
     /// want does. A copy left unrouted fails the request, so the Move keeps its source
     /// Container and a resend tries again. A newer copy already In serves the Service,
     /// so that refusal is no failure.
-    async fn route_created(&self, start: &Start) -> Result<(), LocalMachineError> {
+    async fn route_created(
+        &self,
+        start: &Start,
+        name: &DockerVolumeName,
+    ) -> Result<(), LocalMachineError> {
         let Start::Create {
             rotation: rotation @ RunRotation::In { .. },
             ..
@@ -386,13 +390,20 @@ impl MachineService {
         else {
             return Ok(());
         };
-        // A resend lands here too when another holder runs; only this Create's own copy is routed.
-        let Some(created) = self.start_container(start).await? else {
-            return Ok(());
-        };
-        if !matches!(created.runtime, ContainerRuntimeObservation::Running { .. }) {
+        let created = self.start_container(start).await?;
+        let running = created.as_ref().is_some_and(|created| {
+            matches!(created.runtime, ContainerRuntimeObservation::Running { .. })
+        });
+        // A resend lands here too when another holder runs; only this Create's own copy is
+        // routed. A copy that exited is started again by its In want, which reports health.
+        if !running && self.local.volume_holder_running(name).await? {
             return Ok(());
         }
+        let Some(created) = created else {
+            return Err(LocalMachineError::StoragePreparation(not_routed(
+                "the moved Service is not routed: its Container is gone".to_owned(),
+            )));
+        };
         // Boxed: the In future is large, and inline it overflows the SetVolumeCopy task's stack.
         let ensured = Box::pin(self.local.ensure_container(ContainerWant::Running {
             container: RunTarget::Existing(ContainerLocator::Id(created.container_id)),
@@ -410,15 +421,12 @@ impl MachineService {
                 return Ok(());
             }
             EnsuredContainer::Refused { refusal, .. } => refusal.into_error(),
-            EnsuredContainer::Ensured { health, .. } => RpcError {
-                code: RpcErrorCode::Conflict,
-                message: match health.and_then(HealthVerdict::into_failure) {
+            EnsuredContainer::Ensured { health, .. } => {
+                not_routed(match health.and_then(HealthVerdict::into_failure) {
                     Some(failure) => format!("the moved Service is not routed: {failure}"),
                     None => "the moved Service stopped before it was routed".to_owned(),
-                },
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+                })
+            }
         };
         Err(LocalMachineError::StoragePreparation(error))
     }
@@ -495,4 +503,13 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
         ),
     };
     LocalMachineError::StoragePreparation(refused.rpc_error(message))
+}
+
+fn not_routed(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
 }
