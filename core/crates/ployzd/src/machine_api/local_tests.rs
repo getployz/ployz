@@ -2388,6 +2388,28 @@ mod ensure_container {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// The floor of one admission turn: a Stopped want on an exited Container takes the
+    /// exclusive turn through `finish_mutation` for a Docker stop that changes nothing.
+    #[tokio::test]
+    #[ignore = "perf probe: prints the p95 of 200 admitted stops"]
+    async fn admission_turn_floor() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-turn-floor").await;
+        let id = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
+            .container_id;
+        set_state(&fake, &id, json!({"Status":"exited", "ExitCode":0}));
+        let stopped = json!({"want":{"state":"stopped", "container":{"id":id}, "drain":0}});
+        let mut took = Vec::with_capacity(200);
+        for _ in 0..200 {
+            let started = std::time::Instant::now();
+            present(&ensure(&service, stopped.clone()).await);
+            took.push(started.elapsed());
+        }
+        took.sort_unstable();
+        let p95 = *took.get(took.len() * 95 / 100 - 1).unwrap();
+        println!("admission_turn_floor p95 {:.3} ms", p95.as_secs_f64() * 1e3);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_gone_want_stops_then_removes_and_a_resend_reads_absent() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-gone").await;
