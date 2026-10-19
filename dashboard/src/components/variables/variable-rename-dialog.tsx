@@ -34,12 +34,16 @@ function RenameForm({ variableKey, referrers, onRename }: {
   onRename: (to: string) => void;
 }) {
   const [typed, setTyped] = useState(variableKey);
+  // The dialog stays up while it animates closed; a second click then is the same rename.
+  const [sent, setSent] = useState(false);
   const to = typed.trim().toUpperCase();
   const error = to ? variableKeyError(to) : null;
   return (
     <form className="flex flex-col gap-4" onSubmit={(event) => {
       event.preventDefault();
-      if (to && !error && to !== variableKey) onRename(to);
+      if (sent || !to || error || to === variableKey) return;
+      setSent(true);
+      onRename(to);
     }}>
       <Field>
         <FieldLabel htmlFor="variable-rename">Name</FieldLabel>
@@ -59,7 +63,7 @@ function RenameForm({ variableKey, referrers, onRename }: {
       ) : null}
       <DialogFooter>
         <DialogClose render={<Button type="button" variant="outline" />}>Cancel</DialogClose>
-        <Button type="submit" disabled={!to || error !== null || to === variableKey}>Rename</Button>
+        <Button type="submit" disabled={sent || !to || error !== null || to === variableKey}>Rename</Button>
       </DialogFooter>
     </form>
   );

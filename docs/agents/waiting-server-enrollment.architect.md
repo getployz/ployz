@@ -421,7 +421,8 @@ type HostReport = {
 
 ```ts
 type CheckinResponse =
-  | { kind: "wait"; retryAfter: number; probe?: ProbeRequest }
+  | { kind: "wait"; retryAfter: number; probe?: ProbeRequest;
+      noCluster?: true }                                          // Enroll on arrival, Organization has no first server
   | { kind: "enroll"; attemptId: string; token: string;           // per-attempt cet_, role-bound
       name: string; role: "founder" | "joiner";
       storage: { kind: "none" } | { kind: "zfs" } | { kind: "zfs"; device: string };

@@ -34,7 +34,7 @@ database, so staging gets its own copy of both and its own data. Use your own se
 
 Ployz never copies data, so staging's database starts empty. A setup command runs once, before
 `web` first starts, to fill it. To give every new branch of production the same commands, add
-them under **Branches of production** in production's **Settings → Environment**.
+them under **Branch setup** in production's **Settings → Environment**.
 
 ## Test staging at its own address
 
@@ -239,7 +239,8 @@ you make another one the default.
 
 Deleting returns at once. The environment stays listed until every server that ran it has taken it
 off, and then it's gone. A server that's offline holds its part until it answers or you remove the
-server, and Ployz names the server it waits on. Ployz tries again each hour, so it finishes within the
+server, and Ployz names the server it waits on. If the delete fails, settings name each offline
+server and link to its page, where you can forget it. Ployz tries again each hour, so it finishes within the
 hour after that. A volume whose copies Ployz couldn't all check is
 deleted only if you chose to delete every copy. Then a mirror of it made after the delete started
 goes too.

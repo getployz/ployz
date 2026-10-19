@@ -268,6 +268,8 @@ fn a_memory_limit_takes_a_size_with_a_unit_and_refuses_bytes() {
         json!("2TiB"),
         json!(2000),
         json!(0),
+        json!(0.001),
+        json!("5MiB"),
     ] {
         let error = store
             .write(
@@ -279,6 +281,17 @@ fn a_memory_limit_takes_a_size_with_a_unit_and_refuses_bytes() {
         assert!(!error.message.contains("looks like bytes"), "{refused}");
     }
     assert_eq!(value(&store, &who, "web.memLimit"), json!(1.073_741_824));
+    let floor = store
+        .write(&who, &edit(None, vec![set("web.memLimit", json!(0.001))]))
+        .unwrap_err();
+    assert_eq!(
+        floor.message,
+        "memLimit: expected at least 0.01 GB (10 MB): Docker refuses less than 6 MiB"
+    );
+    store
+        .write(&who, &edit(None, vec![set("web.memLimit", json!("10MB"))]))
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.memLimit"), json!(0.01));
 }
 
 #[test]
