@@ -28,10 +28,10 @@ use crate::connect::Client;
 const NAMES_WAIT: std::time::Duration = ROW_DEADLINE;
 
 /// What the Store held Sealed, as of one read.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Names {
     Unread,
-    /// A read failed: nothing is shown for the rest of the request.
+    /// A read failed: nothing is shown until a later read lands.
     Failed,
     /// The Store owns no such Namespace: every env value is scrubbed.
     Every,
@@ -72,7 +72,8 @@ struct Env {
     values: Option<BTreeMap<String, String>>,
     /// The newest `begin` before this env was asked for; only a later read covers it.
     after: u64,
-    forms: std::sync::Mutex<Option<(u64, Arc<SealedForms>)>>,
+    /// The forms compiled for the newest names, kept while a refresh reads the same names.
+    forms: std::sync::Mutex<Option<(Names, Arc<SealedForms>)>>,
 }
 
 type EnvRead = Shared<BoxFuture<'static, Arc<Env>>>;
@@ -189,26 +190,23 @@ impl SealedNames {
 impl PendingNames {
     /// The Store's answer: the names it holds Sealed, or None when it owns no such Namespace.
     pub fn done(self, names: Option<BTreeSet<String>>) {
-        let generation = self.generation;
-        self.shared.read.send_if_modified(|read| {
-            if matches!(read.names, Names::Failed) || read.generation > generation {
-                return false;
-            }
-            *read = Arc::new(Read {
-                names: names.map_or(Names::Every, Names::Only),
-                generation,
-            });
-            true
-        });
+        self.land(names.map_or(Names::Every, Names::Only));
     }
 
-    /// The Store could not be read: hide every line from now on.
+    /// The Store could not be read: hide every line until a later read lands.
     pub fn failed(self) {
-        let generation = self.shared.begun.load(Ordering::SeqCst);
-        self.shared.read.send_replace(Arc::new(Read {
-            names: Names::Failed,
-            generation,
-        }));
+        self.land(Names::Failed);
+    }
+
+    fn land(self, names: Names) {
+        let generation = self.generation;
+        self.shared.read.send_if_modified(|read| {
+            if read.generation > generation {
+                return false;
+            }
+            *read = Arc::new(Read { names, generation });
+            true
+        });
     }
 }
 
@@ -242,8 +240,8 @@ fn verdict(
 impl Env {
     fn forms(&self, read: &Read) -> Arc<SealedForms> {
         let mut cached = self.forms.lock().expect("sealed forms lock");
-        if let Some((generation, forms)) = &*cached
-            && *generation == read.generation
+        if let Some((names, forms)) = &*cached
+            && *names == read.names
         {
             return Arc::clone(forms);
         }
@@ -259,7 +257,7 @@ impl Env {
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
         let forms = Arc::new(SealedForms::compile(&values));
-        *cached = Some((read.generation, Arc::clone(&forms)));
+        *cached = Some((read.names.clone(), Arc::clone(&forms)));
         forms
     }
 }

@@ -367,3 +367,20 @@ async fn unreadable_names_or_env_hide_the_lines() {
         ]
     ));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_names_read_after_a_failure_shows_lines_again() {
+    let (fake, [frames]) = fake(Some(VALUE)).await;
+    *fake.answer.lock().unwrap() = Err(());
+    let reader = live(&fake).await;
+    frames.line(1, &format!("before {VALUE}\n")).await;
+    let first = reader.next().await.unwrap().map(|record| record.line);
+    assert!(matches!(first, Some(LogLine::Hidden)), "{first:?}");
+
+    *fake.answer.lock().unwrap() = Ok(sealed("TOKEN"));
+    fake.names.begin().done(sealed("TOKEN"));
+    frames.line(2, &format!("after {VALUE}\n")).await;
+    drop(frames);
+    assert_eq!(messages(&shown(&reader).await), "after [secret TOKEN]\n");
+}
+
