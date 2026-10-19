@@ -275,13 +275,13 @@ async fn assert_replacement_health_compensation(
                 UpdateOrder::StopFirst,
                 ReplacementCompensation::OldStopped {
                     stop_new_container,
-                    restart_old_container,
+                    restore_old_container,
                 },
             ) => {
                 stop_new_container
                     .as_ref()
                     .is_some_and(StopAttempt::stopped)
-                    && restart_old_container.restarted()
+                    && restore_old_container.restored()
             }
             _ => false,
         });

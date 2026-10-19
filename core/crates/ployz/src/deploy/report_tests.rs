@@ -793,7 +793,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
             error: denied(),
             compensation: ReplacementCompensation::OldStopped {
                 stop_new_container: Some(StopAttempt::Stopped),
-                restart_old_container: RestartAttempt::Failed { error: denied() },
+                restore_old_container: RestoreAttempt::Failed { error: denied() },
             },
         },
         unexecuted: Vec::new(),

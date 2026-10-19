@@ -554,6 +554,7 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::StorageHeadroom { .. }
             | DeployWarning::UnbudgetedDiskUsage
             | DeployWarning::StorageObservationUnknown { .. }
+            | DeployWarning::LeftRunning { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. } => false,
