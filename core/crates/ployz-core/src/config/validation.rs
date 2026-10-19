@@ -33,6 +33,8 @@ pub const HEALTHCHECK_TIMEOUT_MAX: u16 = 300;
 pub const HEALTHCHECK_TIMEOUT_DEFAULT: u16 = 300;
 /// Every restart policy.
 pub const RESTART_POLICIES: [&str; 4] = ["always", "no", "on-failure", "unless-stopped"];
+/// Every update order.
+pub const UPDATE_ORDERS: [&str; 3] = ["start-first", "stop-first", "rolling"];
 
 /// Validation errors identify the setting, never echo credentials or authored values.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error, TS)]
@@ -71,6 +73,7 @@ pub enum ServiceSettingInput {
     HealthcheckTimeoutSeconds(u16),
     RestartPolicy(ServiceRestartPolicy),
     MaxRetries(u8),
+    UpdateOrder(Option<ServiceUpdateOrder>),
     Replicas(u8),
     CpuLimit(Option<f64>),
     MemLimit(Option<f64>),
@@ -152,6 +155,7 @@ impl ServiceSettingInput {
             }
             Self::Healthcheck(ServiceHealthcheck::None)
             | Self::RestartPolicy(_)
+            | Self::UpdateOrder(_)
             | Self::PrivateDns(_) => Ok(()),
             Self::HealthcheckPath(value) => healthcheck_path(value),
             Self::HealthcheckTimeoutSeconds(value) => timeout(*value),
@@ -372,6 +376,7 @@ fn expected(field: &str) -> &'static str {
         "cpuLimit" => "Expected vCPUs above 0 and up to 64, for example 0.5",
         "memLimit" => "Expected GB above 0 and up to 1024, for example 0.5 or 2",
         "healthcheckTimeoutSeconds" => "Expected 1–300 seconds",
+        "updateOrder" => "Expected start-first, stop-first or rolling",
         _ => "Invalid setting value",
     }
 }

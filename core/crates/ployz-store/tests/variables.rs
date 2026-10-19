@@ -11,7 +11,8 @@ use ployz_store::{
     Actor, Admit, Change, ConfigId, ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig,
     CreateProject, CreateService, Deploy, DeploymentId, DeploymentsQuery, DiffQuery, Edit, Edited,
     EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, PlanQuery, ProjectId,
-    ProjectName, PutConfigFile, RunnerId, SealingKey, ServiceLineageId, SettingPath,
+    ProjectName, PutConfigFile, RunnerId, SealedNamesQuery, SealingKey, ServiceLineageId,
+    SettingPath,
 };
 use serde_json::{Value, json};
 
@@ -296,8 +297,6 @@ fn a_typed_private_address_answers_with_its_reference() {
                 json!("https://api.internal.example.com"),
             ),
             ("web.env.SELF", json!("http://web.internal:8080")),
-            // Only the last value set to a variable is answered.
-            ("web.env.API_DB", json!("http://api.internal")),
             (
                 "web.env.API_DB",
                 json!("http://${{ api.PLOYZ_PRIVATE_DOMAIN }}"),
@@ -397,15 +396,14 @@ fn claim_unseals(store: &ConfigStore, id: &DeploymentId) {
     let api = environment_of(&claimed, "api");
     assert_eq!(api["DATABASE_URL"], format!("postgres://{SECRET}@db/app"));
     assert_eq!(api["WEB"], "web.internal");
-    // The runner scrubs failed logs of exactly the values that are or reference a secret.
-    let secret_keys = |service: &str| {
-        claimed.secret_env[&ServiceName::parse(service).unwrap()]
+    assert_eq!(
+        claimed
+            .sealed_names
             .iter()
             .map(String::as_str)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(secret_keys("web"), ["PASSWORD"]);
-    assert_eq!(secret_keys("api"), ["DATABASE_URL"]);
+            .collect::<Vec<_>>(),
+        ["DATABASE_URL", "PASSWORD", "WEB"]
+    );
     // A Service waits for the Services its variables reference.
     let api = ServiceName::parse("api").unwrap();
     assert_eq!(
@@ -643,6 +641,47 @@ fn a_renamed_secret_stays_sealed_and_keeps_its_value() {
 }
 
 #[test]
+fn sealed_names_keep_every_name_ever_sealed_and_every_template() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.TOKEN", json!({ "secret": SECRET })),
+            ("web.env.OLD", json!({ "secret": "retired-value" })),
+            ("web.env.PLAIN", json!("hello-plain")),
+            ("api.env.URL", json!("http://${{ web.PLAIN }}")),
+        ],
+    )
+    .unwrap();
+    rename(&store, &[], "web.env.TOKEN", "API_TOKEN").unwrap();
+    unset(&store, "web.env.OLD");
+
+    let names = |store: &ConfigStore| {
+        store
+            .read(&who(), &SealedNamesQuery::default())
+            .unwrap()
+            .names
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&store), ["API_TOKEN", "OLD", "TOKEN", "URL"]);
+    let id = admit(&store, 1).unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    assert_eq!(
+        claimed.sealed_names.into_iter().collect::<Vec<_>>(),
+        ["API_TOKEN", "OLD", "TOKEN", "URL"]
+    );
+    assert!(
+        !json!(store.read(&who(), &SealedNamesQuery::default()).unwrap())
+            .to_string()
+            .contains("s3cr3t")
+    );
+}
+
+#[test]
 fn a_rename_onto_a_name_in_use_changes_neither() {
     let store = backend::open();
     shop(&store);
@@ -657,7 +696,7 @@ fn a_rename_onto_a_name_in_use_changes_neither() {
     // All or none: the set before the refused rename does not land either.
     let refused = rename(
         &store,
-        &[("web.env.LOG_LEVEL", json!("debug"))],
+        &[("web.env.OTHER", json!("set"))],
         "web.env.API_URL",
         "LOG_LEVEL",
     )
@@ -666,6 +705,11 @@ fn a_rename_onto_a_name_in_use_changes_neither() {
     assert_eq!(refused.details["variable"], "LOG_LEVEL");
     assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
     assert_eq!(value(&store, "web.env.LOG_LEVEL"), json!("info"));
+    assert!(
+        get(&store, Some("web")).values.unwrap()["env"]
+            .get("OTHER")
+            .is_none()
+    );
 
     let missing = rename(&store, &[], "web.env.API_UR", "OTHER").unwrap_err();
     assert_eq!(missing.code, RpcErrorCode::NotFound);
@@ -677,6 +721,126 @@ fn a_rename_onto_a_name_in_use_changes_neither() {
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{path} → {to}");
     }
     assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
+}
+
+#[test]
+fn a_rename_and_another_change_to_where_it_moves_from_or_to_are_refused() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, &[("web.env.A", json!("moved"))]).unwrap();
+    let rename = |path: &str, to: &str| Change::Rename {
+        path: SettingPath::parse(path).unwrap(),
+        to: to.to_owned(),
+        update_references: false,
+    };
+    let unset = |path: &str| Change::Unset {
+        path: SettingPath::parse(path).unwrap(),
+    };
+    let set = |path: &str, value: Value| Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    };
+    let before = get(&store, Some("web")).values;
+    for (changes, path) in [
+        (
+            vec![rename("web.env.A", "B"), unset("web.env.B")],
+            "web.env.B",
+        ),
+        (
+            vec![rename("web.env.A", "B"), set("web.env.B", json!("other"))],
+            "web.env.B",
+        ),
+        (
+            vec![set("web.env.B", json!("other")), rename("web.env.A", "B")],
+            "web.env.B",
+        ),
+        (
+            vec![rename("web.env.A", "B"), rename("web.env.B", "C")],
+            "web.env.B",
+        ),
+        (
+            vec![rename("web.env.A", "B"), unset("web.env.A")],
+            "web.env.A",
+        ),
+    ] {
+        let refused = store
+            .write(
+                &who(),
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: changes.clone(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{changes:?}");
+        assert_eq!(
+            refused.message,
+            format!("{path} is changed twice in one edit; change it once"),
+            "{changes:?}"
+        );
+        assert_eq!(get(&store, Some("web")).values, before, "{changes:?}");
+    }
+}
+
+#[test]
+fn a_variable_object_with_exported_and_a_change_to_exported_are_refused() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, &[("web.env.X", json!("x"))]).unwrap();
+    let set = |path: &str, value: Value| Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    };
+    let unset = |path: &str| Change::Unset {
+        path: SettingPath::parse(path).unwrap(),
+    };
+    let patch = |value: Value| Change::Patch {
+        path: SettingPath::parse("web").unwrap(),
+        value,
+    };
+    let edit = |changes: Vec<Change>| {
+        store.write(
+            &who(),
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes,
+            },
+        )
+    };
+    let before = get(&store, Some("web")).values;
+    for changes in [
+        vec![
+            set("web.env.X", json!({ "exported": true })),
+            set("web.env.X.exported", json!(false)),
+        ],
+        vec![
+            set("web.env.X.exported", json!(false)),
+            set("web.env.X", json!({ "value": "y", "exported": true })),
+        ],
+        vec![
+            patch(json!({ "env": { "X": { "exported": true } } })),
+            unset("web.env.X.exported"),
+        ],
+    ] {
+        let refused = edit(changes.clone()).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{changes:?}");
+        assert_eq!(
+            refused.message, "web.env.X.exported is changed twice in one edit; change it once",
+            "{changes:?}"
+        );
+        assert_eq!(get(&store, Some("web")).values, before, "{changes:?}");
+    }
+
+    // A value with no exported field leaves the flag to the other change.
+    edit(vec![
+        set("web.env.X", json!({ "value": "y" })),
+        set("web.env.X.exported", json!(true)),
+    ])
+    .unwrap();
+    assert_eq!(value(&store, "web.env.X"), json!("y"));
+    assert_eq!(value(&store, "web.env.X.exported"), true);
 }
 
 /// Services `web`, `api` and `worker`, where `api` and `worker` reference web's

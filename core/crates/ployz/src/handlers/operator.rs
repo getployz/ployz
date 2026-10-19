@@ -105,7 +105,6 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
     };
     match store.try_read(&NamespaceQuery { environment }) {
         Ok(view) => Ok(Some(Scoped {
-            environment: view.environment,
             namespace: view.namespace,
             services: view.services,
         })),
@@ -120,7 +119,6 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
 /// names they have now.
 #[derive(Clone)]
 pub(super) struct Scoped {
-    pub(super) environment: ployz_store::EnvironmentSummary,
     pub(super) namespace: Namespace,
     pub(super) services:
         std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::ServiceName>,
@@ -246,7 +244,6 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         (Some(id), Some(store)) => {
             let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
             Some(Scoped {
-                environment: view.environment,
                 namespace: view.namespace,
                 services: view.runtime_names,
             })
@@ -362,7 +359,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         })
     })?;
     credential.map_or(Ok(()), |credential| {
-        super::cloud_read::logs(root, &credential, fallback)
+        super::cloud_read::logs(&credential, fallback)
     })
 }
 
@@ -1290,13 +1287,6 @@ mod scope_tests {
     fn a_renamed_service_is_found_by_its_runtime_name() {
         let name = |text: &str| ployz_core::ServiceName::parse(text).unwrap();
         let scoped = Scoped {
-            environment: ployz_store::EnvironmentSummary {
-                id: ployz_store::EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
-                    .unwrap(),
-                project: ployz_store::ProjectName::parse("shop").unwrap(),
-                name: ployz_store::EnvironmentName::parse("production").unwrap(),
-                revision: ployz_store::Revision(1),
-            },
             namespace: Namespace::parse("shop-production").unwrap(),
             services: [(name("api2"), name("api"))].into(),
         };

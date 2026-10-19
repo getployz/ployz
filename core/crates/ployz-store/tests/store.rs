@@ -132,6 +132,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             "web.replicas",
             "web.restartPolicy",
             "web.startCommand",
+            "web.updateOrder",
         ]
     );
     let view = get(&store, &who, Some("web"));
@@ -151,6 +152,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             { "path": "web.restartPolicy", "value": "unless-stopped", "default": "unless-stopped", "apply": "staged" },
             { "path": "web.startCommand", "value": null, "default": null, "apply": "staged" },
             { "path": "web.template", "value": null, "default": null, "apply": "immediate" },
+            { "path": "web.updateOrder", "value": null, "default": null, "apply": "staged" },
         ])
     );
     assert_eq!(
@@ -178,7 +180,7 @@ fn the_whole_environment_shows_only_what_is_set_unless_all() {
         ..EnvironmentQuery::default()
     };
     let all = store.read(&who, &query).unwrap();
-    assert_eq!(all.settings.len(), 12);
+    assert_eq!(all.settings.len(), 13);
     assert_eq!(get(&store, &who, Some("web.cpuLimit")).settings.len(), 1);
 }
 
@@ -546,6 +548,7 @@ fn wrong_paths_and_values_name_the_fix() {
             "restartPolicy",
             "startCommand",
             "template",
+            "updateOrder",
             "repository",
             "branch",
             "rootDir",

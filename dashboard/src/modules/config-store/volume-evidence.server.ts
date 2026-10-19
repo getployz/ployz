@@ -13,10 +13,16 @@ export const VolumeObserver = Context.Reference<{ readonly observe: typeof obser
 /** The fields used to gather evidence; native Store decoding still validates the original command. */
 const AdmitCommand = Schema.Struct({
   command: Schema.Literal("admit"),
-  // A retry needs no evidence: it ships the Volume identities its source accepted.
   admit: Schema.Literals(["deploy", "remove", "shut_down"]),
   environment: Schema.optional(EnvironmentRef),
   services: Schema.optional(Schema.Array(Schema.String)),
+});
+
+/** A plain retry ships the Volume identities its source accepted; a rollback reviews what it deletes now. */
+const RetryCommand = Schema.Struct({
+  command: Schema.Literal("admit"),
+  admit: Schema.Literal("retry"),
+  deployment: Schema.String,
 });
 
 const RemoveCommand = Schema.Struct({
@@ -25,7 +31,7 @@ const RemoveCommand = Schema.Struct({
   environment: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
-const EvidenceCommand = Schema.Union([AdmitCommand, RemoveCommand, Schema.Struct({
+const EvidenceCommand = Schema.Union([AdmitCommand, RetryCommand, RemoveCommand, Schema.Struct({
   command: Schema.Literal("publish"),
   environment: Schema.optional(EnvironmentRef),
 })]);
@@ -42,7 +48,7 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
 ) {
   if (call.operation !== "write") return undefined;
   const command = Option.getOrUndefined(Schema.decodeUnknownOption(EvidenceCommand)(call.command));
-  if (command === undefined || (command.command === "admit" && (command.services ?? []).length > 0)) return undefined;
+  if (command === undefined || ("services" in command && (command.services ?? []).length > 0)) return undefined;
   const asked = yield* Effect.option(questions(command, read));
   const sought = Option.getOrUndefined(asked)?.flatMap((removals) => removals.volumes.map((volume) => volume.docker_volume));
   if (sought === undefined || sought.length === 0) return undefined;
@@ -75,6 +81,9 @@ export const systemVolumeEvidence = Effect.fn("ConfigStore.systemVolumeEvidence"
 
 /** The Volumes `command` may remove, per Environment it touches. */
 const questions = Effect.fn("ConfigStore.volumeQuestions")(function* (command: typeof EvidenceCommand.Type, read: StoreRead) {
+  if ("deployment" in command) {
+    return [yield* storeTry(() => read({ query: "removals", environment: environmentOf(undefined), remove: false, deployment: command.deployment }))];
+  }
   if (command.command !== "remove") {
     const remove = command.command === "admit" && command.admit !== "deploy";
     return [yield* storeTry(() => read({ query: "removals", environment: environmentOf(command.environment), remove }))];

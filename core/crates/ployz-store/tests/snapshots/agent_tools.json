@@ -267,7 +267,7 @@
             "properties": {
               "autoDeploy": {
                 "default": true,
-                "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+                "description": "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once.",
                 "examples": [
                   false
                 ],
@@ -695,6 +695,19 @@
                 "title": "Template",
                 "type": "object"
               },
+              "updateOrder": {
+                "description": "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without.",
+                "enum": [
+                  "start-first",
+                  "stop-first",
+                  "rolling"
+                ],
+                "examples": [
+                  "rolling"
+                ],
+                "title": "Update order",
+                "type": "string"
+              },
               "waitForCi": {
                 "description": "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",
                 "examples": [
@@ -754,6 +767,7 @@
                     "rootDir",
                     "startCommand",
                     "template",
+                    "updateOrder",
                     "waitForCi",
                     "watchPaths"
                   ],
@@ -1615,29 +1629,38 @@
       "read_only": true
     },
     {
-      "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve. May stop to ask a human to approve.",
+      "description": "Ship an ended Deployment's commit and settings again; an older one rolls back newer ones. A human approves every redeploy. May stop to ask a human to approve.",
       "destructive": true,
       "gate": "store",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "accept_volume_loss": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "deployment": {
             "description": "The Deployment's number. Omit for the latest.",
             "minimum": 1,
             "type": "integer"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "request_key": {
             "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          },
+          "version": {
             "type": "string"
           }
         },

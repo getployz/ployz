@@ -103,6 +103,8 @@ ployz set web.image=nginx:1.27 web.buildMethod=dockerfile   # refused: an image 
 ployz set web.image=nginx:1.27 web.repository=acme/web      # refused: one source at a time
 ```
 
+One edit changes each setting at most once, so an edit that sets and unsets `web.image` is refused.
+
 The source never blocks an unset. A setting the service's source does not have is already
 at its default, so unsetting it changes nothing. A repository service still refuses an unset
 `branch`, because it always builds a branch: set another one instead. An empty service takes
@@ -245,6 +247,15 @@ to leave it down. **Always** restarts it whenever it stops. See
 
 Shown with **On failure**. 10 by default, from 0 to 100; after that many restarts, the replica
 stays stopped.
+
+### Update order
+
+How a deploy replaces this service's replicas. **Automatic** by default: **Stop first** for a
+service with a volume, **Start first** for the rest. Choose **Start first** for no downtime,
+**Stop first** when two copies must never run at once, or **Rolling** to replace one server at a
+time, so a failure leaves the later servers on the old version. A service with a volume takes
+**Start first** only when the volume allows shared writes. See
+[Choose how a deploy replaces replicas](../deploy/deployments.md#choose-how-a-deploy-replaces-replicas).
 
 ## Storage
 

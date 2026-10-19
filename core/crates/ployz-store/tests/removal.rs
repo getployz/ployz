@@ -597,6 +597,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
             &RemovalsQuery {
                 environment: at("production"),
                 remove: true,
+                deployment: None,
             },
         )
         .unwrap();
@@ -1045,6 +1046,7 @@ fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
             &RemovalsQuery {
                 environment: at("production"),
                 remove: true,
+                deployment: None,
             },
         )
         .unwrap();
@@ -1072,6 +1074,19 @@ fn shutting_down_what_never_ran_applies_at_once() {
         view.deployment.outcome,
         Some(ployz_store::Outcome::NeverRan)
     );
+    // A removal that applied left nothing to redeploy.
+    let again = store.write_trusted(
+        &who,
+        &Admit::Retry(ployz_store::Retry {
+            id: id(2),
+            deployment: id(1),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        &Trusted::default(),
+    );
+    assert_eq!(refusal(again).code, RpcErrorCode::Conflict);
 }
 
 #[test]

@@ -250,60 +250,103 @@ pub(super) fn queue(
 }
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
-/// targets, Namespace, registry credentials and upload, whatever changed since. Only a Deployment that ended
-/// without applying can be retried: failed, unknown or cancelled.
+/// targets, Namespace, registry credentials, upload and pinned commits, whatever
+/// changed since. Any Deployment that ended can be redeployed, applied ones too.
+/// One older than a Deployment that may have changed the Servers rolls that back,
+/// once the caller confirmed exactly those. Its source's consent covered what the
+/// Servers held then, and a later Deployment may have brought a Volume back, so a
+/// rollback reviews its deletes against Applied State and the Servers now, and a
+/// full one retires every Service added since, as a Deploy of its revision would.
 pub(crate) fn retry(
     tx: &mut dyn Tx,
     who: &Actor,
-    id: &DeploymentId,
-    source: &DeploymentId,
-) -> Result<DeploymentSummary, RpcError> {
+    retry: &crate::Retry,
+    trusted: &crate::Trusted,
+) -> Result<(DeploymentSummary, Rollback), RpcError> {
+    let (id, source) = (&retry.id, &retry.deployment);
     owned(tx, who, source)?;
     let stored = locked(tx, source)?;
     match stored.summary.status {
-        DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled => {}
-        DeploymentStatus::Applied => {
-            return Err(error::conflict(
-                "This Deployment applied, so there is nothing to retry",
-                json!({ "deployment": source }),
-            ));
-        }
+        DeploymentStatus::Applied
+        | DeploymentStatus::Failed
+        | DeploymentStatus::Unknown
+        | DeploymentStatus::Cancelled => {}
         DeploymentStatus::Queued | DeploymentStatus::Running | DeploymentStatus::Cancelling => {
             return Err(error::conflict(
-                "This Deployment hasn't ended: cancel it or wait before retrying it",
+                "This Deployment hasn't ended: cancel it or wait before redeploying it",
                 json!({ "deployment": source }),
             ));
         }
         DeploymentStatus::Superseded => return Err(superseded(source)),
     }
-    // Shipping an older revision over one that applied since would roll it back without saying so.
-    // ponytail: any newer applied Deployment refuses, even one targeting other Services; compare targets if that bites.
-    let newer = tx
+    if stored.summary.remove {
+        if stored.summary.status == DeploymentStatus::Applied {
+            return Err(error::conflict(
+                "This removal applied: nothing is left to redeploy",
+                json!({ "deployment": source }),
+            ));
+        }
+        let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
+        crate::removal::guard_removal(tx, &environment)?;
+    }
+    // What a rollback retires is frozen against Applied State now, which a newer
+    // running Deployment may yet change. A queued one is superseded, as by a Deploy,
+    // and one whose lease lapsed is unknown: its runner is gone.
+    if let Some(newer) = tx
         .query(
-            "SELECT MAX(number) FROM config_deployment \
-             WHERE environment_id = ?1 AND number > ?2 AND status = 'applied'",
+            "SELECT MAX(number) FROM config_deployment WHERE environment_id = ?1 \
+             AND number > ?2 AND status IN ('running', 'cancelling') AND lease > ?3",
             &[
                 stored.summary.environment_id.as_str().into(),
                 i64::try_from(stored.summary.number)
                     .map_err(|_| error::corrupt("Deployment number"))?
                     .into(),
+                now().into(),
             ],
         )?
         .first()
-        .and_then(|row| row.int(0).ok());
-    if let Some(newer) = newer {
+        .ok_or_else(|| error::corrupt("Deployment number"))?
+        .optional_int(0)?
+    {
         return Err(error::conflict(
-            format!(
-                "Deployment #{newer} applied after this one, so retrying it would roll that back: deploy again instead"
-            ),
-            json!({ "deployment": source, "newer": newer }),
+            format!("Wait for #{newer} to finish, then redeploy."),
+            json!({ "deployment": source, "waiting_for": newer }),
         ));
     }
-    if stored.summary.remove {
-        let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
-        crate::removal::guard_removal(tx, &environment)?;
+    let mut rollback = Rollback {
+        number: stored.summary.number,
+        rolls_back: undone(tx, &stored.summary)?,
+        removes: Vec::new(),
+    };
+    if let Some(confirmed) = &retry.rolls_back
+        && *confirmed != rollback.rolls_back
+    {
+        return Err(error::confirmation_required(
+            match numbered(&rollback.rolls_back) {
+                Some(undoes) => format!(
+                    "Redeploying #{} now undoes {undoes}: confirm again",
+                    rollback.number
+                ),
+                None => format!(
+                    "Redeploying #{} no longer rolls anything back: confirm again",
+                    rollback.number
+                ),
+            },
+            json!({
+                "deployment": source,
+                "number": rollback.number,
+                "rolls_back": rollback.rolls_back,
+            }),
+        ));
     }
-    let (services, nodes) = retried(tx, &stored)?;
+    let fresh = match rollback.rolls_back.is_empty() {
+        true => None,
+        false => Some(rollback_losses(tx, who, &stored, retry, trusted)?),
+    };
+    if let Some((_, losses)) = &fresh {
+        rollback.removes.clone_from(losses);
+    }
+    let (services, nodes) = retried(tx, &stored, fresh)?;
     let admitted_at = now();
     let number = queue(tx, &stored.summary.environment_id, |tx, number| {
         // Every other frozen column comes from the source, so a retry never re-reads
@@ -339,7 +382,7 @@ pub(crate) fn retry(
         )
         .map(|_| ())
     })?;
-    Ok(DeploymentSummary {
+    let summary = DeploymentSummary {
         id: id.clone(),
         number,
         status: DeploymentStatus::Queued,
@@ -354,7 +397,133 @@ pub(crate) fn retry(
         warnings: Vec::new(),
         ingress: Vec::new(),
         ..stored.summary
+    };
+    Ok((summary, rollback))
+}
+
+/// What a redeploy rolls back: the Deployment it ships again, by number, the
+/// newer ones it undoes, and the Volumes it removes with the data each deletes.
+#[derive(Clone, Debug)]
+pub(crate) struct Rollback {
+    pub(crate) number: u64,
+    pub(crate) rolls_back: Vec<u64>,
+    pub(crate) removes: Vec<VolumeLoss>,
+}
+
+/// The Deployments of `deployment`'s Environment after it that may have changed
+/// the Servers, oldest first: every one that started. Redeploying it undoes them.
+pub(crate) fn undone(
+    tx: &mut dyn Tx,
+    deployment: &DeploymentSummary,
+) -> Result<Vec<u64>, RpcError> {
+    let number =
+        i64::try_from(deployment.number).map_err(|_| error::corrupt("Deployment number"))?;
+    tx.query(
+        "SELECT number FROM config_deployment \
+         WHERE environment_id = ?1 AND number > ?2 AND started IS NOT NULL ORDER BY number",
+        &[deployment.environment_id.as_str().into(), number.into()],
+    )?
+    .iter()
+    .map(|row| u64::try_from(row.int(0)?).map_err(|_| error::corrupt("Deployment number")))
+    .collect()
+}
+
+/// `numbers` as people read them: "#5", "#5 and #6", "#5, #6 and #7"; none for none.
+pub(crate) fn numbered(numbers: &[u64]) -> Option<String> {
+    let (last, rest) = numbers.split_last()?;
+    Some(match rest {
+        [] => format!("#{last}"),
+        _ => format!(
+            "{} and #{last}",
+            rest.iter()
+                .map(|number| format!("#{number}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     })
+}
+
+/// Applied State and what rolling back to `stored` deletes, reviewed afresh
+/// against the Servers now with `retry`'s acceptance, never its source's consent.
+fn rollback_losses(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    stored: &Stored,
+    retry: &crate::Retry,
+    trusted: &crate::Trusted,
+) -> Result<(SavedEnvironmentIntent, Vec<VolumeLoss>), RpcError> {
+    let environment = &stored.summary.environment_id;
+    scope::lock_all(tx, [environment.clone()])?;
+    let loaded = scope::load_by_id(tx, environment)?;
+    if !stored.summary.remove {
+        crate::removal::marked(tx, &loaded)?;
+    }
+    let review = crate::review::review(tx, &loaded)?;
+    crate::review::check(&review, retry.version.as_deref())?;
+    let removed = rollback_removed(tx, stored, &review.head.applied)?;
+    let losses = crate::removal::review(
+        who,
+        environment,
+        (&review.view.version, retry.version.as_deref()),
+        removed,
+        trusted.volumes.as_ref(),
+        (&retry.accept_volume_loss, &[]),
+    )?;
+    Ok((review.head.applied, losses))
+}
+
+/// The Volumes redeploying `stored` removes: those its Saved revision drops, or
+/// only those a targeted one removed itself, among the Volumes Applied State
+/// `applied` holds and those any newer Deployment that started targeted. One that
+/// failed or lost track may have created a Volume Applied State doesn't list.
+pub(crate) fn rollback_removed(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    applied: &SavedEnvironmentIntent,
+) -> Result<Vec<crate::removal::RemovedVolume>, RpcError> {
+    let source = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    let mut removed = crate::removal::removed(applied, &source, &stored.namespace)?;
+    let number =
+        i64::try_from(stored.summary.number).map_err(|_| error::corrupt("Deployment number"))?;
+    for row in &tx.query(
+        "SELECT nodes FROM config_deployment \
+         WHERE environment_id = ?1 AND number > ?2 AND started IS NOT NULL",
+        &[stored.summary.environment_id.as_str().into(), number.into()],
+    )? {
+        let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
+        for node in nodes {
+            let TargetNode::Volume { id, name, .. } = node else {
+                continue;
+            };
+            if source
+                .volumes
+                .iter()
+                .any(|kept| kept.resource_id == id.as_str())
+                || removed.iter().any(|volume| volume.id == id)
+            {
+                continue;
+            }
+            removed.push(crate::removal::RemovedVolume {
+                docker_volume: crate::removal::docker_volume(&stored.namespace, id.as_str())?,
+                id,
+                name,
+            });
+        }
+    }
+    if !stored.summary.services.is_empty() {
+        removed.retain(|volume| {
+            stored.nodes.iter().any(|node| {
+                matches!(
+                    node,
+                    TargetNode::Volume {
+                        deletes: Some(_),
+                        ..
+                    }
+                ) && node.id() == volume.id.as_str()
+            })
+        });
+    }
+    Ok(removed)
 }
 
 /// The targets and nodes a retry of `stored` ships: its own, but a targeted one
@@ -362,9 +531,11 @@ pub(crate) fn retry(
 /// Either takes over the teardown of the queued Deployment it supersedes. A retry whose
 /// Saved revision still holds a Service that teardown retires is refused: it would
 /// run that Service again, or tear it down while deploying it, so the teardown stays.
+/// A rollback passes `fresh`: Applied State now and the losses reviewed against it.
 fn retried(
     tx: &mut dyn Tx,
     stored: &Stored,
+    fresh: Option<(SavedEnvironmentIntent, Vec<VolumeLoss>)>,
 ) -> Result<(Vec<ServiceName>, Vec<TargetNode>), RpcError> {
     let environment = &stored.summary.environment_id;
     let latest = crate::review::latest_saved(tx, environment)?.map(|latest| latest.intent);
@@ -389,8 +560,47 @@ fn retried(
             ));
         }
     }
+    // A rollback deletes the losses reviewed afresh. One whose Volume Applied State
+    // doesn't list, which a newer Deployment may have created, deletes what was found.
+    let (fresh, unlisted) = match fresh {
+        Some((applied, losses)) => {
+            let (listed, unlisted): (Vec<VolumeLoss>, Vec<VolumeLoss>) =
+                losses.into_iter().partition(|loss| {
+                    applied
+                        .volumes
+                        .iter()
+                        .any(|volume| volume.resource_id == loss.volume.id.as_str())
+                });
+            (Some((applied, listed)), unlisted)
+        }
+        None => (None, Vec::new()),
+    };
+    let unlisted = unlisted
+        .into_iter()
+        .filter(|loss| !loss.deletes.is_empty())
+        .map(|loss| TargetNode::Volume {
+            id: loss.volume.id,
+            name: loss.volume.name,
+            deletes: Some(loss.deletes),
+        });
     if stored.summary.services.is_empty() {
-        let mut nodes = stored.nodes.clone();
+        // A full rollback freezes its revision over Applied State now: it removes
+        // what newer Deployments added and deletes only the losses reviewed afresh.
+        let mut nodes = match &fresh {
+            Some((applied, losses)) => {
+                freeze(
+                    environment,
+                    &source,
+                    applied,
+                    Scope::All { losses },
+                    stored.namespace.clone(),
+                    stored.cluster_domain.as_ref(),
+                )?
+                .nodes
+            }
+            None => stored.nodes.clone(),
+        };
+        nodes.extend(unlisted);
         if let Some(latest) = &latest {
             inherit(tx, environment, (latest, &source), &mut nodes)?;
         }
@@ -429,11 +639,26 @@ fn retried(
                     })?);
                 }
             }
+            // A rollback deletes only the losses reviewed afresh, added below.
+            TargetNode::Volume {
+                deletes: Some(_), ..
+            } if fresh.is_some() => {}
             TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
                 nodes.push(node.clone());
             }
         }
     }
+    if let Some((applied, losses)) = &fresh {
+        for loss in losses {
+            let volume = applied
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == loss.volume.id.as_str())
+                .ok_or_else(|| error::corrupt("Applied State"))?;
+            nodes.push(TargetNode::volume(volume, Some(loss.deletes.clone()))?);
+        }
+    }
+    nodes.extend(unlisted);
     inherit(tx, environment, (&latest, &source), &mut nodes)?;
     let named = |target: &ServiceName| {
         nodes
@@ -549,7 +774,6 @@ pub(crate) fn claim(
     let Lowered {
         input,
         mut intent,
-        secret_env,
         warnings,
         ..
     } = lower(
@@ -589,10 +813,11 @@ pub(crate) fn claim(
         .collect();
     let organization = build::organization(tx, id)?;
     let build_order = crate::builders::order(tx, organization.as_str())?;
+    let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
-        secret_env,
+        sealed_names,
         input,
         receipts,
         sources,

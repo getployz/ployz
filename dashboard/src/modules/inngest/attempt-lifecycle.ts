@@ -24,7 +24,7 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
     readonly concurrency?: RunConcurrency;
     readonly cancelOn?: RunCancelOn;
     readonly handler: (
-      ctx: { event: { data: unknown }; step: PloyzStepTools; runId: string },
+      ctx: { event: { data: unknown }; step: PloyzStepTools; runId: string; attempt: number },
       runEffect: EffectRunner,
     ) => Promise<Result>;
   };
@@ -58,7 +58,7 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
           }
         },
       },
-      async ({ event, step, runId }) => run.handler({ event, step, runId }, runEffect),
+      async ({ event, step, runId, attempt }) => run.handler({ event, step, runId, attempt }, runEffect),
     );
 
   const createCancel = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => {
