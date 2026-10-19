@@ -109,6 +109,8 @@ pub(super) struct Harvester {
     /// The newest Docker event seen. A reconnect resumes from it, so events
     /// sent while the stream was down still leave their markers.
     last_event_nanos: Option<i64>,
+    /// The newest time of each container's events, by action.
+    delivered: HashMap<(ContainerId, String), i64>,
     /// What the events said of each container's current run.
     runs: HashMap<ContainerId, Run>,
     /// Exits that wait on the inspect that follows them: Docker can send
@@ -275,6 +277,7 @@ impl Harvester {
             inspected,
             data_dir,
             last_event_nanos: None,
+            delivered: HashMap::new(),
             runs: HashMap::new(),
             exits: HashMap::new(),
             stop_signals: HashMap::new(),
@@ -328,6 +331,7 @@ impl Harvester {
         self.damage.retain(|id, _| present.contains(id));
         self.owned_by_event.retain(|id, _| present.contains(id));
         self.runs.retain(|id, _| present.contains(id));
+        self.delivered.retain(|(id, _), _| present.contains(id));
         self.stop_signals.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id);
@@ -378,7 +382,7 @@ impl Harvester {
         else {
             return;
         };
-        if self.first_delivery(&message) {
+        if self.first_delivery(id, &message) {
             self.mark(id, &message);
         }
         let held = matches!(
@@ -400,15 +404,21 @@ impl Harvester {
     }
 
     /// Records the event's time and says whether it is new: a stream resumed
-    /// from the newest event repeats that event.
-    fn first_delivery(&mut self, message: &EventMessage) -> bool {
+    /// from the newest event repeats that event. Containers that die together
+    /// send events at the same time.
+    fn first_delivery(&mut self, id: ContainerId, message: &EventMessage) -> bool {
         let Some(at) = message.time_nano else {
             return true;
         };
-        if self.last_event_nanos.is_some_and(|last| at <= last) {
+        let last = self
+            .delivered
+            .entry((id, message.action.clone().unwrap_or_default()))
+            .or_insert(i64::MIN);
+        if at <= *last {
             return false;
         }
-        self.last_event_nanos = Some(at);
+        *last = at;
+        self.last_event_nanos = self.last_event_nanos.max(Some(at));
         true
     }
 
@@ -3511,6 +3521,29 @@ mod tests {
                 stopped: false,
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn containers_that_die_together_each_queue_a_crash() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let other = "cd".repeat(32);
+        let mut die = event("die", T0 + 1, &[service, ("exitCode", "1")]);
+        running.harvester.on_docker_event(die.clone());
+        die.actor.as_mut().unwrap().id = Some(other.clone());
+        running.harvester.on_docker_event(die.clone());
+        // A stream resumed from the newest event delivers both again.
+        running.harvester.on_docker_event(die);
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "1")]));
+        running.settle_exits(|| Inspected::Gone);
+        let other = ContainerId::parse(&other).unwrap();
+        while running.harvester.exits.contains_key(&other) {
+            running.harvester.on_inspected(other, Inspected::Gone);
+        }
+        assert_eq!(crashes(&host).len(), 2);
     }
 
     #[tokio::test]
