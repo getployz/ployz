@@ -241,9 +241,7 @@ it.live("names a restore within 63 characters, and past a Volume that already ha
   // An earlier restore holds that name: the same point restores again under a fresh one.
   const second = yield* restore();
   if (!second.ok) throw new Error(second.refusal.message);
-  const name = yield* nameOf(second.placement.volumeId);
-  expect(name).toMatch(/^d{58}-[a-z0-9]{4}$/u);
-  expect(name).not.toBe(`${"d".repeat(58)}-${time}`);
+  expect(yield* nameOf(second.placement.volumeId)).toBe(`${"d".repeat(56)}-${time}-2`);
 }));
 
 it.live("writes the restore's row before its Store write, so a Deploy admitted right after stamps it", () => Effect.gen(function* () {
