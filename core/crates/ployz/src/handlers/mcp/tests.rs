@@ -2471,10 +2471,7 @@ mod published {
         let home = tempfile::tempdir().unwrap();
         let mut client =
             Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
-        let entry = agent_facing()
-            .into_iter()
-            .find(|entry| name(entry) == "org_member_role")
-            .unwrap();
+        let entry = org_member_role();
         assert_eq!(entry["gate"], "ask", "{entry}");
         let refused = at_once(client.call(2, name(&entry), arguments(&entry))).await;
         (fake, refused)
@@ -2511,16 +2508,57 @@ mod published {
         );
     }
 
+    fn org_member_role() -> Value {
+        agent_facing()
+            .into_iter()
+            .find(|entry| name(entry) == "org_member_role")
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn another_published_refusal_reaches_the_agent_as_cloud_sent_it() {
-        let refusal = json!({
+    async fn a_published_refusal_reaches_the_agent_as_a_tool_s_with_the_call_to_repeat() {
+        let (_fake, refused) = gated_refused_with(json!({
+            "code": "invalid_argument",
+            "message": "Expected \"owner\" | \"admin\" | \"member\"",
+            "details": null,
+            "field": "role",
+            "expected": { "type": "string", "enum": ["owner", "admin", "member"] },
+            "writes": "none",
+        }))
+        .await;
+        let entry = org_member_role();
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        assert_eq!(
+            refused["result"]["structuredContent"],
+            json!({
+                "code": "invalid_argument",
+                "message": "Expected \"owner\" | \"admin\" | \"member\"",
+                "field": "role",
+                "expected": { "type": "string", "enum": ["owner", "admin", "member"] },
+                "retry": { "tool": "org_member_role", "input": arguments(&entry) },
+                "writes": "none",
+                "next": [],
+            }),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_from_a_cloud_that_predates_writes_says_writes_are_unknown() {
+        let (_fake, refused) = gated_refused_with(json!({
             "code": "not_found",
             "message": "No member named ada.",
             "details": { "approval_id": "apr_7" },
-        });
-        let (_fake, refused) = gated_refused_with(refusal.clone()).await;
-        assert_eq!(refused["result"]["isError"], true, "{refused}");
-        assert_eq!(refused["result"]["structuredContent"], refusal, "{refused}");
+        }))
+        .await;
+        let content = &refused["result"]["structuredContent"];
+        assert_eq!(content["writes"], "unknown", "{refused}");
+        assert_eq!(
+            content["details"],
+            json!({ "approval_id": "apr_7" }),
+            "{refused}"
+        );
+        assert_eq!(content["retry"]["tool"], "org_member_role", "{refused}");
     }
 
     #[tokio::test]

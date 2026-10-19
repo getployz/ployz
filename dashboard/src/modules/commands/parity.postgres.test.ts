@@ -35,7 +35,7 @@ const SERVES_500 = JSON.stringify({
 
 /** A tool result as the model reads it: a command's outcome, or the agent's word that no such tool exists. */
 const Heard = Schema.fromJsonString(Schema.Union([
-  Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown), refusal: Schema.optional(Schema.Struct({ code: Schema.String, message: Schema.String })) }),
+  Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown), refusal: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)) }),
   Schema.Struct({ error: Schema.String }),
 ]));
 
@@ -224,7 +224,7 @@ it.live("asks before changing a role, removing a member or revoking an invite th
     }
   }));
 
-it.live("refuses a bad input the same way through ployz and the sidebar, so the agent hears the error ployz prints", () =>
+it.live("refuses a bad input the same way through ployz and the sidebar, naming the field, what fits it and that nothing was written, as Store tools refuse", () =>
   Effect.gen(function* () {
     const { route, sidebar, rows } = yield* parity();
     const before = yield* rows;
@@ -232,9 +232,17 @@ it.live("refuses a bad input the same way through ployz and the sidebar, so the 
     const viaSidebar = yield* sidebar("server_upgrade_policy_set", { channel: "alpha" });
     expect(viaRoute.status).toBe(422);
     const error = asRecord(asRecord(viaRoute.body)?.["error"]);
-    expect(error).toMatchObject({ code: "invalid_input" });
-    expect(viaSidebar).toEqual({ ok: false, refusal: { code: error?.["code"], message: error?.["message"] } });
+    expect(error).toMatchObject({ code: "invalid_argument", field: "channel", expected: { enum: ["stable", "beta"] }, writes: "none" });
+    expect(viaSidebar).toEqual({ ok: false, refusal: { ...error, retry: { tool: "server_upgrade_policy_set", input: { channel: "alpha" } } } });
     expect(yield* rows).toEqual(before);
+  }));
+
+it.live("refuses an input a command doesn't take and a Service it can't find, saying nothing was written", () =>
+  Effect.gen(function* () {
+    const { route, sidebar } = yield* parity();
+    const unknown = asRecord(asRecord((yield* route("org_member_rm", { member: "Ada", force: true })).body)?.["error"]);
+    expect(unknown).toMatchObject({ code: "invalid_argument", field: "force", expected: { properties: { member: {} } }, writes: "none" });
+    expect(yield* sidebar("uptime_show", { project: "shop", service: "nope" })).toMatchObject({ ok: false, refusal: { writes: "none", retry: { tool: "uptime_show" } } });
   }));
 
 it.live("answers approvals only through ployz, records who decided, and keeps them out of the sidebar, so the agent never approves its own request", () =>
@@ -266,7 +274,7 @@ it.live("refuses a ployz approve of a request an agent asked for, and still lets
     }));
     expect(yield* route("org_approval_approve", { id: data ?? "" })).toEqual({
       status: 403,
-      body: { error: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this.", details: expect.anything() } },
+      body: { error: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this.", details: expect.anything(), writes: "unknown" } },
     });
     expect(yield* route("org_approval_deny", { id: logs ?? "" })).toMatchObject({ status: 200, body: { output: { id: logs, status: "denied" } } });
     expect((yield* rows).decided.map(({ status }) => status)).toEqual(["pending", "denied"]);

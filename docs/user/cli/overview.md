@@ -301,7 +301,9 @@ Add `--json` to any command to get one JSON object instead of text. A stream, su
 prints JSON Lines instead: one object per line. If the command fails before it prints anything,
 that object is `{"error": {...}}`. A stream that fails after it printed names the failure on stderr
 and exits with code 3. Its `cause` lists every underlying error, outermost first, and
-`details` holds the next command to run when there is one.
+`details` holds the next command to run when there is one. When a Ployz Cloud command such as
+`ployz org member rm` refuses, `details` also says whether it wrote anything (`writes`), and for
+an input it can't take, the `field` and the JSON Schema `expected` there.
 
 Scripts can tell failures apart by exit code:
 

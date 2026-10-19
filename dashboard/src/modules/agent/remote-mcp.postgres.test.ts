@@ -58,7 +58,7 @@ const Structured = Schema.Struct({
   request_key: Schema.String,
   approval_required: Schema.optional(Schema.Struct({ approval_id: Schema.String, url: Schema.String })),
   claim_required: Schema.optional(Schema.Struct({ message: Schema.String, url: Schema.String })),
-  refusal: Schema.optional(Schema.Struct({ code: Schema.String })),
+  refusal: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   value: Schema.optional(Schema.Unknown),
 });
 
@@ -337,6 +337,21 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
     const refused = yield* agent.call("service_add", { ...SHOP, project: "nope", name: "cache", image: "redis:7" });
     expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { code: "not_found" } } });
     expect(yield* agent.call("environment_show", SHOP)).toMatchObject({ isError: false, body: { ok: true } });
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a Cloud command refuses a remote agent as a Store tool does: the field, what fits it, that nothing was written and the call to repeat", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const input = { service: "web", from: "yesterday" };
+    const refused = yield* agent.call("uptime_show", input);
+    expect(refused).toMatchObject({
+      isError: true,
+      body: {
+        ok: false,
+        refusal: { code: "invalid_argument", field: "from", expected: { type: "string" }, writes: "none", retry: { tool: "uptime_show", input } },
+      },
+    });
   }).pipe(Effect.scoped), 30_000);
 
 it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>
