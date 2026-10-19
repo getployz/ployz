@@ -55,7 +55,7 @@ $ ployz domain add api
 
 stdout:
 ```
-Staged domain api on api in shop/production (revision 10).
+Staged domain api on api in shop/production.
 ```
 
 ### domain add worker --json (generated)
@@ -97,7 +97,7 @@ $ ployz domain add web shop.example.org
 
 stdout:
 ```
-Staged domain shop.example.org on web in shop/production (revision 12).
+Staged domain shop.example.org on web in shop/production.
 ```
 
 ### domain add web docs.example.org --port 8080 --json
@@ -138,7 +138,7 @@ $ ployz domain add web shop.example.org
 
 stdout:
 ```
-Staged domain shop.example.org on web in shop/production (revision 13).
+Staged domain shop.example.org on web in shop/production.
 ```
 
 ### domain add, unknown service
@@ -187,7 +187,7 @@ $ ployz domain set api myapi
 
 stdout:
 ```
-Staged generated domain myapi on api in shop/production (revision 14).
+Staged generated domain myapi on api in shop/production.
 ```
 
 ### domain set worker myworker --json
@@ -310,7 +310,7 @@ $ ployz domain rm shop.example.org
 
 stdout:
 ```
-Staged removal of domain shop.example.org on web in shop/production (revision 16).
+Staged removal of domain shop.example.org on web in shop/production.
 ```
 
 ### domain rm docs.example.org --json
