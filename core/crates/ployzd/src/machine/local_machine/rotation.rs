@@ -158,7 +158,7 @@ impl LocalMachine {
                 let reads = self.guard_reads(&copy, &want).await?;
                 self.check(&copy, &want, expect.as_ref(), reads).await?
             }
-            decided => decided,
+            decided @ (Checked::Met | Checked::Refused(_)) => decided,
         };
         let met = match checked {
             Checked::Refused(refusal) => return Ok(refused(now, refusal)),
