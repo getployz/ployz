@@ -290,11 +290,11 @@ pub(crate) fn retry(
         crate::removal::guard_removal(tx, &environment)?;
     }
     // What a rollback retires is frozen against Applied State now, which a newer
-    // Deployment still in flight may yet change.
+    // running Deployment may yet change. A queued one is superseded, as by a Deploy.
     if let Some(newer) = tx
         .query(
             "SELECT MAX(number) FROM config_deployment WHERE environment_id = ?1 \
-             AND number > ?2 AND status IN ('queued', 'running', 'cancelling')",
+             AND number > ?2 AND status IN ('running', 'cancelling')",
             &[
                 stored.summary.environment_id.as_str().into(),
                 i64::try_from(stored.summary.number)

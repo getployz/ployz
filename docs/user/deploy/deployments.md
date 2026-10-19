@@ -161,8 +161,8 @@ their recorded outcomes.
   and they and the other settings saved after #4 show as staged changes again. A volume #4 deleted
   that a later deployment brought back is deleted again only after you type its name in **Deletes
   data**. If another deployment runs while you confirm, Ployz asks again with the new list.
-  While a newer deployment is queued or running, Redeploy on an older one refuses with "Wait for
-  #5 to finish, then redeploy."
+  While a newer deployment is running, Redeploy on an older one refuses with "Wait for #5 to
+  finish, then redeploy." A queued one gives way, as when you deploy again.
 - A finished removal or shutdown can't be redeployed: there is nothing left to ship.
 - **A rollback lasts until your next push or deploy**, which ships your latest commit and saved
   settings again. To keep it, revert the commit in Git and change the settings back.

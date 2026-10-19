@@ -2214,7 +2214,15 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
             .as_str(),
         "shop-production"
     );
-    // A cancelled Deployment can be retried too, with its own Saved revision.
+    // A cancelled Deployment can be retried too, with its own Saved revision, once
+    // the newer #3 ends.
+    let b = runner("runner-b");
+    store
+        .record(&id(3), &b, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &b, succeeded(&["web", "api"]))
+        .unwrap();
     let newer = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
         .unwrap()
@@ -2305,16 +2313,16 @@ fn a_redeploy_is_refused_unless_its_deployment_ended() {
     admit(&store, &who, 3, &[], None).unwrap();
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Superseded);
     assert_eq!(code(retry(&store, &who, 9, 2)), RpcErrorCode::Conflict);
-    // A refused redeploy queued nothing.
+    // A refused redeploy queued nothing, and an accepted one supersedes what's queued.
     fail_api(&store, 3);
     assert_eq!(retry(&store, &who, 9, 3).unwrap().number, 4);
     assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
-    // While a newer one is queued, nothing older redeploys, and it stays queued.
     admit(&store, &who, 5, &[], None).unwrap();
+    retry(&store, &who, 6, 3).unwrap();
+    assert_eq!(status(&store, &who, 5), DeploymentStatus::Superseded);
     assert_eq!(status(&store, &who, 9), DeploymentStatus::Superseded);
-    assert_eq!(code(retry(&store, &who, 6, 3)), RpcErrorCode::Conflict);
-    assert_eq!(code(retry(&store, &who, 7, 1)), RpcErrorCode::Conflict);
-    assert_eq!(status(&store, &who, 5), DeploymentStatus::Queued);
+    assert_eq!(retry(&store, &who, 7, 1).unwrap().number, 7);
+    assert_eq!(status(&store, &who, 6), DeploymentStatus::Superseded);
 }
 
 /// Redeploy `source` as `n`, confirming that it rolls back `confirmed`.
@@ -2358,15 +2366,12 @@ fn a_redeploy_rolls_back_every_newer_deployment_that_may_have_changed_the_server
     admit(&store, &who, 4, &[], None).unwrap();
     admit(&store, &who, 5, &[], None).unwrap();
     assert_eq!(rolls_back(&store, &who, 1), [2]);
-    let waiting = rollback(&store, &who, (6, 1), &[2]).unwrap_err();
-    assert_eq!(waiting.code, RpcErrorCode::Conflict);
-    assert_eq!(waiting.message, "Wait for #5 to finish, then redeploy.");
-    cancel(&store, &who, 5).unwrap();
 
     // What the caller confirmed must still be what it rolls back.
     let stale = rollback(&store, &who, (6, 1), &[]).unwrap_err();
     assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(stale.details["rolls_back"], json!([2]));
+    assert_eq!(status(&store, &who, 5), DeploymentStatus::Queued);
     assert_eq!(rollback(&store, &who, (6, 1), &[2]).unwrap().number, 6);
 }
 
@@ -2813,6 +2818,9 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         Some(upload.clone())
     );
     // A retry ships the failed one's upload, not the Environment's latest.
+    store
+        .record(&id(2), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
     let mut newer = upload.clone();
     newer.digest = ployz_core::UploadDigest::parse("e".repeat(64)).unwrap();
     with(3, Some(newer)).unwrap();
@@ -3880,16 +3888,16 @@ fn a_newer_queued_deployment_keeps_a_running_ones_creates_deployed() {
 #[test]
 fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
     let (store, who) = shop();
-    admit(&store, &who, 1, &["api"], None).unwrap();
-    cancel(&store, &who, 1).unwrap();
-    admit(&store, &who, 2, &[], None).unwrap();
-    store.claim(&id(2), &runner("runner-a")).unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &runner("runner-a")).unwrap();
+    admit(&store, &who, 2, &["api"], None).unwrap();
+    cancel(&store, &who, 2).unwrap();
     store
         .write(
             &who,
             &Admit::Retry(Retry {
                 id: id(3),
-                deployment: id(1),
+                deployment: id(2),
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
