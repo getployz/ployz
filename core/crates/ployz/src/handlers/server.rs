@@ -21,7 +21,7 @@ use crate::{
     cloud_account::{self, Credential, StoreCallError},
     cloud_login::{CredentialStore, LoginError},
     cluster::RoleWaitError,
-    connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
+    connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
 };
@@ -186,28 +186,46 @@ async fn through_cloud(matches: &ArgMatches, credential: &Credential) -> Result<
 
 async fn dial(matches: &ArgMatches, access: cloud_account::ServerAccess) -> Result<Client, Error> {
     if access.connections.is_empty() {
-        return Err(no_reachable_server(access.unreachable));
+        return Err(no_reachable_server(access.unreachable, None));
     }
+    // Cloud hands back the connections it holds without probing their Servers.
+    let mut unreachable = access
+        .connections
+        .iter()
+        .filter_map(|connection| connection.machine_id().copied())
+        .collect::<Vec<_>>();
+    unreachable.extend(access.unreachable);
     let selected = SelectedConnections {
         source: ConnectionSource::Cloud,
         connections: access.connections,
     };
     let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(crate::connect::connect_selected_with(selected, Arc::new(connector)).await?)
+    match crate::connect::connect_selected_with(selected, Arc::new(connector)).await {
+        Ok(client) => Ok(client),
+        Err(error @ ConnectError::AllFailed { reached: false, .. }) if !unreachable.is_empty() => {
+            Err(no_reachable_server(unreachable, Some(error)))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
-fn no_reachable_server(unreachable: Vec<ployz_core::MachineId>) -> Error {
+/// None of `unreachable` answered; `cause` says how the last attempt failed.
+fn no_reachable_server(
+    unreachable: Vec<ployz_core::MachineId>,
+    cause: Option<ConnectError>,
+) -> Error {
     if unreachable.is_empty() {
         return Error::not_found("this Organization has no Servers")
             .hint(Hint::Next("ployz server add".into()));
     }
-    Error::detailed(
+    Error::detailed_caused(
         RpcErrorCode::Unavailable,
         format!(
             "no Server of this Organization is reachable now: {}",
             super::joined(&unreachable)
         ),
         json!({ "unreachable": unreachable }),
+        cause,
     )
 }
 
@@ -754,5 +772,27 @@ mod tests {
         let error = error.report();
         assert_eq!(error.code, RpcErrorCode::Unavailable);
         assert_eq!(error.details.get("unreachable"), Some(&json!([offline])));
+    }
+
+    #[tokio::test]
+    async fn held_connections_that_reach_no_server_name_the_unreachable_servers() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "ls"])
+            .unwrap();
+        let (held, gone) = ("a".repeat(32), "b".repeat(32));
+        let credential = cloud(json!({
+            "connections": [{ "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }],
+            "unreachable": [gone],
+        }));
+        let Err(error) = through_cloud(leaf_matches(&matches), &credential).await else {
+            panic!("dialed a Server that is not there");
+        };
+        assert!(
+            !error.causes().is_empty(),
+            "the connect error stays the cause"
+        );
+        let error = error.report();
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.details.get("unreachable"), Some(&json!([held, gone])));
     }
 }
