@@ -239,7 +239,7 @@ failed, it exits non-zero. When you're signed in, Ployz Cloud runs the drain, as
 button. Unlike the button, it waits for approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud. Add
-[`--context`](standalone-clusters.md#pick-where-one-command-acts) to drain from your computer instead.
+`--context` to drain from your computer instead.
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
 reads **Your domains point at 203.0.113.10**: the server's address. Turn it off and a dialog lists the
@@ -328,7 +328,7 @@ ployz server upgrade stable web-1 web-2
 
 When you're signed in, Ployz Cloud runs the upgrade, so it follows your organization's channel.
 Naming the other channel fails with `channel_mismatch`. To pick an exact version like `0.2.0`,
-add [`--context`](standalone-clusters.md#pick-where-one-command-acts) and upgrade from your computer instead. Ployz Cloud never moves a server to an
+add `--context` and upgrade from your computer instead. Ployz Cloud never moves a server to an
 older release than it runs, so a downgrade also needs `--context`.
 
 Ployz releases are signed, starting with the first release after 0.3.0-beta.2. A server checks
@@ -452,7 +452,7 @@ before they take the server out. One approval removes the server once, and appro
 doesn't approve a removal that resets the server.
 
 Unlike `drain`, `upgrade` and `clean`, removing or forgetting a server Ployz Cloud manages always goes through
-Ployz Cloud, even with [`--context`](standalone-clusters.md#pick-where-one-command-acts) or `--connect`: Cloud keeps a record of each server it manages,
+Ployz Cloud, even with `--context` or `--connect`: Cloud keeps a record of each server it manages,
 and removing one behind its back would leave that record behind.
 Ctrl-C stops following the removal but doesn't stop it: it keeps running in Ployz Cloud, and the
 server stays in your context, since the removal can still fail.
@@ -512,7 +512,7 @@ confirmation names each volume as the approval does: by the services that used i
 refuses anything an environment owns, including one an environment took over while the removal
 waited, and it asks before it stops services or deletes volume data (see [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)). The
 CLI stops waiting after 30 minutes and says so; the removal keeps running in Ployz Cloud. Add
-[`--context`](standalone-clusters.md#pick-where-one-command-acts) to clean up from your computer instead.
+`--context` to clean up from your computer instead.
 
 ## Forget servers you deleted
 

@@ -58,7 +58,6 @@ New to Ployz? Follow these steps from a first deploy to real users.
 
 - [Add a server](servers/add-a-server.md): requirements, the install command, the ports to open
 - [Manage servers](servers/manage-servers.md): status, upgrades, removing a server
-- [Run servers without Ployz Cloud](servers/standalone-clusters.md): standalone clusters over SSH, contexts
 
 ## Observe
 

@@ -363,8 +363,8 @@ NAME	CURRENT	DEFAULT	CONNECTIONS
 
 stderr:
 ```
-No contexts yet.
-next: ployz server add --standalone DESTINATION
+No contexts yet. Contexts reach Clusters run without Ployz Cloud; your Cloud Servers need none.
+next: ployz server ls
 ```
 
 ### ctx ls --json (no contexts)
@@ -377,7 +377,8 @@ $ ployz --json ctx ls
 stdout:
 ```
 {
-  "contexts": []
+  "contexts": [],
+  "next": "ployz server ls"
 }
 ```
 
@@ -602,8 +603,8 @@ NAME	CURRENT	DEFAULT	CONNECTIONS
 
 stderr:
 ```
-No contexts yet.
-next: ployz server add --standalone DESTINATION
+No contexts yet. Contexts reach Clusters run without Ployz Cloud; your Cloud Servers need none.
+next: ployz server ls
 ```
 
 ### status (with a context removed)

@@ -600,10 +600,10 @@ fn ctx_rm_of_an_unknown_name_fails_without_mutating() {
 }
 
 #[test]
-fn with_no_contexts_ls_and_use_point_at_the_command_that_makes_one() {
+fn with_no_contexts_ls_and_use_point_signed_in_users_at_their_cloud_servers() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("config.yaml");
-    let next = "next: ployz server add --standalone DESTINATION";
+    let next = "next: ployz server ls";
 
     let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["ctx", "ls", "--ployz-config", path.to_str().unwrap()])
@@ -613,6 +613,23 @@ fn with_no_contexts_ls_and_use_point_at_the_command_that_makes_one() {
     let stderr = String::from_utf8_lossy(&listed.stderr);
     assert!(stderr.contains("No contexts yet."), "{stderr}");
     assert!(stderr.contains(next), "{stderr}");
+
+    let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "ls",
+            "--json",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(listed.status.success(), "{listed:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(
+        listed,
+        serde_json::json!({ "contexts": [], "next": "ployz server ls" })
+    );
 
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([

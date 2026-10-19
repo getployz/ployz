@@ -13,8 +13,8 @@ use crate::context::{
 
 use super::{Error, leaf_matches, required};
 
-/// The one command that makes a context.
-const MAKE_A_CONTEXT: &str = "ployz server add --standalone DESTINATION";
+/// Where a signed-in user with no contexts finds their Servers instead.
+const NO_CONTEXTS_NEXT: &str = "ployz server ls";
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
     if matches
@@ -58,7 +58,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
         .collect::<Vec<_>>();
     let mut table = Table::new(
         ["NAME", "CURRENT", "DEFAULT", "CONNECTIONS"],
-        "No contexts yet.",
+        "No contexts yet. Contexts reach Clusters run without Ployz Cloud; your Cloud Servers need none.",
     );
     for context in &contexts {
         table.row([
@@ -72,10 +72,14 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
             Cell::from(context.connections.len().to_string()),
         ]);
     }
-    ui::list(&json!({ "contexts": contexts }), &table)?;
-    if contexts.is_empty() {
-        ui::hint(&Hint::Next(MAKE_A_CONTEXT.to_owned()));
+    if !contexts.is_empty() {
+        return ui::list(&json!({ "contexts": contexts }), &table);
     }
+    ui::list(
+        &json!({ "contexts": contexts, "next": NO_CONTEXTS_NEXT }),
+        &table,
+    )?;
+    ui::hint(&Hint::Next(NO_CONTEXTS_NEXT.to_owned()));
     Ok(())
 }
 
@@ -100,7 +104,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
             "no contexts found in Ployz config {}",
             config.path().display()
         ))
-        .hint(Hint::Next(MAKE_A_CONTEXT.to_owned())));
+        .hint(Hint::Next(NO_CONTEXTS_NEXT.to_owned())));
     }
     let requested_connection = leaf.get_one::<String>("connection");
     let selected = match leaf.get_one::<String>("context-name") {

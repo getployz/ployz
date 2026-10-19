@@ -238,14 +238,11 @@ pub(crate) const CONFIG_UNMOUNT: Verb = Verb::cloud(
 );
 pub(crate) const CTX: Verb =
     Verb::local("ctx", Never, context::command, link::show).docs("cli/overview.md");
-pub(crate) const CTX_LS: Verb = Verb::local("ctx ls", Never, context::list_command, context::list)
-    .docs("servers/standalone-clusters.md");
+pub(crate) const CTX_LS: Verb = Verb::local("ctx ls", Never, context::list_command, context::list);
 pub(crate) const CTX_RM: Verb =
-    Verb::local("ctx rm", Never, context::remove_command, context::remove)
-        .docs("servers/standalone-clusters.md");
+    Verb::local("ctx rm", Never, context::remove_command, context::remove);
 pub(crate) const CTX_USE: Verb =
-    Verb::local("ctx use", Never, context::select_command, context::select)
-        .docs("servers/standalone-clusters.md");
+    Verb::local("ctx use", Never, context::select_command, context::select).docs("cli/overview.md");
 #[cfg(feature = "verify-faults")]
 pub(crate) const DEBUG_LOCAL_RPC: Verb = Verb::internal(
     "debug local-rpc",
