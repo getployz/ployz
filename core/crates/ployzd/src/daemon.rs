@@ -426,13 +426,11 @@ impl Daemon {
                             local_id,
                             shutdown.clone(),
                         )
-                        .await
+                        .await;
                     }
-                    None => {
-                        shutdown.cancelled().await;
-                        Ok(())
-                    }
+                    None => shutdown.cancelled().await,
                 }
+                Ok(())
             };
             let retire = async {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
