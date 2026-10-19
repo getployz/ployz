@@ -77,6 +77,10 @@ pub(crate) fn environment(
 ) -> Result<EnvironmentView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let path = query.path.as_ref();
+    let only = path.and_then(SettingPath::target);
+    if only == Some(&Target::Setup) {
+        crate::branch::refuse_service_named_setup(&environment)?;
+    }
     let services = match path {
         Some(path) => vec![environment.service(path.settings_of()?)?],
         None => {
@@ -85,7 +89,6 @@ pub(crate) fn environment(
             services
         }
     };
-    let only = path.and_then(SettingPath::target);
     let values = path
         .filter(|path| path.target().is_none())
         .and_then(|_| services.first())

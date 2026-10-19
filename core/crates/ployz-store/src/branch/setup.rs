@@ -156,6 +156,7 @@ pub(crate) fn set_own(
     service: &ServiceName,
     value: Option<Value>,
 ) -> Result<bool, RpcError> {
+    refuse_service_named_setup(environment)?;
     let row = branch_row(tx, environment)?;
     let lineage = environment.service(service)?.lineage_id.clone();
     let command = value
@@ -198,6 +199,30 @@ pub(crate) fn set_own(
         ],
     )?;
     Ok(true)
+}
+
+/// A Service named `setup`, from before the name was reserved: its paths read as a
+/// Branch's Setup Commands, so it is renamed before any `setup.` path is used.
+pub(crate) fn refuse_service_named_setup(environment: &Environment) -> Result<(), RpcError> {
+    if !environment
+        .working
+        .services
+        .iter()
+        .any(|service| service.slug == "setup")
+    {
+        return Ok(());
+    }
+    let next = format!(
+        "ployz service rename setup NAME --env {} --project {}",
+        environment.summary.name, environment.summary.project
+    );
+    Err(error::invalid(
+        format!(
+            "A Service in {} is named setup, and setup.SERVICE now means a Branch's Setup Command; rename it first: {next}",
+            environment.summary.name
+        ),
+        json!({ "service": "setup", "next": next }),
+    ))
 }
 
 /// `setup.SERVICE` never waits for a Deploy, so there is nothing to discard.

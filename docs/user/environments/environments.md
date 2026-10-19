@@ -41,7 +41,8 @@ postgres --setup 'web=pnpm db:seed'`. In the branch, `ployz get setup.web` shows
 setup.web='pnpm db:seed --small'` changes it, and `ployz unset setup.web` removes it. A change
 takes effect at once, with nothing to deploy first: the next deploy runs the new command if `web`
 hasn't deployed in staging yet, and until then `ployz diff` shows it. So when a setup command
-fails, fix it with `ployz set` and deploy again.
+fails, fix it with `ployz set` and deploy again. Because `setup.` names these commands, no Service can be named
+`setup`, just as none can be named `volumes` or `configs`.
 
 ## Test staging at its own address
 

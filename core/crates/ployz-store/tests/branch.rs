@@ -43,7 +43,11 @@ fn at(environment: &str) -> EnvironmentRef {
 /// production: `web` (a secret, a reference to `db`, a private image with a
 /// registry credential) uses `db`, which mounts Volume `data`. Nothing deployed.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_on(backend::open())
+}
+
+/// [`shop`] on `store`.
+fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -812,6 +816,98 @@ fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
     own.setup = vec![setup("db", "seed")];
     let made = store.write(&who, &own).unwrap();
     assert_eq!(made.branch.setup, [setup("db", "seed")]);
+}
+
+#[test]
+fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_renamed() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    let reserved = "setup is reserved: paths name a Branch's Setup Commands as setup.SERVICE";
+
+    let created = store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("setup").unwrap(),
+                image: Some("busybox".into()),
+                template: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(created.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(created.message, reserved);
+
+    let renamed = store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: at("production"),
+                service: ServiceName::parse("db").unwrap(),
+                name: ServiceName::parse("setup").unwrap(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(renamed.message, reserved);
+
+    // A Service named setup from before the name was reserved.
+    backend::execute(
+        &url,
+        r#"UPDATE config_environment SET working = replace(working, '"slug":"db"', '"slug":"setup"')"#,
+    );
+    let rename_first = "A Service in production is named setup, and setup.SERVICE now means \
+        a Branch's Setup Command; rename it first: \
+        ployz service rename setup NAME --env production --project shop";
+    let read = store
+        .read(
+            &who,
+            &ployz_store::EnvironmentQuery {
+                environment: at("production"),
+                path: Some(SettingPath::parse("setup.image").unwrap()),
+                all: false,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(read.message, rename_first);
+    let set = store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("setup.web").unwrap(),
+                    value: json!("pnpm db:seed"),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert_eq!(set.message, rename_first);
+
+    // Renaming it away is allowed, and setup.SERVICE paths work again.
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: at("production"),
+                service: ServiceName::parse("setup").unwrap(),
+                name: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    let read = store
+        .read(
+            &who,
+            &ployz_store::EnvironmentQuery {
+                environment: at("production"),
+                path: Some(SettingPath::parse("setup.web").unwrap()),
+                all: false,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(read.message, "production is not a Branch");
 }
 
 #[test]

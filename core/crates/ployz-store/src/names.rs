@@ -43,16 +43,15 @@ fn refuse_taken_among(
     let working = &environment.working;
     let (kind, name, taken) = match name {
         Name::Service(name) => {
-            if name == "volumes" || name == "configs" {
+            let reserved = match name {
+                "volumes" => Some("Volumes as volumes.NAME"),
+                "configs" => Some("Configs as configs.NAME"),
+                "setup" => Some("a Branch's Setup Commands as setup.SERVICE"),
+                _ => None,
+            };
+            if let Some(paths) = reserved {
                 return Err(error::invalid(
-                    format!(
-                        "{name} is reserved: paths name {} as {name}.NAME",
-                        if name == "volumes" {
-                            "Volumes"
-                        } else {
-                            "Configs"
-                        }
-                    ),
+                    format!("{name} is reserved: paths name {paths}"),
                     json!({ "service": name }),
                 ));
             }
