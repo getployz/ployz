@@ -157,9 +157,45 @@ fn drop_null(object: &mut Map<String, Value>) {
     }
 }
 
-/// The schema at `field`, a dotted path through properties, or the whole
-/// schema when the path leads nowhere.
+/// What fits at `field`, a dotted path through properties, stopping where the
+/// path leads nowhere. An object shows its keys and their types, not their
+/// schemas.
 pub(crate) fn at(schema: &Value, field: &str) -> Value {
+    let mut here = reach(schema, field).clone();
+    for list in ["properties", "patternProperties"] {
+        if let Some(Value::Object(named)) = here.get_mut(list) {
+            for property in named.values_mut() {
+                *property = outline(property);
+            }
+        }
+    }
+    if let Some(items) = here.get_mut("items") {
+        *items = outline(items);
+    }
+    if let Some(rest) = here
+        .get_mut("additionalProperties")
+        .filter(|rest| rest.is_object())
+    {
+        *rest = outline(rest);
+    }
+    here
+}
+
+/// `schema`'s type, and its values when it takes only a few.
+fn outline(schema: &Value) -> Value {
+    let mut kept = Map::new();
+    for key in ["type", "enum", "const"] {
+        if let Some(value) = schema.get(key) {
+            kept.insert(key.into(), value.clone());
+        }
+    }
+    if let Some(Value::Array(options)) = schema.get("anyOf") {
+        kept.insert("anyOf".into(), options.iter().map(outline).collect());
+    }
+    Value::Object(kept)
+}
+
+fn reach<'schema>(schema: &'schema Value, field: &str) -> &'schema Value {
     let mut here = schema;
     for part in field.split('.').filter(|part| !part.is_empty()) {
         let next = here
@@ -177,10 +213,10 @@ pub(crate) fn at(schema: &Value, field: &str) -> Value {
             .or_else(|| part.parse::<usize>().ok().and(here.get("items")));
         match next {
             Some(next) => here = next,
-            None => return schema.clone(),
+            None => return here,
         }
     }
-    here.clone()
+    here
 }
 
 /// Where `schema` is not portable, as one line per problem; empty when it is.
