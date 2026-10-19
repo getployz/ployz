@@ -262,23 +262,15 @@ fn every_sealed_value_under_a_shared_name_is_scrubbed() {
 
 fn stream(frames: &[(Channel, &[u8])], forms: &SealedForms) -> Vec<(Channel, Vec<u8>)> {
     let mut scrub = FrameScrub::new();
-    let mut out = vec![(Channel::Stdout, Vec::new()), (Channel::Stderr, Vec::new())];
+    let mut out: BTreeMap<Channel, Vec<u8>> = BTreeMap::new();
     for (channel, frame) in frames {
         let released = scrub.push(*channel, frame, forms);
-        out.iter_mut()
-            .find(|(c, _)| c == channel)
-            .unwrap()
-            .1
-            .extend(released);
+        out.entry(*channel).or_default().extend(released);
     }
     for (channel, held) in scrub.finish(forms) {
-        out.iter_mut()
-            .find(|(c, _)| *c == channel)
-            .unwrap()
-            .1
-            .extend(held);
+        out.entry(channel).or_default().extend(held);
     }
-    out
+    out.into_iter().collect()
 }
 
 fn stdout_of(frames: &[&[u8]], forms: &SealedForms) -> Vec<u8> {

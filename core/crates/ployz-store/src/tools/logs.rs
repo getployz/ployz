@@ -397,10 +397,20 @@ pub enum Channel {
 /// Each channel has its own carry, since a value never continues from stdout to stderr.
 /// The carry holds raw bytes, so a frame may split a UTF-8 sequence or a base64 form and
 /// the match still lands.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct FrameScrub {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+}
+
+/// Prints how much each channel holds, never the held bytes.
+impl fmt::Debug for FrameScrub {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FrameScrub")
+            .field("stdout", &self.stdout.len())
+            .field("stderr", &self.stderr.len())
+            .finish()
+    }
 }
 
 /// Held bytes stay under `max(longest - 1, CARRY_CAP)`. A labelled short value whose
@@ -484,21 +494,22 @@ fn release_point(text: &[u8], forms: &SealedForms) -> usize {
 
 /// Bytes at the end of `text` that begin a UTF-8 sequence the text does not finish.
 fn incomplete_tail(text: &[u8]) -> usize {
-    let tail = text.len().min(3);
-    let Some(lead) = (1..=tail).find(|&back| {
-        text.get(text.len() - back)
-            .is_some_and(|byte| byte & 0xC0 != 0x80)
-    }) else {
+    let lead = text
+        .iter()
+        .rev()
+        .take(3)
+        .enumerate()
+        .find(|(_, byte)| *byte & 0xC0 != 0x80);
+    let Some((back, byte)) = lead else {
         return 0;
     };
-    let byte = text.get(text.len() - lead).copied().unwrap_or_default();
     let need = match byte {
         0xC0..=0xDF => 2,
         0xE0..=0xEF => 3,
         0xF0..=0xF7 => 4,
         _ => return 0,
     };
-    if need > lead { lead } else { 0 }
+    if need > back + 1 { back + 1 } else { 0 }
 }
 
 fn percent_encoded(value: &str, hex: &[u8; 16]) -> String {
