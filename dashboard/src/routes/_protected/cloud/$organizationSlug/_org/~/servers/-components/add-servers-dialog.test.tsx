@@ -119,7 +119,7 @@ it("submits a bounded arrival token and describes it after minting", async () =>
 
 it("shows the one-time command when Create is double-clicked", async () => {
   const create = vi.spyOn(fleetTokenFunctions, "createFleetTokenServerFn")
-    .mockResolvedValueOnce({ token: TOKEN, id: "token-1", name: "soak-add-dbl", expiresAt: "2026-10-19T10:00:00Z", cloudOrigin: "https://ployz.dev" })
+    .mockResolvedValueOnce({ token: TOKEN, id: "token-1", name: "soak-add-dbl", expiresAt: "2026-10-19T10:00:00Z", cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3" })
     .mockRejectedValueOnce(new Error("A Fleet Token named soak-add-dbl already exists."));
   await renderDialog();
   fireEvent.click(screen.getByRole("button", { name: "Add servers" }));
@@ -141,7 +141,7 @@ it("holds the dialog through Escape until the command shows", async () => {
   fireEvent.click(submit);
   await waitFor(() => expect(submit.hasAttribute("disabled")).toBe(true));
   fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
-  await act(async () => resolve({ token: TOKEN, id: "token-1", name: "brisk-otter", expiresAt: "2026-10-19T10:00:00Z", cloudOrigin: "https://ployz.dev" }));
+  await act(async () => resolve({ token: TOKEN, id: "token-1", name: "brisk-otter", expiresAt: "2026-10-19T10:00:00Z", cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3" }));
 
   expect(await screen.findByText("Shown once. Expires in 24h.")).toBeTruthy();
 });
