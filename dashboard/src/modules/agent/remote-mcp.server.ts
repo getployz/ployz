@@ -10,6 +10,7 @@ import { asRecord, asString, projectJsonObject, projectJsonValue } from "#/lib/j
 import type { JsonObject } from "#/db/tables";
 import { grantClaimsOf, oauthCaller } from "#/modules/identity/caller.server";
 import { claimUrlFor } from "#/modules/identity/claim-required.server";
+import { ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { MCP_SCOPES, mcpEndpoints } from "#/server/auth-mcp.server";
 import { Auth } from "#/server/auth.server";
@@ -136,6 +137,9 @@ export const serveRemoteMcp = Effect.fn("RemoteMcp.serve")(function* (request: R
   if (request.method !== "POST") return withHeaders(new Response(null, { status: 405 }), { ...CORS, Allow: "POST, OPTIONS" });
   const { app } = yield* AppConfig;
   const { resource } = mcpEndpoints(app.url);
+  if (request.headers.get("authorization")?.startsWith(`Bearer ${ORGANIZATION_TOKEN_PREFIX}`) === true) {
+    return withHeaders(challenge(resource, "/mcp takes a Connect sign-in, not a Ployz token. For a token, run ployz mcp with PLOYZ_TOKEN."), CORS);
+  }
   const run: Run = Effect.runPromiseWith(yield* Effect.context<RemoteServices>());
   const keys: Array<string> = [];
   const response = yield* auth.mcp.protect(request, async (verified, claims) => {
