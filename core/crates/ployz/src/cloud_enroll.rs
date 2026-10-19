@@ -451,7 +451,8 @@ async fn post_callback(
         &mut (),
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
         crate::setup_retry::WAIT,
-        Error::is_transport,
+        // Cloud answers 503 until it can reach the Machine; both stages are safe to repeat.
+        |error: &Error| error.is_transport() || matches!(error, Error::Status { status: 503, .. }),
         async |_| {
             post_json(&http, url, token, &body)
                 .await
@@ -1148,6 +1149,43 @@ mod tests {
             })
             .await
             .expect("held request must retry before the stage deadline");
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_publication_and_completion_retry_while_cloud_is_unavailable() {
+        for publishing in [true, false] {
+            let (listener, url) = listen().await;
+            let server = tokio::spawn(async move {
+                for (status, reason) in [(503, "Service Unavailable"), (200, "OK")] {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    read_http(&mut stream).await;
+                    tokio::io::AsyncWriteExt::write_all(
+                        &mut stream,
+                        &http_response(status, reason, b"{}"),
+                    )
+                    .await
+                    .unwrap();
+                }
+            });
+            let credential = PairingCredential::parse("pairing-secret").unwrap();
+            let result = if publishing {
+                publish(
+                    &url,
+                    &token(),
+                    MachineId::random(),
+                    &credential,
+                    &ManagementCapability::new(
+                        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+                        [2; 32],
+                    ),
+                )
+                .await
+            } else {
+                callback(&url, &token(), MachineId::random(), &credential).await
+            };
+            result.unwrap();
+            server.await.unwrap();
         }
     }
 
