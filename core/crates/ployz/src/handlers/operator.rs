@@ -1391,8 +1391,8 @@ mod scope_tests {
             "namespace": "shop-production",
             "services": { "api2": "api" },
         });
-        if let Some(authored) = authored {
-            view["authored"] = serde_json::json!(authored);
+        if let (Some(authored), Some(fields)) = (authored, view.as_object_mut()) {
+            fields.insert("authored".into(), serde_json::json!(authored));
         }
         serde_json::from_value::<ployz_store::NamespaceView>(view)
             .unwrap()

@@ -33,7 +33,11 @@ fn refusal(output: &std::process::Output, code: i32) -> Value {
     assert_eq!(output.status.code(), Some(code), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let last = stdout.lines().last().unwrap_or_default();
-    serde_json::from_str::<Value>(last).unwrap()["error"].clone()
+    serde_json::from_str::<Value>(last)
+        .unwrap()
+        .get("error")
+        .cloned()
+        .unwrap()
 }
 
 fn readings(points: Vec<ServicePoint>) -> MetricHistoryReply {
