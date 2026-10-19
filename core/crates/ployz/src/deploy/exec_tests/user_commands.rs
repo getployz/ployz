@@ -123,18 +123,33 @@ async fn run_command(command: Command, recording: Recording) -> Ran {
         grace_period_seconds: None,
     };
     let answer = match command {
-        Command::Stop => cleanup::user_stop(&recording, &machine, &copy, none(), 1)
-            .await
-            .map(|()| None),
+        Command::Stop => cleanup::user_stop(
+            &recording,
+            &machine,
+            &copy,
+            none(),
+            1,
+            &CancellationToken::new(),
+        )
+        .await
+        .map(|()| None),
         Command::Start => cleanup::user_start(&recording, &machine, &copy)
             .await
             .map(Some),
-        Command::Restart => cleanup::user_restart(&recording, &machine, &copy, none())
-            .await
-            .map(Some),
-        Command::Remove => cleanup::user_remove(&recording, &machine, &copy)
-            .await
-            .map(|()| None),
+        Command::Restart => cleanup::user_restart(
+            &recording,
+            &machine,
+            &copy,
+            none(),
+            &CancellationToken::new(),
+        )
+        .await
+        .map(Some),
+        Command::Remove => {
+            cleanup::user_remove(&recording, &machine, &copy, &CancellationToken::new())
+                .await
+                .map(|()| None)
+        }
     };
     recording.fake.assert_done();
     Ran {
@@ -522,5 +537,78 @@ async fn a_start_or_restart_of_a_copy_older_than_an_in_copy_reports_it_left_unro
             ran.rotation
         );
         assert_eq!(ran.fake.rotation(&newer), Some(CopyRotation::In));
+    }
+}
+
+/// Ctrl-C during the unlisted wait ends the command at once. The copy it withdrew
+/// goes back In rather than staying Held with nothing said.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_restart_or_stop_brings_the_copy_back_in() {
+    for command in [Command::Restart, Command::Stop] {
+        let mut fake = Scripted::new(vec![inspected()]).with_copy(
+            &machine('a'),
+            &container('1'),
+            CopyRotation::In,
+        );
+        fake.acks.insert(machine('b'), Ack::Never);
+        let recording = Recording::of(fake);
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            cancel.cancel();
+        });
+        let none = || StopOptions {
+            signal: None,
+            grace_period_seconds: None,
+        };
+        let begun = tokio::time::Instant::now();
+        let error = match command {
+            Command::Restart => cleanup::user_restart(
+                &recording,
+                &machine('a'),
+                &container('1'),
+                none(),
+                &cancellation,
+            )
+            .await
+            .map(drop),
+            Command::Stop => {
+                cleanup::user_stop(
+                    &recording,
+                    &machine('a'),
+                    &container('1'),
+                    none(),
+                    1,
+                    &cancellation,
+                )
+                .await
+            }
+            Command::Start | Command::Remove => unreachable!(),
+        }
+        .unwrap_err();
+
+        assert!(begun.elapsed() < cleanup::ACK_WAIT, "{command:?}");
+        assert_eq!(
+            error.code,
+            RpcErrorCode::Unavailable,
+            "{command:?}: {error:?}"
+        );
+        assert!(
+            error.message.contains("cancelled") && error.message.contains("back In"),
+            "{command:?}: {error:?}"
+        );
+        recording.fake.assert_done();
+        assert_eq!(
+            recording.fake.rotation(&container('1')),
+            Some(CopyRotation::In)
+        );
+        assert!(
+            !recording
+                .wants()
+                .iter()
+                .any(|want| matches!(want, ContainerWant::Stopped { .. })),
+            "{command:?} stopped a copy it never confirmed unlisted"
+        );
     }
 }

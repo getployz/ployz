@@ -11,6 +11,7 @@ use ployz_core::{
     ServiceObservation, ServiceSelector, select_service,
 };
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     cluster::HealthWaitError,
@@ -403,9 +404,14 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             } else {
                 rolling.iter().map(|one| vec![one]).collect()
             };
+            let cancellation = cancellation_on_ctrl_c();
+            let _cancel_listener = cancellation.clone().drop_guard();
             let mut outcome: Option<ServiceActionOutcome> = None;
-            for services in &batches {
+            'batches: for services in &batches {
                 for &action in actions {
+                    if cancellation.is_cancelled() {
+                        break 'batches;
+                    }
                     let (signal, timeout) = match action {
                         ContainerAction::Stop | ContainerAction::Restart => {
                             (signal.clone(), timeout)
@@ -413,7 +419,12 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
                         ContainerAction::Start | ContainerAction::Remove => (None, None),
                     };
                     let step = apply_service_action(
-                        client, &live, &names, services, action, signal, timeout,
+                        client,
+                        &live,
+                        &names,
+                        services,
+                        (action, signal, timeout),
+                        &cancellation,
                     )
                     .await?;
                     outcome = Some(match outcome {
@@ -497,9 +508,8 @@ async fn apply_service_action(
     live: &LiveServices<RpcError>,
     names: &HashMap<MachineId, &MachineName>,
     services: &[&ServiceObservation],
-    action: ContainerAction,
-    signal: Option<String>,
-    timeout: Option<u16>,
+    (action, signal, timeout): (ContainerAction, Option<String>, Option<u16>),
+    cancellation: &CancellationToken,
 ) -> Result<ServiceActionOutcome, Error> {
     let service_container_ids = services
         .iter()
@@ -513,7 +523,7 @@ async fn apply_service_action(
     let mut partial = false;
     for service in services {
         let outcomes = client
-            .change_observed_service(service, action, signal.clone(), timeout)
+            .change_observed_service(service, action, signal.clone(), timeout, cancellation)
             .await;
         for success in outcomes.successes {
             crate::ui::stream(format_args!(
@@ -549,13 +559,11 @@ async fn apply_service_action(
             partial = true;
         }
     }
-    let cancellation = cancellation_on_ctrl_c();
-    let _parent = cancellation.clone().drop_guard();
     if matches!(action, ContainerAction::Start | ContainerAction::Restart) {
         // A start waits for each healthcheck the way a Deploy does.
         let waits = join_all(changed.iter().map(|(machine_id, container_id)| async {
             client
-                .wait_until_ready(machine_id, container_id, &cancellation)
+                .wait_until_ready(machine_id, container_id, cancellation)
                 .await
         }))
         .await;
