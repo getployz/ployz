@@ -7,7 +7,7 @@ use ployz_core::{
 };
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     num::{NonZeroU16, NonZeroUsize},
     os::unix::fs::PermissionsExt,
@@ -22,9 +22,9 @@ use crate::{
         Error as CorrosionError, IngressRouteAck, IngressRouteChange, MachineView, ReplicatedStore,
         Subscription, published_cover,
     },
-    dns::{DownMachines, load_down_machines},
     docker::LABEL_DEPLOYMENT,
     filesystem::{atomic_write, set_ployz_group},
+    route_acks::{DownMachines, load_down},
 };
 
 const CERTS_DIR: &str = "certs";
@@ -65,7 +65,7 @@ pub(crate) async fn run(
         move || {
             let machines = machines.clone();
             let admin = admin.clone();
-            async move { load_down_machines(&machines, &admin, &local).await }
+            async move { load_down(&machines, &admin, &local).await }
         },
         caddy::config_path(&data_dir),
         runtime_dir.join("caddy/admin.sock"),
@@ -386,7 +386,7 @@ where
     Connect: FnMut() -> ConnectFuture,
     ConnectFuture: Future<Output = Result<Option<A>, caddy::Error>>,
     LoadDown: FnMut() -> DownFuture,
-    DownFuture: Future<Output = Result<HashSet<MachineId>, CorrosionError>>,
+    DownFuture: Future<Output = Result<BTreeSet<MachineId>, CorrosionError>>,
 {
     let mut last_input = None;
     let mut acked = BTreeMap::new();

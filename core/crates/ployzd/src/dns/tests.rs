@@ -1,6 +1,6 @@
 //! Projection tests for Internal DNS answers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hickory_server::proto::op::{Edns, Query as WireQuery};
 use ployz_core::{
@@ -9,36 +9,12 @@ use ployz_core::{
     ServiceName,
 };
 use serde_json::json;
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
 
 use super::*;
-use crate::corrosion::ReplicatedObservations;
+use crate::corrosion::Error as CorrosionError;
 
 const SUBNET: &str = "10.210.1.0/24";
-
-#[tokio::test(start_paused = true)]
-async fn membership_sample_times_out() {
-    let root = std::env::temp_dir().join(format!("ployzd-dns-membership-{}", MachineId::random()));
-    std::fs::create_dir_all(&root).unwrap();
-    let path = root.join("admin.sock");
-    let listener = UnixListener::bind(&path).unwrap();
-    let admin_server = tokio::spawn(async move {
-        let (_stream, _) = listener.accept().await.unwrap();
-        std::future::pending::<()>().await;
-    });
-    let machines = MachineView::fixed(Some(Arc::new(ReplicatedObservations {
-        observations: Vec::new(),
-        incomplete_ids: Vec::new(),
-    })));
-
-    let error = load_down_machines(&machines, &AdminClient::new(path), &MachineId::random())
-        .await
-        .unwrap_err();
-
-    assert!(matches!(error, CorrosionError::Io(error) if error.kind() == io::ErrorKind::TimedOut));
-    admin_server.abort();
-    std::fs::remove_dir_all(root).unwrap();
-}
 
 #[test]
 fn projects_only_eligible_service_container_addresses() {
@@ -505,7 +481,7 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
         )
     };
     let observations = vec![copy(1, &local, 1), copy(2, &suspect, 2), copy(3, &down, 3)];
-    let down_machines = HashSet::from([local, down]);
+    let down_machines = BTreeSet::from([local, down]);
     let answers = |inputs: &mut ProjectionInputs| {
         addresses(plan(&inputs.build(), "api.app.internal.", RecordType::A))
     };
@@ -564,7 +540,7 @@ fn a_down_machine_keeps_its_answers_while_no_other_copy_serves() {
     };
     assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
 
-    inputs.down.update(Ok(HashSet::from([remote])));
+    inputs.down.update(Ok(BTreeSet::from([remote])));
 
     assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
 }

@@ -3,6 +3,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io,
     time::Duration,
 };
 
@@ -12,7 +13,8 @@ use ployz_core::{
 };
 
 use crate::corrosion::{
-    AdminClient, IngressRouteRow, ReplicatedObservations, membership_states_by_address,
+    AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedObservations,
+    membership_states_by_address,
 };
 
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -78,15 +80,99 @@ pub(crate) async fn sample_ackers(
     local: &MachineId,
     admin: &AdminClient,
 ) -> Membership {
-    let states =
-        match tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states()).await {
-            Ok(Ok(states)) => Some(membership_states_by_address(states)),
-            _ => {
-                tracing::warn!("membership sample failed; every Machine must ack");
-                None
-            }
-        };
+    let states = sample_states(admin)
+        .await
+        .inspect_err(|_| tracing::warn!("membership sample failed; every Machine must ack"))
+        .ok();
     required_ackers(machines, local, states.as_ref())
+}
+
+/// The Machines a proxy drops from its routes, the same Down set `ReadRoutes`
+/// and the LastIn guard read.
+pub(crate) async fn load_down(
+    machines: &MachineView,
+    admin: &AdminClient,
+    local: &MachineId,
+) -> Result<BTreeSet<MachineId>, CorrosionError> {
+    let machines = machines.current().ok_or_else(|| {
+        CorrosionError::Io(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "the Machine view has not observed the store yet",
+        ))
+    })?;
+    let states = sample_states(admin).await?;
+    Ok(machines
+        .observations
+        .iter()
+        .filter(|machine| reported_down(machine, local, Some(&states)))
+        .map(|machine| machine.id)
+        .collect())
+}
+
+async fn sample_states(
+    admin: &AdminClient,
+) -> Result<BTreeMap<ManagementAddress, MembershipEvidence>, CorrosionError> {
+    let states = tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states())
+        .await
+        .map_err(|_| {
+            CorrosionError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "membership sample timed out",
+            ))
+        })??;
+    Ok(membership_states_by_address(states))
+}
+
+/// The Down set a proxy routes by, from the last sample that loaded. Nothing
+/// is Down before the first one, and the local Machine never is.
+pub(crate) struct DownMachines {
+    local_id: MachineId,
+    down: Option<BTreeSet<MachineId>>,
+}
+
+impl DownMachines {
+    pub(crate) fn new(local_id: MachineId) -> Self {
+        Self {
+            local_id,
+            down: None,
+        }
+    }
+
+    pub(crate) fn local_id(&self) -> MachineId {
+        self.local_id
+    }
+
+    pub(crate) fn contains(&self, machine: &MachineId) -> bool {
+        *machine != self.local_id
+            && self
+                .down
+                .as_ref()
+                .is_some_and(|down| down.contains(machine))
+    }
+
+    /// Take one sample, keeping the last loaded set when it failed. True when
+    /// the set changed.
+    pub(crate) fn update(&mut self, loaded: Result<BTreeSet<MachineId>, CorrosionError>) -> bool {
+        match loaded {
+            Ok(down) if self.down.as_ref() == Some(&down) => false,
+            Ok(down) => {
+                self.down = Some(down);
+                true
+            }
+            Err(error) => {
+                let fallback = if self.down.is_some() {
+                    "keeping the last successful filter"
+                } else {
+                    "routing every Machine"
+                };
+                eprintln!(
+                    "failed to load membership for routing; {fallback}: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
+                false
+            }
+        }
+    }
 }
 
 pub(crate) fn required_ackers(
@@ -97,7 +183,7 @@ pub(crate) fn required_ackers(
     let (down, up): (Vec<Machine>, Vec<Machine>) = machines
         .observations
         .into_iter()
-        .partition(|machine| &machine.id != local && reported_down(machine, states));
+        .partition(|machine| reported_down(machine, local, states));
     let named = up
         .into_iter()
         .map(|machine| (machine.id, machine.name))
@@ -116,13 +202,17 @@ pub(crate) fn required_ackers(
     }
 }
 
+/// Only explicit Down evidence counts. A Machine with no evidence is unknown,
+/// not Down, and the local Machine never is.
 fn reported_down(
     machine: &Machine,
+    local: &MachineId,
     states: Option<&BTreeMap<ManagementAddress, MembershipEvidence>>,
 ) -> bool {
-    states.is_some_and(|states| {
-        states.get(&machine.management_address()) == Some(&MembershipEvidence::Down)
-    })
+    &machine.id != local
+        && states.is_some_and(|states| {
+            states.get(&machine.management_address()) == Some(&MembershipEvidence::Down)
+        })
 }
 
 /// Every row whose containers arrived counts, whatever its deploy column holds.
@@ -139,3 +229,7 @@ pub(crate) fn routed(
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "route_acks_tests.rs"]
+mod tests;
