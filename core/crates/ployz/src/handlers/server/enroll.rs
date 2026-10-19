@@ -9,6 +9,7 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
 use ployz_core::{CloudEnrollToken, MachineId, MachineName, RpcErrorCode, StoragePreparation};
@@ -115,11 +116,10 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         return runtime.block_on(wait_joined(&acting, enrollment));
     }
     // Before Cloud mints a token, so a bad flag costs none.
-    let name = check_shape(matches)?;
+    let shape = shaping_args(matches)?;
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
-        let storage = matches.get_one::<StoragePreparation>("storage").cloned();
-        return runtime.block_on(paste(&acting, &minted, storage, name.as_ref()));
+        return runtime.block_on(paste(&acting, &minted, &shape));
     }
     drop(runtime);
     super::super::cloud::enroll(
@@ -129,14 +129,52 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-/// Parse every flag that shapes the Server as enrollment will.
-fn check_shape(matches: &ArgMatches) -> Result<Option<MachineName>, Error> {
+/// `server add` switches and values that shape the Server, which a pasted line repeats.
+const SHAPING_SWITCHES: [&str; 2] = ["reset", "yes"];
+const SHAPING_VALUES: [&str; 12] = [
+    "name",
+    "storage",
+    "public-ip",
+    "wg-endpoint",
+    "wg-mtu",
+    "label-add",
+    "accepts-builds",
+    "accepts-services",
+    "accepts-ingress",
+    "network",
+    "ingress-image",
+    "version",
+];
+
+/// The flags given here that shape the Server, as `server add` arguments, once each
+/// parses as enrollment will read it.
+fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
     super::enrollment_policy(matches)?;
     super::helpers::token_request(matches)?;
-    Ok(matches
-        .get_one::<String>("name")
-        .map(MachineName::parse)
-        .transpose()?)
+    if let Some(name) = matches.get_one::<String>("name") {
+        MachineName::parse(name)?;
+    }
+    let given = |id: &str| {
+        matches!(
+            matches.value_source(id),
+            Some(ValueSource::CommandLine | ValueSource::EnvVariable)
+        )
+    };
+    let switches = SHAPING_SWITCHES
+        .into_iter()
+        .filter(|id| given(id) && matches.get_flag(id))
+        .map(|id| format!("--{id}"));
+    let values = SHAPING_VALUES
+        .into_iter()
+        .filter(|id| given(id))
+        .flat_map(|id| {
+            matches
+                .get_raw(id)
+                .into_iter()
+                .flatten()
+                .flat_map(move |raw| [format!("--{id}"), raw.to_string_lossy().into_owned()])
+        });
+    Ok(values.chain(switches).collect())
 }
 
 /// The enrollment token from its one source: `--token-stdin`, `--token-file` or
@@ -266,13 +304,8 @@ struct PendingReport<'a> {
     next: String,
 }
 
-async fn paste(
-    acting: &Acting,
-    minted: &Minted,
-    storage: Option<StoragePreparation>,
-    name: Option<&MachineName>,
-) -> Result<(), Error> {
-    let line = pasted_command(acting.credential.cloud(), storage, name);
+async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(), Error> {
+    let line = pasted_command(acting.credential.cloud(), shape);
     if crate::ui::json() {
         return crate::ui::emit(&PendingReport {
             status: "pending",
@@ -292,26 +325,20 @@ async fn paste(
 }
 
 /// One line that installs exactly this CLI's release, so the Server speaks the same
-/// enrollment, keeping an explicit `--storage` and `--name`. It carries no token: `server add`
+/// enrollment, keeping every flag that shapes the Server. It carries no token: `server add`
 /// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin.
-fn pasted_command(
-    cloud: &str,
-    storage: Option<StoragePreparation>,
-    name: Option<&MachineName>,
-) -> String {
+fn pasted_command(cloud: &str, shape: &[String]) -> String {
     let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
     } else {
         format!(" --cloud-url '{cloud}'")
     };
-    let storage_flag = storage.map_or(String::new(), |storage| {
-        format!(" --storage {}", shell_words::quote(&storage.to_string()))
-    });
-    let name_flag = name.map_or(String::new(), |name| {
-        format!(" --name {}", shell_words::quote(name.as_str()))
-    });
+    let shape_flags: String = shape
+        .iter()
+        .map(|arg| format!(" {}", shell_words::quote(arg)))
+        .collect();
     format!(
-        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add{cloud_flag}{storage_flag}{name_flag}",
+        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add{cloud_flag}{shape_flags}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -377,29 +404,100 @@ pub(in crate::handlers) fn requested_storage(matches: &ArgMatches) -> StoragePre
 mod tests {
     use super::*;
 
+    fn add_matches(argv: &[&str]) -> ArgMatches {
+        crate::cli::command().try_get_matches_from(argv).unwrap()
+    }
+
     #[test]
     fn pasted_command_pins_this_release_and_names_a_non_default_cloud() {
         let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            pasted_command("https://ployz.dev", None, None),
+            pasted_command("https://ployz.dev", &[]),
             format!("curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo ployz server add")
         );
         assert!(
-            pasted_command("http://localhost:3000", None, None)
+            pasted_command("http://localhost:3000", &[])
                 .ends_with("sudo ployz server add --cloud-url 'http://localhost:3000'")
-        );
-        assert!(
-            pasted_command("https://ployz.dev", Some(StoragePreparation::None), None)
-                .ends_with("sudo ployz server add --storage none")
         );
     }
 
     #[test]
-    fn pasted_command_keeps_the_requested_name() {
-        let name = MachineName::parse("soak-join").unwrap();
-        assert!(
-            pasted_command("https://ployz.dev", None, Some(&name))
-                .ends_with("sudo ployz server add --name soak-join")
+    fn the_pasted_line_carries_only_the_flags_given() {
+        let matches = add_matches(&["ployz", "server", "add", "--command"]);
+        assert_eq!(
+            shaping_args(leaf_matches(&matches)).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_pasted_line_parses_to_the_same_server() {
+        let given = [
+            "--name",
+            "web-1",
+            "--storage",
+            "zfs:/dev/disk/by-id/virtio data",
+            "--public-ip",
+            "192.0.2.9",
+            "--wg-endpoint",
+            "192.0.2.1,[2001:db8::1]:6000",
+            "--wg-mtu",
+            "1380",
+            "--label-add",
+            "region=eu",
+            "--label-add",
+            "rack=r1",
+            "--accepts-builds",
+            "false",
+            "--accepts-services=false",
+            "--accepts-ingress",
+            "false",
+            "--network",
+            "10.9.0.0/16",
+            "--ingress-image",
+            "caddy:2.10",
+            "--version",
+            "0.3.0",
+            "--reset",
+            "--yes",
+        ];
+        let original =
+            add_matches(&[["ployz", "server", "add", "--command"].as_slice(), &given].concat());
+        let original = leaf_matches(&original);
+        let line = pasted_command("https://ployz.dev", &shaping_args(original).unwrap());
+        let argv = shell_words::split(line.split_once(" && ").unwrap().1).unwrap();
+        let replayed = crate::cli::command()
+            .try_get_matches_from(argv.iter().skip_while(|arg| *arg != "ployz"))
+            .unwrap();
+        let replayed = leaf_matches(&replayed);
+
+        assert!(!replayed.get_flag("command"));
+        let raw = |matches: &ArgMatches, id: &str| -> Vec<String> {
+            matches
+                .get_raw(id)
+                .into_iter()
+                .flatten()
+                .map(|raw| raw.to_string_lossy().into_owned())
+                .collect()
+        };
+        for id in SHAPING_VALUES {
+            assert_eq!(raw(replayed, id), raw(original, id), "--{id}");
+            assert_eq!(
+                replayed.value_source(id),
+                Some(ValueSource::CommandLine),
+                "--{id}"
+            );
+        }
+        for id in SHAPING_SWITCHES {
+            assert!(replayed.get_flag(id), "--{id}");
+        }
+        assert_eq!(
+            super::super::enrollment_policy(replayed).unwrap(),
+            super::super::enrollment_policy(original).unwrap()
+        );
+        assert_eq!(
+            super::super::helpers::token_request(replayed).unwrap(),
+            super::super::helpers::token_request(original).unwrap()
         );
     }
 
