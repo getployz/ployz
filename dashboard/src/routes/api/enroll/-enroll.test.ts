@@ -3,6 +3,7 @@ import type { JsonValue } from "#/db/schema";
 import { NotFound, Validation, Unauthorized } from "#/server/public-error";
 import { Effect } from "effect";
 import {
+  handleLegacyEnrollment,
   handleMachineEnrollmentCallback,
   handleMachineEnrollmentJoin,
   handleMachineSetupReport,
@@ -199,6 +200,48 @@ describe("machine enrollment routes", () => {
     expect(reportResponse.status).toBe(401);
     expect(mocks.completeFounding).not.toHaveBeenCalled();
     expect(record).not.toHaveBeenCalled();
+  });
+
+  it("answers legacy enroll requests with advice to update to the latest beta", async () => {
+    const requests = [
+      new Request(`https://cloud.example/api/enroll/${token}`, {
+        method: "POST",
+        headers: { "user-agent": "ployz-cli/0.2.4" },
+      }),
+      new Request(`https://cloud.example/api/enroll/${token}`, {
+        method: "POST",
+      }),
+      new Request(`https://cloud.example/api/enroll/${token}/callback`, {
+        method: "POST",
+        headers: { "user-agent": "ployz-cli/0.2.3" },
+      }),
+    ];
+
+    const [withVersion, withoutVersion, older] = requests.map(handleLegacyEnrollment);
+
+    expect(withVersion.status).toBe(426);
+    await expect(withVersion.json()).resolves.toEqual({
+      _tag: "PublicError",
+      code: "UPGRADE_REQUIRED",
+      message: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
+      error: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
+    });
+
+    expect(withoutVersion.status).toBe(426);
+    await expect(withoutVersion.json()).resolves.toEqual({
+      _tag: "PublicError",
+      code: "UPGRADE_REQUIRED",
+      message: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
+      error: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
+    });
+
+    expect(older.status).toBe(426);
+    await expect(older.json()).resolves.toEqual({
+      _tag: "PublicError",
+      code: "UPGRADE_REQUIRED",
+      message: "Ployz 0.2.3 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
+      error: "Ployz 0.2.3 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
+    });
   });
 
   it("ignores unknown identity fields from newer CLIs", async () => {

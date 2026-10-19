@@ -499,6 +499,7 @@ fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>)
 fn http_client() -> Result<reqwest::Client, Error> {
     // Bound each request; `not_yet` polling may legitimately outlive one request.
     reqwest::Client::builder()
+        .user_agent(concat!("ployz-cli/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
@@ -1001,6 +1002,11 @@ mod tests {
             request
                 .lines()
                 .any(|line| line.eq_ignore_ascii_case("authorization: Bearer pmet_test"))
+        );
+        assert!(
+            request
+                .lines()
+                .any(|line| line.to_ascii_lowercase().starts_with("user-agent: ployz-cli/"))
         );
         for url in [url, callback_url(&origin), report_url(&origin)] {
             assert!(!url.contains(token().as_str()), "{url}");

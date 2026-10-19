@@ -9,14 +9,14 @@ agent the Ployz skill, and the agent can deploy and change your services for you
 ## Install the CLI
 
 ```sh
-curl -fsSL https://ployz.sh | sh
+curl -fsSL https://ployz.sh | sh -s beta
 
 # or with Homebrew
 brew install getployz/ployz/ployz
 ```
 
 It runs on Linux and macOS. On Windows, install it inside WSL. To upgrade, run the same command
-again, or `brew upgrade ployz`.
+again, or `brew upgrade ployz`. To install the stable release instead of beta, omit `-s beta`.
 
 ## Sign in
 

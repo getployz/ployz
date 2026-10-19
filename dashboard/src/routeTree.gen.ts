@@ -38,6 +38,7 @@ import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
 import { Route as ApiCliManifestRouteImport } from './routes/api/cli/manifest'
 import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
 import { Route as ApiEnrollIndexRouteImport } from './routes/api/enroll/index'
+import { Route as ApiEnrollSplatRouteImport } from './routes/api/enroll/$'
 import { Route as ApiEnrollCallbackRouteImport } from './routes/api/enroll/callback'
 import { Route as ApiEnrollReportRouteImport } from './routes/api/enroll/report'
 import { Route as ApiGithubCallbackRouteImport } from './routes/api/github/callback'
@@ -233,6 +234,11 @@ const ApiConfigSplatRoute = ApiConfigSplatRouteImport.update({
 const ApiEnrollIndexRoute = ApiEnrollIndexRouteImport.update({
   id: '/api/enroll/',
   path: '/api/enroll/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiEnrollSplatRoute = ApiEnrollSplatRouteImport.update({
+  id: '/api/enroll/$',
+  path: '/api/enroll/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiEnrollCallbackRoute = ApiEnrollCallbackRouteImport.update({
@@ -583,6 +589,7 @@ export interface FileRoutesByFullPath {
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
+  '/api/enroll/$': typeof ApiEnrollSplatRoute
   '/api/enroll/callback': typeof ApiEnrollCallbackRoute
   '/api/enroll/report': typeof ApiEnrollReportRoute
   '/api/github/callback': typeof ApiGithubCallbackRoute
@@ -657,6 +664,7 @@ export interface FileRoutesByTo {
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
+  '/api/enroll/$': typeof ApiEnrollSplatRoute
   '/api/enroll/callback': typeof ApiEnrollCallbackRoute
   '/api/enroll/report': typeof ApiEnrollReportRoute
   '/api/github/callback': typeof ApiGithubCallbackRoute
@@ -732,6 +740,7 @@ export interface FileRoutesById {
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
+  '/api/enroll/$': typeof ApiEnrollSplatRoute
   '/api/enroll/callback': typeof ApiEnrollCallbackRoute
   '/api/enroll/report': typeof ApiEnrollReportRoute
   '/api/github/callback': typeof ApiGithubCallbackRoute
@@ -812,6 +821,7 @@ export interface FileRouteTypes {
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
+    | '/api/enroll/$'
     | '/api/enroll/callback'
     | '/api/enroll/report'
     | '/api/github/callback'
@@ -886,6 +896,7 @@ export interface FileRouteTypes {
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
+    | '/api/enroll/$'
     | '/api/enroll/callback'
     | '/api/enroll/report'
     | '/api/github/callback'
@@ -960,6 +971,7 @@ export interface FileRouteTypes {
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
+    | '/api/enroll/$'
     | '/api/enroll/callback'
     | '/api/enroll/report'
     | '/api/github/callback'
@@ -1037,6 +1049,7 @@ export interface RootRouteChildren {
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
   ApiConfigSplatRoute: typeof ApiConfigSplatRoute
+  ApiEnrollSplatRoute: typeof ApiEnrollSplatRoute
   ApiEnrollCallbackRoute: typeof ApiEnrollCallbackRoute
   ApiEnrollReportRoute: typeof ApiEnrollReportRoute
   ApiGithubCallbackRoute: typeof ApiGithubCallbackRoute
@@ -1265,6 +1278,13 @@ declare module '@tanstack/react-router' {
       path: '/api/enroll'
       fullPath: '/api/enroll/'
       preLoaderRoute: typeof ApiEnrollIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/enroll/$': {
+      id: '/api/enroll/$'
+      path: '/api/enroll/$'
+      fullPath: '/api/enroll/$'
+      preLoaderRoute: typeof ApiEnrollSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/enroll/callback': {
@@ -1846,6 +1866,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,
   ApiConfigSplatRoute: ApiConfigSplatRoute,
+  ApiEnrollSplatRoute: ApiEnrollSplatRoute,
   ApiEnrollCallbackRoute: ApiEnrollCallbackRoute,
   ApiEnrollReportRoute: ApiEnrollReportRoute,
   ApiGithubCallbackRoute: ApiGithubCallbackRoute,

@@ -6,16 +6,16 @@ Ployz Cloud. Run them in order. Each step is safe to run again.
 ## 1. Install the CLI
 
 ```sh
-curl -fsSL https://ployz.sh | sh
+curl -fsSL https://ployz.sh | sh -s beta
 ```
 
-This installs `ployz` to `/usr/local/bin`. If that directory isn't writable, the script runs
+This installs `ployz` to `/usr/local/bin` (or `curl -fsSL https://ployz.sh | sh` for stable). If that directory isn't writable, the script runs
 `sudo`, which may ask the user for a password. To install without `sudo`, use a directory on
 the user's `PATH` instead:
 
 ```sh
 mkdir -p ~/.local/bin
-curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
+curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh -s beta
 ```
 
 Check it with `ployz --version`. Homebrew users can run `brew install getployz/ployz/ployz`

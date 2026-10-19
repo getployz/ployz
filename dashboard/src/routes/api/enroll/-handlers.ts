@@ -214,3 +214,23 @@ export function handleMachineSetupReport<R>(
     return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
   });
 }
+
+export function handleLegacyEnrollment(request: Request): Response {
+  const userAgent = request.headers.get("user-agent") ?? "";
+  const match = /ployz(?:-cli)?\/([^\s]+)/u.exec(userAgent);
+  const version = match?.[1] ?? "0.2.4";
+  const message = `Ployz ${version} is too old for ployz.dev; install the latest with \`curl -fsSL https://ployz.sh | sh -s beta\`.`;
+  return Response.json(
+    {
+      _tag: "PublicError",
+      code: "UPGRADE_REQUIRED",
+      message,
+      error: message,
+    },
+    {
+      status: 426,
+      headers: { "cache-control": "no-store" },
+    },
+  );
+}
+
