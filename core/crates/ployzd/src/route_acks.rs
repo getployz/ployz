@@ -6,9 +6,14 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{Machine, MachineId, MachineName, ManagementAddress, MembershipEvidence};
+use ployz_core::{
+    ContainerId, Machine, MachineId, MachineName, ManagementAddress, MembershipEvidence,
+    QualifiedService,
+};
 
-use crate::corrosion::{AdminClient, ReplicatedObservations, membership_states_by_address};
+use crate::corrosion::{
+    AdminClient, IngressRouteRow, ReplicatedObservations, membership_states_by_address,
+};
 
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -118,4 +123,19 @@ fn reported_down(
     states.is_some_and(|states| {
         states.get(&machine.management_address()) == Some(&MembershipEvidence::Down)
     })
+}
+
+/// Every row whose containers arrived counts, whatever its deploy column holds.
+pub(crate) fn routed(
+    rows: BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
+    service: &QualifiedService,
+) -> BTreeMap<MachineId, BTreeSet<ContainerId>> {
+    rows.into_iter()
+        .filter(|((_, routed), _)| routed == service)
+        .filter_map(|((machine, _), row)| match row {
+            IngressRouteRow::Acked(ack) => Some((machine, ack.containers)),
+            IngressRouteRow::UnknownDeploy(containers) => Some((machine, containers)),
+            IngressRouteRow::UnknownContainers => None,
+        })
+        .collect()
 }

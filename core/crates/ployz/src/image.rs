@@ -460,7 +460,7 @@ mod tests {
             cause: Vec::new(),
         };
         assert!(pulls_on_create(refusal(PULL_IMAGE_CAPABILITY)).is_ok());
-        assert!(pulls_on_create(refusal("ployz.serving.read.v1")).is_err());
+        assert!(pulls_on_create(refusal("ployz.serving.routes.v1")).is_err());
         let failed = RpcError {
             code: RpcErrorCode::Unavailable,
             message: "registry unreachable".into(),
