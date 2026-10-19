@@ -43,15 +43,14 @@ const syncRepositoryPage = Effect.fn("Github.syncRepositoryPage")(
   },
 );
 
-/** The same sync as the Inngest function, in one go, for a caller that waits on it. */
-export const syncGithubRepositories = Effect.fn("Github.syncRepositories")(
+/** Caches every repository GitHub lists, for a caller that waits on it. Only the Inngest sync, one at a time per installation, prunes. */
+export const cacheGithubRepositories = Effect.fn("Github.cacheRepositories")(
   function* (installationId: number) {
     const syncedAt = new Date();
     for (let pageNumber = 1; ; pageNumber++) {
       const page = yield* syncRepositoryPage(installationId, pageNumber, syncedAt);
       if (!page.hasNextPage) break;
     }
-    yield* pruneCachedGithubRepositories(installationId, syncedAt);
   },
 );
 

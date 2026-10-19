@@ -1,11 +1,15 @@
 import { it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
-import { expect } from "vitest";
+import { Inngest } from "inngest";
+import { expect, vi } from "vitest";
 import { MAX_OFFERED_INSTALLATIONS } from "./github-connect";
 import { acceptGithubOfferInput } from "./github-connect.functions";
 import { acceptGithubOffer, completeGithubConnect, listGithubOffer, listOrganizationGithub, startGithubConnect } from "./github-connect.server";
-import { listGithubInstallationsForOrganization } from "./github.repository";
+import { listInstallationReposPage } from "./github.api";
+import { listGithubInstallationsForOrganization, pruneCachedGithubRepositories, upsertCachedGithubRepositories } from "./github.repository";
 import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApiService } from "./github-observation.api";
+import { executeSyncGithubRepositories } from "./inngest-sync/sync";
+import type { PloyzStepTools } from "#/modules/inngest/client";
 import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
@@ -46,7 +50,14 @@ const users = fakeGithubUsers({
 });
 // Installation 9 holds more repositories than one page lists.
 const REPOSITORY_COUNTS = new Map([[8, 3], [9, 150]]);
-const installationRepositories: GithubApiService["installationRepositories"] = ({ installationId, page }) => {
+// Runs once, just before installation 9's second page is listed, to land another sync's write mid-listing.
+let beforeSecondPage: Effect.Effect<void> | undefined;
+const installationRepositories: GithubApiService["installationRepositories"] = ({ installationId, page }) => Effect.suspend(() => {
+  const interleaved = installationId === 9 && page === 2 ? beforeSecondPage : undefined;
+  if (interleaved !== undefined) beforeSecondPage = undefined;
+  return interleaved ?? Effect.void;
+}).pipe(Effect.andThen(() => listRepositories({ installationId, page })));
+const listRepositories: GithubApiService["installationRepositories"] = ({ installationId, page }) => {
   const total = REPOSITORY_COUNTS.get(installationId) ?? 0;
   const ids = Array.from({ length: total }, (_, index) => installationId * 1000 + index)
     .slice((page - 1) * GITHUB_REPOSITORIES_PAGE_SIZE, page * GITHUB_REPOSITORIES_PAGE_SIZE);
@@ -166,4 +177,40 @@ it.live("lists a connected account's repositories as soon as the connect returns
     const offer = landing(yield* run(completeGithubConnect(ada, new URLSearchParams({ state: existing, code: "carol-code" }))))["offer"] ?? "";
     yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
     expect(yield* counts()).toEqual({ acme: 0, ada: 3, hopper: 150 });
+  }), 60_000);
+
+it.live("keeps every listed repository when an older sync writes while the connect lists", () =>
+  Effect.gen(function* () {
+    const inngest = new Inngest({ id: "github-connect-test" });
+    const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+    const services = yield* Layer.build(yield* storeTestCloud({ github, inngest }));
+    const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
+    const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
+    const hopper = () => run(listOrganizationGithub(ada, "shop")).pipe(
+      Effect.map(({ accounts }) => accounts.find((account) => account.login === "hopper")?.repositories),
+    );
+
+    // A sync queued earlier, say by GitHub's installation webhook, started a second ago and writes its first page late.
+    const olderSyncStartedAt = new Date(Date.now() - 1000);
+    beforeSecondPage = run(Effect.gen(function* () {
+      const page = yield* listInstallationReposPage(9, 1);
+      yield* upsertCachedGithubRepositories({ installationId: 9, repositories: page.repositories, syncedAt: olderSyncStartedAt });
+    })).pipe(Effect.orDie);
+    const existing = stateOf(yield* run(startGithubConnect(ada, "shop", true)));
+    const offer = landing(yield* run(completeGithubConnect(ada, new URLSearchParams({ state: existing, code: "carol-code" }))))["offer"] ?? "";
+    yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
+    expect(beforeSecondPage).toBeUndefined();
+    expect(yield* hopper()).toBe(150);
+
+    yield* run(pruneCachedGithubRepositories(9, olderSyncStartedAt));
+    const queued = send.mock.calls.flatMap(([events]) => [events].flat());
+    expect(queued.map((event) => event.data)).toEqual([{ installationId: 9, reason: "manual-refresh" }]);
+    const step: PloyzStepTools["run"] = async (_id, operation, ...input) => JSON.parse(JSON.stringify(await operation(...input) ?? null));
+    for (const event of queued) {
+      yield* Effect.promise(() => executeSyncGithubRepositories(
+        { event: { data: event.data }, step: { run: step } },
+        (program) => Effect.runPromise(program.pipe(Effect.provide(services))),
+      ));
+    }
+    expect(yield* hopper()).toBe(150);
   }), 60_000);

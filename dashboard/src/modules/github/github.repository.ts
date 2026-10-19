@@ -203,7 +203,8 @@ export const upsertCachedGithubRepositories = Effect.fn(
         private: sql`excluded.private`,
         htmlUrl: sql`excluded.html_url`,
         repoUpdatedAt: sql`excluded.repo_updated_at`,
-        syncedAt: sql`excluded.synced_at`,
+        // A sync that started earlier never moves a row back, so its prune can't drop a repository a later sync listed.
+        syncedAt: sql`greatest(${schemaGithubRepositoryCache.syncedAt}, excluded.synced_at)`,
       },
     });
 });

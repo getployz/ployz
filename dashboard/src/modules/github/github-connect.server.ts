@@ -16,7 +16,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { can } from "#/modules/organization/permissions";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { syncGithubRepositories } from "#/modules/github/inngest-sync/sync";
+import { cacheGithubRepositories } from "#/modules/github/inngest-sync/sync";
 import { createGithubRepositoriesSyncRequestedEvent } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { AppConfig } from "#/server/config.server";
@@ -92,13 +92,11 @@ const linkChosen = Effect.fn("GithubConnect.linkChosen")(function* (input: {
       organizationId: input.organizationId, installationId, connectedByUserId: input.userId, connectedGithubLogin: input.githubLogin,
     });
   }
-  // Sync before returning, so the settings the person lands on count each account's repositories.
-  const unsynced = (yield* Effect.forEach(input.installationIds, (installationId) => syncGithubRepositories(installationId).pipe(
-    Effect.as(null),
-    Effect.catch((error) => Effect.logWarning("GitHub did not list a linked installation's repositories.", error).pipe(Effect.as(installationId))),
-  ), { concurrency: 8 })).filter((installationId) => installationId !== null);
-  if (unsynced.length === 0) return;
-  yield* sendInngestEvent(unsynced.map((installationId) =>
+  // Cache before returning, so the settings the person lands on count each account's repositories; the queued sync prunes.
+  yield* Effect.forEach(input.installationIds, (installationId) => cacheGithubRepositories(installationId).pipe(
+    Effect.catch((error) => Effect.logWarning("GitHub did not list a linked installation's repositories.", error)),
+  ), { concurrency: 8, discard: true });
+  yield* sendInngestEvent(input.installationIds.map((installationId) =>
     createGithubRepositoriesSyncRequestedEvent({ installationId, reason: "manual-refresh" }))).pipe(
     Effect.catch((error) => Effect.logWarning("Linked a GitHub installation; its repositories sync on the next refresh.", error)),
   );
