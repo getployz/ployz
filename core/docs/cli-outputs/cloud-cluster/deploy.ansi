@@ -23,7 +23,7 @@ next: ployz deploy --expect-version 26:16:0.32
 === diff :: $ ployz diff
 web (update)
   web.env.GREETING: null -> "hello"
-next: ployz deploy --expect-version 27:16:0.34
+next: ployz deploy
 
 === deploy --plan with a staged change :: $ ployz deploy --plan
 web (update)

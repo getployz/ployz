@@ -12,9 +12,10 @@ import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection"
 import { useStagedOffServer } from "#/modules/volume-placement/volume-placement.hooks";
 
 /** Whether this Server takes Services, and Drain. Off alone is a cordon: nothing new lands here, nothing moves. */
-export function ServerServicesSection({ machine, organizationSlug, view, left, onDrain, unavailable }: {
+export function ServerServicesSection({ machine, organizationSlug, lastToRunServices, view, left, onDrain, unavailable }: {
   machine: RuntimeMachineRecord;
   organizationSlug: string;
+  lastToRunServices: boolean;
   view: DrainView;
   /** What a Drain would still move off here (`drainLeftRows`). */
   left: readonly DrainRow[];
@@ -28,6 +29,7 @@ export function ServerServicesSection({ machine, organizationSlug, view, left, o
   return (
     <ServerServicesRows
       acceptsServices={policy.acceptsServices}
+      lastToRunServices={lastToRunServices}
       onAcceptsServices={(acceptsServices) => policy.request({ acceptsServices })}
       view={view}
       left={left}
@@ -43,8 +45,9 @@ export function ServerServicesSection({ machine, organizationSlug, view, left, o
  * way it lists what it still has to move, each Service leaving the list as it leaves this Server. Volumes move with the
  * next Deploy, so the row counts those staged to leave.
  */
-export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, left, onDrain, unavailable, staged }: {
+export function ServerServicesRows({ acceptsServices, lastToRunServices, onAcceptsServices, view, left, onDrain, unavailable, staged }: {
   acceptsServices: boolean;
+  lastToRunServices: boolean;
   onAcceptsServices: (acceptsServices: boolean) => void;
   view: DrainView;
   left: readonly DrainRow[];
@@ -58,7 +61,9 @@ export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, l
     <SettingsSection id="server-services" title="Services">
       <SettingsRow
         label="Run services here"
-        hint={acceptsServices ? undefined : "Nothing new starts here. What runs here stays until you drain."}
+        hint={acceptsServices ? undefined : lastToRunServices ? (
+          <span className="text-warning">No other server runs services. Deploys fail until one does.</span>
+        ) : "Nothing new starts here. What runs here stays until you drain."}
         commit="change"
         control={(
           // Turning it on mid-drain would leave the rest of the Drain nothing to move: it waits for the Drain.

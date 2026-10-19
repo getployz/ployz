@@ -25,6 +25,10 @@ jobs:
           cloud: \${{ inputs.cloud }}
 `;
 
+export function githubBuildId(deploymentId: string, service: string) {
+  return `${deploymentId}.${service}`;
+}
+
 /**
  * Readiness of one repository for GitHub builds, as Cloud last checked it.
  * `waiting` (Add workflow opened, commit not seen yet) is only known to the browser that opened it.

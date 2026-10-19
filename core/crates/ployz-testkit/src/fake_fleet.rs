@@ -444,6 +444,7 @@ async fn accept_loop(
                 .add_service(
                     MachineRpcServer::new(service)
                         .send_compressed(CompressionEncoding::Gzip)
+                        .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
                         .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
                 )
                 .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(stream)))

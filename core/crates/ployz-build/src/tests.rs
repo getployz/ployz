@@ -785,3 +785,63 @@ fn a_cache_export_without_a_runner_cache_runs_nothing() {
     // Any Docker call would fail: this Docker does not exist.
     assert_eq!(export_cache(&request, &Cancellation::new()), Ok(()));
 }
+
+#[test]
+#[ignore = "requires Docker and network access to pull the pinned Railpack images"]
+fn railpack_prepares_a_python_requirements_app() {
+    let directory = std::env::temp_dir().join(format!("ployz-railpack-{}", uuid::Uuid::new_v4()));
+    let app = directory.join("source/app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir(directory.join("private")).unwrap();
+    std::fs::write(app.join("requirements.txt"), "flask==3.0.0\n").unwrap();
+    std::fs::write(app.join("Procfile"), "web: python -m flask run\n").unwrap();
+    let targets = [target("web", None)];
+    let railpack = [Railpack {
+        name: "web".into(),
+        context: "source/app".into(),
+        variables: BTreeMap::new(),
+        refresh_cache: false,
+    }];
+    let environment = BTreeMap::new();
+    let request = Request {
+        image_contexts: &BTreeMap::new(),
+        railpack: &railpack,
+        compose_file: &directory.join("compose.json"),
+        working_dir: &directory,
+        environment: &environment,
+        docker: None,
+        targets: &targets,
+        build_args: &[],
+        output: Output::Load,
+        no_cache: false,
+        pull: false,
+    };
+    let docker = Docker {
+        program: Path::new("docker"),
+        environment: &environment,
+        working_dir: &directory,
+        deadline: Deadline::starting_now(Duration::from_secs(600)),
+        cancellation: None,
+        progress: None,
+    };
+    let builder = format!("ployz-test-{}", uuid::Uuid::new_v4().simple());
+    let preparation = railpack::prepare(
+        &docker,
+        &request,
+        "linux/amd64",
+        &builder,
+        &policy::Resources::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let plan = std::fs::read_to_string(
+        preparation
+            .override_file()
+            .with_file_name("0")
+            .join("plan.json"),
+    )
+    .unwrap();
+    assert!(plan.contains("pip install -r requirements.txt"), "{plan}");
+    drop(preparation);
+    std::fs::remove_dir_all(directory).unwrap();
+}

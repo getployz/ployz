@@ -85,7 +85,7 @@ shopweb.ada.ployz.test	web → 80	Setting up · Live after your next deploy
 === diff :: $ ployz diff
 web (update)
   web.managedHostnames: [{"prefix":"web","targetPort":80}] -> [{"prefix":"shopweb","targetPort":80}]
-next: ployz deploy --expect-version 39:27:0.54
+next: ployz deploy
 
 === domain ls after deploy :: $ ployz domain ls
 acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10

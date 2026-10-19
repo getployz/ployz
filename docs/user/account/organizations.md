@@ -22,7 +22,9 @@ organization, and you own it. Switch between your organizations under **Switch o
 
 In the sidebar, click **Organization** for its settings:
 
-- **General**: your organization's **Domain**, which your services' free addresses live under.
+- **General**: your organization's **Display name**. Owners and admins can change it: type a new
+  one and press Enter or click the check. Its URL stays the same. Below it, your organization's
+  **Domain**, which your services' free addresses live under.
   It appears with your first deploy. Below it, **Allow support access**, and **Forget all
   servers** for when your servers were deleted.
 - **Members**: who's in the organization, their roles, and, for owners and admins, pending
@@ -107,8 +109,8 @@ How you answer depends on where the command runs:
   the reason given. Ctrl-C stops waiting and leaves the approval pending.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
-- In an agent that uses `ployz mcp`, the agent's app asks you. An app that can't ask waits
-  until someone approves or denies it in Ployz Cloud. See
+- In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
+  call fails with a link, as for a connected agent below. See
   [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).
 - In the [Ployz agent](agent-sidebar.md) in the dashboard, you approve or deny right in its
   panel, and the agent waits for you.
@@ -149,7 +151,7 @@ Ployz Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org appr
 refuses with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog,
 in the sidebar, or with `ployz org approval approve`. The dialog and the command answer with this
 computer's `ployz` login, so it must be signed in to the agent's Ployz Cloud and acting in the
-organization that owns the request. Otherwise they refuse: run `ployz org use ORG` to switch,
+organization that owns the request. Otherwise they refuse: run `ployz org use ORGANIZATION` to switch,
 then answer again. If you run the same change yourself with `ployz`, typing the name in your terminal
 approves it. Anyone in the organization can deny any request, from the dashboard or a terminal.
 
@@ -198,7 +200,7 @@ If a server is offline, the organization stays, disabled, until that server is b
 
 With no organization left, the dashboard offers **Create an organization**.
 
-From the CLI, `ployz org rm SLUG` does the same. If this device was signed in to that
+From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,
 then `ployz login`.
 
