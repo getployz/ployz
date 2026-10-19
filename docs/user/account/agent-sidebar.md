@@ -26,8 +26,8 @@ replied. It can:
 
 - Show a server, a service's containers, and where each volume's copies live
   (**server show**, **service status**, **volume show**).
-- Read a service's recent logs from each server that ran it, with secrets from the container's
-  environment replaced (**service logs**). Ployz support sees them only if your organization
+- Read a service's recent logs from each server that ran it, with sealed variables and
+  secret-shaped values replaced (**service logs**). Ployz support sees them only if your organization
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
 - Read a server's own recent logs from the Ployz daemon, Docker or Corrosion, up to 200 lines,
   with secret-shaped values replaced (**server logs**). Ployz support can't read them.

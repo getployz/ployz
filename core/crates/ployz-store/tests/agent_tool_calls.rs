@@ -2250,10 +2250,10 @@ fn renaming_a_referenced_variable_asks_to_update_its_references() {
     );
 }
 
-// Catches service_logs telling Cloud a secret or a resolved template is plain,
-// or dropping why a Server did not answer.
+// Catches service_logs leaving a Sealed variable or a template that may reference one
+// off what Cloud scrubs, naming a plain one, or dropping why a Server did not answer.
 #[test]
-fn service_logs_names_only_plain_variables_and_says_why_a_server_did_not_answer() {
+fn service_logs_names_sealed_variables_and_says_why_a_server_did_not_answer() {
     let (store, _) = deploying();
     call(
         &store,
@@ -2270,7 +2270,7 @@ fn service_logs_names_only_plain_variables_and_says_why_a_server_did_not_answer(
     let mut asked = Vec::new();
     let mut cloud = |cloud: Cloud| match cloud {
         Cloud::Ask(CloudQuery::Logs(query)) => {
-            asked.push(query.plain);
+            asked.push(query.sealed);
             Ok(json!({
                 "servers": [],
                 "seen": servers(&[])["seen"],
@@ -2291,19 +2291,12 @@ fn service_logs_names_only_plain_variables_and_says_why_a_server_did_not_answer(
     )
     .ok();
 
-    let [plain] = asked.as_slice() else {
-        panic!("one logs ask: {asked:?}");
+    let [Some(sealed)] = asked.as_slice() else {
+        panic!("one logs ask naming the Sealed variables: {asked:?}");
     };
-    assert_eq!(plain.get("PLAIN").map(String::as_str), Some("hello-plain"));
     assert_eq!(
-        plain.get("SHARED").map(String::as_str),
-        Some("exported-plain")
-    );
-    assert!(!plain.contains_key("KEY"), "{plain:?}");
-    assert_ne!(
-        plain.get("URL").map(String::as_str),
-        Some("http://hello-plain"),
-        "a template's resolved value is never plain"
+        sealed.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["KEY", "URL"]
     );
     assert_eq!(
         logs["notes"],

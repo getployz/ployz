@@ -242,7 +242,7 @@ async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcErro
                     machine,
                     selector.clone(),
                     query.lines,
-                    &query.plain,
+                    query.sealed.as_ref(),
                 )
             })
             .await)

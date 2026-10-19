@@ -1,7 +1,7 @@
 //! Tools on a Service's containers: their state, their logs, and restarting,
 //! starting or stopping them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use ployz_core::ServiceName;
@@ -283,10 +283,10 @@ impl Tool for ServiceLogs {
         }
         let mut answers = cx.read(asks)?.into_iter();
         let namespace = cx.view::<NamespaceQuery>(answers.next())?;
-        // Unread variables leave nothing plain, so every env value is scrubbed.
-        let plain = cx
+        let sealed = cx
             .view::<ServiceQuery>(answers.next())
-            .map_or_else(|_| BTreeMap::new(), |view| plain_env(&view.values));
+            .ok()
+            .map(|view| sealed_env(&view.values));
         let deployment = match numbered {
             Some(_) => Some(cx.view::<NumberedDeploymentQuery>(answers.next())?),
             None => None,
@@ -316,7 +316,7 @@ impl Tool for ServiceLogs {
             since: self
                 .since_minutes
                 .map(|minutes| Duration::from_secs(u64::from(minutes) * 60)),
-            plain,
+            sealed,
         };
         let mut answers = cx
             .read(vec![Ask::Cloud(CloudQuery::Logs(query))])?
@@ -331,18 +331,19 @@ impl Tool for ServiceLogs {
     }
 }
 
-/// The variables a Service's Settings `values` show as plain text. A secret shows no value
-/// and a template shows its `${{ … }}`, so neither ever matches a Container's env.
+/// The variables a Service's Settings `values` show as Sealed, `{"secret": …}`, or as a
+/// template, whose `${{ … }}` may reference a Sealed value.
 #[must_use]
-pub fn plain_env(values: &serde_json::Map<String, Value>) -> BTreeMap<String, String> {
+pub fn sealed_env(values: &serde_json::Map<String, Value>) -> BTreeSet<String> {
     let Some(Value::Object(env)) = values.get("env") else {
-        return BTreeMap::new();
+        return BTreeSet::new();
     };
     env.iter()
-        .filter_map(|(name, shown)| {
+        .filter(|(_, shown)| {
             let value = shown.get("value").unwrap_or(shown);
-            Some((name.clone(), value.as_str()?.to_owned()))
+            value.get("secret").is_some() || value.as_str().is_some_and(|text| text.contains("${{"))
         })
+        .map(|(name, _)| name.clone())
         .collect()
 }
 

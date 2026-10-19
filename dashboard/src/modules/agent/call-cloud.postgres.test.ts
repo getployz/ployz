@@ -57,7 +57,7 @@ describe("callCloud", () => {
     server: null,
     lines: 50,
     since: { secs: 600, nanos: 0 },
-    plain: { PORT: "8080" },
+    sealed: ["DATABASE_URL"],
   };
   const TAIL: LogsAnswer = {
     servers: [{ server: "server-1", text: { status: "shown", lines: ["listening on :8080\n", "token [secret TOKEN]\n"], cut: false, redacted: 1 } }],

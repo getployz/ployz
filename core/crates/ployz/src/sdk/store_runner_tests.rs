@@ -252,40 +252,64 @@ async fn a_launch_or_initial_report_failure_settles_all_started_builds_and_keeps
     );
 }
 
+fn scrub_target() -> Scrub {
+    let spec = |name: &str, env: serde_json::Value| -> ployz_core::RequestedServiceSpec {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "nginx", "pull_policy": "missing", "environment": env },
+        }))
+        .unwrap()
+    };
+    let target = [
+        spec(
+            "web",
+            serde_json::json!({ "DB_PASSWORD": "hunter2-long", "LOG_LEVEL": "debug-verbose" }),
+        ),
+        spec(
+            "worker",
+            serde_json::json!({ "API_TOKEN": "tok-worker-9", "MIRROR": "hunter2-long" }),
+        ),
+    ];
+    let secret_env = BTreeMap::from([
+        (
+            ServiceName::parse("web").unwrap(),
+            ["DB_PASSWORD".to_owned()].into(),
+        ),
+        (
+            ServiceName::parse("worker").unwrap(),
+            ["API_TOKEN".to_owned()].into(),
+        ),
+    ]);
+    Scrub::new(&target, &secret_env)
+}
+
+// Catches a failed log that shows a Sealed value, from its own Service or another the
+// claim lowered, even where a plain variable holds the same value, or that scrubs a plain
+// or image value such as NODE_ENV=production.
 #[test]
-fn a_failed_log_is_scrubbed_of_secret_and_machine_only_values_and_keeps_plain_ones() {
-    use ployz_store::tools::{LineCap, LogExcerpt, LogText, Withheld};
-    let web = ServiceName::parse("web").unwrap();
-    let env: BTreeMap<String, String> = [
-        ("DB_PASSWORD", "hunter2-long"),
-        ("LOG_LEVEL", "debug-verbose"),
-    ]
-    .into_iter()
-    .map(|(key, value)| (key.to_owned(), value.to_owned()))
-    .collect();
-    let scrub = Scrub {
-        env: BTreeMap::from([(web.clone(), env.clone())]),
-        secret: BTreeMap::from([(web.clone(), ["DB_PASSWORD".to_owned()].into())]),
-    };
-    let mut machine = env;
-    machine.insert("IMAGE_ONLY".into(), "image-value-x".into());
-    let mut secrets = scrub.secrets(&web);
-    secrets.add_machine_env(Some(&machine));
-    let line = "login hunter2-long at debug-verbose via image-value-x\n".to_owned();
-    let LogText::Shown(excerpt) = LogExcerpt::scrub([line.clone()], &secrets, LineCap::default())
-    else {
-        panic!("a lowered Service has secret context");
-    };
+fn a_failed_log_is_scrubbed_of_sealed_values_only() {
+    use ployz_store::tools::{LineCap, LogExcerpt};
+    let scrub = scrub_target();
+    let sealed = scrub
+        .sealed(&ServiceName::parse("worker").unwrap())
+        .expect("a lowered Service has its Sealed values");
+    let line = "npm warn config production; login hunter2-long at debug-verbose with tok-worker-9 password=open-sesame\n";
+    let excerpt = LogExcerpt::scrub([line.to_owned()], sealed, LineCap::default());
     assert_eq!(
         excerpt.lines(),
-        ["login [secret DB_PASSWORD] at debug-verbose via [secret IMAGE_ONLY]"]
+        [
+            "npm warn config production; login [secret DB_PASSWORD] at debug-verbose with [secret API_TOKEN] password=[redacted]"
+        ]
     );
-    let mut unknown = scrub.secrets(&ServiceName::parse("api").unwrap());
-    unknown.add_machine_env(Some(&machine));
-    assert_eq!(
-        LogExcerpt::scrub([line], &unknown, LineCap::default()),
-        LogText::Withheld {
-            why: Withheld::NoSecretContext
-        }
+}
+
+// Catches a removed Service's log shown with no idea of the Sealed values it ran under.
+#[test]
+fn a_service_the_claim_did_not_lower_has_no_sealed_values() {
+    assert!(
+        scrub_target()
+            .sealed(&ServiceName::parse("api").unwrap())
+            .is_none()
     );
 }

@@ -825,11 +825,9 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
 }
 
 fn shown(text: &str) -> ployz_store::tools::LogText {
-    let mut secrets = ployz_store::tools::SecretSet::from_store([], []);
-    secrets.add_machine_env(Some(&std::collections::BTreeMap::new()));
-    ployz_store::tools::LogExcerpt::scrub(
+    ployz_store::tools::LogText::Shown(ployz_store::tools::LogExcerpt::scrub(
         [text.to_owned()],
-        &secrets,
+        &ployz_store::tools::SealedValues::none(),
         ployz_store::tools::LineCap::default(),
-    )
+    ))
 }

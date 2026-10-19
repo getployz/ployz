@@ -3,7 +3,7 @@
 //! evidence, so the Deploy Intent with its unsealed secrets, the session and the raw
 //! SDK evidence never leave it: the caller gets only the Deployment's summary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use ployz_core::{
     DeployOperation, DeployOutcome, ExecutionError, FailedOperation, RpcError, RpcErrorCode,
     ServiceName,
 };
-use ployz_store::tools::SecretSet;
+use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
     DeploymentStatus, DeploymentSummary, Failure, RowState, RowTracker, RunEvidence, RunnerId,
@@ -212,38 +212,38 @@ pub async fn observe_copies(
     observed
 }
 
-/// Each Service's environment and which of its keys hold a secret: what its failed
+/// Every Sealed value the claim lowered, whichever Service holds it: what a failed
 /// Container's log is scrubbed of.
 struct Scrub {
-    env: BTreeMap<ServiceName, BTreeMap<String, String>>,
-    secret: BTreeMap<ServiceName, std::collections::BTreeSet<String>>,
+    lowered: BTreeSet<ServiceName>,
+    sealed: SealedValues,
 }
 
 impl Scrub {
-    fn new(claimed: &Claimed) -> Self {
+    fn new(
+        target: &[ployz_core::RequestedServiceSpec],
+        secret_env: &BTreeMap<ServiceName, BTreeSet<String>>,
+    ) -> Self {
         Self {
-            env: claimed
-                .intent
-                .target
+            lowered: target.iter().map(|spec| spec.name.clone()).collect(),
+            sealed: target
                 .iter()
-                .map(|spec| (spec.name.clone(), spec.container.environment.clone()))
+                .flat_map(|spec| {
+                    let keys = secret_env.get(&spec.name);
+                    spec.container
+                        .environment
+                        .iter()
+                        .filter(move |(key, _)| keys.is_some_and(|keys| keys.contains(*key)))
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                })
                 .collect(),
-            secret: claimed.secret_env.clone(),
         }
     }
 
-    /// `service`'s secret values, and its plain ones, which its Machine's env may
-    /// repeat. A Service the claim did not lower has no secret context.
-    fn secrets(&self, service: &ServiceName) -> SecretSet {
-        let Some(env) = self.env.get(service) else {
-            return SecretSet::unknown();
-        };
-        let keys = self.secret.get(service);
-        let (secrets, plain): (Vec<_>, Vec<_>) = env
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .partition(|(key, _)| keys.is_some_and(|keys| keys.contains(key)));
-        SecretSet::from_store(secrets, plain)
+    /// What `service`'s log is scrubbed of. None for a Service the claim did not lower,
+    /// one this Deploy removes: it ran under Sealed values the claim no longer holds.
+    fn sealed(&self, service: &ServiceName) -> Option<&SealedValues> {
+        self.lowered.contains(service).then_some(&self.sealed)
     }
 }
 
@@ -262,7 +262,7 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
-        let scrub = Scrub::new(&claimed);
+        let scrub = Scrub::new(&claimed.intent.target, &claimed.secret_env);
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.preview(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -574,8 +574,14 @@ impl Run {
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
                     (&mut row.state, container, session.client())
                 {
-                    let secrets = scrub.secrets(&row.service);
-                    *log = super::failed_tail(&client, row.machine, container, secrets).await;
+                    *log = match scrub.sealed(&row.service) {
+                        Some(sealed) => {
+                            super::failed_tail(&client, row.machine, container, sealed).await
+                        }
+                        None => LogText::Withheld {
+                            why: Withheld::NoSecretContext,
+                        },
+                    };
                 }
                 pending.insert((row.service.clone(), row.machine), row);
             }

@@ -728,10 +728,10 @@ impl FakeMachine for DeployService {
         }
         unused()
     }
-    /// Every Container's Log Store holds `line 1`..`line 12` and then its exit,
-    /// paged newest first. A Service-wide read interleaves Containers `d..d` (odd
-    /// lines) and `c..c` (even lines); line 11 prints its env's PLAIN and line 12
-    /// leaks its TOKEN.
+    /// Every Container's Log Store holds `line 1`..`line 10`, then a line printing its
+    /// env's PLAIN and one leaking its TOKEN, then its exit, paged newest first. A
+    /// Service-wide read interleaves Containers `d..d` (odd lines) and `c..c` (even
+    /// lines).
     async fn log_history(
         &self,
         request: Request<OpaquePayload>,
@@ -764,9 +764,9 @@ impl FakeMachine for DeployService {
                 },
                 ts: n,
                 stream: ployz_core::HistoryStream::Stdout,
-                text: match (service_wide, n) {
-                    (true, 11) => b"plain from-docker".to_vec(),
-                    (true, 12) => b"token live-only-sentinel".to_vec(),
+                text: match n {
+                    11 => b"plain from-docker".to_vec(),
+                    12 => b"token=live-only-sentinel".to_vec(),
                     _ => format!("line {n}").into_bytes(),
                 },
             })

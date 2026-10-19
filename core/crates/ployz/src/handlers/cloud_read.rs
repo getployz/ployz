@@ -2,7 +2,7 @@
 //! the Servers instead, under the read permission each needs and the credential's
 //! Environment ceiling.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use chrono::Utc;
 use ployz_core::{MachineName, QualifiedService, ServiceName};
@@ -12,7 +12,7 @@ use ployz_store::{
         CloudQuery, LineCap, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject,
         Timestamp,
         cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
-        plain_env,
+        sealed_env,
     },
 };
 use reqwest::Method;
@@ -97,13 +97,13 @@ pub(super) fn logs(
         .map(Duration::from_nanos);
     let mut read = Vec::new();
     for (name, runtime) in services {
-        // Unread variables leave nothing plain, so every env value is scrubbed.
-        let plain = store
+        let sealed = store
             .try_read(&ServiceQuery {
                 environment: environment.clone(),
                 service: name.clone(),
             })
-            .map_or_else(|_| BTreeMap::new(), |view| plain_env(&view.values));
+            .ok()
+            .map(|view| sealed_env(&view.values));
         let answer: LogsAnswer = ask(
             credential,
             CloudQuery::Logs(LogsQuery {
@@ -114,7 +114,7 @@ pub(super) fn logs(
                 server: None,
                 lines: line_cap(asked.tail),
                 since,
-                plain,
+                sealed,
             }),
         )?;
         read.push((name, answer));
