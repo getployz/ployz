@@ -1,7 +1,8 @@
 //! The owner's half of serving rotation. A copy's rotation moves only here, along
 //! [`CopyRotation::edge`]. Each want is checked before any effect, and again under
 //! the exclusive admission turn right before the write, against the rotation this
-//! Machine recorded. Replicated rows from other Machines only narrow what it does.
+//! Machine recorded. Replicated rows from other Machines are read before the turn
+//! and only narrow what it does.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,9 +10,9 @@ use futures_util::{TryFutureExt, future::try_join_all};
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerObservation,
-    ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId,
-    EnsuredContainer, Gen, HealthVerdict, MachineId, QualifiedService, RotationEdge,
-    RotationRefusal, RotationTarget, RunRotation, RunTarget,
+    ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
+    CopyRotation, DeploymentLogId, EnsuredContainer, Gen, HealthVerdict, MachineId,
+    QualifiedService, RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget,
 };
 
 use super::{Error, LocalMachine, not_found_refusal, redacted, refuse};
@@ -45,14 +46,14 @@ impl RotationWant {
 
 /// What a rotation check reads about one copy. A copy not created yet has no id.
 #[derive(Clone, Debug)]
-struct Copy {
+struct CopyState {
     id: Option<ContainerId>,
     service: QualifiedService,
     r#gen: Gen,
     rotation: CopyRotation,
 }
 
-impl Copy {
+impl CopyState {
     fn of(observed: &ContainerObservation) -> Self {
         Self {
             id: Some(observed.container_id),
@@ -69,6 +70,24 @@ struct Routed {
     routes: BTreeMap<MachineId, BTreeSet<ContainerId>>,
     membership: Membership,
     named: Vec<ContainerObservation>,
+}
+
+/// The replicated rows a want's guard reads, taken before the turn. Only this
+/// copy's rotation and the local copies' rotations are guarded by the turn, and
+/// those are read again under it.
+enum GuardReads {
+    None,
+    /// Every copy's row, for the OlderThanIn guard.
+    NewerIn(Vec<ContainerObservation>),
+    LastIn(Routed),
+}
+
+/// What the write under the turn did.
+enum Written {
+    Done,
+    /// The copy no longer runs, so In was not written.
+    NotRunning(ContainerRuntimeObservation),
+    Refused(ContainerRefusal),
 }
 
 enum Checked {
@@ -89,8 +108,8 @@ pub(super) fn describe(rotation: &CopyRotation) -> String {
 }
 
 impl LocalMachine {
-    /// Out or Held: a write only, so the guards that read other copies run once, under
-    /// the turn. The Container keeps running.
+    /// Out or Held: a write only, so the guards that read other copies run once, in
+    /// the write. The Container keeps running.
     pub(super) async fn rotate(
         &self,
         locator: ContainerLocator,
@@ -101,7 +120,7 @@ impl LocalMachine {
         let Some(observed) = now.present() else {
             return Ok(refused(now, not_found_refusal(&locator)));
         };
-        let copy = Copy::of(observed);
+        let copy = CopyState::of(observed);
         match decide(&copy, &want, expect.as_ref()) {
             Checked::Met => Ok(EnsuredContainer::Ensured {
                 now: redacted(now),
@@ -128,8 +147,8 @@ impl LocalMachine {
         };
         let now = self.container_now(&locator).await?;
         let copy = match (&now, &container) {
-            (ContainerNow::Present(observed), _) => Copy::of(observed),
-            (ContainerNow::Absent { .. }, RunTarget::New(new)) => Copy {
+            (ContainerNow::Present(observed), _) => CopyState::of(observed),
+            (ContainerNow::Absent { .. }, RunTarget::New(new)) => CopyState {
                 id: None,
                 service: QualifiedService::new(
                     new.slot.namespace.clone(),
@@ -142,54 +161,65 @@ impl LocalMachine {
                 return Ok(refused(now, not_found_refusal(&locator)));
             }
         };
-        match self.check(&copy, &want, expect.as_ref(), None).await? {
-            Checked::Met => {
-                return Ok(EnsuredContainer::Ensured {
-                    now: redacted(now),
-                    health: None,
-                });
+        let checked = match decide(&copy, &want, expect.as_ref()) {
+            Checked::Allowed(_) => {
+                let reads = self.guard_reads(&copy, &want).await?;
+                self.check(&copy, &want, expect.as_ref(), reads).await?
             }
+            decided => decided,
+        };
+        let met = match checked {
             Checked::Refused(refusal) => return Ok(refused(now, refusal)),
-            Checked::Allowed(_) => {}
-        }
+            Checked::Met => true,
+            Checked::Allowed(_) => false,
+        };
+        // A copy already In still runs: Met only skips the rotation write.
         let started = self
             .ensure_docker(ContainerWant::Running {
                 container,
                 rotation: RunRotation::Pending,
             })
             .await?;
+        if met {
+            return Ok(started);
+        }
         let EnsuredContainer::Ensured {
-            now: ContainerNow::Present(started),
-            ..
-        } = started
+            now: ContainerNow::Present(observed),
+            health,
+        } = &started
         else {
             return Ok(started);
         };
-        let id = ContainerLocator::Id(started.container_id);
-        let ContainerNow::Present(observed) = self.container_now(&id).await? else {
-            return Ok(refused(
-                ContainerNow::Absent { of: id.clone() },
-                not_found_refusal(&id),
-            ));
+        let id = ContainerLocator::Id(observed.container_id);
+        let health = match health {
+            Some(settled) => settled.clone(),
+            None => {
+                let ContainerNow::Present(observed) = self.container_now(&id).await? else {
+                    return Ok(refused(
+                        ContainerNow::Absent { of: id.clone() },
+                        not_found_refusal(&id),
+                    ));
+                };
+                self.settle_health(&observed.container_id, &observed.resolved_spec)
+                    .await?
+            }
         };
-        let health = self
-            .settle_health(&observed.container_id, &observed.resolved_spec)
-            .await?;
         if health != HealthVerdict::Healthy {
             return Ok(EnsuredContainer::Ensured {
                 now: redacted(self.container_now(&id).await?),
                 health: Some(health),
             });
         }
-        self.write(Copy::of(&observed), want, expect, Some(health))
+        self.write(CopyState::of(observed), want, expect, Some(health))
             .await
     }
 
     /// Check `want` again under the exclusive turn, against the rotation this Machine
     /// recorded, and write it. Holds the lock `remove` takes from the read to the write.
+    /// In is written only on a copy that still runs.
     async fn write(
         &self,
-        copy: Copy,
+        copy: CopyState,
         want: RotationWant,
         expect: Option<CopyRotation>,
         health: Option<HealthVerdict>,
@@ -198,87 +228,102 @@ impl LocalMachine {
             .id
             .expect("only an existing copy reaches the rotation write");
         let locator = ContainerLocator::Id(id);
-        // Replicated rows are not guarded by the turn, so the LastIn guard's reads of
-        // them run alongside it; the local rotations it reads wait for the turn.
-        let early = matches!(
-            (&want, &copy.rotation),
-            (RotationWant::Out { allow_empty: false }, CopyRotation::In)
-        );
+        let reads = self.guard_reads(&copy, &want).await?;
         let local = self.clone();
-        let refusal = self
+        let written = self
             .finish_mutation({
                 let locator = locator.clone();
                 async move {
                     let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-                    let (turn, routed) = tokio::join!(containers.rotation_turn(&id), async {
-                        if early {
-                            Some(local.routed(&copy).await)
-                        } else {
-                            None
-                        }
-                    });
-                    let turn = match turn {
+                    let turn = match containers.rotation_turn(&id).await {
                         Ok(turn) => turn,
                         Err(crate::docker::Error::ContainerNotFound(_)) => {
-                            return Ok(Some(not_found_refusal(&locator)));
+                            return Ok(Written::Refused(not_found_refusal(&locator)));
                         }
                         Err(error) => return Err(error.into()),
                     };
-                    let copy = Copy {
+                    let copy = CopyState {
                         rotation: turn.rotation().clone(),
                         ..copy
                     };
-                    match local.check(&copy, &want, expect.as_ref(), routed).await? {
-                        Checked::Met => Ok(None),
-                        Checked::Refused(refusal) => Ok(Some(refusal)),
-                        Checked::Allowed(rotation) => {
-                            turn.write(&rotation).await?;
-                            Ok(None)
+                    let to = match local.check(&copy, &want, expect.as_ref(), reads).await? {
+                        Checked::Met => return Ok(Written::Done),
+                        Checked::Refused(refusal) => return Ok(Written::Refused(refusal)),
+                        Checked::Allowed(to) => to,
+                    };
+                    if let RotationWant::In { .. } = want {
+                        let observed = containers
+                            .inspect_managed(&id, &local.record().id())
+                            .await?;
+                        if !super::is_running(&observed) {
+                            return Ok(Written::NotRunning(observed.runtime.clone()));
                         }
                     }
+                    turn.write(&to).await?;
+                    Ok(Written::Done)
                 }
             })
             .await?;
         let now = self.container_now(&locator).await?;
-        Ok(match refusal {
-            None => EnsuredContainer::Ensured {
+        Ok(match written {
+            Written::Done => EnsuredContainer::Ensured {
                 now: redacted(now),
                 health,
             },
-            Some(refusal) => refused(now, refusal),
+            Written::NotRunning(observation) => EnsuredContainer::Ensured {
+                now: redacted(now),
+                health: Some(HealthVerdict::Failed {
+                    observation,
+                    last_check: None,
+                }),
+            },
+            Written::Refused(refusal) => refused(now, refusal),
+        })
+    }
+
+    /// The replicated rows `want`'s guard needs, read without the turn.
+    async fn guard_reads(
+        &self,
+        copy: &CopyState,
+        want: &RotationWant,
+    ) -> Result<GuardReads, Error> {
+        Ok(match want {
+            RotationWant::In { .. } => {
+                GuardReads::NewerIn(self.replicated()?.containers().await?.observations)
+            }
+            RotationWant::Out { allow_empty: false } => {
+                GuardReads::LastIn(self.routed(copy).await?)
+            }
+            RotationWant::Out { allow_empty: true } | RotationWant::Held(_) => GuardReads::None,
         })
     }
 
     /// The want against `copy`: [`decide`], then the guards that read other copies.
-    /// `routed` is the LastIn guard's replicated read when it was already taken.
     async fn check(
         &self,
-        copy: &Copy,
+        copy: &CopyState,
         want: &RotationWant,
         expect: Option<&CopyRotation>,
-        routed: Option<Result<Routed, Error>>,
+        reads: GuardReads,
     ) -> Result<Checked, Error> {
         let to = match decide(copy, want, expect) {
             Checked::Allowed(to) => to,
             decided @ (Checked::Met | Checked::Refused(_)) => return Ok(decided),
         };
-        let guard = match (want, &copy.rotation) {
-            (RotationWant::In { .. }, _) => self.newer_in(copy).await?,
-            (RotationWant::Out { allow_empty: false }, CopyRotation::In) => {
-                let routed = match routed {
-                    Some(routed) => routed?,
-                    None => self.routed(copy).await?,
-                };
-                self.last_in(copy, routed).await?
-            }
-            _ => None,
+        let guard = match (reads, &copy.rotation) {
+            (GuardReads::NewerIn(observed), _) => self.newer_in(copy, observed).await?,
+            (GuardReads::LastIn(routed), CopyRotation::In) => self.last_in(copy, routed).await?,
+            (GuardReads::LastIn(_), _) | (GuardReads::None, _) => None,
         };
         Ok(guard.map_or(Checked::Allowed(to), Checked::Refused))
     }
 
     /// Refuse In while a newer copy of the Service is already In.
-    async fn newer_in(&self, copy: &Copy) -> Result<Option<ContainerRefusal>, Error> {
-        let observed = self.replicated()?.containers().await?.observations;
+    async fn newer_in(
+        &self,
+        copy: &CopyState,
+        observed: Vec<ContainerObservation>,
+    ) -> Result<Option<ContainerRefusal>, Error> {
         let newer = self
             .in_siblings(copy, observed)
             .await?
@@ -301,7 +346,7 @@ impl LocalMachine {
 
     /// The LastIn guard's reads of replicated rows. Only copies some ack row names can
     /// pass, so only those rows are read.
-    async fn routed(&self, copy: &Copy) -> Result<Routed, Error> {
+    async fn routed(&self, copy: &CopyState) -> Result<Routed, Error> {
         let replicated = self.replicated()?;
         let (rows, membership) = tokio::try_join!(
             replicated
@@ -332,10 +377,11 @@ impl LocalMachine {
     }
 
     /// Refuse In to Out unless another In copy of the Service is acked by every live
-    /// proxy. A Machine list that is only partly replicated never passes.
+    /// proxy. A Machine list that is only partly replicated never passes, and a copy
+    /// on a Down Machine serves no one.
     async fn last_in(
         &self,
-        copy: &Copy,
+        copy: &CopyState,
         Routed {
             routes,
             membership,
@@ -346,6 +392,7 @@ impl LocalMachine {
             .in_siblings(copy, named)
             .await?
             .into_iter()
+            .filter(|sibling| !membership.down.contains(&sibling.machine_id))
             .map(|sibling| sibling.container_id)
             .collect::<Vec<_>>();
         if siblings.is_empty() {
@@ -390,7 +437,7 @@ impl LocalMachine {
     /// Machine reads this Machine's own record instead of its row, which may lag.
     async fn in_siblings(
         &self,
-        copy: &Copy,
+        copy: &CopyState,
         observed: Vec<ContainerObservation>,
     ) -> Result<Vec<ContainerObservation>, Error> {
         let machine_id = self.record().id();
@@ -428,7 +475,7 @@ impl LocalMachine {
 }
 
 /// The want against `copy` alone: already met, then `expect`, then the edge table.
-fn decide(copy: &Copy, want: &RotationWant, expect: Option<&CopyRotation>) -> Checked {
+fn decide(copy: &CopyState, want: &RotationWant, expect: Option<&CopyRotation>) -> Checked {
     if want.met_by(&copy.rotation) {
         return Checked::Met;
     }
@@ -453,7 +500,11 @@ fn decide(copy: &Copy, want: &RotationWant, expect: Option<&CopyRotation>) -> Ch
     }
 }
 
-fn edge_refusal(refusal: RotationRefusal, copy: &Copy, want: &RotationWant) -> ContainerRefusal {
+fn edge_refusal(
+    refusal: RotationRefusal,
+    copy: &CopyState,
+    want: &RotationWant,
+) -> ContainerRefusal {
     let from = describe(&copy.rotation);
     match refusal {
         RotationRefusal::HeldByOtherRun => refuse(

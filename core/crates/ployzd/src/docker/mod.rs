@@ -176,8 +176,10 @@ impl LocalDocker {
     }
 }
 
-/// One existing copy's rotation, read under the lock `remove` takes and held for its write.
+/// One existing copy's rotation, read under the lock `remove` takes and held until
+/// the rotation is written or the Container stopped or removed.
 pub struct RotationTurn<'a> {
+    runtime: &'a ContainerRuntime,
     operation: spec_store::ConfigOperation<'a>,
     container_id: ContainerId,
     rotation: ployz_core::CopyRotation,
@@ -199,6 +201,22 @@ impl RotationTurn<'_> {
             .operation
             .set_rotation(&self.container_id, rotation)
             .await?)
+    }
+
+    /// Remove the Container and its records, as [`ContainerRuntime::remove`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`ContainerRuntime::remove`].
+    pub async fn remove(mut self, remove_volumes: bool, force: bool) -> Result<(), Error> {
+        self.runtime
+            .remove_locked(
+                &mut self.operation,
+                &self.container_id,
+                remove_volumes,
+                force,
+            )
+            .await
     }
 }
 
@@ -233,8 +251,8 @@ impl ContainerRuntime {
         Ok(self.specs.clear_floors().await?)
     }
 
-    /// Take the lock `remove` takes and read a copy's rotation under it, so the
-    /// Container cannot go between the read and a write.
+    /// Take the lock `remove` takes and read a copy's rotation under it, so no other
+    /// rotation write or removal lands before the turn is spent.
     ///
     /// # Errors
     ///
@@ -248,22 +266,11 @@ impl ContainerRuntime {
         self.ensure_managed(container_id).await?;
         let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
         Ok(RotationTurn {
+            runtime: self,
             operation,
             container_id: *container_id,
             rotation,
         })
-    }
-
-    /// A copy's recorded rotation, `Pending` when it has none.
-    ///
-    /// # Errors
-    ///
-    /// Returns when the Machine database cannot be read.
-    pub async fn rotation(
-        &self,
-        container_id: &ContainerId,
-    ) -> Result<ployz_core::CopyRotation, Error> {
-        Ok(self.specs.rotation(container_id).await?.unwrap_or_default())
     }
 
     /// The recorded rotations of `container_ids`, in one read. A copy that never left

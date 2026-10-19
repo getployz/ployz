@@ -14,14 +14,15 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use ployz_core::{
-    AdvertisedEndpoint, ConfiguredHealthcheck, ContainerId, ContainerLocator, ContainerNow,
-    ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, EnsureContainerRequest,
-    EnsuredContainer, HealthVerdict, HealthcheckCommand, HealthcheckSpec, Machine, MachineId,
-    MachineName, MachineRpc, MachineRuntime, NewContainer, QualifiedService, ReadRoutesRequest,
-    ResolvedServiceSpec, RoutesRead, RunRotation, RunTarget, WireGuardPublicKey, op,
+    AdvertisedEndpoint, AnswerWhen, ConfiguredHealthcheck, ContainerId, ContainerLocator,
+    ContainerNow, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId,
+    EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
+    Machine, MachineId, MachineName, MachineRpc, MachineRuntime, NewContainer, QualifiedService,
+    ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation, RunTarget, WireGuardPublicKey,
+    op,
 };
 use serde_json::{Value, json};
-use tokio::net::UnixListener;
+use tokio::{net::UnixListener, sync::Notify};
 use tokio_util::{codec::LengthDelimitedCodec, sync::CancellationToken};
 use tonic::Request;
 
@@ -36,6 +37,9 @@ use crate::docker::{
 use crate::machine::{LocalMachineStore, RecordOwner};
 
 const SETTLE: Duration = Duration::from_secs(10);
+const CLUSTER_CONTAINERS: &str = "SELECT id, machine_id, container FROM containers ORDER BY id";
+const SERVICE_ROUTES: &str =
+    "SELECT machine_id, service_id, deploy, containers FROM ingress_routes WHERE service_id = ?";
 
 struct Node {
     service: MachineService,
@@ -51,7 +55,7 @@ struct Fleet {
     states: Arc<Mutex<Vec<Value>>>,
     shutdown: CancellationToken,
     dir: PathBuf,
-    _cluster: FakeCluster,
+    cluster: FakeCluster,
 }
 
 impl Fleet {
@@ -119,7 +123,7 @@ impl Fleet {
             states,
             shutdown,
             dir,
-            _cluster: cluster,
+            cluster,
         }
     }
 
@@ -248,7 +252,46 @@ impl Drop for Fleet {
 
 impl Node {
     async fn rotation(&self, container: ContainerId) -> CopyRotation {
-        self.runtime.rotation(&container).await.unwrap()
+        self.runtime
+            .rotations(vec![container])
+            .await
+            .unwrap()
+            .remove(&container)
+            .unwrap_or_default()
+    }
+
+    /// Write `rotation` straight to this Machine's record, as a want that won the
+    /// turn would.
+    async fn record(&self, container: ContainerId, rotation: CopyRotation) {
+        self.runtime
+            .rotation_turn(&container)
+            .await
+            .unwrap()
+            .write(&rotation)
+            .await
+            .unwrap();
+    }
+
+    /// Hold the exclusive admission turn until `release` is notified.
+    async fn hold_turn(&self, release: Arc<Notify>) {
+        let started = Arc::new(Notify::new());
+        tokio::spawn({
+            let (local, started) = (self.service.local.clone(), Arc::clone(&started));
+            async move { local.hold_mutation_for_test(started, release).await }
+        });
+        started.notified().await;
+    }
+
+    /// Wait until a stop has withdrawn `container` from ingress: it planned the stop
+    /// and is draining or waiting for the turn.
+    async fn withdrawn(&self, container: ContainerId) {
+        tokio::time::timeout(SETTLE, async {
+            while !self.runtime.stopping_ids_for_test().contains(&container) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{container} was never withdrawn"));
     }
 
     fn container(&self, container: ContainerId) -> Option<Value> {
@@ -757,6 +800,176 @@ async fn unhealthy_in_keeps_rotation() {
         assert_eq!(rotation_of(&reply), rotation);
         assert_eq!(node.rotation(copy).await, rotation);
     }
+}
+
+/// An In write that lands after a Stopped want planned its stop, but before it took
+/// the turn, keeps the copy running.
+#[tokio::test]
+async fn stopped_rechecks_rotation_under_the_turn() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.pending(0, "a", "api", 1).await;
+    let release = Arc::new(Notify::new());
+    node.hold_turn(Arc::clone(&release)).await;
+
+    let (reply, ()) = tokio::join!(ensure(node, stopped(a)), async {
+        node.withdrawn(a).await;
+        node.record(a, CopyRotation::In).await;
+        release.notify_one();
+    });
+
+    refused(&reply, ContainerRefusalReason::InRotation);
+    assert!(node.running(a));
+    assert_eq!(node.rotation(a).await, CopyRotation::In);
+}
+
+/// A Held write that lands after a Gone want planned its removal keeps the copy.
+#[tokio::test]
+async fn gone_rechecks_rotation_under_the_turn() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.pending(0, "a", "api", 1).await;
+    let release = Arc::new(Notify::new());
+    node.hold_turn(Arc::clone(&release)).await;
+
+    let (reply, ()) = tokio::join!(ensure(node, gone(a)), async {
+        node.withdrawn(a).await;
+        node.record(a, CopyRotation::Held(run("run-a"))).await;
+        release.notify_one();
+    });
+
+    refused(&reply, ContainerRefusalReason::InRotation);
+    assert!(node.running(a));
+    assert_eq!(node.rotation(a).await, CopyRotation::Held(run("run-a")));
+}
+
+/// A copy that stops after its health settled is not written In.
+#[tokio::test]
+async fn in_write_rechecks_that_the_copy_runs() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.pending(0, "a", "api", 1).await;
+    let before_turn = fleet.cluster.hold_query(CLUSTER_CONTAINERS, 2);
+
+    let (reply, ()) = tokio::join!(
+        ensure(node, into(a, None, Some(CopyRotation::Pending))),
+        async {
+            before_turn.wait().await;
+            node.set_state(a, json!({"Status": "exited", "ExitCode": 1}));
+            before_turn.wait().await;
+        }
+    );
+
+    let EnsuredContainer::Ensured { health, .. } = &reply else {
+        panic!("expected Ensured, got {reply:?}");
+    };
+    assert!(
+        matches!(health, Some(HealthVerdict::Failed { .. })),
+        "{health:?}"
+    );
+    assert_eq!(rotation_of(&reply), CopyRotation::Pending);
+    assert_eq!(node.rotation(a).await, CopyRotation::Pending);
+}
+
+/// A copy moved while the LastIn guard read replicated rows is checked again under
+/// the turn: the read leaves the turn free, and the fence refuses the stale want.
+#[tokio::test]
+async fn a_move_after_the_pre_read_is_caught_under_the_turn() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let api = service("api");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    let b = fleet.routed(1, "b", "api", 1).await;
+    fleet.ack_all(&api, &[a, b]).await;
+    let reading = fleet.cluster.hold_query(SERVICE_ROUTES, 1);
+
+    let (reply, ()) = tokio::join!(ensure(node, out(a, false, Some(CopyRotation::In))), async {
+        reading.wait().await;
+        let moved = tokio::time::timeout(
+            SETTLE,
+            ensure(node, held(a, "run-x", Some(CopyRotation::In))),
+        )
+        .await
+        .expect("the turn is free while the guard reads replicated rows");
+        ensured(&moved);
+        reading.wait().await;
+    });
+
+    refused(&reply, ContainerRefusalReason::RotationMismatch);
+    assert_eq!(node.rotation(a).await, CopyRotation::Held(run("run-x")));
+}
+
+/// A sibling on a Down Machine serves no one, however the live proxies ack it.
+#[tokio::test]
+async fn last_in_ignores_a_sibling_on_a_down_machine() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    let b = fleet.routed(2, "b", "api", 1).await;
+    fleet.ack(0, &api, &[a, b]).await;
+    fleet.ack(1, &api, &[a, b]).await;
+    fleet.down(2);
+
+    let reply = ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))).await;
+
+    refused(&reply, ContainerRefusalReason::LastIn);
+    assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
+}
+
+/// In on a copy already In still converges Docker: an exited copy starts again.
+#[tokio::test]
+async fn in_on_an_in_copy_starts_it() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.routed(0, "a", "api", 1).await;
+    node.set_state(a, json!({"Status": "exited", "ExitCode": 1}));
+
+    let reply = ensure(node, into(a, None, None)).await;
+
+    ensured(&reply);
+    assert!(node.running(a));
+    assert_eq!(rotation_of(&reply), CopyRotation::In);
+}
+
+/// A new copy brought In with a settled answer waits out its health monitor once.
+#[tokio::test]
+async fn settled_in_settles_health_once() {
+    const MONITOR: Duration = Duration::from_secs(3);
+    let fleet = Fleet::start().await;
+    let mut spec = spec("api");
+    spec.update.monitor_millis = Some(u64::try_from(MONITOR.as_millis()).unwrap());
+    let mut new = new_copy("a", spec, 1);
+    new.answer = AnswerWhen::Settled;
+
+    let started = std::time::Instant::now();
+    let reply = ensure(
+        fleet.node(0),
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+            rotation: RunRotation::In {
+                run: None,
+                expect: None,
+            },
+        },
+    )
+    .await;
+    let took = started.elapsed();
+
+    assert!(
+        matches!(
+            reply,
+            EnsuredContainer::Ensured {
+                health: Some(HealthVerdict::Healthy),
+                ..
+            }
+        ),
+        "{reply:?}"
+    );
+    assert_eq!(rotation_of(&reply), CopyRotation::In);
+    assert!(
+        took < MONITOR + MONITOR * 2 / 3,
+        "settled once, not twice: took {took:?}"
+    );
 }
 
 mod rotation_commands {

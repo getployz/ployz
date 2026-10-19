@@ -35,6 +35,16 @@ struct ClusterKv {
     subscriptions: bool,
     snapshots_fail: bool,
     tokens: Vec<String>,
+    held: Option<HeldQuery>,
+}
+
+/// The answer to the `nth` run of `query`, held after it is read until the test
+/// passes its gate twice.
+#[derive(Clone)]
+struct HeldQuery {
+    query: String,
+    nth: usize,
+    gate: Arc<tokio::sync::Barrier>,
 }
 
 impl ClusterKv {
@@ -57,6 +67,7 @@ impl ClusterKv {
             subscriptions,
             snapshots_fail: false,
             tokens: Vec::new(),
+            held: None,
         }
     }
 }
@@ -169,6 +180,18 @@ impl FakeCluster {
         let _ = kv.pointer_changes.send(());
     }
 
+    /// Hold the answer to the `nth` run of `query`, read before the hold, until the
+    /// returned gate is waited on twice: once to see it held, once to release it.
+    pub(crate) fn hold_query(&self, query: &str, nth: usize) -> Arc<tokio::sync::Barrier> {
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        self.kv.lock().unwrap().held = Some(HeldQuery {
+            query: query.to_owned(),
+            nth,
+            gate: Arc::clone(&gate),
+        });
+        gate
+    }
+
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
         self.kv.lock().unwrap().tokens.clone()
     }
@@ -199,7 +222,27 @@ async fn queries(
     State(kv): State<Arc<Mutex<ClusterKv>>>,
     body: Bytes,
 ) -> Result<Vec<u8>, StatusCode> {
-    query(&kv, serde_json::from_slice(&body).unwrap()).map(Into::into)
+    let statement: Statement = serde_json::from_slice(&body).unwrap();
+    let gate = {
+        let mut kv = kv.lock().unwrap();
+        let due = kv.held.as_mut().is_some_and(|held| {
+            if held.query == statement.query {
+                held.nth -= 1;
+            }
+            held.nth == 0
+        });
+        if due {
+            kv.held.take().map(|held| held.gate)
+        } else {
+            None
+        }
+    };
+    let answer = query(&kv, statement);
+    if let Some(gate) = gate {
+        gate.wait().await;
+        gate.wait().await;
+    }
+    answer.map(Into::into)
 }
 
 async fn transactions(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> Vec<u8> {

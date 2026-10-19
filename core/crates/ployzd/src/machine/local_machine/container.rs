@@ -10,9 +10,9 @@ use std::sync::Arc;
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
     ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation,
-    ContainerWant, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason,
-    ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
-    NewContainer, PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest,
+    ContainerWant, CopyRotation, DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened,
+    ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
+    Namespace, NewContainer, PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest,
     ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget,
     Start, StopOptions, VolumeGen, VolumeRemoved,
 };
@@ -24,7 +24,7 @@ use ployz_core::{
 use self::rotation::RotationWant;
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
-use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, same_creation};
+use crate::docker::{ContainerCreated, ContainerRequest, ImageIngest, RotationTurn, same_creation};
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
@@ -275,6 +275,7 @@ impl LocalMachine {
     ///
     /// Returns when Docker is unavailable, admission is busy, or Docker cannot remove the
     /// container.
+    #[cfg(test)]
     pub(crate) async fn remove_container(
         &self,
         container_id: ContainerId,
@@ -321,6 +322,50 @@ impl LocalMachine {
         drain: Drain,
         stop: &StopOptions,
     ) -> Result<Result<ContainerObservation, VolumeGen>, Error> {
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        self.stop_checked(installation, container, drain, stop, || async move {
+            let Some((name, r#gen)) = fence else {
+                return Ok(Ok(None));
+            };
+            let mut floor = containers.floor_turn().await;
+            Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
+        })
+        .await
+    }
+
+    /// Stop a copy for a Stopped or Gone want, as [`Self::stop_behind_ingress`] does.
+    /// Under the turn its rotation is read again, and the copy stops only if the edge
+    /// table lets it leave toward `target`: an In write that won the turn meanwhile
+    /// keeps it running.
+    async fn stop_out_of_rotation(
+        &self,
+        installation: &crate::mutation::MutationGuard,
+        container: &ContainerId,
+        target: RotationTarget,
+        drain: Drain,
+        stop: &StopOptions,
+    ) -> Result<Result<ContainerObservation, ContainerRefusal>, Error> {
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        self.stop_checked(installation, container, drain, stop, || {
+            leave_rotation(containers, container, &target)
+        })
+        .await
+    }
+
+    /// Drain `container` behind ingress, then under the exclusive turn run `check`
+    /// and stop it while holding what `check` returned. A refusal stops nothing.
+    async fn stop_checked<G, R, F, Fut>(
+        &self,
+        installation: &crate::mutation::MutationGuard,
+        container: &ContainerId,
+        drain: Drain,
+        stop: &StopOptions,
+        check: F,
+    ) -> Result<Result<ContainerObservation, R>, Error>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Result<G, R>, Error>>,
+    {
         let _ = installation;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
@@ -331,15 +376,9 @@ impl LocalMachine {
         let _withdrawal = containers.withdraw(*container);
         tokio::time::sleep(drain.as_duration()).await;
         let turn = self.owner.admission_lock().write_owned().await;
-        let floor = match fence {
-            Some((name, r#gen)) => {
-                let mut floor = containers.floor_turn().await;
-                if let Err(floor) = floor.admit(name, r#gen).await? {
-                    return Ok(Err(floor));
-                }
-                Some(floor)
-            }
-            None => None,
+        let held = match check().await? {
+            Ok(held) => held,
+            Err(refused) => return Ok(Err(refused)),
         };
         let stopped = containers
             .stop(
@@ -348,7 +387,7 @@ impl LocalMachine {
                 stop.grace_period_seconds.map(i32::from),
             )
             .await;
-        drop(floor);
+        drop(held);
         drop(turn);
         stopped?;
         Ok(Ok(containers
@@ -752,28 +791,33 @@ impl LocalMachine {
             ContainerStep::Stop { id, drain, stop } => {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
-                    local
-                        .stop_behind_ingress(&installation, &id, None, drain, &stop)
+                    Ok(local
+                        .stop_out_of_rotation(
+                            &installation,
+                            &id,
+                            RotationTarget::Stopped,
+                            drain,
+                            &stop,
+                        )
                         .await?
-                        .ok();
-                    Ok(())
+                        .err())
                 })
-                .await?;
-                None
+                .await?
             }
             ContainerStep::Hold(id) => {
                 let local = self.clone();
                 self.finish_mutation(async move {
-                    local
-                        .containers
-                        .as_ref()
-                        .ok_or(Error::DockerUnavailable)?
-                        .stop(&id, None, None)
-                        .await?;
-                    Ok(())
+                    let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                    let turn =
+                        match leave_rotation(containers, &id, &RotationTarget::Stopped).await? {
+                            Ok(turn) => turn,
+                            Err(refusal) => return Ok(Some(refusal)),
+                        };
+                    containers.stop(&id, None, None).await?;
+                    drop(turn);
+                    Ok(None)
                 })
-                .await?;
-                None
+                .await?
             }
             ContainerStep::StopThenRemove {
                 id,
@@ -783,43 +827,47 @@ impl LocalMachine {
                 let local = self.clone();
                 self.finish_installed(move |installation| async move {
                     match local
-                        .stop_behind_ingress(
+                        .stop_out_of_rotation(
                             &installation,
                             &id,
-                            None,
+                            RotationTarget::Gone,
                             drain,
                             &StopOptions::default(),
                         )
                         .await
                     {
-                        Ok(_) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                        Ok(Ok(_))
+                        | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                        Ok(Err(refusal)) => return Ok(Some(refusal)),
                         Err(error) => return Err(error),
                     }
-                    let turn = local.owner.admission_lock().write_owned().await;
-                    let removed = local
-                        .containers
-                        .as_ref()
-                        .ok_or(Error::DockerUnavailable)?
-                        .remove(&id, anonymous_volumes == AnonymousVolumes::Remove, false)
-                        .await;
-                    drop(turn);
-                    match removed {
-                        Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(()),
-                        Err(error) => Err(error.into()),
-                    }
+                    let _turn = local.owner.admission_lock().write_owned().await;
+                    let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                    removed(
+                        remove_out_of_rotation(
+                            containers,
+                            &id,
+                            anonymous_volumes == AnonymousVolumes::Remove,
+                        )
+                        .await,
+                    )
                 })
-                .await?;
-                None
+                .await?
             }
             ContainerStep::Remove(id, anonymous_volumes) => {
-                match self
-                    .remove_container(id, anonymous_volumes == AnonymousVolumes::Remove, false)
-                    .await
-                {
-                    Ok(_) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
-                    Err(error) => return Err(error),
-                }
-                None
+                let local = self.clone();
+                self.finish_mutation(async move {
+                    let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                    removed(
+                        remove_out_of_rotation(
+                            containers,
+                            &id,
+                            anonymous_volumes == AnonymousVolumes::Remove,
+                        )
+                        .await,
+                    )
+                })
+                .await?
             }
         };
         let now = redacted(self.container_now(&locator).await?);
@@ -1049,8 +1097,11 @@ fn plan_container(
             stop,
         } => match present {
             None => not_found(&container),
-            Some(observed) if in_rotation(observed, &RotationTarget::Stopped) => {
-                ContainerStep::Refuse(in_rotation_refusal(observed))
+            Some(observed) if in_rotation(observed.rotation(), &RotationTarget::Stopped) => {
+                ContainerStep::Refuse(in_rotation_refusal(
+                    &observed.container_id,
+                    observed.rotation(),
+                ))
             }
             Some(observed) if is_running(observed) => ContainerStep::Stop {
                 id: observed.container_id,
@@ -1070,8 +1121,11 @@ fn plan_container(
                 ContainerLocator::Id(id) => ContainerStep::Remove(id, anonymous_volumes),
                 ContainerLocator::Key(_) => ContainerStep::Done,
             },
-            Some(observed) if in_rotation(observed, &RotationTarget::Gone) => {
-                ContainerStep::Refuse(in_rotation_refusal(observed))
+            Some(observed) if in_rotation(observed.rotation(), &RotationTarget::Gone) => {
+                ContainerStep::Refuse(in_rotation_refusal(
+                    &observed.container_id,
+                    observed.rotation(),
+                ))
             }
             Some(observed) if is_running(observed) => ContainerStep::StopThenRemove {
                 id: observed.container_id,
@@ -1088,22 +1142,64 @@ fn plan_container(
 
 /// Whether the edge table keeps a copy in routing against `target`. The copy must
 /// leave routing first, through an Out want.
-fn in_rotation(observed: &ContainerObservation, target: &RotationTarget) -> bool {
+fn in_rotation(rotation: &CopyRotation, target: &RotationTarget) -> bool {
     matches!(
-        observed.rotation().edge(target),
+        rotation.edge(target),
         RotationEdge::Refused(RotationRefusal::InRotation)
     )
 }
 
-fn in_rotation_refusal(observed: &ContainerObservation) -> ContainerRefusal {
+fn in_rotation_refusal(container: &ContainerId, rotation: &CopyRotation) -> ContainerRefusal {
     refuse(
         ContainerRefusalReason::InRotation,
         format!(
-            "Container {} is {}; take it out of routing first",
-            observed.container_id,
-            rotation::describe(observed.rotation())
+            "Container {container} is {}; take it out of routing first",
+            rotation::describe(rotation)
         ),
     )
+}
+
+/// The copy's rotation turn, unless the edge table keeps the copy in routing
+/// against `target`.
+async fn leave_rotation<'a>(
+    containers: &'a crate::docker::ContainerRuntime,
+    container: &ContainerId,
+    target: &RotationTarget,
+) -> Result<Result<RotationTurn<'a>, ContainerRefusal>, Error> {
+    let turn = containers.rotation_turn(container).await?;
+    Ok(if in_rotation(turn.rotation(), target) {
+        Err(in_rotation_refusal(container, turn.rotation()))
+    } else {
+        Ok(turn)
+    })
+}
+
+/// Remove the copy under the caller's turn unless it is still in routing. A
+/// Container Docker no longer has serves nothing, so only its records go.
+async fn remove_out_of_rotation(
+    containers: &crate::docker::ContainerRuntime,
+    container: &ContainerId,
+    remove_volumes: bool,
+) -> Result<Option<ContainerRefusal>, Error> {
+    match leave_rotation(containers, container, &RotationTarget::Gone).await {
+        Ok(Ok(turn)) => turn.remove(remove_volumes, false).await?,
+        Ok(Err(refusal)) => return Ok(Some(refusal)),
+        Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {
+            containers.remove(container, remove_volumes, false).await?;
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(None)
+}
+
+/// A removal that found the Container already gone succeeded.
+fn removed(
+    outcome: Result<Option<ContainerRefusal>, Error>,
+) -> Result<Option<ContainerRefusal>, Error> {
+    match outcome {
+        Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => Ok(None),
+        outcome => outcome,
+    }
 }
 
 fn run_step(observed: &ContainerObservation) -> ContainerStep {
