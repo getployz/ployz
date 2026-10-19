@@ -169,6 +169,15 @@ describe("VariableRow", () => {
     expect(screen.queryByText("Edit")).toBeNull();
   });
 
+  it("marks a sealed variable with a lock that says why its value is hidden", async () => {
+    render(<VariableRow variable={sealedVariable()} collection={collection} onSealVariable={vi.fn()} />);
+
+    const sealed = screen.getByRole("button", { name: "Sealed" });
+    expect(screen.queryByText("!")).toBeNull();
+    fireEvent.click(sealed);
+    expect(await screen.findByText("Sealed. Its value is never shown.")).toBeTruthy();
+  });
+
   it("shows a saved value as the editor closes, and the stored one again when the write is refused", async () => {
     let fail = (_error: Error) => {};
     const write = new Promise<void>((_resolve, reject) => { fail = reject; });
@@ -308,10 +317,11 @@ describe("VariableRow", () => {
     expect(screen.getByRole("button", { name: "Hide API_KEY" })).toBeTruthy();
   });
 
-  it("marks a sealed value with a focusable Sealed badge", () => {
+  it("lets the keyboard reach the Sealed lock", () => {
     render(<VariableRow variable={sealedVariable()} collection={collection} onSealVariable={vi.fn()} />);
-    const badge = screen.getByRole("img", { name: "Sealed" });
-    expect(badge.tabIndex).toBe(0);
+    const lock = screen.getByRole("button", { name: "Sealed" });
+    lock.focus();
+    expect(document.activeElement).toBe(lock);
   });
 
   it.each([

@@ -32,25 +32,25 @@ it("counts working services once, excluding stopped containers, hooks, and other
     runtimeService("staging/worker", [container("other", "running")]),
     runtimeService("store-production/removed", [container("removed", "running")]),
   ];
-  const view = render(<ProjectCard name="Store" environment={environment} runtimeServices={runtimeServices} runtimeStatus="observed" />);
+  const view = render(<ProjectCard name="Store" offline={new Set()} environment={environment} runtimeServices={runtimeServices} runtimeStatus="observed" />);
   expect(screen.getByText("2/3 services online")).toBeTruthy();
   expect(screen.getByText("production")).toBeTruthy();
   expect(screen.getByLabelText("Services").children).toHaveLength(3);
 
-  view.rerender(<ProjectCard name="Store" environment={environment} runtimeServices={runtimeServices} runtimeStatus="unavailable" />);
+  view.rerender(<ProjectCard name="Store" offline={new Set()} environment={environment} runtimeServices={runtimeServices} runtimeStatus="unavailable" />);
   expect(screen.getByText("3 services")).toBeTruthy();
   expect(screen.queryByText(/online/)).toBeNull();
 });
 
 it("counts a service whose replica passed its healthcheck once and is failing it now as online", () => {
-  render(<ProjectCard name="Store" environment={environment} runtimeStatus="observed" runtimeServices={[
+  render(<ProjectCard name="Store" offline={new Set()} environment={environment} runtimeStatus="observed" runtimeServices={[
     runtimeService("store-production/api", [container("api", "running", "failing")]),
   ]} />);
   expect(screen.getByText("1/3 services online")).toBeTruthy();
 });
 
 it("does not count unhealthy or starting containers as online", () => {
-  render(<ProjectCard name="Store" environment={environment} runtimeStatus="observed" runtimeServices={[
+  render(<ProjectCard name="Store" offline={new Set()} environment={environment} runtimeStatus="observed" runtimeServices={[
     runtimeService("store-production/api", [container("api", "running", "unhealthy")]),
     runtimeService("store-production/db", [container("db", "running", "starting")]),
   ]} />);
@@ -58,18 +58,18 @@ it("does not count unhealthy or starting containers as online", () => {
 });
 
 it("keeps empty and single-service footers compact", () => {
-  const view = render(<ProjectCard name="Store" environment={{ ...environment, services: [] }} runtimeServices={[]} runtimeStatus="observed" />);
+  const view = render(<ProjectCard name="Store" offline={new Set()} environment={{ ...environment, services: [] }} runtimeServices={[]} runtimeStatus="observed" />);
   expect(screen.getByText("No services")).toBeTruthy();
-  view.rerender(<ProjectCard name="Store" environment={{ ...environment, services: environment.services.slice(0, 1) }} runtimeServices={[]} runtimeStatus="observed" />);
+  view.rerender(<ProjectCard name="Store" offline={new Set()} environment={{ ...environment, services: environment.services.slice(0, 1) }} runtimeServices={[]} runtimeStatus="observed" />);
   expect(screen.getByText("0/1 service online")).toBeTruthy();
 });
 
 it("folds services past eight tiles into one count tile", () => {
   const services = Array.from({ length: 36 }, (_, index) => service(`s${index}`));
-  const view = render(<ProjectCard name="Store" environment={{ ...environment, services }} runtimeServices={[]} runtimeStatus="observed" />);
+  const view = render(<ProjectCard name="Store" offline={new Set()} environment={{ ...environment, services }} runtimeServices={[]} runtimeStatus="observed" />);
   expect(screen.getByLabelText("Services").children).toHaveLength(8);
   expect(screen.getByText("+29")).toBeTruthy();
-  view.rerender(<ProjectCard name="Store" environment={{ ...environment, services: services.slice(0, 8) }} runtimeServices={[]} runtimeStatus="observed" />);
+  view.rerender(<ProjectCard name="Store" offline={new Set()} environment={{ ...environment, services: services.slice(0, 8) }} runtimeServices={[]} runtimeStatus="observed" />);
   expect(screen.getByLabelText("Services").children).toHaveLength(8);
   expect(screen.queryByText(/^\+/)).toBeNull();
 });

@@ -114,6 +114,14 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
           {inScope.flatMap((environment) => {
             const removal = environment.removal;
             if (!removal) return [];
+            if (removal.kind === "pending") return [
+              <SettingsRow
+                key={environment.id}
+                label={<><Spinner />Deleting {environment.name}…</>}
+                hint="Ployz takes it off your servers at its next hourly sweep. If that hasn't started, delete it again."
+                commit="none"
+              />,
+            ];
             const deployment = <Link {...deploymentDestination(params(environment.name), removal.id)}
               className="underline underline-offset-4">Deployment {deploymentLabel(removal)}</Link>;
             // Applied, while the Store is deleting it: the next sweep finishes it.

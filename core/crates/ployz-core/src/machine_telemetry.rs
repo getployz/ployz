@@ -173,6 +173,24 @@ impl MachineTelemetry {
             docker_root_free_bytes: docker_root.available(),
         }
     }
+
+    /// Host memory and how much of it is available.
+    #[must_use]
+    pub fn memory(&self) -> ByteCapacity {
+        ByteCapacity {
+            total: self.memory_total_bytes,
+            available: self.memory_available_bytes,
+        }
+    }
+
+    /// The Docker-root filesystem and how much of it is free.
+    #[must_use]
+    pub fn docker_root(&self) -> ByteCapacity {
+        ByteCapacity {
+            total: self.docker_root_total_bytes,
+            available: self.docker_root_free_bytes,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for MachineTelemetry {

@@ -28,6 +28,7 @@ import {
 } from "#/components/ui/field";
 import { Spinner } from "#/components/ui/spinner";
 import type { OrganizationEnrollmentStatus } from "#/modules/machines/enrollment";
+import { toErrorMessage } from "#/lib/error-message";
 
 export function PendingEnrollmentResetSection({
   status,
@@ -58,11 +59,7 @@ export function PendingEnrollmentResetSection({
         toast.success("Founding attempt reset.");
         onCompleted?.();
       } catch (error) {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : "The founding attempt couldn’t be reset.",
-        );
+        toast.error(toErrorMessage(error, "The founding attempt couldn’t be reset."));
       }
     });
   }
