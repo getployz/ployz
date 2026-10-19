@@ -10,7 +10,9 @@ use std::{
 };
 
 use ployz::{
-    connect::{Client, SystemConnector, connect_selected_with},
+    connect::{
+        BoxProxyStream, Client, ConnectError, Connector, SystemConnector, connect_selected_with,
+    },
     context::{Connection, ConnectionSource, SelectedConnections},
     deploy::PlanOptions,
 };
@@ -34,7 +36,10 @@ use ployz_testkit::{
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{Request, Response, Status, Streaming, transport::Server};
+use tonic::{
+    Request, Response, Status, Streaming,
+    transport::{Channel, Server},
+};
 
 #[path = "../support/inspect_telemetry.rs"]
 mod inspect_telemetry_fixture;
@@ -345,6 +350,11 @@ impl DeployService {
 
     pub(super) fn listed_containers(&self) -> Arc<Mutex<Vec<ployz_core::ContainerObservation>>> {
         self.listed_containers.clone()
+    }
+
+    /// Copies that left In; a sticky proxy still routes them.
+    pub(super) fn unrouted(&self) -> Arc<Mutex<BTreeSet<ContainerId>>> {
+        self.unrouted.clone()
     }
 
     pub(super) fn created_namespaces(&self) -> Arc<Mutex<Vec<Namespace>>> {
@@ -746,7 +756,17 @@ impl FakeMachine for DeployService {
         if self.uninspectable.contains(&inspect.container_id) {
             return Err(Status::not_found("no such container"));
         }
-        let spec = spec("web")
+        let listed = self
+            .listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|container| container.container_id == inspect.container_id)
+            .map(ployz_core::ContainerObservation::identity);
+        let name = listed
+            .as_ref()
+            .map_or_else(|| "web".to_owned(), |service| service.name.to_string());
+        let spec = spec(&name)
             .to_resolved(
                 ServiceId::random(),
                 ResolvedUpdateConfig {
@@ -773,7 +793,10 @@ impl FakeMachine for DeployService {
                     machine_id: target
                         .or_else(|| self.machines.first().map(|machine| machine.machine.id))
                         .unwrap_or_else(MachineId::random),
-                    namespace: Namespace::parse("app").unwrap(),
+                    namespace: listed.map_or_else(
+                        || Namespace::parse("app").unwrap(),
+                        |service| service.namespace,
+                    ),
                     kind: ContainerKind::ServiceContainer,
                     runtime: self.current_runtime(),
                     effective_healthcheck: self.effective_healthcheck.clone(),
@@ -1238,6 +1261,59 @@ pub(super) async fn connected(
             connections: vec![Connection::tcp(address)],
         },
         Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    (client, server)
+}
+
+/// `connected` over in-process streams, so a paused clock never outruns OS I/O.
+pub(super) async fn connected_in_memory(
+    service: DeployService,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    type Incoming =
+        tokio::sync::mpsc::UnboundedSender<Result<tokio::io::DuplexStream, std::io::Error>>;
+    struct Memory(Incoming);
+    #[tonic::async_trait]
+    impl Connector for Memory {
+        async fn connect(&self, _: &Connection) -> Result<Channel, ConnectError> {
+            let incoming = self.0.clone();
+            Channel::from_static("http://memory.invalid")
+                .connect_with_connector(tower::service_fn(move |_| {
+                    let (client, server) = tokio::io::duplex(64 * 1024);
+                    incoming.send(Ok(server)).unwrap();
+                    async move { Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client)) }
+                }))
+                .await
+                .map_err(Into::into)
+        }
+
+        async fn dial_proxy(
+            &self,
+            _: &Connection,
+            _: &str,
+            _: &str,
+        ) -> Result<BoxProxyStream, ConnectError> {
+            Err(ConnectError::Attempt("unused".into()))
+        }
+    }
+    let (incoming, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(Fake(service)))
+            .serve_with_incoming(tokio_stream::wrappers::UnboundedReceiverStream::new(
+                receiver,
+            )),
+    );
+    let client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::tcp("127.0.0.1:1".parse().unwrap())],
+        },
+        Arc::new(Memory(incoming)),
     )
     .await
     .unwrap();
