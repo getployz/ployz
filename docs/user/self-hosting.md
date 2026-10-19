@@ -198,6 +198,9 @@ before it stops.
 
 - **Back up one volume.** Everything Ployz Cloud stores, your organizations, projects and
   settings included, is in `ployz-cloud-self-host_postgres-data`.
+- **Rate-limit the API in your proxy.** Ployz Cloud limits sign-in attempts, but not requests
+  to `/api/cli` and `/mcp`. If your instance is public, set a request rate limit for those
+  paths in your proxy or tunnel.
 - **Adding a GitHub permission later.** Existing installations keep working without it until
   their owner approves the new permissions on GitHub.
 - **No uptime checks yet.** Self-hosted Ployz Cloud doesn't run the uptime checker, so services
