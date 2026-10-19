@@ -1220,11 +1220,7 @@ impl<'a> Rows<'a> {
                 ready: tokio::sync::OnceCell::new(),
             })
             .collect();
-        let names = plan
-            .pending_rows()
-            .into_iter()
-            .filter_map(|row| Some((row.machine_id, row.machine_name?)))
-            .collect();
+        let names = plan.machine_names().clone();
         Self {
             namespace: &plan.namespace,
             operations,

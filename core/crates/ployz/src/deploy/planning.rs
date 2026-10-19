@@ -81,6 +81,8 @@ pub struct DeployPlan {
     /// serves plus this plan's new copies, never its planned keep list: the pointer may
     /// have gained or withdrawn copies since this plan's snapshot.
     adds_only: bool,
+    /// Every snapshot Machine's name, so a report names a Machine the plan places nothing on.
+    machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
 }
 
 impl DeployPlan {
@@ -104,6 +106,10 @@ impl DeployPlan {
         &self,
     ) -> &std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth> {
         &self.registry_auth
+    }
+
+    pub(super) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
+        &self.machine_names
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -153,6 +159,7 @@ impl DeployPlan {
             preview: DeployPreview::new(rows, Vec::new(), namespace),
             registry_auth: std::collections::BTreeMap::new(),
             adds_only: false,
+            machine_names: BTreeMap::new(),
         }
     }
 }
@@ -594,6 +601,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         preview,
         registry_auth: std::collections::BTreeMap::new(),
         adds_only: false,
+        machine_names: super::progress::machine_names(snapshot),
     }
 }
 
