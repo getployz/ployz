@@ -900,10 +900,6 @@ pub enum DependencyHealthFailure {
     /// Deploy, from a daemon that does not name the Machines that did not.
     #[error("machine {machine_id} did not route the dependency's Deploy in time")]
     NotRoutedOn { machine_id: MachineId },
-    /// These Machines run a Ployz that never acks a route, so the
-    /// dependency's Deploy can never count as routed.
-    #[error("Deploys need a newer Ployz on {}", list(machines))]
-    PredatesAcks { machines: Vec<MachineName> },
 }
 
 fn list(machines: &[MachineName]) -> String {

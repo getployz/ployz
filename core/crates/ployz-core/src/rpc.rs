@@ -1236,8 +1236,6 @@ pub struct ServingPointerRead {
 pub struct IngressMachine {
     pub id: MachineId,
     pub name: MachineName,
-    /// Its record names a Ployz older than 0.3.0-beta.2, which never acks.
-    pub predates_acks: bool,
 }
 
 /// Refusal of a Serving Pointer read or publish by a Machine that is not the lowest-id

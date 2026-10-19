@@ -166,16 +166,8 @@ struct Scripted {
     hold_taken_by: Option<ployz_core::DeploymentLogId>,
     /// No Machine routes a pin.
     unrouted_pin: bool,
-    /// An ingress Machine with no task here that never acks, and whether its
-    /// Ployz predates acks.
-    bystander: Option<(MachineId, bool)>,
-    /// The bystander joins after the pin, so only reads of this run's
-    /// pointers list it.
-    bystander_joins_late: bool,
-    /// The bystander's upgrade replicates and it acks this long after the
-    /// client is built.
-    bystander_upgraded_after: Option<Duration>,
-    built: Instant,
+    /// An ingress Machine with no task here that never acks.
+    bystander: Option<MachineId>,
     /// Reads come from a daemon that names no unrouted Machines.
     unnamed_reads: bool,
     /// No Machine routes a row naming one of these Containers.
@@ -213,9 +205,6 @@ impl Scripted {
             hold_taken_by: None,
             unrouted_pin: false,
             bystander: None,
-            bystander_joins_late: false,
-            bystander_upgraded_after: None,
-            built: Instant::now(),
             unnamed_reads: false,
             dead: Vec::new(),
             rival: None,
@@ -495,14 +484,8 @@ impl MachineOperations for Scripted {
                 .collect(),
             _ => BTreeMap::new(),
         };
-        let bystander = self
-            .bystander
-            .filter(|_| ours || !self.bystander_joins_late)
-            .filter(|_| {
-                self.bystander_upgraded_after
-                    .is_none_or(|after| self.built.elapsed() < after)
-            });
-        let all_routed = pointer.is_some() && routed && lagging.is_none() && bystander.is_none();
+        let all_routed =
+            pointer.is_some() && routed && lagging.is_none() && self.bystander.is_none();
         let mut ingress = self.pulled.lock().unwrap().clone();
         ingress.extend(lagging);
         let unrouted = if self.unnamed_reads {
@@ -510,13 +493,11 @@ impl MachineOperations for Scripted {
         } else {
             ingress
                 .into_iter()
-                .map(|machine| (machine, false))
-                .chain(bystander)
-                .filter(|(machine, _)| !acks.contains_key(machine))
-                .map(|(id, predates_acks)| IngressMachine {
+                .chain(self.bystander)
+                .filter(|machine| !acks.contains_key(machine))
+                .map(|id| IngressMachine {
                     id,
                     name: machine_name(&id),
-                    predates_acks,
                 })
                 .collect()
         };

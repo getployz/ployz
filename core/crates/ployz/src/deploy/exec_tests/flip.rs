@@ -501,55 +501,6 @@ async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_machine_too_old_to_ack_joining_mid_deploy_fails_the_removal_after_the_grace() {
-    let old = machine('5');
-    let machine = machine('1');
-    let (plan, client) = rollout_removal(
-        machine,
-        Scripted {
-            bystander: Some((old, true)),
-            bystander_joins_late: true,
-            ..Scripted::new(vec![created(
-                Call::Run(machine, ContainerKind::ServiceContainer),
-                &container('d'),
-            )])
-        },
-    );
-    let began = Instant::now();
-
-    let outcome = execute_groups(&plan, crate::deploy::planning::test_groups(&plan), &client).await;
-
-    let DeployOutcome::Failed {
-        completed,
-        failed:
-            FailedOperation::Operation {
-                error:
-                    ExecutionError::DependencyHealth {
-                        failure: failure @ DependencyHealthFailure::PredatesAcks { .. },
-                        ..
-                    },
-                ..
-            },
-        ..
-    } = &outcome
-    else {
-        panic!("{outcome:?}");
-    };
-    assert_eq!(completed.len(), 1);
-    assert_eq!(
-        failure.to_string(),
-        "Deploys need a newer Ployz on machine-5"
-    );
-    assert!(
-        (PREDATES_GRACE..PREDATES_GRACE + 2 * ACK_POLL).contains(&began.elapsed()),
-        "{:?}",
-        began.elapsed()
-    );
-    assert!(client.removed_after.lock().unwrap().is_empty());
-    client.assert_done();
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_dependent_starts_once_its_machine_acks_the_dependency() {
     let machine = machine('1');
     let plan = vec![
@@ -1553,77 +1504,12 @@ async fn a_first_deploy_of_an_empty_service_starts_nothing_until_its_pin_is_rout
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_machine_too_old_to_ack_fails_the_deploy_after_the_grace_naming_it() {
-    let machine = machine('1');
-    let plan = vec![run(&machine, spec(None, None, None), true)];
-    let client = Scripted {
-        observations: Some(Vec::new()),
-        bystander: Some((self::machine('5'), true)),
-        ..Scripted::new(Vec::new())
-    };
-    let began = Instant::now();
-
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
-
-    let DeployOutcome::Failed {
-        completed,
-        failed:
-            FailedOperation::Operation {
-                error:
-                    ExecutionError::DependencyHealth {
-                        failure: failure @ DependencyHealthFailure::PredatesAcks { .. },
-                        ..
-                    },
-                ..
-            },
-        ..
-    } = &outcome
-    else {
-        panic!("{outcome:?}");
-    };
-    assert!(completed.is_empty());
-    assert_eq!(
-        failure.to_string(),
-        "Deploys need a newer Ployz on machine-5"
-    );
-    assert!(
-        (PREDATES_GRACE..PREDATES_GRACE + 2 * ACK_POLL).contains(&began.elapsed()),
-        "{:?}",
-        began.elapsed()
-    );
-    client.assert_done();
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_machine_whose_upgrade_replicates_within_the_grace_is_waited_for() {
-    let machine = machine('1');
-    let plan = vec![run(&machine, spec(None, None, None), true)];
-    let client = Scripted {
-        observations: Some(Vec::new()),
-        bystander: Some((self::machine('5'), true)),
-        bystander_upgraded_after: Some(PREDATES_GRACE / 2),
-        ..Scripted::new(vec![created(
-            Call::Run(machine, ContainerKind::ServiceContainer),
-            &container('a'),
-        )])
-    };
-
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
-
-    assert!(
-        matches!(outcome, DeployOutcome::Success { .. }),
-        "{outcome:?}"
-    );
-    client.assert_done();
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_pin_that_is_never_routed_names_the_machine_that_did_not_ack() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(None, None, None), true)];
     let client = Scripted {
         observations: Some(Vec::new()),
-        bystander: Some((self::machine('3'), false)),
+        bystander: Some(self::machine('3')),
         ..Scripted::new(Vec::new())
     };
     let began = Instant::now();

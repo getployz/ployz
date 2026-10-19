@@ -136,9 +136,6 @@ pub enum Error {
     Upgrade(#[from] crate::installer::upgrade::Error),
 }
 
-/// The first Ployz release whose ingress acks the routes it applies.
-const FIRST_ACKING_RELEASE: &str = "0.3.0-beta.2";
-
 impl LocalMachine {
     /// A Local Machine over its record owner, with no Cluster or Docker collaborators.
     #[must_use]
@@ -313,30 +310,13 @@ impl LocalMachine {
             .as_ref()
             .ok_or(Error::ClusterStoreUnavailable)?;
         let machines = cluster.replicated.machines().await?;
-        let first_acking = ployz_core::MachineVersion::parse(FIRST_ACKING_RELEASE)
-            .expect("the first acking release parses");
-        // A record whose runtime is not yet published carries no version and
-        // proves nothing, so only a parsed older release counts.
-        let predates_acks: BTreeSet<MachineId> = machines
-            .observations
-            .iter()
-            .filter(|machine| {
-                ployz_core::MachineVersion::parse(&machine.runtime.daemon_version)
-                    .is_ok_and(|version| version < first_acking)
-            })
-            .map(|machine| machine.id)
-            .collect();
         let membership =
             crate::retire::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
         Ok(match membership.ackers {
             crate::retire::Ackers::Known(machines) if !machines.is_empty() => Some(
                 machines
                     .into_iter()
-                    .map(|(id, name)| ployz_core::IngressMachine {
-                        predates_acks: predates_acks.contains(&id),
-                        id,
-                        name,
-                    })
+                    .map(|(id, name)| ployz_core::IngressMachine { id, name })
                     .collect(),
             ),
             crate::retire::Ackers::Known(_)

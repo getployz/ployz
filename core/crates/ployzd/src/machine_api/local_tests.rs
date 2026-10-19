@@ -3016,14 +3016,13 @@ mod serving_pointer {
     }
 
     #[tokio::test]
-    async fn read_names_unacked_machines_and_flags_only_releases_older_than_acks() {
+    async fn read_names_the_unacked_machines_not_reported_down() {
         use crate::corrosion::{IngressRouteAck, IngressRouteChange};
 
         let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
         std::fs::create_dir_all(&dir).unwrap();
         let local = enrolled(&dir);
-        let mut current = local.record().machine().unwrap().clone();
-        current.runtime.daemon_version = env!("CARGO_PKG_VERSION").to_owned();
+        let current = local.record().machine().unwrap().clone();
         let registering: Machine = serde_json::from_value(json!({
             "id": "c".repeat(32),
             "name": "machine-3",
@@ -3033,7 +3032,7 @@ mod serving_pointer {
             "advertised_endpoints": ["192.0.2.3:51820"],
         }))
         .unwrap();
-        let mut lagging: Machine = serde_json::from_value(json!({
+        let lagging: Machine = serde_json::from_value(json!({
             "id": "e".repeat(32),
             "name": "machine-4",
             "subnet": "10.210.4.0/24",
@@ -3042,8 +3041,7 @@ mod serving_pointer {
             "advertised_endpoints": ["192.0.2.4:51820"],
         }))
         .unwrap();
-        lagging.runtime.daemon_version = "0.3.0-beta.2".to_owned();
-        let mut old: Machine = serde_json::from_value(json!({
+        let down: Machine = serde_json::from_value(json!({
             "id": "f".repeat(32),
             "name": "machine-5",
             "subnet": "10.210.5.0/24",
@@ -3052,18 +3050,14 @@ mod serving_pointer {
             "advertised_endpoints": ["192.0.2.5:51820"],
         }))
         .unwrap();
-        old.runtime.daemon_version = "0.2.4".to_owned();
+        let mut reported_down = alive(&down);
+        reported_down["state"] = json!("Down");
         let (service, task) = serve(
             &dir,
             local,
             corrosion_db(),
-            &[
-                current.clone(),
-                registering.clone(),
-                lagging.clone(),
-                old.clone(),
-            ],
-            Vec::new(),
+            &[current.clone(), registering.clone(), lagging.clone(), down],
+            vec![reported_down],
         )
         .await;
         let local = service.local();
@@ -3094,17 +3088,10 @@ mod serving_pointer {
                 ployz_core::IngressMachine {
                     id: registering.id,
                     name: registering.name,
-                    predates_acks: false,
                 },
                 ployz_core::IngressMachine {
                     id: lagging.id,
                     name: lagging.name,
-                    predates_acks: false,
-                },
-                ployz_core::IngressMachine {
-                    id: old.id,
-                    name: old.name,
-                    predates_acks: true,
                 },
             ]
         );

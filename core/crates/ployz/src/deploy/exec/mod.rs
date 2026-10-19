@@ -48,10 +48,6 @@ const RESTART_POLL: Duration = Duration::from_millis(250);
 const ACK_POLL: Duration = Duration::from_secs(1);
 /// How long a dependent waits for one Machine to route its dependency's Deploy.
 const ACK_WAIT: Duration = Duration::from_secs(300);
-/// How long a Machine whose record names a release that never acks may stay
-/// unrouted before the wait fails naming it. Long enough for a just-upgraded
-/// Machine's new record to replicate and its ack to land.
-const PREDATES_GRACE: Duration = Duration::from_secs(30);
 const HOLD_BEYOND_HEALTH: Duration = Duration::from_secs(60 * 60);
 const HOLD_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -853,35 +849,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                         }
                                     }
                                     unrouted.insert(service.clone(), read.unrouted);
-                                }
-                                let graced = blocked_since
-                                    .is_some_and(|since| since.elapsed() >= PREDATES_GRACE);
-                                let never = blocked
-                                    .iter()
-                                    .filter(|_| graced)
-                                    .filter(|(_, blocker)| blocker == service)
-                                    .filter_map(|(task, _)| {
-                                        let failure = predates_acks(&awaited(
-                                            unrouted.get(service)?,
-                                            operation_at(operations, *task),
-                                        ))?;
-                                        Some((*task, failure))
-                                    });
-                                for (task, failure) in never {
-                                    if !failed.insert(task) {
-                                        continue;
-                                    }
-                                    let error = ExecutionError::DependencyHealth {
-                                        dependency: qualified.clone(),
-                                        failure,
-                                    };
-                                    progress.fail(task, error.clone());
-                                    stop.get_or_insert(Stop::Failed {
-                                        index: task,
-                                        error,
-                                        compensation: None,
-                                    });
-                                    schedule.apply(Event::Failed(task));
+                                } else {
+                                    unrouted.remove(service);
                                 }
                             }
                             Err(error) => {
@@ -1020,12 +989,6 @@ async fn await_routed_pin<C: MachineOperations>(
         .read_pointer(service)
         .await
         .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
-    let never = |read: &ServingPointerRead| {
-        predates_acks(&read.unrouted).map(|failure| ExecutionError::DependencyHealth {
-            dependency: service.clone(),
-            failure,
-        })
-    };
     let pointer = match read.pointer {
         Some(pointer) if read.all_routed => return Ok(Pin::Admitted(pointer)),
         current => match live_pin(client, run, service, current).await? {
@@ -1044,11 +1007,6 @@ async fn await_routed_pin<C: MachineOperations>(
         }
         if read.all_routed {
             return Ok(Pin::Admitted(pointer));
-        }
-        if since.elapsed() >= PREDATES_GRACE
-            && let Some(error) = never(&read)
-        {
-            return Err(error);
         }
         if cancellation.is_cancelled() {
             return Err(ExecutionError::Cancelled);
@@ -1074,16 +1032,6 @@ fn awaited(unrouted: &[IngressMachine], operation: &DeployOperation) -> Vec<Ingr
             .collect(),
         TaskKind::Unroute | TaskKind::Other => unrouted.to_vec(),
     }
-}
-
-/// The wait on `unrouted` can never end: some of them run a Ployz that never acks.
-fn predates_acks(unrouted: &[IngressMachine]) -> Option<DependencyHealthFailure> {
-    let machines: Vec<_> = unrouted
-        .iter()
-        .filter(|machine| machine.predates_acks)
-        .map(|machine| machine.name.clone())
-        .collect();
-    (!machines.is_empty()).then_some(DependencyHealthFailure::PredatesAcks { machines })
 }
 
 /// The wait on `unrouted` ran out. A daemon that names no Machines leaves only
