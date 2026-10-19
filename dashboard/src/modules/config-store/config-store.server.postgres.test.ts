@@ -97,7 +97,7 @@ const Reply = Schema.Struct({
     code: Schema.String,
     message: Schema.optionalKey(Schema.String),
     details: Schema.NullOr(Schema.Struct({
-      revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String),
+      revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String), max_bytes: Schema.optionalKey(Schema.Number),
       approval: Schema.optionalKey(Schema.String), approval_id: Schema.optionalKey(Schema.String),
     })),
   })),
@@ -213,6 +213,29 @@ it.live(
         assert.strictEqual(invalid.json.error?.code, "invalid_argument");
         assert.strictEqual((yield* request("claim", alice, get(null))).status, 404);
         assert.strictEqual((yield* request("read", alice, undefined, "GET")).status, 404);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a write over the body cap is refused with the cap, and nothing is staged",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        assert.strictEqual((yield* request("write", alice, shop)).status, 200);
+        assert.strictEqual((yield* request("write", alice, web)).status, 200);
+
+        const huge = yield* request("write", alice, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.env.HUGE", value: "Z".repeat(4 * 1024 * 1024) }],
+        });
+        assert.strictEqual(huge.status, 422);
+        assert.strictEqual(huge.json.error?.code, "invalid_argument");
+        assert.strictEqual(huge.json.error?.message, "The request is over 4 MiB.");
+        assert.deepStrictEqual(huge.json.error?.details, { max_bytes: 4 * 1024 * 1024 });
+        assert.deepStrictEqual((yield* request("read", alice, get("web.env.HUGE"))).json.settings ?? [], []);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
