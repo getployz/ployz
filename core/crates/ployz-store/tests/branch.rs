@@ -548,6 +548,32 @@ fn a_live_reference_holds_while_its_parent_only_stages_the_removal() {
 }
 
 #[test]
+fn removing_an_own_copy_the_parent_still_runs_breaks_nothing() {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("db.env.PASS", json!("pw"))]);
+    deploy(&store, &who, "production", 1, true);
+    store
+        .write(&who, &branch("fix-web", "production", &["web", "db"]))
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.DB_PASS", json!("${{ db.PASS }}"))],
+    );
+    let removed = store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("fix-web"),
+                service: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    assert!(removed.broken.is_empty(), "{:?}", texts(&removed.broken));
+}
+
+#[test]
 fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);

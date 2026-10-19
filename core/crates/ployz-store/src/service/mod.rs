@@ -220,7 +220,7 @@ pub(crate) fn remove_service(
     let removed = crate::Missing::Service {
         from: Some(service.name.clone()),
     };
-    let live_keys = BTreeMap::new();
+    let live_keys = crate::branch::live_keys(tx, &environment.summary.id, &environment.working)?;
     let broken = crate::rules::broken(&environment.working, &live_keys, &names)
         .into_iter()
         .filter(|reference| reference.missing == removed)

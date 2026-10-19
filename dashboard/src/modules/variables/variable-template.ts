@@ -17,14 +17,15 @@ export type ValuePart =
  * Display grammar:
  *  - `${{ KEY }}`            — self ref (owner's own scope)
  *  - `${{ slug.KEY }}`       — ref to service `slug`'s exported `KEY`
- *  - `${{ <deleted slug>.KEY }}` — ref to removed service `slug`, `<deleted>` when unnamed
+ *  - `${{ <deleted slug>.KEY }}` — ref to removed service `slug`, `<deleted>` when unnamed;
+ *    `#2` and on tell apart removed services shown alike, as `<deleted slug#2>`
  *  - `$${{`                  — a literal `${{`
  */
 
 export const KEY_SRC = "[A-Za-z_][A-Za-z0-9_]*";
 export const SLUG_SRC = "[A-Za-z0-9][A-Za-z0-9_-]*";
 
-const DELETED_SRC = `<deleted(?: ${SLUG_SRC})?>`;
+const DELETED_SRC = `<deleted(?: (?:${SLUG_SRC}(?:#[1-9][0-9]*)?|#[1-9][0-9]*))?>`;
 
 // Anchored matcher for a single `${{ [slug.]KEY }}` token at the start of a string.
 const TOKEN_AT_START = new RegExp(

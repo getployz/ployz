@@ -1047,18 +1047,22 @@ fn editing_a_broken_variable_keeps_its_reference() {
         .unwrap();
     assert_eq!(
         value(&store, "api.env.URL"),
-        json!("db://${{ <deleted>.PASS }}")
+        json!("db://${{ <deleted web>.PASS }}")
     );
     set(
         &store,
-        &[("api.env.URL", json!("pg://${{ <deleted>.PASS }}"))],
+        &[("api.env.URL", json!("pg://${{ <deleted web>.PASS }}"))],
     )
     .unwrap();
     assert_eq!(
         value(&store, "api.env.URL"),
-        json!("pg://${{ <deleted>.PASS }}")
+        json!("pg://${{ <deleted web>.PASS }}")
     );
-    let refused = set(&store, &[("api.env.URL", json!("${{ <deleted>.OTHER }}"))]).unwrap_err();
+    let refused = set(
+        &store,
+        &[("api.env.URL", json!("${{ <deleted web>.OTHER }}"))],
+    )
+    .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
     let diff = store
         .read(
@@ -1069,7 +1073,70 @@ fn editing_a_broken_variable_keeps_its_reference() {
         )
         .unwrap();
     let broken: Vec<String> = diff.broken.iter().map(ToString::to_string).collect();
-    assert_eq!(broken, ["api.env.URL references a removed Service"]);
+    assert_eq!(broken, ["api.env.URL references web, which was removed"]);
+}
+
+#[test]
+fn removed_services_shown_alike_are_told_apart_by_number() {
+    let store = backend::open();
+    shop(&store);
+    let remove = |name: &str| {
+        store
+            .write(
+                &who(),
+                &ployz_store::RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse(name).unwrap(),
+                },
+            )
+            .unwrap();
+    };
+    set(
+        &store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("api.env.HOSTS", json!("${{ web.URL }}")),
+        ],
+    )
+    .unwrap();
+    remove("web");
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &[
+            ("web.env.URL", json!("w")),
+            (
+                "api.env.HOSTS",
+                json!("${{ <deleted web>.URL }},${{ web.URL }}"),
+            ),
+        ],
+    )
+    .unwrap();
+    remove("web");
+    assert_eq!(
+        value(&store, "api.env.HOSTS"),
+        json!("${{ <deleted web>.URL }},${{ <deleted web#2>.URL }}")
+    );
+    set(
+        &store,
+        &[("api.env.HOSTS", json!("${{ <deleted web#2>.URL }}"))],
+    )
+    .unwrap();
+    assert_eq!(
+        value(&store, "api.env.HOSTS"),
+        json!("${{ <deleted web>.URL }}")
+    );
 }
 
 #[test]

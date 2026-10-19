@@ -24,7 +24,6 @@ use ts_rs::TS;
 
 use crate::SetupCommand;
 use crate::error;
-use crate::id::EnvironmentId;
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 
@@ -143,40 +142,25 @@ pub(crate) fn broken(
         })
 }
 
-/// [`broken`] in `environment`, naming a removed Service as the newest save that
-/// holds it does, else as `names` does.
+/// [`broken`] in `environment`, naming a removed Service as it was last called
+/// there, else as `names` does.
 pub(crate) fn broken_in(
     tx: &mut dyn Tx,
     environment: &Environment,
     mut names: BTreeMap<String, String>,
 ) -> Result<Vec<BrokenReference>, RpcError> {
     let working = &environment.working;
-    let live = &environment.live;
-    for (lineage, name) in live {
+    for (lineage, name) in &environment.live {
         names.entry(lineage.clone()).or_insert_with(|| name.clone());
     }
     names.extend(environment.removed.clone());
     let live_keys = crate::branch::live_keys(tx, &environment.summary.id, working)?;
-    let mut unnamed = removed_lineages(working, live);
-    unnamed.retain(|lineage| !names.contains_key(lineage));
-    names.extend(saved_names(tx, &environment.summary.id, unnamed)?);
     Ok(broken(working, &live_keys, &names))
-}
-
-/// The last name of each removed Service `working` references, from the newest
-/// save that holds it.
-pub(crate) fn removed_names(
-    tx: &mut dyn Tx,
-    id: &EnvironmentId,
-    working: &SavedEnvironmentIntent,
-    live: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, RpcError> {
-    saved_names(tx, id, removed_lineages(working, live))
 }
 
 /// The lineage of each Service a reference of `working` reads that is neither in
 /// it nor in `live`.
-fn removed_lineages(
+pub(crate) fn removed_lineages(
     working: &SavedEnvironmentIntent,
     live: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
@@ -191,55 +175,6 @@ fn removed_lineages(
             Wants::Variable { .. } => None,
         })
         .collect()
-}
-
-/// The name of each Service lineage in `unnamed` in the newest save of
-/// Environment `id` that holds it.
-fn saved_names(
-    tx: &mut dyn Tx,
-    id: &EnvironmentId,
-    mut unnamed: BTreeSet<String>,
-) -> Result<BTreeMap<String, String>, RpcError> {
-    let mut names = BTreeMap::new();
-    if unnamed.is_empty() {
-        return Ok(names);
-    }
-    let id = id.as_str();
-    let revisions = tx.query(
-        "SELECT revision FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC",
-        &[id.into()],
-    )?;
-    for revision in revisions {
-        if unnamed.is_empty() {
-            break;
-        }
-        let rows = tx.query(
-            "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
-            &[id.into(), revision.int(0)?.into()],
-        )?;
-        let Some(row) = rows.first() else {
-            continue;
-        };
-        for service in row.json::<SavedNames>(0, "Saved State")?.services {
-            if unnamed.remove(&service.lineage_id) {
-                names.insert(service.lineage_id, service.slug);
-            }
-        }
-    }
-    Ok(names)
-}
-
-/// The Service names a save holds, read without the rest of it.
-#[derive(Deserialize)]
-struct SavedNames {
-    services: Vec<SavedName>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedName {
-    lineage_id: String,
-    slug: String,
 }
 
 /// What the rules read of one Environment.

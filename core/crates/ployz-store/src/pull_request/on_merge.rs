@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use ployz_core::config::{
     Arrives, At, Cell, Cells, PRIVATE_DOMAIN_KEY, Plan, RowId, SERVICE_NAME_KEY,
     SavedEnvironmentIntent, SavedVariableValue, SealedCell, ServiceGitBranch, ServiceSource,
-    Setting, ValuePart, ValuePartOwner, Verdict, Why, canonicalize_environment_intent, marks_on,
+    Setting, ValuePart, ValuePartOwner, Verdict, Why, canonicalize_environment_intent,
+    is_deleted_owner, marks_on,
 };
 use serde_json::Value;
 
@@ -196,7 +197,8 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
     let way = Move::merge(tx, from, &into)?;
     let plan = way.plan(&saved);
     let stored = edits(tx, &from.summary.id, &into.summary.id)?;
-    let (from_names, into_names) = (from.names(), into.names());
+    let (from_names, into_names) = (from.shown_names(), into.shown_names());
+    let edit_names = edit_names(from, &into);
     let mut rows = Vec::new();
     for row in plan.rows() {
         let (ride, conflict, arrives) = match &row.verdict {
@@ -234,7 +236,7 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
         let production = shown(&saved, &into_names, &row.id, &row.into);
         let lands = match (stored.get(&row.id), arrives) {
             _ if ride == Ride::Kept => production.clone(),
-            (Some(edit), _) if ride == Ride::Edited => shown_edit(edit, &into_names),
+            (Some(edit), _) if ride == Ride::Edited => shown_edit(edit, &edit_names),
             (_, Arrives::NeedsValue) => json!({ "secret": false }),
             _ => preview.clone(),
         };
@@ -308,6 +310,18 @@ fn edited_values(
             .any(|row| row.at.row == *id && row.ride == Ride::Edited)
     });
     stored
+}
+
+/// The names an Edit into `into` shows and reads Services by: `into`'s, and each
+/// Service removed in `from` that `into` doesn't name, as `from` shows it.
+fn edit_names(from: &Environment, into: &Environment) -> BTreeMap<String, String> {
+    let mut names = into.shown_names();
+    for (lineage, name) in from.shown_names() {
+        if is_deleted_owner(&name) {
+            names.entry(lineage).or_insert(name);
+        }
+    }
+    names
 }
 
 /// An Edit as reads show it.
@@ -448,7 +462,7 @@ pub(crate) fn set_merge_value(
                 &VariableKey::parse(key)?,
                 value,
                 &landing.into.names(),
-                &landing.into.removed,
+                &edit_names(&from, &landing.into),
                 &old,
             )?;
             let mut value = json!(variables::stored(parts));
@@ -828,6 +842,12 @@ fn land_one(
     }
     let consumed = end_included(tx, &into, Some(&from.summary.id))?;
     if working != destination.working {
+        for (lineage, name) in &from.removed {
+            destination
+                .removed
+                .entry(lineage.clone())
+                .or_insert_with(|| name.clone());
+        }
         let carried = Carried::of(tx, &from.summary.id, &from.working)?;
         crate::branch::land(
             tx,

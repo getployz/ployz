@@ -916,3 +916,59 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
         [("web", None)]
     );
 }
+
+#[test]
+fn an_edit_dropping_one_of_two_removed_services_keeps_the_other() {
+    let (store, who) = shop();
+    for (n, name) in [(9, "redis"), (10, "cache")] {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at("pr-5"),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: Some("redis:7".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("redis.env.URL", json!("r")),
+            ("cache.env.URL", json!("c")),
+            ("web.env.HOSTS", json!("${{ redis.URL }},${{ cache.URL }}")),
+        ],
+    );
+    for gone in ["redis", "cache"] {
+        store
+            .write(
+                &who,
+                &ployz_store::RemoveService {
+                    environment: at("pr-5"),
+                    service: ServiceName::parse(gone).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        row(&store, &who, "web.env.HOSTS").lands,
+        json!("${{ <deleted redis>.URL }},${{ <deleted cache>.URL }}")
+    );
+
+    store
+        .write(
+            &who,
+            &merge_value("web.env.HOSTS", Some("${{ <deleted cache>.URL }}")),
+        )
+        .unwrap();
+    let hosts = row(&store, &who, "web.env.HOSTS");
+    assert_eq!(
+        (hosts.lands, hosts.ride),
+        (json!("${{ <deleted cache>.URL }}"), Ride::Edited)
+    );
+}

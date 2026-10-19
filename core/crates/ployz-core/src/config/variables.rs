@@ -216,25 +216,48 @@ pub fn resolve_config_file(
 /// record names it, as in `${{ <deleted>.URL }}`.
 pub const DELETED_OWNER: &str = "<deleted>";
 
-/// How a reference renders removed Service `name`, as in `${{ <deleted redis>.URL }}`.
+/// How a reference renders a removed Service: `<deleted redis>` for one last called
+/// `name`, [`DELETED_OWNER`] for one no record names. The `nth` removed Service shown
+/// alike, from 2, adds `#nth`, as in `<deleted redis#2>` or `<deleted #2>`.
 #[must_use]
-pub fn deleted_owner(name: &str) -> String {
-    format!("<deleted {name}>")
+pub fn deleted_owner(name: Option<&str>, nth: usize) -> String {
+    match (name, nth) {
+        (None, ..=1) => DELETED_OWNER.to_owned(),
+        (Some(name), ..=1) => format!("<deleted {name}>"),
+        (name, nth) => format!("<deleted {}#{nth}>", name.unwrap_or_default()),
+    }
 }
 
-/// The Service name a removed Service's token carries: `Some(None)` for
-/// [`DELETED_OWNER`], `Some(Some(name))` for [`deleted_owner`]'s, and `None` for
-/// any other text.
+/// Whether `token` is a removed Service as [`deleted_owner`] renders it.
 #[must_use]
-pub fn deleted_owner_name(token: &str) -> Option<Option<&str>> {
-    let inner = token.strip_prefix("<deleted")?.strip_suffix('>')?;
-    if inner.is_empty() {
-        return Some(None);
+pub fn is_deleted_owner(token: &str) -> bool {
+    deleted_token(token).is_some_and(|(_, rest)| rest.is_empty())
+}
+
+/// The removed Service's token `text` starts with, as [`deleted_owner`] renders it,
+/// and the text after it. Reads no further than the token.
+fn deleted_token(text: &str) -> Option<(&str, &str)> {
+    let mut rest = text.strip_prefix("<deleted")?;
+    if let Some(label) = rest.strip_prefix(' ') {
+        let (name, after) = identifier(label, '-');
+        if !name.is_empty() && !name.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+            return None;
+        }
+        rest = match after.strip_prefix('#') {
+            Some(nth) => {
+                let (digits, after) =
+                    nth.split_at(nth.find(|c: char| !c.is_ascii_digit()).unwrap_or(nth.len()));
+                if digits.is_empty() || digits.starts_with('0') {
+                    return None;
+                }
+                after
+            }
+            None if name.is_empty() => return None,
+            None => after,
+        };
     }
-    let name = inner.strip_prefix(' ')?;
-    let (whole, rest) = identifier(name, '-');
-    (rest.is_empty() && whole.starts_with(|c: char| c.is_ascii_alphanumeric()))
-        .then_some(Some(name))
+    let after = rest.strip_prefix('>')?;
+    Some(text.split_at(text.len() - after.len()))
 }
 
 /// A display template parsed into parts, and the Service names that matched no producer.
@@ -325,10 +348,7 @@ pub fn parse_variable_template(
 /// Returns the owner name, the key and the text after the token.
 fn template_token(text: &str) -> Option<(Option<&str>, &str, &str)> {
     let body = text.trim_start();
-    let deleted = body
-        .find('>')
-        .map(|end| body.split_at(end + 1))
-        .filter(|(token, _)| deleted_owner_name(token).is_some());
+    let deleted = deleted_token(body);
     let (first, after) = deleted.unwrap_or_else(|| identifier(body, '-'));
     let (owner, key, after) = match after.strip_prefix('.') {
         Some(after)
@@ -470,16 +490,41 @@ mod tests {
         let ghost = parse("x=${{ ghost.Y }}");
         assert_eq!(ghost.parts, [text("x=${{ ghost.Y }}")]);
         assert_eq!(ghost.unresolved, ["ghost"]);
-        let gone = parse("${{ <deleted>.Y }} ${{ <deleted redis-2>.Z }}");
+        let shown = [
+            deleted_owner(None, 1),
+            deleted_owner(Some("redis-2"), 1),
+            deleted_owner(Some("redis-2"), 2),
+            deleted_owner(None, 3),
+        ];
         assert_eq!(
-            (gone.unresolved, gone.malformed),
-            (
-                vec![DELETED_OWNER.to_owned(), deleted_owner("redis-2")],
-                false
-            )
+            shown,
+            [
+                DELETED_OWNER,
+                "<deleted redis-2>",
+                "<deleted redis-2#2>",
+                "<deleted #3>"
+            ]
         );
-        assert!(parse("${{ <deleted -x>.Y }}").malformed);
-        assert!(parse("${{ <deletedx>.Y }}").malformed);
+        let gone = parse(
+            &shown
+                .iter()
+                .map(|owner| format!("${{{{ {owner}.Y }}}}"))
+                .collect::<String>(),
+        );
+        assert_eq!((gone.unresolved, gone.malformed), (shown.to_vec(), false));
+        for malformed in [
+            "<deleted -x>",
+            "<deletedx>",
+            "<deleted >",
+            "<deleted x#0>",
+            "<deleted x#>",
+        ] {
+            assert!(
+                parse(&format!("${{{{ {malformed}.Y }}}}")).malformed,
+                "{malformed}"
+            );
+            assert!(!is_deleted_owner(malformed), "{malformed}");
+        }
         assert_eq!(parse("echo $${{ FOO }}").parts, [text("echo ${{ FOO }}")]);
         for malformed in [
             "${{ not-valid",

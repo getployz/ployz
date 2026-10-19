@@ -744,7 +744,7 @@ fn removing_what_a_config_references_stages_and_reports_it_broken() {
     let shown = item(&store, &who, "sentry").unwrap().contents[&file("a.yml")].clone();
     assert_eq!(
         shown,
-        "key: ${{ <deleted>.KEY }}\nhost: ${{ <deleted>.PLOYZ_PRIVATE_DOMAIN }}"
+        "key: ${{ <deleted worker>.KEY }}\nhost: ${{ <deleted worker>.PLOYZ_PRIVATE_DOMAIN }}"
     );
     put(
         &store,
@@ -763,7 +763,7 @@ fn removing_what_a_config_references_stages_and_reports_it_broken() {
         &who,
         "sentry",
         "a.yml",
-        &format!("{shown}\nother: ${{{{ <deleted>.OTHER }}}}"),
+        &format!("{shown}\nother: ${{{{ <deleted worker>.OTHER }}}}"),
     ));
     assert_eq!(invented.code, RpcErrorCode::InvalidArgument);
 }

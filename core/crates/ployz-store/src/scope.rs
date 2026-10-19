@@ -56,7 +56,7 @@ pub(crate) struct Environment {
     /// reference them by these names.
     pub(crate) live: BTreeMap<String, String>,
     /// The last name of each removed Service its Working State references, by
-    /// lineage, from the newest save that holds it.
+    /// lineage, as stored when the Service left it.
     pub(crate) removed: BTreeMap<String, String>,
 }
 
@@ -75,13 +75,16 @@ impl Environment {
     }
 
     /// [`Self::names`], and each removed Service a reference reads as reads show
-    /// it, such as `<deleted redis>`.
+    /// it, such as `<deleted redis>`: one name per Service, so an edit reads each
+    /// back as the Service it was.
     pub(crate) fn shown_names(&self) -> BTreeMap<String, String> {
         let mut names = self.names();
-        for (lineage, name) in &self.removed {
-            names
-                .entry(lineage.clone())
-                .or_insert_with(|| ployz_core::config::deleted_owner(name));
+        let mut alike = BTreeMap::new();
+        for lineage in crate::rules::removed_lineages(&self.working, &self.live) {
+            let name = self.removed.get(&lineage).map(String::as_str);
+            let nth = alike.entry(name).or_insert(0);
+            *nth += 1;
+            names.insert(lineage, ployz_core::config::deleted_owner(name, *nth));
         }
         names
     }
@@ -513,13 +516,13 @@ fn load(
     id: &EnvironmentId,
 ) -> Result<Environment, RpcError> {
     let rows = tx.query(
-        "SELECT name, working_revision, working FROM config_environment WHERE id = ?1",
+        "SELECT name, working_revision, working, removed FROM config_environment WHERE id = ?1",
         &[id.as_str().into()],
     )?;
     let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
     let working = row.intent(2, "Working State")?;
     let live = crate::branch::live_names(tx, id, &working)?;
-    let removed = crate::rules::removed_names(tx, id, &working, &live)?;
+    let removed = row.json(3, "removed Services")?;
     Ok(Environment {
         summary: EnvironmentSummary {
             id: id.clone(),
@@ -556,15 +559,14 @@ pub(crate) fn persist_working(
     tx: &mut dyn Tx,
     environment: &mut Environment,
 ) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT working, removed FROM config_environment WHERE id = ?1",
+        &[environment.summary.id.as_str().into()],
+    )?;
+    let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
+    let before = row.intent(0, "Working State")?;
+    let mut removed: BTreeMap<String, String> = row.json(1, "removed Services")?;
     crate::storage::admit_protect(tx, |tx| {
-        let rows = tx.query(
-            "SELECT working FROM config_environment WHERE id = ?1",
-            &[environment.summary.id.as_str().into()],
-        )?;
-        let before = rows
-            .first()
-            .ok_or_else(|| error::corrupt("Environment"))?
-            .intent(0, "Working State")?;
         crate::review::touches_source(
             tx,
             &environment.summary.id,
@@ -572,13 +574,29 @@ pub(crate) fn persist_working(
             &environment.working.services,
         )
     })?;
+    for (lineage, name) in std::mem::take(&mut environment.removed) {
+        removed.entry(lineage).or_insert(name);
+    }
+    removed.extend(
+        before
+            .services
+            .iter()
+            .map(|service| (service.lineage_id.clone(), service.slug.clone())),
+    );
+    let referenced = crate::rules::removed_lineages(&environment.working, &environment.live);
+    removed.retain(|lineage, _| referenced.contains(lineage));
+    environment.removed = removed;
     environment.summary.revision = environment.summary.revision.next();
     tx.execute(
-        "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
+        "UPDATE config_environment SET working_revision = ?1, working = ?2, removed = ?3 WHERE id = ?4",
         &[
             revision_param(environment.summary.revision)?.into(),
             serde_json::to_string(&environment.working)
                 .expect("Working State is JSON")
+                .as_str()
+                .into(),
+            serde_json::to_string(&environment.removed)
+                .expect("names are JSON")
                 .as_str()
                 .into(),
             environment.summary.id.as_str().into(),
@@ -636,6 +654,12 @@ pub(crate) fn validate_and_refresh_working_from(
     )?;
     environment.working = working;
     environment.live = live;
+    for service in from.into_iter().flat_map(|from| &from.services) {
+        environment
+            .removed
+            .entry(service.lineage_id.clone())
+            .or_insert_with(|| service.slug.clone());
+    }
     Ok(())
 }
 
