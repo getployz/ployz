@@ -155,17 +155,14 @@ impl DownMachines {
                 self.down = Some(down);
                 true
             }
+            // A failed sample is unknown evidence, as `ReadRoutes` and the LastIn
+            // guard read it, so no Machine stays filtered as Down on a stale set.
             Err(error) => {
-                let fallback = if self.down.is_some() {
-                    "keeping the last successful filter"
-                } else {
-                    "routing every Machine"
-                };
                 eprintln!(
-                    "failed to load membership for routing; {fallback}: {error}",
+                    "failed to load membership for routing; routing every Machine: {error}",
                     error = ployz_core::error_chain::inline(&error),
                 );
-                false
+                self.down.take().is_some_and(|down| !down.is_empty())
             }
         }
     }
