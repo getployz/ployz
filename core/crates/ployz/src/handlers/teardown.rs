@@ -1029,6 +1029,31 @@ mod tests {
         assert_eq!(refused.details.get("version"), None);
     }
 
+    #[test]
+    fn a_service_staged_while_the_prompt_was_open_is_not_removed_without_effects() {
+        // Nothing ran, so the Store removes without asking for a version; a `worker`
+        // staged since the prompt listed `web` would go with it.
+        let prompt = shown(&["web"]);
+        let mut sent = 0;
+        let again = || Ok(shown(&["web", "worker"]));
+        let refused = bound(&mut request(), "shop", Some((&prompt, again)), |_| {
+            sent += 1;
+            Ok(Removal::Removed {
+                residuals: Vec::new(),
+            })
+        });
+        assert_eq!(sent, 0, "it sends nothing the person didn't see");
+        let Some(refused) = refusal(refused) else {
+            panic!("a staged worker the person never saw goes");
+        };
+        assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+        assert_eq!(
+            refused.message,
+            "What this removes changed since you confirmed: production now has Service \
+             worker. Nothing was removed. Run it again to go ahead"
+        );
+    }
+
     fn shown(services: &[&str]) -> Shown {
         shown_in(&[("production", services)])
     }
