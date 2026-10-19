@@ -888,15 +888,14 @@ async fn discard_new<C: MachineOperations>(
         return;
     };
     let copy = cleanup::Copy::observed(observed);
-    let reason =
+    let left =
         match cleanup::retire(client, &copy, true, AnonymousVolumes::Remove, cancellation).await {
-            Ok(cleanup::Step::Done) => return,
-            Ok(cleanup::Step::Refused(refusal)) => refusal.message,
-            Ok(cleanup::Step::NotConfirmed(machines)) => rows.not_confirmed(&machines),
-            Ok(cleanup::Step::Cancelled) => "interrupted".into(),
-            Err(error) => error.message,
+            Ok(step) => Option::<Left>::from(step),
+            Err(error) => Some(Left::Failed(error)),
         };
-    progress.warn(rows.left_running(&copy, reason));
+    if let Some(left) = left {
+        rows.leave_running(progress, &copy, left);
+    }
 }
 
 /// The Deploy ends at `index` before any Container changed.
