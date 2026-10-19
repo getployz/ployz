@@ -9,9 +9,10 @@ pub struct EnvEntry {
     pub value: String,
 }
 
-/// Read `.env` text: blank lines and `#` comments skipped, an optional `export `, values bare (ending at ` #`),
-/// single-quoted (literal) or double-quoted (`\n \r \t \\ \"` escapes), and a quoted value may span lines. Keys keep
-/// their case and are letters, digits and `_`, not starting with a digit.
+/// Read `.env` text: blank lines and `#` comments skipped, an optional `export `, values bare (as in Docker Compose,
+/// ending at a space or tab before `#`, but not the blank right after `=`), single-quoted (literal) or double-quoted
+/// (`\n \r \t \\ \"` escapes), and a quoted value may span lines. Keys keep their case and are letters, digits and `_`,
+/// not starting with a digit.
 ///
 /// # Errors
 /// Names the first bad line by number, never its text (it may hold a secret).
@@ -48,9 +49,9 @@ pub fn parse_env_file(text: &str) -> Result<Vec<EnvEntry>, ConfigError> {
                 "a variable name is letters, digits and _, not starting with a digit",
             ));
         }
-        let value = match value.trim_start().chars().next() {
+        let value = value.trim_start();
+        let value = match value.chars().next() {
             Some(quote @ ('"' | '\'')) => {
-                let value = value.trim_start();
                 let mut rest = value.strip_prefix(quote).unwrap_or(value).to_owned();
                 // A quoted value may run onto the next lines until its closing quote.
                 loop {
@@ -75,7 +76,7 @@ pub fn parse_env_file(text: &str) -> Result<Vec<EnvEntry>, ConfigError> {
                 .next()
                 .and_then(|value| value.split("\t#").next())
                 .unwrap_or_default()
-                .trim()
+                .trim_end()
                 .to_owned(),
         };
         // A container's environment can't carry NUL.
@@ -158,7 +159,7 @@ mod tests {
                 ("MULTI", "line1\nline2"),
                 ("ESC", "a\tb\nc\\d\"e"),
                 ("BARE", "value"),
-                ("NOTE", ""),
+                ("NOTE", "# note"),
                 ("HASH", "#kept"),
                 ("DUP", "first"),
                 ("DUP", "second"),
@@ -171,7 +172,7 @@ mod tests {
     fn reads_windows_and_tab_separated_files() {
         assert_eq!(
             read("\u{feff}A=1\nexport\tB=2\nC=3\t# note\nD=\t# note\n"),
-            [("A", "1"), ("B", "2"), ("C", "3"), ("D", "")]
+            [("A", "1"), ("B", "2"), ("C", "3"), ("D", "# note")]
                 .map(|(key, value)| (key.to_owned(), value.to_owned()))
         );
         assert_eq!(
