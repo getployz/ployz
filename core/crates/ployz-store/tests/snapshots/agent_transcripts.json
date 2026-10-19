@@ -5418,7 +5418,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_show",
                 "input": {
@@ -5521,7 +5521,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_logs",
                 "input": {
@@ -5641,7 +5641,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_metrics",
                 "input": {
@@ -6769,7 +6769,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_set",
                 "input": {
@@ -6874,7 +6874,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_drain",
                 "input": {
@@ -6978,7 +6978,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_upgrade",
                 "input": {
@@ -8115,7 +8115,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_remove",
                 "input": {
@@ -8216,7 +8216,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_forget",
                 "input": {

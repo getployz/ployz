@@ -175,6 +175,21 @@ impl Failure {
         })
     }
 
+    /// [`Self::detailed`] over `cause`, when there is one, which prints as its `cause:` line.
+    pub(crate) fn detailed_caused(
+        code: RpcErrorCode,
+        message: impl Into<Cow<'static, str>>,
+        details: Value,
+        cause: Option<impl Error + Send + Sync + 'static>,
+    ) -> Self {
+        Self::command(Message {
+            code,
+            text: message.into(),
+            details,
+            source: cause.map(|cause| Box::new(cause) as Box<dyn Error + Send + Sync>),
+        })
+    }
+
     /// Our sentence over `cause`, which prints as its `cause:` line.
     pub fn caused(
         code: RpcErrorCode,
