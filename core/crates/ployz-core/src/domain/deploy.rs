@@ -416,6 +416,33 @@ impl<E> StopAttempt<E> {
     pub const fn stopped(&self) -> bool {
         matches!(self, Self::Stopped)
     }
+
+    /// The sentence a user reads; the error stays out of it.
+    #[must_use]
+    pub const fn line(&self) -> &'static str {
+        match self {
+            Self::Stopped => "Stopped the new Container.",
+            Self::Failed { .. } => "Could not stop the new Container.",
+        }
+    }
+}
+
+impl<E> ReplacementCompensation<E> {
+    /// What the compensation did, one sentence per attempt, in order.
+    #[must_use]
+    pub fn lines(&self) -> Vec<&'static str> {
+        match self {
+            Self::OldUntouched { stop_new_container } => vec![stop_new_container.line()],
+            Self::OldStopped {
+                stop_new_container,
+                restore_old_container,
+            } => stop_new_container
+                .iter()
+                .map(StopAttempt::line)
+                .chain([restore_old_container.line()])
+                .collect(),
+        }
+    }
 }
 
 impl<E> From<Result<(), E>> for StopAttempt<E> {
@@ -439,6 +466,21 @@ pub enum RestoreAttempt<E> {
     NotServing,
     /// The restore, or the wait for the proxies to route the old container, returned `error`.
     Failed { error: E },
+}
+
+impl<E> RestoreAttempt<E> {
+    /// The sentence a user reads; the error stays out of it.
+    #[must_use]
+    pub const fn line(&self) -> &'static str {
+        match self {
+            Self::Restored => "Restored the old Container; it serves again.",
+            Self::LeftHeld => "The old Container is left Held by another Deploy.",
+            Self::NotServing => {
+                "The old Container was not serving before this Deploy; nothing to restore."
+            }
+            Self::Failed { .. } => "Could not restore the old Container.",
+        }
+    }
 }
 
 impl<E> From<Result<(), E>> for RestoreAttempt<E> {
@@ -1242,4 +1284,32 @@ pub struct MachineStorageBudget {
     pub machine_name: MachineName,
     /// Aggregate capacity for the selected provisioned Volumes on this Machine.
     pub budget: crate::StorageBudget,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compensation_lines_say_what_became_of_each_container_in_order() {
+        let restored = ReplacementCompensation::<String>::OldStopped {
+            stop_new_container: Some(StopAttempt::Stopped),
+            restore_old_container: RestoreAttempt::Restored,
+        };
+        assert_eq!(
+            restored.lines(),
+            [
+                "Stopped the new Container.",
+                "Restored the old Container; it serves again."
+            ]
+        );
+        let held = ReplacementCompensation::<String>::OldStopped {
+            stop_new_container: None,
+            restore_old_container: RestoreAttempt::LeftHeld,
+        };
+        assert_eq!(
+            held.lines(),
+            ["The old Container is left Held by another Deploy."]
+        );
+    }
 }
