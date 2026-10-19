@@ -248,6 +248,7 @@ async fn entries(
     context: Option<&str>,
 ) -> Result<SelectedConnections, Error> {
     let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let mut signed_out = false;
     if direct.is_none() && context.is_none() {
         let store = CredentialStore::beside(&super::config_path(matches)?);
         match cloud_account::from_env(&store).await {
@@ -265,16 +266,27 @@ async fn entries(
                     connections: access.connections,
                 });
             }
-            Err(LoginError::SignedOut) => {}
+            Err(LoginError::SignedOut) => signed_out = true,
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(crate::connect::resolve_connections(
+    crate::connect::resolve_connections(
         &super::config_path(matches)?,
         direct,
         context,
         std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
-    )?)
+    )
+    .map_err(|error| {
+        let no_config = matches!(
+            error,
+            crate::connect::ConnectError::Context(ContextError::NoConfig)
+        );
+        if signed_out && no_config && !super::store::local_mode() {
+            LoginError::SignedOut.into()
+        } else {
+            error.into()
+        }
+    })
 }
 
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
