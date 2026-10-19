@@ -93,6 +93,10 @@ fn a_cli_line_for_a_human_becomes_a_fix() {
             page: DashboardPage::Variables
         })
     ));
+    assert!(matches!(
+        cli_next("ployz volume add data --mount web:/data --docker --shared-writes"),
+        Next::Drop
+    ));
     assert!(matches!(cli_next("ployz rm everything"), Next::Drop));
 }
 

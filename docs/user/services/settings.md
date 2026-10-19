@@ -91,6 +91,8 @@ switches to an image loses its root directory and build settings, so they are ba
 defaults if it later builds a repository again. Like every change, the switch waits for your
 next deploy, and Discard undoes it.
 
+A service has one source at a time, so one `set` takes `image` or `repository`, not both.
+
 Each setting belongs to one kind of source. An image service refuses the repository settings:
 `branch`, `rootDir`, the build settings and the deploy-on-push settings. A repository service
 refuses the registry credential. Ployz checks every setting you set against the source the
@@ -222,6 +224,13 @@ seconds after the new one starts, ready or not. Off also ignores a `HEALTHCHECK`
   different ports, it checks `PORT`.
 - **Command.** Enter a command like `pg_isready -h 127.0.0.1`. It runs in a shell inside the
   container and passes when it exits 0. The databases Ployz creates come with one.
+
+In the CLI, `ployz set web.healthcheck=/up` sets a path. A command, or a timeout, takes an object:
+
+```sh
+ployz set web --patch '{"healthcheck":{"command":"pg_isready -h 127.0.0.1","timeoutSeconds":60}}'
+ployz set web --patch '{"healthcheck":{"path":"/up","timeoutSeconds":60}}'
+```
 
 Services whose variables reference this one wait until it passes. Click **×** to turn it off. See
 [Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
