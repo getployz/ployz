@@ -75,9 +75,8 @@ pub enum EnrollPlan {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Rediscovered {
     Unchanged,
-    Updated(Machine),
-    /// No public IP was found where one is stored: a failed lookup, so the row stays.
-    PublicIpUnknown,
+    Updated(Box<Machine>),
+    PublicIpLookupFailed,
 }
 
 /// Replay when the stored Machine and MTU equal what the request would produce.
@@ -444,7 +443,7 @@ impl LocalMachineStore {
         };
         let pinned = self.record.pinned_addresses;
         if !pinned.public_ip && discovered.public_ip.is_none() && machine.public_ip.is_some() {
-            return Ok(Rediscovered::PublicIpUnknown);
+            return Ok(Rediscovered::PublicIpLookupFailed);
         }
         let update = MachineUpdate {
             public_ip: match discovered.public_ip {
@@ -461,7 +460,8 @@ impl LocalMachineStore {
         if update.is_empty() {
             return Ok(Rediscovered::Unchanged);
         }
-        self.apply(update, &[], pinned).map(Rediscovered::Updated)
+        self.apply(update, &[], pinned)
+            .map(|machine| Rediscovered::Updated(Box::new(machine)))
     }
 
     fn apply(
@@ -894,7 +894,7 @@ mod rediscover_tests {
 
         let store = reopened(&dir, store);
         let machine = store.record().machine().unwrap().clone();
-        assert_eq!(outcome, Rediscovered::Updated(machine.clone()));
+        assert_eq!(outcome, Rediscovered::Updated(Box::new(machine.clone())));
         assert_eq!(machine.public_ip, Some(ip(NEW_IP)));
         assert_eq!(machine.advertised_endpoints, moved_host().endpoints);
         assert_eq!(
@@ -966,7 +966,7 @@ mod rediscover_tests {
             })
             .unwrap();
 
-        assert_eq!(outcome, Rediscovered::PublicIpUnknown);
+        assert_eq!(outcome, Rediscovered::PublicIpLookupFailed);
         assert_eq!(store.record().machine(), Some(&before));
     }
 

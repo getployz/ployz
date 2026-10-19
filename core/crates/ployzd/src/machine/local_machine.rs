@@ -454,8 +454,7 @@ impl LocalMachine {
     }
 
     /// Refresh this participating Machine's unpinned public IP and Advertised
-    /// Endpoints from discovery, so peers learn an address that changed while it
-    /// was down. A failure keeps the stored row.
+    /// Endpoints from discovery. A failure keeps the stored row.
     pub async fn rediscover_addresses(&self) {
         match self.try_rediscover_addresses().await {
             Ok(Rediscovered::Unchanged) => {}
@@ -464,7 +463,7 @@ impl LocalMachine {
                 advertised_endpoints = ?machine.advertised_endpoints,
                 "rediscovered this Machine's addresses"
             ),
-            Ok(Rediscovered::PublicIpUnknown) => tracing::warn!(
+            Ok(Rediscovered::PublicIpLookupFailed) => tracing::warn!(
                 "public IP lookup failed; keeping the stored public IP and Advertised Endpoints"
             ),
             Err(error) => tracing::warn!(

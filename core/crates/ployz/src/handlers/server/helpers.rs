@@ -36,7 +36,6 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Erro
     })
 }
 
-/// Addresses the operator chose on the command line, which the Server keeps.
 pub(super) fn pinned(request: &InspectRequest) -> PinnedAddresses {
     PinnedAddresses::chosen(
         request

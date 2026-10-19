@@ -453,7 +453,6 @@ impl LocalMachineRecord {
         })
     }
 
-    /// Own addresses the operator chose, which daemon start leaves alone.
     #[must_use]
     pub fn pinned_addresses(&self) -> PinnedAddresses {
         self.pinned_addresses

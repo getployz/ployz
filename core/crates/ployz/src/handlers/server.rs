@@ -617,10 +617,14 @@ mod tests {
     }
 
     #[test]
-    fn init_pins_only_the_addresses_the_operator_names() {
+    fn enrolling_pins_only_the_addresses_the_operator_names() {
         let pinned = |flags: &[&str]| {
             let matches = crate::cli::command()
-                .try_get_matches_from(["ployz", "server", "init"].iter().chain(flags))
+                .try_get_matches_from(
+                    ["ployz", "server", "add", "--standalone", "root@host"]
+                        .iter()
+                        .chain(flags),
+                )
                 .unwrap();
             helpers::pinned(&helpers::token_request(leaf_matches(&matches)).unwrap())
         };
