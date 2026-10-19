@@ -2,15 +2,16 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { newMajorLine, type ServersUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
+import { UPGRADE_REFUSED } from "#/modules/server-upgrade/server-upgrade.hooks";
 import { ServersUpgradeActions } from "./servers-upgrade";
 
 afterEach(cleanup);
 
-const bar = (line: ServersUpgradeLine, input: { major?: ReturnType<typeof newMajorLine> } = {}) => {
+const bar = (line: ServersUpgradeLine, input: { major?: ReturnType<typeof newMajorLine>; may?: boolean | undefined } = {}) => {
   const upgrade = vi.fn();
   const onSettings = vi.fn();
   const { container } = render(
-    <ServersUpgradeActions line={line} major={input.major ?? null} upgrade={upgrade} onSettings={onSettings} />,
+    <ServersUpgradeActions line={line} major={input.major ?? null} may={"may" in input ? input.may : true} upgrade={upgrade} onSettings={onSettings} />,
   );
   return { text: container.textContent, upgrade, onSettings };
 };
@@ -31,6 +32,19 @@ it("offers Upgrade to the release while Servers are behind", () => {
   const { upgrade } = bar({ kind: "behind", release: "0.2.3", canUpgrade: true });
   fireEvent.click(screen.getByRole("button", { name: "Upgrade to 0.2.3" }));
   expect(upgrade).toHaveBeenCalledTimes(1);
+});
+
+it("lets only a role that may upgrade press Upgrade, and says who may once your role is known", () => {
+  const upgradeTo = () => screen.getByRole<HTMLButtonElement>("button", { name: "Upgrade to 0.2.3" });
+  const behind = { kind: "behind", release: "0.2.3", canUpgrade: true } as const;
+  bar(behind, { may: false });
+  expect([upgradeTo().disabled, upgradeTo().title]).toEqual([true, UPGRADE_REFUSED]);
+  cleanup();
+  bar(behind, { may: undefined });
+  expect([upgradeTo().disabled, upgradeTo().getAttribute("title")]).toEqual([true, null]);
+  cleanup();
+  bar(behind, { may: true });
+  expect([upgradeTo().disabled, upgradeTo().getAttribute("title")]).toEqual([false, null]);
 });
 
 it("offers no Upgrade when no Server behind can take one", () => {

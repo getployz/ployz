@@ -6,9 +6,11 @@ import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog"
 import { forgetServersServerFn, previewForgetServersServerFn } from "#/modules/machines/forget-servers.functions";
 import { useYouMay } from "#/modules/organization/members.queries";
 
-/** Why you can't forget the Servers, or undefined when your role may. */
-export const useForgetServersRefusal = (organizationSlug: string) =>
-  useYouMay(organizationSlug, "servers:remove") ? undefined : "Only an owner or admin can forget them.";
+/** Whether you may forget the Servers, and why not once your role says so. Closed while your role is unknown. */
+export function useForgetServersGate(organizationSlug: string) {
+  const may = useYouMay(organizationSlug, "servers:remove");
+  return { allowed: may === true, refusal: may === false ? "Only an owner or admin can forget them." : undefined };
+}
 
 /**
  * Forget Servers, for Servers that were deleted: Cloud tries each as the dialog opens and again on confirm, lists what

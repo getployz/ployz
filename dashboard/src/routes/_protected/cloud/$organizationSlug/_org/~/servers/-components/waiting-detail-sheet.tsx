@@ -3,13 +3,15 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Button } from "#/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import type { WaitingServerDetail } from "#/modules/machines/waiting/waiting-servers.server";
+import { ENROLL_REFUSED } from "./use-waiting";
 import { blockerLabel, bytes, lastSeen, portText, providerOf, sizeText, statusCell, volumesText } from "./waiting-row";
 
-export function WaitingDetailSheet({ server, open, failed, now, onOpenChange, onEnroll, onReject }: {
+export function WaitingDetailSheet({ server, open, failed, now, may, onOpenChange, onEnroll, onReject }: {
   server: WaitingServerDetail | null;
   open: boolean;
   failed: boolean;
   now: number;
+  may: boolean | undefined;
   onOpenChange: (open: boolean) => void;
   /** Null when the server can't be enrolled now. */
   onEnroll: (() => void) | null;
@@ -18,21 +20,23 @@ export function WaitingDetailSheet({ server, open, failed, now, onOpenChange, on
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-md">
-        {server === null ? <><SheetHeader><SheetTitle>Server details</SheetTitle><SheetDescription>{failed ? "Couldn’t load server details." : "Loading server details."}</SheetDescription></SheetHeader>{failed ? null : <Skeleton className="mx-4 h-32" />}</> : <Detail server={server} now={now} onEnroll={onEnroll} onReject={onReject} />}
+        {server === null ? <><SheetHeader><SheetTitle>Server details</SheetTitle><SheetDescription>{failed ? "Couldn’t load server details." : "Loading server details."}</SheetDescription></SheetHeader>{failed ? null : <Skeleton className="mx-4 h-32" />}</> : <Detail server={server} now={now} may={may} onEnroll={onEnroll} onReject={onReject} />}
       </SheetContent>
     </Sheet>
   );
 }
 
-function Detail({ server, now, onEnroll, onReject }: {
+function Detail({ server, now, may, onEnroll, onReject }: {
   server: WaitingServerDetail;
   now: number;
+  may: boolean | undefined;
   onEnroll: (() => void) | null;
   onReject: (id: string) => void;
 }) {
   const { report } = server;
   const status = statusCell(server, now);
   const volumes = volumesText(report);
+  const refusal = may === false ? ENROLL_REFUSED : undefined;
   return (
     <>
       <SheetHeader>
@@ -66,8 +70,8 @@ function Detail({ server, now, onEnroll, onReject }: {
         </dl>
       </div>
       <SheetFooter>
-        {onEnroll === null ? null : <Button variant="ink" onClick={onEnroll}>Enroll</Button>}
-        <Button variant="destructive" onClick={() => onReject(server.id)}>Reject</Button>
+        {onEnroll === null ? null : <Button variant="ink" disabled={may !== true} title={refusal} onClick={onEnroll}>Enroll</Button>}
+        <Button variant="destructive" disabled={may !== true} title={refusal} onClick={() => onReject(server.id)}>Reject</Button>
         <p className="text-xs text-muted-foreground">It stops checking in. Asking again with the same token gets it turned away.</p>
       </SheetFooter>
     </>

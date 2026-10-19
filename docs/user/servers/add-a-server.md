@@ -75,7 +75,8 @@ to the bottom of the list, and the list never reorders while you look at it. Whe
 server arrives ready, the tray names it and offers **Enroll** and **Reject** right in the header.
 
 Select a waiting server and click **Enroll** to choose its name, storage and what it runs.
-You can enroll while it prepares. Follow [Add many servers](add-many-servers.md) for the full
+You can enroll while it prepares. Only an owner or admin can enroll or reject servers. For a member,
+**Enroll** and **Reject** are disabled and say so. Follow [Add many servers](add-many-servers.md) for the full
 review and enrollment flow.
 
 Each row shows the server's name and operating system, the IP address Ployz Cloud saw it check in

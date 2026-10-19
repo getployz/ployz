@@ -13,10 +13,15 @@ export function organizationMembersQueryOptions(organizationSlug: string) {
   });
 }
 
-/** Whether your role holds `permission`. Not while the members load or fail, nor on a support visit, which has no row: Cloud decides those. */
-export function useYouMay(organizationSlug: string, permission: Permission): boolean {
-  const role = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
-  return role !== undefined && can(role, permission);
+/**
+ * Whether your role holds `permission`, or undefined while it is unknown: until the members load, whenever the latest
+ * read of them failed, even with an older role cached, and on a support visit, which has no row. Cloud decides those,
+ * so an action opens only on true and names who may act only on false.
+ */
+export function useYouMay(organizationSlug: string, permission: Permission): boolean | undefined {
+  const members = useQuery(organizationMembersQueryOptions(organizationSlug));
+  const role = members.status === "success" ? members.data.members.find((row) => row.you)?.role : undefined;
+  return role === undefined ? undefined : can(role, permission);
 }
 
 export type Invite = NonNullable<Awaited<ReturnType<typeof readInviteServerFn>>>;

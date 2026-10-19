@@ -3,7 +3,7 @@ import { WifiOffIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
-import { ForgetServersDialog, useForgetServersRefusal } from "../../../-components/forget-servers-dialog";
+import { ForgetServersDialog, useForgetServersGate } from "../../../-components/forget-servers-dialog";
 
 /**
  * There is nothing to show: Cloud can't reach the cluster, or the watch dropped or came back incomplete without the
@@ -11,16 +11,16 @@ import { ForgetServersDialog, useForgetServersRefusal } from "../../../-componen
  */
 export function ServersUnreachable({ organizationSlug }: { organizationSlug: string }) {
   const [forgetting, setForgetting] = useState(false);
-  const refused = useForgetServersRefusal(organizationSlug);
+  const { allowed, refusal } = useForgetServersGate(organizationSlug);
   return (
     <Empty variant="first-run">
       <EmptyHeader>
         <EmptyMedia variant="icon"><WifiOffIcon /></EmptyMedia>
         <EmptyTitle>Can’t reach your servers right now</EmptyTitle>
-        <EmptyDescription>Servers gone for good?{refused ? ` ${refused}` : ""}</EmptyDescription>
+        <EmptyDescription>Servers gone for good?{refusal ? ` ${refusal}` : ""}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
-        <Button variant="link" disabled={refused !== undefined} onClick={() => setForgetting(true)}>Forget them and start over.</Button>
+        <Button variant="link" disabled={!allowed} onClick={() => setForgetting(true)}>Forget them and start over.</Button>
       </EmptyContent>
       <ForgetServersDialog organizationSlug={organizationSlug} open={forgetting} onOpenChange={setForgetting} />
     </Empty>

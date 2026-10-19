@@ -12,8 +12,9 @@ import { Switch } from "#/components/ui/switch";
 import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
 import { installLines, cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
 import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { useYouMay } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
-import { useCanAddServers, useMintFleetToken } from "./use-waiting";
+import { ADD_SERVERS_REFUSED, useMintFleetToken } from "./use-waiting";
 
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -27,11 +28,11 @@ export function AddServersDialog({ organizationSlug, label = "Add servers", vari
 }) {
   const [open, setOpen] = useState(false);
   const mint = useMintFleetToken(organizationSlug);
-  const { allowed, refusal } = useCanAddServers(organizationSlug);
+  const may = useYouMay(organizationSlug, "servers:add");
   useBlocker({ shouldBlockFn: () => true, disabled: !mint.holding });
   return (
     <>
-      <Button type="button" variant={variant} disabled={!allowed} title={refusal} onClick={() => { mint.reset(); setOpen(true); }}>
+      <Button type="button" variant={variant} disabled={may !== true} title={may === false ? ADD_SERVERS_REFUSED : undefined} onClick={() => { mint.reset(); setOpen(true); }}>
         <PlusIcon data-icon="inline-start" />
         {label}
       </Button>
