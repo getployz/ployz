@@ -272,11 +272,12 @@ pub(super) fn delete(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn mount(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let dir = mount_dir(matches)?;
     let mounted = store::store(root)?.write(&AttachConfig {
         environment: store::environment(matches)?,
         service: service_name(matches)?,
         config: config_name(matches, "config")?,
-        dir: mount_dir(matches)?,
+        dir,
     })?;
     staged(matches, &mounted, "Staged mount of Config")
 }

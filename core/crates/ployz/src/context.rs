@@ -16,7 +16,8 @@ use thiserror::Error;
 
 /// Where the Ployz config lives when `PLOYZ_CONFIG` names nowhere: under
 /// `$XDG_CONFIG_HOME` when that is an absolute path, else `~/.config`.
-pub(crate) fn default_config_path() -> String {
+#[must_use]
+pub fn default_config_path() -> String {
     config_path_under(std::env::var_os("XDG_CONFIG_HOME").as_deref())
 }
 
@@ -30,7 +31,8 @@ fn config_path_under(xdg_config_home: Option<&std::ffi::OsStr>) -> String {
         )
 }
 
-pub(crate) fn expand_home(path: &Path) -> PathBuf {
+#[must_use]
+pub fn expand_home(path: &Path) -> PathBuf {
     path.strip_prefix("~").map_or_else(
         |_| path.to_owned(),
         |suffix| {

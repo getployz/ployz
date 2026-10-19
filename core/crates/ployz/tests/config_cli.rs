@@ -3297,7 +3297,9 @@ fn up_ships_a_directory_without_git() {
 
         let other = second.path().join("My Shop");
         std::fs::create_dir(&other).unwrap();
-        let (code, empty) = in_dir(store, home.path(), &other, &args, &[]);
+        let events = home.path().join("events.jsonl");
+        let empty_args = [&args[..], &["--events", events.to_str().unwrap()]].concat();
+        let (code, empty) = in_dir(store, home.path(), &other, &empty_args, &[]);
         assert_eq!(code, Some(2), "{empty}");
         assert!(
             empty["error"]["message"]
@@ -3305,6 +3307,7 @@ fn up_ships_a_directory_without_git() {
                 .is_some_and(|message| message.starts_with("Nothing to deploy: ")),
             "{empty}"
         );
+        assert!(!events.exists(), "a refused up leaves --events alone");
         std::fs::write(other.join("Dockerfile"), "FROM scratch\n").unwrap();
         let (code, taken) = in_dir(store, home.path(), &other, &args, &[]);
         assert_eq!(code, Some(1), "{taken}");
@@ -3312,6 +3315,61 @@ fn up_ships_a_directory_without_git() {
             taken["error"]["details"]["next"],
             json!("ployz up --project my-shop")
         );
+    }
+}
+
+/// A Branch's copy of a Service `ployz up` uploaded has no source until an upload,
+/// so the Branch names `ployz up --env`, which ships it; `deploy` there is refused.
+#[test]
+fn a_branch_of_an_uploaded_service_names_up_to_ship_it() {
+    let up = [&["up"][..], &UNREACHABLE_SERVER].concat();
+    for store in &targets() {
+        let (home, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = root.path().canonicalize().unwrap().join("up-local");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
+        let run = |args: &[&str]| in_dir(store, home.path(), &dir, args, &[]);
+        let (code, shipped) = run(&up);
+        assert_eq!(code, Some(3), "{shipped}");
+
+        let (code, made) = run(&["env", "branch", "staging", "--copy", "up-local"]);
+        assert_eq!(code, Some(0), "{made}");
+        assert_eq!(made["next"], json!("ployz up --env staging"));
+        let deploy = [&["deploy", "--env", "staging"][..], &UNREACHABLE_SERVER].concat();
+        let (code, refused) = run(&deploy);
+        assert_eq!(code, Some(2), "{refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("has nothing to run yet")),
+            "{refused}"
+        );
+        let (code, staging) = run(&[&up[..], &["--env", "staging"]].concat());
+        assert_eq!(code, Some(3), "{staging}");
+        assert_eq!(
+            staging["deployment"]["environment"]["name"],
+            json!("staging"),
+            "{staging}"
+        );
+    }
+}
+
+/// `config mount` written the way `config add --mount` takes it names the order it takes,
+/// before it looks up the Service or the Config.
+#[test]
+fn a_config_mount_written_like_add_names_the_order_mount_takes() {
+    for store in &targets() {
+        for args in [
+            ["config", "mount", "app", "web:/etc/app"],
+            ["config", "mount", "web:/etc/app", "app"],
+        ] {
+            let refused = error(store, &args);
+            assert_eq!(
+                refused["message"],
+                json!("config mount takes SERVICE CONFIG DIR: ployz config mount web app /etc/app"),
+                "{args:?}"
+            );
+        }
     }
 }
 

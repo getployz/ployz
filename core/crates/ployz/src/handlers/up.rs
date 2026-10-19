@@ -58,9 +58,9 @@ struct Up<'a> {
 pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let config = config_path(matches)?;
-    let events = open_events(matches)?;
     let directory = std::env::current_dir()?.canonicalize()?;
     refuse_empty(&directory)?;
+    let events = open_events(matches)?;
     let server = matches
         .get_one::<String>("server")
         .map(|destination| add_server(matches, &config, destination))
