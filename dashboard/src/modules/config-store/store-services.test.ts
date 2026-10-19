@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DiffView, DomainRow, EnvironmentView, ProjectListing, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { scalarSetting, serviceSetting, settingChange, settingError } from "./catalog";
-import { deployedVcpuLimit, domainChanged, newProjectName, newServiceName, serviceChangeCount, serviceChanges, serviceSettingRows } from "./store-services";
+import { deployedVcpuLimit, domainChanged, newProjectName, newServiceName, serviceChangeCount, serviceChanges, serviceSettingRows, uniqueName } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
   ({ id: `${name}-id`, row: `${name}:node` as RowId, name, private_dns: privateDns, source: "image", change: null, template: null });
@@ -28,6 +28,15 @@ describe("newProjectName", () => {
     expect(newProjectName({ type: "image", image: "ghcr.io/acme/web:1.2" }, [])).toBe("web");
     expect(newProjectName({ type: "git", repository: "getployz/api", branch: null }, [project("api")])).toBe("api-2");
     expect(newProjectName({ type: "image", image: "nginx" }, [project("nginx"), project("nginx-2")])).toBe("nginx-3");
+  });
+});
+
+describe("uniqueName", () => {
+  it("keeps a tail whole and trims the stem so the number fits in 63 characters", () => {
+    const stem = "d".repeat(63);
+    const first = uniqueName(stem, [], { tail: "-1413" });
+    expect(first).toBe(`${"d".repeat(58)}-1413`);
+    expect(uniqueName(stem, [first], { tail: "-1413" })).toBe(`${"d".repeat(56)}-1413-2`);
   });
 });
 

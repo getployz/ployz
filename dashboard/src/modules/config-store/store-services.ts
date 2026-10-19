@@ -60,14 +60,14 @@ export function randomText(alphabet: string, length: number) {
 
 /**
  * The first of `wanted`, `wanted-2`, `wanted-3`… that is none of `taken`, as a DNS label: the stem is trimmed so the
- * number fits in 63 characters.
+ * number fits in 63 characters. A `tail` (`-1413`) is kept whole between the stem and the number.
  */
-export function uniqueName(wanted: string, taken: Iterable<string>) {
+export function uniqueName(wanted: string, taken: Iterable<string>, { tail = "" }: { tail?: string } = {}) {
   const used = new Set(taken);
   const base = slugifySegment(wanted).slice(0, MAX_NAME).replace(/-+$/u, "") || "service";
   for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const name = `${base.slice(0, MAX_NAME - suffix.length).replace(/-+$/u, "")}${suffix}`;
+    const end = `${tail}${n === 1 ? "" : `-${n}`}`;
+    const name = `${base.slice(0, MAX_NAME - end.length).replace(/-+$/u, "")}${end}`;
     if (!used.has(name)) return name;
   }
 }
