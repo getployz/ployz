@@ -209,14 +209,14 @@ struct Acting {
 }
 
 impl Acting {
-    /// POST `/api/cli/PATH` with `body` plus this Organization's slug.
+    /// POST `/api/cli/PATH` with `body` plus this Organization's ID.
     async fn post<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
         mut body: serde_json::Value,
     ) -> Result<T, LoginError> {
         if let Some(object) = body.as_object_mut() {
-            object.insert("organizationSlug".into(), json!(self.organization.slug));
+            object.insert("organizationId".into(), json!(self.organization.id));
         }
         cloud_account::call(&self.credential, reqwest::Method::POST, path, Some(&body)).await
     }

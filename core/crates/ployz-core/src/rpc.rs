@@ -1553,7 +1553,28 @@ impl RpcError {
     pub fn refusal(&self) -> Option<CapabilityRefusal> {
         CapabilityRefusal::new(&self.code, self.details.clone())
     }
+
+    /// `self` from a pull of `image`, naming the image when the answer is not found.
+    /// A registry answers not found for a missing tag and a private repository alike.
+    #[must_use]
+    pub fn pulling(mut self, image: &str) -> Self {
+        if self.code == RpcErrorCode::NotFound && self.details.is_null() {
+            self.details = serde_json::json!({ MISSING_IMAGE: image });
+        }
+        self
+    }
+
+    /// The image a not-found pull named through [`Self::pulling`].
+    #[must_use]
+    pub fn missing_image(&self) -> Option<&str> {
+        if self.code != RpcErrorCode::NotFound {
+            return None;
+        }
+        self.details.get(MISSING_IMAGE)?.as_str()
+    }
 }
+
+const MISSING_IMAGE: &str = "missing_image";
 
 /// A Machine refused a route because its Ployz lacks the route's capability.
 #[derive(Clone, Debug, PartialEq)]

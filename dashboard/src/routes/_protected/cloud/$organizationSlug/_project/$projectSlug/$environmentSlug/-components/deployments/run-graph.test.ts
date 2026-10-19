@@ -59,6 +59,7 @@ describe("run graph", () => {
     expect(rowPhaseLabel("compensating")).toBe("Rolling back");
     expect(rowLabel(running("waiting_for_health"))).toBe("Waiting for health");
     expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: "health", log: null })).toBe("Failed at health check");
+    expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: "pull", log: null })).toBe("Failed at pull");
     expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: null, log: null })).toBe("Failed");
     expect(rowLabel(completed())).toBe("Done");
   });

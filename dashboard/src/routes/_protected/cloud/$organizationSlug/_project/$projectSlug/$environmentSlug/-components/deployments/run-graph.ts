@@ -39,7 +39,7 @@ export function rowPhaseLabel(phase: RowPhase): string {
 }
 
 export const failedAtLabels = {
-  build: "build", create: "create", start: "start", health: "health check", hook: "hook", stop: "stop", remove: "remove",
+  build: "build", pull: "pull", create: "create", start: "start", health: "health check", hook: "hook", stop: "stop", remove: "remove",
   volume: "volume",
 } satisfies Record<FailedAt, string>;
 

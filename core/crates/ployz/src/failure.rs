@@ -28,6 +28,8 @@ pub struct Failure {
     inner: Inner,
     interrupted: bool,
     diagnostic: Option<Box<ui::progress::Diagnostic>>,
+    /// Data its `--json` error carries in `details` beside what the error says.
+    added: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug)]
@@ -71,6 +73,7 @@ impl Failure {
         Self {
             interrupted: false,
             diagnostic: None,
+            added: serde_json::Map::new(),
             inner: Inner::Command {
                 error: Box::new(error),
                 hints: Vec::new(),
@@ -94,6 +97,7 @@ impl Failure {
             inner: Inner::Exit(code),
             interrupted: false,
             diagnostic: None,
+            added: serde_json::Map::new(),
         }
     }
 
@@ -104,6 +108,7 @@ impl Failure {
             inner: Inner::Partial,
             interrupted: false,
             diagnostic: None,
+            added: serde_json::Map::new(),
         }
     }
 
@@ -124,6 +129,13 @@ impl Failure {
 
     pub(crate) fn with_diagnostic(mut self, diagnostic: ui::progress::Diagnostic) -> Self {
         self.diagnostic = Some(Box::new(diagnostic));
+        self
+    }
+
+    /// Carry `value` as `key` in the `--json` error's `details`.
+    #[must_use]
+    pub(crate) fn with_detail(mut self, key: &str, value: Value) -> Self {
+        self.added.insert(key.to_owned(), value);
         self
     }
 
@@ -283,6 +295,15 @@ impl Failure {
                 .as_object_mut()
                 .expect("error details object")
                 .insert("progress".into(), diagnostic.json());
+        }
+        if !self.added.is_empty() {
+            if !details.is_object() {
+                details = serde_json::json!({});
+            }
+            details
+                .as_object_mut()
+                .expect("error details object")
+                .extend(self.added.clone());
         }
         RpcError {
             code,

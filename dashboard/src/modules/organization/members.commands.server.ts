@@ -281,15 +281,15 @@ export const orgLeave = defineCommand({
   agents: false,
   typed: null,
   positional: [],
-  input: Schema.Struct({ organization: Schema.NonEmptyString.annotate({ description: "The Organization to leave, by slug" }) }),
+  input: Schema.Struct({ organization: Schema.NonEmptyString.annotate({ description: "The Organization to leave, by id" }) }),
   output: Left,
   render: "message",
   // Leaves the Organization the input names, never the session's active one: a browser moves every session of the
   // user, so the active one can differ from the Organization `ployz` confirmed.
   run: (caller, input) => Effect.gen(function* () {
     if (caller.credential.kind !== "session") return refused("forbidden", "A token can't leave for you. Run `ployz login`, then leave.");
-    const leaving = (yield* callerOrganizations(caller)).find((row) => row.slug === input.organization);
-    if (leaving === undefined) return refused("not_found", `You are not a member of Organization ${input.organization}. Nothing changed.`);
+    const leaving = (yield* callerOrganizations(caller)).find((row) => row.id === input.organization);
+    if (leaving === undefined) return refused("not_found", "You are not a member of that Organization. Nothing changed.");
     yield* removeMembership(leaving.id, caller.userId, caller.userId);
     return { ok: true, output: { organization: leaving.slug }, message: `You left ${leaving.slug}.` } as const;
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),

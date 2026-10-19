@@ -8,7 +8,7 @@ import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { Conflict, Forbidden, NotFound } from "#/server/public-error";
+import { Conflict, Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 import { allocateUnique, getSlugWithSuffix } from "#/utils/slug";
 import {
   type CreateOrganization,
@@ -288,4 +288,25 @@ export const openOrCreateOrganization = Effect.fn("Organization.openOrCreate")(f
   if (!slug) return yield* new NotFound({ message: "Organization not found." });
   yield* openOrganizationInSession(actor, organizationId, slug);
   return slug;
+});
+
+/** A new Organization the user owns. Only session `sessionId` moves into it; the user's other sessions stay put. */
+export const createOrganizationForSession = Effect.fn("Organization.createForSession")(function* (
+  userId: string,
+  sessionId: string,
+  input: CreateOrganization,
+) {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const created = yield* insertOrganization(userId, input.name, input.slug);
+    const { drizzle: tx } = yield* Database;
+    const moved = yield* tx
+      .update(session)
+      .set({ activeOrganizationId: created.id, activeOrganizationSlug: created.slug, updatedAt: new Date() })
+      .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
+      .returning({ id: session.id });
+    // The session ended mid-request: roll the Organization back with it.
+    if (moved.length === 0) return yield* new Unauthorized();
+    return { id: created.id, slug: created.slug, name: input.name };
+  }));
 });
