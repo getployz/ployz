@@ -369,7 +369,7 @@ pub(super) fn execute(
             };
             return Err(if signal.is_cancelled() {
                 error.interrupted()
-            } else if runner.is_none() {
+            } else if runner.is_none() && error.report().code == RpcErrorCode::Unavailable {
                 error
                     .context(format!(
                         "Stopped following Deployment #{}; it keeps running in Ployz Cloud.",
@@ -995,9 +995,12 @@ pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
     refuse_local_detach(matches, &store)?;
     let events = open_events(matches)?;
     let queued = store
-        .try_write(&Start {
-            deployment: id.clone(),
-        })
+        .try_write_checked(
+            &Start {
+                deployment: id.clone(),
+            },
+            &["deployment", "ls"],
+        )
         .map_err(refused(matches, &store, &id))?;
     ship(matches, &store, &queued, events)
 }
@@ -1007,9 +1010,12 @@ pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
     store
-        .try_write(&Cancel {
-            deployment: id.clone(),
-        })
+        .try_write_checked(
+            &Cancel {
+                deployment: id.clone(),
+            },
+            &["deployment", "ls"],
+        )
         .map_err(refused(matches, &store, &id))?;
     let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
     finish_view(&view, Some(show_hint(matches, view.deployment.number)))

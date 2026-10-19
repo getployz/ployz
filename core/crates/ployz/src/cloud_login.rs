@@ -615,10 +615,11 @@ pub(crate) fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
     }
 }
 
-/// Why a write to `cloud` failed in flight: one that never connected is unreachable,
-/// and one that left this device may have applied though its answer never came.
+/// Why a write to `cloud` failed in flight: one that was never built or never
+/// connected is unreachable, and one that left this device may have applied though
+/// its answer never came.
 pub(crate) fn lost(cloud: &str, error: reqwest::Error) -> LoginError {
-    if error.is_connect() {
+    if error.is_connect() || error.is_builder() {
         return unreachable(cloud, error);
     }
     LoginError::Unanswered {

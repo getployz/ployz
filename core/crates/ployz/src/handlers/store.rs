@@ -150,7 +150,16 @@ impl<'m> Store<'m> {
 
     /// [`Self::write`], leaving the refusal for the caller to add a next step to.
     pub(crate) fn try_write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
-        self.approved(command, &Trusted::default(), Some(&["diff"]))
+        self.try_write_checked(command, &["diff"])
+    }
+
+    /// [`Self::try_write`] for a command whose effect `check`, a read, shows.
+    pub(crate) fn try_write_checked<C: Tell>(
+        &self,
+        command: &C,
+        check: &[&str],
+    ) -> Result<C::Written, StoreCallError> {
+        self.approved(command, &Trusted::default(), Some(check))
     }
 
     /// Apply `command`, asking for approval when Cloud does. A write Cloud took but
