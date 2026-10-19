@@ -183,6 +183,24 @@ enum Ack {
     Missing,
 }
 
+/// Which rotation ask a rival move lands before.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Ask {
+    In,
+    Held,
+    Out,
+}
+
+impl Ask {
+    fn of(target: &RotationTarget) -> Self {
+        match target {
+            RotationTarget::In { .. } => Self::In,
+            RotationTarget::Held(_) => Self::Held,
+            _ => Self::Out,
+        }
+    }
+}
+
 /// A rotation write or a removal, in the order the owners applied them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Move {
@@ -224,8 +242,9 @@ struct Scripted {
     unhealthy_in: BTreeMap<ContainerId, HealthVerdict>,
     /// An In ask on this copy lands, but its reply never arrives.
     unanswered_in: BTreeSet<ContainerId>,
-    /// Another writer moves this copy here just before the run's next ask on it.
-    moved: Mutex<BTreeMap<ContainerId, CopyRotation>>,
+    /// Another writer moves this copy here just before the run's next ask of
+    /// this kind on it.
+    moved: Mutex<BTreeMap<(ContainerId, Ask), CopyRotation>>,
     moves: Mutex<Vec<Move>>,
 }
 
@@ -302,6 +321,17 @@ impl Scripted {
 
     fn moves(&self) -> Vec<Move> {
         self.moves.lock().unwrap().clone()
+    }
+
+    /// The copies this run brought In, in order.
+    fn brought_in(&self) -> Vec<ContainerId> {
+        self.moves()
+            .into_iter()
+            .filter_map(|applied| match applied {
+                Move::To(id, CopyRotation::In) => Some(id),
+                _ => None,
+            })
+            .collect()
     }
 
     fn answers(&self) -> Vec<AnswerWhen> {
@@ -424,7 +454,11 @@ impl Scripted {
         expect: Option<&CopyRotation>,
         allow_empty: bool,
     ) -> Decision {
-        let raced = self.moved.lock().unwrap().remove(&container_id);
+        let raced = self
+            .moved
+            .lock()
+            .unwrap()
+            .remove(&(container_id, Ask::of(target)));
         if let Some(rotation) = &raced {
             self.record(container_id, |copy| copy.rotation = rotation.clone());
         }
@@ -1004,8 +1038,8 @@ mod hooks;
 mod image_ports;
 #[path = "exec_tests/moving.rs"]
 mod moving;
-// DISABLED #[path = "exec_tests/replacement.rs"]
-// DISABLED mod replacement;
+#[path = "exec_tests/replacement.rs"]
+mod replacement;
 #[path = "exec_tests/restart.rs"]
 mod restart;
 #[path = "exec_tests/silent.rs"]
