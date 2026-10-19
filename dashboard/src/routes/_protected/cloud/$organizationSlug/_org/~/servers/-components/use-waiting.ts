@@ -16,11 +16,12 @@ export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; au
 const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
 
 /**
- * Whether you may mint a fleet token, and why not once your role says so. Closed until your role loads, and if it
- * never does, since Cloud refuses the mint without servers:add.
+ * Whether you may mint a fleet token, and why not once your role says so. Closed until your role loads, and whenever
+ * the latest read of it failed, even with an older role cached, since Cloud refuses the mint without servers:add.
  */
 export function useCanAddServers(organizationSlug: string) {
-  const role = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
+  const members = useQuery(organizationMembersQueryOptions(organizationSlug));
+  const role = members.status === "success" ? members.data.members.find((row) => row.you)?.role : undefined;
   const allowed = role !== undefined && can(role, "servers:add");
   return { allowed, refusal: role === undefined || allowed ? undefined : ADD_SERVERS_REFUSED };
 }

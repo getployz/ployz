@@ -35,6 +35,7 @@ async function renderDialog(role: "owner" | "admin" | "member" | "loading" | "fa
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
   await screen.findByRole("button", { name: "Add servers" });
   if (role === "failed") await waitFor(() => expect(client.getQueryState(membersKey("ada"))?.status).toBe("error"));
+  return client;
 }
 
 async function mintWith(expiresIn?: string) {
@@ -185,6 +186,18 @@ it("keeps Add servers closed when your role can't be read, without claiming who 
   await renderDialog("failed");
   const add = screen.getByRole("button", { name: "Add servers" });
   expect(add).toHaveProperty("disabled", true);
+  expect(add.getAttribute("title")).toBeNull();
+});
+
+it("closes Add servers when a later read of your role fails, though the old role is cached", async () => {
+  const client = await renderDialog("owner");
+  const add = screen.getByRole("button", { name: "Add servers" });
+  expect(add).toHaveProperty("disabled", false);
+  vi.spyOn(memberFunctions, "listMembersServerFn").mockRejectedValue(new Error("offline"));
+  await act(() => client.refetchQueries({ queryKey: membersKey("ada") }));
+
+  expect(client.getQueryState(membersKey("ada"))).toMatchObject({ status: "error", data: { members: [{ role: "owner" }] } });
+  await waitFor(() => expect(add).toHaveProperty("disabled", true));
   expect(add.getAttribute("title")).toBeNull();
 });
 
