@@ -1,8 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DeletionDialog } from "#/components/deletion-dialog";
-import { editPending, useStoreBusy } from "#/modules/config-store/store-pending";
+import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
@@ -26,9 +26,10 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
  * tab has it, else from Cloud's refusal, which checks the copies again at admission. Any other refusal (Servers that
  * can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
  *
- * Pressing Deploy or Save in a field with a draft stages the draft first (focus leaves the field) and sends nothing:
- * the review the user read doesn't include the draft, and the one that does hasn't shown yet. The bar then shows it,
- * pink and counted, and the next press ships exactly that.
+ * Pressing Deploy or Save in a field with a draft stages the draft first (focus leaves the field) and sends nothing,
+ * even when the draft saved before the click: the review the user read as they pressed doesn't include it. Nor does
+ * a press while any other write that moves the review still saves. The bar then shows the draft, pink and counted,
+ * and the next press ships exactly that.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
@@ -44,11 +45,23 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const admitting = useStoreBusy(organizationSlug, environment).has("deploying");
   // The mark shows only after a render, so two clicks in one tick need this lock to admit one Deployment.
   const inFlight = useRef(false);
+  // The newest write when the user's last gesture began. A pointer press starts before the field it leaves blurs, so
+  // a write made since is that press's own staging, even one that saved before the click; a key press leaves no field.
+  const gesture = useRef(Number.POSITIVE_INFINITY);
+  useEffect(() => {
+    const mark = () => { gesture.current = writeMark(queryClient); };
+    document.addEventListener("pointerdown", mark, true);
+    document.addEventListener("keydown", mark, true);
+    return () => {
+      document.removeEventListener("pointerdown", mark, true);
+      document.removeEventListener("keydown", mark, true);
+    };
+  }, [queryClient]);
 
   /** Deploys or saves; resolves with how it went, holding what it would delete when the Store asks first. */
   async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null): Promise<Outcome> {
     // Read now, not from the last render: the press that got here may have just staged the field it left.
-    if (editPending(queryClient, organizationSlug, environment)) return { status: "staging" };
+    if (reviewMoving(queryClient, organizationSlug, environment, gesture.current)) return { status: "staging" };
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
     try {

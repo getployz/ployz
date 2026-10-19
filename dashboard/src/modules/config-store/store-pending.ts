@@ -127,14 +127,27 @@ export function pendingMarks(queryClient: QueryClient, organizationSlug: string)
 const sameRef = (a: EnvironmentRef, b: EnvironmentRef) => (a.project ?? "") === (b.project ?? "") && (a.environment ?? "") === (b.environment ?? "");
 const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark && sameRef(mark.environment, environment);
 
+/** Commands that leave an Environment's review where it is: the review's own Deploy and Save, a Deployment's start and cancel. */
+const KEEPS_REVIEW: ReadonlySet<ConfigCommand["command"]> = new Set(["admit", "publish", "start", "cancel"]);
+
+/** Whether `command` can move the Environment's review: any other write that names it, a field's edit or a Volume's storage. */
+const movesReview = (command: ConfigCommand, environment: EnvironmentRef) =>
+  !KEEPS_REVIEW.has(command.command) && commandEnvironments(command).some((named) => sameRef(named, environment));
+
+/** The newest write this tab has made, any kind: a press marks it as its gesture starts, for `reviewMoving`. */
+export function writeMark(queryClient: QueryClient): number {
+  return Math.max(0, ...queryClient.getMutationCache().getAll().map((mutation) => mutation.mutationId));
+}
+
 /**
- * Whether an edit of the Environment's Settings is still saving, read outside React: the review the user sees doesn't
- * include it yet, so a Deploy or Save pressed now would ship a version they haven't read.
+ * Whether a write that moves the Environment's review is still saving, or was made after `since` (a `writeMark`), read
+ * outside React: the review the user read doesn't include it, so a Deploy or Save pressed now would ship a version
+ * they haven't read.
  */
-export function editPending(queryClient: QueryClient, organizationSlug: string, environment: EnvironmentRef): boolean {
-  return queryClient.getMutationCache().findAll(pendingWrites(organizationSlug)).some((mutation) => {
+export function reviewMoving(queryClient: QueryClient, organizationSlug: string, environment: EnvironmentRef, since: number): boolean {
+  return queryClient.getMutationCache().findAll({ mutationKey: ["store-write", organizationSlug] }).some((mutation) => {
     const command = commandOf(mutation);
-    return command?.command === "edit" && sameRef(command.environment, environment);
+    return command !== undefined && movesReview(command, environment) && (mutation.state.status === "pending" || mutation.mutationId > since);
   });
 }
 

@@ -155,7 +155,9 @@ function HealthcheckGroup({ check, change, set, close }: HealthcheckSetting & { 
 
   return (
     <SettingsGroup id="healthcheck" label="Healthcheck" hint={HINT} commit="change" control={
-      <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove healthcheck" onClick={() => (check ? set(null) : close())}>
+      // Keeps focus in the field, whose blur would save its draft before the click removes it.
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove healthcheck" onMouseDown={(event) => event.preventDefault()}
+        onClick={() => (check ? set(null) : close())}>
         <XIcon />
       </Button>
     }>

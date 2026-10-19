@@ -101,4 +101,20 @@ describe("HealthcheckSettings", () => {
     expect(set).not.toHaveBeenCalled();
     expect((screen.getByLabelText("Healthcheck path") as HTMLInputElement).value).toBe("/up");
   });
+
+  it("discards a check typed but not yet saved when it is removed, and saves nothing", () => {
+    const set = vi.fn((_: JsonValue | null) => saved);
+    render(<HealthcheckSettings value={null} change={undefined} set={set} />);
+    fireEvent.click(screen.getByRole("button", { name: "Healthcheck" }));
+    const input = screen.getByLabelText("Healthcheck path");
+    fireEvent.change(input, { target: { value: "/health" } });
+
+    const remove = screen.getByRole("button", { name: "Remove healthcheck" });
+    // A browser moves focus off the field on mouse down, unless the press prevents it.
+    if (fireEvent.mouseDown(remove)) fireEvent.blur(input);
+    fireEvent.click(remove);
+
+    expect(set).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Healthcheck path")).toBeNull();
+  });
 });

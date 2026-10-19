@@ -37,6 +37,7 @@ function Deploy({ placementLoss, version = "2:1:0" }: { placementLoss: Placement
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
     <button type="button" onClick={() => writer.edit({ environment: ref, changes: [{ op: "set", path: "web.replicas", value: 3 }] })}>Stage replicas</button>
+    <button type="button" onClick={() => writer.commit({ command: "set_volume_storage", environment: ref, volume: "pg-data", storage: { kind: "docker" } })}>Stage storage</button>
     <button type="button" onClick={() => void save("  Save this draft  ").then((saved) => saves.push(saved))}>Save now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
     <button type="button" onClick={() => neverSync("api.env.CACHE_TTL", "a:variables.CACHE_TTL" as RowId)}>Never sync CACHE_TTL</button>
@@ -57,7 +58,15 @@ function setup(placementLoss = NO_LOSS) {
   const { rerender } = render(<Deploy placementLoss={placementLoss} />, { wrapper });
   const admits = () => write.mock.calls.map(([call]) => call?.data.command);
   const shows = (version: string) => rerender(<Deploy placementLoss={placementLoss} version={version} />);
-  return { write, admits, shows };
+  return { write, admits, shows, queryClient };
+}
+
+/** A pointer press, as a browser sends it: down, then the click. */
+function press(text: string) {
+  act(() => {
+    fireEvent.pointerDown(screen.getByText(text));
+    fireEvent.click(screen.getByText(text));
+  });
 }
 
 const edited = { ok: true, value: { written: "edited", environment: { revision: 3 } } } as never;
@@ -79,10 +88,41 @@ it("sends nothing for a Deploy pressed while a field's draft still stages, then 
 
   // The bar now shows the review with the draft; the next press ships exactly that.
   test.shows("3:1:0");
-  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  press("Deploy now");
   await waitFor(() => expect(admittedIds).toHaveLength(1));
   expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0", message: "Ship the api" });
   expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("sends nothing for a Deploy whose own press staged a draft that saved before the click, then deploys the next press", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce(admitted);
+
+  // The press begins, then the field it leaves stages its draft, which saves and shows before the button comes up.
+  fireEvent.pointerDown(screen.getByText("Deploy now"));
+  act(() => { fireEvent.click(screen.getByText("Stage replicas")); });
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  test.shows("3:1:0");
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await act(() => Promise.resolve());
+  expect(test.admits()).toMatchObject([{ command: "edit" }]);
+  expect(admittedIds).toEqual([]);
+
+  press("Deploy now");
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
+it("sends nothing for a Deploy pressed while a Volume's storage still saves", async () => {
+  const test = setup();
+  let land: (value: never) => void = () => {};
+  test.write.mockReturnValueOnce(new Promise((resolve) => { land = resolve; }));
+  press("Stage storage");
+  press("Deploy now");
+  land({ ok: true, value: { written: "volume", environment: { revision: 3 } } } as never);
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  expect(test.admits()).toMatchObject([{ command: "set_volume_storage" }]);
+  expect(admittedIds).toEqual([]);
 });
 
 it("reports a Save pressed while a field's draft still stages as not saved, and sends nothing", async () => {
