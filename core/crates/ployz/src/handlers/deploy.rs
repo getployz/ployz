@@ -369,6 +369,7 @@ pub(super) fn execute(
             .map(|view| Followed {
                 view,
                 progress: None,
+                successor: None,
             })
     } else {
         follow(matches, store, admitted, events, runner.as_ref(), &signal)
@@ -451,13 +452,17 @@ pub(super) fn execute(
     {
         ui::warn(warning);
     }
-    let view = followed.view;
+    let Followed {
+        view, successor, ..
+    } = followed;
     let ran = if interrupted {
         Err(Error::cancelled())
     } else if detached {
         Ok(())
     } else {
-        progress::completion(&view, |args| super::rerun(matches, args))
+        progress::completion(&view, successor.as_ref(), |args| {
+            super::rerun(matches, args)
+        })
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(
@@ -586,6 +591,8 @@ impl Drop for OwnedRunner<'_, '_> {
 struct Followed {
     view: DeploymentView,
     progress: Option<Progress>,
+    /// The newer Deployment that superseded it without shipping all of its Services.
+    successor: Option<DeploymentSummary>,
 }
 
 fn finish_progress(followed: &mut Followed, disposition: Disposition) {
@@ -654,6 +661,7 @@ fn follow(
                     followed = Some(Followed {
                         view,
                         progress: None,
+                        successor: None,
                     });
                 }
             }
@@ -670,7 +678,11 @@ fn follow(
             followed.view = view;
         } else {
             let progress = progress::visible(&view).then(|| Progress::start(frame));
-            followed = Some(Followed { view, progress });
+            followed = Some(Followed {
+                view,
+                progress,
+                successor: None,
+            });
         }
         let current = followed
             .as_ref()
@@ -694,13 +706,24 @@ fn follow(
                     ))
                     .hint(Hint::Inspect(next(matches, &["deployment", "ls"])))
             })?;
-            if let Some(newer) = newer {
-                id = newer.id.clone();
-                tracked = newer;
-                last = None;
-                continue;
+            match newer {
+                Some(Replacement::Follow(newer)) => {
+                    id = newer.id.clone();
+                    tracked = newer;
+                    last = None;
+                    continue;
+                }
+                Some(Replacement::Name(newer)) => {
+                    if let Some(followed) = followed.as_mut() {
+                        followed.successor = Some(newer);
+                    }
+                }
+                None => {}
             }
         }
+        let current = followed
+            .as_ref()
+            .expect("a successful read installed its view");
         tap(&current.view, &mut events, &mut last);
         if current.view.deployment.status != DeploymentStatus::Queued {
             unclaimed = None;
@@ -727,8 +750,15 @@ fn follow(
     }
 }
 
-/// The newest Deployment newer than superseded `view` that targets every Service `view` did, among the latest and those in flight.
-fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<DeploymentSummary>, Error> {
+/// What took superseded `view`'s place, among the latest and those in flight.
+enum Replacement {
+    /// The newest newer Deployment that targets every Service `view` did: follow it.
+    Follow(DeploymentSummary),
+    /// Else the newest newer one: name it.
+    Name(DeploymentSummary),
+}
+
+fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Replacement>, Error> {
     let page = store.read(&DeploymentsQuery {
         environment: EnvironmentRef {
             project: Some(view.environment.project.clone()),
@@ -739,10 +769,17 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
     })?;
     // The latest may ship other Services while an older one in flight ships ours:
     // the latest, then the in-flight ones newest first, whatever page they fall on.
-    Ok(page.latest.into_iter().chain(page.in_flight).find(|newer| {
-        newer.number > view.deployment.number
-            && ships_all(&view.deployment.services, &newer.services)
-    }))
+    let mut newer = page
+        .latest
+        .into_iter()
+        .chain(page.in_flight)
+        .filter(|newer| newer.number > view.deployment.number)
+        .peekable();
+    let newest = newer.peek().cloned();
+    Ok(newer
+        .find(|newer| ships_all(&view.deployment.services, &newer.services))
+        .map(Replacement::Follow)
+        .or(newest.map(Replacement::Name)))
 }
 
 /// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.

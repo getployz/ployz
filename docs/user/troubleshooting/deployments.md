@@ -28,7 +28,14 @@ Service before the Deploy is planned, without a depth. A failure names the Serve
 where it happened.
 
 A failed deploy shows the deepest cause, available failed-container log tails, and
-`inspect:` and `retry:` commands. A Deployment result that did not fully succeed exits
+`inspect:` and `retry:` commands. A failed build points at its build log,
+`ployz logs --deployment N --build web`, and an image that won't pull offers
+`undo: ployz history undo N` instead of the logs of the old copy. Neither offers to deploy
+the same thing again. A failed `ployz up` retries with `ployz up`, which uploads your fixed
+directory; `ployz deploy` would ship the last upload that built. `up` leaves out the `Open`
+lines when the deploy failed. When a newer deployment, such as a push, takes the place of the
+one you were following without shipping all of its services, the CLI says
+`Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`. A Deployment result that did not fully succeed exits
 with code 3. A warning that names an incomplete Server observation also makes an
 otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's

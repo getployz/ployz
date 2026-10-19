@@ -12,7 +12,8 @@ Build failed. web: Build failed: the build failed: exited with exit status: 1. N
 The cause is in the [build log](../builds/overview.md#read-the-build-log): open the service's
 tab, then **Build**, and find the line that starts with `ERROR`. A build on GitHub Actions
 fails with `Build failed. web: a build step failed`; the run on GitHub, linked at the top of
-the log, has the full output. Your current version keeps running.
+the log, has the full output. From the CLI, `ployz logs --deployment N --build web` prints
+the same log. Your current version keeps running.
 
 Fix the cause and deploy again. **Redeploy** rebuilds the same commit and settings, so it only
 helps when the fix was on a server.

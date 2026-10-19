@@ -8,8 +8,8 @@ use crate::ui::{
 };
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
 use ployz_store::{
-    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, DeploymentWarning, IngressAction,
-    IngressFailure, NodeStatus, RowState,
+    BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
+    DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeStatus, RowState,
 };
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -264,8 +264,12 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
 
 pub(super) fn completion(
     view: &DeploymentView,
+    successor: Option<&DeploymentSummary>,
     command: impl Fn(&[&str]) -> String,
 ) -> Result<(), Failure> {
+    if view.deployment.status == DeploymentStatus::Superseded {
+        return Err(superseded(view, successor, command));
+    }
     if view.deployment.status != DeploymentStatus::Applied {
         return Err(failure(view, command));
     }
@@ -277,6 +281,13 @@ pub(super) fn completion(
         return Err(Failure::partial());
     }
     Ok(())
+}
+
+/// How a command names a Deployment: its number once it queued, else its ID.
+fn target(deployment: &DeploymentSummary) -> String {
+    deployment
+        .number
+        .map_or_else(|| deployment.id.to_string(), |number| number.to_string())
 }
 
 /// How to retry a removal or shutdown that ended without applying when the command that
@@ -292,21 +303,72 @@ pub(super) fn removal_retry(
         DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled
     );
     (view.deployment.remove && ended).then(|| {
-        // A removal queues at once, so it is numbered; the ID covers the rest.
-        let target = view.deployment.number.map_or_else(
-            || view.deployment.id.to_string(),
-            |number| number.to_string(),
-        );
         Hint::Retry(command(&[
             "deployment",
             "retry",
-            &target,
+            &target(&view.deployment),
             "--project",
             view.environment.project.as_str(),
             "--env",
             view.environment.name.as_str(),
         ]))
     })
+}
+
+/// A newer Deployment took this one's place. Deploying again would take the newer one's.
+fn superseded(
+    view: &DeploymentView,
+    successor: Option<&DeploymentSummary>,
+    command: impl Fn(&[&str]) -> String,
+) -> Failure {
+    let scope = [
+        "--project",
+        view.environment.project.as_str(),
+        "--env",
+        view.environment.name.as_str(),
+    ];
+    let (message, inspect) = match successor {
+        Some(newer) => {
+            let from = newer.push.as_ref().map_or(String::new(), |push| {
+                format!(
+                    " (push {})",
+                    push.head.as_str().get(..7).unwrap_or_default()
+                )
+            });
+            let shown = target(newer);
+            (
+                format!(
+                    "Deployment {} was superseded by {}{from}.",
+                    view.deployment.label(),
+                    newer.label()
+                ),
+                command(&[&["deployment", "show", shown.as_str()][..], &scope].concat()),
+            )
+        }
+        None => (
+            format!("Deployment {} was superseded.", view.deployment.label()),
+            command(&[&["deployment", "ls"][..], &scope].concat()),
+        ),
+    };
+    Failure::from(RpcError {
+        code: RpcErrorCode::Internal,
+        message,
+        cause: Vec::new(),
+        details: serde_json::Value::Null,
+    })
+    .hint(Hint::Inspect(inspect))
+}
+
+/// What stopped a Service, which decides what helps next.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    /// Its build failed: its build log says why, and the same source fails again.
+    Build,
+    /// Its image could not be pulled: its logs show only the old copy, and the same
+    /// image fails again.
+    Image,
+    /// It failed on a Server: its logs say why.
+    Run,
 }
 
 fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failure {
@@ -324,8 +386,16 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             Vec::new(),
         ),
     };
+    let scope = [
+        "--project",
+        view.environment.project.as_str(),
+        "--env",
+        view.environment.name.as_str(),
+    ];
+    let deployment = target(&view.deployment);
     let mut diagnostic = Diagnostic::default();
     let mut hints = Vec::new();
+    let mut faults = Vec::new();
     let mut primary_seen = false;
     for node in &view.nodes {
         let DeployedNode::Service { name, .. } = &node.node else {
@@ -335,11 +405,15 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             view.namespace.clone(),
             view.runtime_names.get(name).unwrap_or(name).clone(),
         );
-        let mut failed = false;
+        let built = view.builds.iter().find(|build| build.service == *name);
+        let mut fault = built
+            .is_some_and(|build| build.status == BuildStatus::Failed)
+            .then_some(Fault::Build);
         for row in &node.rows {
             let RowState::Failed {
                 reason: row_reason,
                 cause: row_cause,
+                step,
                 log,
                 ..
             } = &row.state
@@ -360,20 +434,30 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 server: row.server.clone(),
                 log: log.clone(),
             });
-            failed = true;
+            // A built image comes from a peer, which may answer next time.
+            let row_fault = match step {
+                Some(FailedAt::Build) => Fault::Build,
+                Some(FailedAt::Pull) if built.is_none() => Fault::Image,
+                _ => Fault::Run,
+            };
+            fault = fault.or(Some(row_fault));
         }
         // One hint per Service, by its config name: it reads every Server's logs, and a
         // token that reads through Cloud can serve it too.
-        if failed {
-            hints.push(Hint::Inspect(command(&[
-                "logs",
-                name.as_str(),
-                "--project",
-                view.environment.project.as_str(),
-                "--env",
-                view.environment.name.as_str(),
-            ])));
+        match fault {
+            Some(Fault::Build) => hints.push(Hint::Inspect(command(
+                &[
+                    &["logs", "--deployment", deployment.as_str(), "--build", name.as_str()][..],
+                    &scope,
+                ]
+                .concat(),
+            ))),
+            Some(Fault::Run) => hints.push(Hint::Inspect(command(
+                &[&["logs", name.as_str()][..], &scope].concat(),
+            ))),
+            Some(Fault::Image) | None => {}
         }
+        faults.extend(fault);
     }
     let mut failure = Failure::from(RpcError {
         code: RpcErrorCode::Internal,
@@ -389,13 +473,20 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     if view.deployment.remove {
         return failure;
     }
-    failure.hint(Hint::Retry(command(&[
-        "deploy",
-        "--project",
-        view.environment.project.as_str(),
-        "--env",
-        view.environment.name.as_str(),
-    ])))
+    if faults.contains(&Fault::Image) {
+        let revision = view.deployment.saved.to_string();
+        failure = failure.hint(Hint::Undo(command(
+            &[&["history", "undo", revision.as_str()][..], &scope].concat(),
+        )));
+    }
+    // An upload deploys again only from `up`: a Deploy ships the last one that built.
+    if view.deployment.upload.is_some() {
+        return failure.hint(Hint::Retry(command(&[&["up"][..], &scope].concat())));
+    }
+    if faults.iter().any(|fault| *fault != Fault::Run) {
+        return failure;
+    }
+    failure.hint(Hint::Retry(command(&[&["deploy"][..], &scope].concat())))
 }
 
 #[cfg(test)]
@@ -476,6 +567,102 @@ mod tests {
         );
     }
 
+    fn hints(failure: &Failure) -> Vec<String> {
+        failure
+            .hints()
+            .iter()
+            .map(|hint| match hint {
+                Hint::Next(command) => format!("next: {command}"),
+                Hint::Inspect(command) => format!("inspect: {command}"),
+                Hint::Retry(command) => format!("retry: {command}"),
+                Hint::Undo(command) => format!("undo: {command}"),
+                Hint::Closest(name) => format!("closest: {name}"),
+                Hint::Valid(names) => format!("valid: {}", names.join(", ")),
+            })
+            .collect()
+    }
+
+    fn failed_build(view: &mut DeploymentView) {
+        view.nodes[0].rows.clear();
+        view.builds = vec![
+            serde_json::from_value(json!({
+                "service": "web", "commit": null, "status": "failed", "message": "exit code: 7"
+            }))
+            .unwrap(),
+        ];
+    }
+
+    #[test]
+    fn a_failed_build_names_its_build_log_and_never_says_to_deploy_the_same_again() {
+        let mut view = view();
+        failed_build(&mut view);
+        assert_eq!(
+            hints(&failure(&view, command)),
+            ["inspect: ployz logs --deployment 7 --build web --project shop --env production"]
+        );
+    }
+
+    #[test]
+    fn a_failed_upload_retries_with_up_since_a_deploy_ships_the_last_one_that_built() {
+        let mut view = view();
+        view.deployment.upload = Some(
+            serde_json::from_value(json!({"digest": "a".repeat(64)})).unwrap(),
+        );
+        failed_build(&mut view);
+        assert_eq!(
+            hints(&failure(&view, command)),
+            [
+                "inspect: ployz logs --deployment 7 --build web --project shop --env production",
+                "retry: ployz up --project shop --env production",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_image_that_wont_pull_says_to_undo_it_not_to_read_old_logs_or_retry() {
+        let mut view = view();
+        for row in &mut view.nodes[0].rows {
+            if let RowState::Failed { step, .. } = &mut row.state {
+                *step = Some(FailedAt::Pull);
+            }
+        }
+        assert_eq!(
+            hints(&failure(&view, command)),
+            ["undo: ployz history undo 1 --project shop --env production"]
+        );
+    }
+
+    #[test]
+    fn a_superseded_deployment_names_its_successor_and_never_says_to_deploy_again() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Superseded;
+        view.deployment.outcome = None;
+        let mut newer = view.deployment.clone();
+        newer.number = Some(8);
+        newer.push = Some(
+            serde_json::from_value(json!({
+                "repository_id": 1, "branch": "main", "head": format!("bbe4f9e{}", "a".repeat(33))
+            }))
+            .unwrap(),
+        );
+        let failure = completion(&view, Some(&newer), command).unwrap_err();
+        let text = crate::ui::plain(&failure);
+        assert!(
+            text.contains("Deployment #7 was superseded by #8 (push bbe4f9e)."),
+            "{text}"
+        );
+        assert_eq!(
+            hints(&failure),
+            ["inspect: ployz deployment show 8 --project shop --env production"]
+        );
+        let alone = completion(&view, None, command).unwrap_err();
+        assert!(crate::ui::plain(&alone).contains("Deployment #7 was superseded."));
+        assert_eq!(
+            hints(&alone),
+            ["inspect: ployz deployment ls --project shop --env production"]
+        );
+    }
+
     #[test]
     fn a_failed_removal_never_says_to_retry_with_deploy() {
         let retries = |view: &DeploymentView| {
@@ -535,7 +722,7 @@ mod tests {
             Vec::new(),
             view.namespace.clone(),
         ));
-        assert!(completion(&view, command).is_ok());
+        assert!(completion(&view, None, command).is_ok());
         assert!(noop(&view));
         let warning = DeployWarning::ObservationOmitted {
             kind: ObservationKind::Container,
@@ -543,7 +730,7 @@ mod tests {
             gap: None,
         };
         view.preview.as_mut().unwrap().warnings.push(warning);
-        assert!(completion(&view, command).is_ok());
+        assert!(completion(&view, None, command).is_ok());
         let DeployWarning::ObservationOmitted { gap, .. } =
             view.preview.as_mut().unwrap().warnings.first_mut().unwrap()
         else {
@@ -554,7 +741,7 @@ mod tests {
             reason: ObservationGapReason::Down,
         });
         assert_eq!(
-            completion(&view, command).unwrap_err().printed_exit(),
+            completion(&view, None, command).unwrap_err().printed_exit(),
             Some(3)
         );
         assert!(!noop(&view));
@@ -600,7 +787,7 @@ mod tests {
             },
         ];
         assert!(!noop(&view) && visible(&view));
-        assert!(completion(&view, command).is_ok());
+        assert!(completion(&view, None, command).is_ok());
         let rows: Vec<_> = frame(&view)
             .rows
             .into_iter()
@@ -671,7 +858,7 @@ mod tests {
             },
         ];
         assert!(!noop(&view) && visible(&view));
-        assert!(completion(&view, command).is_ok());
+        assert!(completion(&view, None, command).is_ok());
         assert!(frame(&view).rows.iter().any(|row| {
             row.subject == Subject::Unlocated(QualifiedService::system_ingress())
                 && row.state == State::Unknown

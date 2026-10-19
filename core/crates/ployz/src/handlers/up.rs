@@ -135,8 +135,11 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         if !shipped.presented {
             say_view(view);
         }
-        for url in &up.urls {
-            crate::ui::stream(format_args!("Open {url}"));
+        // A failed Deployment left the app as it was, or not running at all.
+        if shipped.ran.is_ok() {
+            for url in &up.urls {
+                crate::ui::stream(format_args!("Open {url}"));
+            }
         }
         if let Some(dashboard) = &up.dashboard {
             crate::ui::stream(format_args!("Dashboard: {dashboard}"));
