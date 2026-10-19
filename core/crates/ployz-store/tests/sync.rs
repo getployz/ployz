@@ -39,7 +39,10 @@ fn at(environment: &str) -> EnvironmentRef {
 /// production runs `web` (image `web:1`, `PLAIN=1`) and `db`; Branch `fix-web` has
 /// its own `web` and uses `db` live.
 fn shop(deployed: bool) -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open(), deployed)
+}
+
+fn shop_in(store: ConfigStore, deployed: bool) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -1086,6 +1089,32 @@ fn a_new_branch_closing_under_a_removed_branchs_name_admits_its_own_removal() {
     assert_eq!(
         (admitted.id, admitted.status),
         (id, DeploymentStatus::Applied)
+    );
+}
+
+#[test]
+fn a_close_whose_removal_row_is_gone_admits_its_removal_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap(), true);
+    close_by_sync(&store, &who, 30, "web:2");
+    assert_eq!(swept(&store, &who), vec!["fix-web".to_owned()]);
+    let (first, admitted) = admit_removal(&store, &who, &Trusted::default());
+    admitted.unwrap();
+    // The mark names its removal in JSON, so the row can go while the mark stays.
+    backend::execute(
+        &url,
+        &format!(
+            "DELETE FROM config_deployment WHERE id = '{}'",
+            first.as_str()
+        ),
+    );
+    assert_eq!(swept(&store, &who), vec!["fix-web".to_owned()]);
+    let (id, admitted) = admit_removal(&store, &who, &Trusted::default());
+    let admitted = admitted.unwrap();
+    assert_eq!(
+        (admitted.id, admitted.status),
+        (id, DeploymentStatus::Queued)
     );
 }
 
