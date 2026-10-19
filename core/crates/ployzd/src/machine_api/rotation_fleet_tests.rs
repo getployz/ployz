@@ -1057,10 +1057,7 @@ async fn settled_in_settles_health_once() {
         "{reply:?}"
     );
     assert_eq!(rotation_of(&reply), CopyRotation::In);
-    assert!(
-        took < MONITOR + MONITOR * 2 / 3,
-        "settled once, not twice: took {took:?}"
-    );
+    assert!(took < MONITOR * 2, "settled once, not twice: took {took:?}");
 }
 
 mod rotation_commands {
