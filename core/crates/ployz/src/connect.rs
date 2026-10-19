@@ -542,7 +542,8 @@ pub async fn connect_selected_with(
     })
 }
 
-async fn connect_one(
+/// Dial and confirm one entry.
+pub(crate) async fn connect_one(
     connection: &Connection,
     source: &ConnectionSource,
     connector: &Arc<dyn Connector>,

@@ -3061,3 +3061,86 @@ mod serving_pointer {
         std::fs::remove_dir_all(dir).ok();
     }
 }
+
+async fn select_endpoint(
+    service: &MachineService,
+    peer: MachineId,
+) -> Result<ployz_core::EndpointSelected, ployz_core::RpcError> {
+    let response = service
+        .select_endpoint(Request::new(
+            op::SelectEndpoint::into_request(ployz_core::SelectEndpointRequest {
+                peer,
+                endpoint: ployz_core::SelectedEndpoint("198.51.100.7:51820".parse().unwrap()),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    if let RpcResponseBody::EndpointSelected(selected) = response.body {
+        return Ok(selected);
+    }
+    let RpcResponseBody::Error(error) = response.body else {
+        panic!("unexpected response {:?}", response.body);
+    };
+    Err(error)
+}
+
+#[tokio::test]
+async fn an_operator_endpoint_reaches_this_machines_wireguard_and_never_names_itself() {
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-select-endpoint-{}", MachineId::random()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let own_id = store.record().id();
+    let without_mesh = MachineService::with_cluster(store.clone(), None);
+    assert_eq!(
+        select_endpoint(&without_mesh, MachineId::random())
+            .await
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Unavailable
+    );
+
+    let (chooser, mut choices) = tokio::sync::mpsc::channel(1);
+    let mut service = MachineService::with_cluster(store, None);
+    service.endpoint_chooser = Some(chooser);
+    let known = MachineId::random();
+    let plane = tokio::spawn(async move {
+        let mut taken = Vec::new();
+        while let Some(choice) = choices.recv().await {
+            let crate::network::EndpointChoice {
+                peer,
+                endpoint,
+                applied,
+            } = choice;
+            let outcome = if peer == known {
+                taken.push((peer, endpoint));
+                Ok(())
+            } else {
+                Err(crate::network::ChoiceRefused::UnknownPeer(peer))
+            };
+            applied.send(outcome).unwrap();
+        }
+        taken
+    });
+
+    assert_eq!(
+        select_endpoint(&service, own_id).await.unwrap_err().code,
+        RpcErrorCode::InvalidArgument
+    );
+    let selected = select_endpoint(&service, known).await.unwrap();
+    assert_eq!(selected.peer, known);
+    assert_eq!(
+        select_endpoint(&service, MachineId::random())
+            .await
+            .unwrap_err()
+            .code,
+        RpcErrorCode::NotFound
+    );
+    drop(service);
+    assert_eq!(plane.await.unwrap(), [(known, selected.endpoint)]);
+    std::fs::remove_dir_all(data_dir).ok();
+}

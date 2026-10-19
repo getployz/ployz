@@ -361,7 +361,39 @@ given to `ployz server init`, `ployz server add` or `ployz server set`. To chang
 `ployz server set` again.
 
 If every server's address changed at once, the servers can't reach each other to share the new
-addresses, and each one shows the others as unreachable.
+addresses, and each one shows the others as unreachable. [Tell them where one of them
+is](#servers-lost-each-other-after-their-ips-changed).
+
+## Servers lost each other after their IPs changed
+
+Every server got a new public IP address at once, for example after a provider moved or restarted
+them. Each server shows itself running and the others as not answering, in `ployz server ls` and in
+Ployz Cloud, because each one still dials the others at their old addresses.
+
+Tell the servers where one of them is now. Run this once, with that server's name and its new
+public IP address:
+
+```sh
+ployz server set web-2 --wg-endpoint 203.0.113.20
+```
+
+Every other server the command reaches starts dialing `web-2` at that address right away; WireGuard
+uses port 51820 unless you name another, as in `203.0.113.20:51821`. Once one of them reaches
+`web-2`, `web-2` answers from its own new address and the two find each other, usually within
+seconds. The command says which servers took the address, then saves it on `web-2`:
+
+```text
+web-1 now dials web-2 at 203.0.113.20:51820.
+Updated Server web-2.
+```
+
+If `web-2` still can't be reached, the second line reads `! web-2 unreachable; its record is
+unchanged.` and the command still succeeds. Run it again once both servers show up in `ployz server
+ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
+server that still shows as not answering.
+
+Run it from your machine with Ployz Cloud or a context that reaches the other servers, or on one of
+the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
 ## Services can't resolve each other's names
 

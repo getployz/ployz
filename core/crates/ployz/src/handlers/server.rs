@@ -11,7 +11,7 @@ use crate::cli::{
 };
 use ployz_core::{
     AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineName, MachineTarget, MachineUpdate,
-    PublicIpUpdate, RpcErrorCode, UpdateMachineRequest, op,
+    PublicIpUpdate, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
@@ -33,6 +33,7 @@ mod add;
 pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
+mod endpoint;
 pub(super) mod enroll;
 pub(super) mod forget;
 mod helpers;
@@ -240,6 +241,42 @@ async fn answering(
     }
 }
 
+/// Every Server [`connect`] could enter by, in its order: Cloud's Server Access when
+/// signed in, else the `--connect`, `--context` or local daemon connections.
+async fn entries(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<SelectedConnections, Error> {
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    if direct.is_none() && context.is_none() {
+        let store = CredentialStore::beside(&super::config_path(matches)?);
+        match cloud_account::from_env(&store).await {
+            Ok(credential) => {
+                let access = cloud_account::server_access(&credential).await?;
+                if access.connections.is_empty() {
+                    return Err(if access.unreachable.is_empty() {
+                        no_servers()
+                    } else {
+                        no_reachable_server(&access.unreachable)
+                    });
+                }
+                return Ok(SelectedConnections {
+                    source: ConnectionSource::Cloud,
+                    connections: access.connections,
+                });
+            }
+            Err(LoginError::SignedOut) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(crate::connect::resolve_connections(
+        &super::config_path(matches)?,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )?)
+}
+
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
 async fn dial(
     matches: &ArgMatches,
@@ -380,55 +417,128 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     );
     let rerun = super::rerun(matches, &args);
     let ingress = IngressImage::given_or(image.cloned(), IngressImage::Keep);
-    let accepts_ingress = update.accepts_ingress;
     let selector = MachineTarget::parse(selector)?;
-    let recovery_matches = matches.clone();
-    with_client(root, |client| {
-        Box::pin(async move {
-            let machine = client
-                .invoke::<op::UpdateMachine>(
-                    UpdateMachineRequest { update },
-                    &selector,
-                    Some(TARGET_RPC_TIMEOUT),
-                )
-                .await?
-                .machine;
-            crate::ui::stream(format_args!("Updated Server {}.", machine.name));
-            // The update is committed; starting the Ingress Proxy for a new ingress role is a
-            // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
-            // advertising the Server at its next sync, and `server rm` stops the proxy.
-            if accepts_ingress != Some(true) {
-                return crate::ui::emit(&json!({ "server": server_json(&machine) }));
-            }
-            let followed = async {
-                crate::cluster::wait_for_role(
-                    client,
-                    &machine.id,
-                    crate::cluster::RoleSetting::IngressOn,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map_err(|error| match error {
-                    RoleWaitError::Connect(error) => Error::from(error),
-                    error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
-                        Error::from(error)
-                    }
-                })?;
-                crate::ingress::follow_roles(client, ingress).await
-            }
-            .await;
-            crate::ui::emit_committed(
-                json!({ "server": server_json(&machine), "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
-                followed.map(drop).map_err(|error| {
-                    ingress_incomplete(
-                        "Server updated",
-                        super::ingress_hints(error, |args| super::rerun(&recovery_matches, args)),
-                        rerun,
-                    )
-                }),
-            )
-        })
+    let seed = update
+        .advertised_endpoints
+        .as_ref()
+        .and_then(|endpoints| endpoints.first())
+        .map(|endpoint| SelectedEndpoint(endpoint.0));
+    let recovery = matches.clone();
+    let Some(address) = seed else {
+        return with_client(root, |client| {
+            Box::pin(apply_update(
+                client, selector, update, None, ingress, rerun, recovery,
+            ))
+        });
+    };
+    super::runtime()?.block_on(async {
+        let context = matches.get_one::<String>("context").map(String::as_str);
+        let entries = entries(matches, context).await?;
+        let connector =
+            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+        let mut seeding = endpoint::seed(&entries, Arc::new(connector), &selector, address).await;
+        if let Some(sentence) = seeding.sentence() {
+            crate::ui::stream(sentence);
+        }
+        let Some(mut client) = seeding.updater.take() else {
+            return Err(unseeded(&seeding));
+        };
+        apply_update(
+            &mut client,
+            selector,
+            update,
+            Some(seeding),
+            ingress,
+            rerun,
+            recovery,
+        )
+        .await
     })
+}
+
+/// No Server took the endpoint and none was reached to update the target: the first failure.
+fn unseeded(seeding: &endpoint::Seeding) -> Error {
+    seeding.failures.first().map_or_else(
+        || Error::not_found("no Server took the endpoint"),
+        |missed| {
+            Error::from(missed.error.clone()).context(format!("{} did not answer.", missed.entry))
+        },
+    )
+}
+
+/// Update the target's record. With `seeding`, a target that cannot be reached still
+/// leaves the other Servers dialing it, and the command succeeds.
+async fn apply_update(
+    client: &mut Client,
+    selector: MachineTarget,
+    update: MachineUpdate,
+    seeding: Option<endpoint::Seeding>,
+    ingress: IngressImage,
+    rerun: String,
+    recovery: ArgMatches,
+) -> Result<(), Error> {
+    let accepts_ingress = update.accepts_ingress;
+    let updated = client
+        .invoke::<op::UpdateMachine>(
+            UpdateMachineRequest { update },
+            &selector,
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await;
+    let machine = match (updated, &seeding) {
+        (Ok(updated), _) => updated.machine,
+        (Err(error), Some(seeding)) if !seeding.dialed_by.is_empty() => {
+            let name = seeding.target.as_ref().map_or_else(
+                || selector.as_str().to_owned(),
+                |target| target.name.to_string(),
+            );
+            crate::ui::warn(format!("{name} unreachable; its record is unchanged."));
+            return crate::ui::emit(&json!({
+                "server": null,
+                "endpoint": seeding,
+                "target_error": error,
+            }));
+        }
+        (Err(error), _) => return Err(error.into()),
+    };
+    crate::ui::stream(format_args!("Updated Server {}.", machine.name));
+    // The update is committed; starting the Ingress Proxy for a new ingress role is a
+    // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
+    // advertising the Server at its next sync, and `server rm` stops the proxy.
+    if accepts_ingress != Some(true) {
+        return crate::ui::emit(&json!({ "server": server_json(&machine), "endpoint": seeding }));
+    }
+    let followed = async {
+        crate::cluster::wait_for_role(
+            client,
+            &machine.id,
+            crate::cluster::RoleSetting::IngressOn,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| match error {
+            RoleWaitError::Connect(error) => Error::from(error),
+            error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
+                Error::from(error)
+            }
+        })?;
+        crate::ingress::follow_roles(client, ingress).await
+    }
+    .await;
+    crate::ui::emit_committed(
+        json!({
+            "server": server_json(&machine),
+            "endpoint": seeding,
+            "ingress": followed.as_ref().ok().and_then(Option::as_ref),
+        }),
+        followed.map(drop).map_err(|error| {
+            ingress_incomplete(
+                "Server updated",
+                super::ingress_hints(error, |args| super::rerun(&recovery, args)),
+                rerun,
+            )
+        }),
+    )
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
@@ -629,7 +739,9 @@ pub(super) fn set_command(command: Command) -> Command {
                         .value_name("N|auto")
                         .help("Builds this Server runs at once; auto follows its roles and RAM"),
                 )
-                .arg(many("wg-endpoint", None))
+                .arg(many("wg-endpoint", None).value_name("IP[:PORT]").help(
+                    "Where peers reach this Server over WireGuard; every other Server the command reaches dials the first one now, even if this Server is unreachable",
+                ))
                 .arg(ingress_image())
                 .arg(positional("server", true))
 }

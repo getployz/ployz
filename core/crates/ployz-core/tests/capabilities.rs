@@ -11,8 +11,9 @@ use ployz_core::{
     PUBLISH_SERVING_POINTER_CAPABILITY, PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
     READ_SERVING_POINTER_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
+    SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -34,6 +35,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (
             SET_PUSH_TARGET_CAPABILITY,
             "ployz.machine.set-push-target.v1",
+        ),
+        (
+            SELECT_ENDPOINT_CAPABILITY,
+            "ployz.network.select-endpoint.v1",
         ),
         (LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1"),
         (
@@ -113,6 +118,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.register.v1",
             "ployz.machine.set-management-client.v1",
             "ployz.machine.set-push-target.v1",
+            "ployz.network.select-endpoint.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
             "ployz.machine.upgrade.request.v1",
@@ -197,6 +203,10 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         "/ployz.rpc.v1.MachineRpc/SetPushTarget"
     );
     assert_eq!(
+        op::SelectEndpoint::PATH,
+        "/ployz.rpc.v1.MachineRpc/SelectEndpoint"
+    );
+    assert_eq!(
         op::RequestMachineUpgrade::PATH,
         "/ployz.rpc.v1.MachineRpc/RequestMachineUpgrade"
     );
@@ -245,6 +255,10 @@ const FIELD_FLOOR: &[&str] = &[
 
 /// Each capability above the floor, and what a caller does when a Machine lacks it.
 const ABOVE_FLOOR: &[(&str, &str)] = &[
+    (
+        "ployz.network.select-endpoint.v1",
+        "refused legibly: `server set --wg-endpoint` lists the Server as missed and still updates the target",
+    ),
     (
         "ployz.machine.set-push-target.v1",
         "gated: the SDK checks the contract before calling",

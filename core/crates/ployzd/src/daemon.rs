@@ -301,7 +301,9 @@ impl Daemon {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let running_builds = builds.running_builds();
         builds.follow(local.watch());
+        let (endpoint_chooser, endpoint_choices) = tokio::sync::mpsc::channel(8);
         let machine_api = MachineApi::builder(local.clone())
+            .with_endpoint_chooser(endpoint_chooser)
             .with_volume_plugin(plugin.clone())
             .with_build_grants(Arc::clone(&grants))
             .with_builds(builds)
@@ -364,7 +366,12 @@ impl Daemon {
             let network_runner = async {
                 if let Some(network) = &mut network {
                     network
-                        .run(machine_view.clone(), local.clone(), shutdown.clone())
+                        .run(
+                            machine_view.clone(),
+                            local.clone(),
+                            endpoint_choices,
+                            shutdown.clone(),
+                        )
                         .await
                 } else {
                     shutdown.cancelled().await;

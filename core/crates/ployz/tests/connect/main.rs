@@ -46,6 +46,7 @@ mod sdk_update_machine;
 mod sdk_upgrade_machine;
 mod sdk_volumes;
 mod sdk_watch;
+mod server_endpoint_cli;
 mod support;
 mod unix_session;
 use support::*;

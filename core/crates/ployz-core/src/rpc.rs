@@ -25,7 +25,8 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    PinnedAddresses, QualifiedService, ResolvedServiceSpec, ServingPointer, StorageChoice,
+    PinnedAddresses, QualifiedService, ResolvedServiceSpec, SelectedEndpoint, ServingPointer,
+    StorageChoice,
     WireGuardPublicKey,
 };
 
@@ -383,6 +384,23 @@ pub struct SetPushTargetRequest {
 pub struct PushTargetSet {
     #[ts(type = "string | null")]
     pub url: Option<url::Url>,
+}
+
+/// An operator's endpoint for reaching `peer` from the Machine that takes the request.
+///
+/// It sets only that Machine's own Selected Endpoint; `peer`'s record is unchanged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectEndpointRequest {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
+}
+
+/// The Machine that took a [`SelectEndpointRequest`] now dials `endpoint` for `peer`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EndpointSelected {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
 }
 
 /// The place one Container creation lands on a Machine. The same slot names the
@@ -1355,6 +1373,7 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     PushTargetSet(PushTargetSet) => "push_target_set";
+    EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";

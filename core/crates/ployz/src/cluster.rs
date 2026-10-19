@@ -135,6 +135,21 @@ impl Client {
             .map_err(|_| ConnectError::EntryNotReady)?
     }
 
+    /// The id of the Machine this client enters by.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport or remote error when the entry does not describe itself.
+    pub(crate) async fn entry_id(&self) -> Result<MachineId, ConnectError> {
+        let payload = op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
+        apply_timeout(
+            Some(CONNECT_CONFIRM_TIMEOUT),
+            self.call_once::<op::DescribeContract>(payload, None),
+        )
+        .await
+        .map(|description| description.machine_id)
+    }
+
     /// Issue one unary RPC. The response type is derived from the RPC, so a request
     /// cannot be paired with the wrong response.
     ///
