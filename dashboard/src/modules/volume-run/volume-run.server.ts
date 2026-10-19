@@ -182,9 +182,24 @@ const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string
 
 const deploying = (lane: Pick<VolumeRunRow, "kind" | "heldBy">) => lane.kind === "deploy" || lane.heldBy !== null;
 
-/** `volumeName` is the Volume's name now, which the hints must use: the run keeps the name it started under. */
-const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind, volumeName: string) {
+/**
+ * The Volume's name now, read by the ids its Docker volume name carries, so a rename after the request resolved still
+ * shows: a run keeps the name it started under. A Volume no longer configured keeps that name.
+ */
+const currentVolumeName = Effect.fn("VolumeRun.currentVolumeName")(function* (run: Pick<VolumeRunRow, "organizationId" | "dockerVolume" | "volumeName">) {
+  const parsed = parseDockerVolumeName(run.dockerVolume);
+  if (parsed === null) return run.volumeName;
+  const { namespaces } = yield* readStore(run.organizationId, { query: "namespaces" });
+  const owned = namespaces.find((entry) => entry.namespace === parsed.namespace);
+  if (owned === undefined) return run.volumeName;
+  const { volumes } = yield* readStore(run.organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } });
+  return volumes.find((volume) => volume.id === parsed.volumeId)?.name ?? run.volumeName;
+});
+
+/** Names the Volume as it is called at the refusal, so the hints run as printed. */
+const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind) {
   const run = volumeRunView(lane);
+  const volumeName = yield* currentVolumeName(lane);
   if (deploying(lane)) return { code: "conflict", message: `${volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
   const refuse = (message: string, details: JsonValue = { run }) => ({ code: "conflict", message, details }) satisfies StoreRefusal;
   const input = laneInputOf(lane);
@@ -250,15 +265,18 @@ const refusedWhileOwed = (input: VolumeLaneInput, pending: Owed) => {
   return input.args.machine === undefined || input.args.machine === pending.current;
 };
 
-const owedRefusal = (pending: Owed, target: string | null): StoreRefusal => ({
-  code: "conflict",
-  message: `${pending.volumeName} finishes on ${target ?? "its new Server"}; ployz volume release ${pending.volumeName} finishes it now`,
-  details: { run: volumeRunView(pending) },
+const owedRefusal = Effect.fn("VolumeRun.owedRefusal")(function* (pending: Owed, target: string | null) {
+  const volumeName = yield* currentVolumeName(pending);
+  return {
+    code: "conflict",
+    message: `${volumeName} finishes on ${target ?? "its new Server"}; ployz volume release ${volumeName} finishes it now`,
+    details: { run: volumeRunView(pending) },
+  } satisfies StoreRefusal;
 });
 
 const namedOwedRefusal = Effect.fn("VolumeRun.namedOwedRefusal")(function* (pending: Owed) {
   const { name } = yield* machineNamed(pending.organizationId, pending.current);
-  return owedRefusal(pending, name ?? (yield* laneTarget(pending)));
+  return yield* owedRefusal(pending, name ?? (yield* laneTarget(pending)));
 });
 
 type DeleteMirrorArgs = VolumeRunArgs["delete_mirror"];
@@ -431,7 +449,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const lane = yield* activeLane(input.volumeId);
   if (lane !== undefined && (input.kind !== "release" || keepsLane(lane, "cancelled", "release"))) {
-    return { ok: false, refusal: yield* laneRefusal(lane, input.kind, volume.volumeName) } satisfies VolumeRunPlan;
+    return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   const { owed: pending } = yield* commitment(input.volumeId);
   if (pending !== null && input.kind !== "delete_mirror" && refusedWhileOwed(input, pending)) {
@@ -569,7 +587,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
     if (only !== undefined && lane?.id !== only) return yield* new LaneMoved({ active: lane });
     let taken: VolumeRunRow | undefined;
     if (lane !== undefined && end !== null) {
-      if (keepsLane(lane, end, input.kind)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind, volume.volumeName), busy: volumeRunView(lane) });
+      if (keepsLane(lane, end, input.kind)) return yield* new LaneRefused({ refusal: yield* laneRefusal(lane, input.kind), busy: volumeRunView(lane) });
       [taken] = yield* drizzle.update(volumeRun).set(ended(end, TAKEN_BY[end]))
         .where(and(eq(volumeRun.id, lane.id), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES), eq(volumeRun.phase, "warm")))
         .returning();
@@ -594,7 +612,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       const [held] = input.kind === "deploy" ? [] : yield* drizzle.select().from(volumeRun)
         .where(and(eq(volumeRun.volumeId, input.volumeId), isNotNull(volumeRun.heldBy)))
         .limit(1);
-      if (held !== undefined) return yield* new LaneRefused({ refusal: yield* laneRefusal(held, input.kind, volume.volumeName), busy: volumeRunView(held) });
+      if (held !== undefined) return yield* new LaneRefused({ refusal: yield* laneRefusal(held, input.kind), busy: volumeRunView(held) });
       const admitted = yield* admitOwed(inserted, input);
       // A release floors and plans on its own; only a yielding run fences the lane it took before it plans.
       if (inngestRunId === null) yield* enqueueRun(admitted, end === "yielded" ? taken?.kind ?? fences : undefined);
@@ -605,7 +623,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
     const active = yield* activeLane(input.volumeId, true);
     if (active === undefined && round < TAKE_ROUNDS) continue;
     if (active === undefined) return yield* new LaneChurn({ message: `runs on ${volume.volumeName} keep landing and ending; try again` });
-    return yield* new LaneRefused({ refusal: yield* laneRefusal(active, input.kind, volume.volumeName), busy: volumeRunView(active) });
+    return yield* new LaneRefused({ refusal: yield* laneRefusal(active, input.kind), busy: volumeRunView(active) });
   }
 });
 
@@ -628,7 +646,7 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
   }
   if (input.kind !== "release") {
     if (!refusedWhileOwed(input, pending)) return inserted;
-    return yield* new LaneRefused({ refusal: owedRefusal(pending, yield* laneTarget(pending)), busy: volumeRunView(pending), owed: pending });
+    return yield* new LaneRefused({ refusal: yield* owedRefusal(pending, yield* laneTarget(pending)), busy: volumeRunView(pending), owed: pending });
   }
   if (plan !== undefined && (plan.forward?.after !== pending.id || plan.forward.to !== pending.current)) {
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(pending) });

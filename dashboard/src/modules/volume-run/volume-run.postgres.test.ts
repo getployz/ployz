@@ -48,6 +48,7 @@ import {
   releaseLanesOff,
   requestVolumeRun,
   requireOwner,
+  resolveVolume,
   type RunContext,
   sendSwitch,
   setVolumeCopy,
@@ -673,6 +674,22 @@ describe("volume runs", () => {
         ok: false,
         refusal: { message: `files is busy with a mirror; ployz volume runs files ${first.id} follows it, and ployz volume release files stops it` },
       });
+    });
+
+    it("a Volume renamed after its request resolved is refused by the name it has at the refusal, and the printed runs command finds the run", async () => {
+      const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const resolved = await runEffect(resolveVolume(organizationId, environment, volumeId));
+      storeVolumes = storeVolumes.map((volume) => volume.id === volumeId ? { ...volume, name: "files" } : volume);
+
+      const refused = await runEffect(insertRun({ userId, organizationId }, { volumeId, kind: "sync", args: { full: false } }, resolved, crypto.randomUUID()));
+      expect(refused).toMatchObject({
+        ok: false,
+        refusal: { message: `files is busy with a mirror; ployz volume runs files ${first.id} follows it, and ployz volume release files stops it` },
+      });
+      const [, name, id] = /ployz volume runs (\S+) (\S+)/.exec(refused.ok ? "" : refused.refusal.message) ?? [];
+      const named = storeVolumes.find((volume) => volume.name === name);
+      expect(named?.id).toBe(volumeId);
+      expect((await runEffect(listVolumeRuns(organizationId, volumeId))).map((run) => run.id)).toContain(id);
     });
 
     it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
@@ -1666,6 +1683,16 @@ describe("volume runs", () => {
         { machine: { id: A, name: "fsn-1" }, answered: false },
         { machine: { id: B, name: "fsn-2" }, address: "fdcc::2", answered: true, view: { copy: slotCopy(G, null, "2") }, floorless: false },
       ];
+
+      it("names a Volume renamed since it resolved by its new name, so the release it prints runs", async () => {
+        await pending();
+        storeVolumes = storeVolumes.map((entry) => entry.id === volumeId ? { ...entry, name: "files" } : entry);
+
+        expect(await insert({ kind: "sync", args: { full: true } })).toMatchObject({
+          ok: false,
+          refusal: { message: "files finishes on fsn-2; ployz volume release files finishes it now" },
+        });
+      });
 
       it("refuses a move, a mirror, any sync, a seed and a removal of B's mirror, of a slot that resolved to no Machine or of every mirror, returning the release that failed as busy, and admits removing another mirror", async () => {
         const release = await pending();
