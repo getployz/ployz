@@ -33,6 +33,12 @@ pub(crate) enum LoginError {
         #[source]
         error: reqwest::Error,
     },
+    #[error("Cloud at {cloud} stopped answering after it got this change, so it may have applied.")]
+    Unanswered {
+        cloud: String,
+        #[source]
+        error: reqwest::Error,
+    },
     #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
     #[error("Cloud answered HTTP {status}{}", readable(.body))]
@@ -604,6 +610,18 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: Vec<u8>) -> Result<T,
 
 pub(crate) fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
     LoginError::Unreachable {
+        cloud: cloud.to_owned(),
+        error: error.without_url(),
+    }
+}
+
+/// Why a write to `cloud` failed in flight: one that never connected is unreachable,
+/// and one that left this device may have applied though its answer never came.
+pub(crate) fn lost(cloud: &str, error: reqwest::Error) -> LoginError {
+    if error.is_connect() {
+        return unreachable(cloud, error);
+    }
+    LoginError::Unanswered {
         cloud: cloud.to_owned(),
         error: error.without_url(),
     }

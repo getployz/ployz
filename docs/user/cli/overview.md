@@ -305,6 +305,13 @@ Scripts can tell failures apart by exit code:
 
 `ployz exec` exits with your command's own exit code.
 
+A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
+`service add` and other changes exit 1 with `Cloud ... stopped answering after it got this
+change, so it may have applied.` Its `inspect:` line names the read that shows whether it
+landed, such as `ployz diff` or, for a deploy, `ployz deployment ls`. Check there before you
+run it again. With `--json` the error's `details` says `"writes": "unknown"`. When Cloud
+can't be reached at all, the error says `Could not reach Cloud` and nothing changed.
+
 A command that deletes something, such as `ployz project rm shop`, shows what goes and asks you
 to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
 `--json` it never asks: it exits 2 and prints the command to run instead, which passes the name

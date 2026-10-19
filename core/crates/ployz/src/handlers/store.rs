@@ -150,13 +150,16 @@ impl<'m> Store<'m> {
 
     /// [`Self::write`], leaving the refusal for the caller to add a next step to.
     pub(crate) fn try_write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
-        self.approved(command, &Trusted::default())
+        self.approved(command, &Trusted::default(), Some(&["diff"]))
     }
 
+    /// Apply `command`, asking for approval when Cloud does. A write Cloud took but
+    /// never answered names `check`, the read that shows whether it applied.
     fn approved<C: Tell>(
         &self,
         command: &C,
         trusted: &Trusted,
+        check: Option<&[&str]>,
     ) -> Result<C::Written, StoreCallError> {
         let mut approval = self
             .matches
@@ -170,6 +173,10 @@ impl<'m> Store<'m> {
                 .write(command, trusted.clone(), approval.as_deref())
             {
                 Err(StoreCallError::Refused(refused)) => refused,
+                Err(StoreCallError::Cloud(error @ LoginError::Unanswered { .. })) => {
+                    let check = check.map(|check| Hint::Inspect(next(self.matches, check)));
+                    return Err(StoreCallError::Stopped(Error::from(error).hint(check)));
+                }
                 written => return written,
             };
             let (Backend::Cloud(runtime, credential), Some(asked), false) =
@@ -206,6 +213,7 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            Some(&["diff"]),
         )
     }
 
@@ -230,6 +238,7 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            Some(&["deployment", "ls"]),
         )
     }
 
@@ -250,6 +259,7 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            None,
         )
     }
 

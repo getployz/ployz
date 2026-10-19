@@ -329,7 +329,10 @@ fn cut_off(tool: &str, deadline: Duration) -> RpcError {
 /// Whether Cloud may have acted on a request that failed this way.
 fn may_have_landed(error: &LoginError) -> bool {
     match error {
-        LoginError::Unreachable { .. } | LoginError::Status { .. } | LoginError::Reply(_) => true,
+        LoginError::Unreachable { .. }
+        | LoginError::Unanswered { .. }
+        | LoginError::Status { .. }
+        | LoginError::Reply(_) => true,
         LoginError::Unsupported(_)
         | LoginError::Store { .. }
         | LoginError::Corrupt { .. }

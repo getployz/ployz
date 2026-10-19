@@ -245,7 +245,9 @@ pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
             )
         }
         StoreCallError::Cloud(LoginError::Status { status, .. }) => *status >= 500,
-        StoreCallError::Cloud(LoginError::Unreachable { .. } | LoginError::Reply(_))
+        StoreCallError::Cloud(
+            LoginError::Unreachable { .. } | LoginError::Unanswered { .. } | LoginError::Reply(_),
+        )
         | StoreCallError::Stopped(_) => true,
         StoreCallError::Cloud(
             LoginError::Unsupported(_)

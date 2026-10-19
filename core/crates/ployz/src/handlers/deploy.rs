@@ -369,6 +369,13 @@ pub(super) fn execute(
             };
             return Err(if signal.is_cancelled() {
                 error.interrupted()
+            } else if runner.is_none() {
+                error
+                    .context(format!(
+                        "Stopped following Deployment #{}; it keeps running in Ployz Cloud.",
+                        admitted.number
+                    ))
+                    .hint(Hint::Inspect(hint))
             } else {
                 error
             });
