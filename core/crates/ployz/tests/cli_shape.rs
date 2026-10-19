@@ -816,6 +816,28 @@ fn waiting_cloud(
 }
 
 #[test]
+fn server_ls_lists_an_organization_without_servers_as_empty() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes, WaitingCloud::of(Vec::new()));
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, stderr) = run_json_with(&["server", "ls", "--json"], &token);
+    assert_eq!(code, Some(0), "{json} {stderr}");
+    assert_eq!(
+        json,
+        serde_json::json!({ "servers": [], "failures": [], "omitted": [] })
+    );
+
+    let (code, stdout, stderr) = run_output(&["server", "ls"], &token);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stdout.unwrap(),
+        "SERVER\tMEMBERSHIP\tSTORAGE\tPUBLIC IP\tSUBNET\tDAEMON\tOS\n"
+    );
+    assert!(stderr.contains("No Servers yet."), "{stderr}");
+}
+
+#[test]
 fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let cloud = waiting_cloud(routes.clone(), WaitingCloud::six());
