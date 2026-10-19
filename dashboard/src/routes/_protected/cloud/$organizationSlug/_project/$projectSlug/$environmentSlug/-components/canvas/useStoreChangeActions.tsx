@@ -1,7 +1,9 @@
 import { useRef, useState } from "react";
 import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
 import { DeletionDialog } from "#/components/deletion-dialog";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useStoreBusy } from "#/modules/config-store/store-pending";
+import { diffQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
@@ -29,6 +31,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
   version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS) {
   const writer = useStoreWriter(organizationSlug);
+  const scope = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
@@ -43,6 +46,12 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null): Promise<Outcome> {
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
+    // Pressing Deploy leaves a field, which stages its draft first; the bar already counts it. Once this tab's edits
+    // land, act on the review they answered. If one was refused, the shown review stands and the Store judges it.
+    if (await writer.landed()) {
+      const diff = scope.queryClient.getQueryData(storeViewOptions(organizationSlug, scope, diffQuery(environment)).queryKey);
+      if (diff?.ok) version = diff.value.version;
+    }
     try {
       await writer.commit(action === "deploy"
         ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }

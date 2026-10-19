@@ -66,7 +66,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   // The revision each Environment's own last save produced, which views may not show yet.
   const committed = new Map<string, number>();
   // Edits not yet settled, in any Environment: a command naming several Environments waits for all of them.
-  const unsettled = new Set<Promise<unknown>>();
+  const unsettled = new Set<Promise<boolean>>();
 
   /** The Environments whose views a command moves (null, every view). */
   function keysOf(command: ConfigCommand): ReadonlySet<string> | null {
@@ -91,7 +91,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   }
 
   function trackEdit(promise: Promise<unknown>) {
-    const settled = promise.then(() => undefined, () => undefined).finally(() => unsettled.delete(settled));
+    const settled = promise.then(() => true, () => false).finally(() => unsettled.delete(settled));
     unsettled.add(settled);
   }
 
@@ -141,6 +141,11 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       }, true);
       trackEdit(promise);
       return observeFailure({ isPersisted: { promise } });
+    },
+    /** Waits for every edit queued so far: true when there were some and each one landed. */
+    async landed(): Promise<boolean> {
+      const pending = [...unsettled];
+      return pending.length > 0 && (await Promise.all(pending)).every(Boolean);
     },
     /**
      * Any other command: its marks show at once over the cached views (`store-pending.ts`), and it saves in the

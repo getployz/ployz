@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import { diffQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { useStoreWriter } from "#/modules/config-store/store-write";
 import * as lens from "#/modules/runtime/use-runtime-lens";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
 import { useStoreChangeActions } from "./useStoreChangeActions";
@@ -32,7 +34,9 @@ const shown = (version: string) => `${version}#loss-shown`;
 
 function Deploy({ placementLoss }: { placementLoss: PlacementLoss }) {
   const { deploy, save, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id), placementLoss);
+  const writer = useStoreWriter("acme");
   return <>
+    <button type="button" onClick={() => void writer.edit({ environment: ref, changes: [] }).isPersisted.promise.catch(() => {})}>Stage</button>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
     <button type="button" onClick={() => void save("  Save this draft  ").then((saved) => saves.push(saved))}>Save now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
@@ -53,6 +57,9 @@ function setup(placementLoss = NO_LOSS) {
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   render(<Deploy placementLoss={placementLoss} />, { wrapper });
   const admits = () => write.mock.calls.map(([call]) => call?.data.command);
+  // The review the bar shows, which a landed edit answers anew.
+  const diffKey = storeViewOptions("acme", { queryClient, sessionId: "session", userId: "user" }, diffQuery(ref)).queryKey;
+  queryClient.setQueryData(diffKey, { ok: true, value: { version: "2:1:0" } } as never);
   return { write, admits };
 }
 
@@ -198,4 +205,33 @@ it("reports an earlier Save as not saved when a later one asks again", async () 
   await screen.findByText("pg-data");
   fireEvent.click(screen.getByText("Save now"));
   await waitFor(() => expect(saves).toEqual([false]));
+});
+
+// Pressing Deploy leaves a field, which stages its draft in the same gesture.
+const edited = { ok: true, value: { written: "edited", environment: { revision: 3 } }, answers: [{ query: diffQuery(ref), result: { ok: true, value: { version: "3:1:0" } } }] } as never;
+
+it("deploys the review that includes a draft staged on the way to Deploy", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce(admitted);
+
+  act(() => {
+    fireEvent.click(screen.getByText("Stage"));
+    fireEvent.click(screen.getByText("Deploy now"));
+  });
+
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
+it("keeps the shown review when that draft is refused, so the Store judges what the user saw", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(refusal("conflict", null)).mockResolvedValueOnce(admitted);
+
+  act(() => {
+    fireEvent.click(screen.getByText("Stage"));
+    fireEvent.click(screen.getByText("Deploy now"));
+  });
+
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "2:1:0" });
 });
