@@ -305,7 +305,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 if action == ployz_store::HistoryAction::Restore {
                     format!("Already matches #{revision}.")
                 } else {
-                    format!("#{revision} is already undone.")
+                    format!("Nothing to undo in #{revision}.")
                 }
             ),
         );

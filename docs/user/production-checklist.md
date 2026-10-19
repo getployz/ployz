@@ -48,8 +48,9 @@ list. Each item links to the page that does it.
   database on it is down until the server is back. See
   [When a server goes down](services/scaling.md#when-a-server-goes-down).
 - **No code rollbacks.** Settings, image tags included, roll back from **Deployments** >
-  **Versions** with **Roll back to #N**. See [Saved history](deploy/deployments.md#saved-history).
-  Code from Git doesn't, so revert the commit and push.
+  **Versions** with **Roll back to #N**, then deploy. See
+  [Saved history](deploy/deployments.md#saved-history). Code from Git doesn't, so revert the
+  commit and push.
 - **No Docker Compose files.** Add each container as its own service.
 - **No autoscaling.** You choose the number of replicas.
 - **Three roles.** An organization has owners, admins and members, with no finer permissions. See

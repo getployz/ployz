@@ -3952,7 +3952,7 @@ fn history_says_nothing_staged_when_the_next_deploy_already_matches() {
     );
     assert_eq!(
         human(&["history", "undo", "2"]),
-        "#2 is already undone. Nothing staged.\n"
+        "Nothing to undo in #2. Nothing staged.\n"
     );
 
     ok(&store, &["deploy", "--skip-deploy"]);
@@ -3962,7 +3962,7 @@ fn history_says_nothing_staged_when_the_next_deploy_already_matches() {
     );
     assert_eq!(
         human(&["history", "undo", "3"]),
-        "#3 is already undone. Nothing staged.\n"
+        "Nothing to undo in #3. Nothing staged.\n"
     );
 }
 
