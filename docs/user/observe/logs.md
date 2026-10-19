@@ -41,6 +41,11 @@ as `namespace/name`, either explicitly or through project or deployment scope.
 The command still needs a server observation and access to each selected server's
 log store. Servers that do not answer are named, and partial results exit with code 3.
 
+A name the environment doesn't have now, and that no retained line matches, fails with
+`No Service named nosvc in Environment production` and lists the services you can name. It exits
+with code 1. `--follow` needs a service the environment has now, deployed or not yet deployed, so
+it refuses any other name before reading.
+
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.
 

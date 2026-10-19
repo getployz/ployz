@@ -290,8 +290,10 @@ selection flags.
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.
 
-Add `--json` to any command to get one JSON object instead of text. If the command fails, that
-object is `{"error": {...}}`. Its `cause` lists every underlying error, outermost first, and
+Add `--json` to any command to get one JSON object instead of text. A stream, such as `ployz logs`,
+prints JSON Lines instead: one object per line. If the command fails before it prints anything,
+that object is `{"error": {...}}`. A stream that fails after it printed names the failure on stderr
+and exits with code 3. Its `cause` lists every underlying error, outermost first, and
 `details` holds the next command to run when there is one.
 
 Scripts can tell failures apart by exit code:
