@@ -4,6 +4,7 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::RpcErrorCode;
 use std::path::Path;
+use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
@@ -779,7 +780,7 @@ pub(crate) fn word(value: &impl serde::Serialize) -> String {
         .unwrap_or_default()
 }
 
-/// A value as a change line shows it: a long one cut to its start and length, so one big variable doesn't fill the terminal.
+/// A value as a change line shows it: a long one cut to the start that fits 80 columns, and its length, so one big variable doesn't fill the terminal.
 pub(crate) fn shown(value: &serde_json::Value) -> String {
     const SHOWN: usize = 80;
     let length = value.as_str().map_or_else(
@@ -793,7 +794,7 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
     let mut width = 0;
     let start: String = pieces(&text)
         .take_while(|piece| {
-            width += piece.chars().count();
+            width += piece.width();
             width <= SHOWN
         })
         .collect();
@@ -1096,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_value_is_cut_between_escapes_never_inside_one() {
+    fn a_long_value_is_cut_within_80_columns_never_inside_an_escape() {
         let cut = |before: usize, odd: char| {
             shown(&json!(format!(
                 "{}{odd}{}",
@@ -1117,6 +1118,9 @@ mod tests {
             cut(70, '\u{1}'),
             format!(r#""{}\u0001zzz… (91 chars)"#, a(70))
         );
+        assert_eq!(cut(78, '界'), format!("\"{}… (91 chars)", a(78)));
+        assert_eq!(cut(78, '😀'), format!("\"{}… (91 chars)", a(78)));
+        assert_eq!(cut(77, '界'), format!("\"{}界… (91 chars)", a(77)));
     }
 
     #[test]
