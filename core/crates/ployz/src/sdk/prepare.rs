@@ -180,16 +180,12 @@ pub async fn select_build_machine(
             machine.name, machine.id
         ));
     }
+    if reasons.is_empty() {
+        reasons.push("no Machines observed".into());
+    }
     Err(ConnectError::Remote(RpcError {
         code: RpcErrorCode::Unsupported,
-        message: format!(
-            "no eligible Build Machine: {}",
-            if reasons.is_empty() {
-                "no Machines observed".into()
-            } else {
-                reasons.join("; ")
-            }
-        ),
+        message: format!("no eligible Build Machine: {}", reasons.join("; ")),
         details: serde_json::json!({"rejections": rejected, "reasons": reasons}),
         cause: Vec::new(),
     }))
