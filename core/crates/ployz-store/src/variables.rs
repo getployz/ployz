@@ -316,13 +316,11 @@ pub(crate) fn rename(
         .configs
         .iter()
         .flat_map(|config| {
-            config.files.iter().filter_map(move |(file, content)| {
-                content
-                    .content
-                    .iter()
-                    .any(reads)
-                    .then(|| format!("{}/{file}", config.name))
-            })
+            config
+                .files
+                .iter()
+                .filter(|(_, content)| content.content.iter().any(reads))
+                .map(move |(file, _)| format!("{}/{file}", config.name))
         })
         .collect();
     if !files.is_empty() {
