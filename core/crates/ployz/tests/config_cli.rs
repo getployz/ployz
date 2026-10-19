@@ -1101,7 +1101,8 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
                     &["env", "rm", "staging", "--confirm", "shop/staging"],
                 );
                 assert_eq!(code, Some(3), "{admitted}");
-                assert_eq!(admitted["remove"], true, "{admitted}");
+                assert_eq!(admitted["removal"], "removing", "{admitted}");
+                assert_eq!(admitted["deployments"][0]["remove"], true, "{admitted}");
                 // A removal that didn't apply still names what the name confirmed.
                 assert_eq!(admitted["effects"][0]["name"], "web", "{admitted}");
             }
@@ -4994,4 +4995,75 @@ fn with_a_context_a_signed_in_command_dials_directly() {
         assert_ne!(code, Some(0), "{args:?}: no context lab to dial: {json}");
     }
     assert!(approvals.runs().is_empty(), "{:?}", approvals.runs());
+}
+
+#[test]
+fn a_removal_no_server_answers_is_still_removing_and_retries_with_the_same_rm() {
+    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        dispatch(store, written);
+        if let Written::Removal(Removal::Removing { left, .. }) = written {
+            for deployment in left.iter().filter_map(|left| left.deployment.clone()) {
+                dispatch(store, &Written::Deployment(deployment));
+            }
+        }
+    }
+    let cloud = Target::Cloud {
+        url: fake_cloud_with_dispatch(worker),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["env", "new", "staging"]);
+    let web = ["service", "add", "web", "--image", "nginx:alpine"];
+    ok(&cloud, &[&web[..], &["--env", "staging"]].concat());
+    assert_eq!(
+        ployz(Some(&cloud), &["deploy", "--env", "staging"]).0,
+        Some(3)
+    );
+
+    let removing = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = cloud.command(home.path()).args(args).output().unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(3), "{args:?}: {stderr}");
+        let retry = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("retry: "))
+            .unwrap_or_else(|| panic!("{args:?} names no retry: {stderr}"))
+            .to_owned();
+        (output.stdout, retry)
+    };
+    let (stdout, retry) = removing(&[
+        "--json",
+        "env",
+        "rm",
+        "staging",
+        "--confirm",
+        "shop/staging",
+    ]);
+    let removed: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(removed["removal"], "removing", "{removed}");
+    assert_eq!(removed["environment"]["name"], "staging", "{removed}");
+    assert_eq!(removed["deployments"][0]["status"], "failed", "{removed}");
+    assert_eq!(
+        removed["left"][0]["deployment"]["status"], "failed",
+        "{removed}"
+    );
+    assert_eq!(retry, "ployz env rm staging --confirm shop/staging");
+
+    // The retry it names runs the removal again rather than refusing.
+    let rerun: Vec<&str> = retry.split(' ').skip(1).collect();
+    let (stdout, retry) = removing(&rerun);
+    let said = String::from_utf8(stdout).unwrap();
+    assert!(
+        said.contains("Deployment #3 of shop/staging: failed"),
+        "{said}"
+    );
+    assert!(!said.contains("Cloud goes on"), "{said}");
+    assert_eq!(retry, "ployz env rm staging --confirm shop/staging");
+
+    let (stdout, retry) = removing(&["--json", "project", "rm", "shop", "--confirm", "shop"]);
+    let removed: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(removed["removal"], "removing", "{removed}");
+    assert_eq!(removed["project"]["name"], "shop", "{removed}");
+    assert_eq!(retry, "ployz project rm shop --confirm shop");
 }
