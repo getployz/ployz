@@ -127,6 +127,24 @@ it.live("a removal names the Servers that didn't answer, Volumes or not, and eve
       .toBeUndefined();
   }));
 
+it.live("a malformed removal probes no Server", () =>
+  Effect.gen(function* () {
+    const services = yield* cloud();
+    const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
+    yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
+    const observe = vi.fn(async (): Promise<VolumeObservation> => ({ sought: [], held: [], unanswered: [] }));
+    const malformed: JsonObject[] = [
+      { command: "remove" },
+      { command: "remove", project: 5 },
+      { command: "admit", admit: "remove", environment: 5 },
+    ];
+    for (const command of malformed) {
+      expect(yield* provided(gatherUnanswered(ORGANIZATION, { operation: "write", command: raw(command) }, undefined)
+        .pipe(Effect.provideService(VolumeObserver, { observe })))).toBeUndefined();
+    }
+    expect(observe).not.toHaveBeenCalled();
+  }));
+
 it.live("a removal whose Server connections fail to load says Cloud couldn't look, never that every Server answered", () =>
   Effect.gen(function* () {
     const services = yield* cloud();

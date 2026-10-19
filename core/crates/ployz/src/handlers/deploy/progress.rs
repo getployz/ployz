@@ -223,17 +223,27 @@ pub(super) fn completion(
     Ok(())
 }
 
-/// How to retry a removal or shutdown that didn't apply when the command that ran it
-/// is `deployment retry` or `start`: retry this Deployment. A Deploy can't.
+/// How to retry a removal or shutdown that ended without applying when the command that
+/// ran it is `deployment retry` or `start`: retry this Deployment in its own Environment.
+/// A Deploy can't.
 pub(super) fn removal_retry(
     view: &DeploymentView,
     command: impl Fn(&[&str]) -> String,
 ) -> Option<Hint> {
-    (view.deployment.remove && view.deployment.status != DeploymentStatus::Applied).then(|| {
+    // The statuses `deployment retry` accepts.
+    let ended = matches!(
+        view.deployment.status,
+        DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled
+    );
+    (view.deployment.remove && ended).then(|| {
         Hint::Retry(command(&[
             "deployment",
             "retry",
             &view.deployment.number.to_string(),
+            "--project",
+            view.environment.project.as_str(),
+            "--env",
+            view.environment.name.as_str(),
         ]))
     })
 }
@@ -425,12 +435,27 @@ mod tests {
         let mut removal = view();
         assert_eq!(removal_retry(&removal, command), None);
         removal.deployment.remove = true;
-        assert_eq!(
-            removal_retry(&removal, command),
-            Some(Hint::Retry("ployz deployment retry 7".to_owned()))
-        );
-        removal.deployment.status = DeploymentStatus::Applied;
-        assert_eq!(removal_retry(&removal, command), None);
+        let retry = Some(Hint::Retry(
+            "ployz deployment retry 7 --project shop --env production".to_owned(),
+        ));
+        for status in [
+            DeploymentStatus::Failed,
+            DeploymentStatus::Unknown,
+            DeploymentStatus::Cancelled,
+        ] {
+            removal.deployment.status = status;
+            assert_eq!(removal_retry(&removal, command), retry, "{status:?}");
+        }
+        for status in [
+            DeploymentStatus::Applied,
+            DeploymentStatus::Queued,
+            DeploymentStatus::Running,
+            DeploymentStatus::Cancelling,
+            DeploymentStatus::Superseded,
+        ] {
+            removal.deployment.status = status;
+            assert_eq!(removal_retry(&removal, command), None, "{status:?}");
+        }
     }
 
     #[test]

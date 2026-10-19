@@ -290,7 +290,7 @@ fn ship(
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<(), Error> {
     let shipped = execute(matches, store, admitted, None, events)?;
-    let again = progress::removal_retry(&shipped.view, |words| next(matches, words));
+    let again = progress::removal_retry(&shipped.view, |words| super::rerun(matches, words));
     shipped.finish().map_err(|error| match again {
         Some(again) => error.hint(again),
         None => error,

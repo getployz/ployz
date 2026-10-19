@@ -66,8 +66,9 @@ export const gatherUnanswered = Effect.fn("ConfigStore.gatherUnanswered")(functi
   volumes: VolumeObservation | undefined,
 ) {
   if (call.operation !== "write") return undefined;
-  const command = call.command;
-  const removes = command.command === "remove" || (command.command === "admit" && command.admit === "remove");
+  // Decoded before any Server is asked: a malformed removal is the Store's to refuse, not worth a probe.
+  const command = Option.getOrUndefined(Schema.decodeUnknownOption(EvidenceCommand)(call.command));
+  const removes = command?.command === "remove" || (command?.command === "admit" && command.admit === "remove");
   if (!removes) return undefined;
   if (volumes !== undefined) return volumes.unanswered;
   const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
