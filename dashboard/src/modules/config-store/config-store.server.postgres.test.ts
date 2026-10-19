@@ -1354,7 +1354,7 @@ it.live(
         const reservations = () => hostedDns.requests.filter((call) => call.method === "POST").length;
         const reserved = () => Effect.gen(function* () {
           const { drizzle } = yield* Database;
-          return (yield* drizzle.execute<{ name: string }>(sql`select name from organization_cluster_domain`)).rows;
+          return yield* drizzle.execute<{ name: string }>(sql`select name from organization_cluster_domain`, "objects");
         });
         const generate: ConfigCommand = { ...custom, hostname: null };
         const staged = yield* Effect.all([request("write", alice, generate), request("write", alice, generate)], { concurrency: "unbounded" });

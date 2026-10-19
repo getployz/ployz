@@ -238,7 +238,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   );
   const domains = yield* gatherDomainEvidence(organizationId, call, read).pipe(
     Effect.catchTag("HostedDnsError", () => Effect.fail(new StoreRefused({
-      code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; deploy again.", details: null,
+      code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; try again.", details: null,
     }))),
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);

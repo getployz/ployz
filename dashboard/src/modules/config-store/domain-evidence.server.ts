@@ -124,7 +124,7 @@ export const lookUpHostname = (hostname: string) => Effect.promise(async (): Pro
   : Effect.void));
 
 /**
- * What Cloud observes of the Organization's public domains, for the Store calls that need it. Admitting a generated domain reserves the Cluster Domain first; reading domains
+ * What Cloud observes of the Organization's public domains, for the Store calls that need it. Staging or admitting a generated domain reserves the Cluster Domain first; reading domains
  * observes the Cluster (or reuses an observation from the last few seconds); checking one also looks up its DNS now and asks for a Cluster Domain sync. Nothing here comes
  * from the caller.
  */
@@ -141,10 +141,9 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   if (wanted === undefined) return nothing;
   if ("command" in wanted) {
     if (wanted.command !== "admit") {
-      const edit: ConfigDomainEvidence = {
-        ...nothing,
-        cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
-      };
+      const generates = wanted.command === "set_generated_domain" || (adding !== undefined && (adding.hostname ?? null) === null);
+      const row = generates ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId);
+      const edit: ConfigDomainEvidence = { ...nothing, cluster_domain: clusterDomain(row) };
       const published = yield* recentlyPublished(organizationId);
       if (published) edit.published = published;
       return edit;
