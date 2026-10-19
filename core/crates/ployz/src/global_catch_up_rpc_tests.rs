@@ -179,8 +179,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
 async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_slot() {
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerWant, Drain, LocalMachinePhase, MachineDetails,
-        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RpcRequestBody,
-        RunTarget,
+        OpaquePayload, RpcRequestBody, RunTarget,
     };
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
@@ -216,28 +215,12 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                 async move {
                     let one_target = rpc.metadata().get(ployz_core::ONE_TARGET_HEADER).cloned();
                     let body = rpc.into_inner().decode_request().unwrap().body;
-                    if !matches!(body, RpcRequestBody::ListMachines(_)) {
-                        assert_eq!(one_target.unwrap(), target.id.as_str());
-                    }
+                    assert_eq!(one_target.unwrap(), target.id.as_str());
                     #[expect(
                         clippy::wildcard_enum_match_arm,
                         reason = "fixture rejects unrelated RPCs"
                     )]
                     let response = match body {
-                        RpcRequestBody::ListMachines(_) => {
-                            recorded.lock().unwrap().push("machines");
-                            RpcResponse::from(MachineList {
-                                enrollment: None,
-                                machines: vec![MachineObservation::new(
-                                    target.clone(),
-                                    MembershipObservation::Up,
-                                )],
-                            })
-                        }
-                        RpcRequestBody::ReadRoutes(_) => {
-                            recorded.lock().unwrap().push("read pointer");
-                            RpcResponse::from(ployz_core::RoutesRead::default())
-                        }
                         RpcRequestBody::Inspect(inspect) => {
                             recorded.lock().unwrap().push(if inspect.include_storage {
                                 "inspect"
@@ -363,7 +346,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
         )
         .await;
         assert_eq!(
-            ran.ok(),
+            ran.ok().map(|copy| copy.map(|copy| copy.container_id)),
             match outcome {
                 "new" | "matching" => Some(Some(container_id('a'))),
                 "revision" => Some(Some(container_id('b'))),
@@ -375,7 +358,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
             "new" | "revision" => &["inspect", "list", "capacity", "run new"],
             "matching" => &["inspect", "list", "run existing"],
             "conflict" => &["inspect", "list", "capacity", "run new"],
-            "ineligible" => &["inspect", "list", "machines", "read pointer", "gone"],
+            "ineligible" => &["inspect", "list", "gone"],
             "capacity" => &["inspect", "list", "capacity"],
             _ => &["inspect"],
         };
@@ -389,7 +372,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerWant, LocalMachinePhase, MachineDetails,
         MachineList, MachineObservation, MembershipObservation, OpaquePayload, RpcRequestBody,
-        RunTarget, TelemetryObservation,
+        RunRotation, RunTarget, TelemetryObservation,
     };
     use std::sync::{
         Arc, Mutex,
@@ -475,7 +458,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
                                 container: RunTarget::Existing(ContainerLocator::Id(id)),
-                                ..
+                                rotation,
                             } => {
                                 assert!(eligible);
                                 let mut current = current.lock().unwrap();
@@ -484,6 +467,10 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                                 slot.try_update(|parts| {
                                     parts.runtime = ContainerRuntimeObservation::Running {
                                         health: HealthObservation::Healthy,
+                                    };
+                                    if let RunRotation::In { expect, .. } = rotation {
+                                        assert_eq!(expect, Some(CopyRotation::Pending));
+                                        parts.rotation = Some(CopyRotation::In);
                                     }
                                 })
                                 .unwrap();
@@ -502,9 +489,6 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             }
                             other => panic!("unexpected want: {other:?}"),
                         },
-                        RpcRequestBody::ReadRoutes(_) => {
-                            RpcResponse::from(ployz_core::RoutesRead::default())
-                        }
                         other => {
                             panic!("unexpected RPC (existing slot needs no endpoint): {other:?}")
                         }
@@ -527,12 +511,13 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
 }
 
 #[tokio::test]
-async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
+async fn an_ineligible_target_retires_its_own_in_copy() {
     use ployz_core::{
-        ContainerList, ContainerLocator, ContainerWant, DeploymentLogId, LocalMachinePhase,
-        MachineDetails, MachineList, MachineObservation, MembershipObservation, OpaquePayload,
-        RoutesRead, RpcRequestBody, ServingPointer,
+        ContainerList, ContainerLocator, ContainerWant, LocalMachinePhase, MachineDetails,
+        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RoutesRead,
+        RpcRequestBody,
     };
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
     for eligible in [false, true] {
@@ -547,34 +532,19 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
             .containers
             .remove(0)
             .into_observation();
-        old.try_update(|parts| {
-            parts
-                .labels
-                .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), "dep-a".into());
-        })
-        .unwrap();
-        let pointer = ServingPointer {
-            deploy: DeploymentLogId::parse("dep-b").unwrap(),
-            containers: vec![container_id('b')],
-            previous: Some(DeploymentLogId::parse("dep-a").unwrap()),
-            retiring: Vec::new(),
-            deciding: None,
-        };
+        old.try_update(|parts| parts.rotation = Some(CopyRotation::In))
+            .unwrap();
         let local = Arc::new(Mutex::new(vec![old]));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (current, recorded, observed) = (local.clone(), calls.clone(), fresh.clone());
         let (mut client, server) =
             crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
-                let (target, current, recorded, pointer) = (
-                    observed.clone(),
-                    current.clone(),
-                    recorded.clone(),
-                    pointer.clone(),
-                );
+                let (target, current, recorded) =
+                    (observed.clone(), current.clone(), recorded.clone());
                 async move {
                     #[expect(
                         clippy::wildcard_enum_match_arm,
-                        reason = "fixture rejects every RPC that would create, run or publish"
+                        reason = "fixture rejects every RPC that would create or run"
                     )]
                     let response = match rpc.into_inner().decode_request().unwrap().body {
                         RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
@@ -587,10 +557,14 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
                         RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                             containers: current.lock().unwrap().clone(),
                         }),
-                        RpcRequestBody::ReadRoutes(_) => RpcResponse::from(RoutesRead {
-                            pointer: Some(pointer),
-                            ..Default::default()
-                        }),
+                        RpcRequestBody::ReadRoutes(_) => {
+                            recorded.lock().unwrap().push("routes");
+                            RpcResponse::from(RoutesRead {
+                                routes: BTreeMap::from([(target.id, Some(BTreeSet::new()))]),
+                                complete: true,
+                                ..Default::default()
+                            })
+                        }
                         RpcRequestBody::Inspect(_) => {
                             recorded.lock().unwrap().push("inspect");
                             RpcResponse::from(MachineDetails {
@@ -609,6 +583,21 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
                             })
                         }
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
+                            ContainerWant::Out {
+                                container: ContainerLocator::Id(id),
+                                allow_empty,
+                                expect,
+                            } => {
+                                recorded.lock().unwrap().push("out");
+                                assert_eq!(id, container_id('a'));
+                                assert!(!allow_empty, "Global retirement never allows empty");
+                                assert_eq!(expect, Some(CopyRotation::In));
+                                let mut current = current.lock().unwrap();
+                                let copy = current.first_mut().unwrap();
+                                copy.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+                                    .unwrap();
+                                ensured(ContainerNow::Present(copy.clone()))
+                            }
                             ContainerWant::Gone {
                                 container: ContainerLocator::Id(id),
                                 ..
@@ -620,7 +609,7 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
                                     of: ContainerLocator::Id(id),
                                 })
                             }
-                            other => panic!("an unproven copy is never run: {other:?}"),
+                            other => panic!("an ineligible target never runs a copy: {other:?}"),
                         },
                         other => panic!("unexpected RPC: {other:?}"),
                     };
@@ -649,7 +638,11 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
         } else {
             result.unwrap();
             assert_eq!(excluded, [qualified("app", "api")]);
-            assert_eq!(calls.lock().unwrap().as_slice(), ["inspect", "gone"]);
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                ["inspect", "out", "routes", "gone"],
+                "an In copy goes Out, waits for the proxies, then goes"
+            );
             assert!(local.lock().unwrap().is_empty());
         }
         server.abort();
