@@ -33,6 +33,7 @@ mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
+mod sealed;
 mod store_call;
 mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
@@ -54,6 +55,7 @@ pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,
 };
+pub use sealed::{LiveLogRecord, LogLine, PendingNames, ScrubbedHistoryStream, ScrubbedLogStream, SealedNames};
 pub(crate) use logs::{
     container_env, failed_tail, process_tail, service_tail, tail_excerpt, tail_frames,
 };
