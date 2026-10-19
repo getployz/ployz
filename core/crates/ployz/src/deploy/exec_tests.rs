@@ -1010,6 +1010,8 @@ mod replacement;
 mod restart;
 #[path = "exec_tests/silent.rs"]
 mod silent;
+#[path = "exec_tests/user_commands.rs"]
+mod user_commands;
 
 fn run(
     machine_id: &MachineId,
