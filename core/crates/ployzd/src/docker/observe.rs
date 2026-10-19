@@ -1051,7 +1051,13 @@ mod tests {
         };
 
         wait_for(CopyRotation::Pending).await;
-        runtime.set_rotation(&id, &CopyRotation::In).await.unwrap();
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&CopyRotation::In)
+            .await
+            .unwrap();
         wait_for(CopyRotation::In).await;
 
         shutdown.cancel();

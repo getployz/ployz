@@ -94,6 +94,13 @@ impl VolumeStorage {
             return Err(SwitchError::Precondition
                 .rpc_error(format!("Volume {name} has no bound to seed {into} with")));
         }
+        if Self::slot_fs(&datasets, &pool, &into).is_some()
+            && self.marked_written_here(&fs).await.map_err(internal)?
+        {
+            return Err(SwitchError::Precondition.rpc_error(format!(
+                "Volume {into} is held in slot {parent}; promote or restore it before seeding it"
+            )));
+        }
         if slot {
             // Another point, or a copy that never finished: it goes and the receive starts over.
             self.zfs(&["destroy", "-r", &parent])

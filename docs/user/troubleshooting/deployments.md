@@ -103,11 +103,13 @@ can show here.
 This service references another in its variables, and that one didn't come up healthy, so
 Ployz didn't start this one. Fix the service the message names first; its **Logs** say why.
 
-## My pre-deploy command failed
+## My setup or pre-deploy command failed
 
-`hook container … failed: exited with code 1`, or `failed: timed out`
+`The setup or pre-deploy command failed` with `exited with code 1`, or `timed out`
 
-None of the service's replicas were replaced, so the old version keeps running.
+None of the service's replicas were replaced, so the old version keeps running. Before a service
+starts, Ployz runs its pre-deploy command, then, the first time a new environment deploys it, its
+setup commands. The first one that fails stops the deploy.
 
 - Read the **Deploy** log: the command's output is there.
 - `timed out` means it ran longer than 5 minutes. Make it faster, or run the slow part outside
@@ -135,6 +137,14 @@ deploy a card can read **Not running** or **Crashed** for a few seconds: if the 
   ```sh
   ployz service restart api
   ```
+
+## My service shows Server offline
+
+Every replica of the service is on a server that's **Offline**, so the service is down. See
+[A server shows Offline](servers.md#a-server-shows-offline) and
+[When a server goes down](../services/scaling.md#when-a-server-goes-down). A service with replicas
+on other servers keeps serving from them, and reads **Degraded** while fewer serve than it asks
+for.
 
 ## My deployment stays Queued
 

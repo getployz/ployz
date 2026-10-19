@@ -739,10 +739,8 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
                                *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                                "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
                                "--public-ip", "none", "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
-            response = json.loads(result.stdout) if result.stdout else {}
+            response = enrolled(node, result, commands.evidence)
             follow_up = response.get("follow_up_error", {})
-            if result.returncode and not (result.returncode == 3 and response.get("server") and follow_up.get("code") == "unavailable"):
-                raise RuntimeError(f"{node['name']}: enrollment failed: {result.stderr.decode(errors='replace')}\nEvidence: {commands.evidence}")
             node["machine_id"] = response["server"]["machine"]["id"]
             if result.returncode:
                 # Initialization committed, but the published daemon can serve
@@ -780,6 +778,15 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
         if args.cloud and "cloud" not in run:
             commands([DASHBOARD / "scripts" / "verify" / "down.sh"], check=False)
         raise
+
+
+def enrolled(node, result, evidence):
+    """The `server add` response; only a committed founder whose follow-up is unavailable may exit nonzero."""
+    response = json.loads(result.stdout) if result.stdout else {}
+    follow_up = response.get("follow_up_error", {})
+    if result.returncode and not (result.returncode == 3 and response.get("server") and follow_up.get("code") == "unavailable"):
+        raise RuntimeError(f"{node['name']}: enrollment failed: {(result.stdout + result.stderr).decode(errors='replace').strip()}\nEvidence: {evidence}")
+    return response
 
 
 def attach_bare(run, backend):

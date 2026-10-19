@@ -37,28 +37,42 @@ struct Cloud {
     url: String,
     bodies: Arc<Mutex<Vec<Value>>>,
     seen: tokio::sync::watch::Receiver<usize>,
-    received: Arc<Mutex<Vec<tokio::time::Instant>>>,
+    arrived: tokio::sync::watch::Receiver<usize>,
+    release: Arc<tokio::sync::Notify>,
 }
 
 impl Cloud {
     async fn answering(answers: Vec<String>) -> Self {
-        Self::delaying(answers, Duration::ZERO).await
+        Self::serving(answers, Duration::ZERO, None).await
     }
 
     async fn delaying(answers: Vec<String>, delay: Duration) -> Self {
+        Self::serving(answers, delay, None).await
+    }
+
+    /// Holds the answer to the `held`th request, counting from zero, until `release`.
+    async fn holding(answers: Vec<String>, held: usize) -> Self {
+        Self::serving(answers, Duration::ZERO, Some(held)).await
+    }
+
+    async fn serving(answers: Vec<String>, delay: Duration, held: Option<usize>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let bodies = Arc::new(Mutex::new(Vec::new()));
         let (count, seen) = tokio::sync::watch::channel(0);
         let kept = Arc::clone(&bodies);
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let times = Arc::clone(&received);
+        let (arrival, arrived) = tokio::sync::watch::channel(0);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::clone(&release);
         tokio::spawn(async move {
             let mut answers = answers.into_iter();
-            loop {
+            for request in 0.. {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let body = read_body(&mut stream).await;
-                times.lock().unwrap().push(tokio::time::Instant::now());
+                arrival.send_replace(request + 1);
+                if held == Some(request) {
+                    gate.notified().await;
+                }
                 tokio::time::sleep(delay).await;
                 let answer = answers.next().unwrap_or_else(|| WAIT.to_owned());
                 let response = format!(
@@ -78,8 +92,17 @@ impl Cloud {
             url,
             bodies,
             seen,
-            received,
+            arrived,
+            release,
         }
+    }
+
+    async fn arrival(&self, count: usize) {
+        self.arrived
+            .clone()
+            .wait_for(|arrived| *arrived >= count)
+            .await
+            .unwrap();
     }
 
     fn attempts(&self) -> Vec<Value> {
@@ -152,6 +175,7 @@ struct Scripted {
     participating: bool,
     follow_up: Option<String>,
     pace: Option<Duration>,
+    mid_post: bool,
     first: EnrollStage,
     installer: Option<std::path::PathBuf>,
 }
@@ -168,6 +192,7 @@ impl Scripted {
             participating: false,
             follow_up: None,
             pace: None,
+            mid_post: false,
             first: EnrollStage::Installing,
             installer: None,
         }
@@ -222,20 +247,29 @@ impl Host for Scripted {
             );
             self.events.lock().unwrap().push("installed");
         }
-        if self.pace.is_none() {
-            self.cloud.told(self.first).await;
-        }
-        for stage in &self.stages {
+        if self.mid_post {
+            self.cloud.arrival(2).await;
+            for stage in &self.stages {
+                progress(*stage);
+            }
+            self.cloud.release.notify_one();
+            self.cloud.told(*self.stages.last().unwrap()).await;
+        } else {
+            if self.pace.is_none() {
+                self.cloud.told(self.first).await;
+            }
+            for stage in &self.stages {
+                if let Some(pace) = self.pace {
+                    tokio::time::sleep(pace).await;
+                }
+                progress(*stage);
+                if self.pace.is_none() && *stage >= self.first {
+                    self.cloud.told(*stage).await;
+                }
+            }
             if let Some(pace) = self.pace {
                 tokio::time::sleep(pace).await;
             }
-            progress(*stage);
-            if self.pace.is_none() && *stage >= self.first {
-                self.cloud.told(*stage).await;
-            }
-        }
-        if let Some(pace) = self.pace {
-            tokio::time::sleep(pace).await;
         }
         self.events.lock().unwrap().push("finished");
         Committed::from_setup(
@@ -941,14 +975,11 @@ async fn resumed_attempt_reports_only_forward_moves() {
 #[tokio::test]
 async fn stage_changes_during_a_post_are_coalesced_and_sent_promptly() {
     let fixture = Fixture::new("ready");
-    let cloud =
-        Arc::new(Cloud::delaying(vec![instruction("zfs")], Duration::from_millis(200)).await);
+    let cloud = Arc::new(Cloud::holding(vec![instruction("zfs")], 1).await);
     let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
-    host.pace = Some(Duration::from_millis(5));
-    // Keep host work alive while the delayed POST finishes; progress itself does not wait for Cloud.
-    host.stages.extend(vec![EnrollStage::Publishing; 100]);
+    host.mid_post = true;
     let next = tokio::time::timeout(
-        Duration::from_secs(2),
+        HEARTBEAT / 2,
         pass(
             &host,
             &mut fixture.client(&cloud),
@@ -961,9 +992,7 @@ async fn stage_changes_during_a_post_are_coalesced_and_sent_promptly() {
     .unwrap();
     assert_eq!(next, Next::Enrolled);
     assert_eq!(cloud.stages(), ["installing", "publishing"]);
-    let times = cloud.received.lock().unwrap();
-    assert_eq!(times.len(), 3);
-    assert!(*times.get(2).unwrap() - *times.get(1).unwrap() < Duration::from_millis(400));
+    assert_eq!(cloud.attempts().len(), 2);
 }
 
 #[test]
