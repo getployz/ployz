@@ -51,6 +51,7 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
   const max = Number(maxServers);
   const maxOk = !autoEnroll || (Number.isInteger(max) && max >= 1 && max <= 1000);
   const nameOk = name.trim() === "" || NAME_PATTERN.test(name.trim());
+  const nameInput = useId();
   const nameRule = useId();
 
   if (mint.data !== undefined && mint.variables !== undefined) {
@@ -74,9 +75,10 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
         <DialogTitle>New fleet token</DialogTitle>
         <DialogDescription>Run it on as many servers as you like. They show up under Servers.</DialogDescription>
       </DialogHeader>
-      <label className="flex flex-col gap-1.5 text-sm">
-        <span className="text-muted-foreground">Name</span>
+      <div className="flex flex-col gap-1.5 text-sm">
+        <label htmlFor={nameInput} className="text-muted-foreground">Name</label>
         <Input
+          id={nameInput}
           value={name}
           onChange={(event) => setName(event.target.value)}
           placeholder="Picked for you"
@@ -86,7 +88,7 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
           className="font-mono"
         />
         {nameOk ? null : <span id={nameRule} className="text-xs text-destructive">Lowercase letters, digits and hyphens, up to 63.</span>}
-      </label>
+      </div>
       <div className="flex flex-col gap-1.5 text-sm">
         <span className="text-muted-foreground">Expires</span>
         <div role="group" aria-label="Expires" className="flex w-fit gap-1 rounded-lg bg-muted p-0.75">

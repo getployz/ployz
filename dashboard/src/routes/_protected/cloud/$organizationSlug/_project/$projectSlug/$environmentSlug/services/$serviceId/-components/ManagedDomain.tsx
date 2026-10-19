@@ -145,8 +145,8 @@ export function ManagedDomainDialog({
                     }
                     description={
                       defaultTargetPort === null
-                        ? "The port your app listens on. Blank uses PORT, 8080 unless set."
-                        : `The port your app listens on. Blank uses PORT, set to ${defaultTargetPort}.`
+                        ? "Leave blank to use this service's PORT variable."
+                        : `Leave blank to use this service's PORT variable, ${defaultTargetPort}.`
                     }
                   />
                 )}

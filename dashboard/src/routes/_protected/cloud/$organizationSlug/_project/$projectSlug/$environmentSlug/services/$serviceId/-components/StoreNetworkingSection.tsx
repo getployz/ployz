@@ -72,6 +72,14 @@ export function defaultPortHint(port: JsonValue | undefined, domains: readonly P
   return settingText(port) === "" && domains.some((domain) => domain.port === null) ? PLATFORM_HTTP_PORT : null;
 }
 
+/** The port a blank domain port reaches: the Service's PORT, else the one Ployz sets; null when PORT isn't a port. */
+export function blankPortTarget(port: JsonValue | undefined) {
+  const text = settingText(port);
+  if (text === "") return PLATFORM_HTTP_PORT;
+  const value = Number(text);
+  return Number.isInteger(value) && value >= 1 && value <= 65_535 ? value : null;
+}
+
 /**
  * A Service's domains over the Config Store: generated ones under the Cluster Domain and custom ones, each with the
  * status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
@@ -115,6 +123,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   // A domain without its own port routes to PORT, which Ployz sets when the user doesn't. Whether the app listens
   // there is unknown, so this is a hint, never a failure.
   const defaultPort = defaultPortHint(state.rows.get("env.PORT")?.value, domains);
+  const blankPort = blankPortTarget(state.rows.get("env.PORT")?.value);
   const privateRow = (
     <SettingsRow label="Private address" hint="How other services in this environment reach it." commit="confirm" control={
       <ServiceSettingInput ariaLabel="Private address" suffix=".internal" placeholder={service.name} value={privateDns}
@@ -180,7 +189,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
           managed={{ prefix: freePrefix(privateDns, allPrefixes), targetPort: null }}
           clusterDomain={clusterDomain}
           takenPrefixes={allPrefixes}
-          defaultTargetPort={null}
+          defaultTargetPort={blankPort}
           onClose={() => setEditor(null)}
           onSubmit={({ prefix, targetPort }) => void add(null, targetPort, own.length > 0 ? prefix.trim().toLowerCase() : null)}
         />
@@ -190,7 +199,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
           managed={{ prefix: generated.prefix, targetPort: generated.port }}
           clusterDomain={clusterDomain}
           takenPrefixes={allPrefixes.filter((prefix) => prefix !== generated.prefix)}
-          defaultTargetPort={null}
+          defaultTargetPort={blankPort}
           onClose={() => setEditor(null)}
           onSubmit={({ prefix, targetPort }) => {
             // One command: the subdomain, and the port (null follows the container's PORT).
@@ -205,7 +214,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
         <CustomDomainDialog
           route={edited?.kind === "custom" ? { hostname: edited.hostname, targetPort: edited.port } : undefined}
           hostnameFixed
-          defaultTargetPort={null}
+          defaultTargetPort={blankPort}
           onClose={() => setEditor(null)}
           initial={editor.kind === "add" ? editor.draft : undefined}
           refusal={editor.kind === "add" ? editor.refusal : undefined}
