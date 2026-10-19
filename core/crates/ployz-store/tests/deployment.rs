@@ -2305,16 +2305,16 @@ fn a_redeploy_is_refused_unless_its_deployment_ended() {
     admit(&store, &who, 3, &[], None).unwrap();
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Superseded);
     assert_eq!(code(retry(&store, &who, 9, 2)), RpcErrorCode::Conflict);
-    // A refused redeploy queued nothing, and an accepted one supersedes what's queued.
+    // A refused redeploy queued nothing.
     fail_api(&store, 3);
     assert_eq!(retry(&store, &who, 9, 3).unwrap().number, 4);
     assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
+    // While a newer one is queued, nothing older redeploys, and it stays queued.
     admit(&store, &who, 5, &[], None).unwrap();
-    retry(&store, &who, 6, 3).unwrap();
-    assert_eq!(status(&store, &who, 5), DeploymentStatus::Superseded);
     assert_eq!(status(&store, &who, 9), DeploymentStatus::Superseded);
-    assert_eq!(retry(&store, &who, 7, 1).unwrap().number, 7);
-    assert_eq!(status(&store, &who, 6), DeploymentStatus::Superseded);
+    assert_eq!(code(retry(&store, &who, 6, 3)), RpcErrorCode::Conflict);
+    assert_eq!(code(retry(&store, &who, 7, 1)), RpcErrorCode::Conflict);
+    assert_eq!(status(&store, &who, 5), DeploymentStatus::Queued);
 }
 
 /// Redeploy `source` as `n`, confirming that it rolls back `confirmed`.

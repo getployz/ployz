@@ -1908,7 +1908,7 @@ fn the_newest_applied_deployment_redeploys_and_rolls_nothing_back() {
     assert_eq!(redeployed["retries"], 1);
     assert_eq!(redeployed["rolls_back"], json!([]));
 
-    // #2 starts, so redeploying #1 rolls it back.
+    // #2 starts and loses track, so redeploying #1 rolls it back.
     let numbered = |number| {
         store
             .read(
@@ -1923,7 +1923,22 @@ fn the_newest_applied_deployment_redeploys_and_rolls_nothing_back() {
             .id
     };
     let runner = RunnerId::parse("runner").unwrap();
-    store.claim(&numbered(2), &runner).unwrap();
+    let claimed = store.claim(&numbered(2), &runner).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace,
+        "operations": [{
+            "index": 0, "machine_id": machine('a'), "service_name": "web",
+            "operation": remove_container(), "status": { "type": "pending" },
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    store
+        .record(&numbered(2), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    store
+        .record(&numbered(2), &runner, RunEvidence::Abandoned)
+        .unwrap();
     let rollback = json!({ "deployment": 1, "request_key": "rollback-0001" });
     let rolled_back = call(&store, "deployment_retry", rollback.clone(), "retry-2").ok();
     assert_eq!(rolled_back["deployment"], 3);
