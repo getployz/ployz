@@ -24,6 +24,7 @@ Workers keep findings in files and send the supervisor pointers, so the supervis
 - Append each finding to the store's `FINDINGS.md` and its evidence under `evidence/<area>/`. Ids run per area (`<area>-<n>`), so only you take ids from your own sequence. Read your area's last id and append in one step under the lock, `flock FINDINGS.md.lock`.
 - Each row names the Machine or container checked, the exact command or click, and what came back. Flag any lab action that came first: a Boat stop, resume or `power on`.
 - Grep `docs/user/` before calling a behaviour unexpected. Documented behaviour is a docs or design question.
+- Search open issues before filing, with `gh issue list -R getployz/ployz --state open --search "<keywords>"`. When one matches, write the issue number in your `FINDINGS.md` row and add your evidence there instead of filing it again.
 - Probe whether a destroy waits for approval. The brief may be wrong about it.
 - Send the supervisor one line, the finding ids or a file path, with `t3_thread_send` mode `auto`. `auto` steers a running turn and starts an idle one. On `parent_not_active`, append the line to `outbox/<area>.md`. At the start of every turn the supervisor moves each file in `outbox/` to `outbox/read/<area>-<hhmm>.md` first, then reads the moved copy, so a line appended meanwhile lands in a new file.
 
