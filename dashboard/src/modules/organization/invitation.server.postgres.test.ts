@@ -200,12 +200,12 @@ describe("member commands", () => {
 
   it("refuses the last owner who leaves or steps down, and lets them once another owner exists", async () => {
     expect(await as("ada", "org_member_rm", { member: "eve@example.test" })).toMatchObject({ ok: true });
-    expect(await as("ada", "org_leave", { organization: "acme" })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+    expect(await as("ada", "org_leave", { organization: ACME })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await as("ada", "org_member_role", { member: "ada@example.test", role: "admin" })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await roleOf(ids.ada)).toBe("owner");
 
     expect(await as("ada", "org_member_role", { member: "Carol", role: "owner" })).toMatchObject({ ok: true });
-    expect(await as("ada", "org_leave", { organization: "acme" })).toMatchObject({ ok: true });
+    expect(await as("ada", "org_leave", { organization: ACME })).toMatchObject({ ok: true });
     expect(await roleOf(ids.ada)).toBeNull();
   });
 
@@ -250,21 +250,24 @@ describe("org leave", () => {
 
   it("leaves the Organization it names even when the session acts in another", async () => {
     const session = { kind: "session", id: "fay-session" } as const;
-    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "bravo")).toMatchObject({ ok: true, output: { organization: "bravo" } });
+    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, BRAVO)).toMatchObject({ ok: true, output: { organization: "bravo" } });
     expect(await membershipsOf(fay)).toEqual(["charlie"]);
   });
 
   it("refuses an Organization the caller may not act in and changes nothing", async () => {
     const session = { kind: "session", id: "fay-session" } as const;
-    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "acme")).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, ACME)).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    // A slug no longer names the Organization to leave; only its ID does.
+    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "charlie")).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    expect(await membershipsOf(fay)).toEqual(["charlie"]);
   });
 
   it("refuses a token, even a full one leaving its own Organization, and changes nothing", async () => {
     const token = { kind: "token", id: "fay-token", grant: FULL_GRANT } as const;
     await harness.db.insert(member).values({ userId: fay, organizationId: BRAVO, role: "member" });
     const refusal = { code: "forbidden", message: "A token can't leave for you. Run `ployz login`, then leave." };
-    expect(await leave(token, { id: CHARLIE, slug: "charlie" }, "bravo")).toMatchObject({ ok: false, refusal });
-    expect(await leave(token, { id: BRAVO, slug: "bravo" }, "bravo")).toMatchObject({ ok: false, refusal });
+    expect(await leave(token, { id: CHARLIE, slug: "charlie" }, BRAVO)).toMatchObject({ ok: false, refusal });
+    expect(await leave(token, { id: BRAVO, slug: "bravo" }, BRAVO)).toMatchObject({ ok: false, refusal });
     expect(await membershipsOf(fay)).toEqual(["bravo", "charlie"]);
   });
 });

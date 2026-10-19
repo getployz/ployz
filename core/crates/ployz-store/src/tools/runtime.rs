@@ -10,10 +10,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::LineCap;
-use super::act::{Run, latest, operate, operations, resolve, servers};
+use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Health, LogsAnswer, OperationsAnswer,
-    ServersAnswer,
 };
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
@@ -293,7 +292,7 @@ impl Tool for ServiceLogs {
         };
         let only = match &self.server {
             Some(name) => {
-                let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+                let answer = roster(cx, answers.next())?;
                 Some(resolve(&answer, name, "server", false)?.reference())
             }
             None => None,
@@ -369,7 +368,7 @@ fn service_act(
     deployed(&namespace, &service)?;
     let only = match &server {
         Some(name) => {
-            let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+            let answer = roster(cx, answers.next())?;
             Some(resolve(&answer, name, "server", true)?.reference())
         }
         None => None,

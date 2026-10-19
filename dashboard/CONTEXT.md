@@ -117,7 +117,7 @@ One attempt to turn a Waiting Server into a Server, with its role (founder or jo
 _Avoid_: Join request, enrollment job, admission
 
 **Signed-in Device**:
-A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations. Logout or `ployz token rm` ends it at once.
+A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations and `ployz org new` moves into one it makes; the member's other sessions stay put. Logout or `ployz token rm` ends it at once.
 _Avoid_: CLI login, device token
 
 **Server Access**:

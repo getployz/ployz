@@ -70,7 +70,9 @@ export const revokeInviteServerFn = createServerFn({ method: "POST" })
 export const leaveOrganizationServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Slug })))
-  .handler(({ context, data }) => runActor(context, ran(getRequest().headers, data.organizationSlug, "org_leave", { organization: data.organizationSlug })));
+  .handler(({ context, data }) => runActor(context, dashboardCaller(getRequest().headers, data.organizationSlug).pipe(
+    Effect.flatMap((caller) => ranAs(caller, "org_leave", { organization: caller.organization.id })),
+  )));
 
 /** Anyone holding the link may see where it leads, signed in or not: the token is the secret. */
 export const readInviteServerFn = createServerFn({ method: "POST" })

@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useBlocker } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import type { ButtonVariants } from "#/components/ui/button-variants";
@@ -25,22 +26,24 @@ export function AddServersDialog({ organizationSlug, label = "Add servers", vari
   variant?: ButtonVariants["variant"];
 }) {
   const [open, setOpen] = useState(false);
+  const mint = useMintFleetToken(organizationSlug);
+  useBlocker({ shouldBlockFn: () => true, disabled: !mint.holding });
   return (
     <>
-      <Button type="button" variant={variant} onClick={() => setOpen(true)}>
+      <Button type="button" variant={variant} onClick={() => { mint.reset(); setOpen(true); }}>
         <PlusIcon data-icon="inline-start" />
         {label}
       </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(next) => mint.holding || setOpen(next)}>
         <DialogContent className="sm:max-w-xl">
-          {open ? <MintFlow organizationSlug={organizationSlug} onDone={() => setOpen(false)} /> : null}
+          {open ? <MintFlow organizationSlug={organizationSlug} mint={mint} onDone={() => setOpen(false)} /> : null}
         </DialogContent>
       </Dialog>
     </>
   );
 }
 
-function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDone: () => void }) {
+function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string; mint: ReturnType<typeof useMintFleetToken>; onDone: () => void }) {
   const [name, setName] = useState("");
   const [expiresIn, setExpiresIn] = useState<FleetTokenLifetime>("1d");
   const [autoEnroll, setAutoEnroll] = useState(false);
@@ -48,7 +51,6 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
   const max = Number(maxServers);
   const maxOk = !autoEnroll || (Number.isInteger(max) && max >= 1 && max <= 1000);
   const nameOk = name.trim() === "" || NAME_PATTERN.test(name.trim());
-  const mint = useMintFleetToken(organizationSlug);
 
   if (mint.data !== undefined && mint.variables !== undefined) {
     return (
@@ -115,11 +117,17 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
           </Field>
         ) : null}
       </FieldGroup>
+      {mint.stalled ? (
+        <div role="alert" className="text-sm text-destructive">
+          <p>Ployz hasn't answered. Retry or cancel.</p>
+          <p>If it made the token, it shows in Tokens under Servers, where you can revoke it.</p>
+        </div>
+      ) : null}
       <DialogFooter>
-        <Button type="button" variant="outline" onClick={onDone}>Cancel</Button>
-        <Button type="submit" variant="ink" disabled={!nameOk || !maxOk || mint.isPending}>
-          {mint.isPending ? <Spinner data-icon="inline-start" /> : null}
-          Create
+        <Button type="button" variant="outline" disabled={mint.holding} onClick={onDone}>Cancel</Button>
+        <Button type="submit" variant="ink" disabled={!nameOk || !maxOk || mint.holding}>
+          {mint.holding ? <Spinner data-icon="inline-start" /> : null}
+          {mint.stalled ? "Retry" : "Create"}
         </Button>
       </DialogFooter>
     </form>
