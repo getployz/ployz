@@ -19,7 +19,8 @@ import { usePendingMarks, showPending } from "./store-pending";
 const refreshedBy = {
   environment: ["store_environment"],
   diff: ["store_environment", "store_deployment"],
-  history: ["store_environment"],
+  // Live and Failed follow Deployments.
+  history: ["store_environment", "store_deployment"],
   history_preview: ["store_environment", "store_deployment"],
   plan: ["store_environment", "store_deployment"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.

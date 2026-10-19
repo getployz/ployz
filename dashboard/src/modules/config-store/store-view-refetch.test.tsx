@@ -76,3 +76,11 @@ it("keeps History's last answer when the Store is busy", async () => {
   await act(async () => tab.reads[1]?.answer(history(2)));
   await waitFor(() => expect(tab.newest()).toBe(2));
 });
+
+it("rereads History when only a Deployment changed", async () => {
+  const tab = openHistory();
+  act(() => applyOrganizationChanges(["store_deployment"], "acme", tab.scope));
+  await waitFor(() => expect(tab.reads).toHaveLength(1));
+  await act(async () => tab.reads[0]?.answer(history(2)));
+  await waitFor(() => expect(tab.newest()).toBe(2));
+});

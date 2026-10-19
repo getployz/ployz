@@ -203,17 +203,14 @@ pub(crate) fn live(
         .filter(|saved| *saved != NOTHING))
 }
 
-/// Whether the latest Deployment of Saved `revision` failed. A later run of it
-/// that applies, or still runs, clears it.
+/// Whether the latest Deployment of Saved `revision` failed. Any later attempt
+/// at it clears it, even one superseded before it ran.
 pub(crate) fn failed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     revision: Revision,
 ) -> Result<bool, RpcError> {
-    let condition = format!(
-        "saved_revision = {} AND status <> 'superseded'",
-        revision_param(revision)?
-    );
+    let condition = format!("saved_revision = {}", revision_param(revision)?);
     Ok(latest_where(tx, environment, &condition)?
         .is_some_and(|deployment| deployment.status == DeploymentStatus::Failed))
 }

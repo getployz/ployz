@@ -3988,3 +3988,23 @@ fn history_marks_the_last_applied_revision_live_and_a_newest_one_that_failed() {
         "a newer version not deployed yet has no mark"
     );
 }
+
+#[test]
+fn a_superseded_retry_of_the_failed_version_clears_failed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    fail_api(&store, 1);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    fail_api(&store, 2);
+    assert_eq!(marks(&store, &who).1, Some(second));
+
+    retry(&store, &who, 3, 2).unwrap();
+    retry(&store, &who, 4, 1).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Superseded);
+    assert_eq!(
+        marks(&store, &who).1,
+        None,
+        "the newest version's latest attempt was superseded, not failed"
+    );
+}
