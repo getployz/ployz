@@ -3918,3 +3918,73 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
     assert_admin_asked(&refused);
     retry(approved(&refused)).unwrap();
 }
+
+/// History's (live, failed) marks.
+fn marks(store: &ConfigStore, who: &Actor) -> (Option<Revision>, Option<Revision>) {
+    let view = store
+        .read(who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    (view.live, view.failed)
+}
+
+fn save(store: &ConfigStore, who: &Actor) -> Revision {
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap()
+        .saved
+        .unwrap()
+}
+
+#[test]
+fn history_marks_the_last_applied_revision_live_and_a_newest_one_that_failed() {
+    let (store, who) = shop();
+    let first = save(&store, &who);
+    assert_eq!(marks(&store, &who), (None, None), "saved, never deployed");
+
+    apply_both(&store, &who, 1);
+    assert_eq!(marks(&store, &who), (Some(first), None));
+
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    fail_api(&store, 2);
+    assert_eq!(
+        marks(&store, &who),
+        (Some(first), Some(second)),
+        "the Servers still run the version before the failed one"
+    );
+
+    retry(&store, &who, 3, 2).unwrap();
+    assert_eq!(
+        marks(&store, &who),
+        (Some(first), None),
+        "a later run of the failed version clears Failed"
+    );
+    let a = runner("runner-a");
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(marks(&store, &who), (Some(second), None));
+
+    set_replicas(&store, &who, "web", 4);
+    let third = save(&store, &who);
+    assert_ne!(third, second);
+    assert_eq!(
+        marks(&store, &who),
+        (Some(second), None),
+        "a newer version not deployed yet has no mark"
+    );
+}
