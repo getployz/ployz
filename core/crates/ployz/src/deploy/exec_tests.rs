@@ -172,6 +172,10 @@ struct Scripted {
     /// The bystander joins after the pin, so only reads of this run's
     /// pointers list it.
     bystander_joins_late: bool,
+    /// The bystander's upgrade replicates and it acks this long after the
+    /// client is built.
+    bystander_upgraded_after: Option<Duration>,
+    built: Instant,
     /// Reads come from a daemon that names no unrouted Machines.
     unnamed_reads: bool,
     /// No Machine routes a row naming one of these Containers.
@@ -210,6 +214,8 @@ impl Scripted {
             unrouted_pin: false,
             bystander: None,
             bystander_joins_late: false,
+            bystander_upgraded_after: None,
+            built: Instant::now(),
             unnamed_reads: false,
             dead: Vec::new(),
             rival: None,
@@ -491,7 +497,11 @@ impl MachineOperations for Scripted {
         };
         let bystander = self
             .bystander
-            .filter(|_| ours || !self.bystander_joins_late);
+            .filter(|_| ours || !self.bystander_joins_late)
+            .filter(|_| {
+                self.bystander_upgraded_after
+                    .is_none_or(|after| self.built.elapsed() < after)
+            });
         let all_routed = pointer.is_some() && routed && lagging.is_none() && bystander.is_none();
         let mut ingress = self.pulled.lock().unwrap().clone();
         ingress.extend(lagging);

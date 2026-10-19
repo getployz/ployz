@@ -501,7 +501,7 @@ async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_machine_too_old_to_ack_joining_mid_deploy_fails_the_removal_at_once() {
+async fn a_machine_too_old_to_ack_joining_mid_deploy_fails_the_removal_after_the_grace() {
     let old = machine('5');
     let machine = machine('1');
     let (plan, client) = rollout_removal(
@@ -540,7 +540,11 @@ async fn a_machine_too_old_to_ack_joining_mid_deploy_fails_the_removal_at_once()
         failure.to_string(),
         "Deploys need a newer Ployz on machine-5"
     );
-    assert!(began.elapsed() < ACK_POLL, "{:?}", began.elapsed());
+    assert!(
+        (PREDATES_GRACE..PREDATES_GRACE + 2 * ACK_POLL).contains(&began.elapsed()),
+        "{:?}",
+        began.elapsed()
+    );
     assert!(client.removed_after.lock().unwrap().is_empty());
     client.assert_done();
 }
@@ -1549,7 +1553,7 @@ async fn a_first_deploy_of_an_empty_service_starts_nothing_until_its_pin_is_rout
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_machine_too_old_to_ack_fails_the_deploy_at_once_naming_it() {
+async fn a_machine_too_old_to_ack_fails_the_deploy_after_the_grace_naming_it() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(None, None, None), true)];
     let client = Scripted {
@@ -1582,8 +1586,34 @@ async fn a_machine_too_old_to_ack_fails_the_deploy_at_once_naming_it() {
         failure.to_string(),
         "Deploys need a newer Ployz on machine-5"
     );
-    assert_eq!(began.elapsed(), Duration::ZERO);
-    assert!(client.pins().is_empty(), "nothing was written");
+    assert!(
+        (PREDATES_GRACE..PREDATES_GRACE + 2 * ACK_POLL).contains(&began.elapsed()),
+        "{:?}",
+        began.elapsed()
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_machine_whose_upgrade_replicates_within_the_grace_is_waited_for() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        observations: Some(Vec::new()),
+        bystander: Some((self::machine('5'), true)),
+        bystander_upgraded_after: Some(PREDATES_GRACE / 2),
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('a'),
+        )])
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
     client.assert_done();
 }
 

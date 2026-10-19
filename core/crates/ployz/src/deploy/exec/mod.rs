@@ -48,6 +48,10 @@ const RESTART_POLL: Duration = Duration::from_millis(250);
 const ACK_POLL: Duration = Duration::from_secs(1);
 /// How long a dependent waits for one Machine to route its dependency's Deploy.
 const ACK_WAIT: Duration = Duration::from_secs(300);
+/// How long a Machine whose record names a release that never acks may stay
+/// unrouted before the wait fails naming it. Long enough for a just-upgraded
+/// Machine's new record to replicate and its ack to land.
+const PREDATES_GRACE: Duration = Duration::from_secs(30);
 const HOLD_BEYOND_HEALTH: Duration = Duration::from_secs(60 * 60);
 const HOLD_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -850,8 +854,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                     }
                                     unrouted.insert(service.clone(), read.unrouted);
                                 }
+                                let graced = blocked_since
+                                    .is_some_and(|since| since.elapsed() >= PREDATES_GRACE);
                                 let never = blocked
                                     .iter()
+                                    .filter(|_| graced)
                                     .filter(|(_, blocker)| blocker == service)
                                     .filter_map(|(task, _)| {
                                         let failure = predates_acks(&awaited(
@@ -1019,11 +1026,6 @@ async fn await_routed_pin<C: MachineOperations>(
             failure,
         })
     };
-    if !read.all_routed
-        && let Some(error) = never(&read)
-    {
-        return Err(error);
-    }
     let pointer = match read.pointer {
         Some(pointer) if read.all_routed => return Ok(Pin::Admitted(pointer)),
         current => match live_pin(client, run, service, current).await? {
@@ -1043,7 +1045,9 @@ async fn await_routed_pin<C: MachineOperations>(
         if read.all_routed {
             return Ok(Pin::Admitted(pointer));
         }
-        if let Some(error) = never(&read) {
+        if since.elapsed() >= PREDATES_GRACE
+            && let Some(error) = never(&read)
+        {
             return Err(error);
         }
         if cancellation.is_cancelled() {
