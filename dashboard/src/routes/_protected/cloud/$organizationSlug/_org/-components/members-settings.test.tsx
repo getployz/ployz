@@ -8,8 +8,8 @@ import { InviteDialog, PendingInvites } from "./members-settings";
 
 type Invites = Parameters<typeof PendingInvites>[0]["invites"];
 
-const invite = (id: string, email: string | null): Invites[number] =>
-  ({ id, email, role: "member", invited_by: "Ada", expires_at: "2026-10-21T12:00:00Z" });
+const invite = (id: string, email: string | null, row: Partial<Invites[number]> = {}): Invites[number] =>
+  ({ id, email, role: "member", invited_by: "Ada", expires_at: "2026-10-21T12:00:00Z", ...row });
 
 function Pending({ initial, onRevoke }: { initial: Invites; onRevoke: (invite: string) => void }) {
   const [invites, setInvites] = useState(initial);
@@ -108,12 +108,23 @@ describe("PendingInvites", () => {
     document.body.replaceChildren();
   });
 
-  it("names each Revoke after its invite", () => {
-    render(<Pending initial={[invite("inv-1", "grace@example.com"), invite("inv-2", null)]} onRevoke={vi.fn()} />);
+  it("names each Revoke after its invite, telling same-day links apart", () => {
+    render(<Pending onRevoke={vi.fn()} initial={[
+      invite("inv-1", "grace@example.com"),
+      invite("inv-2", null),
+      invite("inv-3", null, { expires_at: "2026-10-21T15:00:00Z" }),
+      invite("inv-4", null, { invited_by: "Linus" }),
+      invite("inv-5", null, { role: "admin" }),
+    ]} />);
 
-    expect(screen.getByRole("button", { name: "Revoke grace@example.com" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^Revoke link expiring / })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
+    const names = screen.getAllByRole("button", { name: /^Revoke / }).map((button) => button.getAttribute("aria-label"));
+    expect(names).toEqual([
+      "Revoke grace@example.com",
+      expect.stringMatching(/^Revoke link expiring .+, from Ada, Member, 1 of 2$/),
+      expect.stringMatching(/^Revoke link expiring .+, from Ada, Member, 2 of 2$/),
+      expect.stringMatching(/^Revoke link expiring .+, from Linus$/),
+      expect.stringMatching(/^Revoke link expiring .+, from Ada, Admin$/),
+    ]);
   });
 
   it("moves focus to the next invite after a Revoke, and to Invite after the last", () => {

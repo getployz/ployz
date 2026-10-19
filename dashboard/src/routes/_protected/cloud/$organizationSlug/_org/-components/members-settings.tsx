@@ -23,6 +23,7 @@ import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
 import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
+import { distinctNames } from "#/lib/distinct-names";
 import { toErrorMessage } from "#/lib/error-message";
 import {
   inviteMemberServerFn,
@@ -194,6 +195,8 @@ export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
 }) {
   const revokeButtons = useRef(new Map<string, HTMLButtonElement>());
   const inviteButton = useRef<HTMLButtonElement>(null);
+  const revokeNames = distinctNames(invites.map((invite) =>
+    [invite.email ?? `link expiring ${formatDate(invite.expires_at)}`, `from ${invite.invited_by}`, ROLE_LABELS[invite.role]]));
   // The invite below takes the revoked one's place, so focus moves to it, or up, or to Invite when none is left.
   function revoke(id: string) {
     const index = invites.findIndex((row) => row.id === id);
@@ -206,7 +209,7 @@ export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
     <SettingsSection id="invites" title="Pending invites">
       {invites.length > 0 ? (
         <SettingsList label="Pending invites">
-          {invites.map((invite) => (
+          {invites.map((invite, index) => (
             <SettingsListItem
               key={invite.id}
               media={invite.email ? <MailIcon /> : <LinkIcon />}
@@ -215,7 +218,7 @@ export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
               commit="change"
               actions={manager ? (
                 <Button variant="ghost" size="sm" onClick={() => revoke(invite.id)}
-                  aria-label={invite.email ? `Revoke ${invite.email}` : `Revoke link expiring ${formatDate(invite.expires_at)}`}
+                  aria-label={`Revoke ${revokeNames[index]}`}
                   ref={(button) => {
                     if (button) revokeButtons.current.set(invite.id, button);
                     return () => { revokeButtons.current.delete(invite.id); };

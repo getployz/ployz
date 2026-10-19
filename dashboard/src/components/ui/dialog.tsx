@@ -55,7 +55,7 @@ function DialogContent({
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
 } & VariantProps<typeof dialogContentVariants>) {
-  const openerFocus = useOpenerFinalFocus()
+  const opener = useOpenerFinalFocus()
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -65,7 +65,8 @@ function DialogContent({
           dialogContentVariants({ padding, surface }),
           className
         )}
-        finalFocus={finalFocus ?? openerFocus}
+        ref={opener.popup}
+        finalFocus={finalFocus ?? opener.finalFocus}
         {...props}
       >
         {children}

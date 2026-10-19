@@ -46,6 +46,28 @@ function AlwaysMounted() {
   );
 }
 
+function Handoff() {
+  const [create, setCreate] = useState(false);
+  const [config, setConfig] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setCreate(true)}>Create</button>
+      <Dialog open={create} onOpenChange={setCreate}>
+        <DialogContent>
+          <DialogTitle>Create</DialogTitle>
+          <button type="button" autoFocus onClick={() => { setCreate(false); setConfig(true); }}>Config</button>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={config} onOpenChange={setConfig}>
+        <DialogContent>
+          <DialogTitle>Create config</DialogTitle>
+          <input aria-label="Name" autoFocus />
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 describe("dialogs opened without a Trigger", () => {
   afterEach(() => {
     cleanup();
@@ -68,5 +90,21 @@ describe("dialogs opened without a Trigger", () => {
 
     await waitFor(() => expect(screen.queryByRole("textbox", { name: "Name" })).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  it("leaves focus in the next dialog when one dialog hands off to another", async () => {
+    render(<Handoff />);
+    const opener = screen.getByRole("button", { name: "Create" });
+    opener.focus();
+    fireEvent.click(opener);
+    const config = await screen.findByRole("button", { name: "Config" });
+    await waitFor(() => expect(document.activeElement).toBe(config));
+
+    fireEvent.click(config);
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Config" })).toBeNull());
+    const name = screen.getByRole("textbox", { name: "Name" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(document.activeElement).toBe(name);
   });
 });

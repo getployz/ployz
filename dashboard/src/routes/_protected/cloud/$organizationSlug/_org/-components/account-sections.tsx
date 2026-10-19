@@ -12,6 +12,7 @@ import { SettingsSection } from "#/components/settings/settings-section";
 import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
+import { distinctNames } from "#/lib/distinct-names";
 import { accountSessionsRead, getAccountSessionsCollection, getLinkedAccountsCollection, linkedAccountsRead, revokeAccountSession, type AccountSessionRow } from "#/modules/account/account.collection";
 import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/modules/notifications/notifications.queries";
 import { formatRelativeTime } from "#/utils/relative-time";
@@ -91,6 +92,10 @@ export function SessionList({ sessions, currentSessionId, onSignOut }: {
   currentSessionId: string;
   onSignOut: (session: string) => void;
 }) {
+  const signOutable = sessions.filter((row) => row.id !== currentSessionId && !row.cli);
+  const names = distinctNames(signOutable.map((row) =>
+    [deviceLabel(row), row.ipAddress, `active ${formatRelativeTime(new Date(row.lastActiveAt))}`]));
+  const signOutNames = new Map(signOutable.map((row, index) => [row.id, names[index]]));
   return (
     <SettingsList label="Sessions">
       {sessions.map((row) => (
@@ -105,7 +110,7 @@ export function SessionList({ sessions, currentSessionId, onSignOut }: {
             : row.cli
               ? <Badge variant="outline">CLI</Badge>
               : (
-                <Button variant="outline" size="sm" aria-label={`Sign out ${[deviceLabel(row), row.ipAddress].filter(Boolean).join(", ")}`}
+                <Button variant="outline" size="sm" aria-label={`Sign out ${signOutNames.get(row.id)}`}
                   onClick={() => onSignOut(row.id)}>
                   Sign out
                 </Button>
