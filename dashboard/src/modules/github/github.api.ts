@@ -23,11 +23,16 @@ const RepositoryFullName = Schema.String.check(
   Schema.isPattern(/^[^/\s]+\/[^/\s]+$/),
 );
 
+/** With the page an earlier read returned, reads it conditionally and returns that page again while GitHub says it still matches. */
 export const listInstallationReposPage = Effect.fn(
   "Github.listInstallationReposPage",
-)(function* (installationId: number, page: number) {
+)(function* (installationId: number, page: number, previous?: GithubInstallationReposPage) {
   const api = yield* GithubApi;
-  const response = yield* api.installationRepositories({ installationId, page });
+  const response = yield* api.installationRepositories({ installationId, page, etag: previous?.etag ?? undefined });
+  if (response === "not-modified") {
+    if (previous === undefined) return yield* Effect.die("GitHub answered an unconditional repository listing with 304.");
+    return previous;
+  }
   return {
     repositories: response.repositories.map((repository) => ({
       id: repository.id,
@@ -42,6 +47,7 @@ export const listInstallationReposPage = Effect.fn(
     totalCount: response.total_count,
     hasNextPage:
       page * GITHUB_REPOSITORIES_PAGE_SIZE < response.total_count,
+    etag: response.etag,
   } satisfies GithubInstallationReposPage;
 });
 

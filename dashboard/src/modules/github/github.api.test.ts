@@ -663,6 +663,7 @@ describe("GitHub repository synchronization provider", () => {
       page: 1,
       totalCount: 101,
       hasNextPage: true,
+      etag: null,
     });
   });
 

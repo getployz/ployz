@@ -5,7 +5,7 @@ import { githubRepositoriesSyncRequestedEventType } from "#/modules/inngest/even
 import { createSyncGithubRepositories } from "./sync";
 
 describe("GitHub repository sync Inngest adapter", () => {
-  it("preserves the trigger, retries, singleton, and keyed concurrency", () => {
+  it("preserves the trigger, retries, singleton, keyed concurrency, and a limit across installations", () => {
     const fn = createSyncGithubRepositories(new Inngest({ id: "test" }));
 
     expect(fn.opts).toEqual(
@@ -17,7 +17,7 @@ describe("GitHub repository sync Inngest adapter", () => {
           key: "event.data.installationId",
           mode: "skip",
         },
-        concurrency: [{ key: "event.data.installationId", limit: 1 }],
+        concurrency: [{ key: "event.data.installationId", limit: 1 }, { limit: 4 }],
       }),
     );
   });

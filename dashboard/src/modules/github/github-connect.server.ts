@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Fiber, Option, Redacted, Schema } from "effect";
 import {
   linkGithubInstallation,
   listCachedGithubRepositoriesForOrganization,
@@ -84,8 +84,8 @@ export const startGithubConnect = Effect.fn("GithubConnect.start")(function* (ac
   }).toString()}`;
 });
 
-/** How long a connect waits on a sync already running for the installation before leaving the listing to a queued one. */
-const CONNECT_LOCK_WAIT_MILLIS = 5000;
+/** How long a connect waits for its syncs, from linking to returning, before leaving the rest to queued ones. */
+const CONNECT_SYNC_WAIT_MILLIS = 5000;
 
 const linkChosen = Effect.fn("GithubConnect.linkChosen")(function* (input: {
   organizationId: string; userId: string; githubLogin: string; installationIds: ReadonlyArray<number>;
@@ -96,9 +96,20 @@ const linkChosen = Effect.fn("GithubConnect.linkChosen")(function* (input: {
     });
   }
   // Sync before returning, so the settings the person lands on count each account's repositories.
-  const unsynced = (yield* Effect.forEach(input.installationIds, (installationId) => syncGithubRepositories(installationId, CONNECT_LOCK_WAIT_MILLIS).pipe(
-    Effect.as(null),
-    Effect.catch((error) => Effect.logWarning("Did not sync a linked installation's repositories before returning.", error).pipe(Effect.as(installationId))),
+  const deadline = Date.now() + CONNECT_SYNC_WAIT_MILLIS;
+  const synced = (installationId: number) => Effect.gen(function* () {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    // Detached, so the wait ends at the deadline even while the sync waits for a pooled connection, which can't be
+    // interrupted; the sync then finishes or gives up on its own, and the queued one follows it.
+    const sync = yield* Effect.forkDetach(syncGithubRepositories(installationId, deadline).pipe(
+      Effect.as(true),
+      Effect.catch((error) => Effect.logWarning("Did not sync a linked installation's repositories during a connect.", error).pipe(Effect.as(false))),
+    ));
+    return Option.getOrElse(yield* Fiber.join(sync).pipe(Effect.timeoutOption(remaining)), () => false);
+  });
+  const unsynced = (yield* Effect.forEach(input.installationIds, (installationId) => synced(installationId).pipe(
+    Effect.map((done) => done ? null : installationId),
   ), { concurrency: 4 })).filter((installationId) => installationId !== null);
   if (unsynced.length === 0) return;
   yield* sendInngestEvent(unsynced.map((installationId) =>

@@ -21,4 +21,6 @@ export type GithubInstallationReposPage = {
   page: number;
   totalCount: number;
   hasNextPage: boolean;
+  /** GitHub's ETag for the page, which a conditional read of it sends back. */
+  etag: string | null;
 };

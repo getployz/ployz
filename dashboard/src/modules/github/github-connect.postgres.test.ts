@@ -6,7 +6,10 @@ import { expect, vi } from "vitest";
 import { MAX_OFFERED_INSTALLATIONS } from "./github-connect";
 import { acceptGithubOfferInput } from "./github-connect.functions";
 import { acceptGithubOffer, completeGithubConnect, listGithubOffer, listOrganizationGithub, startGithubConnect } from "./github-connect.server";
-import { findGithubRepositoryByNameForOrganization, listGithubInstallationsForOrganization, lockGithubRepositoryCache, upsertCachedGithubRepositories, upsertGithubInstallation } from "./github.repository";
+import {
+  deleteCachedGithubRepositoriesById, findGithubRepositoryByNameForOrganization, listGithubInstallationsForOrganization, lockGithubRepositoryCache,
+  pruneCachedGithubRepositories, upsertCachedGithubRepositories, upsertGithubInstallation,
+} from "./github.repository";
 import { processGithubInstallationRepositoriesEvent } from "./github.server";
 import { githubRepositoryCache } from "./tables";
 import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApi, type GithubApiService } from "./github-observation.api";
@@ -56,22 +59,33 @@ const REPOSITORY_COUNTS = new Map([[8, 3], [9, 150]]);
 const revoked = new Set<number>();
 // Repositories renamed on GitHub, which made them private on a new default branch too.
 const renamed = new Map<number, string>();
-// Runs once, after installation 9's second page is read and before the reader gets it, to land another writer there.
+// Runs once, after a writer holding the cache lock re-reads installation 9's second page and before it gets it.
 let afterSecondPage: Effect.Effect<void> | undefined;
-const installationRepositories: GithubApiService["installationRepositories"] = ({ installationId, page }) =>
-  listRepositories({ installationId, page }).pipe(Effect.tap(() => {
-    const interleaved = installationId === 9 && page === 2 ? afterSecondPage : undefined;
-    if (interleaved !== undefined) afterSecondPage = undefined;
-    return interleaved ?? Effect.void;
+// Runs once, while a writer first lists installation 9, before it holds any connection.
+let whileListing: Effect.Effect<void> | undefined;
+const installationRepositories: GithubApiService["installationRepositories"] = ({ installationId, page, etag }) =>
+  listRepositories({ installationId, page, etag }).pipe(Effect.tap(() => {
+    if (installationId !== 9) return Effect.void;
+    if (etag === undefined && page === 1) {
+      const hook = whileListing;
+      whileListing = undefined;
+      return hook ?? Effect.void;
+    }
+    if (etag !== undefined && page === 2) {
+      const hook = afterSecondPage;
+      afterSecondPage = undefined;
+      return hook ?? Effect.void;
+    }
+    return Effect.void;
   }));
-const listRepositories: GithubApiService["installationRepositories"] = ({ installationId, page }) => {
+// Answers a conditional read with "not-modified" while the page's ids, names and total still match its ETag.
+const listRepositories: GithubApiService["installationRepositories"] = ({ installationId, page, etag }) => {
   const granted = Array.from({ length: REPOSITORY_COUNTS.get(installationId) ?? 0 }, (_, index) => installationId * 1000 + index)
     .filter((id) => !revoked.has(id));
-  const ids = granted.slice((page - 1) * GITHUB_REPOSITORIES_PAGE_SIZE, page * GITHUB_REPOSITORIES_PAGE_SIZE);
-  return Effect.succeed({
-    total_count: granted.length,
-    repositories: ids.map(repository),
-  });
+  const repositories = granted.slice((page - 1) * GITHUB_REPOSITORIES_PAGE_SIZE, page * GITHUB_REPOSITORIES_PAGE_SIZE).map(repository);
+  const current = JSON.stringify([granted.length, repositories.map((listed) => [listed.id, listed.name])]);
+  if (etag === current) return Effect.succeed("not-modified" as const);
+  return Effect.succeed({ total_count: granted.length, repositories, etag: current });
 };
 const repository = (id: number) => {
   const name = renamed.get(id) ?? `repo-${id}`;
@@ -196,6 +210,8 @@ const hopperCloud = Effect.fn(function* () {
   const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
   revoked.clear();
   renamed.clear();
+  afterSecondPage = undefined;
+  whileListing = undefined;
   const services = yield* Layer.build(yield* storeTestCloud({ github, inngest }));
   const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
   const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
@@ -310,4 +326,56 @@ it.live("leaves the listing to a queued sync when another writer holds the cache
       .toEqual([{ installationId: 9, reason: "manual-refresh" }]);
     yield* Deferred.succeed(release, undefined);
     yield* Fiber.join(holder);
+  }), 60_000);
+
+it.live("returns within its wait and leaves the listing to a queued sync while other writers hold every pooled connection", () =>
+  Effect.gen(function* () {
+    const { send, connectHopper, cached, elsewhere } = yield* hopperCloud();
+    const release = yield* Deferred.make<void>();
+    const holders: Fiber.Fiber<unknown, unknown>[] = [];
+    // While the connect lists GitHub, other writers take every connection in node-postgres's default pool of 10.
+    whileListing = Effect.gen(function* () {
+      const held = yield* Effect.forEach(Array.from({ length: 10 }), () => Deferred.make<void>());
+      for (const taken of held) {
+        holders.push(yield* elsewhere(Effect.gen(function* () {
+          const database = yield* Database;
+          yield* database.transaction(Effect.gen(function* () {
+            yield* Deferred.succeed(taken, undefined);
+            yield* Deferred.await(release);
+          }));
+        })));
+      }
+      yield* Effect.forEach(held, Deferred.await, { discard: true });
+    });
+
+    const started = Date.now();
+    expect(yield* connectHopper).toEqual({ linked: 1 });
+    expect(Date.now() - started).toBeLessThan(7_000);
+    expect(send.mock.calls.flatMap(([events]) => [events].flat()).map((event) => event.data))
+      .toEqual([{ installationId: 9, reason: "manual-refresh" }]);
+
+    yield* Deferred.succeed(release, undefined);
+    for (const holder of holders) yield* Fiber.join(holder);
+    // The connect's sync takes a connection once one frees, so none leaked, and caches the listing.
+    yield* cached.pipe(
+      Effect.flatMap((repositories) => repositories.size === 150 ? Effect.void : Effect.fail("not cached yet")),
+      Effect.retry({ schedule: Schedule.spaced("20 millis") }),
+      Effect.timeout("10 seconds"),
+    );
+  }), 60_000);
+
+it.live("caches and prunes in one call past the 65,535 parameters Postgres binds to a statement", () =>
+  Effect.gen(function* () {
+    const { run, cached } = yield* hopperCloud();
+    // 8,000 rows of 9 columns would bind 72,000 parameters, and 70,000 listed ids would bind one each.
+    yield* run(upsertCachedGithubRepositories({
+      installationId: 9,
+      repositories: Array.from({ length: 8000 }, (_, index) => ({ ...repository(9000 + index), repo_updated_at: "2026-01-01T00:00:00Z" })),
+      syncedAt: new Date(),
+    }));
+    expect((yield* cached).size).toBe(8000);
+    const listed = Array.from({ length: 70_000 }, (_, index) => 9000 + index).filter((id) => id !== 9001);
+    expect(yield* run(pruneCachedGithubRepositories(9, listed))).toBe(1);
+    yield* run(deleteCachedGithubRepositoriesById(9, listed));
+    expect((yield* cached).size).toBe(0);
   }), 60_000);

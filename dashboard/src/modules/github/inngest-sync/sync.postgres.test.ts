@@ -31,10 +31,10 @@ function createStepTools() {
   };
 }
 
-function jsonResponse<Body>(body: Body) {
+function jsonResponse<Body>(body: Body, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status: 200,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 }
 
@@ -147,8 +147,9 @@ it.live(
                 provider_only: "removed",
               },
             ],
-          }),
-        );
+          }, { etag: '"page-1"' }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 304, headers: { etag: '"page-1"' } }));
       vi.stubGlobal("fetch", fetchMock);
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => vi.unstubAllGlobals()),
@@ -172,6 +173,12 @@ it.live(
         processedRepoCount: 1,
         deletedRepositoryCount: 0,
       });
+      // The listing under the cache lock asks GitHub only whether the first listing's page changed.
+      assert.deepStrictEqual(fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get("If-None-Match") ?? undefined), [
+        undefined,
+        undefined,
+        '"page-1"',
+      ]);
       const repositories = yield* Effect.promise(() =>
         runEffect(
           Effect.gen(function* () {

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import {
   githubInstallation as schemaGithubInstallation,
@@ -165,6 +165,12 @@ export const deleteCachedGithubRepositoriesForInstallation = Effect.fn(
     .where(eq(schemaGithubRepositoryCache.installationId, installationId));
 });
 
+/** One bind parameter however many ids, where a list binds one each and Postgres takes at most 65,535. */
+const repositoryIdArray = (repositoryIds: readonly number[]) => sql`${sql.param([...repositoryIds])}::bigint[]`;
+
+/** Rows per insert: each binds 9 parameters, so a whole listing in one statement could pass Postgres's 65,535. */
+const UPSERT_CHUNK_ROWS = 1000;
+
 export const deleteCachedGithubRepositoriesById = Effect.fn(
   "Github.deleteCachedRepositoriesById",
 )(function* (installationId: number, repositoryIds: readonly number[]) {
@@ -175,7 +181,7 @@ export const deleteCachedGithubRepositoriesById = Effect.fn(
     .where(
       and(
         eq(schemaGithubRepositoryCache.installationId, installationId),
-        inArray(schemaGithubRepositoryCache.repositoryId, repositoryIds),
+        sql`${schemaGithubRepositoryCache.repositoryId} = any(${repositoryIdArray(repositoryIds)})`,
       ),
     );
 });
@@ -187,38 +193,39 @@ export const upsertCachedGithubRepositories = Effect.fn(
   readonly repositories: readonly GithubRepository[];
   readonly syncedAt: Date;
 }) {
-  if (data.repositories.length === 0) return;
   const database = yield* Database;
-  yield* database.drizzle
-    .insert(schemaGithubRepositoryCache)
-    .values(
-      data.repositories.map((repository) => ({
-        installationId: data.installationId,
-        repositoryId: repository.id,
-        name: repository.name,
-        fullName: repository.full_name,
-        defaultBranch: repository.default_branch,
-        private: repository.private,
-        htmlUrl: repository.html_url,
-        repoUpdatedAt: new Date(repository.repo_updated_at),
-        syncedAt: data.syncedAt,
-      })),
-    )
-    .onConflictDoUpdate({
-      target: [
-        schemaGithubRepositoryCache.installationId,
-        schemaGithubRepositoryCache.repositoryId,
-      ],
-      set: {
-        name: sql`excluded.name`,
-        fullName: sql`excluded.full_name`,
-        defaultBranch: sql`excluded.default_branch`,
-        private: sql`excluded.private`,
-        htmlUrl: sql`excluded.html_url`,
-        repoUpdatedAt: sql`excluded.repo_updated_at`,
-        syncedAt: sql`excluded.synced_at`,
-      },
-    });
+  for (let start = 0; start < data.repositories.length; start += UPSERT_CHUNK_ROWS) {
+    yield* database.drizzle
+      .insert(schemaGithubRepositoryCache)
+      .values(
+        data.repositories.slice(start, start + UPSERT_CHUNK_ROWS).map((repository) => ({
+          installationId: data.installationId,
+          repositoryId: repository.id,
+          name: repository.name,
+          fullName: repository.full_name,
+          defaultBranch: repository.default_branch,
+          private: repository.private,
+          htmlUrl: repository.html_url,
+          repoUpdatedAt: new Date(repository.repo_updated_at),
+          syncedAt: data.syncedAt,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [
+          schemaGithubRepositoryCache.installationId,
+          schemaGithubRepositoryCache.repositoryId,
+        ],
+        set: {
+          name: sql`excluded.name`,
+          fullName: sql`excluded.full_name`,
+          defaultBranch: sql`excluded.default_branch`,
+          private: sql`excluded.private`,
+          htmlUrl: sql`excluded.html_url`,
+          repoUpdatedAt: sql`excluded.repo_updated_at`,
+          syncedAt: sql`excluded.synced_at`,
+        },
+      });
+  }
 });
 
 /** Deletes the installation's cached repositories that a full listing left out. */
@@ -231,7 +238,7 @@ export const pruneCachedGithubRepositories = Effect.fn(
     .where(
       and(
         eq(schemaGithubRepositoryCache.installationId, installationId),
-        notInArray(schemaGithubRepositoryCache.repositoryId, [...listedRepositoryIds]),
+        sql`${schemaGithubRepositoryCache.repositoryId} <> all(${repositoryIdArray(listedRepositoryIds)})`,
       ),
     )
     .returning({ repositoryId: schemaGithubRepositoryCache.repositoryId });

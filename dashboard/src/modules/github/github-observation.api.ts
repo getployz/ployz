@@ -28,7 +28,7 @@ import {
 import { GITHUB_API_VERSION, GithubTokens, githubAppJwt } from "#/modules/github/github-token.server";
 import { AppConfig } from "#/server/config.server";
 
-type GithubRequestHeaders = { "X-GitHub-Api-Version": string; Accept?: string; Authorization?: string };
+type GithubRequestHeaders = { "X-GitHub-Api-Version": string; Accept?: string; Authorization?: string; "If-None-Match"?: string };
 export { GITHUB_COMPARE_STATUSES };
 export type {
   GithubBranchHeadObservation,
@@ -181,7 +181,7 @@ const installationRepositoriesSchema = Schema.Struct({
   })),
   total_count: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
 });
-export type GithubInstallationRepositoriesResponse = typeof installationRepositoriesSchema.Type;
+export type GithubInstallationRepositoriesListing = typeof installationRepositoriesSchema.Type & { readonly etag: string | null };
 const userAccessTokenSchema = Schema.Struct({ access_token: nonEmptyString });
 export const GITHUB_REPOSITORIES_PAGE_SIZE = 100;
 
@@ -219,10 +219,13 @@ export interface GithubApiService {
   readonly app: <S extends Schema.ConstraintDecoder<unknown>>(
     input: GithubAppRequest<S>,
   ) => Effect.Effect<S["Type"], GithubObservationError>;
-  /** One page of what an installation grants, read as Cloud for the repository cache. Never repository contents. */
+  /**
+   * One page of what an installation grants, read as Cloud for the repository cache. Never repository contents.
+   * With the `etag` an earlier read of the page returned, answers "not-modified" while the page still matches it.
+   */
   readonly installationRepositories: (
-    input: { installationId: number; page: number },
-  ) => Effect.Effect<GithubInstallationRepositoriesResponse, GithubObservationError>;
+    input: { installationId: number; page: number; etag?: string },
+  ) => Effect.Effect<GithubInstallationRepositoriesListing | "not-modified", GithubObservationError>;
   readonly exchangeUserCode: (code: string) => Effect.Effect<Redacted.Redacted<string>, GithubObservationError>;
   readonly userJson: <S extends Schema.ConstraintDecoder<unknown>>(
     input: GithubUserRequest<S>,
@@ -540,37 +543,44 @@ export const GithubApiLive = Layer.effect(
       return tokens.installationToken(access.organizationId, access.installationId);
     };
 
-    const request = Effect.fn("GithubApi.request")(
-      function* <S extends Schema.ConstraintDecoder<unknown>>(input: {
-        token: string | null;
-        path: `/${string}`;
-        operation: GithubObservationOperation;
-        schema: S;
-        method?: "POST" | "PATCH";
-        body?: unknown;
-      }) {
-        const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
-        if (input.token !== null) headers.Authorization = `Bearer ${input.token}`;
-        const response = yield* Effect.tryPromise({
-          try: (signal) => fetch(`${config.github.origins.api}${input.path}`, input.method
-            ? { signal, method: input.method, headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
-            : { signal, headers }),
-          catch: () =>
-            githubObservationError({
-              code: "request_failed",
-              operation: input.operation,
-              retriable: true,
-            }),
-        });
-        if (!response.ok) {
-          return yield* githubObservationError({
-            code: response.status === 404 ? "not_found" : "request_failed",
+    const send = Effect.fn("GithubApi.send")(function* (input: {
+      token: string | null;
+      path: `/${string}`;
+      operation: GithubObservationOperation;
+      method?: "POST" | "PATCH";
+      body?: unknown;
+      /** A conditional GET: GitHub answers 304, which this returns, when the resource still has this ETag. */
+      ifNoneMatch?: string;
+    }) {
+      const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
+      if (input.token !== null) headers.Authorization = `Bearer ${input.token}`;
+      if (input.ifNoneMatch !== undefined) headers["If-None-Match"] = input.ifNoneMatch;
+      const response = yield* Effect.tryPromise({
+        try: (signal) => fetch(`${config.github.origins.api}${input.path}`, input.method
+          ? { signal, method: input.method, headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
+          : { signal, headers }),
+        catch: () =>
+          githubObservationError({
+            code: "request_failed",
             operation: input.operation,
-            status: response.status,
-            retryAfterSeconds: retryAfterSeconds(response),
-            retriable: isRetriableGithubResponse(response),
-          });
-        }
+            retriable: true,
+          }),
+      });
+      if (response.status === 304 && input.ifNoneMatch !== undefined) return response;
+      if (!response.ok) {
+        return yield* githubObservationError({
+          code: response.status === 404 ? "not_found" : "request_failed",
+          operation: input.operation,
+          status: response.status,
+          retryAfterSeconds: retryAfterSeconds(response),
+          retriable: isRetriableGithubResponse(response),
+        });
+      }
+      return response;
+    });
+
+    const decode = Effect.fn("GithubApi.decode")(
+      function* <S extends Schema.ConstraintDecoder<unknown>>(response: Response, schema: S, operation: GithubObservationOperation) {
         const parsedJson = yield* Effect.tryPromise({
           try: async () => {
             const text = await response.text();
@@ -580,21 +590,34 @@ export const GithubApiLive = Layer.effect(
           catch: () =>
             githubObservationError({
               code: "invalid_response",
-              operation: input.operation,
+              operation,
               status: response.status,
               retriable: false,
             }),
         });
-        return yield* Schema.decodeUnknownEffect(input.schema)(parsedJson).pipe(
+        return yield* Schema.decodeUnknownEffect(schema)(parsedJson).pipe(
           Effect.mapError(() =>
             githubObservationError({
               code: "invalid_response",
-              operation: input.operation,
+              operation,
               status: response.status,
               retriable: false,
             }),
           ),
         );
+      },
+    );
+
+    const request = Effect.fn("GithubApi.request")(
+      function* <S extends Schema.ConstraintDecoder<unknown>>({ schema, ...input }: {
+        token: string | null;
+        path: `/${string}`;
+        operation: GithubObservationOperation;
+        schema: S;
+        method?: "POST" | "PATCH";
+        body?: unknown;
+      }) {
+        return yield* decode(yield* send(input), schema, input.operation);
       },
     );
 
@@ -621,12 +644,14 @@ export const GithubApiLive = Layer.effect(
           return yield* githubObservationError({ code: "invalid_input", operation: "list_repositories", retriable: false });
         }
         const token = yield* tokens.systemInstallationToken(input.installationId);
-        return yield* request({
+        const response = yield* send({
           token,
           path: `/installation/repositories?per_page=${GITHUB_REPOSITORIES_PAGE_SIZE}&page=${input.page}`,
           operation: "list_repositories",
-          schema: installationRepositoriesSchema,
+          ifNoneMatch: input.etag,
         });
+        if (response.status === 304) return "not-modified" as const;
+        return { ...yield* decode(response, installationRepositoriesSchema, "list_repositories"), etag: response.headers.get("etag") };
       },
     );
 
