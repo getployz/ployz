@@ -907,7 +907,8 @@ fn notices(frame: &Frame) -> Vec<String> {
                     | DeployWarning::IngressHostname { .. }
                     | DeployWarning::ObserverRelativeHostnameConflict
                     | DeployWarning::SkippedDependencyHealth { .. }
-                    | DeployWarning::ImagePortMismatch { .. } => None,
+                    | DeployWarning::ImagePortMismatch { .. }
+                    | DeployWarning::LeftRunning { .. } => None,
                 })
                 .collect::<BTreeSet<_>>();
             Some(format!(
