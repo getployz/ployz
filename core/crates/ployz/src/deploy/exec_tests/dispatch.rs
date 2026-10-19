@@ -841,3 +841,59 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn proxy_copies_never_routed_always_removable() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old, new_first, new_second) = (container('a'), container('b'), container('c'));
+    let mut proxy = spec(None, None, None);
+    proxy.name = ServiceName::parse("ingress").unwrap();
+    let plan = vec![
+        DeployOperation::ReplaceContainer(ReplacementOperation {
+            machine_id: first,
+            old_container_id: old,
+            spec: proxy.clone(),
+            skip_health_monitor: true,
+        }),
+        run(&second, proxy, true),
+    ];
+    let client = Scripted::new(vec![
+        created(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            &new_first,
+        ),
+        created(
+            Call::Run(second, ContainerKind::ServiceContainer),
+            &new_second,
+        ),
+        observed_ingress(Call::Inspect(first, old), running()),
+        ok(Call::Remove(first, old)),
+    ]);
+
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, Namespace::system()),
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    for new in [new_first, new_second] {
+        assert_eq!(
+            client.rotation(&new),
+            Some(CopyRotation::Pending),
+            "a proxy copy stays Pending for life"
+        );
+    }
+    assert_eq!(
+        client.moves(),
+        [Move::Gone(old)],
+        "a proxy copy is never brought In or sent Out, and leaves by Gone"
+    );
+    client.assert_done();
+}
