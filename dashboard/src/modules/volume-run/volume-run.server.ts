@@ -339,6 +339,7 @@ const refusalCode = {
   unanswered: "unavailable",
   confirm_required: "confirmation_required",
   invalid: "invalid_argument",
+  already_on: "conflict",
   no_writer: "conflict",
   two_writers: "conflict",
   volume_switching: "conflict",
