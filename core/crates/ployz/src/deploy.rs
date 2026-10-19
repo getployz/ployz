@@ -13,8 +13,10 @@ use ployz_core::{
 use thiserror::Error;
 
 mod apply;
+pub(crate) mod cleanup;
 mod convergence;
 mod exec;
+pub(crate) use exec::MachineOperations;
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
