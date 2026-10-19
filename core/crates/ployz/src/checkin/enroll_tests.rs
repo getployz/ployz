@@ -269,6 +269,9 @@ impl Host for Scripted {
             }
             if let Some(pace) = self.pace {
                 tokio::time::sleep(pace).await;
+                if let Some(last) = self.stages.last() {
+                    self.cloud.told(*last).await;
+                }
             }
         }
         self.events.lock().unwrap().push("finished");
@@ -815,14 +818,18 @@ async fn committed_resume_keeps_heartbeat_pacing_when_cloud_keeps_rejecting() {
     host.pace = Some(Duration::from_millis(250));
 
     assert_eq!(
-        pass(
-            &host,
-            &mut fixture.client(&cloud),
-            &fixture.key,
-            &fixture.paths,
-            Utc::now(),
+        tokio::time::timeout(
+            HEARTBEAT / 2,
+            pass(
+                &host,
+                &mut fixture.client(&cloud),
+                &fixture.key,
+                &fixture.paths,
+                Utc::now(),
+            ),
         )
-        .await,
+        .await
+        .unwrap(),
         Next::Enrolled
     );
     assert!(host.events().contains(&"finished"));
