@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
 };
 use thiserror::Error;
 
@@ -745,12 +745,15 @@ pub enum DeployWarning {
         dependent: QualifiedService,
         dependency: QualifiedService,
     },
-    /// The pulled image exposes TCP ports, and none of them is a port the Service's
-    /// domains send traffic to. The Machines that pulled the image report `exposed`;
-    /// both lists are sorted without repeats.
+    /// On each of `machines`, the pulled image exposes TCP ports and none of them is
+    /// a port the Service's domains send traffic to. Each Machine is judged on what
+    /// it pulled; `exposed` joins the mismatching Machines' reports. The lists are
+    /// sorted without repeats. `service_id` outlives a rename of `service`.
     ImagePortMismatch {
         service: ServiceName,
+        service_id: ServiceId,
         image: String,
+        machines: Vec<MachineId>,
         exposed: Vec<u16>,
         routed: Vec<u16>,
     },
@@ -811,6 +814,7 @@ impl Display for DeployWarning {
                 image,
                 exposed,
                 routed,
+                ..
             } => write!(
                 f,
                 "{service}'s image {image} exposes {}; its domains send to {}. Set the domain port or PORT.",

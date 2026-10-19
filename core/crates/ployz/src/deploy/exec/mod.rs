@@ -18,7 +18,7 @@ use ployz_core::{
     HealthVerdict, Hold, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
     MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
     OperationPhase, PortPublication, PublishServingPointerRequest, PullPolicy, QualifiedService,
-    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RpcError, RpcErrorCode, RunTarget,
+    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RpcError, RpcErrorCode, RunTarget, ServiceId,
     ServiceName, ServiceOutcome, ServingPointer, ServingPointerPublication, ServingPointerRead,
     SlotKey, StopOptions, TransportProtocol, op,
 };
@@ -1138,15 +1138,22 @@ fn port_mismatches(
     operations: &[DeployOperation],
     exposed: &BTreeMap<(MachineId, &str), Vec<ExposedPort>>,
 ) -> Vec<DeployWarning> {
-    let mut services: BTreeMap<&ServiceName, (&str, BTreeSet<u16>, BTreeSet<u16>)> =
-        BTreeMap::new();
+    struct Mismatch<'a> {
+        service_id: ServiceId,
+        image: &'a str,
+        machines: BTreeSet<MachineId>,
+        exposed: BTreeSet<u16>,
+        routed: BTreeSet<u16>,
+    }
+    let mut services: BTreeMap<&ServiceName, Mismatch<'_>> = BTreeMap::new();
     for operation in operations {
         let Some(spec) = operation.spec() else {
             continue;
         };
         let image = spec.container.image.as_str();
+        let machine_id = operation.machine_id();
         let tcp = exposed
-            .get(&(operation.machine_id(), image))
+            .get(&(machine_id, image))
             .into_iter()
             .flatten()
             .filter(|port| port.protocol == TransportProtocol::Tcp)
@@ -1163,22 +1170,27 @@ fn port_mismatches(
         if tcp.is_empty() || routed.is_empty() || !tcp.is_disjoint(&routed) {
             continue;
         }
-        let service = services
-            .entry(&spec.name)
-            .or_insert_with(|| (image, BTreeSet::new(), BTreeSet::new()));
-        service.1.extend(tcp);
-        service.2.extend(routed);
+        let mismatch = services.entry(&spec.name).or_insert_with(|| Mismatch {
+            service_id: spec.service_id.clone(),
+            image,
+            machines: BTreeSet::new(),
+            exposed: BTreeSet::new(),
+            routed: BTreeSet::new(),
+        });
+        mismatch.machines.insert(machine_id);
+        mismatch.exposed.extend(tcp);
+        mismatch.routed.extend(routed);
     }
     services
         .into_iter()
-        .map(
-            |(service, (image, exposed, routed))| DeployWarning::ImagePortMismatch {
-                service: service.clone(),
-                image: image.to_owned(),
-                exposed: exposed.into_iter().collect(),
-                routed: routed.into_iter().collect(),
-            },
-        )
+        .map(|(service, mismatch)| DeployWarning::ImagePortMismatch {
+            service: service.clone(),
+            service_id: mismatch.service_id,
+            image: mismatch.image.to_owned(),
+            machines: mismatch.machines.into_iter().collect(),
+            exposed: mismatch.exposed.into_iter().collect(),
+            routed: mismatch.routed.into_iter().collect(),
+        })
         .collect()
 }
 

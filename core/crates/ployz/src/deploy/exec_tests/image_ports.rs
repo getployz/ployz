@@ -94,7 +94,9 @@ async fn an_image_exposing_another_port_warns_and_the_deploy_still_completes() {
         warnings,
         [DeployWarning::ImagePortMismatch {
             service: ServiceName::parse("web").unwrap(),
+            service_id: service_id(),
             image: "nginx".into(),
+            machines: vec![machine('1')],
             exposed: vec![80],
             routed: vec![8080],
         }]
@@ -151,7 +153,7 @@ async fn a_service_without_domains_raises_no_warning() {
 }
 
 #[tokio::test]
-async fn two_machines_pulling_the_same_image_warn_once() {
+async fn two_machines_pulling_the_same_image_warn_once_naming_both() {
     let (outcome, warnings) = deploy(
         vec![
             run(&machine('1'), routed(8080), true),
@@ -162,7 +164,17 @@ async fn two_machines_pulling_the_same_image_warn_once() {
     .await;
 
     assert!(matches!(outcome, DeployOutcome::Success { .. }));
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(
+        warnings,
+        [DeployWarning::ImagePortMismatch {
+            service: ServiceName::parse("web").unwrap(),
+            service_id: service_id(),
+            image: "nginx".into(),
+            machines: vec![machine('1'), machine('2')],
+            exposed: vec![80],
+            routed: vec![8080],
+        }]
+    );
 }
 
 #[tokio::test]
@@ -186,7 +198,9 @@ async fn one_machine_whose_image_misses_the_domain_port_warns_with_its_ports_onl
         warnings,
         [DeployWarning::ImagePortMismatch {
             service: ServiceName::parse("web").unwrap(),
+            service_id: service_id(),
             image: "nginx".into(),
+            machines: vec![first],
             exposed: vec![80],
             routed: vec![8080],
         }]

@@ -371,7 +371,9 @@ fn a_deploy_warning_shows_once_on_the_applied_deploy() {
         .unwrap();
     let mismatch = ployz_core::DeployWarning::ImagePortMismatch {
         service: "web".parse().unwrap(),
+        service_id: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
         image: "nginx".into(),
+        machines: vec![MachineId::parse("a".repeat(32)).unwrap()],
         exposed: vec![80],
         routed: vec![8080],
     };
@@ -392,7 +394,9 @@ fn a_deploy_warning_shows_once_on_the_applied_deploy() {
         serde_json::json!({"warning": {
             "type": "image_port_mismatch",
             "service": "web",
+            "service_id": "c".repeat(32),
             "image": "nginx",
+            "machines": ["a".repeat(32)],
             "exposed": [80],
             "routed": [8080],
         }})

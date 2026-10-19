@@ -15,6 +15,7 @@ import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
   admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, nodeApplied, outcomeReason, showCancelling,
+  warnedService,
   type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -157,11 +158,11 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
         </p>
       ))}
       {deployWarnings.map((warning) => {
-        const found = warning.warning;
-        const node = found.type === "image_port_mismatch" ? services.find((service) => service.name === found.service) : undefined;
+        const node = warnedService(deployment, warning);
+        const text = deploymentWarningText(warning, node?.name);
         return (
-          <p key={deploymentWarningText(warning)} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
-            <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}. Set the domain port or PORT.
+          <p key={text} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
+            <TriangleAlertIcon className="size-4" />{text}. Set the domain port or PORT.
             {node ? (
               <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: node.id }} search={{}}
                 className="underline underline-offset-4">Service settings</Link>

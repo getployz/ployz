@@ -735,7 +735,9 @@ fn a_retained_row_fits_the_terminal_with_its_count_whole() {
 fn a_notice_raised_mid_deploy_shows_under_the_live_rows_and_in_plain_output() {
     let warning = DeployWarning::ImagePortMismatch {
         service: ployz_core::ServiceName::parse("web").unwrap(),
+        service_id: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
         image: "nginx".into(),
+        machines: vec![ployz_core::MachineId::parse("a".repeat(32)).unwrap()],
         exposed: vec![80],
         routed: vec![8080],
     };
