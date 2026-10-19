@@ -8,7 +8,7 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
     sync::{Arc, Mutex},
 };
@@ -115,8 +115,13 @@ impl Fixture {
     }
 
     fn ployz(&self, args: &[&str]) -> Output {
+        self.ployz_in(self.home.path(), args)
+    }
+
+    fn ployz_in(&self, dir: &Path, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_ployz"))
             .args(args)
+            .current_dir(dir)
             .env("HOME", self.home.path())
             .env("PLOYZ_CONFIG", self.config())
             .env("PLOYZ_TOKEN", "ployz_test_token")
@@ -177,6 +182,19 @@ fn entry_rendering(render: &str) -> Value {
         .into_iter()
         .find(|entry| entry["render"] == render && entry["typed"].is_null())
         .unwrap_or_else(|| panic!("the fixture has an untyped {render} entry"))
+}
+
+/// The untyped fixture entry that takes a Project and an Environment.
+fn entry_scoped() -> Value {
+    fixture_entries()
+        .into_iter()
+        .find(|entry| {
+            let input = &entry["input"]["properties"];
+            entry["typed"].is_null()
+                && input["project"].is_object()
+                && input["environment"].is_object()
+        })
+        .expect("the fixture has an untyped entry taking a Project and an Environment")
 }
 
 fn argv(entry: &Value) -> Vec<String> {
@@ -529,4 +547,89 @@ fn a_name_two_members_share_exits_2_and_lists_both_emails() {
     for email in ["sam@one.example", "sam@two.example"] {
         assert!(stderr.contains(email), "{stderr}");
     }
+}
+
+/// `entry`'s command line, every positional argument filled with `web`.
+fn scoped_args(entry: &Value) -> Vec<String> {
+    let mut args = argv(entry);
+    args.extend(
+        entry["positional"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|_| "web".to_owned()),
+    );
+    args
+}
+
+/// A directory linked to `shop`'s `staging` Environment, as `ployz link` records it.
+fn linked_dir(cloud: &Fixture) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = dir.path().canonicalize().unwrap();
+    let links = json!({
+        canonical.to_str().unwrap(): { "project": "shop", "environment": "staging" }
+    });
+    std::fs::write(
+        cloud.home.path().join("links.json"),
+        serde_json::to_vec(&links).unwrap(),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn a_linked_directory_names_the_project_and_environment_a_command_left_out() {
+    let cloud = Fixture::new("one");
+    let dir = linked_dir(&cloud);
+    let args = scoped_args(&entry_scoped());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz_in(dir.path(), &args);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let bodies = cloud.cloud.lock().unwrap().bodies.clone();
+    assert_eq!(bodies.len(), 1, "one run");
+    assert_eq!(bodies[0]["input"]["project"], "shop");
+    assert_eq!(bodies[0]["input"]["environment"], "staging");
+}
+
+#[test]
+fn a_typed_project_wins_over_the_link_and_leaves_its_environment_out() {
+    let cloud = Fixture::new("one");
+    let dir = linked_dir(&cloud);
+    let mut args = scoped_args(&entry_scoped());
+    args.extend(["--project".to_owned(), "blog".to_owned()]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz_in(dir.path(), &args);
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let bodies = cloud.cloud.lock().unwrap().bodies.clone();
+    assert_eq!(bodies[0]["input"]["project"], "blog");
+    assert!(
+        bodies[0]["input"].get("environment").is_none(),
+        "a link's Environment applies only within its own Project: {}",
+        bodies[0]
+    );
+}
+
+#[test]
+fn an_ambiguous_project_names_ployz_link_as_the_next_step() {
+    let cloud = Fixture::new("one");
+    cloud.answer_runs_with(
+        409,
+        json!({ "error": {
+            "code": "ambiguous",
+            "message": "Name a Project: this Organization has more than one",
+            "details": { "projects": ["shop", "blog"] },
+        } }),
+    );
+    let args = scoped_args(&entry_scoped());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let output = cloud.ployz(&args);
+
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("ployz link --project PROJECT"), "{stderr}");
 }
