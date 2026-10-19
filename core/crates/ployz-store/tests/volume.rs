@@ -7,8 +7,9 @@
 
 use ployz_core::config::{ReviewLifecycleKind, VolumeKind};
 use ployz_core::{
-    DeployOutcome, DeployPreview, DockerVolumeId, DockerVolumeName, MachineId, RpcError,
-    RpcErrorCode, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
+    DeployOutcome, DeployPreview, DockerVolumeId, DockerVolumeName, MachineId,
+    ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode, ServiceName, VolumeRemoval,
+    VolumeRemovalOutcome,
 };
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Change, ConfigStore, CreateProject, CreateService,
@@ -1594,12 +1595,56 @@ fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "uploads is already mounted by web; allow shared writes first: ployz volume set uploads --shared-writes"
+        "uploads would be mounted by web, api; add it with --shared-writes"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume add uploads --mount web:/uploads --mount api:/uploads --docker --shared-writes --env production --project shop"
     );
     assert!(store.write(&who, &both(true)).unwrap().volume.shared_writes);
 
     set_shared_writes(&store, &who, true).unwrap();
     edit(&store, &who, mount()).unwrap();
+}
+
+#[test]
+fn a_new_volume_on_a_second_replica_is_refused_with_an_add_that_works() {
+    let (store, who) = shop();
+    add_api(&store, &who);
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("api.replicas"),
+            value: json!(2),
+        },
+    )
+    .unwrap();
+    let add = |shared_writes| CreateVolume {
+        shared_writes,
+        storage_locked: true,
+        storage: VolumeKind::Provisioned {
+            maximum_bytes: ProvisionedVolumeMaximumBytes::parse_gb("1.5GB").unwrap(),
+        },
+        id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
+        environment: EnvironmentRef::default(),
+        name: VolumeName::parse("uploads").unwrap(),
+        mounts: vec![Mount {
+            service: ServiceName::parse("api").unwrap(),
+            path: "/uploads".into(),
+        }],
+    };
+    let refused = store.write(&who, &add(false)).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "uploads would be attached to api; set replicas to 1, or add it with --shared-writes"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume add uploads --mount api:/uploads --size 1.5GB --shared-writes --env production --project shop"
+    );
+    assert!(store.write(&who, &add(true)).unwrap().volume.shared_writes);
 }
 
 #[test]
