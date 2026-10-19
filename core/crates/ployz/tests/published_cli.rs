@@ -119,8 +119,12 @@ impl Fixture {
     }
 
     fn ployz_in(&self, dir: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_ployz"))
-            .args(args)
+        self.command_in(dir).args(args).output().unwrap()
+    }
+
+    fn command_in(&self, dir: &Path) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
             .current_dir(dir)
             .env("HOME", self.home.path())
             .env("PLOYZ_CONFIG", self.config())
@@ -128,9 +132,8 @@ impl Fixture {
             .env("PLOYZ_CLOUD_URL", &self.url)
             .env("NO_PROXY", "127.0.0.1")
             .env("no_proxy", "127.0.0.1")
-            .env("NO_COLOR", "1")
-            .output()
-            .unwrap()
+            .env("NO_COLOR", "1");
+        command
     }
 
     fn routes(&self) -> Vec<String> {
@@ -632,4 +635,58 @@ fn an_ambiguous_project_names_ployz_link_as_the_next_step() {
     assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
     let stderr = text(&output.stderr);
     assert!(stderr.contains("ployz link --project PROJECT"), "{stderr}");
+}
+
+#[test]
+fn a_typed_project_wins_over_an_empty_ployz_project() {
+    let cloud = Fixture::new("one");
+    let mut args = scoped_args(&entry_scoped());
+    args.extend(["--project".to_owned(), "blog".to_owned()]);
+
+    let output = cloud
+        .command_in(cloud.home.path())
+        .args(&args)
+        .env("PLOYZ_PROJECT", "")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let bodies = cloud.cloud.lock().unwrap().bodies.clone();
+    assert_eq!(bodies[0]["input"]["project"], "blog");
+}
+
+#[test]
+fn a_typed_environment_wins_over_an_empty_ployz_env() {
+    let cloud = Fixture::new("one");
+    let mut args = scoped_args(&entry_scoped());
+    args.extend(["--environment".to_owned(), "production".to_owned()]);
+
+    let output = cloud
+        .command_in(cloud.home.path())
+        .args(&args)
+        .env("PLOYZ_ENV", "")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let bodies = cloud.cloud.lock().unwrap().bodies.clone();
+    assert_eq!(bodies[0]["input"]["environment"], "production");
+}
+
+#[test]
+fn an_empty_ployz_project_with_no_typed_project_is_refused_before_cloud_runs() {
+    let cloud = Fixture::new("one");
+    let args = scoped_args(&entry_scoped());
+
+    let output = cloud
+        .command_in(cloud.home.path())
+        .args(&args)
+        .env("PLOYZ_PROJECT", "")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("Expected a Project name"), "{stderr}");
+    assert!(cloud.cloud.lock().unwrap().bodies.is_empty(), "no run");
 }
