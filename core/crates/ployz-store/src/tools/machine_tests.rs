@@ -233,3 +233,29 @@ fn a_number_outside_its_declared_range_is_refused() {
     );
     assert!(!matches!(step, Step::Done { .. }), "300 is in range");
 }
+
+#[test]
+fn an_ambiguous_refusal_leaves_the_choice_to_the_agent_instead_of_a_retry() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "domain_check")
+        .unwrap();
+    let call = Call::new("domain_check", json!({ "domain": "example.com" }));
+    let refusal = finish(
+        from_store(
+            RpcError {
+                code: RpcErrorCode::Ambiguous,
+                message: "Name a Project: this Organization has more than one".into(),
+                details: json!({ "projects": ["blog", "shop"] }),
+                cause: Vec::new(),
+            },
+            &call,
+            Writes::None,
+        ),
+        entry,
+        &call,
+        "call-1",
+    );
+    assert_eq!(refusal.valid, ["blog", "shop"]);
+    assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
+}
