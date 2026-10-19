@@ -64,6 +64,11 @@ no service arguments, and `--follow` still use live container discovery.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`) sets it. A line
   without one counts as **Info**, stderr included.
+- **The dashboard never shows a Sealed value.** It replaces each one with `[secret NAME]`, and a
+  variable you seal while you watch is scrubbed from the next lines on. Lines it couldn't check,
+  say because your servers couldn't read the service's variables, show as
+  **Hidden: couldn’t check these lines for Sealed values.** When a server fails, the banner says
+  **Container logs are unavailable.** instead of quoting the server's error.
 - **Detected gaps appear in the log**, saying the lines weren't captured or couldn't be read.
   Missing output can have no gap record, such as when a container ran entirely while log
   collection was down.

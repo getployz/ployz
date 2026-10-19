@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Exit, Schema, Scope } from "effect";
-import type { ConfigQuery, LogFilter } from "@ployz/sdk";
+import { type ConfigQuery, type LogFilter, SealedNames } from "@ployz/sdk";
 import { authorizeRequest, requireAccessById } from "#/modules/organization/access.server";
-import { OrganizationRuntime } from "./organization-runtime.server";
-import { backfillThenFollow } from "./container-log-events.server";
+import { type ConnectedRuntimeClient, OrganizationRuntime } from "./organization-runtime.server";
+import { backfillThenFollow, withheld } from "./container-log-events.server";
+import { sealedFeed } from "./sealed-names.server";
 import { Forbidden, NotFound, Validation } from "#/server/public-error";
 import { organizationSlugSchema } from "#/modules/organization/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -44,6 +45,23 @@ export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* 
 
 const HISTORY_PAGE = 500;
 
+/**
+ * A page of `filter`'s stored logs, or its tail and follow. Every read scrubs under one handle the Store's Sealed names
+ * feed while the scope lives, so one Store read serves them all; a Machine's failure reaches the viewer as fixed copy.
+ */
+export const readContainerLogs = Effect.fn("Runtime.readContainerLogs")(function* (connected: ConnectedRuntimeClient, organizationId: string, filter: LogFilter & { namespace: string }, signal: AbortSignal, history?: { cursor?: string }, handle = new SealedNames()) {
+  const sealed = yield* sealedFeed(organizationId, filter.namespace, handle);
+  if (history !== undefined) {
+    const page = yield* connected.logHistory({ filter, sealed, cursor: history.cursor, limit: HISTORY_PAGE, signal });
+    return { type: "history" as const, page: { ...page, failures: page.failures.map(withheld) } };
+  }
+  const options = { filter, sealed, tail: 200, signal };
+  // Both reads start only when the response pulls them.
+  const tail = yield* connected.logs({ ...options, follow: false });
+  const follow = yield* connected.logs({ ...options, follow: true });
+  return { type: "stream" as const, events: backfillThenFollow(tail, follow) };
+});
+
 /** The response owns this scope until its consumer disconnects. */
 export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch, history?: { cursor?: string }) {
   const access = yield* authorizeRequest(request.headers, search.organizationSlug, "logs:read");
@@ -62,18 +80,15 @@ export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function
     if (history === undefined) return { type: "offline" as const };
     return yield* new Validation({ message: "Container logs are unavailable while the server is disconnected." });
   }
-  if (history !== undefined) {
-    return yield* session.connected.logHistory({ filter, cursor: history.cursor, limit: HISTORY_PAGE, signal: request.signal })
-      .pipe(Effect.map(page => ({ type: "history" as const, page })), Effect.ensuring(close));
+  const read = yield* readContainerLogs(session.connected, organizationId, filter, request.signal, history)
+    .pipe(Effect.provideService(Scope.Scope, scope), Effect.onError(() => close));
+  if (read.type === "history") {
+    yield* close;
+    return read;
   }
-  const options = { filter, tail: 200, signal: request.signal };
-  // Both reads start only when the response pulls them.
-  const tail = yield* session.connected.logs({ ...options, follow: false }).pipe(Effect.onError(() => close));
-  const follow = yield* session.connected.logs({ ...options, follow: true }).pipe(Effect.onError(() => close));
-  const events = backfillThenFollow(tail, follow);
   // Support's access is read again while it streams, so hiding container logs stops lines already flowing.
   const logsShown = access.kind === "support"
     ? requireAccessById({ userId: access.userId }, organizationId, "logs:read").pipe(Effect.map(now => now.kind !== "support" || now.shows.logs))
     : undefined;
-  return { type: "stream" as const, events, close, logsShown };
+  return { ...read, close, logsShown };
 });
