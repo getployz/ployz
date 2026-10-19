@@ -103,7 +103,6 @@ it("moves an open Deployment on from Queued when the change stream never says it
     await act(() => vi.advanceTimersByTimeAsync(10_000));
     expect(status()).toBe("applied");
 
-    // An ended Deployment never changes again: it stops reading.
     const reads = read.mock.calls.length;
     await act(() => vi.advanceTimersByTimeAsync(60_000));
     expect(read.mock.calls.length).toBe(reads);
