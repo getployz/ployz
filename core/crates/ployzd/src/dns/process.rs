@@ -16,12 +16,15 @@ use tokio_util::sync::CancellationToken;
 use super::{
     Answers, Handler, ProjectionInputs, Upstreams,
     listeners::{Keeper, Listeners, SystemdKeeper, adopt, names},
-    load_down_machines, run_server,
+    run_server,
     service::{Probe, Successor},
     spec::{CorrosionEndpoint, DnsSpec, SpecFile},
 };
-use crate::corrosion::{
-    AdminClient, ApiClient, Error as CorrosionError, MachineView, ReplicatedStore, Subscription,
+use crate::{
+    corrosion::{
+        AdminClient, ApiClient, Error as CorrosionError, MachineView, ReplicatedStore, Subscription,
+    },
+    route_acks::load_down,
 };
 
 /// Exit status for "the installed binary cannot serve DNS; port 53 was handed
@@ -392,8 +395,7 @@ async fn watch_projection(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // `Then` retains an in-flight membership read when another select branch wins, so slow
     // membership I/O never delays Container-change withdrawal.
-    let membership =
-        IntervalStream::new(interval).then(|_| load_down_machines(machines, admin, &local_id));
+    let membership = IntervalStream::new(interval).then(|_| load_down(machines, admin, &local_id));
     tokio::pin!(membership);
     let mut pending_snapshot = false;
     loop {

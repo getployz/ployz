@@ -8,7 +8,7 @@ use ployz_core::{
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
 use std::{
-    collections::HashSet,
+    collections::BTreeSet,
     fmt::Write as _,
     future::Future,
     io,
@@ -143,7 +143,7 @@ pub async fn run<LoadDown, DownFuture>(
 ) -> io::Result<()>
 where
     LoadDown: FnMut() -> DownFuture,
-    DownFuture: Future<Output = Result<HashSet<MachineId>, CorrosionError>>,
+    DownFuture: Future<Output = Result<BTreeSet<MachineId>, CorrosionError>>,
 {
     prepare_directory(
         admin_socket

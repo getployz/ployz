@@ -1,7 +1,7 @@
 //! Observer-local Internal DNS serving and answer projection.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
@@ -26,8 +26,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, MachineId, MembershipObservation, Namespace, ProxyRoutes,
-    QualifiedService, ServiceId, proxy_routes, service_containers, synthesize_membership,
+    ContainerObservation, MachineId, Namespace, ProxyRoutes, QualifiedService, ServiceId,
+    proxy_routes, service_containers,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -36,9 +36,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::corrosion::{
-    AdminClient, Error as CorrosionError, MachineView, membership_states_by_address,
-};
+use crate::route_acks::DownMachines;
 
 mod listeners;
 mod process;
@@ -54,7 +52,6 @@ pub use service::DnsService;
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_RESPONSE_BUFFER: usize = 32;
 
@@ -101,59 +98,6 @@ impl ProjectionInputs {
         let projection = Projection::from_routes(&self.observations, &routes);
         self.routed = routes;
         projection
-    }
-}
-
-/// The Machines Internal DNS and Ingress drop from routes, from the last
-/// membership sample that loaded. Nothing is Down before the first one, and
-/// the local Machine never is.
-pub(crate) struct DownMachines {
-    local_id: MachineId,
-    down: Option<HashSet<MachineId>>,
-}
-
-impl DownMachines {
-    pub(crate) fn new(local_id: MachineId) -> Self {
-        Self {
-            local_id,
-            down: None,
-        }
-    }
-
-    pub(crate) fn local_id(&self) -> MachineId {
-        self.local_id
-    }
-
-    pub(crate) fn contains(&self, machine: &MachineId) -> bool {
-        *machine != self.local_id
-            && self
-                .down
-                .as_ref()
-                .is_some_and(|down| down.contains(machine))
-    }
-
-    /// Take one sample, keeping the last loaded set when it failed. True when
-    /// the set changed.
-    pub(crate) fn update(&mut self, loaded: Result<HashSet<MachineId>, CorrosionError>) -> bool {
-        match loaded {
-            Ok(down) if self.down.as_ref() == Some(&down) => false,
-            Ok(down) => {
-                self.down = Some(down);
-                true
-            }
-            Err(error) => {
-                let fallback = if self.down.is_some() {
-                    "keeping the last successful filter"
-                } else {
-                    "routing every Machine"
-                };
-                eprintln!(
-                    "failed to load membership for routing; {fallback}: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                false
-            }
-        }
     }
 }
 
@@ -623,37 +567,6 @@ async fn flush_udp(listen: SocketAddr) -> io::Result<()> {
     socket.send(&HEADER_ONLY_QUERY).await?;
     socket.recv(&mut [0; 512]).await?;
     Ok(())
-}
-
-pub(crate) async fn load_down_machines(
-    machines: &MachineView,
-    admin: &AdminClient,
-    local_id: &MachineId,
-) -> Result<HashSet<MachineId>, CorrosionError> {
-    let machines = machines.current().ok_or_else(|| {
-        CorrosionError::Io(io::Error::new(
-            io::ErrorKind::NotConnected,
-            "the Machine view has not observed the store yet",
-        ))
-    })?;
-    let states = tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states())
-        .await
-        .map_err(|_| {
-            CorrosionError::Io(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "membership sample timed out",
-            ))
-        })??;
-    let states = membership_states_by_address(states);
-    Ok(
-        synthesize_membership(machines.observations.clone(), local_id, &states)
-            .into_iter()
-            .filter_map(|observation| {
-                (observation.membership == MembershipObservation::Down)
-                    .then_some(observation.machine.id)
-            })
-            .collect(),
-    )
 }
 
 fn nameservers_from_resolv_conf(text: &str, listen: Ipv4Addr) -> Vec<SocketAddr> {

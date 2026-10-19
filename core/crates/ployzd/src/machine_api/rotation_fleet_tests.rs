@@ -1,7 +1,7 @@
 //! Three real Machine API handlers over one fake Corrosion cluster, each on its own
-//! fake Docker. No proxy acks rotation yet, so the tests write the ack rows and the
-//! membership by hand; every Container row reaches the cluster through the real
-//! observation publisher.
+//! fake Docker. The tests write membership by hand, and the ack rows too unless
+//! they run the real Ingress watchers; every Container row reaches the cluster
+//! through the real observation publisher.
 
 #![expect(clippy::indexing_slicing, reason = "JSON fixture reads")]
 
@@ -22,8 +22,8 @@ use ployz_core::{
     ContainerNow, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId,
     EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
     HttpHealthcheck, Machine, MachineId, MachineName, MachineRpc, MachineRuntime, NewContainer,
-    QualifiedService, ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation, RunTarget,
-    WireGuardPublicKey, op,
+    ProxyRoutes, QualifiedService, ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation,
+    RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -36,13 +36,15 @@ use tonic::Request;
 
 use super::MachineService;
 use crate::corrosion::{
-    AdminClient, IngressRouteAck, IngressRouteChange, ReplicatedStore, fake_cluster::FakeCluster,
+    AdminClient, IngressRouteAck, IngressRouteChange, IngressRouteRow, MachineView,
+    ReplicatedStore, fake_cluster::FakeCluster,
 };
 use crate::docker::{
     ContainerRuntime,
     test_support::{FakeDocker, fake_runtime_with, spec_with_sources},
 };
 use crate::machine::{LocalMachineStore, RecordOwner};
+use crate::route_acks::{DownMachines, load_down};
 
 const SETTLE: Duration = Duration::from_secs(10);
 const CLUSTER_CONTAINERS: &str = "SELECT id, machine_id, container FROM containers ORDER BY id";
@@ -144,6 +146,10 @@ impl Fleet {
     }
 
     fn down(&self, index: usize) {
+        self.membership(index, "Down");
+    }
+
+    fn membership(&self, index: usize, state: &str) {
         let row = &self.node(index).row;
         let address = std::net::SocketAddr::new(
             row.management_address().0.into(),
@@ -152,7 +158,98 @@ impl Fleet {
         self.states
             .lock()
             .unwrap()
-            .push(json!({ "id": { "addr": address }, "state": "Down" }));
+            .push(json!({ "id": { "addr": address }, "state": state }));
+    }
+
+    /// Give `container` on `index` a Container Address and wait until the cluster has it.
+    async fn addressed(&self, index: usize, container: ContainerId, address: &str) {
+        let id = container.to_string();
+        for named in self
+            .node(index)
+            .fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter(|named| named["Id"] == id.as_str())
+        {
+            named["NetworkSettings"] = json!({ "Networks": { "ployz": { "IPAddress": address } } });
+        }
+        tokio::time::timeout(SETTLE, async {
+            while self
+                .store
+                .container(&container)
+                .await
+                .unwrap()
+                .is_none_or(|row| row.address.is_none())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{container} never published an address"));
+    }
+
+    /// Run the real Ingress watcher of every Machine, each sampling Down from the
+    /// fleet's membership.
+    async fn run_ingress(&self) -> MachineView {
+        let machines = MachineView::start(self.store.clone(), self.shutdown.clone());
+        tokio::time::timeout(SETTLE, async {
+            while machines
+                .current()
+                .is_none_or(|current| current.observations.len() < self.nodes.len())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the Machine view never read every Machine");
+        for node in &self.nodes {
+            let dir = self.dir.join(format!("ingress-{}", node.row.name));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (machines, admin, local) = (machines.clone(), self.admin(), node.row.id);
+            tokio::spawn(crate::ingress::caddy::run(
+                node.row.clone(),
+                self.cluster.store(),
+                move || {
+                    let (machines, admin) = (machines.clone(), admin.clone());
+                    async move { load_down(&machines, &admin, &local).await }
+                },
+                dir.join("Caddyfile"),
+                dir.join("admin.sock"),
+                self.shutdown.clone(),
+            ));
+        }
+        machines
+    }
+
+    fn admin(&self) -> AdminClient {
+        AdminClient::new(self.dir.join("admin.sock"))
+    }
+
+    /// Wait until every Machine's Ingress acks `service` with exactly `containers`.
+    async fn acked_by_all(&self, service: &QualifiedService, containers: &[ContainerId]) {
+        let want: BTreeSet<_> = containers.iter().copied().collect();
+        tokio::time::timeout(SETTLE, async {
+            loop {
+                let rows = self.store.service_ingress_routes(service).await.unwrap();
+                let acked = self.nodes.iter().all(|node| {
+                    matches!(
+                        rows.get(&(node.row.id, service.clone())),
+                        Some(IngressRouteRow::Acked(ack))
+                            if ack.deploy.as_str() == "rotation" && ack.containers == want
+                    )
+                });
+                if acked {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("every Ingress never acked {service} with {want:?}"));
     }
 
     async fn ack(&self, index: usize, service: &QualifiedService, containers: &[ContainerId]) {
@@ -1019,6 +1116,56 @@ async fn last_in_ignores_a_sibling_on_a_down_machine() {
 
     refused(&reply, ContainerRefusalReason::LastIn);
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
+}
+
+/// A Machine membership holds no evidence for is unknown, not Down. Both proxies
+/// route its new In copy beside the one they already route, and the Ingress acks
+/// that list it complete `ReadRoutes`, so an ack wait for that copy returns.
+#[tokio::test]
+async fn stale_evidence_keeps_in_copy_routed() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    fleet.membership(0, "Alive");
+    fleet.membership(2, "Alive");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    fleet.addressed(0, a, "10.210.1.2").await;
+    let machines = fleet.run_ingress().await;
+    fleet.acked_by_all(&api, &[a]).await;
+    let mut dns_down = DownMachines::new(fleet.id(2));
+    let routed_before = proxy_routes(
+        &service_containers(fleet.store.containers().await.unwrap().observations),
+        |machine| dns_down.contains(machine),
+        &ProxyRoutes::new(),
+    );
+
+    let b = fleet.routed(1, "b", "api", 1).await;
+    fleet.addressed(1, b, "10.210.2.2").await;
+
+    let down = load_down(&machines, &fleet.admin(), &fleet.id(2))
+        .await
+        .unwrap();
+    assert!(down.is_empty(), "no evidence is not Down: {down:?}");
+    dns_down.update(Ok(down));
+    let dns_routes = proxy_routes(
+        &service_containers(fleet.store.containers().await.unwrap().observations),
+        |machine| dns_down.contains(machine),
+        &routed_before,
+    );
+    let dns_routed: BTreeSet<_> = dns_routes[&api]
+        .iter()
+        .map(|serving| serving.as_observation().container_id)
+        .collect();
+    assert_eq!(dns_routed, BTreeSet::from([a, b]));
+    fleet.acked_by_all(&api, &[a, b]).await;
+    let routes = fleet.read_routes(0, &api).await;
+    assert!(!routes.down.contains(&fleet.id(1)), "{routes:?}");
+    assert!(routes.complete, "{routes:?}");
+    assert_eq!(
+        routes.routes,
+        (0..3)
+            .map(|index| (fleet.id(index), Some(BTreeSet::from([a, b]))))
+            .collect(),
+    );
 }
 
 /// A newer local copy brought In while an In want read its guard rows is found under
