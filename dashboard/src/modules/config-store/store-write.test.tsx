@@ -93,6 +93,28 @@ it("shows an edit at once, saves edits in order against the newest revision, and
   expect(test.replicas()).toBe(5);
 });
 
+it("carries a review forward through this tab's own edits, and stops at a revision made elsewhere", async () => {
+  const test = setup(view(2, 1));
+  test.write.mockResolvedValueOnce(edited(3));
+  await test.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise;
+  // The CLI made revision 4; a read brings it before the next edit, which expects it.
+  test.store.current = view(4, 3);
+  const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
+  test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { view: "environment", ...view(4, 3) } });
+  test.write.mockResolvedValueOnce(edited(5));
+  await test.edit({ environment: ref, changes: replicas(5) }).isPersisted.promise;
+
+  // SAFETY: these tests read nothing of a Save but that it was sent.
+  test.write.mockResolvedValue({ ok: true, value: { written: "published" } } as never);
+  // The review this tab saw before its first edit: its own edit moves it to 3, and 4 is nobody's here.
+  await test.writer.commit({ command: "publish", environment: ref, version: "2:1:0", accept_volume_loss: [] }).isPersisted.promise;
+  // A review read at 4 moves through the edit made on it.
+  await test.writer.commit({ command: "publish", environment: ref, version: "4:1:0#loss-x", accept_volume_loss: [] }).isPersisted.promise;
+  expect(test.write.mock.calls.map(([{ data }]) => data.command)).toMatchObject([
+    { command: "edit", expect: 2 }, { command: "edit", expect: 4 }, { command: "publish", version: "3:1:0" }, { command: "publish", version: "5:1:0#loss-x" },
+  ]);
+});
+
 it("undoes an edit the Store refuses as a conflict and shows what changed elsewhere", async () => {
   const test = setup(view(2, 1));
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");

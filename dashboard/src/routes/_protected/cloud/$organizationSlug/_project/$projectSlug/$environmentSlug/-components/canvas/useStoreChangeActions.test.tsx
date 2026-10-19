@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
-import { diffQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { diffQuery, environmentSettingsQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import * as lens from "#/modules/runtime/use-runtime-lens";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
@@ -37,6 +37,7 @@ function Deploy({ placementLoss }: { placementLoss: PlacementLoss }) {
   const writer = useStoreWriter("acme");
   return <>
     <button type="button" onClick={() => void writer.edit({ environment: ref, changes: [] }).isPersisted.promise.catch(() => {})}>Stage</button>
+    <button type="button" onClick={() => void writer.edit({ environment: { project: "shop", environment: "staging" }, changes: [] }).isPersisted.promise.catch(() => {})}>Stage elsewhere</button>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
     <button type="button" onClick={() => void save("  Save this draft  ").then((saved) => saves.push(saved))}>Save now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
@@ -55,11 +56,11 @@ function setup(placementLoss = NO_LOSS) {
   vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: {} } as never);
   const write = vi.spyOn(functions, "writeStoreServerFn");
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  // The Settings this tab shows, at the revision the review "2:1:0" names: what its edits expect.
+  const settings = storeViewOptions("acme", { queryClient, sessionId: "session", userId: "user" }, environmentSettingsQuery(ref)).queryKey;
+  queryClient.setQueryData(settings, { ok: true, value: { view: "environment", environment: { id: "env", project: "shop", name: "production", revision: 2 }, settings: [] } } as never);
   render(<Deploy placementLoss={placementLoss} />, { wrapper });
   const admits = () => write.mock.calls.map(([call]) => call?.data.command);
-  // The review the bar shows, which a landed edit answers anew.
-  const diffKey = storeViewOptions("acme", { queryClient, sessionId: "session", userId: "user" }, diffQuery(ref)).queryKey;
-  queryClient.setQueryData(diffKey, { ok: true, value: { version: "2:1:0" } } as never);
   return { write, admits };
 }
 
@@ -207,12 +208,14 @@ it("reports an earlier Save as not saved when a later one asks again", async () 
   await waitFor(() => expect(saves).toEqual([false]));
 });
 
-// Pressing Deploy leaves a field, which stages its draft in the same gesture.
-const edited = { ok: true, value: { written: "edited", environment: { revision: 3 } }, answers: [{ query: diffQuery(ref), result: { ok: true, value: { version: "3:1:0" } } }] } as never;
+// Pressing Deploy leaves a field, which stages its draft in the same gesture. The Store's answer carries the review
+// after the edit: `at` is the revision the edit made, `seen` the one the review then shows (newer when someone else wrote).
+const edited = (at: number, seen = at) => ({ ok: true, value: { written: "edited", environment: { revision: at } },
+  answers: [{ query: diffQuery(ref), result: { ok: true, value: { version: `${seen}:1:0` } } }] }) as never;
 
 it("deploys the review that includes a draft staged on the way to Deploy", async () => {
   const test = setup();
-  test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce(admitted);
+  test.write.mockResolvedValueOnce(edited(3)).mockResolvedValueOnce(admitted);
 
   act(() => {
     fireEvent.click(screen.getByText("Stage"));
@@ -234,4 +237,55 @@ it("keeps the shown review when that draft is refused, so the Store judges what 
 
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
   expect(test.admits()[1]).toMatchObject({ command: "admit", version: "2:1:0" });
+});
+
+it("ships nothing this tab never reviewed: a change made elsewhere right after the draft leaves the Deploy at the draft's revision", async () => {
+  const test = setup();
+  // The edit made revision 3; by the time the Store answered, the CLI had made 4, which the review now shows.
+  test.write.mockResolvedValueOnce(edited(3, 4)).mockResolvedValueOnce(admitted);
+
+  act(() => {
+    fireEvent.click(screen.getByText("Stage"));
+    fireEvent.click(screen.getByText("Deploy now"));
+  });
+
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
+it("queues the Deploy at the click: a draft staged after it goes behind it, not into it", async () => {
+  const test = setup();
+  let first: (value: never) => void = () => {};
+  const edits = { count: 0 };
+  test.write.mockImplementation(({ data }) => {
+    if (data.command.command !== "edit") return Promise.resolve(admitted);
+    return edits.count++ === 0 ? new Promise((resolve) => { first = resolve; }) : Promise.resolve(edited(4));
+  });
+
+  act(() => {
+    fireEvent.click(screen.getByText("Stage"));
+    fireEvent.click(screen.getByText("Deploy now"));
+    fireEvent.click(screen.getByText("Stage"));
+  });
+  // The first draft answers only once the Deploy and the second draft are queued behind it.
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  first(edited(3));
+
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(3));
+  expect(test.admits().map((command) => command?.command)).toEqual(["edit", "admit", "edit"]);
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
+it("waits on no edit in another Environment", async () => {
+  const test = setup();
+  // A draft in staging whose save never answers.
+  test.write.mockImplementation(({ data }) => data.command.command === "edit" ? new Promise(() => {}) : Promise.resolve(admitted));
+
+  act(() => {
+    fireEvent.click(screen.getByText("Stage elsewhere"));
+    fireEvent.click(screen.getByText("Deploy now"));
+  });
+
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", environment: ref, version: "2:1:0" });
 });
