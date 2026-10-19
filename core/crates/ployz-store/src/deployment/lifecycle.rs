@@ -211,6 +211,7 @@ pub(crate) fn admit(
         status: DeploymentStatus::Queued,
         saved,
         services: targets,
+        ships: shipped(&nodes),
         runner: None,
         upload,
         remove: saved == NOTHING,

@@ -137,6 +137,10 @@ pub struct DeploymentSummary {
     pub saved: Revision,
     /// The Services it targets; empty targets every Service.
     pub services: Vec<ServiceName>,
+    /// Every Service it ships, as frozen at admission: the ones it targets and the
+    /// ones they reference. Empty while it waits for CI.
+    #[serde(default)]
+    pub ships: Vec<ServiceName>,
     /// The runner that claimed it.
     pub runner: Option<RunnerId>,
     /// What its Services without a source of their own build from.
@@ -539,6 +543,17 @@ pub(crate) enum TargetNode {
         id: ConfigId,
         name: ConfigName,
     },
+}
+
+/// The Services among `nodes`.
+pub(crate) fn shipped(nodes: &[TargetNode]) -> Vec<ServiceName> {
+    nodes
+        .iter()
+        .filter_map(|node| match node {
+            TargetNode::Service { name, .. } => Some(name.clone()),
+            TargetNode::Volume { .. } | TargetNode::Config { .. } => None,
+        })
+        .collect()
 }
 
 impl TargetNode {
@@ -959,6 +974,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             status,
             saved: row.number(4, "revision")?,
             services: row.json(5, "Deployment")?,
+            ships: shipped(&nodes),
             runner: row.parse_optional(11, "identity")?,
             upload: row
                 .optional_text(9)?

@@ -267,6 +267,50 @@ fn a_narrowed_deploy_records_a_new_service_it_references() {
 }
 
 #[test]
+fn a_narrowed_deploy_lists_the_services_it_references_among_those_it_ships() {
+    let (store, who) = store();
+    create(&store, &who, 3, "client");
+    let first = deploy(&store, &who, 1, &[]);
+    assert_eq!(run(&store, &first, &["client"]), DeploymentStatus::Applied);
+    create(&store, &who, 4, "postgres");
+    set(
+        &store,
+        &who,
+        &[(
+            "client.env.DB",
+            json!("${{ postgres.PLOYZ_PRIVATE_DOMAIN }}"),
+        )],
+    );
+    let admitted = store
+        .write(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: deployment(2),
+                environment: EnvironmentRef::default(),
+                services: vec![name("client")],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+        )
+        .unwrap();
+    let listed = store
+        .read(
+            &who,
+            &crate::DeploymentQuery {
+                id: admitted.id.clone(),
+            },
+        )
+        .unwrap()
+        .deployment;
+    for summary in [&admitted, &listed] {
+        assert_eq!(summary.services, [name("client")]);
+        assert_eq!(summary.ships, [name("client"), name("postgres")]);
+    }
+}
+
+#[test]
 fn a_narrowed_deploy_records_the_saved_change_of_a_service_it_references() {
     let (store, who) = store();
     create(&store, &who, 3, "client");
