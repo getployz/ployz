@@ -61,6 +61,35 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
 });
 
 /**
+ * For a removal's admission: which Servers didn't answer Cloud just now, every one when none could be reached. A removal
+ * that failed goes again once one of them answers, Volumes or not. `volumes` already names them when it was gathered.
+ * Undefined when Cloud couldn't look, such as when its connections didn't load: the Store then keeps waiting on the
+ * Servers that were silent before, never reading it as all of them answering.
+ */
+export const gatherUnanswered = Effect.fn("ConfigStore.gatherUnanswered")(function* (
+  organizationId: string,
+  call: StoreCall,
+  volumes: VolumeObservation | undefined,
+) {
+  if (call.operation !== "write") return undefined;
+  // Decoded before any Server is asked: a malformed removal is the Store's to refuse, not worth a probe.
+  const command = Option.getOrUndefined(Schema.decodeUnknownOption(EvidenceCommand)(call.command));
+  const removes = command?.command === "remove" || (command?.command === "admit" && command.admit === "remove");
+  if (!removes) return undefined;
+  if (volumes !== undefined) return volumes.unanswered;
+  const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
+  const connections = Option.getOrUndefined(loaded);
+  if (connections?.kind !== "ready") return undefined;
+  if (connections.connections.length === 0) return [];
+  const { observe } = yield* VolumeObserver;
+  const observed = yield* storeTry(() => observe(connections.connections, [])).pipe(Effect.option);
+  return Option.match(observed, {
+    onNone: () => connections.connections.flatMap((connection) => connection.machine_id ?? []),
+    onSome: (observation) => observation.unanswered,
+  });
+});
+
+/**
  * For a Git push: which Servers hold the Volumes whose loss was accepted when they were saved. Without it, or when the
  * Servers can't be reached, the push keeps their data and the next Deploy asks again.
  */

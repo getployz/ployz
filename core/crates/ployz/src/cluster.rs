@@ -613,9 +613,14 @@ impl Client {
             .await
             .map_err(RpcError::from)?;
         let inspector = self.clone();
+        // Seeking nothing asks only who answers: storage holds nothing sought.
+        let storage: &[MachineObservation] = match sought.is_empty() {
+            true => &[],
+            false => &machines.machines,
+        };
         let (listed, inspected) = tokio::join!(
             self.list_volumes(&machines.machines),
-            inspector.inspect_storage(&machines.machines)
+            inspector.inspect_storage(storage)
         );
         let mut unanswered: BTreeSet<MachineId> = listed
             .failures
@@ -1142,12 +1147,10 @@ pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcErr
         .chain(error.cause)
         .collect::<Vec<_>>()
         .join(": ");
-    RpcError {
-        code: error.code,
-        message: format!("Machine {machine_id} did not answer: {transport}"),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unanswered_target(
+        error.code,
+        format!("Machine {machine_id} did not answer: {transport}"),
+    )
 }
 
 fn status_error(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
