@@ -186,7 +186,7 @@ $ ployz diff --env hotfix
 stdout:
 ```
 worker (create)
-next: ployz deploy --expect-version 2:0:0.0 --env hotfix
+next: ployz deploy --env hotfix
 ```
 
 ### deploy the Branch
@@ -249,7 +249,7 @@ $ ployz diff --env hotfix
 stdout:
 ```
 api (create)
-next: ployz deploy --expect-version 3:1:0.1 --env hotfix
+next: ployz deploy --env hotfix
 ```
 
 ### env copy --json a Volume (refused: takes a Service)
@@ -391,7 +391,7 @@ stdout:
 ```
 api (update)
   api.env.LOG_LEVEL: "warn" -> "info"
-next: ployz deploy --expect-version 64:36:0.63
+next: ployz deploy
 ```
 
 ### discard in production
@@ -403,7 +403,7 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production (revision 65).
+Discarded every staged change in shop/production.
 ```
 
 ### env sync --json to the Parent

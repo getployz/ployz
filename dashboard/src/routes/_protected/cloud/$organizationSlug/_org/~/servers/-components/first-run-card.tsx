@@ -25,7 +25,7 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
       <p className="text-sm text-muted-foreground">Add servers to queue more here.</p>
     ) : (
       <div className="flex flex-col gap-3">
-        <InstallTabs lines={installLines(mint.data.cloudOrigin, mint.data.token)} />
+        <InstallTabs lines={installLines(mint.data)} />
         <p className="text-sm text-muted-foreground">Run it on more servers and they queue above.</p>
       </div>
     );
@@ -49,7 +49,7 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
           </Button>
         ) : (
           <div className="flex flex-col gap-3">
-            <InstallTabs lines={installLines(mint.data.cloudOrigin, mint.data.token)} />
+            <InstallTabs lines={installLines(mint.data)} />
             <p className="text-sm text-warning">Shown once. Expires in {cliLifetimeLabel("7d")}.</p>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Spinner />

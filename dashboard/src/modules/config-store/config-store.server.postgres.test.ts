@@ -25,7 +25,7 @@ import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
-import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
+import { receiveUpload, releaseUpload, UPLOAD_LIMIT } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import type { TokenGrant } from "#/modules/identity/token-grant";
@@ -97,7 +97,7 @@ const Reply = Schema.Struct({
     code: Schema.String,
     message: Schema.optionalKey(Schema.String),
     details: Schema.NullOr(Schema.Struct({
-      revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String),
+      revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String), max_bytes: Schema.optionalKey(Schema.Number),
       approval: Schema.optionalKey(Schema.String), approval_id: Schema.optionalKey(Schema.String),
     })),
   })),
@@ -213,6 +213,29 @@ it.live(
         assert.strictEqual(invalid.json.error?.code, "invalid_argument");
         assert.strictEqual((yield* request("claim", alice, get(null))).status, 404);
         assert.strictEqual((yield* request("read", alice, undefined, "GET")).status, 404);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a write over the body cap is refused with the cap, and nothing is staged",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        assert.strictEqual((yield* request("write", alice, shop)).status, 200);
+        assert.strictEqual((yield* request("write", alice, web)).status, 200);
+
+        const huge = yield* request("write", alice, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.env.HUGE", value: "Z".repeat(4 * 1024 * 1024) }],
+        });
+        assert.strictEqual(huge.status, 422);
+        assert.strictEqual(huge.json.error?.code, "invalid_argument");
+        assert.strictEqual(huge.json.error?.message, "The request is over 4 MiB.");
+        assert.deepStrictEqual(huge.json.error?.details, { max_bytes: 4 * 1024 * 1024 });
+        assert.deepStrictEqual((yield* request("read", alice, get("web.env.HUGE"))).json.settings ?? [], []);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -1434,6 +1457,20 @@ it.live(
         const tooBig = yield* receiveUpload(store, organizationId, "00000000-0000-4000-8000-000000000203",
           new Blob([archive]).stream(), archive.length - 1);
         assert.strictEqual(tooBig?.code, "invalid_argument");
+        // Under Cloudflare's 100 MB request cap, so an oversized upload meets Cloud's refusal, not a proxy's error page.
+        assert.strictEqual(UPLOAD_LIMIT, 95 * 1024 * 1024);
+        const piece = new Uint8Array(1024 * 1024);
+        let sent = 0;
+        const overCap = new ReadableStream<Uint8Array>({
+          pull: (controller) => {
+            if (sent > UPLOAD_LIMIT) return controller.close();
+            sent += piece.length;
+            controller.enqueue(piece);
+          },
+        });
+        const overCloudflare = yield* receiveUpload(store, organizationId, "00000000-0000-4000-8000-000000000204", overCap);
+        assert.strictEqual(overCloudflare?.code, "invalid_argument");
+        assert.strictEqual(overCloudflare?.message, "The upload is over the 95 MiB compressed source limit.");
 
         // Cloud, not the caller, names who uploaded it.
         const admitted = yield* request("write", alice, {

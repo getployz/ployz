@@ -2,6 +2,7 @@ import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from "effect";
@@ -1667,6 +1668,51 @@ it.live(
         assert.deepStrictEqual(listed.enrollments.map((row) => row.ahead), [null, null, null]);
         const one = JSON.parse((yield* cli("GET", `enrollments/${attempts[0]?.id}`, alice)).text) as { enrollment: { ahead: number | null } };
         assert.strictEqual(one.enrollment.ahead, null);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+const WAITING_FIXTURE = new URL("../../../../../core/crates/ployz/tests/fixtures/waiting-servers.json", import.meta.url);
+
+it.live(
+  "GET waiting-servers and GET waiting-servers/:id answer the core fixture ployz parses, so a changed reply cannot ship with a stale fixture",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "amber-falcon", expires_in: "1d" })).json.fleet_token
+          ?? assert.fail("no fleet token");
+        const id = "6b0f3c1e-0000-4000-8000-000000000001";
+        yield* database.drizzle.insert(waitingServer).values({
+          id,
+          organizationId: alice.organization.id,
+          fleetTokenId: fleet.id,
+          checkinKey: "0".repeat(64),
+          report: {
+            hostname: "web-1", publicIp: "198.51.100.4", provider: "hetzner", os: { id: "ubuntu", version: "24.04" }, kernel: "6.8.0",
+            arch: "x86_64", virt: "kvm", cpuCount: 4, memoryTotalBytes: 8_000_000_000,
+            disks: [
+              { path: "/dev/sda", sizeBytes: 40_000_000_000, role: "root", availableBytes: 30_000_000_000 },
+              { path: "/dev/sdb", byId: "/dev/disk/by-id/scsi-0HC_Volume_1", sizeBytes: 100_000_000_000, role: "empty" },
+            ],
+            docker: { kind: "present", version: "27.3.1", api: "1.47", compatible: true }, cgroup: "v2",
+            zfs: { kind: "eligible", targets: [{ kind: "main_disk" }, { kind: "disk", byId: "/dev/disk/by-id/scsi-0HC_Volume_1" }], buildMinutes: 6 },
+            blockers: [{ code: "ports", message: "Port 443 is in use." }], warnings: [{ code: "swap", message: "Swap is on." }],
+            prep: { docker: "ready", zfs: "off" }, cliVersion: "0.3.0",
+          },
+          observedIp: "203.0.113.9",
+          firstSeenAt: new Date("2026-10-16T00:00:00.000Z"),
+          lastCheckInAt: new Date("2026-10-16T00:05:00.000Z"),
+        });
+        const list = JSON.parse((yield* cli("GET", "waiting-servers", alice)).text) as unknown;
+        const detail = JSON.parse((yield* cli("GET", `waiting-servers/${id}`, alice)).text) as unknown;
+        const served = { list, detail };
+        if (process.env["PLOYZ_WRITE_WAITING_FIXTURE"] === "1") writeFileSync(WAITING_FIXTURE, `${JSON.stringify(served, null, 2)}\n`);
+        const fixture: unknown = JSON.parse(readFileSync(WAITING_FIXTURE, "utf8"));
+        assert.deepStrictEqual(served, fixture, "core's waiting-servers.json is stale: run `pnpm waiting:fixture` in dashboard/ and commit it");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

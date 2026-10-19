@@ -21,7 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { scalarSetting, serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { templateLabel } from "#/modules/config-store/database-presets";
-import { changedProps, deployedVcpuLimit, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { changedProps, deployedVcpuLimit, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -102,7 +102,7 @@ const taken = (service: ServiceListing, services: readonly ServiceListing[], nam
 
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) =>
-    dnsLabelError(name) ?? (taken(service, services, name) ? `A service here is already named ${name}.` : undefined)));
+    taken(service, services, name) ? `A service here is already named ${name}.` : undefined));
 }
 
 /**
@@ -208,7 +208,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           value={shownName}
           schema={nameSchema(service, services)}
           editTitle="Edit service name"
-          editDescription="Rename this service. Other services reach it at its Private DNS name, which stays."
+          editDescription="Other services keep reaching it at its old address."
           placeholder="Service name"
           {...changedProps(rename)}
           onRename={(name) => writer.commit({ command: "rename_service", environment: store, service: service.name, name })}

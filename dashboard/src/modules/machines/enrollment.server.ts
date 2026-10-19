@@ -13,7 +13,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
-import { Ployz, PloyzProviderError, ployzVersion } from "#/modules/runtime/ployz.server";
+import { Ployz, ployzVersion } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
@@ -47,7 +47,7 @@ import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollmen
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
+import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
 import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
 import {
@@ -807,7 +807,9 @@ export const completeMachineEnrollment = Effect.fn(
     // Shared negotiation verifies machine_id before this transaction can make it ready.
     yield* Effect.scoped(Effect.gen(function* () {
       const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, machineId);
-      if (opened.status !== "connected") return yield* new PloyzProviderError({ operation: "confirm enrollment", cause: opened });
+      if (opened.status !== "connected") {
+        return yield* new Unavailable({ message: "Cloud can't reach this Server yet.", userFacing: true, cause: opened });
+      }
     }));
 
     const database = yield* Database;

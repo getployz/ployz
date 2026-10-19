@@ -23,7 +23,7 @@ $ ployz set web.replicas=3
 
 stdout:
 ```
-Staged web.replicas in shop/production (revision 10).
+Staged web.replicas in shop/production.
 ```
 
 stderr:
@@ -65,7 +65,7 @@ $ ployz set web.env.LOG_LEVEL=info web.env.PORT=8080 db.replicas=1
 
 stdout:
 ```
-Staged web.env.LOG_LEVEL, web.env.PORT in shop/production (revision 12).
+Staged web.env.LOG_LEVEL, web.env.PORT in shop/production.
 ```
 
 stderr:
@@ -82,7 +82,7 @@ $ ployz set web.env.DB_URL=postgres://\$\{\{\ db.PLOYZ_PRIVATE_DOMAIN\ \}\}/app
 
 stdout:
 ```
-Staged web.env.DB_URL in shop/production (revision 13).
+Staged web.env.DB_URL in shop/production.
 ```
 
 stderr:
@@ -120,7 +120,7 @@ Note: cap.sh feeds </dev/null, so the two --secret captures above read an empty 
 
 ```console
 $ printf s3cr3t | ployz set web.env.API_KEY --secret
-Staged web.env.API_KEY in shop/production (revision 14).
+Staged web.env.API_KEY in shop/production.
 next: ployz deploy --project shop
 # exit 0
 $ printf s3cr3t | ployz --json set web.env.API_KEY2 --secret
@@ -150,7 +150,7 @@ $ ployz set web --patch \{\"healthcheck\":\{\"path\":\"/healthz\"\}\}
 
 stdout:
 ```
-Staged web.healthcheck in shop/production (revision 16).
+Staged web.healthcheck in shop/production.
 ```
 
 stderr:
@@ -191,7 +191,7 @@ $ ployz volume add pgdata
 
 stdout:
 ```
-Staged new Volume pgdata in shop/production (revision 17).
+Staged new Volume pgdata in shop/production.
 Storage: Managed volume (5 GB limit)
 ```
 
@@ -209,7 +209,7 @@ $ ployz set db.mounts.pgdata=/var/lib/postgresql/data
 
 stdout:
 ```
-Staged db.mounts.pgdata in shop/production (revision 18).
+Staged db.mounts.pgdata in shop/production.
 ```
 
 stderr:
@@ -238,7 +238,7 @@ $ ployz set web --from-env-file /tmp/ployz-cli-outputs-store/web.env
 
 stdout:
 ```
-Staged web.env.A, web.env.B in shop/production (revision 19).
+Staged web.env.A, web.env.B in shop/production.
 ```
 
 stderr:
@@ -914,7 +914,7 @@ $ ployz unset web.replicas
 
 stdout:
 ```
-Staged web.replicas in shop/production (revision 20).
+Staged web.replicas in shop/production.
 ```
 
 stderr:

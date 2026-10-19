@@ -81,7 +81,9 @@ Your service still gets the real value when it deploys.
   a plain value is refused, so a secret never turns into plain text by mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
   History brings back comes back **Not set**: choose **Set value** to give it one. Until then,
-  deploys leave it out of your service.
+  deploys leave it out of your service. A sealed variable added after the version you roll back
+  to stays, with its value, on a service that stays. A service added after that version goes,
+  with its variables. Delete a sealed variable yourself if you don't want it.
 - A sealed value is stored exactly as typed, so it can't hold a
   [reference](#reference-another-services-variable).
 
@@ -133,5 +135,7 @@ their values, under your own variables.
   [branch](../environments/environments.md) starts with its parent's variables, sealed values
   included, and changing them leaves the parent alone. A reference to a service the branch
   shares with its parent reads the parent's values.
+- **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
+  `invalid_argument` and the limit. Split it into smaller changes.
 
 Next: [add a database](databases.md).
