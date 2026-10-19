@@ -592,6 +592,11 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
         .into_iter()
         .collect::<Vec<_>>()
         .join(", ");
+    let by_environment: BTreeMap<&EnvironmentName, &BTreeSet<DestructiveEffect>> = reviews
+        .iter()
+        .filter(|reviewed| !reviewed.effects.is_empty())
+        .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.effects))
+        .collect();
     let ask = match lost.is_empty() {
         true => "Pass the version to go ahead",
         false => "Pass the version and accept each lost Volume by name to go ahead",
@@ -602,6 +607,7 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
             "volumes": lost,
             "accept": accept,
             "effects": effects,
+            "effects_by_environment": by_environment,
             "version": version,
         }),
     ))

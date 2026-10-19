@@ -16,7 +16,7 @@ const readClaimAs = (headers: Headers, secret: string, signingIn: boolean) =>
   getAuthSessionEffect(headers).pipe(
     Effect.flatMap((session) => {
       if (session === null) return readClaim(secret, null);
-      const actor = { userId: session.user.id };
+      const actor = { userId: session.user.id, credential: { kind: "session", id: session.session.id } } as const;
       return signingIn && session.user.isAnonymous !== true ? finishClaimSignIn(secret, actor) : readClaim(secret, actor);
     }),
   );

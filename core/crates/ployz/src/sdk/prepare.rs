@@ -118,10 +118,12 @@ pub async fn select_build_machine(
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<SelectedBuilder, ConnectError> {
     let mut reasons = Vec::new();
+    let mut shown = Vec::new();
     let mut rejected = std::collections::BTreeMap::<&str, usize>::new();
     for (observed, reason) in rank(visible, preference) {
         if cancellation.is_cancelled() {
             reasons.push("Build selection cancelled".into());
+            shown.push("Build selection cancelled".into());
             break;
         }
         let machine = &observed.machine;
@@ -132,10 +134,13 @@ pub async fn select_build_machine(
         } else {
             "capability unverified"
         };
-        let rejection = if !observed.invites_rpc() {
-            format!("membership is {:?}", observed.membership)
+        let (rejection, public) = if !observed.invites_rpc() {
+            (
+                format!("membership is {:?}", observed.membership),
+                "is not online",
+            )
         } else if !machine.accepts_builds {
-            "does not accept Builds".into()
+            ("does not accept Builds".into(), "builds are turned off")
         } else {
             match client
                 .invoke::<op::DescribeContract>(
@@ -145,13 +150,17 @@ pub async fn select_build_machine(
                 )
                 .await
             {
-                Ok(contract) if contract.machine_id != machine.id => format!(
-                    "contract identifies a different Machine ({})",
-                    contract.machine_id
+                Ok(contract) if contract.machine_id != machine.id => (
+                    format!(
+                        "contract identifies a different Machine ({})",
+                        contract.machine_id
+                    ),
+                    "answered as a different Machine",
                 ),
-                Ok(contract) if !contract.supports(ployz_core::BUILD_CAPABILITY) => {
-                    "does not support remote Builds".into()
-                }
+                Ok(contract) if !contract.supports(ployz_core::BUILD_CAPABILITY) => (
+                    "does not support remote Builds".into(),
+                    "lacks the Build capability",
+                ),
                 Ok(_) => match client
                     .check_build_capabilities(machine.id, targets, cancellation)
                     .await
@@ -163,14 +172,24 @@ pub async fn select_build_machine(
                             rejections: reasons,
                         });
                     }
-                    Err(error) => format!(
+                    Err(error) => (
+                        format!(
+                            "Build capability could not be verified: {}",
+                            crate::ui::row(&error)
+                        ),
+                        "its build capability check failed",
+                    ),
+                },
+                Err(error) => (
+                    format!(
                         "Build capability could not be verified: {}",
                         crate::ui::row(&error)
                     ),
-                },
-                Err(error) => format!(
-                    "Build capability could not be verified: {}",
-                    crate::ui::row(&error)
+                    if error.code == RpcErrorCode::Unavailable {
+                        "did not answer"
+                    } else {
+                        "its build capability check failed"
+                    },
                 ),
             }
         };
@@ -179,18 +198,19 @@ pub async fn select_build_machine(
             "Machine {} ({}): {rejection}",
             machine.name, machine.id
         ));
+        shown.push(format!(
+            "Server {} ({}): {public}",
+            machine.name, machine.id
+        ));
+    }
+    if reasons.is_empty() {
+        reasons.push("no Machines observed".into());
+        shown.push("no Servers observed".into());
     }
     Err(ConnectError::Remote(RpcError {
         code: RpcErrorCode::Unsupported,
-        message: format!(
-            "no eligible Build Machine: {}",
-            if reasons.is_empty() {
-                "no Machines observed".into()
-            } else {
-                reasons.join("; ")
-            }
-        ),
-        details: serde_json::json!({"rejections": rejected}),
+        message: format!("no eligible Build Machine: {}", reasons.join("; ")),
+        details: serde_json::json!({"rejections": rejected, "reasons": shown}),
         cause: Vec::new(),
     }))
 }

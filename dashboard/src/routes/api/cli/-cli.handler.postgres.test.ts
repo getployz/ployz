@@ -28,18 +28,21 @@ import { callStore, readStore } from "#/modules/config-store/config-store.server
 import { permissionsOf } from "#/modules/organization/permissions";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
+import { syncOrganizationSlug } from "#/modules/organization/organization-state.server";
+import { resolveCaller } from "#/modules/identity/caller.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
 import { handleCliRequest as handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
-import { MintMachineEnrollmentInput } from "#/modules/machines/enrollment";
+import { CliMintMachineEnrollmentInput } from "#/modules/machines/enrollment";
 import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { encodePublicError, statusForPublicError } from "#/server/public-error";
+import { encodePublicError, statusForPublicError, Unauthorized } from "#/server/public-error";
+import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
@@ -146,6 +149,7 @@ const cliLayer = Effect.fn(function* (
 /** The fields these tests read from `/api/cli` replies. */
 const Named = Schema.Struct({ id: Schema.String, kind: Schema.String });
 const Approval = Schema.Struct({ id: Schema.String, status: Schema.String, digest: Schema.String });
+const MadeOrganization = Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String });
 const Reply = Schema.Struct({
   run: Schema.optionalKey(Schema.Struct({ id: Schema.String, state: Schema.String })),
   organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
@@ -181,7 +185,7 @@ const Reply = Schema.Struct({
   size: Schema.optionalKey(Schema.Number),
   truncated: Schema.optionalKey(Schema.Boolean),
   content: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  organization: Schema.optionalKey(Schema.String),
+  organization: Schema.optionalKey(Schema.Union([Schema.String, MadeOrganization])),
   namespace: Schema.optionalKey(Schema.String),
   volumes: Schema.optionalKey(Schema.Array(Schema.Unknown)),
   approval: Schema.optionalKey(Approval),
@@ -244,6 +248,13 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   const error = encodePublicError(Cause.squash(exit.cause));
   return { status: statusForPublicError(error), json: empty, text: JSON.stringify(error) };
 });
+
+/** The Organization `POST organizations` made. */
+const madeOrganization = (reply: { status: number; json: Reply }) => {
+  assert.strictEqual(reply.status, 200);
+  const made = reply.json.organization;
+  return Schema.is(MadeOrganization)(made) ? made : assert.fail("no Organization made");
+};
 
 /** A refusal's status and message, whether the route answered it or failed with it. */
 const refusedWith = (reply: { status: number; text: string }) => {
@@ -589,6 +600,46 @@ it.live(
 );
 
 it.live(
+  "a dashboard Organization switch moves only the browser's session, so the CLI keeps acting where org use put it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const browser = yield* auth.resolveActor(new Headers({ cookie: alice.cookie }));
+        yield* drizzle.insert(member).values({ userId: browser.userId, organizationId: bob.organization.id });
+        const device = yield* signIn("alice");
+        const deviceHeaders = new Headers({ authorization: `Bearer ${device.session}` });
+        const used = yield* auth.handler(new Request(`${origin}/api/auth/organization/set-active`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${device.session}`, "content-type": "application/json" },
+          body: JSON.stringify({ organizationSlug: bob.organization.slug }),
+        }));
+        assert.strictEqual(used.status, 200);
+        const deviceSessionId = (yield* resolveCaller(deviceHeaders)).credential.id;
+        const row = (id: string) => drizzle
+          .select({ activeOrganizationId: session.activeOrganizationId, updatedAt: session.updatedAt })
+          .from(session).where(eq(session.id, id));
+        const deviceBefore = yield* row(deviceSessionId);
+
+        yield* syncOrganizationSlug(browser, { organizationSlug: bob.organization.slug });
+        yield* syncOrganizationSlug(browser, { organizationSlug: alice.organization.slug });
+
+        assert.deepStrictEqual(yield* row(deviceSessionId), deviceBefore);
+        assert.strictEqual((yield* row(browser.credential.id))[0]?.activeOrganizationId, alice.organization.id);
+        assert.strictEqual((yield* resolveCaller(deviceHeaders)).organization.slug, bob.organization.slug);
+        // What `ployz mcp login` sends: its agent token lands in the device's Organization, not the browser's.
+        const minted = yield* cli("POST", "tokens", device, { name: "agent", kind: "agent", expires_in_days: 30 });
+        assert.strictEqual(minted.json.token?.organization, bob.organization.slug);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "each device and token gets its own holder per Server, on first use and on Servers enrolled later; "
     + "revocation clears only its holders and reports offline Servers until a retry confirms",
   () =>
@@ -836,7 +887,9 @@ it.live(
         // Only the Organization the credential acts in.
         const other = yield* cli("DELETE", "organizations/elsewhere", alice);
         assert.strictEqual(other.status, 422);
-        assert.strictEqual(other.json.error?.details?.next, "ployz org use elsewhere");
+        assert.strictEqual(other.json.error?.code, "invalid_argument");
+        // The slug no longer names it; only the ID does.
+        assert.strictEqual((yield* cli("DELETE", `organizations/${slug}`, alice)).status, 422);
 
         // A Project must go first, through its own teardown; nothing is unpaired meanwhile.
         const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
@@ -845,7 +898,7 @@ it.live(
           default_environment: "00000000-0000-4000-8000-000000001261",
         } });
         assert.isTrue(created.ok);
-        const refused = yield* cli("DELETE", `organizations/${slug}`, alice);
+        const refused = yield* cli("DELETE", `organizations/${alice.organization.id}`, alice);
         assert.strictEqual(refused.status, 409);
         assert.deepStrictEqual(refused.json.error?.details?.next, { tool: "remove", input: { project: "shop" } });
         assert.isTrue(server.slots.has("cloud"));
@@ -853,19 +906,72 @@ it.live(
 
         // A Server offline: the Organization stays, disabled, and says which Server must still confirm.
         server.online = false;
-        const partial = yield* cli("DELETE", `organizations/${slug}`, alice);
+        const partial = yield* cli("DELETE", `organizations/${alice.organization.id}`, alice);
         assert.deepInclude(partial.json, { organization: slug, removed: false, servers: { confirmed: [], unconfirmed: [machine] } });
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 1);
 
         // The same command confirms it once the Server is back, clearing Cloud's key and every device key.
         server.online = true;
-        const removed = yield* cli("DELETE", `organizations/${slug}`, alice);
+        const removed = yield* cli("DELETE", `organizations/${alice.organization.id}`, alice);
         assert.deepInclude(removed.json, { organization: slug, removed: true, servers: { confirmed: [machine], unconfirmed: [] } });
         assert.deepStrictEqual([...server.slots.keys()], []);
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 0);
         assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "org new makes an Organization the user owns under the first free slug, and moves only the calling session into it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const laptop = yield* signIn("alice");
+        const personal = alice.organization.slug;
+        const current = (reply: Reply) => reply.organizations?.find((row) => row.current)?.slug;
+        const count = () => database.drizzle.select().from(organization).pipe(Effect.map((rows) => rows.length));
+        const before = yield* count();
+
+        const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 1 })).json.token ?? assert.fail("no token");
+        const byToken = yield* cli("POST", "organizations", { bearer: token.secret }, { name: "Acme" });
+        assert.strictEqual(byToken.status, 422);
+        assert.strictEqual(byToken.json.error?.code, "invalid_argument");
+        assert.strictEqual((yield* cli("POST", "organizations", alice, { name: " " })).status, 422);
+        assert.strictEqual((yield* cli("POST", "organizations", alice, { name: "Acme", slug: "!!!" })).status, 422);
+        assert.strictEqual((yield* cli("POST", "organizations", alice, { name: "x".repeat(65) })).status, 422);
+        assert.deepStrictEqual(refusedWith(yield* cli("POST", "organizations", alice, { name: "日本" })), [
+          422, "This name has no letters or digits to make a slug from. Pass --slug.",
+        ]);
+        // A sign-in that ended mid-request has no session to move, so its Organization rolls back.
+        const [owner] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .innerJoin(organization, eq(organization.id, member.organizationId)).where(eq(organization.slug, personal));
+        const ended = yield* Effect.exit(createOrganizationForSession(owner?.userId ?? assert.fail("no owner"), crypto.randomUUID(), { name: "Gone", slug: "gone" }));
+        assert.isTrue(Exit.isFailure(ended) && Cause.squash(ended.cause) instanceof Unauthorized);
+        assert.strictEqual(yield* count(), before);
+
+        const made = madeOrganization(yield* cli("POST", "organizations", alice, { name: " Acme Corp " }));
+        assert.deepInclude(made, { slug: "acme-corp", name: "Acme Corp" });
+        assert.strictEqual(current((yield* cli("GET", "organizations", alice)).json), "acme-corp");
+        // The user's other sign-in keeps acting where it was.
+        assert.strictEqual(current((yield* cli("GET", "organizations", laptop)).json), personal);
+
+        const suffixed = madeOrganization(yield* cli("POST", "organizations", laptop, { name: "Acme again", slug: "Acme Corp" }));
+        assert.match(suffixed.slug, /^acme-corp-[0-9a-f]{8}$/);
+        assert.strictEqual(current((yield* cli("GET", "organizations", laptop)).json), suffixed.slug);
+        assert.strictEqual(current((yield* cli("GET", "organizations", alice)).json), "acme-corp");
+
+        const roles = yield* database.drizzle.select({ slug: organization.slug, role: member.role }).from(member)
+          .innerJoin(organization, eq(organization.id, member.organizationId))
+          .orderBy(organization.slug);
+        assert.deepStrictEqual(roles.map((row) => [row.slug.replace(/-[0-9a-f]{8}$/, "-*"), row.role]), [
+          ["acme-corp", "owner"], ["acme-corp-*", "owner"], [personal, "owner"],
+        ]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -890,7 +996,7 @@ it.live(
         for (const role of ["admin", "member"] as const) {
           yield* database.drizzle.update(member).set({ role })
             .where(and(eq(member.userId, bobId), eq(member.organizationId, alice.organization.id)));
-          const refused = yield* cli("DELETE", `organizations/${slug}`, bob);
+          const refused = yield* cli("DELETE", `organizations/${alice.organization.id}`, bob);
           assert.strictEqual(refused.status, 403);
           assert.strictEqual(refused.json.error?.code, "forbidden");
           assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
@@ -948,16 +1054,20 @@ it.live(
           const bearer = as.session ?? as.bearer;
           if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
           const request = new Request(`${origin}/api/cli/servers/enroll`, { method: "POST", headers, body: JSON.stringify(body) });
-          return handleOrganizationCliRequest(request, MintMachineEnrollmentInput, mintCliMachineEnrollment).pipe(
+          return handleOrganizationCliRequest(request, CliMintMachineEnrollmentInput, mintCliMachineEnrollment).pipe(
             Effect.map((response) => response.status),
             Effect.catch((error) => Effect.succeed(statusForPublicError(encodePublicError(error)))),
           );
         };
-        assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug }), 200);
-        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationSlug: alice.organization.slug }), 200);
-        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationSlug: bob.organization.slug }), 403);
-        assert.strictEqual(yield* enroll({}, { organizationSlug: alice.organization.slug }), 401);
-        assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug, extra: true }), 422);
+        assert.strictEqual(yield* enroll(alice, { organizationId: alice.organization.id }), 200);
+        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationId: alice.organization.id }), 200);
+        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationId: bob.organization.id }), 403);
+        assert.strictEqual(yield* enroll(alice, { organizationId: bob.organization.id }), 404);
+        assert.strictEqual(yield* enroll({}, { organizationId: alice.organization.id }), 401);
+        assert.strictEqual(yield* enroll(alice, { organizationId: alice.organization.id, extra: true }), 422);
+        assert.strictEqual(yield* enroll(alice, { organizationId: "not-a-uuid" }), 422);
+        // The slug no longer names an Organization to the CLI surface.
+        assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug }), 422);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

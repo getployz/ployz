@@ -10,6 +10,8 @@ mod lifecycle;
 mod lowering;
 pub(crate) mod query;
 #[cfg(test)]
+mod reference_tests;
+#[cfg(test)]
 mod retire_tests;
 mod rows;
 pub(crate) use history::*;
@@ -595,6 +597,13 @@ impl Frozen {
     /// Whether this Deployment targets node `id`.
     pub(crate) fn targets(&self, id: &str) -> bool {
         self.nodes.iter().any(|node| node.id() == id)
+    }
+
+    /// Whether this Deployment ships Service `name`, named or referenced.
+    pub(crate) fn ships(&self, name: &ServiceName) -> bool {
+        self.nodes.iter().any(
+            |node| matches!(node, TargetNode::Service { name: service, .. } if service == name),
+        )
     }
 }
 

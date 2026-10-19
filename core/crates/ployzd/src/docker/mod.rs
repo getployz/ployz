@@ -35,7 +35,7 @@ use futures_util::StreamExt;
 use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
-    HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
+    Gen, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
     ImageSummary, LastHealthCheck, MachineId, MachineImages, MachineTelemetry, Namespace,
     QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
     healthcheck_deadline,
@@ -66,6 +66,7 @@ pub const LABEL_NAMESPACE: &str = "ployz.namespace";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
 /// Deployment attempt that created a Service Container.
 pub const LABEL_DEPLOYMENT: &str = "ployz.deployment.id";
+pub const LABEL_GEN: &str = "ployz.gen";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 
 #[derive(Clone)]
@@ -204,6 +205,19 @@ impl ContainerRuntime {
 
     pub async fn clear_floors(&self) -> Result<(), Error> {
         Ok(self.specs.clear_floors().await?)
+    }
+
+    /// Record a copy's rotation. Observations republish at once, without a Docker event.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be written.
+    pub async fn set_rotation(
+        &self,
+        container_id: &ContainerId,
+        rotation: &ployz_core::CopyRotation,
+    ) -> Result<(), Error> {
+        Ok(self.specs.set_rotation(container_id, rotation).await?)
     }
 
     /// Report this Container as `stopping` until the returned Withdrawal drops,
@@ -386,6 +400,11 @@ impl ContainerRuntime {
             .get(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
+        let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
+        let r#gen = labels
+            .get(LABEL_GEN)
+            .and_then(|label| label.parse().ok())
+            .map_or(Gen::FIRST, Gen::new);
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
         let address = container_address(&inspected);
@@ -428,6 +447,8 @@ impl ContainerRuntime {
         let runtime = withdrawn(runtime, self.is_withdrawn(container_id));
         let container =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                rotation: Some(rotation),
+                r#gen: Some(r#gen),
                 container_id: *container_id,
                 display_name: display_name(inspected.name.as_deref()),
                 created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),

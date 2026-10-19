@@ -7,7 +7,7 @@ export type CommitState<T> = { phase: "idle" } | { phase: "saving"; to: T } | { 
 const IDLE = { phase: "idle" } as const;
 
 /** A refusal's own words; a fetch that never reached Cloud says so instead of "Failed to fetch". */
-function failureReason<E>(error: E) {
+export function failureReason<E>(error: E) {
   return error instanceof Error && !(error instanceof TypeError) && error.message ? error.message : "Couldn't reach Ployz Cloud.";
 }
 

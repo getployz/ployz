@@ -135,6 +135,7 @@ pub fn join_request(first: &Machine, registration: &Registered) -> EnrollRequest
             },
         },
         wireguard_mtu: None,
+        pinned: Default::default(),
     }
 }
 
@@ -394,6 +395,7 @@ impl Cluster {
                     advertised_endpoints: vec![self.endpoint(0)?],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
         )
         .await

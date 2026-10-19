@@ -48,6 +48,8 @@ To undo, click **Discard** beside a change, or open **⋮** and choose **Discard
 Discarding a service or volume you never deployed deletes it. Discard does not save a version.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
+In the CLI, `ployz discard` names each saved change it took out and the command that brings it
+back, such as `ployz discard web`. `ployz diff` lists those rows and `ployz status` counts them.
 
 The dashboard's **Deploy** needs a staged change. To ship the same commit and settings again,
 click **Redeploy** on the newest deployment. To move GitHub services to their branch's latest
@@ -61,15 +63,18 @@ ployz deploy
 
 Open **Deployments** in the sidebar, then **Versions**, to see this environment's saved versions.
 Each version is titled from what it changed unless it was saved with a message, and lists its
-changes one per row, folding past three. The version's **⋮** menu:
+changes one per row, folding past three. **Live** marks the version the latest fully applied
+deployment shipped. **Failed** marks the newest version when its
+latest deployment failed; a later deployment of it clears it. A version saved but
+not deployed yet has no badge. The version's **⋮** menu:
 
 - **Undo these N changes** reverses that version's changed fields and keeps the versions saved
   after it. The first recorded version has no earlier version to undo.
 - **Roll back to #N** stages that version's complete configuration, undoing every later version.
-  The current version has nothing to roll back to. After a failed deploy, rolling back to the
-  version your servers still run deploys too: **Deploy** saves it, and services that already
-  match are left running. Like every deploy, it moves GitHub services to the newest commit on
-  their branch, so a branch that moved on since ships its newer code.
+  The newest version has nothing to roll back to. After a failed deploy, rolling back to the
+  **Live** version deploys too: **Deploy** saves it, and services that already match are left
+  running. Like every deploy, it moves GitHub services to the newest commit on their branch, so a
+  branch that moved on since ships its newer code.
 
 Each row's **⋮** undoes that one change. A change the same save tied to others undoes with them,
 and the menu says how many: adding a Service together with another Service's reference to it,

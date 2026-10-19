@@ -278,6 +278,8 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
+// React Query tells its observers on a setTimeout(0), which act does not wait for.
+const notified = () => new Promise((done) => setTimeout(done, 0));
 const flowClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 function flow(servers: readonly WaitingServerView[], hasFirst: boolean) {
   const client = flowClient();
@@ -307,11 +309,11 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const waitingFetch = client.refetchQueries({ queryKey: waitingKey });
   const statusFetch = client.refetchQueries({ queryKey: statusKey });
   const returned: WaitingServerView = { ...first, arrivalAt: "2026-10-17T10:01:00Z", returned: { state: "failed", stage: "storage", message: "Disk missing" } };
-  const endWaiting = () => act(async () => { waiting.resolve([second, returned]); await waitingFetch; });
-  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], hasFirst: true, joining: 0 }); await statusFetch; });
+  const endWaiting = () => act(async () => { waiting.resolve([second, returned]); await waitingFetch; await notified(); });
+  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], hasFirst: true, joining: 0 }); await statusFetch; await notified(); });
   if (order === "waiting-first") {
     await endWaiting();
-    await vi.waitFor(() => expect(rowNames()).toEqual(["second", "first"]));
+    expect(rowNames()).toEqual(["second", "first"]);
     const before = within(box()).getAllByRole("row");
     await endStatus();
     expect(within(box()).getAllByRole("row")).toEqual(before);

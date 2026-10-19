@@ -103,6 +103,7 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
                     advertised_endpoints: founder.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -168,6 +169,7 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
                     advertised_endpoints: founder.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -237,6 +239,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
                     advertised_endpoints: founder.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )

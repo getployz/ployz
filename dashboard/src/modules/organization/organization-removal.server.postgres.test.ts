@@ -70,7 +70,7 @@ describe("removeOrganizationAsMember", () => {
       role: "owner" as const,
       credential: { kind: "token" as const, id: "00000000-0000-4000-8000-00000000c002", grant: presetGrant({ preset: "read" }) },
     };
-    expect(await harness.runEffect(Effect.exit(removeOrganization(caller, "lab").pipe(
+    expect(await harness.runEffect(Effect.exit(removeOrganization(caller, LAB).pipe(
       Effect.provideService(CloudStore, { open: Effect.die(STORE_OPENED) }),
       Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
       Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),

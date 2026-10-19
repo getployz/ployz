@@ -169,15 +169,15 @@ fn shown(value: &Value) -> String {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DiscardInput {
-    /// Only this Service's Staged changes. Omit service, volume and config to discard everything Staged.
+    /// Only this Service. Omit service, volume and config for everything.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     service: Option<ServiceName>,
-    /// Only this Volume's Staged changes.
+    /// Only this Volume.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     volume: Option<VolumeName>,
-    /// Only this Config's Staged changes.
+    /// Only this Config.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     config: Option<ConfigName>,
@@ -196,8 +196,7 @@ pub(crate) struct DiscardInput {
 
 impl Tool for DiscardInput {
     const NAME: &'static str = "discard";
-    const DESCRIPTION: &'static str =
-        "Return every Staged change, or one Service's, Volume's or Config's, to what is deployed.";
+    const DESCRIPTION: &'static str = "Return all Staged changes, or one Service, Volume or Config, to deployed. A named one differing only from saved returns to saved.";
     const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
@@ -231,7 +230,7 @@ impl Tool for DiscardInput {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let discard = Discard {
             environment: scope.clone(),
-            target: Default::default(),
+            target: None,
             path,
             version: None,
         };
@@ -251,6 +250,10 @@ impl Tool for DiscardInput {
             "at": at(&discarded.environment),
             "discarded": what,
             "changed": discarded.changed,
+            "saved_not_staged": discarded.reversed.iter().map(|reversal| json!({
+                "name": reversal.change.name,
+                "way_back": reversal.way_back,
+            })).collect::<Vec<_>>(),
         }))
     }
 }

@@ -109,6 +109,28 @@ impl DiffView {
         }
         changes
     }
+
+    /// How many changes [`Self::review_changes`] lists, counting each node and each Setting.
+    #[must_use]
+    pub fn review_count(&self) -> usize {
+        self.review_changes()
+            .iter()
+            .map(|change| {
+                change.settings.len() + usize::from(change.lifecycle != ReviewLifecycleKind::Update)
+            })
+            .sum()
+    }
+
+    /// The draft reversals on nodes with no deploy change: saved changes the draft no
+    /// longer holds, which a discard naming the node brings back.
+    #[must_use]
+    pub fn reversals(&self) -> Vec<NodeChange> {
+        self.draft_changes
+            .iter()
+            .filter(|draft| !self.changes.iter().any(|change| change.node == draft.node))
+            .cloned()
+            .collect()
+    }
 }
 
 /// What happens to one node, and its changed Settings.
