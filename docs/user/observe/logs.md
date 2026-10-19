@@ -82,4 +82,9 @@ no service arguments, and `--follow` still use live container discovery.
   servers have lines, they still show, with a note naming the server to upgrade. Upgrade it from
   its page, then refresh the logs page.
 - **When your servers are offline**, the page says **Your servers are offline** and keeps the
-  last lines they sent.
+  last lines they sent. If the servers still answer but the log stream drops, it says
+  **Couldn’t load logs** and retries.
+- **Lines name where they came from** when that varies in view: the service, the server, and the
+  container's short id when a deploy replaced a container on the same server, so the old copy's
+  shutdown reads apart from the new one's start.
+- **Leaving a log closes its stream.** Coming back reopens it and shows the latest lines.
