@@ -3452,7 +3452,6 @@
                     "project": "shop",
                     "environment": null
                   },
-                  "target": "head",
                   "path": "web",
                   "version": null
                 }
@@ -3527,7 +3526,6 @@
                     "project": "shop",
                     "environment": null
                   },
-                  "target": "head",
                   "path": "web",
                   "version": null
                 }
