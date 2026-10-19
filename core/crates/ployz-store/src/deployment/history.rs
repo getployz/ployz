@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// The rule every reading of "the Deployment history" shares: only numbered rows
+/// count, in number order. A hold that never promoted (waiting, superseded or
+/// cancelled while waiting) has no number and is not history. Postgres sorts
+/// NULLs first under `DESC`, so the filter is never left to the sort order.
+pub(crate) const NUMBERED: &str = "number IS NOT NULL";
+
 /// `environment`'s latest `limit` Deployments that were admitted and weren't
 /// superseded, newest first: none waiting for CI.
 pub(crate) fn history(
@@ -13,7 +19,7 @@ pub(crate) fn history(
     tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
-             WHERE environment_id = ?1 AND status NOT IN ('superseded', 'waiting_for_ci') \
+             WHERE environment_id = ?1 AND {NUMBERED} AND status NOT IN ('superseded') \
              ORDER BY number DESC LIMIT ?2"
         ),
         &[environment.as_str().into(), limit.into()],
@@ -48,7 +54,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         .query(
             &format!(
                 "SELECT COUNT(*) FROM config_deployment \
-                 WHERE environment_id = ?1 AND status NOT IN ('superseded', 'waiting_for_ci') \
+                 WHERE environment_id = ?1 AND {NUMBERED} AND status NOT IN ('superseded') \
                  AND NOT {in_flight}"
             ),
             &[id.as_str().into()],
@@ -59,7 +65,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     let rows = tx.query(
         &format!(
             "SELECT number, saved_revision, nodes, cluster_domain FROM config_deployment \
-             WHERE environment_id = ?1 AND {in_flight} ORDER BY number DESC"
+             WHERE environment_id = ?1 AND {NUMBERED} AND {in_flight} ORDER BY number DESC"
         ),
         &[id.as_str().into()],
     )?;
@@ -214,14 +220,12 @@ pub(crate) fn failed(
     environment: &EnvironmentId,
     revision: Revision,
 ) -> Result<bool, RpcError> {
-    let condition = format!(
-        "saved_revision = {} AND number IS NOT NULL",
-        revision_param(revision)?
-    );
+    let condition = format!("saved_revision = {}", revision_param(revision)?);
     Ok(latest_where(tx, environment, &condition)?
         .is_some_and(|deployment| deployment.status == DeploymentStatus::Failed))
 }
 
+/// `environment`'s latest numbered Deployment matching `condition`.
 pub(super) fn latest_where(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -231,7 +235,8 @@ pub(super) fn latest_where(
     tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
-             WHERE environment_id = ?1 AND {condition} ORDER BY number DESC LIMIT 1"
+             WHERE environment_id = ?1 AND {NUMBERED} AND {condition} \
+             ORDER BY number DESC LIMIT 1"
         ),
         &[environment.as_str().into()],
     )?
@@ -396,30 +401,51 @@ pub(crate) fn build_log(
     build::log(tx, &stored, &query.service)
 }
 
-/// One page of `environment`'s Deployments, newest first, before `cursor`. The first
-/// page leads with those waiting for CI, unnumbered; a cursor is a number, so later
-/// pages hold only numbered ones.
+/// The order a list of every Deployment reads in, holds included: by admission,
+/// newest first. Within one second a hold (unnumbered) leads, and numbered ones
+/// keep their number order; the id settles the rest. Every row has each key, so
+/// a page cursor can't skip one.
+const LIST_KEY: &str = "admitted DESC, COALESCE(number, 9223372036854775807) DESC, id DESC";
+
+/// One page of `environment`'s Deployments in [`LIST_KEY`] order, after the one
+/// `after` names: the last of the previous page. The second element names the
+/// last of this page when another follows.
 pub(crate) fn page(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     limit: usize,
-    before: Option<u64>,
-) -> Result<(Vec<DeploymentSummary>, Option<u64>), RpcError> {
-    let first = before.is_none();
-    let before = i64::try_from(before.unwrap_or(u64::MAX >> 1)).unwrap_or(i64::MAX);
+    after: Option<&DeploymentId>,
+) -> Result<(Vec<DeploymentSummary>, Option<DeploymentId>), RpcError> {
     let columns = COLUMNS.as_str();
-    let unnumbered = if first { "number IS NULL OR " } else { "" };
+    let mut params: Vec<crate::storage::Param<'_>> = vec![
+        environment.as_str().into(),
+        i64::try_from(limit + 1).unwrap_or(i64::MAX).into(),
+    ];
+    let mut after_sql = String::new();
+    if let Some(after) = after {
+        let known = tx.query(
+            "SELECT 1 FROM config_deployment WHERE environment_id = ?1 AND id = ?2",
+            &[environment.as_str().into(), after.as_str().into()],
+        )?;
+        if known.is_empty() {
+            return Err(error::invalid(
+                "Expected a cursor from a previous page",
+                json!({}),
+            ));
+        }
+        params.push(after.as_str().into());
+        // Rows later than `after` in LIST_KEY order, each key compared in turn.
+        after_sql = " AND (admitted, COALESCE(number, 9223372036854775807), id) < \
+             (SELECT admitted, COALESCE(number, 9223372036854775807), id \
+              FROM config_deployment WHERE id = ?3)"
+            .to_owned();
+    }
     let rows = tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
-             WHERE environment_id = ?1 AND ({unnumbered}number < ?2) \
-             ORDER BY number IS NOT NULL, number DESC, admitted DESC, id LIMIT ?3"
+             WHERE environment_id = ?1{after_sql} ORDER BY {LIST_KEY} LIMIT ?2"
         ),
-        &[
-            environment.as_str().into(),
-            before.into(),
-            i64::try_from(limit + 1).unwrap_or(i64::MAX).into(),
-        ],
+        &params,
     )?;
     let mut page = rows
         .iter()
@@ -427,12 +453,9 @@ pub(crate) fn page(
         .collect::<Result<Vec<_>, _>>()?;
     let next = (page.len() > limit).then(|| {
         page.truncate(limit);
-        page.iter()
-            .rev()
-            .find_map(|deployment| deployment.number)
-            .unwrap_or(u64::MAX >> 1)
+        page.last().map(|last| last.id.clone())
     });
-    Ok((page, next))
+    Ok((page, next.flatten()))
 }
 
 /// The Servers Deployment `id` failed on, by name, sorted.

@@ -118,7 +118,7 @@ impl Tool for ServiceMetrics {
         ];
         let numbered = self.deployment.map(|number| NumberedDeploymentQuery {
             environment: scope,
-            number,
+            number: Some(number),
         });
         if let Some(query) = &numbered {
             asks.push(store(query)?);

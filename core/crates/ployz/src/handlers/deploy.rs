@@ -996,7 +996,7 @@ pub(super) fn deployment_id(
     };
     let found = store.read(&ployz_store::NumberedDeploymentQuery {
         environment: environment(matches)?,
-        number,
+        number: Some(number),
     })?;
     Ok(found.deployment.id)
 }

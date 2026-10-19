@@ -63,7 +63,8 @@ pub(crate) fn admit(
         None => match tx
             .query(
                 "SELECT upload FROM config_deployment \
-                 WHERE environment_id = ?1 AND upload IS NOT NULL ORDER BY number DESC LIMIT 1",
+                 WHERE environment_id = ?1 AND number IS NOT NULL AND upload IS NOT NULL \
+                 ORDER BY number DESC LIMIT 1",
                 &[environment_id.into()],
             )?
             .first()

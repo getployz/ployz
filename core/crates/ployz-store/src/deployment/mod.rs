@@ -819,7 +819,8 @@ pub(crate) fn cluster_domain(
 ) -> Result<Option<Hostname>, RpcError> {
     tx.query(
         "SELECT cluster_domain FROM config_deployment \
-         WHERE environment_id = ?1 AND cluster_domain IS NOT NULL ORDER BY number DESC LIMIT 1",
+         WHERE environment_id = ?1 AND number IS NOT NULL AND cluster_domain IS NOT NULL \
+         ORDER BY number DESC LIMIT 1",
         &[environment.as_str().into()],
     )?
     .first()

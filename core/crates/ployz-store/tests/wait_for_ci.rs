@@ -7,13 +7,14 @@
 
 use std::collections::BTreeMap;
 
-use ployz_core::ServiceName;
+use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_store::tools::{Ask, Place, Step, StoreAt, ToolResult, Write, resume, start};
 use ployz_store::{
     Actor, Automated, Cancel, CiVerdict, ConfigStore, DeploymentQuery, DeploymentStatus,
     DeploymentSummary, DeploymentsQuery, DiffQuery, EnvironmentName, EnvironmentRef, GitPush,
-    Outcome, ProjectName, Remove, RenameService, Sweep, SystemEvent, Trusted,
+    Outcome, ProjectName, PullRequestQuery, Remove, RenameService, Sweep, SystemEvent, Trusted,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 mod backend;
 mod shop;
@@ -304,7 +305,17 @@ fn holds_number_in_the_order_they_pass_ci() {
             changed: None,
         }),
     );
-    let [api_hold, web_hold] = <[_; 2]>::try_from(held(&store, &who)).unwrap();
+    // Pushed within one second, the two list in no fixed order: pick each by its commit.
+    let holds = held(&store, &who);
+    assert_eq!(holds.len(), 2);
+    let by_head = |head: &str| {
+        holds
+            .iter()
+            .find(|hold| hold.push.as_ref().map(|push| &push.head) == Some(&backend::sha(head)))
+            .cloned()
+            .unwrap()
+    };
+    let (api_hold, web_hold) = (by_head(H3), by_head(H2));
     assert_eq!((web_hold.number, api_hold.number), (None, None));
     assert_eq!(
         (web_hold.label(), api_hold.label()),
@@ -729,4 +740,205 @@ fn cancelled_hold_cannot_be_retried() {
         "{refused:?}"
     );
     assert_eq!(deployments(&store, &who).len(), 1);
+}
+
+/// Drive an agent tool against the Store alone to its result.
+fn tool(store: &ConfigStore, who: &Actor, name: &str, input: Value) -> ToolResult {
+    let place = Place {
+        project: Some(ProjectName::parse("shop").unwrap()),
+        environment: None,
+        store: StoreAt::Cloud {
+            organization: org(),
+        },
+    };
+    let (mut step, mut state) = start(name, input, &place, "call-1");
+    loop {
+        let asks = match step {
+            Step::Read { asks } | Step::Wait { then: asks, .. } => asks,
+            Step::Write { write } => match *write {
+                Write::Store(command) => {
+                    let written = store
+                        .write_trusted(who, &command, &Trusted::default())
+                        .map(|written| serde_json::to_value(written).unwrap());
+                    (step, state) = resume(state, vec![written]);
+                    continue;
+                }
+                Write::Act(act) => panic!("no Cloud in this test: {act:?}"),
+            },
+            Step::Done { result } => break result,
+        };
+        let answers = asks
+            .into_iter()
+            .map(|ask| match ask {
+                Ask::Store(query) => store
+                    .read(who, &query)
+                    .map(|view| serde_json::to_value(view).unwrap()),
+                Ask::Cloud(query) => panic!("no Cloud in this test: {query:?}"),
+            })
+            .collect();
+        (step, state) = resume(state, answers);
+    }
+}
+
+fn ok(result: ToolResult) -> Value {
+    match result {
+        ToolResult::Ok(value) => value,
+        ToolResult::Refused(refusal) => panic!("refused: {refusal:?}"),
+    }
+}
+
+fn refused(result: ToolResult) -> ployz_store::tools::Refusal {
+    match result {
+        ToolResult::Ok(value) => panic!("not refused: {value}"),
+        ToolResult::Refused(refusal) => *refusal,
+    }
+}
+
+/// The history is the numbered rows: a hold never stands in for the latest Deployment,
+/// not even on Postgres, where NULL numbers sort first under `number DESC`.
+#[test]
+fn a_cancelled_hold_is_not_the_latest_deployment() {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    publish(&store, &who);
+    let opened = pull_request_by(&store, &who, true).admitted[0]
+        .deployment
+        .clone();
+    backend::run(&store, &opened.id);
+    system(&store, &push_search(Some(H2), H3));
+    let hold = beside(&store, &who, &opened)
+        .into_iter()
+        .find(|deployment| deployment.status == DeploymentStatus::WaitingForCi)
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Cancel {
+                deployment: hold.id.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(find(&store, &who, &hold).number, None);
+
+    // The pull request's latest Deployment is the one that ran, not the cancelled hold.
+    let pr = store
+        .read(
+            &who,
+            &PullRequestQuery {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
+            },
+        )
+        .unwrap();
+    let latest = pr.environments[0].deployment.as_ref().unwrap();
+    assert_eq!((&latest.id, latest.number), (&opened.id, Some(1)));
+
+    // The list still shows every row: the cancelled hold, the hold it superseded, and #1.
+    let listed: Vec<_> = beside(&store, &who, &opened)
+        .iter()
+        .map(|deployment| deployment.number)
+        .collect();
+    assert_eq!(listed, [None, None, Some(1)]);
+}
+
+/// An Environment whose only Deployment is a hold has no latest Deployment to show,
+/// cancel, or start by default.
+#[test]
+fn an_environment_with_only_a_hold_has_no_deployment_yet() {
+    let (store, who, _) = waiting();
+    let shown = refused(tool(&store, &who, "deployment_show", json!({})));
+    assert_eq!(shown.code, RpcErrorCode::NotFound);
+    assert_eq!(shown.message, "shop/production has no Deployment yet");
+    assert_eq!(
+        shown.next,
+        [ployz_store::tools::Call::new("deploy", json!({}))]
+    );
+}
+
+/// With Deployment #1 queued and a hold pushed after it, the agent's default
+/// Deployment is #1: `deployment_show {}` shows it and `deployment_cancel {}` cancels it,
+/// leaving the hold waiting.
+#[test]
+fn default_deployment_skips_a_newer_hold() {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    publish(&store, &who);
+    let queued = backend::admit(&store, &who, "production", 1);
+    system(&store, &push(None, Some(H2), None));
+    let [hold] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
+    assert_eq!(deployments(&store, &who)[0].id, hold.id);
+
+    let shown = ok(tool(&store, &who, "deployment_show", json!({})));
+    assert_eq!(shown["deployment"], 1);
+    assert_eq!(shown["status"], "queued");
+
+    let cancelled = ok(tool(&store, &who, "deployment_cancel", json!({})));
+    assert_eq!(cancelled["deployment"], 1);
+    assert_eq!(
+        store
+            .read(&who, &DeploymentQuery { id: queued })
+            .unwrap()
+            .deployment
+            .status,
+        DeploymentStatus::Cancelled
+    );
+    assert_eq!(held(&store, &who), [hold]);
+}
+
+/// Pages walk every row, holds included: twenty superseded holds and one waiting
+/// fill a page, and the cursor still reaches the twenty-first.
+#[test]
+fn pages_reach_holds_past_the_first_page() {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    publish(&store, &who);
+    let heads: Vec<String> = (1..=21).map(|n| format!("{n:040x}")).collect();
+    let mut base: Option<&str> = None;
+    for head in &heads {
+        system(&store, &push(base, Some(head), None));
+        base = Some(head);
+    }
+    let page = |cursor: Option<String>| {
+        store
+            .read(
+                &who,
+                &DeploymentsQuery {
+                    limit: Some(20),
+                    cursor,
+                    ..DeploymentsQuery::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = page(None);
+    assert_eq!(first.deployments.len(), 20);
+    let second = page(first.next_cursor.clone());
+    assert_eq!(second.deployments.len(), 1);
+    assert_eq!(second.next_cursor, None);
+    // Pushed within one second, the rows tie on admitted; whatever order they take,
+    // the two pages cover all twenty-one once, the waiting hold among them.
+    let rows: Vec<_> = first
+        .deployments
+        .iter()
+        .chain(&second.deployments)
+        .collect();
+    let seen: std::collections::BTreeSet<_> = rows.iter().map(|row| row.id.clone()).collect();
+    assert_eq!(seen.len(), 21);
+    assert!(rows.iter().all(|row| row.number.is_none()));
+    let waiting: Vec<_> = rows
+        .iter()
+        .filter(|row| row.status == DeploymentStatus::WaitingForCi)
+        .map(|row| row.label().to_owned())
+        .collect();
+    assert_eq!(waiting, [&heads[20][..7]]);
+
+    let bad = store.read(
+        &who,
+        &DeploymentsQuery {
+            limit: Some(20),
+            cursor: Some("20".into()),
+            ..DeploymentsQuery::default()
+        },
+    );
+    assert_eq!(bad.unwrap_err().code, RpcErrorCode::InvalidArgument);
 }

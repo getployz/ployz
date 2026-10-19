@@ -372,6 +372,7 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ),
     ("github ls", CliNext::Tool("github_ls", Some("repository"))),
     ("github connect", CliNext::Tool("github_connect", None)),
+    ("deploy", CliNext::Tool("deploy", None)),
     ("deployment ls", CliNext::Tool("deployment_list", None)),
     ("diff", CliNext::Tool("review", None)),
     ("domain add", CliNext::Tool("domain_add", Some("service"))),

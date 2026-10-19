@@ -15,26 +15,28 @@ use super::step::{Gate, RequestKey};
 use crate::catalog::NODE_NAME;
 use crate::{
     Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, DeploymentsView, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start, VolumeName,
+    DeploymentsQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary, NodeOutcome,
+    NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start, VolumeName,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 
-/// The Deployment `number` names, or the latest when it names none.
+/// The Deployment `number` names, or the latest numbered one when it names none,
+/// with the query that reads it again by its number.
 fn find(
     cx: &mut Cx<'_>,
     environment: EnvironmentRef,
     number: Option<u64>,
-) -> Result<NumberedDeploymentQuery, Stop> {
-    let number = match number {
-        Some(number) => number,
-        None => latest(cx.one(&newest(&environment))?)?,
-    };
-    Ok(NumberedDeploymentQuery {
-        environment,
+) -> Result<(NumberedDeploymentQuery, DeploymentView), Stop> {
+    let view = cx.one(&NumberedDeploymentQuery {
+        environment: environment.clone(),
         number,
-    })
+    })?;
+    let query = NumberedDeploymentQuery {
+        environment,
+        number: number.or(view.deployment.number),
+    };
+    Ok((query, view))
 }
 
 fn newest(environment: &EnvironmentRef) -> DeploymentsQuery {
@@ -43,17 +45,6 @@ fn newest(environment: &EnvironmentRef) -> DeploymentsQuery {
         limit: Some(1),
         cursor: None,
     }
-}
-
-fn latest(page: DeploymentsView) -> Result<u64, Stop> {
-    page.deployments
-        .iter()
-        .find_map(|latest| latest.number)
-        .ok_or_else(|| {
-            Refusal::not_found("This Environment has no Deployment yet")
-                .with_next(Call::new("deploy", json!({})))
-                .into()
-        })
 }
 
 /// Why the Deployment ended as it did, when its runner said.
@@ -257,8 +248,7 @@ impl Tool for DeploymentShow {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let query = find(cx, scope, self.deployment)?;
-        let mut view = cx.one(&query)?;
+        let (query, mut view) = find(cx, scope, self.deployment)?;
         let mut attempt = 0;
         while view.deployment.in_flight {
             let Some(answers) = cx.poll(self.wait_seconds, attempt, vec![store(&query)?])? else {
@@ -319,8 +309,7 @@ impl Tool for DeploymentCancel {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let query = find(cx, scope, self.deployment)?;
-        let view = cx.one(&query)?;
+        let (_, view) = find(cx, scope, self.deployment)?;
         if !view.deployment.in_flight {
             return Err(Refusal::conflict("That Deployment already ended").into());
         }
@@ -375,7 +364,7 @@ impl Tool for DeploymentRetry {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let id: DeploymentId = cx.mint(self.request_key)?;
         let number = match self.deployment {
-            Some(number) => number,
+            Some(number) => Some(number),
             // A replay must not resolve the latest again: by now that is the retry itself.
             None => {
                 let asks = vec![
@@ -399,7 +388,7 @@ impl Tool for DeploymentRetry {
                 if let Some(recorded) = recorded {
                     return Ok(retried(cx, &page.environment, &recorded, None, &[]));
                 }
-                latest(page)?
+                None
             }
         };
         let query = NumberedDeploymentQuery {
@@ -480,8 +469,7 @@ impl Tool for DeploymentStart {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let query = find(cx, scope, self.deployment)?;
-        let queued = cx.one(&query)?;
+        let (_, queued) = find(cx, scope, self.deployment)?;
         let started = cx.write(&Start {
             deployment: queued.deployment.id.clone(),
         })?;

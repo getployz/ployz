@@ -84,7 +84,8 @@ pub(crate) fn retirements(
         }
         let rows = tx.query(
             "SELECT nodes, run FROM config_deployment \
-             WHERE environment_id = ?1 AND (started IS NOT NULL OR status = 'queued') \
+             WHERE environment_id = ?1 AND number IS NOT NULL \
+             AND (started IS NOT NULL OR status = 'queued') \
              AND nodes LIKE ?2 \
              ORDER BY number DESC",
             &[

@@ -3248,7 +3248,7 @@ fn a_deployment_is_found_by_its_number() {
             &who,
             &ployz_store::NumberedDeploymentQuery {
                 environment: EnvironmentRef::default(),
-                number,
+                number: Some(number),
             },
         )
     };
