@@ -289,8 +289,17 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
 
-/** What a Deployment shipped despite, in words: "TOKEN not set", where a Config file left one empty, a Server left without ingress, or ingress it couldn't check. */
+/**
+ * What a Deployment shipped despite, in words: "TOKEN not set", where a Config file left one empty, a Server left
+ * without ingress, ingress it couldn't check, or an image exposing a port its domains don't send to.
+ */
 export function deploymentWarningText(warning: DeploymentWarning) {
+  if ("warning" in warning) {
+    const found = warning.warning;
+    return found.type === "image_port_mismatch"
+      ? `${found.service}'s image ${found.image} exposes ${found.exposed.join(", ")}; its domains send to ${found.routed.join(", ")}`
+      : "The deployment found something to check";
+  }
   if ("cause" in warning) return `Couldn't check ingress: ${warning.cause.replace(/\.$/, "")}. Deploy again to retry`;
   if ("ingress" in warning) {
     return warning.ingress.type === "port_taken"

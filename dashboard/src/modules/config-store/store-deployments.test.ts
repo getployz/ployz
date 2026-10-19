@@ -309,6 +309,8 @@ it("words what a Deployment shipped despite", () => {
     .toBe("Ingress isn't running on web-1: image pull failed");
   expect(deploymentWarningText({ cause: "Couldn't list the Cluster's Servers." }))
     .toBe("Couldn't check ingress: Couldn't list the Cluster's Servers. Deploy again to retry");
+  expect(deploymentWarningText({ warning: { type: "image_port_mismatch", service: "web", image: "nginx", exposed: [80], routed: [8080, 8081] } }))
+    .toBe("web's image nginx exposes 80; its domains send to 8080, 8081");
 });
 
 it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and leaves an ended one alone", () => {

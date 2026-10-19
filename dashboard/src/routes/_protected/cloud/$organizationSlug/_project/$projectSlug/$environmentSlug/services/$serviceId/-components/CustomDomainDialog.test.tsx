@@ -39,6 +39,17 @@ describe("CustomDomainDialog", () => {
     );
   });
 
+  it("says a blank target follows PORT, and what PORT is when the dialog knows it", () => {
+    const { rerender } = render(
+      <CustomDomainDialog defaultTargetPort={null} onClose={vi.fn()} onSubmit={vi.fn()} />
+    );
+    expect(screen.getByText("Leave blank to use PORT, 8080 unless set.")).toBeTruthy();
+    rerender(
+      <CustomDomainDialog defaultTargetPort={3000} onClose={vi.fn()} onSubmit={vi.fn()} />
+    );
+    expect(screen.getByText("Leave blank to use PORT.")).toBeTruthy();
+  });
+
   it("saves a hostname typed in any case as the lowercase name", async () => {
     const onSubmit = vi.fn();
     render(

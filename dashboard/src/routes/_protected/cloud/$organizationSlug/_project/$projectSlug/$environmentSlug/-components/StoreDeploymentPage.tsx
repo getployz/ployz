@@ -68,7 +68,8 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
   const warnings = deployment.warnings ?? [];
   const ingressWarnings = warnings.filter((warning) => "ingress" in warning);
   const uncheckedIngress = warnings.filter((warning) => "cause" in warning);
-  const variableWarnings = warnings.filter((warning) => !("ingress" in warning) && !("cause" in warning));
+  const deployWarnings = warnings.filter((warning) => "warning" in warning);
+  const variableWarnings = warnings.filter((warning) => !("ingress" in warning) && !("cause" in warning) && !("warning" in warning));
   const services = deployment.nodes.filter((node) => node.type === "service");
   // A selected Volume or Config falls back to the Service that failed, so the fix stays one click away.
   const service = selected?.type === "build" ? services.find((node) => node.name === selected.name)
@@ -153,6 +154,11 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
       {uncheckedIngress.map((warning) => (
         <p key={warning.cause} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
           <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}.
+        </p>
+      ))}
+      {deployWarnings.map((warning) => (
+        <p key={deploymentWarningText(warning)} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
+          <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}. Set the domain port or PORT.
         </p>
       ))}
     </div>
