@@ -233,6 +233,7 @@ pub(crate) fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::StopsService => format!("stops Service {name} until started again"),
         DestructiveKind::RestartsService => format!("restarts Service {name}"),
         DestructiveKind::UnprotectsEnvironment => format!("unprotects Environment {name}"),
+        DestructiveKind::RemovesOrganization => format!("removes Organization {name}"),
     }
 }
 
