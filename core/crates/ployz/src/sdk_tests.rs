@@ -74,6 +74,7 @@ fn selection_failure_is_known_and_does_not_expose_provider_details() {
     );
     assert!(!error.message.contains("secret"));
     assert!(!error.details.to_string().contains("secret"));
+    assert!(error.cause.iter().all(|cause| !cause.contains("secret")));
 }
 
 #[test]

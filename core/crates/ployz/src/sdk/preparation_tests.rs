@@ -798,13 +798,16 @@ async fn builder_selection_reports_missing_capability() {
 }
 
 #[tokio::test]
-async fn failed_builder_selection_records_why_each_machine_was_rejected() {
-    let (root, mut service, _builds) = fixture();
-    service.builds = None;
+async fn failed_builder_selection_records_why_each_machine_was_rejected_without_command_output() {
+    let (root, service, builds) = fixture();
+    let checker = machine('a', "checker");
     let mut disabled = machine('b', "disabled");
     disabled.machine.accepts_builds = false;
-    let (mut client, server) =
-        connected(service.with_machines(vec![machine('a', "builder"), disabled])).await;
+    builds.check_failures.lock().unwrap().insert(
+        checker.machine.id,
+        "buildx: failed to authorize: https://registry.example/token?secret=hunter2".into(),
+    );
+    let (mut client, server) = connected(service.with_machines(vec![checker, disabled])).await;
     let visible = client.machines().await.unwrap();
     let selection = crate::sdk::prepare::select_build_machine(
         &mut client,
@@ -826,11 +829,12 @@ async fn failed_builder_selection_records_why_each_machine_was_rejected() {
         "No eligible Build Machine was selected; no build was started."
     );
     let cause = recorded.cause.last().expect("a cause names the rejections");
+    assert!(!cause.contains("hunter2"), "{cause}");
     for reason in [
-        "Machine builder",
-        "does not support remote Builds",
+        "Machine checker",
+        "its build capability check failed",
         "Machine disabled",
-        "does not accept Builds",
+        "builds are turned off",
     ] {
         assert!(cause.contains(reason), "{cause}");
     }
