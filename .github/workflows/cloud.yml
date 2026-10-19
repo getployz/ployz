@@ -111,8 +111,12 @@ jobs:
         if: steps.lookup.outputs.run-id == ''
         with:
           tool: wasm-bindgen@0.2.127
+      # A PR only tests against its SDK, so it builds dev; its upload keeps the release name, which only
+      # this run reads, since lookups take main's uploads alone.
       - name: Build and test the SDK
         if: steps.lookup.outputs.run-id == ''
+        env:
+          PLOYZ_SDK_PROFILE: ${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
         run: bash scripts/pr-check.sh sdk
       # Local verify runs download these too, so main keeps them longer.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -9,10 +9,11 @@ features=${PLOYZ_SDK_FEATURES:-}
 # Worktrees share built bindings through scripts/artifacts.py, keyed by the sources they come from, edits included.
 # kache can't cover this: our crates' keys carry the checkout's absolute paths, so every new worktree recompiles them.
 # Without git or python3 (the Docker image build) there is no key, so it always builds.
-# CI builds release and a local build dev, each cached under its own profile; a local run takes either.
+# Main and release CI build release, which images ship; a PR's CI and a local build only test against dev.
+# Each is cached under its own profile, and a local run takes either.
 release="features=$features profile=release"
 extra=$release
-if [ -z "${CI:-}" ]; then
+if [ -z "${CI:-}" ] || [ "${PLOYZ_SDK_PROFILE:-}" = dev ]; then
   extra="features=$features profile=dev"
 fi
 key=
@@ -33,9 +34,8 @@ if [ -z "$key" ] || ! { fetch --extra "$release" || { [ "$extra" != "$release" ]
   TYPE_DEF_TMP_PATH=$(mktemp)
   export TYPE_DEF_TMP_PATH
   trap 'rm -f "$TYPE_DEF_TMP_PATH"' EXIT
-  # CI and images ship this SDK, so they build release. A local build only serves the dev loop, so it
-  # skips release's optimizations.
-  if [ -n "$key" ] && [ -z "${CI:-}" ]; then
+  # Images ship this SDK, so they build release. A dev build only serves tests, so it skips release's optimizations.
+  if [ -n "$key" ] && [ "$extra" != "$release" ]; then
     python3 scripts/artifacts.py build cargo build -p ployz-sdk --locked ${features:+--features "$features"}
     profile_dir=debug
   else
