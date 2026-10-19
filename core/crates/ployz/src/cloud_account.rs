@@ -87,10 +87,12 @@ pub(crate) fn named_cloud(
     let cloud = cloud.filter(|cloud| !cloud.trim().is_empty());
     let named = match cloud {
         Some(cloud) if token => Some(cloud),
-        None if token => store.cloud().map_err(|error| match error {
-            LoginError::Corrupt { path, .. } => LoginError::TokenCloudUnreadable(path),
-            error => error,
-        })?,
+        None if token => match store.cloud() {
+            Err(LoginError::Corrupt { path, .. }) => {
+                return Err(LoginError::TokenCloudUnreadable(path));
+            }
+            stored => stored?,
+        },
         cloud => store.cloud()?.or(cloud),
     };
     Ok(named.map(|cloud| cloud_origin(&cloud)))
