@@ -87,7 +87,7 @@ async fn report_names_left_running() {
     assert_eq!(
         left_running(&warnings),
         [
-            "app/web  left running on one (proxy on two did not confirm). The next deploy cleans it up."
+            "app/web left running on one (proxy on two did not confirm). The next deploy cleans it up."
         ],
         "{warnings:?}"
     );
@@ -99,7 +99,7 @@ async fn interrupting_cleanup_names_the_copy_left_running() {
 
     assert_eq!(
         left_running(&warnings),
-        ["app/web  left running on one (interrupted). The next deploy cleans it up."],
+        ["app/web left running on one (interrupted). The next deploy cleans it up."],
         "{warnings:?}"
     );
 }

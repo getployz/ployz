@@ -260,7 +260,7 @@ async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() 
         .collect::<Vec<_>>();
     assert_eq!(
         left,
-        ["shop-production/web  left running on entry (interrupted). The next deploy cleans it up."]
+        ["shop-production/web left running on entry (interrupted). The next deploy cleans it up."]
     );
     server.abort();
 }

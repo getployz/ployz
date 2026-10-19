@@ -1196,7 +1196,7 @@ async fn execute_reported<C: MachineOperations>(
 
 fn left_running(machine: &str, reason: &str) -> String {
     format!(
-        "{}  left running on {machine} ({reason}). The next deploy cleans it up.",
+        "{} left running on {machine} ({reason}). The next deploy cleans it up.",
         api()
     )
 }

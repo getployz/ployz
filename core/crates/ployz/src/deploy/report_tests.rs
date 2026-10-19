@@ -914,9 +914,9 @@ fn a_machine_away_during_cleanup_is_named_once_under_the_copies_left_on_it() {
     assert_eq!(
         shown[shown.len() - 3..],
         [
-            "! shop/web  left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
+            "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
             "! Once machine-3 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.",
-            "! shop/web  left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
+            "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
         ]
     );
 }

@@ -588,7 +588,7 @@ async fn ctrl_c_during_cleanup_prints_each_copy_left_running_and_exits_non_zero(
     assert_ne!(output.status.code(), Some(0), "{printed}");
     assert!(
         printed.contains(
-            "shop-production/web  left running on entry (interrupted). The next deploy cleans it up."
+            "shop-production/web left running on entry (interrupted). The next deploy cleans it up."
         ),
         "{printed}"
     );
