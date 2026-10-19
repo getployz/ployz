@@ -107,8 +107,8 @@ approval stays pending in Ployz Cloud.
 In an app that can't show this dialog, the call fails right away with `approval_required`,
 what it would remove, the approval's ID and a link to your organization. Open the link,
 approve or deny it under **Waiting on you** in the Ployz agent, then tell the agent to try
-again. It calls the tool again with that approval and the call goes ahead. The agent can
-never answer the approval itself.
+again. It calls the tool again with that approval: an approved call goes ahead, and a denied
+one fails with your reason. The agent can never answer the approval itself.
 
 `ployz mcp` stops a call that runs for more than 30 minutes. A deployment or Volume run it
 started keeps going in Cloud, and the error names the tool that shows where it stands. A call
