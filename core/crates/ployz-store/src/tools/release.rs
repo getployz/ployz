@@ -23,7 +23,10 @@ const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 const VALUE_CHARS: usize = 80;
 
 /// Refuse loss accepted without the version a confirmation handed back.
-fn version_for_loss(accept: &[VolumeName], version: Option<&String>) -> Result<(), Stop> {
+pub(crate) fn version_for_loss(
+    accept: &[VolumeName],
+    version: Option<&String>,
+) -> Result<(), Stop> {
     AcceptedLoss::from_input(
         accept.iter().map(ToString::to_string).collect(),
         version.cloned(),
@@ -54,7 +57,7 @@ pub(crate) struct Review {
 
 impl Tool for Review {
     const NAME: &'static str = "review";
-    const DESCRIPTION: &'static str = "What the next deploy applies, in plain lines, with the version deploy takes, what a human must approve, and broken references deploys skip.";
+    const DESCRIPTION: &'static str = "What the next deploy applies, in plain lines: the version deploy takes, what a human must approve, and broken references.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -80,6 +83,7 @@ impl Tool for Review {
                     DestructiveKind::StopsService => "stops service",
                     DestructiveKind::RestartsService => "restarts service",
                     DestructiveKind::UnprotectsEnvironment => "unprotects environment",
+                    DestructiveKind::RemovesOrganization => "removes organization",
                 };
                 format!("{kind} {}", effect.name)
             })

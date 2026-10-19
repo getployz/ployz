@@ -1172,6 +1172,9 @@ fn retry(
         &ployz_store::Admit::Retry(ployz_store::Retry {
             id: id.clone(),
             deployment: source.clone(),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         }),
         &Trusted::default(),
     )?;

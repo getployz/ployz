@@ -1,6 +1,7 @@
 import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { Caller } from "#/modules/identity/actor";
+import { rollbackConfirm } from "#/modules/config-store/store-deployments";
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
@@ -20,12 +21,15 @@ export type ServiceApply = { environmentId: string; service: string; verb: "stop
  */
 export type Guarded = { environment: string };
 
+/** A redeploy as its approval binds it: the Deployment it ships again, by number, and the newer ones it rolls back. */
+export type Redeploy = { deployment: number; rolls_back: number[] };
+
 /**
  * What a human approves: the Destructive Effects, and either the Review they come from as the Store refused it, or the
  * operation's preview. A dashboard ask into a Protected Environment also keeps what runs as its asker once approved.
  */
 export type ApprovalReview =
-  | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand }
+  | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand; redeploy?: Redeploy }
   | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply };
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
@@ -36,15 +40,26 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
  */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
-  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove"
+  const verb = command === "publish" ? "Save" : command === "retry" ? (rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
     : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : "Deploy";
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
 }
 
+const rollsBack = (review: ApprovalReview) => "diff" in review && (review.redeploy?.rolls_back.length ?? 0) > 0;
+
+/** What a redeploy's card says it ships: "Back to #4. Undoes #5 and #6.", or "Ships #4 again."; null for anything else. */
+export function redeployLine(command: string, review: ApprovalReview) {
+  if (command !== "retry" || !("diff" in review) || !review.redeploy) return null;
+  const { deployment, rolls_back } = review.redeploy;
+  const rollback = rollbackConfirm({ number: deployment, rolls_back });
+  return rollback ? `Back to #${deployment}. ${rollback.body}.` : `Ships #${deployment} again.`;
+}
+
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
-export function approvalBadge(command: string, { effects }: ApprovalReview) {
+export function approvalBadge(command: string, review: ApprovalReview) {
+  const { effects } = review;
   if (command === "publish") return "Deletes on deploy";
-  if (command === "retry") return "Redeploys";
+  if (command === "retry") return rollsBack(review) ? "Rolls back" : "Redeploys";
   if (command === "stop") return "Stops service";
   if (command === "restart") return "Restarts service";
   if (command === "unprotect") return "Unprotects";
@@ -66,17 +81,18 @@ export function approvalCommand(command: ConfigCommand) {
 const agentShips = (via: Caller["via"], command: ConfigCommand) =>
   via === "agent" && command.command === "admit" && (command.admit === "deploy" || command.admit === "retry");
 
-const agentDestroys = (via: Caller["via"], command: ConfigCommand) =>
-  via === "agent" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
+/** Cloud can't tell a person running `ployz` from an agent running it, so only a dashboard confirm stands as the approval. */
+const askedRemoval = (via: Caller["via"], command: ConfigCommand) =>
+  via !== "dashboard" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
 
 /**
  * The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, a Sync or Take (into a Protected
- * Environment), an agent's retry, and an agent's Project or Environment removal or shutdown.
+ * Environment), an agent's retry, and a Project or Environment removal or shutdown from `ployz` or an agent.
  */
 export function asksApproval(via: Caller["via"], command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")
     || command.command === "sync" || command.command === "take"
-    || agentShips(via, command) || agentDestroys(via, command);
+    || agentShips(via, command) || askedRemoval(via, command);
 }
 
 /** Which Deploys wait for a human: every Deploy or retry an agent asks for, else only a Deploy that destroys something. */
@@ -103,6 +119,7 @@ const destroys = {
   stops_service: { verb: "Stops", noun: "service", after: " until started again" },
   restarts_service: { verb: "Restarts", noun: "service", after: "" },
   unprotects_environment: { verb: "Unprotects", noun: "environment", after: "" },
+  removes_organization: { verb: "Removes", noun: "organization", after: ". Not recoverable." },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
 /**

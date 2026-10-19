@@ -155,6 +155,7 @@ pub(super) fn remove(
         let deletes = store.read(&RemovalsQuery {
             environment: at(name),
             remove: true,
+            deployment: None,
         })?;
         let accepted: Vec<_> = accept
             .iter()
@@ -563,7 +564,8 @@ impl Listed {
             | DestructiveKind::RevokesInvite
             | DestructiveKind::StopsService
             | DestructiveKind::RestartsService
-            | DestructiveKind::UnprotectsEnvironment => true,
+            | DestructiveKind::UnprotectsEnvironment
+            | DestructiveKind::RemovesOrganization => true,
         }
     }
 }
@@ -871,10 +873,11 @@ pub(super) fn unfinished(
             deploy::say_view(view);
         },
     )?;
-    ran.and_then(|()| match matches.get_flag("detach") {
-        true => Ok(()),
-        false => Err(Error::partial()),
-    })
+    ran.map_err(|error| error.hint(Hint::Retry(again.to_owned())))
+        .and_then(|()| match matches.get_flag("detach") {
+            true => Ok(()),
+            false => Err(Error::partial()),
+        })
 }
 
 /// What removing an Environment deletes: its Services and Volumes, by name.

@@ -32,7 +32,7 @@ pub(crate) struct EnvironmentShow {
 
 impl Tool for EnvironmentShow {
     const NAME: &'static str = "environment_show";
-    const DESCRIPTION: &'static str = "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, how many changes are Staged, broken references, and the latest Deployment.";
+    const DESCRIPTION: &'static str = "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, the Staged count, broken references, and the latest Deployment.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {

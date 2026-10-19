@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 
 describe("ConfirmableInput", () => {
+  afterEach(cleanup);
   it("renders a suffix inside the input group", () => {
     render(
       <ConfirmableInput
@@ -32,5 +33,15 @@ describe("ConfirmableInput", () => {
     const inputGroup = input.closest('[data-slot="input-group"]');
 
     expect(inputGroup?.getAttribute("data-changed")).toBe("true");
+  });
+
+  it("waits for its check when it renames, whatever focus does", () => {
+    const onConfirm = vi.fn();
+    render(<ConfirmableInput aria-label="Name" commit="check" value="shop-2" isDirty onValueChange={vi.fn()} onConfirm={onConfirm} />);
+    fireEvent.blur(screen.getByLabelText("Name"));
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(onConfirm).toHaveBeenCalledOnce();
   });
 });

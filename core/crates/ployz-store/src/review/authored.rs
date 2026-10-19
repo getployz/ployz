@@ -13,7 +13,7 @@ use ployz_core::config::{
     SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceBuildConfig,
     ServiceGitAccess, ServiceGitBranch, ServiceHealthcheck, ServiceManagedHostname,
     ServiceRestartPolicy, ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate,
-    Setting, ValuePart, VolumeAttachment, VolumeKind, compare_service_settings,
+    ServiceUpdateOrder, Setting, ValuePart, VolumeAttachment, VolumeKind, compare_service_settings,
     compile_environment_intent, render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
@@ -98,6 +98,7 @@ enum ServiceField {
     Healthcheck(Delta<ServiceHealthcheck>),
     RestartPolicy(Delta<ServiceRestartPolicy>),
     MaxRetries(Delta<u8>),
+    UpdateOrder(Delta<Option<ServiceUpdateOrder>>),
     Replicas(Delta<u8>),
     CpuLimit(Delta<Option<f64>>),
     MemLimit(Delta<Option<f64>>),
@@ -675,6 +676,7 @@ fn service_changes(
         healthcheck,
         restart_policy,
         max_retries,
+        update_order,
         replicas,
         cpu_limit,
         mem_limit,
@@ -723,6 +725,13 @@ fn service_changes(
         &before.config.max_retries,
         max_retries,
         MaxRetries
+    );
+    field!(
+        effects,
+        id,
+        &before.config.update_order,
+        update_order,
+        UpdateOrder
     );
     field!(effects, id, &before.config.replicas, replicas, Replicas);
     field!(effects, id, &before.config.cpu_limit, cpu_limit, CpuLimit);
@@ -1706,6 +1715,7 @@ impl ServiceField {
             Self::Healthcheck(delta) => service.config.healthcheck.clone_from(&delta.before),
             Self::RestartPolicy(delta) => service.config.restart_policy = delta.before,
             Self::MaxRetries(delta) => service.config.max_retries = delta.before,
+            Self::UpdateOrder(delta) => service.config.update_order = delta.before,
             Self::Replicas(delta) => service.config.replicas = delta.before,
             Self::CpuLimit(delta) => service.config.cpu_limit = delta.before,
             Self::MemLimit(delta) => service.config.mem_limit = delta.before,
@@ -2015,6 +2025,7 @@ impl ServiceField {
             Self::Healthcheck(delta) => setting!("healthcheck", Healthcheck, delta),
             Self::RestartPolicy(delta) => setting!("restartPolicy", RestartPolicy, delta),
             Self::MaxRetries(delta) => setting!("maxRetries", MaxRetries, delta),
+            Self::UpdateOrder(delta) => setting!("updateOrder", UpdateOrder, delta),
             Self::Replicas(delta) => setting!("replicas", Replicas, delta),
             Self::CpuLimit(delta) => setting!("cpuLimit", CpuLimit, delta),
             Self::MemLimit(delta) => setting!("memLimit", MemLimit, delta),

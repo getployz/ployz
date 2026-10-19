@@ -18,7 +18,7 @@ use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
     MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, ServiceBuildConfig, ServiceHealthcheck,
-    ServiceImageCredentials, ServiceSource, default_max_retries, default_replicas,
+    ServiceImageCredentials, ServiceSource, UPDATE_ORDERS, default_max_retries, default_replicas,
     parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
@@ -61,6 +61,7 @@ pub(crate) enum ServiceSetting {
     StartCommand,
     /// The Service Template it was created from.
     Template,
+    UpdateOrder,
     /// A Git-backed Service's source and build.
     Git(GitSetting),
     /// A Git-backed Service's Deployment Policy; see [`crate::policy`].
@@ -69,7 +70,7 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 22] = [
+    pub(crate) const ALL: [Self; 23] = [
         Self::CpuLimit,
         Self::Healthcheck,
         Self::Image,
@@ -82,6 +83,7 @@ impl ServiceSetting {
         Self::RestartPolicy,
         Self::StartCommand,
         Self::Template,
+        Self::UpdateOrder,
         Self::Git(GitSetting::Repository),
         Self::Git(GitSetting::Branch),
         Self::Git(GitSetting::RootDir),
@@ -105,6 +107,7 @@ impl ServiceSetting {
             Core::Healthcheck => Self::Healthcheck,
             Core::RestartPolicy => Self::RestartPolicy,
             Core::MaxRetries => Self::MaxRetries,
+            Core::UpdateOrder => Self::UpdateOrder,
             Core::Replicas => Self::Replicas,
             Core::CpuLimit => Self::CpuLimit,
             Core::MemLimit => Self::MemLimit,
@@ -150,6 +153,7 @@ impl ServiceSetting {
             Self::RestartPolicy => "restartPolicy",
             Self::StartCommand => "startCommand",
             Self::Template => "template",
+            Self::UpdateOrder => "updateOrder",
             Self::Git(git) => git.name(),
             Self::Policy(policy) => policy.name(),
         }
@@ -170,6 +174,7 @@ impl ServiceSetting {
             Self::RestartPolicy => "Restart policy",
             Self::StartCommand => "Start command",
             Self::Template => "Template",
+            Self::UpdateOrder => "Update order",
             Self::Git(git) => git.label(),
             Self::Policy(policy) => policy.label(),
         }
@@ -201,6 +206,9 @@ impl ServiceSetting {
             Self::Template => {
                 "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it."
             }
+            Self::UpdateOrder => {
+                "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without."
+            }
             Self::Git(git) => git.description(),
             Self::Policy(policy) => policy.description(),
         }
@@ -222,6 +230,7 @@ impl ServiceSetting {
             | Self::RestartPolicy
             | Self::StartCommand
             | Self::Template
+            | Self::UpdateOrder
             | Self::Git(_) => None,
         }
     }
@@ -242,7 +251,8 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template => self.name(),
+            | Self::Template
+            | Self::UpdateOrder => self.name(),
         }
     }
 
@@ -258,6 +268,7 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
+            | Self::UpdateOrder
             | Self::Git(_) => Apply::Staged,
             // ponytail: a tag, not runtime config; nothing lowers it, so a Deploy never ships it.
             Self::Template | Self::RegistryCredential | Self::Policy(_) => Apply::Immediate,
@@ -277,7 +288,8 @@ impl ServiceSetting {
             | Self::PreDeployCommand
             | Self::RegistryCredential
             | Self::StartCommand
-            | Self::Template => Value::Null,
+            | Self::Template
+            | Self::UpdateOrder => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
             Self::Replicas => json!(default_replicas()),
             Self::RestartPolicy => json!("unless-stopped"),
@@ -343,6 +355,7 @@ impl ServiceSetting {
                 json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": COMMAND_MAX })
             }
             Self::RestartPolicy => json!({ "type": "string", "enum": RESTART_POLICIES }),
+            Self::UpdateOrder => json!({ "type": "string", "enum": UPDATE_ORDERS }),
             Self::Template => json!({
                 "type": "object",
                 "properties": {
@@ -387,6 +400,7 @@ impl ServiceSetting {
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
             Self::Template => json!([{ "id": "postgres", "version": 1 }]),
+            Self::UpdateOrder => json!(["rolling"]),
             Self::Git(git) => git.examples(),
             Self::Policy(policy) => policy.examples(),
         }
@@ -414,7 +428,8 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template => true,
+            | Self::Template
+            | Self::UpdateOrder => true,
         }
     }
 
@@ -433,7 +448,8 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template => "a repository source",
+            | Self::Template
+            | Self::UpdateOrder => "a repository source",
         };
         let has = match source {
             ServiceSource::Image { .. } => "runs an image",
@@ -498,7 +514,8 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template => value,
+            | Self::Template
+            | Self::UpdateOrder => value,
         }
     }
 

@@ -294,6 +294,7 @@ pub(super) fn put_setting(
         (Setting::Healthcheck, value) => config.healthcheck = parse(value)?,
         (Setting::RestartPolicy, value) => config.restart_policy = parse(value)?,
         (Setting::MaxRetries, value) => config.max_retries = parse(value)?,
+        (Setting::UpdateOrder, value) => config.update_order = parse(value)?,
         (Setting::Replicas, value) => config.replicas = parse(value)?,
         (Setting::CpuLimit, value) => config.cpu_limit = parse(value)?,
         (Setting::MemLimit, value) => config.mem_limit = parse(value)?,

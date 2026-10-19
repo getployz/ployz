@@ -1517,17 +1517,19 @@ mod set_volume_copy {
         let plugin = cutting_plugin();
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        running_holder(&service, &fake).await;
+        let holder = running_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
 
-        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                set_copy(&service, floor(1)),
-            )
-            .await
-            .expect("the floor want waited on the draining cut")
-        });
+        let (cut, during) =
+            tokio::join!(set_copy(&service, at_gen(draining_cut(3000), 1)), async {
+                drain_started(&fake, &holder, seen).await;
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(2000),
+                    set_copy(&service, floor(1)),
+                )
+                .await
+                .expect("the floor want waited on the draining cut")
+            });
         assert_eq!(
             serde_json::to_value(reply(&during)).unwrap(),
             json!({"copy": writer_root(0, None)["Ok"]})

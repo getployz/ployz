@@ -25,7 +25,7 @@
       "read_only": true
     },
     {
-      "description": "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, how many changes are Staged, broken references, and the latest Deployment. Never asks a human to approve.",
+      "description": "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, the Staged count, broken references, and the latest Deployment. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -687,6 +687,19 @@
                 "title": "Template",
                 "type": "object"
               },
+              "updateOrder": {
+                "description": "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without.",
+                "enum": [
+                  "start-first",
+                  "stop-first",
+                  "rolling"
+                ],
+                "examples": [
+                  "rolling"
+                ],
+                "title": "Update order",
+                "type": "string"
+              },
               "waitForCi": {
                 "description": "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",
                 "examples": [
@@ -746,6 +759,7 @@
                     "rootDir",
                     "startCommand",
                     "template",
+                    "updateOrder",
                     "waitForCi",
                     "watchPaths"
                   ],
@@ -825,7 +839,7 @@
       "read_only": false
     },
     {
-      "description": "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve. `broken` lists references to it that deploys will skip. Never asks a human to approve.",
+      "description": "Remove a Service, staged until a deploy a human approves. `broken`: references deploys skip. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -1358,7 +1372,7 @@
       "read_only": false
     },
     {
-      "description": "What the next deploy applies, in plain lines, with the version deploy takes, what a human must approve, and broken references deploys skip. Never asks a human to approve.",
+      "description": "What the next deploy applies, in plain lines: the version deploy takes, what a human must approve, and broken references. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -1607,29 +1621,38 @@
       "read_only": true
     },
     {
-      "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve. May stop to ask a human to approve.",
+      "description": "Ship an ended Deployment's commit and settings again; an older one rolls back newer ones. A human approves every redeploy. May stop to ask a human to approve.",
       "destructive": true,
       "gate": "store",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "accept_volume_loss": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "deployment": {
             "description": "The Deployment's number. Omit for the latest.",
             "minimum": 1,
             "type": "integer"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "request_key": {
             "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          },
+          "version": {
             "type": "string"
           }
         },

@@ -342,6 +342,9 @@ fn a_snapshot_missing_a_machine_keeps_the_service_in_applied_state() {
             &Admit::Retry(Retry {
                 id: deployment(3),
                 deployment: admitted.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();

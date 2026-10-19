@@ -71,7 +71,7 @@ impl Verb {
         match self {
             Self::Publish => "save",
             Self::Deploy => "deploy",
-            Self::Retry => "retry",
+            Self::Retry => "redeploy",
             Self::Drain => "drain",
             Self::Set => "change",
             Self::Clean => "cleanup",
@@ -233,6 +233,7 @@ pub(crate) fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::StopsService => format!("stops Service {name} until started again"),
         DestructiveKind::RestartsService => format!("restarts Service {name}"),
         DestructiveKind::UnprotectsEnvironment => format!("unprotects Environment {name}"),
+        DestructiveKind::RemovesOrganization => format!("removes Organization {name}"),
     }
 }
 

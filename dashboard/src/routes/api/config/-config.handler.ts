@@ -63,8 +63,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     ? yield* trustedApproval(caller.organization.id, named)
     : { ok: true, approval: "not_required" } as const;
   if (!trusted.ok) return refusal(trusted.refusal);
-  // `ployz mcp` unprotecting an Environment waits for a human, as the sidebar does; a person at the CLI decided already.
-  const unprotect = call.operation === "write" && caller.via === "agent"
+  // Unprotecting an Environment from `ployz` or `ployz mcp` waits for a human, as the sidebar does.
+  const unprotect = call.operation === "write"
     ? yield* unprotectAsked(caller.organization.id, call.command).pipe(
       Effect.catchTag("StoreRefused", (error) => Effect.succeed({ refused: error.refusal })),
     )

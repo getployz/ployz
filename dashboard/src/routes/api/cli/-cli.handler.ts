@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
+import { type Gate, gateOperation } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -22,7 +23,7 @@ import {
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
+import { checkForgetServers, forgetServers, forgetServersAsked } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import {
@@ -142,6 +143,9 @@ const forgetter = (caller: Caller) => ({ userId: caller.userId, credential: call
 
 const approvalHeader = (request: Request) => request.headers.get("x-ployz-approval");
 
+/** Asks a human before the operation runs, unless the request carries the approval they gave. */
+const gated = (caller: Caller, request: Request): Gate => (asked) => gateOperation(caller, approvalHeader(request), asked);
+
 const accepted = (id: string) => Response.json({ id }, { status: 202 });
 
 /** The request key and approval an operation call carries. */
@@ -199,7 +203,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { organization: yield* createOrganizationForSession(caller.userId, caller.credential.id, input) };
     }
     case "DELETE organizations/:id": {
-      const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""));
+      const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""), { gate: gated(caller, request) });
       return removal.ok ? removal.value : refusal(removal.refusal);
     }
     case "GET tokens":
@@ -394,7 +398,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
           details: { next: `ployz org use ${input.organization}` },
         });
       }
-      const forgotten = yield* forgetServers(forgetter(caller));
+      const forgotten = yield* forgetServers(forgetter(caller), (checked) => gated(caller, request)(forgetServersAsked(caller.organization, checked)));
       return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : refusal(forgotten.refusal);
     }
     case "POST server-access": {

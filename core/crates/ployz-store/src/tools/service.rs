@@ -478,7 +478,7 @@ pub(crate) struct ServiceRemove {
 
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
-    const DESCRIPTION: &'static str = "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve. `broken` lists references to it that deploys will skip.";
+    const DESCRIPTION: &'static str = "Remove a Service, staged until a deploy a human approves. `broken`: references deploys skip.";
     const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {

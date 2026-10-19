@@ -293,7 +293,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
       </div>
       {adding ? (
         <SettingsFormField label="File name" htmlFor="config-new-file">
-          <ConfirmableInput id="config-new-file" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus
+          <ConfirmableInput id="config-new-file" commit="check" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus
             autoComplete="off" isDirty error={adding.error} onValueChange={(name) => setAdding({ name, error: null })}
             onConfirm={add} onCancel={() => setAdding(null)} />
         </SettingsFormField>

@@ -18,6 +18,24 @@ pub fn fresh_url(dir: &tempfile::TempDir) -> String {
     format!("{server}/{name}")
 }
 
+/// Run `sql` on the database at `url`, beside the Store.
+pub fn execute(url: &str, sql: &str) {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute(sql, [])
+                .unwrap();
+        }
+        None => {
+            postgres::Client::connect(url, postgres::NoTls)
+                .unwrap()
+                .execute(sql, &[])
+                .unwrap();
+        }
+    }
+}
+
 /// A new, empty Store.
 pub fn open() -> ConfigStore {
     if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {

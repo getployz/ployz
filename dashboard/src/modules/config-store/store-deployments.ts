@@ -327,22 +327,47 @@ export function missingDeployLogs(deployment: DeploymentView, node: NodeOutcome)
 }
 
 /** The one action a Deployment page shows by itself. */
-export type DeploymentAction = "add_server" | "retry" | "start" | "cancel";
+export type DeploymentAction = "add_server" | "redeploy" | "start" | "cancel";
 
 /**
- * Retry an ended Deployment that didn't apply, start a queued one, cancel one before it ends; with no Server, adding
- * one comes first.
+ * Redeploy an ended Deployment, start a queued one, cancel one before it ends; with no Server, adding one comes first.
  */
 function primaryAction(status: DeploymentStatus, noServers: boolean): DeploymentAction | null {
-  const retry = status === "failed" || status === "unknown" || status === "cancelled";
-  if (noServers && (retry || status === "queued")) return "add_server";
-  if (retry) return "retry";
+  const redeploy = status === "applied" || status === "failed" || status === "unknown" || status === "cancelled";
+  if (noServers && (redeploy || status === "queued")) return "add_server";
+  if (redeploy) return "redeploy";
   if (status === "queued") return "start";
   return status === "running" ? "cancel" : null;
 }
 
-/** The action a Deployment page shows, and whether Cancel waits in its menu beside another one. */
-export function deploymentActions(status: DeploymentStatus, noServers: boolean) {
-  const primary = primaryAction(status, noServers);
+/**
+ * The confirm Redeploy opens when it rolls back Deployments that ran after this one; null when it rolls nothing back
+ * and redeploys in one click.
+ */
+export function rollbackConfirm(deployment: Pick<DeploymentView, "number" | "rolls_back">) {
+  const undone = deployment.rolls_back.map((number) => `#${number}`);
+  if (undone.length === 0) return null;
+  const list = undone.length === 1 ? undone[0] : `${undone.slice(0, -1).join(", ")} and ${undone.at(-1)}`;
+  return { title: `Roll back to #${deployment.number}`, body: `Undoes ${list}` };
+}
+
+/**
+ * What a redeploy rolls back now, from the Store's refusal when it changed after the person confirmed; null for any
+ * other refusal.
+ */
+export function freshRollback(refusal: { code: string; details: unknown }): readonly number[] | null {
+  if (refusal.code !== "confirmation_required") return null;
+  return Option.getOrNull(decodeRollback(refusal.details))?.rolls_back ?? null;
+}
+
+const decodeRollback = Schema.decodeUnknownOption(Schema.Struct({ rolls_back: Schema.Array(Schema.Number) }));
+
+/**
+ * The action a Deployment page shows, and whether Cancel waits in its menu beside another one. A removal that applied
+ * left nothing to redeploy.
+ */
+export function deploymentActions(deployment: Pick<DeploymentSummary, "status" | "remove">, noServers: boolean) {
+  const { status } = deployment;
+  const primary = deployment.remove && status === "applied" ? null : primaryAction(status, noServers);
   return { primary, cancelInMenu: (status === "queued" || status === "running") && primary !== "cancel" };
 }

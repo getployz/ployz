@@ -295,9 +295,11 @@ pub(crate) fn view(
         })
         .collect();
     let builds = build::views(tx, &stored)?;
+    let rolls_back = undone(tx, &stored.summary)?;
     Ok(DeploymentView {
         builds,
         runtime_names,
+        rolls_back,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,
@@ -358,4 +360,26 @@ pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String
     servers.sort();
     servers.dedup();
     Ok(servers)
+}
+
+/// The Machines Deployment `id` failed on because they didn't answer.
+pub(crate) fn unanswered_on(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<BTreeSet<ployz_core::MachineId>, RpcError> {
+    let stored = load(tx, id)?;
+    Ok(super::rows::of_nodes(tx, &stored)?
+        .into_values()
+        .flatten()
+        .filter(|row| {
+            matches!(
+                row.state,
+                super::RowState::Failed {
+                    unanswered: true,
+                    ..
+                }
+            )
+        })
+        .map(|row| row.machine_id)
+        .collect())
 }
