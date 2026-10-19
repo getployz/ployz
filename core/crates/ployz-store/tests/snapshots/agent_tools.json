@@ -208,7 +208,7 @@
       "read_only": false
     },
     {
-      "description": "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal. Never asks a human to approve.",
+      "description": "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. A secret's value never passes through here; generate_secret makes a random one. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -223,6 +223,14 @@
             "description": "Writes only if the place is still at this revision.",
             "minimum": 0,
             "type": "integer"
+          },
+          "generate_secret": {
+            "description": "Variables to give a new random sealed secret, as env.KEY. No one sees its value.",
+            "items": {
+              "pattern": "^env\\.[A-Z_][A-Z0-9_]{0,127}$",
+              "type": "string"
+            },
+            "type": "array"
           },
           "project": {
             "description": "Project name.",

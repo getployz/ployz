@@ -1,6 +1,7 @@
 //! Tools on one Service: read it, create it, change its Settings, rename it and
 //! remove it.
 
+use ring::rand::{SecureRandom as _, SystemRandom};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -10,6 +11,7 @@ use super::environment::{REPOSITORY, source};
 use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting_sentence};
 use super::schema;
+use super::step::{DashboardPage, Fix};
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
 use crate::{
     BatchCommand, BranchName, Change, CreateGitService, CreateService, DomainsQuery, Edit,
@@ -207,6 +209,9 @@ pub(crate) struct ServiceUpdate {
     /// With rename_env, also switch the variables that reference a renamed one to its new name.
     #[serde(default)]
     update_references: bool,
+    #[serde(default)]
+    #[schemars(schema_with = "generate_secret_schema")]
+    generate_secret: Vec<String>,
     /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
@@ -282,9 +287,19 @@ fn rename_schema(_: &mut SchemaGenerator) -> Schema {
     .unwrap_or_default()
 }
 
+fn generate_secret_schema(_: &mut SchemaGenerator) -> Schema {
+    let variable = VARIABLE_KEY.trim_start_matches('^');
+    Schema::try_from(json!({
+        "type": "array",
+        "description": "Variables to give a new random sealed secret, as env.KEY. No one sees its value.",
+        "items": { "type": "string", "pattern": format!("^env\\.{variable}") },
+    }))
+    .unwrap_or_default()
+}
+
 impl Tool for ServiceUpdate {
     const NAME: &'static str = "service_update";
-    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal.";
+    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. A secret's value never passes through here; generate_secret makes a random one.";
     const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
@@ -301,7 +316,7 @@ impl Tool for ServiceUpdate {
                 changes,
             },
             self.expect_revision,
-            refuse_referenced_rename,
+            |error, call, writes| self.refuse_edit(error, call, writes),
         )?;
         let name = self.service.as_str();
         let paths = |paths: &[SettingPath]| {
@@ -336,6 +351,9 @@ impl ServiceUpdate {
                 .map_err(|_| Stop::from(Refusal::invalid("That is not a Setting path", field)))
         };
         let mut changes = Vec::new();
+        if let Some(path) = self.set.as_ref().and_then(secret_value) {
+            return Err(plaintext_secret(call, service, &path).into());
+        }
         if let Some(set) = self.set.as_ref().filter(|set| !set.is_empty()) {
             if let Some((key, tool)) = set.keys().find_map(|key| Some((key, not_setting(key)?))) {
                 let next = json!({
@@ -373,11 +391,117 @@ impl ServiceUpdate {
                 update_references: self.update_references,
             });
         }
+        let given = self.set.as_ref().and_then(|set| set.get("env"));
+        for (index, generate) in self.generate_secret.iter().enumerate() {
+            let field = format!("generate_secret.{index}");
+            let Some(key) = generate.strip_prefix("env.") else {
+                return Err(Refusal::invalid(
+                    "A secret is generated for a variable, env.KEY",
+                    &field,
+                )
+                .into());
+            };
+            if given.and_then(|env| env.get(key)).is_some() || self.unset.contains(generate) {
+                return Err(Refusal::invalid(
+                    format!("{generate} is also in set or unset; give each variable once"),
+                    &field,
+                )
+                .into());
+            }
+            changes.push(Change::Set {
+                path: path(&field, generate)?,
+                value: json!({ "secret": random_secret()? }),
+            });
+        }
         if changes.is_empty() {
-            return Err(Refusal::invalid("Give set, unset or rename_env", "set").into());
+            return Err(
+                Refusal::invalid("Give set, unset, rename_env or generate_secret", "set").into(),
+            );
         }
         Ok(changes)
     }
+
+    /// A refused edit: text for a variable that holds a secret asks the member for its new
+    /// value, and a rename the variables referencing it block retries with
+    /// `update_references`.
+    fn refuse_edit(&self, error: RpcError, call: &Call, writes: Writes) -> Refusal {
+        let sealed = match error.code == RpcErrorCode::Conflict {
+            true => error.details.get("variable").and_then(Value::as_str),
+            false => None,
+        };
+        let given = self.set.as_ref().and_then(|set| set.get("env"));
+        let renamed_onto = |key: &str| self.rename_env.values().any(|to| to.as_str() == Some(key));
+        match sealed
+            .filter(|key| given.and_then(|env| env.get(*key)).is_some() && !renamed_onto(key))
+        {
+            Some(key) => plaintext_secret(call, self.service.as_str(), &format!("env.{key}")),
+            None => refuse_referenced_rename(error, call, writes),
+        }
+    }
+}
+
+/// The Setting path, such as `env.KEY`, of the first secret value `set` gives.
+fn secret_value(set: &Map<String, Value>) -> Option<String> {
+    let sealing = |value: &Value| {
+        value.get("secret").is_some_and(Value::is_string)
+            || value
+                .get("value")
+                .and_then(|value| value.get("secret"))
+                .is_some_and(Value::is_string)
+    };
+    if set.get("registryCredential").is_some_and(sealing) {
+        return Some("registryCredential".to_owned());
+    }
+    set.get("env")?
+        .as_object()?
+        .iter()
+        .find(|(_, value)| sealing(value))
+        .map(|(key, _)| format!("env.{key}"))
+}
+
+/// A secret's value sent by an agent: the member sets it, and this names how.
+fn plaintext_secret(call: &Call, service: &str, path: &str) -> Refusal {
+    let place = [("environment", "env"), ("project", "project")]
+        .into_iter()
+        .filter_map(|(key, flag)| Some(format!(" --{flag} {}", call.input.get(key)?.as_str()?)))
+        .collect::<String>();
+    let command = format!("printf %s \"$VALUE\" | ployz set {service}.{path} --secret{place}");
+    let random = match path.starts_with("env.") {
+        true => format!(" For a random one, send generate_secret: [\"{path}\"] instead."),
+        false => String::new(),
+    };
+    Refusal::invalid(
+        format!(
+            "{service}.{path} is a secret, and its value never passes through an agent. The member sets it in the dashboard under Variables, or runs: {command}.{random}"
+        ),
+        &format!("set.{path}"),
+    )
+    .with_fix(&Fix::OpenDashboard {
+        page: DashboardPage::Variables,
+    })
+}
+
+/// 32 random letters, the shape of the dashboard's database passwords.
+fn random_secret() -> Result<String, Stop> {
+    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    // 208 is the largest multiple of 52 a byte holds, so every letter is equally likely.
+    const LIMIT: u8 = 208;
+    let random = SystemRandom::new();
+    let mut secret = String::with_capacity(32);
+    let mut bytes = [0_u8; 64];
+    while secret.len() < 32 {
+        random
+            .fill(&mut bytes)
+            .map_err(|_| Refusal::internal("No randomness to make a secret from"))?;
+        secret.extend(
+            bytes
+                .iter()
+                .filter(|byte| **byte < LIMIT)
+                .filter_map(|byte| LETTERS.get(usize::from(byte % 52)).copied().map(char::from))
+                .take(32_usize.saturating_sub(secret.len())),
+        );
+    }
+    Ok(secret)
 }
 
 /// A rename the variables referencing it block, retried with `update_references`.

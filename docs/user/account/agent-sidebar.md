@@ -19,6 +19,11 @@ a queued one now, and cancel one, like the
 [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 
+The agent never sees or sends a secret's value. It can give a variable a new random secret,
+sealed, such as a database password that other services then reference. A secret you already
+have, like an API key, you set yourself under **Variables** or with
+`printf %s "$VALUE" | ployz set web.env.API_KEY --secret`; the agent names the exact command.
+
 ## What it can do on your servers
 
 The agent asks your servers and Cloud directly, so its answers are as fresh as the servers that

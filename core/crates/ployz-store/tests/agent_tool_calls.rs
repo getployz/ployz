@@ -15,9 +15,9 @@ use ployz_core::{
 };
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
-    Act, Action, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
-    MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp, ToolResult, VolumeRun,
-    WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
+    Act, Action, Ask, Call, CloudQuery, DashboardPage, Fix, Gate, INSTRUCTIONS, MetricsQuery,
+    MetricsSince, MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp,
+    ToolResult, VolumeRun, WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
 };
 use ployz_store::{
     Actor, Admit, ConfigStore, ConfigsQuery, CreateEnvironment, CreateProject, CreateService,
@@ -2175,6 +2175,119 @@ fn metrics_of_an_unknown_server_are_refused_before_any_are_read() {
     assert_eq!(refusal.did_you_mean.as_deref(), Some("web-1"));
 }
 
+// Catches a generated secret stored as plain text or reaching the agent, and a
+// secret's value an agent sends being sealed instead of refused.
+#[test]
+fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
+    let store = shop();
+    call(
+        &store,
+        "service_add",
+        json!({ "name": "db", "image": "postgres:17" }),
+        "add-1",
+    )
+    .ok();
+
+    let input = json!({ "service": "db", "generate_secret": ["env.POSTGRES_PASSWORD"] });
+    let (mut step, mut state) = start("service_update", input, &place(in_org()), "secret-1");
+    let mut minted = None;
+    let result = loop {
+        let answers = match step {
+            Step::Read { asks } => asks
+                .into_iter()
+                .map(|ask| answer(&store, &who(), &mut no_cloud, ask))
+                .collect(),
+            Step::Write { write } => {
+                let Write::Store(command) = *write else {
+                    panic!("an edit is a Store write");
+                };
+                let sent = serde_json::to_value(&command).unwrap();
+                minted = sent["changes"][0]["value"]["secret"]
+                    .as_str()
+                    .map(str::to_owned);
+                vec![
+                    store
+                        .write(&who(), &command)
+                        .map(|written| serde_json::to_value(written).unwrap()),
+                ]
+            }
+            Step::Wait { .. } => panic!("an edit never waits"),
+            Step::Done { result } => break result,
+        };
+        (step, state) = resume(state, answers);
+    };
+    let minted = minted.expect("the edit seals a new secret");
+    assert_eq!(minted.len(), 32);
+    assert!(minted.chars().all(|c| c.is_ascii_alphabetic()), "{minted}");
+    let ToolResult::Ok(updated) = result else {
+        panic!("refused: {result:?}");
+    };
+    assert_eq!(updated["changed"], json!(["env.POSTGRES_PASSWORD"]));
+    for (what, text) in [
+        ("result", updated.to_string()),
+        ("state", serde_json::to_string(&state).unwrap()),
+    ] {
+        assert!(
+            !text.contains(&minted),
+            "the {what} shows the secret: {text}"
+        );
+    }
+    let db = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "db" }),
+        "read-1",
+    )
+    .ok();
+    assert_eq!(
+        db["env"],
+        json!({ "POSTGRES_PASSWORD": { "secret": true } })
+    );
+    assert!(!db.to_string().contains(&minted), "{db}");
+
+    for (key, set) in [
+        (
+            "sent",
+            json!({ "env": { "API_KEY": { "secret": "sk-live-123" } } }),
+        ),
+        ("text", json!({ "env": { "POSTGRES_PASSWORD": "hunter2" } })),
+    ] {
+        let refused = call(
+            &store,
+            "service_update",
+            json!({ "service": "db", "set": set, "environment": "production" }),
+            key,
+        )
+        .refused();
+        let variable = set["env"].as_object().unwrap().keys().next().unwrap();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{key}");
+        assert_eq!(refused.field, Some(format!("set.env.{variable}")));
+        assert!(
+            refused.message.contains(&format!(
+                "printf %s \"$VALUE\" | ployz set db.env.{variable} --secret --env production"
+            )),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused.fix(),
+            Some(Fix::OpenDashboard {
+                page: DashboardPage::Variables
+            })
+        );
+    }
+    let db = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "db" }),
+        "read-2",
+    )
+    .ok();
+    assert_eq!(
+        db["env"],
+        json!({ "POSTGRES_PASSWORD": { "secret": true } })
+    );
+}
+
 #[test]
 fn renaming_a_referenced_variable_asks_to_update_its_references() {
     let store = shop();
@@ -2261,9 +2374,8 @@ fn service_logs_names_only_plain_variables_and_says_why_a_server_did_not_answer(
         json!({ "service": "web", "set": { "env": {
             "PLAIN": "hello-plain",
             "SHARED": { "value": "exported-plain", "exported": true },
-            "KEY": { "secret": "s3cr3t-value" },
             "URL": "http://${{ web.PLAIN }}",
-        } } }),
+        } }, "generate_secret": ["env.KEY"] }),
         "env-1",
     )
     .ok();

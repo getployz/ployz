@@ -84,6 +84,9 @@ Your service still gets the real value when it deploys.
   deploys leave it out of your service.
 - A sealed value is stored exactly as typed, so it can't hold a
   [reference](#reference-another-services-variable).
+- The [Ployz agent](../account/agent-sidebar.md) and `ployz mcp` can seal a new random value,
+  32 letters, without ever seeing it. They refuse a value you give them and name the
+  `ployz set ... --secret` command to run instead.
 
 ## Reference another service's variable
 
