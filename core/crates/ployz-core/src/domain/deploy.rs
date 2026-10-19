@@ -771,6 +771,12 @@ pub enum DeployWarning {
         machine: String,
         reason: String,
     },
+    /// Cleanup could not reach or confirm `machine` (cut off or powered off).
+    /// Once it is back, a copy left running can answer beside the new copies.
+    MixedAfterReturn {
+        /// The Machine's name when the plan knows it, else its id.
+        machine: String,
+    },
 }
 
 impl DeployWarning {
@@ -791,7 +797,8 @@ impl DeployWarning {
             | Self::ObserverRelativeHostnameConflict
             | Self::SkippedDependencyHealth { .. }
             | Self::ImagePortMismatch { .. }
-            | Self::LeftRunning { .. } => None,
+            | Self::LeftRunning { .. }
+            | Self::MixedAfterReturn { .. } => None,
         }
     }
 }
@@ -844,6 +851,10 @@ impl Display for DeployWarning {
             } => write!(
                 f,
                 "{service}  left running on {machine} ({reason}). The next deploy cleans it up."
+            ),
+            Self::MixedAfterReturn { machine } => write!(
+                f,
+                "Once {machine} is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy."
             ),
         }
     }

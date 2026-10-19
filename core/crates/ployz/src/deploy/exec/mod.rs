@@ -12,16 +12,16 @@ use futures_util::{
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerNow, ContainerObservation, ContainerRefusalReason, ContainerRuntimeObservation,
-    ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure, DeployEvent, DeployWarning,
-    DeploymentLogId, DockerVolumeId, Drain, EnsuredContainer, ExecutionError, ExposedPort,
-    FailedOperation, Gen, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, HookFailure,
-    ImagePulled, InspectContainerRequest, ListContainersRequest, MachineAction, MachineId,
-    MachineName, MachineTarget, MembershipObservation, Namespace, NewContainer, OperationPhase,
-    PortPublication, PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose,
-    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode,
-    RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions,
-    TransportProtocol, op, OutOfMemory,
+    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason,
+    ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
+    DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain, EnsuredContainer,
+    ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
+    HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
+    MachineAction, MachineId, MachineName, MachineTarget, MembershipObservation, Namespace,
+    NewContainer, OperationPhase, PortPublication, PullPolicy, QualifiedService, ReadRoutesRequest,
+    RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError,
+    RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, SlotKey,
+    StopOptions, TransportProtocol, op, OutOfMemory,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -986,36 +986,35 @@ async fn publish_group<C: MachineOperations>(
                 continue;
             }
             Err(error) => {
-                progress.warn(rows.left_running(
-                    &cleanup::Copy {
-                        machine_id: machine_id.clone(),
-                        service: service.clone(),
-                        container_id: *container_id,
-                        rotation: CopyRotation::Pending,
-                    },
-                    error.to_string(),
-                ));
+                let copy = cleanup::Copy {
+                    machine_id: machine_id.clone(),
+                    service: service.clone(),
+                    container_id: *container_id,
+                    rotation: CopyRotation::Pending,
+                };
+                let left = match error {
+                    ExecutionError::Machine { error, .. } => Left::Failed(error),
+                    error => Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error)),
+                };
+                rows.leave_running(progress, &copy, left);
                 continue;
             }
         };
         if interrupted {
-            progress.warn(rows.left_running(&copy, "interrupted".into()));
+            rows.leave_running(progress, &copy, Left::Interrupted);
             continue;
         }
-        let reason =
+        let left: Option<Left> =
             match cleanup::retire(client, &copy, false, AnonymousVolumes::Remove, cancellation)
                 .await
             {
-                Ok(cleanup::Step::Done) => continue,
-                Ok(cleanup::Step::Refused(refusal)) => refusal.message,
-                Ok(cleanup::Step::NotConfirmed(machines)) => rows.not_confirmed(&machines),
-                Ok(cleanup::Step::Cancelled) => {
-                    interrupted = true;
-                    "interrupted".into()
-                }
-                Err(error) => error.message,
+                Ok(step) => step.into(),
+                Err(error) => Some(Left::Failed(error)),
             };
-        progress.warn(rows.left_running(&copy, reason));
+        if let Some(left) = left {
+            interrupted = matches!(left, Left::Interrupted);
+            rows.leave_running(progress, &copy, left);
+        }
     }
     Published::Listed
 }
@@ -1391,12 +1390,68 @@ impl<'a> Rows<'a> {
             .map_or_else(|| id.to_string(), |name| name.to_string())
     }
 
-    fn left_running(&self, copy: &cleanup::Copy, reason: String) -> DeployWarning {
-        DeployWarning::LeftRunning {
+    /// Report `copy` left running. A Machine that was cut off or powered off
+    /// can route it again once it is back, so the report names each one.
+    fn leave_running(&self, progress: &Progress, copy: &cleanup::Copy, left: Left) {
+        let (reason, away) = self.explain(copy, left);
+        progress.warn(DeployWarning::LeftRunning {
             service: copy.service.clone(),
             container_id: copy.container_id,
             machine: self.machine_name(&copy.machine_id),
             reason,
+        });
+        for machine in away {
+            progress.warn(DeployWarning::MixedAfterReturn {
+                machine: self.machine_name(&machine),
+            });
+        }
+    }
+
+    /// The reason a copy was left running, and the Machines that were away.
+    fn explain(&self, copy: &cleanup::Copy, left: Left) -> (String, Vec<MachineId>) {
+        match left {
+            Left::NotConfirmed(machines) => (self.not_confirmed(&machines), machines),
+            Left::Interrupted => ("interrupted".into(), Vec::new()),
+            Left::Refused(refusal) => (refusal.message, Vec::new()),
+            Left::Failed(error) if unanswered(&error) => (
+                format!("{} did not answer", self.machine_name(&copy.machine_id)),
+                vec![copy.machine_id.clone()],
+            ),
+            Left::Failed(error) => (error.message, Vec::new()),
+            Left::NotRestored(left, why) => {
+                let (reason, away) = self.explain(copy, *left);
+                (
+                    format!("{reason}, and it could not go back In: {why}"),
+                    away,
+                )
+            }
+        }
+    }
+}
+
+/// Whether the Machine never answered: cut off or powered off.
+fn unanswered(error: &RpcError) -> bool {
+    error.code == RpcErrorCode::Unavailable || error.target_unanswered()
+}
+
+/// Why cleanup left a copy running.
+enum Left {
+    /// These Machines never confirmed the route change.
+    NotConfirmed(Vec<MachineId>),
+    Interrupted,
+    Refused(ContainerRefusal),
+    Failed(RpcError),
+    /// This run Held the copy and could not bring it back In, for this reason.
+    NotRestored(Box<Left>, String),
+}
+
+impl From<cleanup::Step> for Option<Left> {
+    fn from(step: cleanup::Step) -> Self {
+        match step {
+            cleanup::Step::Done => None,
+            cleanup::Step::Refused(refusal) => Some(Left::Refused(refusal)),
+            cleanup::Step::NotConfirmed(machines) => Some(Left::NotConfirmed(machines)),
+            cleanup::Step::Cancelled => Some(Left::Interrupted),
         }
     }
 }
@@ -1499,11 +1554,11 @@ async fn execute_operation<C: MachineOperations>(
                     Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())
                 }
                 Ok(cleanup::Step::NotConfirmed(machines)) => {
-                    progress.warn(rows.left_running(&copy, rows.not_confirmed(&machines)));
+                    rows.leave_running(progress, &copy, Left::NotConfirmed(machines));
                     Ok(Ran::default())
                 }
                 Ok(cleanup::Step::Cancelled) => {
-                    progress.warn(rows.left_running(&copy, "interrupted".into()));
+                    rows.leave_running(progress, &copy, Left::Interrupted);
                     Err(ExecutionError::Cancelled.into())
                 }
                 Err(error) => Err(machine_error(MachineAction::RemoveContainer, error).into()),
@@ -2099,9 +2154,34 @@ async fn stop_old_copy<C: MachineOperations>(
                 container_id: copy.container_id,
             },
         );
-        rows.confirmed(step, MachineAction::StopContainer)?;
+        let (left, error) = match step {
+            Ok(cleanup::Step::NotConfirmed(machines)) => {
+                let error = machine_error(
+                    MachineAction::StopContainer,
+                    unavailable(rows.not_confirmed(&machines)),
+                );
+                (Left::NotConfirmed(machines), error)
+            }
+            Ok(cleanup::Step::Cancelled) => (Left::Interrupted, ExecutionError::Cancelled),
+            step => {
+                rows.confirmed(step, MachineAction::StopContainer)?;
+                copy.rotation = now;
+                return stop_withdrawn(client, index, progress, copy).await;
+            }
+        };
         copy.rotation = now;
+        leave_unstopped(client, progress, &copy, &old.resolved_spec, rows, left).await;
+        return Err(error);
     }
+    stop_withdrawn(client, index, progress, copy).await
+}
+
+async fn stop_withdrawn<C: MachineOperations>(
+    client: &C,
+    index: usize,
+    progress: &Progress,
+    copy: cleanup::Copy,
+) -> Result<cleanup::Copy, ExecutionError> {
     progress.set_running(index, OperationPhase::StoppingContainer);
     stop(
         client,
@@ -2112,6 +2192,32 @@ async fn stop_old_copy<C: MachineOperations>(
     )
     .await?;
     Ok(copy)
+}
+
+/// A withdrawal that never confirmed: the copy still runs. A copy this run
+/// Held goes back In, so a Service it was serving keeps serving.
+async fn leave_unstopped<C: MachineOperations>(
+    client: &C,
+    progress: &Progress,
+    copy: &cleanup::Copy,
+    spec: &ResolvedServiceSpec,
+    rows: &Rows<'_>,
+    left: Left,
+) {
+    if copy.rotation != CopyRotation::Held(rows.run.clone()) {
+        rows.leave_running(progress, copy, left);
+        return;
+    }
+    let not_restored = match cleanup::bring_in(client, copy, spec, Some(rows.run.clone())).await {
+        Ok(cleanup::BroughtIn::In) => None,
+        Ok(cleanup::BroughtIn::NotIn { .. }) => Some("it failed health".to_owned()),
+        Ok(cleanup::BroughtIn::Refused(refusal)) => Some(refusal.message),
+        Err(error) => Some(error.message),
+    };
+    match not_restored {
+        None => rows.leave_running(progress, copy, left),
+        Some(why) => rows.leave_running(progress, copy, Left::NotRestored(Box::new(left), why)),
+    }
 }
 
 #[expect(
