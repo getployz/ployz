@@ -17,8 +17,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use inputs::BuildInputs;
-pub use inputs::content_digest;
-pub(crate) use inputs::upload_archive;
+pub use inputs::{UploadListing, content_digest};
 
 mod ignore;
 mod inputs;

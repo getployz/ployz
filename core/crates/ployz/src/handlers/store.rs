@@ -301,13 +301,19 @@ impl<'m> Store<'m> {
         }))
     }
 
-    /// Hand Cloud the archive of `dir`, the source Deployment `deployment` builds
-    /// from, before admitting it. The in-process Store's runner reads `dir` itself.
-    pub(crate) fn upload(&self, deployment: &DeploymentId, dir: &Path) -> Result<(), Error> {
+    /// Hand Cloud the archive of `listing`, read from `dir`, the source Deployment
+    /// `deployment` builds from, before admitting it. The in-process Store's runner
+    /// reads `dir` itself.
+    pub(crate) fn upload(
+        &self,
+        deployment: &DeploymentId,
+        dir: &Path,
+        listing: &crate::build::UploadListing,
+    ) -> Result<(), Error> {
         let Backend::Cloud(runtime, credential) = &self.backend else {
             return Ok(());
         };
-        let archive = crate::build::upload_archive(dir).map_err(super::deploy::unreadable(dir))?;
+        let archive = listing.archive().map_err(super::deploy::unreadable(dir))?;
         runtime
             .block_on(cloud_account::upload(
                 credential,

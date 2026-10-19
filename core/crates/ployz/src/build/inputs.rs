@@ -364,64 +364,110 @@ fn special_file(path: &Path, root: &Path) -> io::Error {
     )
 }
 
-/// An Uploaded Source's content digest: lowercase hex sha256 over every path, byte,
-/// mode and link an upload of `root` holds.
-///
-/// # Errors
-/// Fails on unreadable entries and sockets or special files.
-pub fn content_digest(root: &Path) -> Result<String, Error> {
-    let digest = (|| {
-        let paths = uploaded_paths(root)?;
-        fingerprint(
-            root,
+/// What an upload of a directory holds, listed once so its digest and its archive
+/// always cover the same paths.
+pub struct UploadListing {
+    root: PathBuf,
+    paths: BTreeSet<PathBuf>,
+}
+
+impl UploadListing {
+    /// List `root`. In a Git checkout that is what Git keeps, tracked or untracked but
+    /// not ignored, and an error when Git can't say. Elsewhere it is every path.
+    ///
+    /// # Errors
+    /// Fails on unreadable entries, and in a Git checkout when `git ls-files` fails.
+    pub fn read(root: &Path) -> Result<Self, Error> {
+        let read = || -> io::Result<_> {
+            let in_checkout = root
+                .canonicalize()?
+                .ancestors()
+                .any(|dir| dir.join(".git").exists());
+            if in_checkout {
+                return git_kept_paths(root);
+            }
+            let mut paths = BTreeSet::new();
+            walk(root, root, &mut paths)?;
+            Ok(Some(paths))
+        };
+        let paths = read()
+            .map_err(|error| Error::Io(format!("read uploaded source: {error}")))?
+            .ok_or_else(|| Error::Io(GIT_UNREADABLE.into()))?;
+        Ok(Self {
+            root: root.to_owned(),
+            paths,
+        })
+    }
+
+    /// The Uploaded Source's content digest: lowercase hex sha256 over every listed
+    /// path, byte, mode and link.
+    ///
+    /// # Errors
+    /// Fails on unreadable entries and sockets or special files.
+    pub fn digest(&self) -> Result<String, Error> {
+        let digest = fingerprint(
+            &self.root,
             Some(&Selection {
-                paths,
+                paths: self.paths.clone(),
                 ignore: Vec::new(),
             }),
         )
-    })()
-    .map_err(|error| Error::Io(format!("read uploaded source: {error}")))?;
-    Ok(hex::encode(digest))
+        .map_err(|error| Error::Io(format!("read uploaded source: {error}")))?;
+        Ok(hex::encode(digest))
+    }
+
+    /// The upload as Cloud takes it: a gzipped tar of the listed paths, under one
+    /// top-level `source` directory, with modes and links as they are.
+    ///
+    /// # Errors
+    /// Fails on unreadable entries.
+    pub(crate) fn archive(&self) -> Result<Vec<u8>, Error> {
+        (|| {
+            let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut archive = tar::Builder::new(gzip);
+            archive.follow_symlinks(false);
+            archive.append_path_with_name(&self.root, "source")?;
+            for path in &self.paths {
+                archive
+                    .append_path_with_name(self.root.join(path), Path::new("source").join(path))?;
+            }
+            archive.into_inner()?.finish()
+        })()
+        .map_err(|error| Error::Io(format!("archive uploaded source: {error}")))
+    }
 }
 
-/// Every path an upload of `root` holds, relative to it. In a Git checkout that is
-/// what Git keeps, tracked or untracked but not ignored. Elsewhere it is all but a
-/// top-level `.git`.
-fn uploaded_paths(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
-    fn walk(path: &Path, root: &Path, paths: &mut BTreeSet<PathBuf>) -> io::Result<()> {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?.path();
-            let relative = entry.strip_prefix(root).expect("entry is under root");
-            if relative == Path::new(".git") {
-                continue;
-            }
-            paths.insert(relative.to_owned());
-            if fs::symlink_metadata(&entry)?.is_dir() {
-                walk(&entry, root, paths)?;
-            }
+/// The content digest of an upload of `root`.
+///
+/// # Errors
+/// Fails as [`UploadListing::read`] and [`UploadListing::digest`] do.
+pub fn content_digest(root: &Path) -> Result<String, Error> {
+    UploadListing::read(root)?.digest()
+}
+
+const GIT_UNREADABLE: &str =
+    "Couldn't list files with git. Install git, or run ployz up outside the Git checkout.";
+
+fn walk(path: &Path, root: &Path, paths: &mut BTreeSet<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?.path();
+        paths.insert(
+            entry
+                .strip_prefix(root)
+                .expect("entry is under root")
+                .to_owned(),
+        );
+        if fs::symlink_metadata(&entry)?.is_dir() {
+            walk(&entry, root, paths)?;
         }
-        Ok(())
     }
-    if let Some(paths) = git_kept_paths(root)? {
-        return Ok(paths);
-    }
-    let mut paths = BTreeSet::new();
-    walk(root, root, &mut paths)?;
-    Ok(paths)
+    Ok(())
 }
 
 /// The files `git ls-files` keeps under `root` and their directories, or `None` when
-/// `root` is not in a Git checkout Git can read.
+/// Git can't run or fails.
 fn git_kept_paths(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
     use std::os::unix::ffi::OsStrExt as _;
-    // Spare a Mac without developer tools the prompt its stub `git` opens.
-    if !root
-        .canonicalize()?
-        .ancestors()
-        .any(|dir| dir.join(".git").exists())
-    {
-        return Ok(None);
-    }
     let output = match std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -459,25 +505,6 @@ fn git_kept_paths(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
         );
     }
     Ok(Some(paths))
-}
-
-/// An upload of `root` as Cloud takes it: a gzipped tar of what [`content_digest`]
-/// covers, under one top-level `source` directory, with modes and links as they are.
-///
-/// # Errors
-/// Fails on unreadable entries.
-pub(crate) fn upload_archive(root: &Path) -> Result<Vec<u8>, Error> {
-    (|| {
-        let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        let mut archive = tar::Builder::new(gzip);
-        archive.follow_symlinks(false);
-        archive.append_path_with_name(root, "source")?;
-        for path in uploaded_paths(root)? {
-            archive.append_path_with_name(root.join(&path), Path::new("source").join(&path))?;
-        }
-        archive.into_inner()?.finish()
-    })()
-    .map_err(|error| Error::Io(format!("archive uploaded source: {error}")))
 }
 
 // Open every component without following links, so a source edit cannot turn a
@@ -576,7 +603,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
-    fn content_digest_covers_paths_bytes_modes_and_links_but_not_git() {
+    fn content_digest_covers_paths_bytes_modes_and_links() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         fs::create_dir(root.join("src")).unwrap();
@@ -584,13 +611,6 @@ mod tests {
         symlink("src/app", root.join("link")).unwrap();
         let digest = content_digest(root).unwrap();
         assert!(ployz_core::is_lower_hex(&digest, 64), "{digest}");
-        fs::create_dir(root.join(".git")).unwrap();
-        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
-        assert_eq!(
-            content_digest(root).unwrap(),
-            digest,
-            ".git is never uploaded"
-        );
         let changed = |edit: &dyn Fn()| {
             edit();
             content_digest(root).unwrap()
@@ -615,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn an_upload_archive_unpacks_to_the_same_digest_without_git() {
+    fn an_upload_archive_unpacks_to_the_same_digest() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         fs::create_dir(root.join("bin")).unwrap();
@@ -623,14 +643,12 @@ mod tests {
         fs::set_permissions(root.join("bin/run"), fs::Permissions::from_mode(0o750)).unwrap();
         fs::set_permissions(root.join("bin"), fs::Permissions::from_mode(0o770)).unwrap();
         symlink("bin/run", root.join("run")).unwrap();
-        fs::create_dir(root.join(".git")).unwrap();
-        let archive = upload_archive(root).unwrap();
+        let archive = UploadListing::read(root).unwrap().archive().unwrap();
         let unpacked = tempfile::tempdir().unwrap();
         let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive.as_slice()));
         tar.set_preserve_permissions(true);
         tar.unpack(unpacked.path()).unwrap();
         let source = unpacked.path().join("source");
-        assert!(!source.join(".git").exists(), ".git is never uploaded");
         assert_eq!(
             content_digest(&source).unwrap(),
             content_digest(root).unwrap()
@@ -641,15 +659,7 @@ mod tests {
     fn an_upload_of_a_git_checkout_holds_only_what_git_keeps() {
         let checkout = tempfile::tempdir().unwrap();
         let root = checkout.path();
-        let git = |args: &[&str]| {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(root)
-                .args(args)
-                .status()
-                .unwrap();
-            assert!(status.success(), "git {args:?}");
-        };
+        let git = |args: &[&str]| git(root, args);
         git(&["init", "--quiet"]);
         fs::write(root.join(".gitignore"), "node_modules/\n.env\ndist/\n").unwrap();
         fs::write(root.join(".env"), "SECRET=1").unwrap();
@@ -678,7 +688,52 @@ mod tests {
     }
 
     #[test]
-    fn an_upload_outside_a_git_checkout_holds_every_file_but_git() {
+    fn an_upload_of_a_checkout_git_cannot_read_is_refused() {
+        let checkout = tempfile::tempdir().unwrap();
+        let root = checkout.path();
+        git(root, &["init", "--quiet"]);
+        fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        fs::write(root.join(".env"), "SECRET=1").unwrap();
+        fs::write(root.join(".git/index"), "not an index").unwrap();
+        assert_eq!(
+            UploadListing::read(root).err().unwrap().to_string(),
+            GIT_UNREADABLE,
+            "nothing is archived when Git can't say what it ignores"
+        );
+    }
+
+    #[test]
+    fn an_upload_archives_the_files_its_digest_listed() {
+        let checkout = tempfile::tempdir().unwrap();
+        let root = checkout.path();
+        git(root, &["init", "--quiet"]);
+        fs::write(root.join("app.js"), "listed").unwrap();
+        let listing = UploadListing::read(root).unwrap();
+        let digest = listing.digest().unwrap();
+        fs::write(root.join("late.js"), "written after the listing").unwrap();
+        let archive = listing.archive().unwrap();
+        let unpacked = tempfile::tempdir().unwrap();
+        tar::Archive::new(flate2::read::GzDecoder::new(archive.as_slice()))
+            .unpack(unpacked.path())
+            .unwrap();
+        assert_eq!(
+            content_digest(&unpacked.path().join("source")).unwrap(),
+            digest
+        );
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn an_upload_outside_a_git_checkout_holds_every_file() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         fs::write(root.join(".gitignore"), "node_modules/\n.env\n").unwrap();
@@ -696,7 +751,11 @@ mod tests {
     fn unpack(root: &Path) -> tempfile::TempDir {
         let unpacked = tempfile::tempdir().unwrap();
         tar::Archive::new(flate2::read::GzDecoder::new(
-            upload_archive(root).unwrap().as_slice(),
+            UploadListing::read(root)
+                .unwrap()
+                .archive()
+                .unwrap()
+                .as_slice(),
         ))
         .unpack(unpacked.path())
         .unwrap();

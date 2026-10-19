@@ -21,7 +21,7 @@ This file tracks the latest Ployz release. The installed CLI is the source of tr
 
 ## Deploy and change Services
 
-- `ployz up` deploys the current directory: it creates and links a Project if needed, uploads, builds and deploys. In a Git checkout it uploads only the files Git keeps, tracked or not, so files Git ignores such as `.env` and `node_modules` stay home. Outside a Git checkout it uploads every file except `.git`, so move secrets out first. In CI, always pass `--project`, or it creates a new Project named after the checkout.
+- `ployz up` deploys the current directory: it creates and links a Project if needed, uploads, builds and deploys. In a Git checkout it uploads only the files Git keeps, tracked or not, so files Git ignores such as `.env` and `node_modules` stay home. Outside a Git checkout it uploads every file, so move secrets out first. In CI, always pass `--project`, or it creates a new Project named after the checkout.
 - `ployz get SERVICE --json` shows every Setting of a Service, including unset ones with their defaults.
 - `ployz set SERVICE.SETTING=VALUE` stages an edit; `ployz diff` shows what is staged, `ployz deploy` ships it and `ployz deploy --skip-deploy` saves it for the next deploy.
 - Reach another Service by reference, so Ployz knows the two are linked: `ployz set 'web.env.API_URL=http://${{ api.PLOYZ_PRIVATE_DOMAIN }}:${{ api.PORT }}'`. Single-quote it: in double quotes the shell rejects `${{`. A typed `api.internal` comes back in `typed_addresses` with the reference to set instead.
