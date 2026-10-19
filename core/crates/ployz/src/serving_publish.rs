@@ -92,9 +92,12 @@ impl Client {
 
     /// The Service's Serving Pointer and the Machines that acked a deploy of it,
     /// as the publishing Machine holds them.
-    #[expect(
-        dead_code,
-        reason = "the drain moves in R4 and R7 deletes the publisher"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the drain moves in R4 and R7 deletes the publisher"
+        )
     )]
     pub(crate) async fn serving_pointer_read(
         &mut self,
