@@ -333,8 +333,9 @@ fn bound_to(error: Error, effects: &[DestructiveEffect]) -> Error {
 ///
 /// A name typed at the prompt confirms only what the prompt showed, in `prompted`
 /// with the read that lists it again. Nothing is sent when the list read again now
-/// differs, and nothing is sent again when the refusal removes a Service or Volume
-/// the prompt didn't list under its Environment; the refusal names what changed.
+/// differs. Nothing is sent again, and the refusal names what changed since, when
+/// the refusal removes a Service or Volume the prompt didn't list under its
+/// Environment, or when the list read again after the refusal differs.
 /// `--confirm` showed nothing, so the name confirms the plan as it is. A plan that changed between the two sends refuses the second,
 /// saying so. Returns the effects the second send was bound to, none without one,
 /// and with an error that isn't the Store's refusal, which names what goes itself.
@@ -347,7 +348,7 @@ struct Unbound {
 fn bound(
     request: &mut Remove,
     what: &str,
-    prompted: Option<(&Shown, impl FnOnce() -> Result<Shown, StoreCallError>)>,
+    prompted: Option<(&Shown, impl Fn() -> Result<Shown, StoreCallError>)>,
     mut send: impl FnMut(&Remove) -> Result<Removal, StoreCallError>,
 ) -> Result<(Removal, Vec<DestructiveEffect>), Box<Unbound>> {
     let unbound = |error| {
@@ -356,25 +357,21 @@ fn bound(
             effects: Vec::new(),
         })
     };
-    let shown = match prompted {
-        Some((shown, listed)) => {
-            let since = shown.changes(&listed().map_err(unbound)?);
-            if !since.is_empty() {
-                return Err(unbound(StoreCallError::Refused(ployz_core::RpcError {
-                    code: RpcErrorCode::ConfirmationRequired,
-                    message: format!(
-                        "What this removes changed since you confirmed: {}. Nothing was \
+    if let Some((shown, listed)) = &prompted {
+        let since = shown.changes(&listed().map_err(unbound)?);
+        if !since.is_empty() {
+            return Err(unbound(StoreCallError::Refused(ployz_core::RpcError {
+                code: RpcErrorCode::ConfirmationRequired,
+                message: format!(
+                    "What this removes changed since you confirmed: {}. Nothing was \
                          removed. Run it again to go ahead",
-                        since.join(", ")
-                    ),
-                    details: json!({}),
-                    cause: Vec::new(),
-                })));
-            }
-            Some(shown)
+                    since.join(", ")
+                ),
+                details: json!({}),
+                cause: Vec::new(),
+            })));
         }
-        None => None,
-    };
+    }
     if request.version.is_some() {
         return send(request)
             .map(|removal| (removal, Vec::new()))
@@ -398,10 +395,14 @@ fn bound(
             &Changed::No,
         ))));
     };
-    if let Some(shown) = shown {
+    if let Some((shown, listed)) = prompted {
         let unlisted = shown.unlisted(&effects, by_environment.as_ref());
-        if !unlisted.is_empty() {
-            let since = Changed::SinceConfirmed(format!("it now {}", said(&unlisted)));
+        let since = match unlisted.is_empty() {
+            false => format!("it now {}", said(&unlisted)),
+            true => shown.changes(&listed().map_err(unbound)?).join(", "),
+        };
+        if !since.is_empty() {
+            let since = Changed::SinceConfirmed(since);
             return Err(unbound(StoreCallError::Refused(ask(
                 refused, request, what, &since,
             ))));
@@ -1040,6 +1041,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_empty_environment_added_with_the_first_refusal_is_not_removed() {
+        // An Environment that never deployed is not in the Store's review, so its
+        // version doesn't change when one is added while the first send is refused.
+        let prompt = shown(&["web"]);
+        let reads = std::cell::Cell::new(0);
+        let again = || {
+            reads.set(reads.get() + 1);
+            Ok(match reads.get() {
+                1 => shown(&["web"]),
+                _ => shown_in(&[("production", &["web"]), ("staging", &[])]),
+            })
+        };
+        let mut sent = 0;
+        let refused = bound(&mut request(), "shop", Some((&prompt, again)), |_| {
+            sent += 1;
+            Err(asks("v1", "web"))
+        });
+        let Some(refused) = refusal(refused) else {
+            panic!("an empty staging the person never saw goes");
+        };
+        assert_eq!(
+            sent, 1,
+            "it sends nothing bound to what the person didn't see"
+        );
+        assert!(
+            refused.message.starts_with(
+                "What this removes changed since you confirmed: Environment staging is new."
+            ),
+            "{}",
+            refused.message
+        );
+        assert_eq!(refused.details.get("version"), None);
+    }
+
     fn shown(services: &[&str]) -> Shown {
         shown_in(&[("production", services)])
     }
@@ -1067,17 +1103,12 @@ mod tests {
         // The prompt listed production/web and an empty staging; staging/web was
         // deployed after the list was read again, before the first send.
         let listed = shown_in(&[("production", &["web"]), ("staging", &[])]);
-        let again = shown_in(&[("production", &["web"]), ("staging", &[])]);
+        let again = || Ok(shown_in(&[("production", &["web"]), ("staging", &[])]));
         let mut sent = 0;
-        let refused = bound(
-            &mut request(),
-            "shop",
-            Some((&listed, || Ok(again))),
-            |_| {
-                sent += 1;
-                Err(asks_in("v1", "staging", "web"))
-            },
-        );
+        let refused = bound(&mut request(), "shop", Some((&listed, again)), |_| {
+            sent += 1;
+            Err(asks_in("v1", "staging", "web"))
+        });
         let Some(refused) = refusal(refused) else {
             panic!("staging/web goes though the person never saw it");
         };
