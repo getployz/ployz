@@ -1244,14 +1244,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ployz_token_acts_past_an_unreadable_sign_in() {
+    async fn ployz_token_never_guesses_a_cloud_past_an_unreadable_sign_in() {
         let dir = tempfile::tempdir().unwrap();
         let store = CredentialStore::beside(&dir.path().join("config.yaml"));
         std::fs::write(dir.path().join("cloud.json"), "{not json").unwrap();
-        let chosen = credential(&store, Some("ployz_secret".to_owned()), None)
+        let token = || Some("ployz_secret".to_owned());
+        let refused = credential(&store, token(), None).await.err();
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|error| error.to_string().contains("PLOYZ_CLOUD_URL")),
+            "{refused:?}"
+        );
+        let chosen = credential(&store, token(), Some("http://cloud.test".to_owned()))
             .await
             .unwrap();
-        assert_eq!(chosen.cloud(), cloud_origin(DEFAULT_CLOUD));
+        assert_eq!(chosen.cloud(), "http://cloud.test");
         assert!(named_cloud(&store, false, None).is_err());
     }
 
