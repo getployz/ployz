@@ -29,7 +29,7 @@ import { ServiceSettingInput } from "../../../services/$serviceId/-components/Se
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
+import { changedProps } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { deploymentDestination } from "../../../-components/deployments/run-search";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
@@ -88,8 +88,8 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   const shownName = useStorePendingName(organizationSlug, environment, "volume", volume.name);
   const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
-  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
-    ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
+  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) =>
+    volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined));
   const managed = volume.deployed && volume.storage.kind === "provisioned" && !removing;
   // A mirror shows only in Copies, whatever tab the address carried in.
   const page = copy !== null || !Schema.is(volumePageSchema)(tab) ? "copies" : tab;
