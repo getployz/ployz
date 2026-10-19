@@ -28,15 +28,20 @@ Service before the Deploy is planned, without a depth. A failure names the Serve
 where it happened.
 
 A failed deploy shows the deepest cause, available failed-container log tails, and a
-`retry:` command. It adds an `inspect:` command for each failed Service when there is
-something to inspect:
+`retry:` command. It adds at most one `inspect:` command per failed Service, chosen from
+every Server where that Service failed, in this order:
 
-- A failure while starting, health-checking, running a hook for, stopping or removing a
-  Container shows `ployz logs <service>`.
-- A failed image pull shows `ployz get <service>.image`. A Service built from source has no
-  `image` setting, so it gets no `inspect:` line.
-- A failure before any Container exists, such as creating the Container or preparing its
-  Volumes, gets no `inspect:` line. `ployz logs` would show only the old Container.
+1. `ployz logs <service>` when any of them failed while starting, health-checking, running a
+   hook for, stopping or removing a Container, or failed at an unknown step and has a
+   Container log.
+2. Otherwise, `ployz get <service>.image` when any of them failed to pull the image. A Service
+   built from source has no `image` setting, so it gets no `inspect:` line.
+3. Otherwise no `inspect:` line. A failed build, or a failure before any Container exists,
+   such as creating the Container or preparing its Volumes, leaves nothing new to inspect:
+   `ployz logs` would show only the old Container.
+
+So a Service that failed to pull on one Server and to start on another shows only
+`ployz logs <service>`.
 
 A Deployment result that did not fully succeed exits with code 3. A warning that
 names an incomplete Server observation also makes an
