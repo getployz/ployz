@@ -144,7 +144,7 @@ pub(super) fn remove(
     };
     let refs: Vec<_> = members.iter().map(at).collect();
     let what = target(project, environment);
-    let removal = bound(&mut request, &what, shown, |request| {
+    let (removal, effects) = bound(&mut request, &what, shown, |request| {
         store.remove(request, &refs)
     })
     .map_err(|error| {
@@ -258,7 +258,11 @@ pub(super) fn remove(
         }
     })();
     match result {
-        Ok(Some((removal, ran))) => Ok(Some(Removed { removal, ran })),
+        Ok(Some((removal, ran))) => Ok(Some(Removed {
+            removal,
+            effects,
+            ran,
+        })),
         Ok(None) => Ok(None),
         Err(error) if !ran.is_empty() => {
             for deployment in &ran {
@@ -279,23 +283,24 @@ pub(super) fn remove(
 /// refusal removes a Service or Volume it didn't list, nothing is sent again and the
 /// refusal names what changed since. `--confirm` showed nothing, so the name confirms
 /// the plan as it is. A plan that changed between the two sends refuses the second,
-/// saying so.
+/// saying so. Returns the effects the second send was bound to, none without one.
 fn bound(
     request: &mut Remove,
     what: &str,
     shown: Option<&Shown>,
     mut send: impl FnMut(&Remove) -> Result<Removal, StoreCallError>,
-) -> Result<Removal, StoreCallError> {
+) -> Result<(Removal, Vec<DestructiveEffect>), StoreCallError> {
     if request.version.is_some() {
-        return send(request);
+        return send(request).map(|removal| (removal, Vec::new()));
     }
     let refused = match send(request) {
         Err(StoreCallError::Refused(refused)) => refused,
-        sent => return sent,
+        sent => return sent.map(|removal| (removal, Vec::new())),
     };
     let Some(Reviewed {
         version,
         effects,
+        by_environment,
         unaccepted: false,
     }) = Reviewed::of(&refused, &request.accept_volume_loss)
     else {
@@ -307,7 +312,7 @@ fn bound(
         )));
     };
     let unlisted = shown
-        .map(|shown| shown.unlisted(&effects))
+        .map(|shown| shown.unlisted(&effects, by_environment.as_ref()))
         .unwrap_or_default();
     if !unlisted.is_empty() {
         let since = Changed::SinceConfirmed(&unlisted);
@@ -315,18 +320,21 @@ fn bound(
     }
     ui::note(format_args!("Removing {what} {}.", said(&effects)));
     request.version = Some(version);
-    send(request).map_err(|error| match error {
+    let removal = send(request).map_err(|error| match error {
         StoreCallError::Refused(refused) => {
             StoreCallError::Refused(ask(refused, request, what, &Changed::WhileRunning))
         }
         error => error,
-    })
+    })?;
+    Ok((removal, effects))
 }
 
 /// What a `confirmation_required` removal refusal reviewed.
 struct Reviewed {
     version: String,
     effects: Vec<DestructiveEffect>,
+    /// The same effects by the Environment they remove from, when the Store says.
+    by_environment: Option<BTreeMap<EnvironmentName, Vec<DestructiveEffect>>>,
     /// Whether it loses a Volume `accepted` doesn't name.
     unaccepted: bool,
 }
@@ -354,13 +362,14 @@ impl Reviewed {
         Some(Self {
             version: details.get("version")?.as_str()?.to_owned(),
             effects: serde_json::from_value(details.get("effects")?.clone()).ok()?,
+            by_environment: details
+                .get("effects_by_environment")
+                .and_then(|by| serde_json::from_value(by.clone()).ok()),
             unaccepted,
         })
     }
 }
 
-/// `refused` as a person who typed the name reads it: what goes, without the
-/// version, and whether it `changed` since this command showed it.
 /// How what a removal deletes moved away from what this command confirmed.
 enum Changed<'a> {
     No,
@@ -370,9 +379,13 @@ enum Changed<'a> {
     WhileRunning,
 }
 
-/// The Services and Volumes the prompt listed before a person typed the name.
+/// The Services and Volumes the prompt listed before a person typed the name, by
+/// Environment.
 #[derive(Debug, Default)]
-pub(super) struct Shown {
+pub(super) struct Shown(BTreeMap<EnvironmentName, Listed>);
+
+#[derive(Debug, Default)]
+struct Listed {
     services: std::collections::BTreeSet<String>,
     volumes: std::collections::BTreeSet<String>,
 }
@@ -382,10 +395,14 @@ impl Shown {
     pub(super) fn of<'a>(inventories: impl IntoIterator<Item = &'a Inventory>) -> Self {
         let mut shown = Self::default();
         for inventory in inventories {
-            shown
+            let listed = shown
+                .0
+                .entry(inventory.environment.name.clone())
+                .or_default();
+            listed
                 .services
                 .extend(inventory.services.iter().map(ToString::to_string));
-            shown.volumes.extend(
+            listed.volumes.extend(
                 inventory
                     .volumes
                     .iter()
@@ -395,30 +412,51 @@ impl Shown {
         shown
     }
 
-    /// The effects that remove a Service or a Volume the prompt didn't list. Other
-    /// kinds, such as a domain, go with the Services it listed.
-    fn unlisted(&self, effects: &[DestructiveEffect]) -> Vec<DestructiveEffect> {
-        effects
+    /// The effects that remove a Service or a Volume the prompt didn't list under
+    /// the Environment it goes from. Other kinds, such as a domain, go with the
+    /// Services it listed. Without `by_environment` nothing can be matched, so every
+    /// effect counts as unlisted.
+    fn unlisted(
+        &self,
+        effects: &[DestructiveEffect],
+        by_environment: Option<&BTreeMap<EnvironmentName, Vec<DestructiveEffect>>>,
+    ) -> Vec<DestructiveEffect> {
+        let Some(by_environment) = by_environment else {
+            return effects.to_vec();
+        };
+        let none = Listed::default();
+        by_environment
             .iter()
-            .filter(|effect| match effect.kind {
-                DestructiveKind::RemovesService => !self.services.contains(&effect.name),
-                DestructiveKind::DeletesVolume | DestructiveKind::DetachesVolume => {
-                    !self.volumes.contains(&effect.name)
-                }
-                DestructiveKind::RemovesDomain
-                | DestructiveKind::RemovesServer
-                | DestructiveKind::RemovesMember
-                | DestructiveKind::ChangesRole
-                | DestructiveKind::RevokesInvite
-                | DestructiveKind::StopsService
-                | DestructiveKind::RestartsService
-                | DestructiveKind::UnprotectsEnvironment => false,
+            .flat_map(|(environment, effects)| {
+                let listed = self.0.get(environment).unwrap_or(&none);
+                effects.iter().filter(move |effect| !listed.has(effect))
             })
             .cloned()
             .collect()
     }
 }
 
+impl Listed {
+    fn has(&self, effect: &DestructiveEffect) -> bool {
+        match effect.kind {
+            DestructiveKind::RemovesService => self.services.contains(&effect.name),
+            DestructiveKind::DeletesVolume | DestructiveKind::DetachesVolume => {
+                self.volumes.contains(&effect.name)
+            }
+            DestructiveKind::RemovesDomain
+            | DestructiveKind::RemovesServer
+            | DestructiveKind::RemovesMember
+            | DestructiveKind::ChangesRole
+            | DestructiveKind::RevokesInvite
+            | DestructiveKind::StopsService
+            | DestructiveKind::RestartsService
+            | DestructiveKind::UnprotectsEnvironment => true,
+        }
+    }
+}
+
+/// `refused` as a person who typed the name reads it: what goes, without the
+/// version, and whether it `changed` since this command showed it.
 fn ask(
     mut refused: ployz_core::RpcError,
     request: &Remove,
@@ -468,6 +506,10 @@ fn said(effects: &[DestructiveEffect]) -> String {
 pub(super) struct Removed {
     #[serde(flatten)]
     pub(super) removal: Removal,
+    /// What the typed name confirmed, as the Store reviewed it: what the removal
+    /// was bound to when this command bound it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) effects: Vec<DestructiveEffect>,
     #[serde(rename = "deployments")]
     pub(super) ran: Vec<DeploymentSummary>,
 }
@@ -746,13 +788,20 @@ mod tests {
     use super::*;
 
     fn asks(version: &str, service: &str) -> StoreCallError {
+        asks_in(version, "production", service)
+    }
+
+    fn asks_in(version: &str, environment: &str, service: &str) -> StoreCallError {
+        let effect =
+            json!({ "kind": "removes_service", "name": service, "node": "n", "path": "p" });
         StoreCallError::Refused(ployz_core::RpcError {
             code: RpcErrorCode::ConfirmationRequired,
             message: format!("Removing this will remove Service {service}. Pass the version"),
             details: json!({
                 "volumes": {},
                 "accept": {},
-                "effects": [{ "kind": "removes_service", "name": service, "node": "n", "path": "p" }],
+                "effects": [effect],
+                "effects_by_environment": { environment: [effect] },
                 "version": version,
             }),
             cause: Vec::new(),
@@ -781,7 +830,10 @@ mod tests {
                 _ => Err(asks("v1", "web")),
             }
         });
-        assert!(matches!(removed, Ok(Removal::Removed { .. })));
+        let Ok((Removal::Removed { .. }, effects)) = removed else {
+            panic!("the bound send didn't remove it");
+        };
+        assert_eq!(effects[0].name, "web");
         assert_eq!(sent, [None, Some("v1".to_owned())]);
     }
 
@@ -806,10 +858,67 @@ mod tests {
     }
 
     fn shown(services: &[&str]) -> Shown {
-        Shown {
-            services: services.iter().map(|name| (*name).to_owned()).collect(),
-            volumes: std::collections::BTreeSet::new(),
-        }
+        shown_in(&[("production", services)])
+    }
+
+    /// What a prompt listed: each Environment with its Services.
+    fn shown_in(environments: &[(&str, &[&str])]) -> Shown {
+        Shown(
+            environments
+                .iter()
+                .map(|(environment, services)| {
+                    (
+                        EnvironmentName::parse(*environment).unwrap(),
+                        Listed {
+                            services: services.iter().map(|name| (*name).to_owned()).collect(),
+                            volumes: std::collections::BTreeSet::new(),
+                        },
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_service_shown_in_another_environment_is_refused_without_sending_again() {
+        // The prompt listed production/web and an empty staging; staging/web was
+        // deployed before the name was typed.
+        let listed = shown_in(&[("production", &["web"]), ("staging", &[])]);
+        let mut sent = 0;
+        let refused = bound(&mut request(), "shop", Some(&listed), |_| {
+            sent += 1;
+            Err(asks_in("v1", "staging", "web"))
+        });
+        let Err(StoreCallError::Refused(refused)) = refused else {
+            panic!("staging/web goes though the person never saw it");
+        };
+        assert_eq!(
+            sent, 1,
+            "it sends nothing bound to what the person didn't see"
+        );
+        assert!(
+            refused.message.starts_with(
+                "What this removes changed since you confirmed: it now removes Service web."
+            ),
+            "{}",
+            refused.message
+        );
+        assert_eq!(refused.details.get("version"), None);
+    }
+
+    #[test]
+    fn a_refusal_without_effects_by_environment_is_never_sent_again_after_a_prompt() {
+        let mut sent = 0;
+        let refused = bound(&mut request(), "shop", Some(&shown(&["web"])), |_| {
+            sent += 1;
+            let mut asked = asks("v1", "web");
+            if let StoreCallError::Refused(refused) = &mut asked {
+                refused.details["effects_by_environment"] = serde_json::Value::Null;
+            }
+            Err(asked)
+        });
+        assert!(matches!(refused, Err(StoreCallError::Refused(_))));
+        assert_eq!(sent, 1);
     }
 
     #[test]
@@ -847,7 +956,10 @@ mod tests {
                 _ => Err(asks("v1", "web")),
             }
         });
-        assert!(matches!(removed, Ok(Removal::Removed { .. })));
+        let Ok((Removal::Removed { .. }, effects)) = removed else {
+            panic!("the bound send didn't remove it");
+        };
+        assert_eq!(effects[0].name, "web");
         assert_eq!(sent, [None, Some("v1".to_owned())]);
     }
 

@@ -1028,11 +1028,15 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
                     ],
                 );
                 assert_eq!(removing["deployments"][0]["remove"], true, "{removing}");
+                // `--json` names what the name confirmed, as the stderr note does.
+                assert_eq!(removing["effects"][0]["kind"], "removes_service");
+                assert_eq!(removing["effects"][0]["name"], "web", "{removing}");
                 let removing = ok(
                     store,
                     &["project", "rm", "shop", "--confirm", "shop", "--detach"],
                 );
                 assert_eq!(removing["deployments"][0]["remove"], true, "{removing}");
+                assert_eq!(removing["effects"][0]["name"], "web", "{removing}");
             }
         }
     }
