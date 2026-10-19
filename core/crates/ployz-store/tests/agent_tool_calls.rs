@@ -3058,10 +3058,41 @@ fn every_read_tool_explains_what_it_cannot_find() {
 #[test]
 fn turning_pull_request_environments_off_needs_no_repository() {
     let store = shop();
-    let run = call(&store, "environment_pr", json!({ "enabled": false }), "call-1");
+    let run = call(
+        &store,
+        "environment_pr",
+        json!({ "enabled": false }),
+        "call-1",
+    );
     assert_eq!(run.writes, 0);
     let off = run.ok();
     assert_eq!(off["pull_request_environments"], json!(false));
-    let refusal = call(&store, "environment_pr", json!({ "enabled": true }), "call-2").refused();
+    let refusal = call(
+        &store,
+        "environment_pr",
+        json!({ "enabled": true }),
+        "call-2",
+    )
+    .refused();
     assert_eq!(refusal.field.as_deref(), Some("repository"));
+}
+
+#[test]
+fn an_unknown_environment_lists_the_real_ones_instead_of_creating_it() {
+    let store = shop();
+    let refusal = call(
+        &store,
+        "environment_remove",
+        json!({ "project": "shop", "environment": "nope" }),
+        "call-1",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.writes, Writes::None);
+    assert_eq!(refusal.valid, vec!["production".to_owned()]);
+    assert_eq!(refusal.fix(), None);
+    assert_eq!(
+        refusal.next,
+        vec![Call::new("environment_show", json!({ "project": "shop" }))]
+    );
 }
