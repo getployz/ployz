@@ -95,9 +95,13 @@ behind, and services the push doesn't touch keep running as they are.
 Turn on **Wait for CI** under **Settings → Source** to hold a push's deploy until its GitHub
 checks pass, from GitHub Actions or any other app that reports checks. It applies at once.
 
-- If a check fails, the commit doesn't deploy. Re-run it on GitHub and the commit deploys once it
-  passes, or push a fix.
-- A newer push replaces a commit that's still waiting.
+A held push shows in **Runs** and in `ployz deployment ls` as a deployment that reads **Waiting
+for CI**, with its commit. It deploys as that same deployment once every check passes. Cancel it
+there to drop the push.
+
+- If a check fails, the deployment reads **CI failed** and the commit doesn't deploy. Re-run the
+  check on GitHub and the commit deploys once it passes, or push a fix.
+- A newer push replaces a commit that's still waiting, and so does a deploy you start yourself.
 - If no checks run for a commit, it waits until your next push. CI that reports commit statuses
   instead of checks counts as no checks.
 

@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
-  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
+  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
   freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
 } from "./store-deployments";
 
@@ -142,6 +142,9 @@ it("shows one action: redeploy once a Deployment ended, start while queued, canc
   expect(deploymentActions({ status: "failed", remove: false }, true)).toEqual({ primary: "add_server", cancelInMenu: false });
   expect(deploymentActions({ status: "queued", remove: false }, true)).toEqual({ primary: "add_server", cancelInMenu: true });
   expect(deploymentActions({ status: "running", remove: false }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  // One waiting for CI queues once its CI passes; only Cancel is left to do.
+  expect(deploymentActions({ status: "waiting_for_ci", remove: false }, false)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "waiting_for_ci", remove: false }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
   // A removal that applied left nothing to redeploy; one that failed redeploys.
   expect(deploymentActions({ status: "applied", remove: true }, false)).toEqual({ primary: null, cancelInMenu: false });
   expect(deploymentActions({ status: "failed", remove: true }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
@@ -159,6 +162,15 @@ it("reads what a redeploy rolls back now from the Store's refusal, and nothing f
   expect(freshRollback({ code: "confirmation_required", details: { rolls_back: [] } })).toEqual([]);
   expect(freshRollback({ code: "confirmation_required", details: { volumes: [] } })).toBeNull();
   expect(freshRollback({ code: "conflict", details: { rolls_back: [5] } })).toBeNull();
+});
+
+it("words a push waiting for CI by how its CI stands, and lights it red once its CI failed", () => {
+  const waiting = { status: "waiting_for_ci", remove: false, outcome: null } as const;
+  expect(deploymentStatusLabel({ ...waiting, ci: "pending" })).toBe("Waiting for CI");
+  expect(deploymentStatusLabel({ ...waiting, ci: "failed" })).toBe("CI failed");
+  expect(deploymentLight({ status: "waiting_for_ci", ci: "pending" })).toBe("queued");
+  expect(deploymentLight({ status: "waiting_for_ci", ci: "failed" })).toBe("failed");
+  expect(deploymentLight({ status: "running", ci: null })).toBe("deploying");
 });
 
 it("names an upload's provenance, and its uploader only when someone else started the Deployment", () => {
