@@ -90,7 +90,7 @@ impl Tool for EnvironmentShow {
             "services": services,
             "volumes": volumes.volumes.iter().map(|volume| &volume.volume.name).collect::<Vec<_>>(),
             "configs": configs.configs.iter().map(|config| &config.config.name).collect::<Vec<_>>(),
-            "staged": diff.total_count,
+            "staged": diff.review_count(),
             "latest_deployment": latest,
         }))
     }

@@ -228,7 +228,7 @@ impl Tool for DiscardInput {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let discard = Discard {
             environment: scope.clone(),
-            target: Default::default(),
+            target: None,
             path,
             version: None,
         };
@@ -248,6 +248,7 @@ impl Tool for DiscardInput {
             "at": at(&discarded.environment),
             "discarded": what,
             "changed": discarded.changed,
+            "saved_not_staged": discarded.reversed.iter().map(|change| &change.name).collect::<Vec<_>>(),
         }))
     }
 }

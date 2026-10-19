@@ -3,7 +3,8 @@
 
 use clap::{ArgMatches, Command};
 use ployz_core::ServiceName;
-use ployz_store::{DiffQuery, DiffView, Discard, SettingPath};
+use ployz_core::config::{EnvironmentNodeType, ReviewLifecycleKind};
+use ployz_store::{DiffQuery, DiffView, Discard, Discarded, SettingPath};
 use serde::Serialize;
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
@@ -52,8 +53,8 @@ pub(super) fn discard_command(command: Command) -> Command {
                 .help("SERVICE, SERVICE.SETTING, volumes.VOLUME, configs.CONFIG or a `ployz diff` row [default: everything]"),
         )
         .arg(version())
-        .arg(value("target", None).value_parser(["head", "saved", "review"]).default_value("head")
-            .help("Head resets deploy changes; saved abandons draft reversals; review discards the displayed combined list"))
+        .arg(value("target", None).value_parser(["head", "saved", "review"])
+            .help("Head resets deploy changes; saved abandons draft reversals; review discards the displayed combined list [default: head, or saved for a path only saved lists]"))
 }
 
 /// `ployz diff --json`: the review, plus each staged domain change as people read it.
@@ -175,11 +176,13 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let discard = Discard {
         environment: environment(matches)?,
-        target: match matches.get_one::<String>("target").map(String::as_str) {
-            Some("saved") => ployz_store::DiscardTarget::Saved,
-            Some("review") => ployz_store::DiscardTarget::Review,
-            _ => ployz_store::DiscardTarget::Head,
-        },
+        target: matches
+            .get_one::<String>("target")
+            .map(|target| match target.as_str() {
+                "saved" => ployz_store::DiscardTarget::Saved,
+                "review" => ployz_store::DiscardTarget::Review,
+                _ => ployz_store::DiscardTarget::Head,
+            }),
         path: path.clone(),
         version: matches.get_one::<String>("version").cloned(),
     };
@@ -191,14 +194,25 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         "{}/{}",
         discarded.environment.project, discarded.environment.name
     );
+    let reversed = if path.is_none() {
+        discarded.reversed.as_slice()
+    } else {
+        &[]
+    };
     if !discarded.changed {
-        return crate::ui::done(
-            &Next::new(&discarded, None),
-            format_args!(
-                "Nothing staged{} in {where_}; nothing to discard.",
-                path.map_or_else(String::new, |path| format!(" at {path}"))
-            ),
-        );
+        return crate::ui::finish(&Next::new(&discarded, None), || {
+            if reversed.is_empty() {
+                crate::ui::stream(format_args!(
+                    "Nothing staged{} in {where_}; nothing to discard.",
+                    path.map_or_else(String::new, |path| format!(" at {path}"))
+                ));
+            } else {
+                crate::ui::stream(format_args!(
+                    "Nothing differs from what is deployed in {where_}."
+                ));
+            }
+            comes_back(matches, &discarded, reversed);
+        });
     }
     let hint = next(matches, &["diff"]);
     crate::ui::finish(&Next::new(&discarded, Some(hint.clone())), || {
@@ -207,8 +221,34 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
             path.map_or_else(|| "every staged change".to_owned(), |path| path.to_string()),
             discarded.environment.revision
         ));
+        comes_back(matches, &discarded, reversed);
         crate::ui::hint(&crate::ui::Hint::Inspect(hint));
     })
+}
+
+/// One line per saved change the draft no longer holds, with the discard that brings it back.
+fn comes_back(matches: &ArgMatches, discarded: &Discarded, reversed: &[ployz_store::NodeChange]) {
+    let saved = discarded.saved.map_or(0, |saved| saved.0);
+    for change in reversed {
+        let path = match change.node.node_type {
+            EnvironmentNodeType::Service => change.name.clone(),
+            EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
+            EnvironmentNodeType::Config => format!("configs.{}", change.name),
+        };
+        let command = next(matches, &["discard", &path]);
+        let name = &change.name;
+        match change.lifecycle {
+            ReviewLifecycleKind::Delete => crate::ui::stream(format_args!(
+                "{name} is in saved #{saved} but was never deployed, so discarding removes it. Bring it back: {command}"
+            )),
+            ReviewLifecycleKind::Create => crate::ui::stream(format_args!(
+                "{name} is removed in saved #{saved} but still deployed, so discarding keeps it. Remove it again: {command}"
+            )),
+            ReviewLifecycleKind::Update => crate::ui::stream(format_args!(
+                "{name} has changes in saved #{saved} that were never deployed, so discarding undoes them. Bring them back: {command}"
+            )),
+        }
+    }
 }
 
 pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {

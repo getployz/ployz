@@ -63,9 +63,11 @@ pub struct Discard {
     pub environment: EnvironmentRef,
     /// The comparison to return to. Head preserves the deployment baseline; Saved
     /// abandons a draft reversal; Review discards the server-derived visible rows.
+    /// `None` returns everything to Head, and a path to its row's baseline: Saved
+    /// when only a draft reversal lists it, else Head.
     #[serde(default)]
-    #[ts(as = "Option<DiscardTarget>", optional)]
-    pub target: DiscardTarget,
+    #[ts(optional)]
+    pub target: Option<DiscardTarget>,
     /// `SERVICE`, `volumes.VOLUME`, `configs.CONFIG`, `SERVICE.SETTING`,
     /// `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME` or `SERVICE.configs.CONFIG`; none
     /// discards everything.
@@ -94,6 +96,10 @@ pub struct Discarded {
     pub saved: Option<Revision>,
     /// False when nothing it names was staged.
     pub changed: bool,
+    /// The draft reversals left after it, which a discard naming each node brings back.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<super::NodeChange>>", optional)]
+    pub reversed: Vec<super::NodeChange>,
 }
 
 pub(crate) fn publish(
@@ -204,9 +210,17 @@ pub(crate) fn discard(
         scope::persist_working(tx, &mut whole)?;
         environment = whole.summary;
     }
+    let reversed = if changed {
+        let after = scope::load_by_id(tx, &environment.id)?;
+        review::review(tx, &after)?.view
+    } else {
+        reviewed.view
+    }
+    .reversals();
     Ok(Discarded {
         environment,
         saved: reviewed.saved.as_ref().map(|saved| saved.revision),
         changed,
+        reversed,
     })
 }

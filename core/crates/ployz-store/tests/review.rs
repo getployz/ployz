@@ -133,7 +133,7 @@ fn discard(
         who,
         &Discard {
             environment: EnvironmentRef::default(),
-            target: ployz_store::DiscardTarget::Head,
+            target: Some(ployz_store::DiscardTarget::Head),
             path: path.map(|path| SettingPath::parse(path).unwrap()),
             version: version.map(Into::into),
         },
@@ -578,7 +578,7 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("web").unwrap()),
                 version: None,
             },
@@ -703,6 +703,68 @@ fn history_undo_stages_only_its_delta_and_preserves_later_unrelated_edits() {
 }
 
 #[test]
+fn discard_of_a_never_deployed_save_lists_it_and_its_path_brings_it_back() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    let discard_path = |target, path: &str| {
+        store.write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target,
+                path: Some(SettingPath::parse(path).unwrap()),
+                version: None,
+            },
+        )
+    };
+    let reversed = |discarded: &Discarded| {
+        let mut names: Vec<_> = discarded
+            .reversed
+            .iter()
+            .map(|change| (change.name.clone(), change.lifecycle))
+            .collect();
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        names
+    };
+
+    let discarded = discard(&store, &who, None, None).unwrap();
+    assert!(discarded.changed);
+    let removed = vec![
+        ("api".to_owned(), ReviewLifecycleKind::Delete),
+        ("web".to_owned(), ReviewLifecycleKind::Delete),
+    ];
+    assert_eq!(reversed(&discarded), removed);
+    assert_eq!(value(&store, &who, "web.image"), None);
+    let view = diff(&store, &who);
+    assert_eq!(view.total_count, 0);
+    assert_eq!(view.review_changes().len(), 2);
+    assert!(view.review_count() >= 2, "status counts what diff lists");
+
+    let again = discard(&store, &who, None, None).unwrap();
+    assert!(!again.changed);
+    assert_eq!(reversed(&again), removed);
+
+    let error = discard_path(Some(ployz_store::DiscardTarget::Head), "web").unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+
+    assert!(discard_path(None, "web").unwrap().changed);
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("nginx:1")));
+    assert_eq!(value(&store, &who, "api.image"), None);
+    let view = diff(&store, &who);
+    assert_eq!(
+        view.review_changes()
+            .iter()
+            .map(|change| (change.name.as_str(), change.lifecycle))
+            .collect::<Vec<_>>(),
+        [
+            ("web", ReviewLifecycleKind::Create),
+            ("api", ReviewLifecycleKind::Delete)
+        ]
+    );
+    assert_eq!(view.reversals().len(), 1);
+}
+
+#[test]
 fn discard_inverse_returns_to_saved_without_history_and_save_records_reversal() {
     let (store, who) = shop();
     backend::deploy(&store, &who, "production", 1);
@@ -731,7 +793,7 @@ fn discard_inverse_returns_to_saved_without_history_and_save_records_reversal() 
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(SettingPath::parse("web.replicas").unwrap()),
                 version: Some(reversed.version),
             },
@@ -778,7 +840,7 @@ fn discard_review_restores_mixed_runtime_and_inverse_rows_once() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Review,
+                target: Some(ployz_store::DiscardTarget::Review),
                 version: Some(before.version),
                 ..Discard::default()
             },
@@ -815,7 +877,7 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Review,
+                target: Some(ployz_store::DiscardTarget::Review),
                 version: Some(before.version),
                 ..Discard::default()
             },
@@ -923,7 +985,7 @@ fn discard_to_saved(store: &ConfigStore, who: &Actor) {
             who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: None,
                 version: None,
             },
@@ -2390,7 +2452,7 @@ fn saved_discard_cannot_downgrade_a_sealed_variable() {
     let result = store.write(
         &who,
         &Discard {
-            target: ployz_store::DiscardTarget::Saved,
+            target: Some(ployz_store::DiscardTarget::Saved),
             path: Some(SettingPath::parse("web.env.KEY").unwrap()),
             ..Discard::default()
         },
@@ -2532,7 +2594,7 @@ fn undo_export_only_revision_preserves_later_value_and_review_discards_both_fiel
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Review,
+                target: Some(ployz_store::DiscardTarget::Review),
                 ..Discard::default()
             },
         )
@@ -2630,7 +2692,7 @@ fn review_discard_restores_custom_and_generated_domain_changes() {
             .write(
                 &who,
                 &Discard {
-                    target: ployz_store::DiscardTarget::Review,
+                    target: Some(ployz_store::DiscardTarget::Review),
                     version: Some(before.version),
                     ..Discard::default()
                 },
@@ -2680,7 +2742,7 @@ fn template_metadata_is_reviewed_and_undone_without_deploying() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(SettingPath::parse("web.template").unwrap()),
                 ..Discard::default()
             },
@@ -2931,7 +2993,7 @@ fn legacy_id_only_saved_and_review_discard_restore_the_visible_field() {
             .write(
                 who,
                 &Discard {
-                    target,
+                    target: Some(target),
                     path: (target == ployz_store::DiscardTarget::Saved)
                         .then(|| SettingPath::parse("web.env.KEY").unwrap()),
                     version: Some(review.version),
@@ -2984,7 +3046,7 @@ fn legacy_description_discard_is_individual_and_not_an_editor() {
         .write(
             who,
             &Discard {
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(path.clone()),
                 ..Discard::default()
             },
@@ -3215,7 +3277,7 @@ fn discarding_new_variable_export_preserves_its_value_and_owner() {
                 .write(
                     &who,
                     &Discard {
-                        target,
+                        target: Some(target),
                         path: Some(SettingPath::parse(&format!("{path}.exported")).unwrap()),
                         version: Some(diff(&store, &who).version),
                         ..Discard::default()
@@ -3240,7 +3302,7 @@ fn discarding_new_variable_export_preserves_its_value_and_owner() {
                 .write(
                     &who,
                     &Discard {
-                        target,
+                        target: Some(target),
                         path: Some(SettingPath::parse(&path).unwrap()),
                         version: Some(diff(&store, &who).version),
                         ..Discard::default()
@@ -3276,7 +3338,7 @@ fn discarding_new_legacy_description_preserves_other_variable_fields() {
             .write(
                 who,
                 &Discard {
-                    target,
+                    target: Some(target),
                     path: Some(SettingPath::parse("web.env.KEY.description").unwrap()),
                     version: Some(diff(store, who).version),
                     ..Discard::default()
@@ -3313,7 +3375,7 @@ fn discarding_missing_child_preserves_a_new_service_and_history() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(SettingPath::parse("worker.env.MISSING").unwrap()),
                 version: Some(diff(&store, &who).version),
                 ..Discard::default()
@@ -3377,7 +3439,7 @@ fn discarding_a_new_configs_child_never_deletes_its_owner() {
         let result = store.write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(SettingPath::parse(&format!("configs.@{id}.files.{file}")).unwrap()),
                 version: Some(diff(&store, &who).version),
                 ..Discard::default()
@@ -3484,7 +3546,7 @@ fn reordered_routes_review_publish_and_discard() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Review,
+                target: Some(ployz_store::DiscardTarget::Review),
                 version: Some(review.version),
                 ..Discard::default()
             },

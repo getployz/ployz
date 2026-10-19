@@ -48,6 +48,8 @@ To undo, click **Discard** beside a change, or open **⋮** and choose **Discard
 Discarding a service or volume you never deployed deletes it. Discard does not save a version.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
+In the CLI, `ployz discard` names each saved change it took out and the command that brings it
+back, such as `ployz discard web`. `ployz diff` lists those rows and `ployz status` counts them.
 
 The dashboard's **Deploy** needs a staged change. Deploying again with nothing staged is
 CLI-only for now:
