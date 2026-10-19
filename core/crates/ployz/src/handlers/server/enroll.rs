@@ -99,7 +99,8 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
             if !matches.get_flag("command") && matches.get_one::<String>("wait").is_none() =>
         {
             drop(runtime);
-            return super::super::cloud::enroll(root, prompted_token()?, cloud);
+            let remote = matches.get_one::<String>("destination").is_some();
+            return super::super::cloud::enroll(root, prompted_token(remote)?, cloud);
         }
         credential => credential?,
     };
@@ -188,18 +189,19 @@ pub(in crate::handlers) fn enroll_token(
     Ok(Some(CloudEnrollToken::parse(raw.trim())?))
 }
 
-fn prompted_token() -> Result<CloudEnrollToken, Error> {
+fn prompted_token(remote: bool) -> Result<CloudEnrollToken, Error> {
     let token = crate::ui::secret(
         "Enrollment token",
-        no_terminal_for_token,
+        || no_terminal_for_token(remote),
         "Cancelled. Nothing was enrolled.",
     )?;
     Ok(CloudEnrollToken::parse(token.trim())?)
 }
 
-/// Run from a script, nothing can answer the prompt; `sudo` also drops an exported
+/// Run from a script, nothing can answer the prompt. Adding a remote Server, signing in
+/// here is the way on; on the Server itself, `sudo` drops an exported
 /// `PLOYZ_ENROLL_TOKEN`, so name the form that survives it.
-fn no_terminal_for_token() -> Error {
+fn no_terminal_for_token(remote: bool) -> Error {
     Error::coded(
         RpcErrorCode::Unauthenticated,
         format!(
@@ -207,7 +209,14 @@ fn no_terminal_for_token() -> Error {
             env::ENROLL_TOKEN
         ),
     )
-    .hint(Hint::Next("sudo ployz server add --token-stdin".into()))
+    .hint(Hint::Next(
+        if remote {
+            "ployz login"
+        } else {
+            "sudo ployz server add --token-stdin"
+        }
+        .into(),
+    ))
 }
 
 /// What a Cloud enrollment acts with, and the Organization it enrolls into.
@@ -388,7 +397,7 @@ mod tests {
 
     #[test]
     fn a_missing_terminal_names_the_scripted_token_sources() {
-        let refusal = no_terminal_for_token();
+        let refusal = no_terminal_for_token(false);
         let message = refusal.to_string();
         assert!(!message.contains("Not signed in"), "{message}");
         assert!(message.contains("--token-stdin"), "{message}");
@@ -398,6 +407,11 @@ mod tests {
                 .hints()
                 .iter()
                 .all(|hint| *hint != Hint::Next("ployz login".into()))
+        );
+        assert!(
+            no_terminal_for_token(true)
+                .hints()
+                .contains(&Hint::Next("ployz login".into()))
         );
     }
 }
