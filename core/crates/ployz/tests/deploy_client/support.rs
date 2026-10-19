@@ -17,17 +17,20 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, AnswerWhen, CapabilityName, ContainerDetails, ContainerId, ContainerKind,
     ContainerList, ContainerLocator, ContainerNow, ContainerPath, ContainerRuntimeObservation,
-    ContractDescription, DockerVolume, DockerVolumeName, EnsuredContainer, ExecResponseFrame,
-    HealthObservation, HealthVerdict, HealthcheckSpec, LocalMachinePhase,
+    ContractDescription, CopyRotation, DockerVolume, DockerVolumeName, EnsuredContainer,
+    ExecResponseFrame, HealthObservation, HealthVerdict, HealthcheckSpec, LocalMachinePhase,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
     MachineList, MachineName, MachineObservation, MachineRpcServer, MembershipObservation,
     Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RoutesRead, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, ServingPointer, ServingPointerPublication, UpdateOrder,
-    VolumeInventory, WireGuardPublicKey,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RotationEdge, RoutesRead, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, ServingPointer, ServingPointerPublication,
+    UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
-use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
+use ployz_testkit::{
+    fake_machine::{Fake, FakeMachine, FakeStream},
+    rotation,
+};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -74,6 +77,13 @@ pub(super) struct DeployService {
     pub(super) copies: Arc<Mutex<BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>>>,
     /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
     pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
+    /// Each copy whose rotation a want moved, or that this fake created. A listed
+    /// Container no want touched keeps the rotation it was listed with.
+    rotations: Arc<Mutex<BTreeMap<ContainerId, Rotated>>>,
+    /// Copies that were In and left: a proxy that never drops a route keeps them.
+    unrouted: Arc<Mutex<BTreeSet<ContainerId>>>,
+    /// Machines whose proxy adds copies as they go In but never drops one.
+    sticky_proxies: BTreeSet<MachineId>,
     image_pulls: Arc<Mutex<Vec<ImagePullCall>>>,
     /// Creations that arrived without a prepared image, so the Machine pulled inside them.
     creation_pulls: Arc<AtomicUsize>,
@@ -81,6 +91,13 @@ pub(super) struct DeployService {
     pull_failures: BTreeSet<MachineId>,
     /// What a rejected pull answers.
     pull_failure: RpcError,
+}
+
+/// A copy's Service and rotation as its owner holds them.
+#[derive(Clone, Debug)]
+struct Rotated {
+    service: QualifiedService,
+    rotation: CopyRotation,
 }
 
 /// One `PullImage` a Machine answered.
@@ -130,6 +147,9 @@ impl DeployService {
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
             pointers: Arc::new(Mutex::new(BTreeMap::new())),
+            rotations: Arc::new(Mutex::new(BTreeMap::new())),
+            unrouted: Arc::new(Mutex::new(BTreeSet::new())),
+            sticky_proxies: BTreeSet::new(),
             image_pulls: Arc::new(Mutex::new(Vec::new())),
             creation_pulls: Arc::new(AtomicUsize::new(0)),
             pull_failures: BTreeSet::new(),
@@ -180,6 +200,12 @@ impl DeployService {
     /// `machine_id` answers every container listing with an error.
     pub(super) fn fail_listing_on(mut self, machine_id: MachineId) -> Self {
         self.listing_failures.push(machine_id);
+        self
+    }
+
+    /// The proxy on `machine_id` never confirms a copy left its route.
+    pub(super) fn never_unroute_on(mut self, machine_id: MachineId) -> Self {
+        self.sticky_proxies.insert(machine_id);
         self
     }
 
@@ -332,6 +358,127 @@ impl DeployService {
         }
     }
 
+    fn rotation(&self, container_id: &ContainerId) -> CopyRotation {
+        if let Some(rotated) = self.rotations.lock().unwrap().get(container_id) {
+            return rotated.rotation.clone();
+        }
+        self.listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|container| container.container_id == *container_id)
+            .map(|container| container.rotation().clone())
+            .unwrap_or_default()
+    }
+
+    fn rotate(&self, container_id: ContainerId, rotation: CopyRotation) {
+        if self.rotation(&container_id) == CopyRotation::In && rotation != CopyRotation::In {
+            self.unrouted.lock().unwrap().insert(container_id);
+        }
+        let listed = self
+            .listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|container| container.container_id == container_id)
+            .map(ployz_core::ContainerObservation::identity);
+        let mut rotations = self.rotations.lock().unwrap();
+        let service = rotations
+            .get(&container_id)
+            .map(|rotated| rotated.service.clone())
+            .or(listed)
+            .expect("a rotated copy is listed or created here");
+        rotations.insert(container_id, Rotated { service, rotation });
+    }
+
+    /// What each Machine's proxy routes for `service`: every In copy, and on a sticky
+    /// proxy every copy that ever was.
+    fn routes(&self, service: &QualifiedService) -> RoutesRead {
+        let removed = self.removed.lock().unwrap().clone();
+        let mut copies: BTreeMap<ContainerId, QualifiedService> = self
+            .listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|container| (container.container_id, container.identity()))
+            .collect();
+        copies.extend(
+            self.rotations
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, rotated)| (*id, rotated.service.clone())),
+        );
+        let ours = |id: &ContainerId| copies.get(id) == Some(service) && !removed.contains(id);
+        let routed: BTreeSet<ContainerId> = copies
+            .keys()
+            .filter(|id| ours(id) && self.rotation(id) == CopyRotation::In)
+            .copied()
+            .collect();
+        let unrouted: BTreeSet<ContainerId> = self
+            .unrouted
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| ours(id))
+            .copied()
+            .collect();
+        RoutesRead {
+            routes: self
+                .machines
+                .iter()
+                .map(|observed| {
+                    let id = observed.machine.id;
+                    let route = if self.sticky_proxies.contains(&id) {
+                        routed.union(&unrouted).copied().collect()
+                    } else {
+                        routed.clone()
+                    };
+                    (id, Some(route))
+                })
+                .collect(),
+            complete: true,
+            ..RoutesRead::default()
+        }
+    }
+
+    /// The owner's answer to a rotation `want` on `container_id`: refused by the edge
+    /// table, a held health wait for In, or the rotation written.
+    async fn turn(
+        &self,
+        machine_id: MachineId,
+        container_id: ContainerId,
+        resolved_spec: ResolvedServiceSpec,
+        want: &ployz_core::ContainerWant,
+    ) -> Result<Option<HealthVerdict>, EnsuredContainer> {
+        let observed = || {
+            ContainerNow::Present(self.observed(machine_id, container_id, resolved_spec.clone()))
+        };
+        match rotation::decide(&self.rotation(&container_id), want) {
+            Err(refusal) => Err(EnsuredContainer::Refused {
+                now: observed(),
+                refusal,
+            }),
+            Ok(RotationEdge::Write(CopyRotation::In)) => {
+                let health = self.settle().await;
+                if health == HealthVerdict::Healthy {
+                    self.rotate(container_id, CopyRotation::In);
+                    Ok(Some(health))
+                } else {
+                    Err(EnsuredContainer::Ensured {
+                        now: observed(),
+                        health: Some(health),
+                    })
+                }
+            }
+            Ok(RotationEdge::Write(rotation)) => {
+                self.rotate(container_id, rotation);
+                Ok(None)
+            }
+            Ok(RotationEdge::Keep | RotationEdge::Remove | RotationEdge::Refused(_)) => Ok(None),
+        }
+    }
+
     fn observed(
         &self,
         machine_id: MachineId,
@@ -339,7 +486,7 @@ impl DeployService {
         resolved_spec: ResolvedServiceSpec,
     ) -> ployz_core::ContainerObservation {
         ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-            rotation: None,
+            rotation: Some(self.rotation(&container_id)),
             r#gen: None,
             container_id,
             display_name: format!("{}-1", resolved_spec.name),
@@ -462,14 +609,24 @@ impl FakeMachine for DeployService {
                 cause: Vec::new(),
             }));
         }
+        let listed: Vec<_> = self
+            .listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|container| container.machine_id == machine_id)
+            .cloned()
+            .collect();
         encoded(RpcResponse::from(ContainerList {
-            containers: self
-                .listed_containers
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|container| container.machine_id == machine_id)
-                .cloned()
+            containers: listed
+                .into_iter()
+                .map(|mut container| {
+                    let rotation = self.rotation(&container.container_id);
+                    container
+                        .try_update(|parts| parts.rotation = Some(rotation))
+                        .unwrap();
+                    container
+                })
                 .collect(),
         }))
     }
@@ -544,6 +701,7 @@ impl FakeMachine for DeployService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let target = machine_from_metadata(&request).ok();
         let RpcRequestBody::InspectContainer(inspect) =
             request.into_inner().decode_request().unwrap().body
         else {
@@ -574,15 +732,13 @@ impl FakeMachine for DeployService {
             ])),
             container: ployz_core::ContainerObservation::try_from(
                 ployz_core::ContainerObservationParts {
-                    rotation: None,
+                    rotation: Some(self.rotation(&inspect.container_id)),
                     r#gen: None,
                     container_id: inspect.container_id,
                     display_name: "web-1".into(),
                     created_at_unix_nanos: 0,
-                    machine_id: self
-                        .machines
-                        .first()
-                        .map(|machine| machine.machine.id)
+                    machine_id: target
+                        .or_else(|| self.machines.first().map(|machine| machine.machine.id))
                         .unwrap_or_else(MachineId::random),
                     namespace: Namespace::parse("app").unwrap(),
                     kind: ContainerKind::ServiceContainer,
@@ -624,12 +780,17 @@ impl FakeMachine for DeployService {
         else {
             return Err(Status::invalid_argument("expected ensure_container"));
         };
+        let want = ensure.want.clone();
         let settled = matches!(
-            &ensure.want,
+            &want,
             ployz_core::ContainerWant::Running { container: RunTarget::New(new), .. }
                 if new.answer == AnswerWhen::Settled
         );
-        let now = match ensure.want {
+        let turned = async |container_id: ContainerId| {
+            self.turn(machine_id, container_id, resolved(spec("web")), &want)
+                .await
+        };
+        let (now, turned_health) = match ensure.want {
             ployz_core::ContainerWant::Running {
                 container: RunTarget::New(new),
                 ..
@@ -667,13 +828,30 @@ impl FakeMachine for DeployService {
                         let n = self.containers.fetch_add(1, Ordering::SeqCst) + 1;
                         let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
                         self.slots.lock().unwrap().insert(key, container_id);
+                        self.rotations.lock().unwrap().insert(
+                            container_id,
+                            Rotated {
+                                service: QualifiedService::new(
+                                    new.slot.namespace.clone(),
+                                    new.resolved_spec.name.clone(),
+                                ),
+                                rotation: CopyRotation::Pending,
+                            },
+                        );
                         container_id
                     }
                 };
                 if let Some(error) = &self.start_error {
                     return encoded(RpcResponse::from(error.clone()));
                 }
-                ContainerNow::Present(self.observed(machine_id, container_id, new.resolved_spec))
+                (
+                    ContainerNow::Present(self.observed(
+                        machine_id,
+                        container_id,
+                        new.resolved_spec,
+                    )),
+                    None,
+                )
             }
             ployz_core::ContainerWant::Running {
                 container: RunTarget::Existing(locator),
@@ -682,29 +860,50 @@ impl FakeMachine for DeployService {
                 if let Some(error) = &self.start_error {
                     return encoded(RpcResponse::from(error.clone()));
                 }
-                ContainerNow::Present(self.observed(
-                    machine_id,
-                    self.located(&locator)?,
-                    resolved(spec("web")),
-                ))
+                let container_id = self.located(&locator)?;
+                match turned(container_id).await {
+                    Ok(health) => (
+                        ContainerNow::Present(self.observed(
+                            machine_id,
+                            container_id,
+                            resolved(spec("web")),
+                        )),
+                        health,
+                    ),
+                    Err(answer) => return encoded(RpcResponse::from(answer)),
+                }
             }
-            ployz_core::ContainerWant::Stopped { container, .. } => ContainerNow::Present(
-                self.observed(machine_id, self.located(&container)?, resolved(spec("web"))),
-            ),
+            ployz_core::ContainerWant::Stopped { container, .. }
+            | ployz_core::ContainerWant::Out { container, .. }
+            | ployz_core::ContainerWant::Held { container, .. } => {
+                let container_id = self.located(&container)?;
+                if let Err(answer) = turned(container_id).await {
+                    return encoded(RpcResponse::from(answer));
+                }
+                (
+                    ContainerNow::Present(self.observed(
+                        machine_id,
+                        container_id,
+                        resolved(spec("web")),
+                    )),
+                    None,
+                )
+            }
             ployz_core::ContainerWant::Gone { container, .. } => {
                 if let Ok(container_id) = self.located(&container) {
+                    if let Err(answer) = turned(container_id).await {
+                        return encoded(RpcResponse::from(answer));
+                    }
+                    self.rotations.lock().unwrap().remove(&container_id);
                     self.removed.lock().unwrap().insert(container_id);
                 }
-                ContainerNow::Absent { of: container }
-            }
-            ployz_core::ContainerWant::Out { .. } | ployz_core::ContainerWant::Held { .. } => {
-                return unused();
+                (ContainerNow::Absent { of: container }, None)
             }
         };
         let health = if settled {
             Some(self.settle().await)
         } else {
-            None
+            turned_health
         };
         encoded(RpcResponse::from(EnsuredContainer::Ensured { now, health }))
     }
@@ -869,6 +1068,9 @@ impl FakeMachine for DeployService {
         else {
             panic!("expected pointer read");
         };
+        if read.routes_only {
+            return encoded(RpcResponse::from(self.routes(&read.service)));
+        }
         let pointer = self.pointers.lock().unwrap().get(&read.service).cloned();
         let acks = pointer
             .iter()
