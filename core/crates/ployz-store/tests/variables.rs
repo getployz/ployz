@@ -742,6 +742,68 @@ fn a_rename_and_another_change_to_where_it_moves_from_or_to_are_refused() {
     }
 }
 
+#[test]
+fn a_variable_object_with_exported_and_a_change_to_exported_are_refused() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, &[("web.env.X", json!("x"))]).unwrap();
+    let set = |path: &str, value: Value| Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    };
+    let unset = |path: &str| Change::Unset {
+        path: SettingPath::parse(path).unwrap(),
+    };
+    let patch = |value: Value| Change::Patch {
+        path: SettingPath::parse("web").unwrap(),
+        value,
+    };
+    let edit = |changes: Vec<Change>| {
+        store.write(
+            &who(),
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes,
+            },
+        )
+    };
+    let before = get(&store, Some("web")).values;
+    for changes in [
+        vec![
+            set("web.env.X", json!({ "exported": true })),
+            set("web.env.X.exported", json!(false)),
+        ],
+        vec![
+            set("web.env.X.exported", json!(false)),
+            set("web.env.X", json!({ "value": "y", "exported": true })),
+        ],
+        vec![
+            patch(json!({ "env": { "X": { "exported": true } } })),
+            unset("web.env.X.exported"),
+        ],
+    ] {
+        let refused = edit(changes.clone()).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{changes:?}");
+        assert_eq!(
+            refused.message, "web.env.X.exported is changed twice in one edit; change it once",
+            "{changes:?}"
+        );
+        assert_eq!(get(&store, Some("web")).values, before, "{changes:?}");
+    }
+
+    // A value with no exported field leaves the flag to the other change.
+    edit(vec![
+        set("web.env.X", json!({ "value": "y" })),
+        set("web.env.X.exported", json!(true)),
+    ])
+    .unwrap();
+    assert_eq!(
+        value(&store, "web.env.X"),
+        json!({ "value": "y", "exported": true })
+    );
+}
+
 /// Services `web`, `api` and `worker`, where `api` and `worker` reference web's
 /// API_URL in both forms, beside text that only looks like it.
 fn referenced(store: &ConfigStore) {
