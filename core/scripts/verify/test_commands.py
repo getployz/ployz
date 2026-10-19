@@ -38,5 +38,22 @@ class OpenStdin(unittest.TestCase):
         self.assertEqual(self.commands(["cat"], input=b"yaml", timeout=5).stdout, b"yaml")
 
 
+class Enrollment(unittest.TestCase):
+    """`--json server add` prints its failure on stdout and leaves stderr empty."""
+
+    def test_a_refused_enrollment_reports_the_printed_error(self):
+        error = b'{"error":{"code":"conflict","message":"This Organization\'s Servers can\'t be reached."}}\n'
+        result = cluster.subprocess.CompletedProcess([], 1, error, b"")
+        with self.assertRaises(RuntimeError) as raised:
+            cluster.enrolled(dict(name="machine-1"), result, "/evidence")
+        self.assertIn("machine-1: enrollment failed:", str(raised.exception))
+        self.assertIn("This Organization's Servers can't be reached.", str(raised.exception))
+
+    def test_a_committed_enrollment_with_an_unavailable_follow_up_is_returned(self):
+        response = dict(server=dict(machine=dict(id="m1")), follow_up_error=dict(code="unavailable"))
+        result = cluster.subprocess.CompletedProcess([], 3, cluster.json.dumps(response).encode(), b"")
+        self.assertEqual(cluster.enrolled(dict(name="machine-1"), result, "/evidence"), response)
+
+
 if __name__ == "__main__":
     unittest.main()

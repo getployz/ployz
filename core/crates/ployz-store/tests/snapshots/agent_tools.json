@@ -535,7 +535,7 @@
                 "anyOf": [
                   {
                     "maximum": 1024.0,
-                    "minimum": 0,
+                    "minimum": 0.01,
                     "type": "number"
                   },
                   {

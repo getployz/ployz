@@ -83,6 +83,41 @@ where
     connected_client(service).await
 }
 
+/// One fake Machine answering unary calls with `unary` and its log streams with `stream`.
+pub(crate) async fn rpc_routes<U, UFut, F, Fut, S>(
+    unary: U,
+    stream: F,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+)
+where
+    U: Fn(Request<OpaquePayload>) -> UFut + Clone + Send + Sync + 'static,
+    UFut: Future<Output = Result<Response<OpaquePayload>, Status>> + Send + 'static,
+    F: Fn(Request<OpaquePayload>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<S>, Status>> + Send + 'static,
+    S: Stream<Item = Result<OpaquePayload, Status>> + Send + 'static,
+{
+    let unary = tower::service_fn(unary);
+    let stream = tower::service_fn(stream);
+    let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
+        let unary = unary.clone();
+        let stream = stream.clone();
+        async move {
+            let path = request.uri().path();
+            let mut grpc = tonic::server::Grpc::new(ProstCodec::default());
+            Ok::<_, Infallible>(
+                if path.ends_with("/TailLogs") || path.ends_with("/LogHistory") {
+                    grpc.server_streaming(stream, request).await
+                } else {
+                    grpc.unary(unary, request).await
+                },
+            )
+        }
+    });
+    connected_client(service).await
+}
+
 async fn connected_client<S>(
     service: S,
 ) -> (

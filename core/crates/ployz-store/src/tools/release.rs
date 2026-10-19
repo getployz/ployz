@@ -98,7 +98,7 @@ impl Tool for Review {
             })),
             "staged": diff.total_count,
             "lines": diff.changes.iter().flat_map(lines).collect::<Vec<_>>(),
-            "asks_approval": !destroys.is_empty(),
+            "asks_approval": !cx.is_local(),
             "destroys": destroys,
             "broken": diff.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),
         }))

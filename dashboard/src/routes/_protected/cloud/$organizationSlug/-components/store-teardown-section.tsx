@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
@@ -15,6 +15,7 @@ import { fetchStoreView, removalsQuery, servicesQuery, volumesQuery } from "#/mo
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
+import { useServerList } from "#/modules/machines/use-servers";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { can } from "#/modules/organization/permissions";
 import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
@@ -24,6 +25,25 @@ import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_pro
 function ended(status: DeploymentStatus) {
   if (status === "failed") return "failed";
   return status === "unknown" ? "may not have ended" : `was ${status}`;
+}
+
+/** The offline Servers a removal can't reach, each linked to where it can be forgotten. */
+export function OfflineServers({ organizationSlug, servers }: { organizationSlug: string; servers: readonly { id: string; name: string }[] }) {
+  if (servers.length === 0) return null;
+  const one = servers.length === 1;
+  return (
+    <>
+      {" "}
+      {servers.map((server, index) => (
+        <Fragment key={server.id}>
+          {index > 0 ? ", " : null}
+          <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: server.id }} hash="remove-server"
+            className="underline underline-offset-4">{server.name}</Link>
+        </Fragment>
+      ))}
+      {one ? " is offline. Bring it back or forget it, then try again." : " are offline. Bring them back or forget them, then try again."}
+    </>
+  );
 }
 
 /**
@@ -56,6 +76,8 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   const yourRole = members?.find((row) => row.you)?.role;
   const refused = yourRole !== undefined && !can(yourRole, target.environment === null ? "project:delete" : "environment:delete");
   const disabledReason = refused ? "Only an owner or admin can delete it." : blocked;
+  const offline = useServerList(organizationSlug).servers.filter((server) => server.status === "offline")
+    .map((server) => ({ id: server.machine.id, name: server.name }));
   const inScope = target.environment === null ? environments : environments.filter((row) => row.name === target.environment);
   const commit = (command: Parameters<typeof writer.commit>[0], handles: readonly string[]) =>
     writer.commit(command, handles).isPersisted.promise;
@@ -114,6 +136,14 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
           {inScope.flatMap((environment) => {
             const removal = environment.removal;
             if (!removal) return [];
+            if (removal.kind === "pending") return [
+              <SettingsRow
+                key={environment.id}
+                label={<><Spinner />Deleting {environment.name}…</>}
+                hint="Ployz takes it off your servers at its next hourly sweep. If that hasn't started, delete it again."
+                commit="none"
+              />,
+            ];
             const deployment = <Link {...deploymentDestination(params(environment.name), removal.id)}
               className="underline underline-offset-4">Deployment {deploymentLabel(removal)}</Link>;
             // Applied, while the Store is deleting it: the next sweep finishes it.
@@ -138,7 +168,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
               <SettingsRow
                 key={environment.id}
                 label={`Deleting ${environment.name} didn't finish`}
-                hint={<span role="alert" className="text-destructive">{deployment} {ended(removal.status)}. Some of it may still be on your servers.</span>}
+                hint={<span role="alert" className="text-destructive">{deployment} {ended(removal.status)}. Some of it may still be on your servers.<OfflineServers organizationSlug={organizationSlug} servers={offline} /></span>}
                 commit="none"
                 control={<Button variant="outline" disabled={busy} onClick={() => setOpen(true)}>Try again</Button>}
               />,

@@ -12,6 +12,7 @@ export type RefusalCode =
   | "volume_switching"
   | "second_mirror"
   | "invalid"
+  | "already_on"
   | "no_mirror"
   | "no_copy"
   | "another_copy"
@@ -255,7 +256,7 @@ function copyElsewhere(name: string, copy: Member): Refusal {
   return { code: "second_mirror", message: `${name} already has a copy on ${copy.machine.name}, ${slot}`, next: `ployz volume mirror rm ${slot}` };
 }
 
-export const alreadyOn = (name: string, server: string): Refusal => ({ code: "invalid", message: `${name}'s writer is already on ${server}` });
+export const alreadyOn = (name: string, server: string): Refusal => ({ code: "already_on", message: `${name}'s writer is already on ${server}` });
 
 /** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
 function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], answered: readonly AnsweredMember[]): Planned {

@@ -13,7 +13,7 @@ import {
 import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
-import { startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
+import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
@@ -308,6 +308,8 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
         request.checkinKey,
       ).pipe(Effect.catch((error) => Effect.logWarning("An arrival enroll did not start.", error).pipe(Effect.as(false))));
       if (started) return { ...answer, retryAfter: 2 };
+      // Enroll on arrival never founds, so the host says it waits on the Organization's first server.
+      if (!(yield* hasFirstServer(token.organizationId))) return { ...answer, noCluster: true } satisfies CheckinResponse;
     }
     return answer;
   }

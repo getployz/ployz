@@ -102,6 +102,40 @@ fn completion_at_deadline_wins_over_stale_heartbeat() {
 }
 
 #[test]
+fn a_removed_service_counts_as_removed_in_the_summary() {
+    let removal = |state| {
+        crate::deploy::service_row(
+            QualifiedService::parse("shop/web").unwrap(),
+            None,
+            [crate::deploy::Replica {
+                machine: MachineId::random(),
+                state,
+                timing: Timing::Unavailable,
+                starts: false,
+            }],
+        )
+    };
+    let frame = |row| Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![row],
+        notices: Vec::new(),
+    };
+    let text = plain(
+        frame(removal(&ployz_store::RowState::Pending)),
+        vec![(
+            1,
+            Message::Finish(
+                frame(removal(&ployz_store::RowState::Completed)),
+                Disposition::Settled,
+            ),
+        )],
+    );
+    assert!(text.contains("1 removed · across 1 server"), "{text}");
+    assert!(!text.contains("deployed"), "{text}");
+}
+
+#[test]
 fn phase_and_detail_changes_are_preserved_and_restart_quiet_period() {
     let initial = frame(State::Pending);
     let mut starting = initial.clone();
