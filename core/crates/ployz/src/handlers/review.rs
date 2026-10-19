@@ -297,6 +297,19 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
             accept_overwrite: matches.get_flag("accept-overwrite"),
         })
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "history")))?;
+    if !staged.changed {
+        return crate::ui::done(
+            &staged,
+            format_args!(
+                "{} Nothing staged.",
+                if action == ployz_store::HistoryAction::Restore {
+                    format!("Already matches #{revision}.")
+                } else {
+                    format!("#{revision} is already undone.")
+                }
+            ),
+        );
+    }
     crate::ui::finish(&staged, || {
         crate::ui::stream(format_args!(
             "Staged {} #{revision}. Deploy to apply.",

@@ -82,7 +82,8 @@ Your service still gets the real value when it deploys.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
   History brings back comes back **Not set**: choose **Set value** to give it one. Until then,
   deploys leave it out of your service. A sealed variable added after the version you roll back
-  to stays, with its value. Delete it yourself if you don't want it.
+  to stays, with its value, on a service that stays. A service added after that version goes,
+  with its variables. Delete a sealed variable yourself if you don't want it.
 - A sealed value is stored exactly as typed, so it can't hold a
   [reference](#reference-another-services-variable).
 
