@@ -555,7 +555,7 @@ impl<'a> Refusing<'a> {
             ),
             [service] if was.is_none() => (
                 format!(
-                    "{name} would be attached to {}; set replicas to 1, or add it with --shared-writes",
+                    "{name} would be attached to {}; set replicas to 1, or add it with shared writes on",
                     service.slug
                 ),
                 self.add(node),
@@ -569,7 +569,7 @@ impl<'a> Refusing<'a> {
             ),
             _ if was.is_none() => (
                 format!(
-                    "{name} would be mounted by {}; add it with --shared-writes",
+                    "{name} would be mounted by {}; add it with shared writes on",
                     slugs(&writing)
                 ),
                 self.add(node),
@@ -596,33 +596,36 @@ impl<'a> Refusing<'a> {
 
     /// `ployz volume add` for Volume `node`, new to this write, with shared writes on.
     fn add(&self, node: &SavedVolumeIntent) -> String {
-        let mounts: String = self
-            .after
-            .working
-            .services
-            .iter()
-            .flat_map(|service| {
-                service
-                    .volume_attachments
-                    .iter()
-                    .filter(|mount| mount.volume_resource_id == node.resource_id)
-                    .map(|mount| {
-                        let mount = format!("{}:{}", service.slug, mount.mount_path);
-                        format!(" --mount {}", shell_words::quote(&mount))
-                    })
-            })
-            .collect();
-        let storage = match node.storage {
-            VolumeKind::Docker {} => "--docker".to_owned(),
-            VolumeKind::Provisioned { maximum_bytes } => {
-                format!("--size {}", maximum_bytes.to_string().replace(' ', ""))
+        let mut words = vec![
+            "ployz".to_owned(),
+            "volume".into(),
+            "add".into(),
+            node.name.clone(),
+        ];
+        for service in &self.after.working.services {
+            for mount in &service.volume_attachments {
+                if mount.volume_resource_id == node.resource_id {
+                    words.push("--mount".into());
+                    words.push(format!("{}:{}", service.slug, mount.mount_path));
+                }
             }
-        };
-        format!(
-            "ployz volume add {}{mounts} {storage} --shared-writes {}",
-            node.name,
-            self.scope()
-        )
+        }
+        match node.storage {
+            VolumeKind::Docker {} => words.push("--docker".into()),
+            VolumeKind::Provisioned { maximum_bytes } => {
+                words.push("--size".into());
+                words.push(maximum_bytes.to_string().replace(' ', ""));
+            }
+        }
+        let EnvironmentSummary { name, project, .. } = self.environment;
+        words.extend([
+            "--shared-writes".into(),
+            "--env".into(),
+            name.to_string(),
+            "--project".into(),
+            project.to_string(),
+        ]);
+        shell_words::join(words)
     }
 
     /// Service `service` updates start-first and mounts Volume `volume` (lineages),
