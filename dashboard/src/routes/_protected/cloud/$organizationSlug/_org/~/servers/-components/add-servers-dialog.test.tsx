@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.functions";
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
+import { STALL_MS } from "#/hooks/use-exclusive-mutation";
 import { AddServersDialog } from "./add-servers-dialog";
 
 const TOKEN = "pflt_test-fixture-token";
@@ -144,4 +145,24 @@ it("holds the dialog through Escape until the command shows", async () => {
   await act(async () => resolve({ token: TOKEN, id: "token-1", name: "brisk-otter", expiresAt: "2026-10-19T10:00:00Z", cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3" }));
 
   expect(await screen.findByText("Shown once. Expires in 24h.")).toBeTruthy();
+});
+
+it("lets go of a mint that never answers, so Escape closes the dialog", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    vi.spyOn(fleetTokenFunctions, "createFleetTokenServerFn").mockReturnValue(new Promise(() => {}));
+    await renderDialog();
+    fireEvent.click(screen.getByRole("button", { name: "Add servers" }));
+    const submit = screen.getByRole("button", { name: "Create" });
+    fireEvent.click(submit);
+    await waitFor(() => expect(submit.hasAttribute("disabled")).toBe(true));
+    await act(async () => vi.advanceTimersByTime(STALL_MS));
+
+    expect(screen.getByText("Ployz hasn't answered. Retry or cancel.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("New fleet token")).toBeNull());
+  } finally {
+    vi.useRealTimers();
+  }
 });

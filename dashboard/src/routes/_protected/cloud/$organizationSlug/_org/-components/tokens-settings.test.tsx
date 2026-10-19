@@ -5,6 +5,7 @@ import { createBrowserHistory, createRootRoute, createRouter, RouterProvider } f
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
+import { STALL_MS } from "#/hooks/use-exclusive-mutation";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import * as storeFunctions from "#/modules/config-store/store.functions";
 import { projectsQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
@@ -67,6 +68,30 @@ it("holds the dialog through Back until the secret shows", async () => {
 
   expect(history.location.pathname).toBe("/tokens");
   expect((await screen.findByLabelText<HTMLInputElement>("Token")).value).toBe("pzt_kept");
+});
+
+it("lets go of a create that never answers, so Back and Retry work again", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const { create, history } = await openNewToken();
+    const submit = screen.getByRole("button", { name: "Make token" });
+    fireEvent.click(submit);
+    await waitFor(() => expect(submit.hasAttribute("disabled")).toBe(true));
+    await act(async () => vi.advanceTimersByTime(STALL_MS));
+
+    expect(screen.getByText("Ployz hasn't answered. Retry or cancel.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    await act(async () => vi.advanceTimersByTime(STALL_MS));
+    await act(async () => {
+      window.history.back();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(history.location.pathname).toBe("/members");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 const token = {

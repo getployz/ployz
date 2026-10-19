@@ -106,10 +106,10 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
     onSuccess: onMade,
   });
   const ready = name.trim() !== "" && (choice !== "deploy" || environment !== "");
-  useBlocker({ shouldBlockFn: () => true, disabled: !make.isPending });
+  useBlocker({ shouldBlockFn: () => true, disabled: !make.holding });
 
   return (
-    <Dialog open onOpenChange={(open) => make.isPending || onOpenChange(open)}>
+    <Dialog open onOpenChange={(open) => make.holding || onOpenChange(open)}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>New token</DialogTitle>
@@ -149,6 +149,12 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
                   </NativeSelect>
                 </Field>
               ) : null}
+              {make.stalled ? (
+                <div role="alert" className="text-sm text-destructive">
+                  <p>Ployz hasn't answered. Retry or cancel.</p>
+                  <p>If it made the token, it shows in Tokens, where you can revoke it.</p>
+                </div>
+              ) : null}
               {make.error ? <p role="alert" className="text-sm text-destructive">{toErrorMessage(make.error, "Couldn't make the token.")}</p> : null}
             </FieldGroup>
           </form>
@@ -158,10 +164,10 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
             <DialogClose render={<Button />}>Done</DialogClose>
           ) : (
             <>
-              <DialogClose render={<Button variant="outline" disabled={make.isPending} />}>Cancel</DialogClose>
-              <Button type="submit" form="token-form" disabled={!ready || make.isPending}>
-                {make.isPending ? <Spinner data-icon="inline-start" /> : null}
-                Make token
+              <DialogClose render={<Button variant="outline" disabled={make.holding} />}>Cancel</DialogClose>
+              <Button type="submit" form="token-form" disabled={!ready || make.holding}>
+                {make.holding ? <Spinner data-icon="inline-start" /> : null}
+                {make.stalled ? "Retry" : "Make token"}
               </Button>
             </>
           )}
