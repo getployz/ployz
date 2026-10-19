@@ -112,6 +112,8 @@ struct Recorded {
     service: QualifiedService,
     kind: ContainerKind,
     r#gen: Gen,
+    /// The Deploy label its create carried, as the daemon writes it.
+    deploy: Option<DeploymentLogId>,
     rotation: CopyRotation,
     /// In before the run, so a proxy that never acks still lists it.
     in_before: bool,
@@ -126,6 +128,7 @@ impl Recorded {
             service: observed.identity(),
             kind: observed.kind,
             r#gen: observed.copy_gen(),
+            deploy: observed.deploy_label(),
             rotation: observed.rotation().clone(),
             in_before: *observed.rotation() == CopyRotation::In,
             stopped: false,
@@ -281,6 +284,7 @@ impl Scripted {
                 service: service.clone(),
                 kind: ContainerKind::ServiceContainer,
                 r#gen,
+                deploy: None,
                 in_before: rotation == CopyRotation::In,
                 rotation,
                 stopped: false,
@@ -346,11 +350,16 @@ impl Scripted {
         let copy = copies
             .entry(observed.container_id)
             .or_insert_with(|| Recorded::of(&observed));
-        let (rotation, r#gen) = (copy.rotation.clone(), copy.r#gen);
+        let (rotation, r#gen, deploy) = (copy.rotation.clone(), copy.r#gen, copy.deploy.clone());
         observed
             .try_update(|parts| {
                 parts.rotation = Some(rotation);
                 parts.r#gen = Some(r#gen);
+                if let Some(deploy) = deploy {
+                    parts
+                        .labels
+                        .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.to_string());
+                }
             })
             .unwrap();
         observed
@@ -701,6 +710,7 @@ impl Scripted {
                     ),
                     new.slot.kind,
                     new.r#gen,
+                    new.deployment_id.clone(),
                 ));
                 (call, ContainerLocator::Key(new.slot))
             }
@@ -756,7 +766,7 @@ impl Scripted {
             | Reply::Pending
             | Reply::Error(_) => None,
         };
-        if let (Some((service, kind, r#gen)), Some(id)) = (created, container_id) {
+        if let (Some((service, kind, r#gen, deploy)), Some(id)) = (created, container_id) {
             self.copies.lock().unwrap().insert(
                 id,
                 Recorded {
@@ -764,6 +774,7 @@ impl Scripted {
                     service,
                     kind,
                     r#gen,
+                    deploy,
                     rotation: CopyRotation::Pending,
                     in_before: false,
                     stopped: false,

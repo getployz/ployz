@@ -465,12 +465,14 @@ async fn skipping_the_health_monitor_answers_once_started() {
     client.assert_done();
 }
 
+/// The copy this run starts is labelled by its create, not by the test, so the
+/// dependency wait finds it as production does.
 #[tokio::test(start_paused = true)]
 async fn dependency_prefers_this_runs_copies() {
     let dependency = QualifiedService::parse("app/api").unwrap();
     let other = DeploymentLogId::parse("other").unwrap();
-    let copy = |hex: char, deploy: &str, runtime: ContainerRuntimeObservation| {
-        let mut observed = serving(&machine('1'), &container(hex), Some(deploy));
+    let copy = |hex: char, deploy: Option<&str>, runtime: ContainerRuntimeObservation| {
+        let mut observed = serving(&machine('1'), &container(hex), deploy);
         observed
             .try_update(|parts| {
                 parts.runtime = runtime;
@@ -479,38 +481,57 @@ async fn dependency_prefers_this_runs_copies() {
             .unwrap();
         observed
     };
+    let started = container('a');
     let cases = [
         (
-            "this run's Pending copy is chosen over another run's In copy",
+            "this run's copy is chosen over another run's In copy",
+            Some(started),
             vec![
-                (copy('a', "run", healthy()), CopyRotation::Pending),
-                (copy('b', "other", exited(1)), CopyRotation::In),
+                (copy('a', None, healthy()), None),
+                (copy('b', Some("other"), exited(1)), Some(CopyRotation::In)),
             ],
         ),
         (
             "the In copies are chosen when this run started none",
+            None,
             vec![
-                (copy('a', "other", healthy()), CopyRotation::In),
-                (copy('b', "other", exited(1)), CopyRotation::Pending),
+                (copy('a', Some("other"), healthy()), Some(CopyRotation::In)),
                 (
-                    copy('c', "other", exited(1)),
-                    CopyRotation::Held(other.clone()),
+                    copy('b', Some("other"), exited(1)),
+                    Some(CopyRotation::Pending),
                 ),
-                (copy('d', "run", exited(1)), CopyRotation::Out),
+                (
+                    copy('c', Some("other"), exited(1)),
+                    Some(CopyRotation::Held(other.clone())),
+                ),
+                (copy('d', Some("run"), exited(1)), Some(CopyRotation::Out)),
             ],
         ),
     ];
-    for (case, copies) in cases {
+    for (case, started, copies) in cases {
         let mut web = spec(Some(0), None, None);
         web.name = ServiceName::parse("web").unwrap();
-        let plan = vec![
+        let mut plan = Vec::new();
+        let mut steps = Vec::new();
+        if let Some(started) = started {
+            plan.push(run(&machine('1'), spec(Some(0), None, None), true));
+            steps.push(created(
+                Call::Run(machine('1'), ContainerKind::ServiceContainer),
+                &started,
+            ));
+        }
+        plan.extend([
             DeployOperation::WaitHealthy {
                 machine_id: machine('1'),
                 dependent: QualifiedService::parse("app/web").unwrap(),
                 dependency: dependency.clone(),
             },
             run(&machine('1'), web, true),
-        ];
+        ]);
+        steps.push(created(
+            Call::Run(machine('1'), ContainerKind::ServiceContainer),
+            &container('e'),
+        ));
         let mut client = Scripted {
             observations: Some(
                 copies
@@ -518,13 +539,12 @@ async fn dependency_prefers_this_runs_copies() {
                     .map(|(observed, _)| observed.clone())
                     .collect(),
             ),
-            ..Scripted::new(vec![created(
-                Call::Run(machine('1'), ContainerKind::ServiceContainer),
-                &container('e'),
-            )])
+            ..Scripted::new(steps)
         };
         for (observed, rotation) in copies {
-            client = client.with_copy(&machine('1'), &observed.container_id, rotation);
+            if let Some(rotation) = rotation {
+                client = client.with_copy(&machine('1'), &observed.container_id, rotation);
+            }
         }
 
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
