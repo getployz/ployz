@@ -376,14 +376,14 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
             Credential::Device(_) => cloud_account::organizations(&credential)
                 .await?
                 .into_iter()
-                .filter(|other| other.slug != organization.slug)
+                .filter(|other| other.id != organization.id)
                 .collect(),
             Credential::Token { .. } => Vec::new(),
         };
         let key = uuid::Uuid::new_v4().to_string();
         // Cloud leaves the Organization named here, not the session's active one, which a
         // browser may have moved since this device last acted.
-        let input = serde_json::json!({ "organization": organization.slug });
+        let input = serde_json::json!({ "organization": organization.id });
         crate::published::run_on(
             &credential,
             cloud_account::Via::Cli,
@@ -458,19 +458,35 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(matches)?);
     let (removal, acting) = runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
+        let (removing, others): (Vec<_>, Vec<_>) = cloud_account::organizations(&credential)
+            .await?
+            .into_iter()
+            .partition(|organization| organization.current);
+        let Some(removing) = removing.into_iter().next() else {
+            return Err(LoginError::TokenRefused.into());
+        };
+        // Cloud removes by ID, which a slug rename never moves; the slug only names it here.
+        if removing.slug != *slug {
+            return Err(if others.iter().any(|other| other.slug == *slug) {
+                Error::coded(
+                    RpcErrorCode::InvalidArgument,
+                    format!(
+                        "This credential acts in Organization {}, not {slug}. No changes made.",
+                        removing.slug
+                    ),
+                )
+                .hint(Hint::Next(format!("ployz org use {slug}")))
+            } else {
+                LoginError::UnknownOrganization(slug.clone()).into()
+            });
+        }
         // A device acts in the Organization it removes; afterwards Cloud refuses it
         // everything, `org ls` included, so it moves to another of the user's first.
-        let others: Vec<cloud_account::OrganizationEntry> = match &credential {
-            Credential::Device(signed_in) if signed_in.organization.slug == *slug => {
-                cloud_account::organizations(&credential)
-                    .await?
-                    .into_iter()
-                    .filter(|organization| organization.slug != *slug)
-                    .collect()
-            }
-            Credential::Device(_) | Credential::Token { .. } => Vec::new(),
+        let others = match &credential {
+            Credential::Device(_) => others,
+            Credential::Token { .. } => Vec::new(),
         };
-        let removal = cloud_account::remove_organization(&credential, slug).await?;
+        let removal = cloud_account::remove_organization(&credential, &removing.id).await?;
         let acting = match others.first() {
             Some(other) if removal.removed => Some(
                 cloud_account::use_organization(&store, &credential, &other.slug)

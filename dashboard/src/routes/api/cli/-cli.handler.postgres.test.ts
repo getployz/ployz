@@ -33,7 +33,7 @@ import { volumeRun } from "#/modules/volume-run/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
 import { handleCliRequest as handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
-import { MintMachineEnrollmentInput } from "#/modules/machines/enrollment";
+import { CliMintMachineEnrollmentInput } from "#/modules/machines/enrollment";
 import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -835,7 +835,9 @@ it.live(
         // Only the Organization the credential acts in.
         const other = yield* cli("DELETE", "organizations/elsewhere", alice);
         assert.strictEqual(other.status, 422);
-        assert.strictEqual(other.json.error?.details?.next, "ployz org use elsewhere");
+        assert.strictEqual(other.json.error?.code, "invalid_argument");
+        // The slug no longer names it; only the ID does.
+        assert.strictEqual((yield* cli("DELETE", `organizations/${slug}`, alice)).status, 422);
 
         // A Project must go first, through its own teardown; nothing is unpaired meanwhile.
         const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
@@ -844,7 +846,7 @@ it.live(
           default_environment: "00000000-0000-4000-8000-000000001261",
         } });
         assert.isTrue(created.ok);
-        const refused = yield* cli("DELETE", `organizations/${slug}`, alice);
+        const refused = yield* cli("DELETE", `organizations/${alice.organization.id}`, alice);
         assert.strictEqual(refused.status, 409);
         assert.deepStrictEqual(refused.json.error?.details?.next, { tool: "remove", input: { project: "shop" } });
         assert.isTrue(server.slots.has("cloud"));
@@ -852,14 +854,14 @@ it.live(
 
         // A Server offline: the Organization stays, disabled, and says which Server must still confirm.
         server.online = false;
-        const partial = yield* cli("DELETE", `organizations/${slug}`, alice);
+        const partial = yield* cli("DELETE", `organizations/${alice.organization.id}`, alice);
         assert.deepInclude(partial.json, { organization: slug, removed: false, servers: { confirmed: [], unconfirmed: [machine] } });
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 1);
 
         // The same command confirms it once the Server is back, clearing Cloud's key and every device key.
         server.online = true;
-        const removed = yield* cli("DELETE", `organizations/${slug}`, alice);
+        const removed = yield* cli("DELETE", `organizations/${alice.organization.id}`, alice);
         assert.deepInclude(removed.json, { organization: slug, removed: true, servers: { confirmed: [machine], unconfirmed: [] } });
         assert.deepStrictEqual([...server.slots.keys()], []);
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
@@ -889,7 +891,7 @@ it.live(
         for (const role of ["admin", "member"] as const) {
           yield* database.drizzle.update(member).set({ role })
             .where(and(eq(member.userId, bobId), eq(member.organizationId, alice.organization.id)));
-          const refused = yield* cli("DELETE", `organizations/${slug}`, bob);
+          const refused = yield* cli("DELETE", `organizations/${alice.organization.id}`, bob);
           assert.strictEqual(refused.status, 403);
           assert.strictEqual(refused.json.error?.code, "forbidden");
           assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
@@ -947,16 +949,19 @@ it.live(
           const bearer = as.session ?? as.bearer;
           if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
           const request = new Request(`${origin}/api/cli/servers/enroll`, { method: "POST", headers, body: JSON.stringify(body) });
-          return handleOrganizationCliRequest(request, MintMachineEnrollmentInput, mintCliMachineEnrollment).pipe(
+          return handleOrganizationCliRequest(request, CliMintMachineEnrollmentInput, mintCliMachineEnrollment).pipe(
             Effect.map((response) => response.status),
             Effect.catch((error) => Effect.succeed(statusForPublicError(encodePublicError(error)))),
           );
         };
-        assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug }), 200);
-        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationSlug: alice.organization.slug }), 200);
-        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationSlug: bob.organization.slug }), 403);
-        assert.strictEqual(yield* enroll({}, { organizationSlug: alice.organization.slug }), 401);
-        assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug, extra: true }), 422);
+        assert.strictEqual(yield* enroll(alice, { organizationId: alice.organization.id }), 200);
+        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationId: alice.organization.id }), 200);
+        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationId: bob.organization.id }), 403);
+        assert.strictEqual(yield* enroll(alice, { organizationId: bob.organization.id }), 404);
+        assert.strictEqual(yield* enroll({}, { organizationId: alice.organization.id }), 401);
+        assert.strictEqual(yield* enroll(alice, { organizationId: alice.organization.id, extra: true }), 422);
+        // The slug no longer names an Organization to the CLI surface.
+        assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug }), 422);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

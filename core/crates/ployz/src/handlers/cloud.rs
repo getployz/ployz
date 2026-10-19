@@ -814,7 +814,7 @@ pub(super) fn reset(root: &ArgMatches) -> Result<(), Error> {
             reqwest::Method::POST,
             "cloud/reset",
             Some(&serde_json::json!({
-                "organizationSlug": organization.slug,
+                "organizationId": organization.id,
                 "confirmedFounderStoppedOrErased": true,
             })),
         )

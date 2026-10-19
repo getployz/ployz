@@ -175,9 +175,9 @@ function enrollmentTestClient(
           completeMachineEnrollment(input),
         ),
       ),
-    mintCli: () => runtime.runPromise(mintCliMachineEnrollment({ userId }, { organizationSlug: "enroll" })),
+    mintCli: () => runtime.runPromise(mintCliMachineEnrollment({ userId }, { organizationId })),
     read: (id: string, actor = userId) => runtime.runPromise(
-      Effect.result(readMachineEnrollment({ userId: actor }, { organizationSlug: "enroll", id })),
+      Effect.result(readMachineEnrollment({ userId: actor }, { organizationId, id })),
     ),
     resetPendingEnrollment: (_organizationId: string) =>
       runtime.runPromise(

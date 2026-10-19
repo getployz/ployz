@@ -12,7 +12,7 @@ import {
 } from "#/modules/machines/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
-import { requireAccess } from "#/modules/organization/access.server";
+import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { Ployz, PloyzProviderError, ployzVersion } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
@@ -29,6 +29,8 @@ import {
   waitForJoinSlot,
   type EnrollmentIdentity,
   type EnrollmentCallback,
+  type CliMintMachineEnrollmentInput,
+  type CliResetPendingEnrollmentInput,
   type MintMachineEnrollmentInput,
   type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
@@ -73,10 +75,15 @@ function credentialsMatch(expected: string, actual: string) {
   return crypto.timingSafeEqual(digest(expected), digest(actual));
 }
 
+/** The dashboard names an Organization by its URL's slug, the CLI by its ID. */
+type OrganizationRef = { readonly organizationSlug: string } | { readonly organizationId: string };
+
 const authorizeEnrollmentOrganization = Effect.fn(
   "MachineEnrollment.authorizeOrganization",
-)(function* (actor: Actor, organizationSlug: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "servers:add");
+)(function* (actor: Actor, named: OrganizationRef) {
+  const { organization } = "organizationId" in named
+    ? yield* requireAccessById(actor, named.organizationId, "servers:add")
+    : yield* requireAccess(actor, named.organizationSlug, "servers:add");
   return { organization, userId: actor.userId };
 });
 
@@ -105,11 +112,8 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
 );
 
 const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
-  function* (actor: Actor, organizationSlug: string, source: "dashboard" | "cli") {
-    const authorization = yield* authorizeEnrollmentOrganization(
-      actor,
-      organizationSlug,
-    );
+  function* (actor: Actor, named: OrganizationRef, source: "dashboard" | "cli") {
+    const authorization = yield* authorizeEnrollmentOrganization(actor, named);
     const issued = yield* insertEnrollmentToken({
       organizationId: authorization.organization.id,
       userId: authorization.userId,
@@ -127,7 +131,7 @@ const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
 export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
   function* (actor: Actor, input: MintMachineEnrollmentInput) {
     const config = yield* AppConfig;
-    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug, "dashboard");
+    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input, "dashboard");
     return mintedEnrollment({
       origin: config.app.url.origin,
       token,
@@ -139,8 +143,8 @@ export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
 
 /** The CLI builds its own pasted command, pinned to its own release. */
 export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli")(
-  function* (actor: Actor, input: MintMachineEnrollmentInput) {
-    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug, "cli");
+  function* (actor: Actor, input: CliMintMachineEnrollmentInput) {
+    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input, "cli");
     return { id, token, expiresAt: expiresAt.toISOString() };
   },
 );
@@ -149,7 +153,7 @@ export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli"
 export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
   function* (actor: Actor, input: ReadMachineEnrollmentInput) {
     const { drizzle } = yield* Database;
-    const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
+    const { organization } = yield* requireAccessById(actor, input.organizationId, "servers:read");
     const [row] = yield* drizzle
       .select({
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
@@ -219,11 +223,8 @@ export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetup
 
 export const resetPendingOrganizationEnrollment = Effect.fn(
   "MachineEnrollment.resetPending",
-)(function* (actor: Actor, input: ResetPendingEnrollmentInput) {
-  const authorization = yield* authorizeEnrollmentOrganization(
-    actor,
-    input.organizationSlug,
-  );
+)(function* (actor: Actor, input: ResetPendingEnrollmentInput | CliResetPendingEnrollmentInput) {
+  const authorization = yield* authorizeEnrollmentOrganization(actor, input);
   return yield* resetPendingEnrollment(authorization.organization.id);
 });
 

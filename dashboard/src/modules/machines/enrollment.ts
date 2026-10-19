@@ -13,6 +13,9 @@ const OrganizationSlug = Schema.String.check(
   Schema.isNonEmpty(),
 );
 
+/** The CLI names its Organization by ID, the dashboard by the slug in its URL. */
+const OrganizationId = Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty());
+
 export const MintMachineEnrollmentInput = Schema.Struct({
   organizationSlug: OrganizationSlug,
 });
@@ -20,8 +23,15 @@ export const MintMachineEnrollmentInput = Schema.Struct({
 export type MintMachineEnrollmentInput =
   typeof MintMachineEnrollmentInput.Type;
 
+export const CliMintMachineEnrollmentInput = Schema.Struct({
+  organizationId: OrganizationId,
+});
+
+export type CliMintMachineEnrollmentInput =
+  typeof CliMintMachineEnrollmentInput.Type;
+
 export const ReadMachineEnrollmentInput = Schema.Struct({
-  organizationSlug: OrganizationSlug,
+  organizationId: OrganizationId,
   id: Schema.String.check(Schema.isUUID()),
 });
 
@@ -35,6 +45,14 @@ export const ResetPendingEnrollmentInput = Schema.Struct({
 
 export type ResetPendingEnrollmentInput =
   typeof ResetPendingEnrollmentInput.Type;
+
+export const CliResetPendingEnrollmentInput = Schema.Struct({
+  organizationId: OrganizationId,
+  confirmedFounderStoppedOrErased: Schema.Literal(true),
+});
+
+export type CliResetPendingEnrollmentInput =
+  typeof CliResetPendingEnrollmentInput.Type;
 
 const MachineIdType = Schema.declare<MachineId>(
   (value): value is MachineId => typeof value === "string",
