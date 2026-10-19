@@ -173,7 +173,7 @@ pub(crate) trait MachineOperations {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<EnsuredContainer, RpcError>;
-    /// What each Machine routes for `service`, as `machine_id` sees the acks.
+    /// What each Machine's proxy routes for `service`, as `machine_id` reads it.
     async fn read_routes(
         &self,
         machine_id: &MachineId,
@@ -951,8 +951,8 @@ enum Published {
 }
 
 /// Bring a Service's new copies In one at a time, wait until every live proxy
-/// lists them, then retire the old copies the plan names, one Out at a time
-/// (D16). An old copy that cannot leave is reported left running.
+/// lists them, then retire the old copies the plan names, one Out at a time.
+/// An old copy that cannot leave is reported left running.
 #[expect(
     clippy::too_many_arguments,
     reason = "one call site; the group's copies travel with the rows"
@@ -970,7 +970,7 @@ async fn publish_group<C: MachineOperations>(
     if new.is_empty() {
         return Published::Listed;
     }
-    // System ingress copies stay Pending for life and no route lists them (D11).
+    // System ingress copies stay Pending for life and no route lists them.
     if *service != QualifiedService::system_ingress()
         && let Err(published) =
             route_new(client, operations, rows, service, &new, cancellation).await

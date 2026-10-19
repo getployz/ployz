@@ -70,7 +70,7 @@ pub(crate) enum BroughtIn {
 }
 
 /// Ask the owner to bring `copy` In for `run`. Only an answer whose `now` is
-/// In succeeds. An unanswered ask re-reads the copy (D17): the owner may have
+/// In succeeds. An unanswered ask re-reads the copy: the owner may have
 /// written In after the deadline passed.
 pub(crate) async fn bring_in<C: MachineOperations>(
     client: &C,
@@ -343,8 +343,8 @@ pub(crate) enum UserStarted {
     NotIn(Option<HealthVerdict>),
 }
 
-/// A user stop, per R1's caller table. A routed or routable copy is Held (under
-/// its own run when it is Held already) and stopped once no live proxy lists it.
+/// A user stop. A routed or routable copy is Held (under its own run when it is
+/// Held already) and stopped once no live proxy lists it.
 /// A copy proxies still list is left running and Held.
 pub(crate) async fn user_stop<C: MachineOperations>(
     client: &C,
@@ -366,7 +366,7 @@ pub(crate) async fn user_stop<C: MachineOperations>(
     stopped(client, &copy, &observed.resolved_spec, stop, queued).await
 }
 
-/// A user start, per R1's caller table: a Held, Pending or stopped In copy is
+/// A user start: a Held, Pending or stopped In copy is
 /// brought In once healthy. An Out copy is refused.
 pub(crate) async fn user_start<C: MachineOperations>(
     client: &C,
@@ -386,7 +386,7 @@ pub(crate) async fn user_start<C: MachineOperations>(
     started(bring_in(client, &copy, &observed.resolved_spec, run).await?)
 }
 
-/// A user restart, per R1's caller table. An In copy is Held, stopped once no
+/// A user restart. An In copy is Held, stopped once no
 /// live proxy lists it, and brought back In under the same run; it comes back
 /// In even when the stop fails. A Held copy is only brought In. A Pending copy
 /// is stopped and started outside rotation. An Out copy is refused.
@@ -434,7 +434,7 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     started
 }
 
-/// A user removal, per R1's Removal rows: an In or Held copy goes Out, and is
+/// A user removal: an In or Held copy goes Out, and is
 /// removed once no live proxy lists it. A Pending or Out copy, a hook and a
 /// proxy copy are removed directly. A copy already gone counts as removed.
 pub(crate) async fn user_remove<C: MachineOperations>(
@@ -474,7 +474,7 @@ async fn observe<C: MachineOperations>(
 }
 
 /// Whether the copy takes part in rotation. Hooks stay Pending for life, and
-/// proxy copies are never routed (D11).
+/// proxy copies are never routed.
 fn routable(observed: &ContainerObservation) -> bool {
     observed.kind == ContainerKind::ServiceContainer
         && observed.identity() != QualifiedService::system_ingress()
