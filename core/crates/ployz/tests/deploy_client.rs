@@ -1181,8 +1181,12 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
         .collect::<Vec<_>>();
     assert_eq!(
         logs,
-        [Ok((3..=12)
+        [Ok((3..=10)
             .map(|n| format!("line {n}"))
+            .chain([
+                "plain from-docker".to_owned(),
+                "token=[redacted]".to_owned()
+            ])
             .collect::<Vec<_>>())]
     );
 }
