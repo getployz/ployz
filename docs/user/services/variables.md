@@ -71,6 +71,7 @@ references the variable still blocks the rename: change that file first.
 ## Seal a secret
 
 A sealed variable is encrypted when you save it, and the dashboard never shows its value again.
+A lock marks it in the list.
 Your service still gets the real value when it deploys.
 
 - New variables are plain unless you tick **Sealed**.

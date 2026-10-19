@@ -19,6 +19,7 @@ it("delivers a log burst together without losing or duplicating replayed records
   const stream = getContainerLogStream({ organizationSlug: "burst" }, { queryClient, sessionId: "session", userId: "user" });
   const changes = vi.fn();
   const subscription = stream.collection.subscribeChanges(changes);
+  stream.view();
   try {
     const baseline = changes.mock.calls.length;
     for (let i = 0; i < 3_001; i++) {
@@ -43,7 +44,7 @@ it("delivers a log burst together without losing or duplicating replayed records
   }
 });
 
-it("retains an inactive stream until DB garbage collection, then reopens it on demand", async () => {
+it("closes the connection once no viewer is on screen, keeps the lines until DB garbage collection, and reopens on view", async () => {
   vi.useFakeTimers();
   const sources: FakeEventSource[] = [];
   class FakeEventSource extends EventTarget {
@@ -58,6 +59,8 @@ it("retains an inactive stream until DB garbage collection, then reopens it on d
   const stream = getContainerLogStream(selection, scope);
   expect(sources).toHaveLength(0);
   const subscription = stream.collection.subscribeChanges(() => {});
+  expect(sources).toHaveLength(0);
+  const leave = stream.view();
   try {
     expect(sources).toHaveLength(1);
     stream.collection.insert({ kind: "line", level: "info", id: "1", timestamp: "1", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", message: "hello" });
@@ -66,19 +69,29 @@ it("retains an inactive stream until DB garbage collection, then reopens it on d
     expect(getContainerLogStream({ ...selection, organizationSlug: "other" }, scope)).not.toBe(stream);
     expect(getContainerLogStream({ ...selection, serviceId: "other" }, scope)).not.toBe(stream);
     expect(getContainerLogStream({ ...selection, environmentSlug: "production" }, scope)).not.toBe(stream);
+    // A viewer that remounts at once keeps the connection.
+    leave();
+    const again = stream.view();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.closed).toBe(false);
+    again();
     subscription.unsubscribe();
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(stream.collection.size).toBe(1);
-    expect(sources[0]?.closed).toBe(false);
-    await vi.advanceTimersByTimeAsync(301_000);
-    expect(stream.collection.size).toBe(0);
     expect(sources[0]?.closed).toBe(true);
     expect(stream.signal.aborted).toBe(true);
-    // A silent stream reconnects each minute on its own; reopening adds exactly one more.
-    const opened = sources.length;
-    const reopened = stream.collection.subscribeChanges(() => {});
-    expect(sources).toHaveLength(opened + 1);
+    expect(stream.collection.size).toBe(1);
+    const returned = stream.view();
+    expect(sources).toHaveLength(2);
     expect(stream.signal.aborted).toBe(false);
+    returned();
+    await vi.advanceTimersByTimeAsync(301_000);
+    expect(stream.collection.size).toBe(0);
+    expect(sources.every(source => source.closed)).toBe(true);
+    const reopened = stream.collection.subscribeChanges(() => {});
+    const viewing = stream.view();
+    expect(sources).toHaveLength(3);
+    viewing();
     reopened.unsubscribe();
   } finally {
     subscription.unsubscribe();
@@ -98,6 +111,7 @@ it("holds live lines while the viewer reads older ones, and past the limit start
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "held" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   const send = (at: number) => sources.at(-1)?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
     kind: "line", id: String(at), timestamp: String(at), machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: `line ${at}`,
   } }) }));
@@ -137,6 +151,7 @@ it("keeps the newest waiting lines by time when a slower Server's older lines ar
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "skewed" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   const send = (id: string, at: number, machineId: string) => sources.at(-1)?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
     kind: "line", id, timestamp: String(at), machineId, machineName: machineId, containerId: machineId, serviceName: "api", channel: "stdout", level: "info", message: id,
   } }) }));
@@ -177,6 +192,7 @@ it("reads the newest page first for the exits the live tail lacks, then follows 
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "exits" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   try {
     for (const at of [10, 20]) sources.at(-1)?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: line(at) }) }));
     await vi.advanceTimersByTimeAsync(260);
@@ -195,7 +211,7 @@ it("reads the newest page first for the exits the live tail lacks, then follows 
 type Stored = { container: string; at: number };
 type HistoryRead = { cursor: string | null; until_nanos: string | null; limit: number };
 type StoreTransport = { watch(): AsyncGenerator<object>; history(input: HistoryRead): Promise<{ next(): Promise<object | null>; cancel(): void }> };
-const sdkHistory = createRequire(import.meta.url)(join(dirname(createRequire(import.meta.url).resolve("@ployz/sdk")), "runtime-logs.js")).history as (transport: StoreTransport, options: LogHistoryOptions) => Promise<LogHistoryPage>;
+const sdkHistory = createRequire(import.meta.url)(join(dirname(createRequire(import.meta.url).resolve("@ployz/sdk")), "runtime-logs.js")).history as (transport: StoreTransport, options: Omit<LogHistoryOptions, "sealed"> & { sealed: object }) => Promise<LogHistoryPage>;
 
 /**
  * One Server's Log Store holding `stored`, read through the SDK's history and the route's projection. `stored` may
@@ -221,7 +237,7 @@ function storeFetch(stored: readonly Stored[], reads: string[]) {
   return async (_url: string, init: RequestInit) => {
     const { cursor, before } = JSON.parse(String(init.body)) as { cursor?: string; before?: string };
     reads.push(cursor ? "cursor" : before === undefined ? "newest" : `before=${before}`);
-    const page = await sdkHistory(transport, { filter: { namespace: "env" }, limit: 500, cursor, before });
+    const page = await sdkHistory(transport, { sealed: {}, filter: { namespace: "env" }, limit: 500, cursor, before });
     return Response.json({ rows: page.records.map(projectContainerLog), failures: page.failures, cursor: page.cursor });
   };
 }
@@ -263,6 +279,7 @@ it.each([
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "paging", environmentSlug: "env", projectSlug: "p" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   try {
     for (const { container, at } of live) {
       source?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
@@ -295,6 +312,7 @@ it("holds each line once when lines waiting past the limit land after a read of 
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "overflow", environmentSlug: "env", projectSlug: "p" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   const send = async (rows: readonly Stored[]) => {
     for (const { container, at } of rows) {
       source?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
@@ -337,6 +355,7 @@ it("keeps every waiting line of a timestamp group the Log Store had only part of
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "partial-group", environmentSlug: "env", projectSlug: "p" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   const seen = new Map<number, number>();
   const send = async (rows: readonly Stored[]) => {
     for (const { container, at } of rows) {
@@ -382,6 +401,7 @@ it("drops a read of the Log Store still in flight when the viewer returns to the
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "stale-read", environmentSlug: "env", projectSlug: "p" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   const send = async (rows: readonly Stored[]) => {
     for (const { container, at } of rows) {
       source?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
@@ -425,6 +445,7 @@ it("keeps each failed container's reason on a Server's missing note until every 
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "recovers" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   const send = (data: string) => source?.dispatchEvent(new MessageEvent("log", { data }));
   const record = (containerId: string) => JSON.stringify({ type: "record", record: {
     kind: "line", id: `${containerId}/1`, timestamp: "1", machineId: "m", machineName: "Server", containerId, serviceName: "api", channel: "stdout", level: "info", message: "back",
@@ -462,6 +483,7 @@ it("retries a failed cursor page after its Server recovers", async () => {
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "retry-history" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   try {
     await stream.loadOlder();
     await stream.loadOlder();
@@ -499,6 +521,7 @@ it("clears an aborted history read so the reconnected stream can load again", as
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "abort-history" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   try {
     const loading = stream.loadOlder();
     expect(stream.getSnapshot().historyPending).toBe(true);
@@ -533,6 +556,7 @@ it("a late aborted read cannot clear a new connection's pending history", async 
   const queryClient = new QueryClient();
   const stream = getContainerLogStream({ organizationSlug: "late-abort-history" }, { queryClient, sessionId: "session", userId: "user" });
   const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
   try {
     const oldRead = stream.loadOlder();
     sources.at(-1)?.dispatchEvent(new Event("error"));

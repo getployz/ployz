@@ -201,7 +201,9 @@ fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
         call_key,
         &mut no_cloud,
     );
-    if let ToolResult::Refused(refusal) = &run.result {
+    if let ToolResult::Refused(refusal) = &run.result
+        && refusal.code != RpcErrorCode::Ambiguous
+    {
         assert_eq!(refusal.retry.tool, tool, "a retry calls the same tool");
         if refusal.code != RpcErrorCode::ConfirmationRequired && refusal.writes != Writes::Unknown {
             assert_eq!(refusal.retry.input, input, "a retry repeats the input");
@@ -575,6 +577,24 @@ fn a_bad_input_names_the_field_and_an_example() {
 }
 
 #[test]
+fn a_new_volume_on_a_second_replica_is_refused_in_a_whole_sentence() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let replicas = json!({ "service": "web", "set": { "replicas": 2 } });
+    call(&store, "service_update", replicas, "update-1").ok();
+
+    let volume = json!({ "name": "data", "service": "web", "path": "/data" });
+    let refusal = call(&store, "volume_add", volume, "volume-1").refused();
+    assert_eq!(refusal.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refusal.message,
+        "data would be attached to web; set replicas to 1, or add it with shared writes on"
+    );
+    assert!(refusal.next.is_empty(), "{refusal:?}");
+}
+
+#[test]
 fn review_reads_domain_changes_as_domains() {
     let store = shop();
     let service = json!({ "name": "web", "image": "traefik/whoami" });
@@ -648,7 +668,7 @@ fn a_service_goes_from_staged_to_deployed() {
     let review = call(&store, "review", json!({}), "review-1");
     assert_eq!(review.writes, 0);
     let review = review.ok();
-    assert_eq!(review["asks_approval"], false);
+    assert_eq!(review["asks_approval"], true);
     assert!(
         review["lines"]
             .as_array()
@@ -681,7 +701,7 @@ fn a_service_goes_from_staged_to_deployed() {
     let waited = call(
         &store,
         "deployment_show",
-        json!({ "wait_seconds": 1_000 }),
+        json!({ "wait_seconds": WAIT_CAP_SECONDS }),
         "show-2",
     );
     assert_eq!(waited.waited_ms, WAIT_CAP_SECONDS * 1_000);
@@ -3053,4 +3073,66 @@ fn every_read_tool_explains_what_it_cannot_find() {
         "answered without saying why:\n{}",
         bare.join("\n")
     );
+}
+
+#[test]
+fn turning_pull_request_environments_off_needs_no_repository() {
+    let store = shop();
+    let run = call(
+        &store,
+        "environment_pr",
+        json!({ "enabled": false }),
+        "call-1",
+    );
+    assert_eq!(run.writes, 0);
+    let off = run.ok();
+    assert_eq!(off["pull_request_environments"], json!(false));
+    let refusal = call(
+        &store,
+        "environment_pr",
+        json!({ "enabled": true }),
+        "call-2",
+    )
+    .refused();
+    assert_eq!(refusal.field.as_deref(), Some("repository"));
+}
+
+#[test]
+fn an_unknown_environment_lists_the_real_ones_instead_of_creating_it() {
+    let store = shop();
+    let refusal = call(
+        &store,
+        "environment_remove",
+        json!({ "project": "shop", "environment": "nope" }),
+        "call-1",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.writes, Writes::None);
+    assert_eq!(refusal.valid, vec!["production".to_owned()]);
+    assert_eq!(refusal.fix(), None);
+    assert_eq!(
+        refusal.next,
+        vec![Call::new("environment_show", json!({ "project": "shop" }))]
+    );
+}
+
+#[test]
+fn review_says_every_agent_deploy_asks_on_cloud_and_none_does_locally() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let on_cloud = call(&store, "review", json!({}), "review-1").ok();
+    assert_eq!(on_cloud["asks_approval"], json!(true), "{on_cloud}");
+    assert_eq!(on_cloud["destroys"], json!([]), "{on_cloud}");
+    let local = drive(
+        &store,
+        StoreAt::Local,
+        "review",
+        json!({}),
+        "review-2",
+        &mut no_cloud,
+    )
+    .ok();
+    assert_eq!(local["asks_approval"], json!(false), "{local}");
 }

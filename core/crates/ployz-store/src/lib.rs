@@ -101,12 +101,13 @@ pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeC
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
+pub use settings::size::memory_size;
 pub use settings::{Apply, NodeName, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
-    AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
-    ProjectListing, ProjectsQuery, ProjectsView, ProtectedView, SeenProtection,
-    SetDefaultEnvironment, SetEnvironmentProtected,
+    AppliedVolume, EnvironmentListing, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView,
+    OrganizationRemoved, ProjectListing, ProjectsQuery, ProjectsView, ProtectedView,
+    RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
 

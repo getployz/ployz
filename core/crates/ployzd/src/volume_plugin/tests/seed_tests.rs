@@ -547,3 +547,30 @@ async fn departure_demotes_the_others_and_names_a_seed_whose_receive_will_not_st
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn a_seed_refuses_a_slot_holding_a_copy_this_machine_wrote() {
+    for (property, value) in [
+        (
+            "snapshots",
+            "tank/ployz-mirror/seed/fs@dep-100\t900\t1690000000",
+        ),
+        ("ployz:cut", "on"),
+        ("ployz:epoch", "3"),
+    ] {
+        let test = TestDir::new();
+        let (socket, _server) = start(
+            &test,
+            USABLE_POOL,
+            &["root", "volume", "seed-slot", "seed-fs"],
+        );
+        set_property(&test, "tank/ployz/data", "snapshots", POINT);
+        set_property(&test, "tank/ployz-mirror/seed/fs", property, value);
+
+        let reply = post(&socket, "/Volume.Seed", seed(77)).await;
+        assert!(reply.get("Err").is_some(), "{property}: {reply}");
+        let log = commands(&test);
+        assert!(!log.contains("zfs destroy"), "{property}: {log}");
+        assert!(test.0.join("seed-fs").exists(), "{property}");
+    }
+}
