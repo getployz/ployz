@@ -373,11 +373,12 @@ pub(super) fn org_new(root: &ArgMatches) -> Result<(), Error> {
         cloud_account::new_organization(&store, &credential, name, slug)
             .await
             .map_err(|error| {
-                // Connected, so the request may have landed and only the reply was lost.
+                // Connected, so the request may have landed and only the reply was lost
+                // or unreadable.
                 let reply_lost = matches!(
                     &error,
                     LoginError::Unreachable { error: cause, .. } if !cause.is_connect()
-                );
+                ) || matches!(error, LoginError::Reply(_));
                 let error = Error::from(error);
                 if reply_lost {
                     error
