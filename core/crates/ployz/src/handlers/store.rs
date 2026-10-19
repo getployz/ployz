@@ -786,12 +786,38 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
         || value.to_string().chars().count(),
         |text| text.chars().count(),
     );
-    let text = crate::ui::escaped(&value.to_string());
+    let text = value.to_string();
     if length <= SHOWN {
-        return text;
+        return crate::ui::escaped(&text);
     }
-    let start: String = text.chars().take(SHOWN).collect();
+    let mut width = 0;
+    let start: String = pieces(&text)
+        .take_while(|piece| {
+            width += piece.chars().count();
+            width <= SHOWN
+        })
+        .collect();
     format!("{start}… ({length} chars)")
+}
+
+/// JSON `text` as shown, in pieces a cut must not split: a JSON escape such as `\n` or
+/// `\u0001`, each [`crate::ui::unprintable`] character as its `\u{…}` escape, or one character.
+fn pieces(text: &str) -> impl Iterator<Item = String> + '_ {
+    let mut chars = text.chars();
+    std::iter::from_fn(move || {
+        let c = chars.next()?;
+        Some(match c {
+            '\\' => {
+                let escape = chars.next();
+                let digits = if escape == Some('u') { 4 } else { 0 };
+                std::iter::once(c)
+                    .chain(escape)
+                    .chain(chars.by_ref().take(digits))
+                    .collect()
+            }
+            c => crate::ui::escaped(c.encode_utf8(&mut [0; 4])),
+        })
+    })
 }
 
 /// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
@@ -1067,6 +1093,30 @@ mod tests {
         assert_eq!(shown(&value), escaped);
         let long = shown(&json!(format!("\u{202E}{}", "a".repeat(100))));
         assert!(long.starts_with(r#""\u{202e}aaa"#), "{long}");
+    }
+
+    #[test]
+    fn a_long_value_is_cut_between_escapes_never_inside_one() {
+        let cut = |before: usize, odd: char| {
+            shown(&json!(format!(
+                "{}{odd}{}",
+                "a".repeat(before),
+                "z".repeat(90 - before)
+            )))
+        };
+        let a = |count| "a".repeat(count);
+        assert_eq!(cut(78, '\u{202E}'), format!("\"{}… (91 chars)", a(78)));
+        assert_eq!(cut(75, '\u{202E}'), format!("\"{}… (91 chars)", a(75)));
+        assert_eq!(
+            cut(71, '\u{202E}'),
+            format!(r#""{}\u{{202e}}… (91 chars)"#, a(71))
+        );
+        assert_eq!(cut(78, '\n'), format!("\"{}… (91 chars)", a(78)));
+        assert_eq!(cut(76, '\u{1}'), format!("\"{}… (91 chars)", a(76)));
+        assert_eq!(
+            cut(70, '\u{1}'),
+            format!(r#""{}\u0001zzz… (91 chars)"#, a(70))
+        );
     }
 
     #[test]
