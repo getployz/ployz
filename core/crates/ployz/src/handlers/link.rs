@@ -131,6 +131,30 @@ pub(crate) fn scope_from_env(config: &Path) -> Result<Scope, Error> {
     })
 }
 
+/// The scope of a Cloud-published command: the `project` and `environment` it was
+/// given, then `PLOYZ_PROJECT`/`PLOYZ_ENV`, then the directory link.
+pub(crate) fn scope_given(
+    config: &Path,
+    project: Option<&str>,
+    environment: Option<&str>,
+) -> Result<Scope, Error> {
+    let env = from_env()?;
+    let project = project
+        .map(|name| ProjectName::parse(name.to_owned()).map(flag_named))
+        .transpose()?;
+    let environment = environment
+        .map(|name| EnvironmentName::parse(name.to_owned()).map(flag_named))
+        .transpose()?;
+    Scope {
+        project: project.or(env.project),
+        environment: environment.or(env.environment),
+        link: None,
+    }
+    .linked(config, |directory, link| {
+        check_organization(config, directory, link)
+    })
+}
+
 /// [`scope_from_env`] for a caller whose credential acts in the Organization with ID
 /// `acting`, such as `ployz mcp`'s agent token, rather than in this device's sign-in.
 pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Error> {
@@ -156,6 +180,13 @@ fn env_named<T>(name: T) -> Named<T> {
     Named {
         name,
         source: Source::Env,
+    }
+}
+
+fn flag_named<T>(name: T) -> Named<T> {
+    Named {
+        name,
+        source: Source::Flag,
     }
 }
 
