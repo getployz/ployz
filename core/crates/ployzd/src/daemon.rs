@@ -327,7 +327,8 @@ impl Daemon {
             shutdown.clone(),
         );
         let rediscovery = crate::machine::LocalMachine::new(local.clone());
-        tokio::spawn(async move { rediscovery.rediscover_addresses().await });
+        let rediscovery_shutdown = shutdown.clone();
+        tokio::spawn(async move { rediscovery.rediscover_addresses(rediscovery_shutdown).await });
         let management_endpoint =
             management::bind(local_record.management_secret(), &config.management)
                 .await
