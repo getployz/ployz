@@ -710,3 +710,92 @@ fn losing_cloud_after_a_replacement_names_the_deployment_being_followed() {
         "ployz deployment show 8 --project shop --env production"
     );
 }
+
+/// Deployment `number` named `named`, with a Service node for each of `ships`.
+fn narrowed(number: u32, status: DeploymentStatus, named: &str, ships: &[&str]) -> DeploymentView {
+    let mut view = view(number, status);
+    view.deployment.services = serde_json::from_value(json!([named])).unwrap();
+    view.nodes = ships
+        .iter()
+        .enumerate()
+        .map(|(n, name)| {
+            serde_json::from_value(json!({
+                "type": "service", "id": format!("dddddddd-dddd-4ddd-8ddd-dddddddddd{n:02}"),
+                "name": name, "outcome": "pending",
+            }))
+            .unwrap()
+        })
+        .collect();
+    view
+}
+
+fn read(view: &DeploymentView) -> Reply {
+    Reply {
+        body: serde_json::to_value(View::Deployment(Box::new(view.clone()))).unwrap(),
+        ..observed(7, DeploymentStatus::Running)
+    }
+}
+
+fn listed(newer: &DeploymentView) -> Reply {
+    Reply {
+        body: serde_json::to_value(View::Deployments(Box::new(DeploymentsView {
+            environment: newer.environment.clone(),
+            deployments: vec![newer.deployment.clone()],
+            next_cursor: None,
+            latest: Some(newer.deployment.clone()),
+            in_flight: vec![newer.deployment.clone()],
+        })))
+        .unwrap(),
+        ..replacement()
+    }
+}
+
+/// `deploy web`, superseded by `deploy client`: the CLI's result after following.
+fn superseded_by_client(client_ships: &[&str]) -> Value {
+    let root = tempfile::tempdir().unwrap();
+    let ours = narrowed(7, DeploymentStatus::Queued, "web", &["web"]);
+    let superseded = narrowed(7, DeploymentStatus::Superseded, "web", &["web"]);
+    let newer = narrowed(8, DeploymentStatus::Running, "client", client_ships);
+    let mut applied = newer.clone();
+    applied.deployment.status = DeploymentStatus::Applied;
+    let mut replies = vec![
+        Reply {
+            body: serde_json::to_value(Written::Deployment(ours.deployment)).unwrap(),
+            ..admitted()
+        },
+        read(&superseded),
+        listed(&newer),
+        read(&newer),
+    ];
+    if client_ships.contains(&"web") {
+        replies.extend([read(&newer), read(&applied)]);
+    }
+    let events = root.path().join("events.ndjson");
+    let Run { output, .. } = cli_run(
+        replies,
+        root.path(),
+        &[
+            "deploy",
+            "web",
+            "--project",
+            "shop",
+            "--env",
+            "production",
+            "--events",
+            events.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_follows_a_newer_one_that_ships_its_service_by_reference() {
+    let result = superseded_by_client(&["client", "web"]);
+    assert_eq!(result.get("number"), Some(&json!(8)), "{result}");
+    assert_eq!(result.get("status"), Some(&json!("applied")), "{result}");
+}
