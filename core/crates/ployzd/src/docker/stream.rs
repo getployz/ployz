@@ -204,6 +204,7 @@ async fn forward_attached_exec(
         StreamEnded,
         ProcessExited(Option<i64>),
         Failed(bollard::errors::Error),
+        ClientGone,
     }
 
     let process_exited = wait_for_exec_exit(docker, exec_id);
@@ -212,24 +213,24 @@ async fn forward_attached_exec(
         tokio::select! {
             biased;
             result = &mut process_exited => match result {
-                Ok(exit_code) => break Ok(Completion::ProcessExited(exit_code)),
-                Err(error) => break Ok(Completion::Failed(error)),
+                Ok(exit_code) => break Completion::ProcessExited(exit_code),
+                Err(error) => break Completion::Failed(error),
             },
+            () = sender.closed() => break Completion::ClientGone,
             next = output.next() => match next {
                 Some(Ok(output)) => {
-                    if let Err(error) = send_exec(sender, exec_output(output, tty)).await {
-                        break Err(error);
+                    if send_exec(sender, exec_output(output, tty)).await.is_err() {
+                        break Completion::ClientGone;
                     }
                 }
-                Some(Err(error)) => break Ok(Completion::Failed(error)),
-                None => break Ok(Completion::StreamEnded),
+                Some(Err(error)) => break Completion::Failed(error),
+                None => break Completion::StreamEnded,
             },
         }
     };
     if let Some(task) = stdin_task {
         task.abort();
     }
-    let completion = completion?;
 
     match completion {
         Completion::StreamEnded => match docker.inspect_exec(exec_id).await {
@@ -240,6 +241,39 @@ async fn forward_attached_exec(
         Completion::ProcessExited(exit_code) => {
             finish_exec_output(output, tty, sender, exit_code).await
         }
+        Completion::ClientGone => {
+            kill_exec(docker, exec_id).await;
+            Err(Status::cancelled("exec client disconnected"))
+        }
+    }
+}
+
+/// Docker has no API to stop an exec, so a client that hangs up kills the
+/// exec's process group the way a closed terminal would. ployzd shares the
+/// host PID namespace, where Docker reports the exec's PID.
+async fn kill_exec(docker: &bollard::Docker, exec_id: &str) {
+    let inspected = match docker.inspect_exec(exec_id).await {
+        Ok(inspected) => inspected,
+        Err(error) => {
+            tracing::warn!(error = %ployz_core::error_chain::inline(&error), "inspecting an abandoned exec failed");
+            return;
+        }
+    };
+    if inspected.running != Some(true) {
+        return;
+    }
+    let Some(pid) = inspected
+        .pid
+        .and_then(|pid| i32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+    else {
+        return;
+    };
+    if let Err(error) = nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGKILL,
+    ) {
+        tracing::warn!(%error, pid, "killing an abandoned exec failed");
     }
 }
 

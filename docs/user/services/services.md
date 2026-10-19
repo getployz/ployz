@@ -94,6 +94,9 @@ ployz exec web                     # a shell in one of its containers
 ployz exec web npm run migrate     # or one command
 ```
 
+When `ployz exec` stops, or loses its connection, the command it started in the container stops
+too.
+
 A restart doesn't pick up staged changes. Deploy for that. Restarting or stopping the same
 service from the CLI and from the [Ployz agent](../account/agent-sidebar.md) at once can leave it
 either running or stopped.
