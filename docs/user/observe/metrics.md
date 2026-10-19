@@ -57,7 +57,8 @@ exit or a stop, such as `ployz service restart`, a Deploy or a rollback, shows n
 the app exits non-zero on the stop signal, as with SIGTERM (143), SIGINT (130) or SIGKILL (137).
 When other issues share the card, the badge adds their count, as in **⚠ OOM +1**. The badge is
 amber, or red when the service is down. Click the ⚠ to open the service's Monitoring tab. A
-server that needs an upgrade or doesn't answer adds nothing to the card.
+server that needs an upgrade or doesn't answer adds nothing to the card. A failing uptime check
+shows **⚠ Unreachable**, and a failing healthcheck **⚠ Check failing**.
 
 A crash or OOM kill also emails the organization, as
 [Notifications](../account/notifications.md) describes.

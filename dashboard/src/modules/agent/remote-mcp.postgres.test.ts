@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { it } from "@effect/vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { sql, type Table } from "drizzle-orm";
+import { eq, sql, type Table } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
 import { Effect, Fiber, Layer, Option, Schema } from "effect";
@@ -13,9 +13,10 @@ import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
 import { oauthConsent, oauthRefreshToken } from "#/modules/identity/oauth-tables";
-import { member, verification } from "#/modules/identity/tables";
+import { member, session, verification } from "#/modules/identity/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { removeMembership } from "#/modules/organization/membership.server";
+import { organization } from "#/modules/organization/tables";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -23,6 +24,7 @@ import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization,
 const origin = "http://localhost:3000";
 const REDIRECT = "http://127.0.0.1:9999/callback";
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a801";
+const OTHER_ORGANIZATION = "00000000-0000-4000-8000-00000000a806";
 const PROJECT = "00000000-0000-4000-8000-00000000a802";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000a803";
 const SERVICE = "00000000-0000-4000-8000-00000000a804";
@@ -508,6 +510,22 @@ it.live("/connect names the agent asking and the host its code returns to, and n
     const tampered = new URLSearchParams(signed);
     tampered.set("redirect_uri", "https://attacker.example/callback");
     expect((yield* choices(tampered.toString()))?.agent).toBeNull();
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("/connect picks the Organization the session acts in, not the first one listed", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const { toConnect } = yield* authorize(shop, yield* registerAgent(shop));
+    const choices = shop.provided(connectChoices(new Headers({ cookie: shop.cookie }), toConnect.search.slice(1)));
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.insert(organization).values({ id: OTHER_ORGANIZATION, name: "Another", slug: "another" });
+      yield* drizzle.insert(member).values({ userId: shop.boId, organizationId: OTHER_ORGANIZATION, role: "owner" });
+      yield* drizzle.update(session).set({ activeOrganizationId: ORGANIZATION }).where(eq(session.userId, shop.boId));
+    }));
+    const picked = yield* choices;
+    expect(picked?.organizations.map((choice) => choice.slug)[0]).toBe("another");
+    expect(picked?.selected).toBe(ORGANIZATION);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a parameter the browser adds to /connect leaves the consent standing", () =>

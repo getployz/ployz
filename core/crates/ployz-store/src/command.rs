@@ -491,7 +491,19 @@ commands! {
             let mut at = Call { tx, who, sealing, trusted };
             c.commands
                 .iter()
-                .map(|command| command.apply(&c.environment, &mut at))
+                .enumerate()
+                .map(|(index, command)| {
+                    command.apply(&c.environment, &mut at).map_err(|mut refused| {
+                        // Its `next` reads what the commands before it wrote, and the
+                        // refusal rolls them back.
+                        if index > 0
+                            && let Some(details) = refused.details.as_object_mut()
+                        {
+                            details.remove("next");
+                        }
+                        refused
+                    })
+                })
                 .collect::<Result<_, _>>()
                 .map(|results| Batched { results })
         };
