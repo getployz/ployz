@@ -25,7 +25,8 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    QualifiedService, ResolvedServiceSpec, ServingPointer, StorageChoice, WireGuardPublicKey,
+    PinnedAddresses, QualifiedService, ResolvedServiceSpec, ServingPointer, StorageChoice,
+    WireGuardPublicKey,
 };
 
 mod docker;
@@ -213,6 +214,8 @@ pub struct EnrollRequest {
     pub role: EnrollAs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "PinnedAddresses::is_empty")]
+    pub pinned: PinnedAddresses,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -467,6 +470,8 @@ pub enum RunTarget {
 pub struct NewContainer {
     pub slot: SlotKey,
     pub resolved_spec: ResolvedServiceSpec,
+    /// Orders this copy among its Service's copies; stamped as the `ployz.gen` label.
+    pub r#gen: crate::Gen,
     /// Correlation metadata, never part of the Service configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<crate::DeploymentLogId>,
@@ -1578,7 +1583,28 @@ impl RpcError {
     pub fn refusal(&self) -> Option<CapabilityRefusal> {
         CapabilityRefusal::new(&self.code, self.details.clone())
     }
+
+    /// `self` from a pull of `image`, naming the image when the answer is not found.
+    /// A registry answers not found for a missing tag and a private repository alike.
+    #[must_use]
+    pub fn pulling(mut self, image: &str) -> Self {
+        if self.code == RpcErrorCode::NotFound && self.details.is_null() {
+            self.details = serde_json::json!({ MISSING_IMAGE: image });
+        }
+        self
+    }
+
+    /// The image a not-found pull named through [`Self::pulling`].
+    #[must_use]
+    pub fn missing_image(&self) -> Option<&str> {
+        if self.code != RpcErrorCode::NotFound {
+            return None;
+        }
+        self.details.get(MISSING_IMAGE)?.as_str()
+    }
 }
+
+const MISSING_IMAGE: &str = "missing_image";
 
 /// A Machine refused a route because its Ployz lacks the route's capability.
 #[derive(Clone, Debug, PartialEq)]
@@ -1845,6 +1871,7 @@ mod set_management_client_wire {
                 advertised_endpoints: machine().advertised_endpoints,
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
         let member = serde_json::to_value(EnrollRequest {
@@ -1856,6 +1883,7 @@ mod set_management_client_wire {
                 },
             },
             wireguard_mtu: Some(1380),
+            pinned: Default::default(),
         })
         .unwrap();
         assert_eq!(founder.pointer("/as/kind"), Some(&json!("founder")));

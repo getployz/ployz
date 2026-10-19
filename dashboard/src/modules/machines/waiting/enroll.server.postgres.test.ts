@@ -824,7 +824,7 @@ const removeUnpairedOrganizationWhile = async (close: (attemptId: string) => Eff
   `);
   const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
   try {
-    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, "ada").pipe(
+    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, adaOrg).pipe(
       Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
     ));
     await waitFor("advisory");
@@ -867,7 +867,7 @@ it("locks the attempt before its cancel event when cancelling, so an Organizatio
   try {
     const cancelling = failure(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attempt.id }));
     await waitFor("advisory");
-    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, "ada").pipe(
+    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, adaOrg).pipe(
       Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
     ));
     await waitFor("transactionid");
@@ -896,7 +896,7 @@ it("holds Fleet Token creation behind an Organization removal", async () => {
   const advisoryWaiters = async () =>
     (await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event = 'advisory'")).rows.length;
   try {
-    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, "ada").pipe(
+    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, adaOrg).pipe(
       Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
     ));
     await waitFor("advisory");

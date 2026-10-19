@@ -3,6 +3,8 @@ import { PencilIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { CommandDialog } from "#/components/ui/command";
 import { FieldError } from "#/components/ui/field";
+import { DnsNameHint } from "#/components/dns-name-hint";
+import { dnsName } from "#/utils/dns-name";
 import { InputGroupInput } from "#/components/ui/input-group";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
 import { Result, Schema } from "effect";
@@ -13,8 +15,10 @@ import {
 
 /**
  * Click-to-edit heading used in the canvas inspector overlay. Shared by the
- * service and volume drawers so renaming behaves identically; callers supply
- * the validation schema and an optimistic rename that owns its failure toast.
+ * service, volume and config drawers so renaming behaves identically. Their
+ * names are DNS labels, so the draft is converted and the saved name previewed;
+ * callers supply the schema the converted name must pass (such as "not taken")
+ * and an optimistic rename that owns its failure toast.
  */
 export function CanvasInspectorNameEditor({
   value,
@@ -37,13 +41,14 @@ export function CanvasInspectorNameEditor({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [draftValue, setDraftValue] = useState("");
-  const parsed = Schema.decodeUnknownResult(schema)(draftValue, strictParseOptions);
-  const error = Result.isFailure(parsed)
+  const converted = dnsName(draftValue);
+  const parsed = Schema.decodeUnknownResult(schema)(converted.name, strictParseOptions);
+  const error = converted.error ?? (converted.name && Result.isFailure(parsed)
     ? parsed.failure instanceof Error
       ? parsed.failure.message
       : "Invalid value"
-    : null;
-  const isDirty = draftValue !== value;
+    : null);
+  const isDirty = converted.name !== "" && converted.name !== value;
 
   function openEditor() {
     setDraftValue(value);
@@ -51,7 +56,7 @@ export function CanvasInspectorNameEditor({
   }
 
   function handleSubmit() {
-    if (Result.isFailure(parsed) || !isDirty) {
+    if (error || Result.isFailure(parsed) || !isDirty) {
       return;
     }
     onRename(parsed.success);
@@ -115,7 +120,7 @@ export function CanvasInspectorNameEditor({
 
               />
           </SourcePickerInput>
-          {error ? <FieldError>{error}</FieldError> : null}
+          {error ? <FieldError>{error}</FieldError> : <DnsNameHint name={converted} />}
           <Button type="submit" disabled={Boolean(error) || !isDirty}>Save</Button>
         </SourcePickerLayout>
         </form>

@@ -2323,10 +2323,15 @@ pub(super) fn prepare_discard(
     tx: &mut dyn Tx,
     environment: &Environment,
     reviewed: &Review,
-    target: DiscardTarget,
+    target: Option<DiscardTarget>,
     path: Option<&SettingPath>,
 ) -> Result<Prepared, RpcError> {
     let saved = reviewed.saved.as_ref().map(|saved| &saved.intent);
+    let target = target.unwrap_or_else(|| {
+        path.map_or(DiscardTarget::Head, |path| {
+            row_baseline(path, environment, reviewed)
+        })
+    });
     let mut working = environment.working.clone();
     let mut baseline = match target {
         DiscardTarget::Saved => saved.unwrap_or(&environment.working).clone(),
@@ -2463,6 +2468,51 @@ pub(super) fn prepare_discard(
         },
     )
 }
+
+/// The baseline a path's row discards to, as `diff` lists it: Saved when only a
+/// draft reversal lists the row, else Head.
+fn row_baseline(path: &SettingPath, environment: &Environment, reviewed: &Review) -> DiscardTarget {
+    let Some(saved) = reviewed.saved.as_ref().map(|saved| &saved.intent) else {
+        return DiscardTarget::Head;
+    };
+    let Ok(node) = resolve_node(path, environment, saved) else {
+        return DiscardTarget::Head;
+    };
+    let Some(draft) = reviewed
+        .view
+        .draft_changes
+        .iter()
+        .find(|change| change.node == node)
+    else {
+        return DiscardTarget::Head;
+    };
+    let runtime = reviewed
+        .view
+        .changes
+        .iter()
+        .find(|change| change.node == node);
+    let only_draft = if path.target().is_none() && path.node_field().is_none() {
+        runtime.is_none_or(|runtime| {
+            runtime.lifecycle == ReviewLifecycleKind::Update
+                && draft.lifecycle != ReviewLifecycleKind::Update
+        })
+    } else {
+        let Ok(selected) = selector_path(path, &node, &environment.working, saved) else {
+            return DiscardTarget::Head;
+        };
+        let lists = |change: &NodeChange| change.settings.iter().any(|row| row.path == selected);
+        lists(draft)
+            && runtime.is_none_or(|runtime| {
+                runtime.lifecycle == ReviewLifecycleKind::Update && !lists(runtime)
+            })
+    };
+    if only_draft {
+        DiscardTarget::Saved
+    } else {
+        DiscardTarget::Head
+    }
+}
+
 fn has_node(intent: &SavedEnvironmentIntent, node: &ReviewNodeIdentity) -> bool {
     match node.node_type {
         EnvironmentNodeType::Service => intent.services.iter().any(|owner| owner.id == node.id),

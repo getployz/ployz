@@ -54,7 +54,24 @@ pub(super) fn token_remove_command(command: Command) -> Command {
 }
 
 pub(super) fn org_group(command: Command) -> Command {
-    command.about("List or switch Organizations")
+    command.about("List, make or switch Organizations")
+}
+
+pub(super) fn org_new_command(command: Command) -> Command {
+    command
+        .about("Make an Organization you own; this device moves to it")
+        .long_about(
+            "Make an Organization you own. Its slug comes from --slug, else the name; \
+             when another Organization has it, Cloud adds a suffix and prints the slug it picked. \
+             This device then acts in the new Organization. Your other sign-ins stay where they are.",
+        )
+        .arg(positional("name", true).help("Its name, up to 64 characters"))
+        .arg(
+            value("slug", None)
+                .value_name("SLUG")
+                .help("Its slug, from which its dashboard URL is made; defaults to the name"),
+        )
+        .after_help("Examples:\n  ployz org new \"Acme Corp\"\n  ployz org new \"Acme Corp\" --slug acme")
 }
 
 pub(super) fn org_list_command(command: Command) -> Command {
@@ -64,7 +81,7 @@ pub(super) fn org_list_command(command: Command) -> Command {
 pub(super) fn org_use_command(command: Command) -> Command {
     command
         .about("Act in another of your Organizations from this device")
-        .arg(positional("organization", true).help("Organization slug"))
+        .arg(positional("organization", true).help("Organization, from ployz org ls"))
 }
 
 pub(super) fn org_build_order_command(command: Command) -> Command {
@@ -101,7 +118,7 @@ pub(super) fn org_remove_command(command: Command) -> Command {
                      Organization, disabled, until the same command confirms it. Type its \
                      slug with --confirm.",
         )
-        .arg(positional("organization", true).help("Organization slug"))
+        .arg(positional("organization", true).help("Organization, from ployz org ls"))
         .arg(
             value("confirm", None)
                 .value_name("ORGANIZATION")
@@ -346,6 +363,40 @@ pub(super) fn org_use(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+pub(super) fn org_new(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = matches.get_one::<String>("name").expect("name is required");
+    let slug = matches.get_one::<String>("slug").map(String::as_str);
+    let store = CredentialStore::beside(&config_path(matches)?);
+    let organization = runtime()?.block_on(async {
+        let credential = cloud_account::from_env(&store).await?;
+        cloud_account::new_organization(&store, &credential, name, slug)
+            .await
+            .map_err(|error| {
+                // Connected, so the request may have landed and only the reply was lost
+                // or unreadable.
+                let reply_lost = matches!(
+                    &error,
+                    LoginError::Unreachable { error: cause, .. } if !cause.is_connect()
+                ) || matches!(error, LoginError::Reply(_));
+                let error = Error::from(error);
+                if reply_lost {
+                    error
+                        .context("Cloud may have made the Organization; check before retrying.")
+                        .hint(Hint::Inspect("ployz org ls".to_owned()))
+                } else {
+                    error
+                }
+            })
+    })?;
+    crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
+        crate::ui::stream(format_args!(
+            "Made Organization {}. This device now acts in it.",
+            organization.slug
+        ))
+    })
+}
+
 /// Leave the Organization through Cloud's `org_leave`. Cloud refuses a device everything
 /// in an Organization it left, so a signed-in device lists the others first and moves to
 /// one, as `org rm` does.
@@ -376,14 +427,14 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
             Credential::Device(_) => cloud_account::organizations(&credential)
                 .await?
                 .into_iter()
-                .filter(|other| other.slug != organization.slug)
+                .filter(|other| other.id != organization.id)
                 .collect(),
             Credential::Token { .. } => Vec::new(),
         };
         let key = uuid::Uuid::new_v4().to_string();
         // Cloud leaves the Organization named here, not the session's active one, which a
         // browser may have moved since this device last acted.
-        let input = serde_json::json!({ "organization": organization.slug });
+        let input = serde_json::json!({ "organization": organization.id });
         crate::published::run_on(
             &credential,
             cloud_account::Via::Cli,
@@ -458,19 +509,38 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(matches)?);
     let (removal, acting) = runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
+        let list = cloud_account::organizations(&credential).await?;
+        let Some(removing) = list.iter().find(|organization| organization.current) else {
+            return Err(match &credential {
+                Credential::Device(signed_in) => {
+                    LoginError::NotMember(signed_in.organization.slug.clone())
+                }
+                Credential::Token { .. } => LoginError::TokenRefused,
+            }
+            .into());
+        };
+        // Cloud removes by ID, which a slug rename never moves; the slug only names it here.
+        if removing.slug != *slug {
+            return Err(if list.iter().any(|other| other.slug == *slug) {
+                Error::coded(
+                    RpcErrorCode::InvalidArgument,
+                    format!(
+                        "This credential acts in Organization {}, not {slug}. No changes made.",
+                        removing.slug
+                    ),
+                )
+                .hint(Hint::Next(format!("ployz org use {slug}")))
+            } else {
+                LoginError::UnknownOrganization(slug.clone()).into()
+            });
+        }
         // A device acts in the Organization it removes; afterwards Cloud refuses it
         // everything, `org ls` included, so it moves to another of the user's first.
-        let others: Vec<cloud_account::OrganizationEntry> = match &credential {
-            Credential::Device(signed_in) if signed_in.organization.slug == *slug => {
-                cloud_account::organizations(&credential)
-                    .await?
-                    .into_iter()
-                    .filter(|organization| organization.slug != *slug)
-                    .collect()
-            }
-            Credential::Device(_) | Credential::Token { .. } => Vec::new(),
+        let others: Vec<_> = match &credential {
+            Credential::Device(_) => list.iter().filter(|other| !other.current).collect(),
+            Credential::Token { .. } => Vec::new(),
         };
-        let removal = cloud_account::remove_organization(&credential, slug).await?;
+        let removal = cloud_account::remove_organization(&credential, &removing.id).await?;
         let acting = match others.first() {
             Some(other) if removal.removed => Some(
                 cloud_account::use_organization(&store, &credential, &other.slug)

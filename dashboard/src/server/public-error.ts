@@ -52,6 +52,14 @@ export class BuildGrantUnavailable extends Data.TaggedError("BuildGrantUnavailab
   readonly publicErrorCategory = "build-grant-unavailable" as const;
 }
 
+/** A dependency Cloud needs, such as a Machine it must reach, is not answering yet; the caller retries. */
+export class Unavailable extends Data.TaggedError("Unavailable")<{
+  readonly message: string;
+  readonly cause?: unknown;
+} & UserFacing> {
+  readonly publicErrorCategory = "unavailable" as const;
+}
+
 export const PublicErrorCategory = Schema.Literals([
   "validation",
   "unauthorized",
@@ -60,6 +68,7 @@ export const PublicErrorCategory = Schema.Literals([
   "conflict",
   "rate-limited",
   "build-grant-unavailable",
+  "unavailable",
   "server-lacks",
   "internal",
 ]);
@@ -205,6 +214,12 @@ export function encodePublicError(cause: unknown): PublicErrorData {
         code: "BUILD_GRANT_UNAVAILABLE",
         message: "Your Cluster could not mint a Build Grant.",
       });
+    case "unavailable":
+      return encode({
+        _tag: "PublicError",
+        code: "UNAVAILABLE",
+        message: userFacingMessage(cause, "A required service is unavailable. Try again shortly."),
+      });
     case "server-lacks": {
       const lack = decodeServerLacks(cause);
       if (Option.isNone(lack)) return internal();
@@ -244,6 +259,7 @@ export function statusForPublicError(error: PublicErrorData): number {
     case "RATE_LIMITED":
       return 429;
     case "BUILD_GRANT_UNAVAILABLE":
+    case "UNAVAILABLE":
       return 503;
     case "INTERNAL":
       return 500;

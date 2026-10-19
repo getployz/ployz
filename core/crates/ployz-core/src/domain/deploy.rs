@@ -13,7 +13,7 @@ use super::{
     ResolvedServiceSpec,
 };
 use crate::{
-    ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, Namespace,
+    ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName,
 };
 use thiserror::Error;
@@ -100,6 +100,11 @@ pub struct DeployIntent {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<DockerVolumeName, String>>", optional)]
     pub volume_names: BTreeMap<DockerVolumeName, String>,
+    /// The Cluster Domain generated domains live under. Ployz Cloud publishes DNS for
+    /// every hostname one label under it, so messages never ask for a record there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cluster_domain: Option<IngressHost>,
 }
 
 /// Registry credentials for pulling one private image. Debug never prints them.
@@ -137,6 +142,7 @@ impl DeployIntent {
             dependencies: BTreeMap::new(),
             registry_auth: BTreeMap::new(),
             volume_names: BTreeMap::new(),
+            cluster_domain: None,
         }
     }
 
@@ -201,6 +207,13 @@ impl DeployIntent {
     #[must_use]
     pub fn with_volume_names(mut self, names: BTreeMap<DockerVolumeName, String>) -> Self {
         self.volume_names = names;
+        self
+    }
+
+    /// The Cluster Domain this Deploy's generated domains live under.
+    #[must_use]
+    pub fn with_cluster_domain(mut self, cluster_domain: Option<IngressHost>) -> Self {
+        self.cluster_domain = cluster_domain;
         self
     }
 

@@ -131,7 +131,7 @@ read_fleet_token() {
     trap 'stty "$tty_mode" < "$TTY"; exit 130' HUP INT TERM
     stty -echo < "$TTY" || error "Could not turn off echo on the terminal, so the Fleet Token isn't read from it."
     # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
-    printf 'Fleet Token: ' >> "$TTY"
+    printf 'Fleet Token (from Servers in Ployz Cloud): ' >> "$TTY"
     read -r FLEET_TOKEN < "$TTY" || FLEET_TOKEN=
     stty "$tty_mode" < "$TTY"
     trap - HUP INT TERM
@@ -139,9 +139,9 @@ read_fleet_token() {
 }
 
 check_in() {
-    echo "Installs Docker and Ployz. Nothing joins until you say so."
+    echo "Installs Docker and Ployz."
     [ "$(uname -s)" = Linux ] || error "A Fleet Token needs a Linux server."
-    [ "$(id -u)" = 0 ] || error "Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- --enroll"
+    [ "$(id -u)" = 0 ] || error "Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- ${VERSION_ARG:+$VERSION_ARG }--enroll"
     command -v systemctl >/dev/null 2>&1 || error "A Fleet Token needs a server that runs systemd."
     [ -n "$FLEET_TOKEN" ] || read_fleet_token
     is_fleet_token "$FLEET_TOKEN" ||

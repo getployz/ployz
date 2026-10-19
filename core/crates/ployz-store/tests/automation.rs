@@ -234,7 +234,7 @@ fn discarded_mount_reversal_affects_automatic_deploy_only_after_save() {
             &who,
             &ployz_store::Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("web.configs.errors").unwrap()),
                 version: None,
             },

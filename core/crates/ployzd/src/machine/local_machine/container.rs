@@ -16,8 +16,8 @@ use ployz_core::{
     ResolvedServiceSpec, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
-    AnswerWhen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict, HealthcheckSpec,
-    ReadyWait, health_monitor,
+    AnswerWhen, Gen, HEALTH_POLL_INTERVAL, HealthFailure, HealthPoll, HealthVerdict,
+    HealthcheckSpec, ReadyWait, health_monitor,
 };
 
 use super::super::ingress::admit_ingress_service;
@@ -191,6 +191,7 @@ impl LocalMachine {
                     &spec,
                     creation_key,
                     deployment_id,
+                    Gen::FIRST,
                     ImagePull::Policy(registry_auth.as_ref()),
                 )
                 .await
@@ -253,6 +254,7 @@ impl LocalMachine {
                             &resolved_spec,
                             Some(creation_key.as_str().to_owned()),
                             None,
+                            Gen::FIRST,
                             ImagePull::Policy(None),
                         )
                         .await?
@@ -825,6 +827,7 @@ impl LocalMachine {
                         &new.resolved_spec,
                         Some(new.slot.creation_key.as_str().to_owned()),
                         new.deployment_id,
+                        new.r#gen,
                         if new.image_prepared {
                             ImagePull::Prepared
                         } else {
@@ -853,6 +856,10 @@ impl LocalMachine {
         Ok(outcome)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A NewContainer's creation facts, also reached from Volume holders that have no NewContainer."
+    )]
     async fn create_container_admitted(
         &self,
         kind: ContainerKind,
@@ -860,6 +867,7 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
         deployment_id: Option<ployz_core::DeploymentLogId>,
+        r#gen: Gen,
         image: ImagePull<'_>,
     ) -> Result<ContainerCreated, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
@@ -877,6 +885,7 @@ impl LocalMachine {
                 ContainerRequest {
                     creation_key: creation_key.as_deref(),
                     deployment_id: deployment_id.as_ref(),
+                    r#gen,
                     image,
                     kind,
                     namespace,

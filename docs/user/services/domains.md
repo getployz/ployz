@@ -67,6 +67,10 @@ Custom domains are free.
 Domains ignore case. Ployz saves `Acme.COM` as `acme.com`, so you see it in lowercase
 everywhere.
 
+You can enter a domain with non-Latin letters, like `пример.рф`. Ployz saves it in the
+`xn--` form DNS uses, `xn--e1afmkfd.xn--p1ai`, and shows that form everywhere, DNS records
+included.
+
 A service can have any number of custom domains next to its generated domains, each with its
 own port.
 

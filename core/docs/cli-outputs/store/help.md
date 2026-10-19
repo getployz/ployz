@@ -23,7 +23,7 @@ Commands:
   deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
-  history     Show immutable saved versions
+  history     Show saved versions to undo or roll back to
   discard     Undo staged Service, Volume, Config or Setting changes
   docs        Search the Ployz docs, or print a page
   domain      Manage public domains
@@ -104,7 +104,7 @@ Commands:
   deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
-  history     Show immutable saved versions
+  history     Show saved versions to undo or roll back to
   discard     Undo staged Service, Volume, Config or Setting changes
   docs        Search the Ployz docs, or print a page
   domain      Manage public domains
@@ -167,7 +167,7 @@ Commands:
   deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
-  history     Show immutable saved versions
+  history     Show saved versions to undo or roll back to
   discard     Undo staged Service, Volume, Config or Setting changes
   docs        Search the Ployz docs, or print a page
   domain      Manage public domains

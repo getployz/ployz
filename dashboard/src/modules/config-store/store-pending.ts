@@ -70,7 +70,10 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "take": return commandEnvironments(command).map((environment): Mark => ({ mark: "busy", environment, why: "syncing" }));
     case "batch": return command.commands.flatMap(marksOf);
     case "never_sync": return [{ mark: "never_sync", environment: command.environment, rows: command.rows, off: command.off ?? false }];
-    case "add_domain": return [{ mark: "domain", environment: command.environment, service: command.service, name: command.hostname ?? command.prefix ?? null }];
+    case "add_domain": {
+      const name = command.hostname ?? command.prefix ?? null;
+      return [{ mark: "domain", environment: command.environment, service: command.service, name: name !== null && /^\p{ASCII}*$/u.test(name) ? name : null }];
+    }
     case "set_generated_domain": return [{ mark: "domain", environment: command.environment, service: command.service, name: command.domain ?? command.prefix }];
     case "set_merge_value": return [{ mark: "merge_value", environment: command.environment, row: command.row }];
     case "cancel": return [{ mark: "cancel", deployment: command.deployment }];

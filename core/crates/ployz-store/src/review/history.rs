@@ -35,6 +35,10 @@ pub struct HistoryView {
     pub revisions: Vec<SavedRevision>,
     /// Whether older revisions exist beyond `limit`.
     pub more: bool,
+    /// The revision the latest applied Deployment shipped: what the Servers run.
+    pub live: Option<Revision>,
+    /// The newest revision, when its latest Deployment failed.
+    pub failed: Option<Revision>,
 }
 
 /// One immutable Saved snapshot's metadata and redacted change summary.
@@ -173,10 +177,20 @@ pub(crate) fn history(
         previous = Some((revision, intent));
     }
     revisions.reverse();
+    let id = &environment.summary.id;
+    let live = crate::deployment::live(tx, id)?;
+    let failed = match revisions.first() {
+        Some(newest) if crate::deployment::failed(tx, id, newest.revision)? => {
+            Some(newest.revision)
+        }
+        _ => None,
+    };
     Ok(HistoryView {
         environment: environment.summary,
         revisions,
         more,
+        live,
+        failed,
     })
 }
 

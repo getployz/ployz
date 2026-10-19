@@ -14,6 +14,10 @@ use std::{
 // Railpack 0.39.0: the frontend image also ships the matching /railpack CLI.
 const IMAGE: &str = "ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103";
 
+/// Preparation runs the frontend's CLI here: mise resolves Python versions with
+/// a bash script, and the Alpine frontend image has no bash.
+const PREPARATION_IMAGE: &str = "buildpack-deps:trixie-curl@sha256:3dd78c060b4d7c97b426d0160f7d8876c84fbf2fc36e651e9c75620ac9a7da24";
+
 /// Preparation's own bridge. The `ployz-build` prefix puts it behind the same
 /// host firewall as build steps: internet only.
 const NETWORK: &str = "ployz-build-p";
@@ -104,6 +108,14 @@ pub(crate) fn prepare(
             Streams::Inherited,
         )?;
     }
+    let cli = preparation.directory.join("railpack");
+    docker.with_container(&format!("{builder}-railpack"), &[IMAGE], |name| {
+        docker.run(
+            "copy the Railpack CLI",
+            &["cp", &format!("{name}:/railpack"), &cli.to_string_lossy()],
+            Streams::Captured,
+        )
+    })?;
     for (index, recipe) in request.railpack.iter().enumerate() {
         let directory = preparation.directory.join(index.to_string());
         fs::DirBuilder::new()
@@ -141,6 +153,7 @@ pub(crate) fn prepare(
         prepare_container(
             docker,
             &request.working_dir.join(&recipe.context),
+            &cli,
             &script,
             &plan,
             builder,
@@ -176,6 +189,7 @@ pub(crate) fn prepare(
 fn prepare_container(
     docker: &Docker<'_>,
     context: &Path,
+    cli: &Path,
     script: &Path,
     plan: &Path,
     builder: &str,
@@ -190,7 +204,7 @@ fn prepare_container(
         NETWORK.into(),
     ];
     arguments.extend(resources.preparation_arguments());
-    arguments.extend([IMAGE.into(), "/prepare.sh".into()]);
+    arguments.extend([PREPARATION_IMAGE.into(), "/prepare.sh".into()]);
     docker.with_container(
         &name,
         &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -198,6 +212,11 @@ fn prepare_container(
             docker.run(
                 "copy captured Railpack source",
                 &["cp", &context.to_string_lossy(), &format!("{name}:/app")],
+                Streams::Captured,
+            )?;
+            docker.run(
+                "copy the Railpack CLI into preparation",
+                &["cp", &cli.to_string_lossy(), &format!("{name}:/railpack")],
                 Streams::Captured,
             )?;
             docker.run(

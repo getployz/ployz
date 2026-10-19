@@ -1627,6 +1627,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     let running = EnsureContainerRequest {
         want: ContainerWant::Running {
             container: RunTarget::New(NewContainer {
+                r#gen: ployz_core::Gen::FIRST,
                 slot: slot.clone(),
                 resolved_spec: spec.clone(),
                 deployment_id: None,
@@ -1639,12 +1640,12 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     assert_eq!(
         serde_json::to_value(&running).unwrap(),
         json!({ "want": { "state": "running", "container": { "new": {
-            "slot": slot_json, "resolved_spec": spec
+            "slot": slot_json, "resolved_spec": spec, "gen": 1
         } } } })
     );
     let settled: EnsureContainerRequest = serde_json::from_value(json!({
         "want": { "state": "running", "container": { "new": {
-            "slot": slot_json, "resolved_spec": spec, "answer": "settled"
+            "slot": slot_json, "resolved_spec": spec, "gen": 1, "answer": "settled"
         } } }
     }))
     .unwrap();
@@ -1657,7 +1658,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     assert_eq!(settled.answer, AnswerWhen::Settled);
     assert_eq!(
         serde_json::to_value(&settled).unwrap(),
-        json!({ "slot": slot_json, "resolved_spec": spec, "answer": "settled" })
+        json!({ "slot": slot_json, "resolved_spec": spec, "gen": 1, "answer": "settled" })
     );
     let request = op::EnsureContainer::into_request(running);
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);

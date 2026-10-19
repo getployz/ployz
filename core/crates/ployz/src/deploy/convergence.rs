@@ -1210,6 +1210,8 @@ mod tests {
 
     fn container(id: char, machine: char, spec: ResolvedServiceSpec) -> ContainerObservation {
         ContainerObservation::try_from(ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: "api".into(),
             created_at_unix_nanos: 0,

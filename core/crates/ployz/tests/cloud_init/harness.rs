@@ -375,6 +375,8 @@ impl JoinDaemon {
                 let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
                 let container =
                     ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                        rotation: None,
+                        r#gen: None,
                         container_id,
                         display_name: format!("{}-{n}", new.resolved_spec.name),
                         created_at_unix_nanos: n as i64,
@@ -1016,6 +1018,8 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         )
         .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse("a".repeat(64)).unwrap(),
         display_name: "ingress-a".into(),
         created_at_unix_nanos: 1,

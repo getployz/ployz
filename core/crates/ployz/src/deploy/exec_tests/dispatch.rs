@@ -832,6 +832,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
         machine_id,
         ContainerWant::Running {
             container: RunTarget::New(NewContainer {
+                r#gen: ployz_core::Gen::FIRST,
                 slot: slot_key(
                     &test_namespace(),
                     ContainerKind::ServiceContainer,

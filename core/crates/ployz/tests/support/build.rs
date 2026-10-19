@@ -19,6 +19,8 @@ pub struct BuildFixture {
     pub terminal: Mutex<Option<Outcome>>,
     pub platforms: Mutex<Option<Vec<String>>>,
     pub workers: Mutex<BTreeMap<MachineId, Vec<String>>>,
+    /// What a Machine's capability check fails with, as raw worker output.
+    pub check_failures: Mutex<BTreeMap<MachineId, String>>,
     pub definitions: Mutex<Vec<remote::Definition>>,
     pub stores: Mutex<BTreeMap<MachineId, MachineImages>>,
     pub opened: Mutex<Vec<MachineId>>,
@@ -126,11 +128,22 @@ impl BuildFixture {
                     .iter()
                     .flat_map(|target| &target.platforms)
                     .find(|platform| !workers.contains(platform));
+                let failure = self
+                    .check_failures
+                    .lock()
+                    .unwrap()
+                    .get(&machine_id)
+                    .cloned()
+                    .or_else(|| {
+                        unsupported.map(|platform| {
+                            format!("the running BuildKit worker cannot build {platform}")
+                        })
+                    });
                 let outcome =
-                    unsupported.map_or(Outcome::CapabilitiesChecked { machine_id }, |platform| {
+                    failure.map_or(Outcome::CapabilitiesChecked { machine_id }, |message| {
                         Outcome::Failed {
                             stage: ployz_build::Stage::Preparation,
-                            message: format!("the running BuildKit worker cannot build {platform}"),
+                            message,
                             work: Default::default(),
                         }
                     });

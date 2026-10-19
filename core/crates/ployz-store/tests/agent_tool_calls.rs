@@ -1111,6 +1111,41 @@ fn with_volume() -> ConfigStore {
     store
 }
 
+// Catches an empty Organization's reads refused, which the sidebar draws as red failures.
+#[test]
+fn an_empty_organization_reads_as_empty_lists_but_still_refuses_a_write() {
+    let store = backend::open();
+    let shown = call(&store, "environment_show", json!({}), "empty-1").ok();
+    assert_eq!(shown["projects"], json!([]));
+    assert_eq!(shown["services"], json!([]));
+    assert_eq!(shown["next"]["tool"], "project_create");
+
+    let listed = drive(
+        &store,
+        in_org(),
+        "server_show",
+        json!({}),
+        "empty-2",
+        &mut |cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[])),
+            Cloud::Ask(query) => panic!("asked {query:?}"),
+            Cloud::Act(act) => panic!("acted {act:?}"),
+        },
+    )
+    .ok();
+    assert_eq!(listed["servers"], json!([]));
+    assert!(listed["next"].is_string(), "{listed}");
+
+    let refused = call(
+        &store,
+        "service_add",
+        example("service_add").unwrap(),
+        "empty-3",
+    )
+    .refused();
+    assert_eq!(refused.code, RpcErrorCode::NotFound);
+}
+
 #[test]
 fn a_local_store_refuses_every_cloud_tool_before_it_asks_or_writes() {
     let store = with_volume();
@@ -1287,6 +1322,79 @@ fn a_server_that_does_not_answer_is_forgotten_without_a_reset() {
         panic!("forget acts once, as a forget: {acted:?}");
     };
     assert_eq!(server.name.as_str(), "web-2");
+}
+
+#[test]
+fn a_name_checked_while_no_server_answers_says_it_went_unchecked() {
+    let store = shop();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Err(serde_json::from_value::<RpcError>(json!({
+            "code": "unavailable",
+            "message": "Your servers aren't answering. Try again once they are.",
+            "details": { "fix": { "fix": "connect_servers" } },
+        }))
+        .unwrap()),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("nothing is asked of an unchecked name: {act:?}"),
+    };
+
+    let named = drive(
+        &store,
+        in_org(),
+        "server_upgrade",
+        json!({ "server": "nope-9" }),
+        "upgrade-1",
+        &mut cloud,
+    )
+    .refused();
+    let every = drive(
+        &store,
+        in_org(),
+        "server_show",
+        json!({}),
+        "show-1",
+        &mut cloud,
+    )
+    .refused();
+
+    assert_eq!(named.code.as_str(), "unavailable");
+    assert_eq!(
+        named.message,
+        "Can't check that name. Your servers aren't answering. Try again once they are."
+    );
+    assert_eq!(
+        every.message,
+        "Your servers aren't answering. Try again once they are."
+    );
+}
+
+#[test]
+fn a_name_checked_in_an_organization_with_no_servers_says_there_are_none() {
+    let store = shop();
+    let empty = "This Organization has no servers yet. Add one from a terminal; staging still works without one.";
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Err(serde_json::from_value::<RpcError>(json!({
+            "code": "unavailable",
+            "message": empty,
+            "details": { "fix": { "fix": "connect_servers" } },
+        }))
+        .unwrap()),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("nothing is asked with no servers: {act:?}"),
+    };
+
+    let named = drive(
+        &store,
+        in_org(),
+        "server_upgrade",
+        json!({ "server": "web-1" }),
+        "upgrade-1",
+        &mut cloud,
+    )
+    .refused();
+
+    assert_eq!(named.code.as_str(), "unavailable");
+    assert_eq!(named.message, empty);
 }
 
 #[test]
