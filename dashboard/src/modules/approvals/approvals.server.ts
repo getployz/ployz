@@ -8,6 +8,7 @@ import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
   type ApprovalReview,
+  type Redeploy,
   approvalCommand,
   approvalSubject,
   type OperationVerb,
@@ -233,6 +234,7 @@ const RefusedReview = Schema.Struct({
   effects: Schema.mutable(Schema.Array(Schema.declare<DestructiveEffect>((value): value is DestructiveEffect => isEffect(value)))),
   diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),
   protected: Schema.optional(Schema.Literal(true)),
+  redeploy: Schema.optional(Schema.Struct({ deployment: Schema.Number, rolls_back: Schema.mutable(Schema.Array(Schema.Number)) })),
 });
 
 const requester = (caller: Caller) => ({
@@ -251,7 +253,12 @@ const askedAgain = (caller: Caller, review: ApprovalReview) =>
   caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), ...requester(caller), review };
 
 /** A protected ask names its Environment; one from the dashboard also keeps what to run once approved. */
-const storeReview = (caller: Caller, command: ConfigCommand, shown: { effects: DestructiveEffect[]; diff: DiffView }, guarded: boolean): ApprovalReview => {
+const storeReview = (
+  caller: Caller,
+  command: ConfigCommand,
+  shown: { effects: DestructiveEffect[]; diff: DiffView; redeploy?: Redeploy },
+  guarded: boolean,
+): ApprovalReview => {
   if (!guarded) return shown;
   const review = { ...shown, protected: { environment: shown.diff.environment.name } };
   return caller.via === "dashboard" ? { ...review, apply: command } : review;
@@ -274,10 +281,11 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     yield* Effect.logWarning("An approval_required refusal named no review; nothing was recorded.");
     return refused;
   }
-  const { approval: digest, effects, diff } = decoded.value;
+  const { approval: digest, effects, diff, redeploy } = decoded.value;
   const guarded = decoded.value.protected === true;
   const organizationId = caller.organization.id;
-  const review = storeReview(caller, command, { effects, diff }, guarded);
+  // A redeploy's card says what it rolls back, which its digest binds.
+  const review = storeReview(caller, command, redeploy ? { effects, diff, redeploy } : { effects, diff }, guarded);
   const recorded = yield* recordAndSweep(organizationId, diff.environment.id, Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(operationApprovals).values({
@@ -294,7 +302,8 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleEnvironment(organizationId, diff.environment));
-  const details = { effects, approval: digest, diff, approval_id: recorded.id };
+  const asked = { effects, approval: digest, diff, approval_id: recorded.id };
+  const details = redeploy ? { ...asked, redeploy: { deployment: redeploy.deployment, rolls_back: redeploy.rolls_back } } : asked;
   return { ...refused, details: guarded ? { ...details, protected: true } : details };
 });
 

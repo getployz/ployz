@@ -521,6 +521,9 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
             &Admit::Retry(Retry {
                 id: again.clone(),
                 deployment: first.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -540,6 +543,72 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     // A Deployment of other Services builds nothing.
     let targeted = admit(&store, &who, 3, &["api"]);
     assert!(store.sources(&targeted).unwrap().is_empty());
+}
+
+/// Deployment `id`, claimed by `runner`, applied `web`.
+fn applied(store: &ConfigStore, id: &DeploymentId, runner: &RunnerId) {
+    let operation = json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)});
+    let preview = serde_json::from_value(json!({
+        "namespace": "shop-production", "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "operations": [{"index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+                        "operation": operation, "status": {"type": "pending"}}],
+    }))
+    .unwrap();
+    store.claim(id, runner).unwrap();
+    store
+        .record(id, runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome =
+        serde_json::from_value(json!({"type": "success", "completed": [operation]})).unwrap();
+    store
+        .record(
+            id,
+            runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    let a = backend::sha(&"a".repeat(40));
+    let b = backend::sha(&"b".repeat(40));
+    let first = admit(&store, &who, 1, &[]);
+    store.pin(&first, &pins(&a)).unwrap();
+    applied(&store, &first, &runner);
+    let second = admit(&store, &who, 2, &[]);
+    store.pin(&second, &pins(&b)).unwrap();
+    applied(&store, &second, &runner);
+
+    // The branch is at b now; redeploying #1 builds a, which #1 pinned.
+    let back = DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: back.clone(),
+                deployment: first.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    assert_eq!(store.sources(&back).unwrap()[0].commit, Some(a.clone()));
+    assert_eq!(
+        store.claim(&back, &runner).unwrap().sources[0].commit,
+        Some(a)
+    );
 }
 
 fn build_order(store: &ConfigStore, who: &Actor, order: Option<BuildOrder>) -> Vec<Builder> {

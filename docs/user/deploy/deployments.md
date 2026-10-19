@@ -51,8 +51,9 @@ Saving records that reversal; Discard on its row returns it to the latest saved 
 In the CLI, `ployz discard` names each saved change it took out and the command that brings it
 back, such as `ployz discard web`. `ployz diff` lists those rows and `ployz status` counts them.
 
-The dashboard's **Deploy** needs a staged change. Deploying again with nothing staged is
-CLI-only for now:
+The dashboard's **Deploy** needs a staged change. To ship the same commit and settings again,
+click **Redeploy** on the newest deployment. To move GitHub services to their branch's latest
+commit with nothing staged, use the CLI:
 
 ```sh
 ployz deploy
@@ -95,7 +96,7 @@ toast names those variables, the Service shows **· N not set**, and its Variabl
 **Set value** on each. Deploys leave a Not set variable out of the container until you set it.
 A variable that was ever sealed can't come back as plain text. A version that only set sealed
 values has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
-An accepted deployment and its retries keep their original snapshot while you edit the draft.
+An accepted deployment and its redeploys keep their original snapshot while you edit the draft.
 
 From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
 rollback without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
@@ -156,18 +157,36 @@ their recorded outcomes.
 
 ## Redeploy or cancel a deployment
 
-- **Redeploy**, on a failed, cancelled or unknown deployment, ships the same commit and settings
-  again. Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
+- **Redeploy**, on any finished deployment, ships that deployment's commit and settings again.
+  Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
   for Deploy** beside the button says so when volume changes are staged. To ship a fix, change it
   and deploy instead. A deployment whose restore failed can't be redeployed, because it would mount
   the new volume empty. Redeploy refuses with "Restore failed. Restore again."
+- **Roll back** by clicking **Redeploy** on a deployment older than one that ran, even one that
+  failed partway. Ployz asks first, in **Roll back to #4**, and names what it undoes, such as
+  **Undoes #5 and #6**. The rollback ships #4's commit and settings. Services added after #4 stop,
+  and they and the other settings saved after #4 show as staged changes again. A volume #4 deleted
+  that a later deployment brought back is deleted again only after you accept it. In **Deletes
+  data**, type the project and environment, such as `shop/production`. The CLI refuses and prints
+  the command that accepts it with `--accept-volume-loss`. If another deployment runs while you
+  confirm, Ployz asks again with the new list.
+  While a newer deployment is running, Redeploy on an older one refuses with "Wait for #5 to
+  finish, then redeploy." A queued one gives way, as when you deploy again, and so does one whose
+  runner stopped reporting.
+- An applied removal or shutdown can't be redeployed: there is nothing left to ship. One that
+  failed, was cancelled or reads `unknown` can.
+- **A rollback lasts until your next push or deploy**, which ships your latest commit and saved
+  settings again. To keep it, revert the commit in Git and change the settings back.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
   Cancel deployment…** takes it out of the queue.
 
-The CLI does the same with `ployz deployment retry`, `start` and `cancel`, and
-[the agent](../account/agent-sidebar.md) can too, without asking you first.
+The CLI does the same with `ployz deployment redeploy`, `start` and `cancel`. Before a rollback,
+`ployz deployment redeploy 4` asks in a terminal; outside one, or with `--json`, it needs `--yes`.
+A rollback that deletes volume data also needs `--accept-volume-loss <volume>` and the
+`--expect-version` it prints.
+[The agent](../account/agent-sidebar.md) can too, and its redeploys wait for you to approve.
 
 ## Deploy without downtime
 

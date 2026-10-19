@@ -1607,29 +1607,38 @@
       "read_only": true
     },
     {
-      "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve. May stop to ask a human to approve.",
+      "description": "Ship an ended Deployment's commit and settings again; an older one rolls back newer ones. A human approves every redeploy. May stop to ask a human to approve.",
       "destructive": true,
       "gate": "store",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "accept_volume_loss": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "deployment": {
             "description": "The Deployment's number. Omit for the latest.",
             "minimum": 1,
             "type": "integer"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "request_key": {
             "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          },
+          "version": {
             "type": "string"
           }
         },
