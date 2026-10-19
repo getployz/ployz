@@ -18,7 +18,7 @@ import { useMintFleetToken, useMintingFleetToken } from "./use-waiting";
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
-type Minted = { readonly name: string; readonly token: string; readonly cloudOrigin: string; readonly expiresIn: FleetTokenLifetime; readonly autoEnroll: { readonly maxServers: number } | null };
+type Minted = { readonly name: string; readonly token: string; readonly cloudOrigin: string; readonly ployzVersion: string; readonly expiresIn: FleetTokenLifetime; readonly autoEnroll: { readonly maxServers: number } | null };
 
 export function AddServersDialog({ organizationSlug, label = "Add servers", variant = "ink" }: {
   organizationSlug: string;
@@ -130,7 +130,7 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
 }
 
 function MintDone({ organizationSlug, minted, onDone }: { organizationSlug: string; minted: Minted; onDone: () => void }) {
-  const lines = installLines(minted.cloudOrigin, minted.token);
+  const lines = installLines(minted);
   return (
     <div className="flex flex-col gap-3">
       <DialogHeader>

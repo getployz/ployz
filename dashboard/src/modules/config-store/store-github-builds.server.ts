@@ -7,6 +7,7 @@ import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
 import { organizationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
+import { githubBuildId } from "#/modules/github/github-build-workflow";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { installationRefusal } from "#/modules/github/github-token.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
@@ -86,7 +87,7 @@ export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (da
     const walk = servers ? source.builders : source.builders.filter((builder) => builder !== "servers");
     if (walk[0] !== "github") return [];
     return [{
-      build: `${data.deploymentId}.${source.service}`,
+      build: githubBuildId(data.deploymentId, source.service),
       service: source.service,
       repository: source.repository,
       repositoryId: source.repository_id,

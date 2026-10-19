@@ -842,13 +842,15 @@ setsid sh -c 'sleep 1; echo b > /proc/sysrq-trigger' >/dev/null 2>&1 < /dev/null
         self.commands(["ssh", *self.options(), "-p", port, "-O", "exit", "root@" + host], check=False)
 
     def power_on(self, node):
+        # Boot order: the volume plugin socket listens before Docker restores containers that mount `ployz` Volumes.
         self.wait_agent(node)
         self.exec(node, ["bash", "-ec", f"""
 systemctl unmask {DOCKER_UNITS} >/dev/null
-systemctl start docker
 observe=
 if [ -e /etc/systemd/system/ployz-observe.service ]; then observe=ployz-observe.service; fi
-systemctl enable --now {PLOYZ_UNITS} $observe
+systemctl enable {PLOYZ_UNITS} $observe
+systemctl start ployz.socket ployz-volume-plugin.socket
+systemctl start docker ployz.service $observe
 """])
 
     def state(self, node):
