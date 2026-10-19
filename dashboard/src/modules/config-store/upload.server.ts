@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigStore } from "@ployz/sdk";
-import { and, asc, eq, sql } from "drizzle-orm";
-import { Effect, Stream } from "effect";
+import { and, asc, eq, min } from "drizzle-orm";
+import { Effect, Option, Stream } from "effect";
 import { uploadChunk } from "#/modules/config-store/tables";
 import { extractUploadedSource } from "#/modules/github/github-source.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
@@ -40,13 +40,9 @@ export const receiveUpload = Effect.fn("ConfigStore.receiveUpload")(function* (
   return yield* Effect.gen(function* () {
     if (body === null) return yield* refused("invalid_argument", "Expected the source as the request body.");
     yield* notAdmittedYet(store, organizationId, deploymentId);
-    // ponytail: uploads never admitted, or whose Deployment is no longer in flight, go a day later, with the next upload
-    // of their Organization; one Store read each.
-    const stale = yield* database.drizzle.selectDistinct({ deploymentId: uploadChunk.deploymentId }).from(uploadChunk).where(and(
-      eq(uploadChunk.organizationId, organizationId), sql`${uploadChunk.createdAt} < now() - interval '1 day'`));
-    // Best effort: a stale upload that can't go now goes with a later upload, and never refuses this one.
-    yield* Effect.forEach(stale, (old) => releaseUpload(store, organizationId, old.deploymentId), { discard: true }).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("Keeping stale uploads Cloud couldn't release.", cause)),
+    // Best effort: an upload that can't go now goes with a later one, and never refuses this one.
+    yield* releaseUploads(store, organizationId).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Keeping uploads Cloud couldn't release.", cause)),
     );
     yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
@@ -95,15 +91,50 @@ export const extractUpload = Effect.fn("ConfigStore.extractUpload")(function* (o
   return yield* extractUploadedSource(data());
 });
 
-/** Delete Deployment `deploymentId`'s upload once it has ended, or was never admitted; while it's in flight, keep it. */
-export const releaseUpload = Effect.fn("ConfigStore.releaseUpload")(function* (
+/**
+ * The Deployment whose upload Deployment `deploymentId` builds from: the one that uploaded it, which may be an earlier
+ * one. `undefined` without an upload.
+ */
+export const uploadOwner = Effect.fn("ConfigStore.uploadOwner")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
 ) {
-  const inFlight = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
-    Effect.map((view) => view.in_flight),
-    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(false)),
+  const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
+  return view.upload === null ? undefined : view.upload.deployment ?? view.id;
+});
+
+/**
+ * Whether Deployment `deploymentId`'s upload, which arrived at `arrived`, may still build: its Deployment may still
+ * run, or its Environment's newest Deployment builds from it. One not admitted yet gets a day.
+ */
+const kept = Effect.fn("ConfigStore.uploadKept")(function* (
+  store: ConfigStore, organizationId: string, deploymentId: string, arrived: Date,
+) {
+  const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
+    Effect.map(Option.some),
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(Option.none())),
   );
-  if (inFlight) return;
+  if (Option.isNone(view)) return arrived.getTime() > Date.now() - 24 * 60 * 60 * 1000;
+  if (view.value.in_flight) return true;
+  const { project, name } = view.value.environment;
+  const newest = yield* storeTry(() => store.read(organizationId, {
+    query: "deployments", environment: { project, environment: name }, limit: 1, cursor: null,
+  })).pipe(
+    Effect.map((page) => page.deployments[0]),
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(undefined)),
+  );
+  return newest?.upload != null && (newest.upload.deployment ?? newest.id) === deploymentId;
+});
+
+/**
+ * Delete every upload of the Organization that can no longer build: one replaced by a newer upload, or whose Services
+ * or Environment are gone. One Store read or two per upload Cloud holds.
+ */
+export const releaseUploads = Effect.fn("ConfigStore.releaseUploads")(function* (store: ConfigStore, organizationId: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.delete(uploadChunk).where(and(eq(uploadChunk.organizationId, organizationId), eq(uploadChunk.deploymentId, deploymentId)));
+  const held = yield* drizzle.select({ deploymentId: uploadChunk.deploymentId, arrived: min(uploadChunk.createdAt) })
+    .from(uploadChunk).where(eq(uploadChunk.organizationId, organizationId)).groupBy(uploadChunk.deploymentId);
+  for (const { deploymentId, arrived } of held) {
+    if (yield* kept(store, organizationId, deploymentId, arrived ?? new Date(0))) continue;
+    yield* drizzle.delete(uploadChunk).where(and(eq(uploadChunk.organizationId, organizationId), eq(uploadChunk.deploymentId, deploymentId)));
+  }
 });

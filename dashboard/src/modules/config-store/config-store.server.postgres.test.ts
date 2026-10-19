@@ -25,7 +25,7 @@ import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
-import { receiveUpload, releaseUpload, UPLOAD_LIMIT } from "#/modules/config-store/upload.server";
+import { receiveUpload, releaseUploads, UPLOAD_LIMIT, uploadOwner } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import type { TokenGrant } from "#/modules/identity/token-grant";
@@ -1429,7 +1429,7 @@ const upload = Effect.fn(function* (deploymentId: string, session: string, body:
 });
 
 it.live(
-  "an upload belongs to the one Deployment it was sent for, names its uploader, and goes once that Deployment ends",
+  "an upload belongs to the one Deployment it was sent for, names its uploader, and stays until a newer one or its Services go",
   () =>
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "config-store-test" });
@@ -1485,15 +1485,69 @@ it.live(
         const { drizzle } = yield* Database;
         const held = (deploymentId: string) => drizzle.select().from(uploadChunk).where(eq(uploadChunk.deploymentId, deploymentId))
           .pipe(Effect.map((rows) => rows.length));
+        const run = (deploymentId: string, environmentId = ENVIRONMENT) =>
+          runStoreDeployment({ organizationId, environmentId, deploymentId, trigger: "user" }, "cloud-test");
+        const servers = yield* drizzle.select().from(organizationMachine);
+        // Admitted while its Server is there, run once it left, so nothing runs.
+        const admit = Effect.fn(function* (
+          id: string, environment: { project: null; environment: string | null }, upload: { digest: string; base: null; uploader: null } | null,
+        ) {
+          yield* drizzle.insert(organizationMachine).values(servers);
+          const admitted = yield* request("write", alice, {
+            command: "admit", admit: "deploy", id, environment, services: [], version: null, accept_volume_loss: [], upload,
+          });
+          yield* drizzle.delete(organizationMachine);
+          return admitted;
+        });
         // Kept while it may still run, so a replaced worker finds it.
-        yield* releaseUpload(store, organizationId, first);
+        yield* releaseUploads(store, organizationId);
         assert.strictEqual(yield* held(first), 1);
         // Its Server left: its upload was read, and nothing ran.
         yield* drizzle.delete(organizationMachine);
-        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first, trigger: "user" }, "cloud-test");
-        expect(ran).toMatchObject({ ran: { id: first, status: "failed" } });
+        expect(yield* run(first)).toMatchObject({ ran: { id: first, status: "failed" } });
+        // Ended, it stays: its Environment's newest Deployment builds from it. The upload not admitted yet stays too.
+        assert.strictEqual(yield* held(first), 1);
+        assert.strictEqual(yield* held(second), 1);
+
+        // A Deployment that only changes settings builds from the kept upload, and keeps it.
+        const settingsOnly = "00000000-0000-4000-8000-000000000205";
+        assert.strictEqual((yield* admit(settingsOnly, here, null)).status, 200);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, settingsOnly), first);
+        yield* run(settingsOnly);
+        assert.strictEqual(yield* held(first), 1);
+
+        // A newer upload replaces it.
+        assert.strictEqual((yield* admit(second, here, { digest: "e".repeat(64), base: null, uploader: null })).status, 200);
+        yield* run(second);
         assert.strictEqual(yield* held(first), 0);
         assert.strictEqual(yield* held(second), 1);
+
+        // Once no Service builds from an upload, it goes.
+        yield* request("write", alice, { command: "remove_service", environment: here, service: "app" });
+        const withoutApp = "00000000-0000-4000-8000-000000000206";
+        assert.strictEqual((yield* admit(withoutApp, here, null)).status, 200);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, withoutApp), undefined);
+        yield* run(withoutApp);
+        assert.strictEqual(yield* held(second), 0);
+
+        // An Environment's upload goes with the Environment: the Store's purge deletes its row, and its Deployments
+        // with it. Like an upload never admitted, it goes once a day has passed since it arrived.
+        const STAGING = "00000000-0000-4000-8000-000000000207";
+        const staging = { project: null, environment: "staging" };
+        yield* request("write", alice, { command: "create_environment", id: STAGING, project: "shop", name: "staging" });
+        yield* request("write", alice, {
+          command: "create_service", id: "00000000-0000-4000-8000-000000000208", environment: staging, name: "app", image: null,
+        });
+        const third = "00000000-0000-4000-8000-000000000209";
+        assert.strictEqual((yield* upload(third, alice, archive)).status, 200);
+        assert.strictEqual((yield* admit(third, staging, { digest: "f".repeat(64), base: null, uploader: null })).status, 200);
+        yield* run(third, STAGING);
+        yield* releaseUploads(store, organizationId);
+        assert.strictEqual(yield* held(third), 1);
+        yield* drizzle.execute(sql`DELETE FROM config_environment WHERE id = ${STAGING}`);
+        yield* drizzle.update(uploadChunk).set({ createdAt: sql`now() - interval '2 days'` }).where(eq(uploadChunk.deploymentId, third));
+        yield* releaseUploads(store, organizationId);
+        assert.strictEqual(yield* held(third), 0);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped),
   60_000,

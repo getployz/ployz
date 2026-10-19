@@ -172,6 +172,9 @@ image**, or delete the service.
 
 `api has no source to build: its last upload is gone and no image is left to reuse. Upload it again or add an image.`
 
+Ployz keeps a service's latest upload, up to 95 MiB, until you upload again or delete the service
+or its environment. You see this when that upload is gone and no image of it is left.
+
 Run `ployz up` again from your app's directory, or click **Add an image to api** on the
 deployment's page.
 

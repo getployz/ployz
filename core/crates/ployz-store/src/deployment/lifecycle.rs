@@ -22,8 +22,16 @@ pub(crate) fn admit(
     crate::volume::fix_storage(tx, environment, &intent, &frozen.nodes)?;
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.
+    // Once none is left, nothing does, and Cloud lets the upload go.
     let upload = match upload {
         Some(upload) => Some(upload),
+        None if !intent
+            .services
+            .iter()
+            .any(|service| matches!(service.config.source, ServiceSource::Empty { .. })) =>
+        {
+            None
+        }
         None => match tx
             .query(
                 "SELECT upload FROM config_deployment \

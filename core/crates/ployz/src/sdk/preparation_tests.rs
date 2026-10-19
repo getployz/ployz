@@ -1344,7 +1344,6 @@ async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
 }
 
 #[tokio::test]
-#[ignore = "held: upload source location pending (deploys-28 B hold, 10-19)"]
 #[expect(clippy::indexing_slicing, reason = "A fixed fixture.")]
 async fn a_settings_only_deploy_of_an_upload_rebuilds_from_the_held_upload() {
     let (root, service, builds) = fixture();
