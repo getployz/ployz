@@ -2,11 +2,10 @@
 
 use std::{
     collections::HashMap,
-    fs::{self, OpenOptions},
+    fs,
     future::Future,
-    io::{Read, Write},
     net::{Ipv4Addr, SocketAddr},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -346,30 +345,25 @@ fn create_private_dir(path: &Path) -> Result<(), Error> {
 }
 
 fn load_or_create_token(path: &Path) -> Result<String, Error> {
-    match OpenOptions::new().read(true).open(path) {
-        Ok(mut file) => {
-            let mut token = String::new();
-            file.read_to_string(&mut token)?;
+    match fs::read_to_string(path) {
+        Ok(token) if !token.is_empty() => {
             fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
             validate_token(token)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let token = format!(
-                "{}{}",
-                ployz_core::MachineId::random(),
-                ployz_core::MachineId::random()
-            );
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(path)?;
-            file.write_all(token.as_bytes())?;
-            file.sync_all()?;
-            Ok(token)
-        }
+        Ok(_) => create_token(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_token(path),
         Err(error) => Err(error.into()),
     }
+}
+
+fn create_token(path: &Path) -> Result<String, Error> {
+    let token = format!(
+        "{}{}",
+        ployz_core::MachineId::random(),
+        ployz_core::MachineId::random()
+    );
+    atomic_write(path, token.as_bytes(), 0o600)?;
+    Ok(token)
 }
 
 fn validate_token(token: String) -> Result<String, Error> {
@@ -510,6 +504,19 @@ mod tests {
                 .contains(r#"bootstrap = ["10.0.0.1:51820", "10.0.0.2:51820", "10.0.0.3:51820"]"#),
             "{encoded}"
         );
+    }
+
+    #[test]
+    fn empty_token_file_from_an_interrupted_write_is_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(TOKEN_FILE);
+        fs::write(&path, "").unwrap();
+
+        let token = load_or_create_token(&path).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), token);
+        assert_eq!(load_or_create_token(&path).unwrap(), token);
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
     }
 
     #[tokio::test(start_paused = true)]
