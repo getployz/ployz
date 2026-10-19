@@ -844,6 +844,52 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn logout_forgets_a_sign_in_whose_cloud_cannot_be_reached() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        let gone = "http://127.0.0.1:1";
+        std::fs::write(
+            &store.path,
+            serde_json::json!({
+                "state": "signed_in",
+                "cloud": gone,
+                "token": "session-token",
+                "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+                "organization": { "id": "o1", "slug": "acme" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let out = logout(&store).await.unwrap().unwrap();
+        assert_eq!(out.cloud, gone);
+        assert!(out.device.is_none());
+        assert!(matches!(
+            signed_in(&store).await,
+            Err(LoginError::SignedOut)
+        ));
+        assert!(matches!(
+            start(&store, &cloud).await,
+            Ok(Start::Pending { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn logout_and_login_replace_an_unreadable_sign_in() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        std::fs::write(&store.path, "{not json").unwrap();
+        assert!(logout(&store).await.unwrap().is_none());
+        assert!(!store.path.exists());
+
+        std::fs::write(&store.path, "{not json").unwrap();
+        let Start::Pending { pending, .. } = start(&store, &cloud).await.unwrap() else {
+            panic!("a fresh login waits for approval");
+        };
+        wait(&store, pending).await.unwrap();
+        assert_eq!(signed_in(&store).await.unwrap().organization.slug, "acme");
+    }
+
+    #[tokio::test]
     async fn a_denied_code_is_forgotten() {
         let approved = Arc::new(Mutex::new(Some("denied")));
         let cloud = device_cloud(approved);

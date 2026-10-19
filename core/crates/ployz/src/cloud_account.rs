@@ -1239,6 +1239,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ployz_token_acts_past_an_unreadable_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::beside(&dir.path().join("config.yaml"));
+        std::fs::write(dir.path().join("cloud.json"), "{not json").unwrap();
+        let chosen = credential(&store, Some("ployz_secret".to_owned()), None)
+            .await
+            .unwrap();
+        assert_eq!(chosen.cloud(), cloud_origin(DEFAULT_CLOUD));
+        assert!(named_cloud(&store, false, None).is_err());
+    }
+
+    #[tokio::test]
     async fn ployz_token_wins_over_the_stored_sign_in() {
         let (_dir, store) = signed_in_store("http://cloud.test");
         let chosen = credential(&store, Some("ployz_secret".to_owned()), None)
