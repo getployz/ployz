@@ -1,5 +1,5 @@
-//! The user rows of R1's caller table, run through `cleanup`'s user commands
-//! against the owner rules the `Scripted` fake models.
+//! The user stop, start, restart and removal, run through `cleanup`'s user
+//! commands against the owner rules the `Scripted` fake models.
 
 use std::time::Duration;
 

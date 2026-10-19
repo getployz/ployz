@@ -451,7 +451,7 @@ impl Scripted {
             .collect()
     }
 
-    /// R2's owner rules for one rotation ask, applying any rival move first.
+    /// The owner's rules for one rotation ask, applying any rival move first.
     fn decide(
         &self,
         machine_id: &MachineId,
