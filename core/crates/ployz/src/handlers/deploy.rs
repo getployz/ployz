@@ -250,10 +250,21 @@ pub(super) fn upload_and_ship(
         message,
     } = request;
     refuse_local_detach(matches, store)?;
-    let upload = source.as_deref().map(uploaded_source).transpose()?;
+    let listing = source
+        .as_deref()
+        .map(|dir| {
+            crate::build::UploadListing::read(dir)
+                .map(|listing| (dir, listing))
+                .map_err(unreadable(dir))
+        })
+        .transpose()?;
+    let upload = listing
+        .as_ref()
+        .map(|(dir, listing)| uploaded_source(dir, listing))
+        .transpose()?;
     let id = DeploymentId::parse(mint())?;
-    if let Some(dir) = source.as_deref() {
-        store.upload(&id, dir)?;
+    if let Some((dir, listing)) = &listing {
+        store.upload(&id, dir, listing)?;
     }
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
@@ -871,8 +882,11 @@ pub(super) fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + 
 
 /// `dir` as an Uploaded Source: its content digest, and the commit it was checked out
 /// at, if any, with whether it holds changes that commit doesn't.
-fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
-    let digest = crate::build::content_digest(dir).map_err(unreadable(dir))?;
+fn uploaded_source(
+    dir: &Path,
+    listing: &crate::build::UploadListing,
+) -> Result<UploadedSource, Error> {
+    let digest = listing.digest().map_err(unreadable(dir))?;
     let digest =
         ployz_core::UploadDigest::parse(digest).expect("a content digest is a lowercase sha256");
     let git = |args: &[&str]| {

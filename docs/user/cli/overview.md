@@ -204,9 +204,10 @@ the way `ployz org rm` does, and prints which one.
 ## Deploy a directory
 
 > [!WARNING]
-> `ployz up` uploads every file in the directory except `.git`, including files Git ignores
-> such as `.env` and `node_modules`. Run it from a fresh clone, or move secrets out of the
-> directory first.
+> In a Git checkout, `ployz up` uploads only the files Git keeps, tracked or not, and leaves out
+> `.git` and every file Git ignores, such as `.env` and `node_modules`. It stops if `git` can't
+> list them. Outside a Git checkout it uploads every file in the directory, so move secrets out
+> of it first.
 
 From your app's directory:
 
