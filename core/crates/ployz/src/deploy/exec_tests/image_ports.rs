@@ -32,6 +32,18 @@ async fn deploy(
     plan: Vec<DeployOperation>,
     reply: ImagePulled,
 ) -> (DeployOutcome<ExecutionError>, Vec<DeployWarning>) {
+    let replies = plan
+        .iter()
+        .map(|operation| (operation.machine_id(), reply.clone()))
+        .collect();
+    deploy_with(plan, replies).await
+}
+
+/// Run `plan` with each Machine reporting its own reply for each pull.
+async fn deploy_with(
+    plan: Vec<DeployOperation>,
+    replies: BTreeMap<MachineId, ImagePulled>,
+) -> (DeployOutcome<ExecutionError>, Vec<DeployWarning>) {
     let steps = plan
         .iter()
         .enumerate()
@@ -44,7 +56,7 @@ async fn deploy(
         })
         .collect();
     let client = Scripted {
-        pull_reply: reply,
+        pull_replies: replies,
         ..Scripted::new(steps)
     };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -151,4 +163,32 @@ async fn two_machines_pulling_the_same_image_warn_once() {
 
     assert!(matches!(outcome, DeployOutcome::Success { .. }));
     assert_eq!(warnings.len(), 1, "{warnings:?}");
+}
+
+#[tokio::test]
+async fn one_machine_whose_image_misses_the_domain_port_warns_with_its_ports_only() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (outcome, warnings) = deploy_with(
+        vec![
+            run(&first, routed(8080), true),
+            run(&second, routed(8080), true),
+        ],
+        [
+            (first, exposing(&["80/tcp"])),
+            (second, exposing(&["8080/tcp"])),
+        ]
+        .into(),
+    )
+    .await;
+
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    assert_eq!(
+        warnings,
+        [DeployWarning::ImagePortMismatch {
+            service: ServiceName::parse("web").unwrap(),
+            image: "nginx".into(),
+            exposed: vec![80],
+            routed: vec![8080],
+        }]
+    );
 }

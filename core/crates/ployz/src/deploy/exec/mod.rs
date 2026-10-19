@@ -1131,8 +1131,9 @@ async fn pull_images<C: MachineOperations>(
     }
 }
 
-/// One warning per Service whose pulled image exposes TCP ports and whose domains
-/// send to none of them. A Machine that reports no ports claims nothing.
+/// One warning per Service that some Machine pulled an image for whose TCP ports
+/// its domains send to none of. `exposed` joins the ports of those Machines only.
+/// A Machine that reports no ports claims nothing.
 fn port_mismatches(
     operations: &[DeployOperation],
     exposed: &BTreeMap<(MachineId, &str), Vec<ExposedPort>>,
@@ -1159,7 +1160,7 @@ fn port_mismatches(
                 PortPublication::Host { .. } => None,
             })
             .collect::<BTreeSet<_>>();
-        if tcp.is_empty() || routed.is_empty() {
+        if tcp.is_empty() || routed.is_empty() || !tcp.is_disjoint(&routed) {
             continue;
         }
         let service = services
@@ -1170,7 +1171,6 @@ fn port_mismatches(
     }
     services
         .into_iter()
-        .filter(|(_, (_, exposed, routed))| exposed.is_disjoint(routed))
         .map(
             |(service, (image, exposed, routed))| DeployWarning::ImagePortMismatch {
                 service: service.clone(),
