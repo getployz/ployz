@@ -3051,7 +3051,7 @@ mod serving_pointer {
         }))
         .unwrap();
         let mut reported_down = alive(&down);
-        reported_down["state"] = json!("Down");
+        *reported_down.get_mut("state").unwrap() = json!("Down");
         let (service, task) = serve(
             &dir,
             local,
