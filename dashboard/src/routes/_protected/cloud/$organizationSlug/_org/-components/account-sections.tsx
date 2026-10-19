@@ -79,29 +79,40 @@ function SessionsSection() {
   return (
     <SettingsSection id="sessions" title="Sessions"
       description={<>CLI devices sign out with <code className="font-mono">ployz logout</code>.</>}>
-      <SettingsList label="Sessions">
-        {sessions.map((row) => (
-          <SettingsListItem
-            key={row.id}
-            media={row.cli ? <TerminalIcon /> : <MonitorIcon />}
-            label={deviceLabel(row)}
-            hint={[row.ipAddress, `Active ${formatRelativeTime(new Date(row.lastActiveAt))}`].filter(Boolean).join(" · ")}
-            commit={row.id === scope.sessionId || row.cli ? "none" : "change"}
-            actions={row.id === scope.sessionId
-              ? <Badge variant="success">This device</Badge>
-              : row.cli
-                ? <Badge variant="outline">CLI</Badge>
-                : (
-                  <Button variant="outline" size="sm" onClick={() => {
-                    revokeAccountSession(scope, row.id).catch(() => toast.error("Couldn't sign out that session."));
-                  }}>
-                    Sign out
-                  </Button>
-                )}
-          />
-        ))}
-      </SettingsList>
+      <SessionList sessions={sessions} currentSessionId={scope.sessionId} onSignOut={(id) => {
+        revokeAccountSession(scope, id).catch(() => toast.error("Couldn't sign out that session."));
+      }} />
     </SettingsSection>
+  );
+}
+
+export function SessionList({ sessions, currentSessionId, onSignOut }: {
+  sessions: readonly AccountSessionRow[];
+  currentSessionId: string;
+  onSignOut: (session: string) => void;
+}) {
+  return (
+    <SettingsList label="Sessions">
+      {sessions.map((row) => (
+        <SettingsListItem
+          key={row.id}
+          media={row.cli ? <TerminalIcon /> : <MonitorIcon />}
+          label={deviceLabel(row)}
+          hint={[row.ipAddress, `Active ${formatRelativeTime(new Date(row.lastActiveAt))}`].filter(Boolean).join(" · ")}
+          commit={row.id === currentSessionId || row.cli ? "none" : "change"}
+          actions={row.id === currentSessionId
+            ? <Badge variant="success">This device</Badge>
+            : row.cli
+              ? <Badge variant="outline">CLI</Badge>
+              : (
+                <Button variant="outline" size="sm" aria-label={`Sign out ${[deviceLabel(row), row.ipAddress].filter(Boolean).join(", ")}`}
+                  onClick={() => onSignOut(row.id)}>
+                  Sign out
+                </Button>
+              )}
+        />
+      ))}
+    </SettingsList>
   );
 }
 
