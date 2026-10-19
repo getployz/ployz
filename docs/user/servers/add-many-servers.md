@@ -48,7 +48,8 @@ check-in refreshes the row. Offline hosts have stopped checking in.
 ## Enroll the selection
 
 1. Select the hosts you recognize by name, source IP and provider, then click **Enroll**.
-   You can select hosts while they prepare. Blocked and Offline hosts cannot be selected.
+   You can select hosts while they prepare. Blocked and Offline hosts cannot be selected. To
+   enroll one host, click its name and then **Enroll** in its details.
 2. For a new cluster, choose the **First server**. Everything else joins once it is up.
 3. Choose **Volumes**. ZFS gives volumes size limits. ZFS uses the main disk. You can fall back
    to Docker where ZFS cannot run. **Docker only** has no managed volume size limits.

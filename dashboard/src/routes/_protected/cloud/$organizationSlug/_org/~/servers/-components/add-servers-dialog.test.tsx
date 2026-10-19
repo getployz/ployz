@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.functions";
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
 import { STALL_MS } from "#/hooks/use-exclusive-mutation";
+import { membersKey } from "#/modules/organization/members.queries";
 import { AddServersDialog } from "./add-servers-dialog";
 
 const TOKEN = "pflt_test-fixture-token";
@@ -20,13 +21,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function renderDialog() {
+async function renderDialog(role: "owner" | "admin" | "member" = "owner") {
   const router = createRouter({
     routeTree: createRootRoute({ component: () => <AddServersDialog organizationSlug="ada" /> }),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   await router.load();
-  render(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);
+  const client = new QueryClient();
+  client.setQueryData(membersKey("ada"), { members: [{ you: true, role }], invites: [], mail: false });
+  render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
   await screen.findByRole("button", { name: "Add servers" });
 }
 
@@ -165,4 +168,11 @@ it("lets go of a mint that never answers, so Escape closes the dialog", async ()
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("keeps a member out of the token form, saying who can add servers", async () => {
+  await renderDialog("member");
+  const add = screen.getByRole("button", { name: "Add servers" });
+  expect(add).toHaveProperty("disabled", true);
+  expect(add.getAttribute("title")).toBe("Only an owner or admin can add servers.");
 });

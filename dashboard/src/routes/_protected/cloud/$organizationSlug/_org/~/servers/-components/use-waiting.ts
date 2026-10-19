@@ -8,8 +8,18 @@ import type { FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token"
 import { createFleetTokenServerFn } from "#/modules/machines/waiting/fleet-token.functions";
 import { cancelServerEnrollmentServerFn, openProbeSelectionServerFn, rejectWaitingServersServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { waitingServerDetailQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { can } from "#/modules/organization/permissions";
 
 export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null };
+
+export const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
+
+/** Whether you may mint a fleet token. Cloud checks it too; until your role loads, the controls stay open. */
+export function useCanAddServers(organizationSlug: string) {
+  const role = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
+  return role === undefined || can(role, "servers:add");
+}
 
 /** Mints a fleet token. The secret lives only in the result, so it shows once. */
 export function useMintFleetToken(organizationSlug: string) {
