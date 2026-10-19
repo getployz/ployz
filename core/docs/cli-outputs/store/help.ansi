@@ -331,7 +331,7 @@ Options:
           The Project's name, typed to confirm its removal
 
       --accept-volume-loss <name>
-          Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this
+          Accept permanent deletion: repeat once per exact volume name in the full deletion list
 
       --json
           Print the result as one JSON object on stdout

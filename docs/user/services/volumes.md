@@ -56,8 +56,9 @@ shared writes in the volume's **Storage** → **Advanced** → **Allow shared wr
 ployz volume set uploads --shared-writes
 ```
 
-Do this only if your app copes with several writers at once; a database's data directory
-doesn't. Everything that mounts the volume still runs on its server.
+The change is staged, like other volume settings, and your next deploy applies it. Do this only if
+your app copes with several writers at once; a database's data directory doesn't. Everything that
+mounts the volume still runs on its server.
 
 ## When its server goes down
 

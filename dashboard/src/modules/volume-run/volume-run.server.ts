@@ -139,9 +139,12 @@ const KIND_WORDS = {
 } satisfies Record<VolumeRunKind, string>;
 
 // A Machine may already be destroying the copy, and no floor retracts that, so a release cannot promise to stop it.
-const busyWith = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) =>
-  `${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ${lane.kind === "delete_mirror" ? "it finishes on its own" : `ployz volume release ${lane.volumeName} stops it`}`;
-export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) => `VolumeBusy: ${busyWith(lane)}`;
+export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "id" | "kind" | "volumeName">) => {
+  const follow = `ployz volume runs ${lane.volumeName} ${lane.id} follows it`;
+  if (lane.kind === "delete_mirror") return `${lane.volumeName} is busy with a mirror removal, which finishes on its own; ${follow}`;
+  if (lane.kind === "release") return `${lane.volumeName} is busy with a release; ${follow}`;
+  return `${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ${follow}, and ployz volume release ${lane.volumeName} stops it`;
+};
 
 export const finishesThere = (volumeName: string, server: string) => `${volumeName} is starting on ${server}; it finishes there`;
 
@@ -182,11 +185,10 @@ const deploying = (lane: Pick<VolumeRunRow, "kind" | "heldBy">) => lane.kind ===
 const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind) {
   const run = volumeRunView(lane);
   if (deploying(lane)) return { code: "conflict", message: `${lane.volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
-  const refuse = (message: string, details: JsonValue = { run }) =>
-    ({ code: "conflict", message: kind === "release" ? message : `VolumeBusy: ${message}`, details }) satisfies StoreRefusal;
+  const refuse = (message: string, details: JsonValue = { run }) => ({ code: "conflict", message, details }) satisfies StoreRefusal;
   const input = laneInputOf(lane);
   if (input.kind === "seed") return refuse(`${lane.volumeName} is being copied into ${input.args.into.name}; it finishes on its own`);
-  if (!pastReturn(lane)) return refuse(busyWith(lane));
+  if (!pastReturn(lane)) return refuse(volumeBusyMessage(lane));
   const target = yield* laneTarget(lane);
   const finishes = finishesThere(lane.volumeName, target ?? "its new Server");
   // A restore's target is the copy it restores from, not a move's destination.

@@ -191,15 +191,11 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             volume,
             shared_writes: *shared_writes,
         })?;
-        return crate::ui::finish(&changed, || {
-            crate::ui::stream(format_args!(
-                "Shared writes {} for Volume {} in {}/{}; this applies now.",
-                shared_writes_word(changed.volume.shared_writes),
-                changed.volume.name,
-                changed.environment.project,
-                changed.environment.name,
-            ));
-        });
+        let what = format!(
+            "Staged shared writes {} for Volume",
+            shared_writes_word(changed.volume.shared_writes)
+        );
+        return staged(matches, &changed, &what, false);
     }
     let storage = requested_storage(matches);
     let changed = store::store(root)?.write(&SetVolumeStorage {

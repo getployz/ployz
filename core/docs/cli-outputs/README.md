@@ -263,7 +263,7 @@ Exit 2 is applied by hand in about ten handlers through `.with_exit(USAGE_EXIT)`
 - Commands are mostly alphabetical, but `link`, `github`, `token` and `project` are out of place.
 - Every subcommand repeats the globals. `--connect <connect>` has no description. `--ployz-config` shows the env path.
 - Placeholders mix casing: `<name>`, `<context>`, `<SECONDS>`, `<PROJECT>`, `<VERSION>`, `<FILE>`.
-- project rm help leaves `<name>` blank and says `--yes cannot bypass this` on a command that has no `--yes`.
+- project rm help leaves `<name>` blank.
 - Top-level help ends with a `Settings catalog: …` line. `--version` prints `0.2.3`.
 
 ## Likely bugs

@@ -643,7 +643,7 @@ describe("volume runs", () => {
   });
 
   describe("C1", () => {
-    it("volume_run_second_request_refused: VolumeBusy names the Volume and how to stop its run, until it ends", async () => {
+    it("volume_run_second_request_refused: the refusal names the Volume, how to follow its run and how to stop it, until it ends", async () => {
       const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const second = await request({ kind: "sync", args: { full: false } });
@@ -652,12 +652,13 @@ describe("volume runs", () => {
         ok: false,
         refusal: {
           code: "conflict",
-          message: "VolumeBusy: data is busy with a mirror; ployz volume release data stops it",
+          message: `data is busy with a mirror; ployz volume runs data ${first.id} follows it, and ployz volume release data stops it`,
           details: { run: expect.objectContaining({ id: first.id }) },
         },
         busy: expect.objectContaining({ id: first.id, kind: "mirror", state: "requested" }),
       });
-      expect(volumeBusyMessage({ kind: "sync", volumeName: "data" })).toBe("VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it");
+      expect(volumeBusyMessage({ id: "r-1", kind: "sync", volumeName: "data" })).toBe("data is busy with a mirror refresh; ployz volume runs data r-1 follows it, and ployz volume release data stops it");
+      expect(volumeBusyMessage({ id: "r-1", kind: "release", volumeName: "data" })).toBe("data is busy with a release; ployz volume runs data r-1 follows it");
       expect(await rows()).toHaveLength(1);
 
       await execute(first.id);
@@ -667,8 +668,8 @@ describe("volume runs", () => {
     it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
       const removal = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
 
-      const removing = "data is busy with a mirror removal; it finishes on its own";
-      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({ ok: false, refusal: { code: "conflict", message: `VolumeBusy: ${removing}` } });
+      const removing = `data is busy with a mirror removal, which finishes on its own; ployz volume runs data ${removal.id} follows it`;
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({ ok: false, refusal: { code: "conflict", message: removing } });
       expect(await request({ kind: "release", args: {} })).toMatchObject({ ok: false, refusal: { code: "conflict", message: removing } });
       expect(await rows()).toMatchObject([{ id: removal.id, kind: "delete_mirror", state: "requested" }]);
     });
@@ -744,7 +745,7 @@ describe("volume runs", () => {
       });
       expect(await request({ kind: "sync", args: { full: false } })).toEqual({
         ok: false,
-        refusal: { code: "conflict", message: "VolumeBusy: data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: committed.id }) } },
+        refusal: { code: "conflict", message: "data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: committed.id }) } },
         busy: expect.objectContaining({ id: committed.id }),
       });
       expect(await lanes()).toEqual(before);
@@ -780,7 +781,7 @@ describe("volume runs", () => {
         busy: expect.objectContaining({ id: seeding?.id, kind: "seed" }),
       });
       expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({
-        ok: false, refusal: { message: "VolumeBusy: data is being copied into data-copy; it finishes on its own" },
+        ok: false, refusal: { message: "data is being copied into data-copy; it finishes on its own" },
       });
       expect(await lanes()).toMatchObject([{ id: seeding?.id, state: "running" }]);
       expect(send).not.toHaveBeenCalled();
@@ -2807,7 +2808,7 @@ describe("volume runs", () => {
 
       expect(admitted).toEqual({
         ok: false,
-        refusal: { code: "conflict", message: "VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it", details: { run: expect.objectContaining({ id: busy.id }) } },
+        refusal: { code: "conflict", message: `data is busy with a mirror refresh; ployz volume runs data ${busy.id} follows it, and ployz volume release data stops it`, details: { run: expect.objectContaining({ id: busy.id }) } },
       });
       expect((await rows()).map((row) => row.id)).toEqual([busy.id]);
       expect(send).not.toHaveBeenCalled();
