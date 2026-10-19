@@ -138,16 +138,9 @@ pub(crate) fn scope_given(
     project: Option<&str>,
     environment: Option<&str>,
 ) -> Result<Scope, Error> {
-    let env = from_env()?;
-    let project = project
-        .map(|name| ProjectName::parse(name.to_owned()).map(flag_named))
-        .transpose()?;
-    let environment = environment
-        .map(|name| EnvironmentName::parse(name.to_owned()).map(flag_named))
-        .transpose()?;
     Scope {
-        project: project.or(env.project),
-        environment: environment.or(env.environment),
+        project: given_or_env(project, env::PROJECT, ProjectName::parse)?,
+        environment: given_or_env(environment, env::ENVIRONMENT, EnvironmentName::parse)?,
         link: None,
     }
     .linked(config, |directory, link| {
@@ -164,30 +157,40 @@ pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Er
 }
 
 fn from_env() -> Result<Scope, Error> {
-    let named = |name: &str| std::env::var(name).ok();
     Ok(Scope {
-        project: named(env::PROJECT)
-            .map(|name| ProjectName::parse(name).map(env_named))
-            .transpose()?,
-        environment: named(env::ENVIRONMENT)
-            .map(|name| EnvironmentName::parse(name).map(env_named))
-            .transpose()?,
+        project: env_named(env::PROJECT, ProjectName::parse)?,
+        environment: env_named(env::ENVIRONMENT, EnvironmentName::parse)?,
         link: None,
     })
 }
 
-fn env_named<T>(name: T) -> Named<T> {
-    Named {
-        name,
-        source: Source::Env,
-    }
+/// `given`, else the environment variable `var`, read only when nothing was given so
+/// a bad variable never blocks a typed name.
+fn given_or_env<T>(
+    given: Option<&str>,
+    var: &str,
+    parse: fn(String) -> Result<T, ployz_core::RpcError>,
+) -> Result<Option<Named<T>>, Error> {
+    let Some(name) = given else {
+        return env_named(var, parse);
+    };
+    Ok(Some(Named {
+        name: parse(name.to_owned())?,
+        source: Source::Flag,
+    }))
 }
 
-fn flag_named<T>(name: T) -> Named<T> {
-    Named {
-        name,
-        source: Source::Flag,
-    }
+fn env_named<T>(
+    var: &str,
+    parse: fn(String) -> Result<T, ployz_core::RpcError>,
+) -> Result<Option<Named<T>>, Error> {
+    let Ok(name) = std::env::var(var) else {
+        return Ok(None);
+    };
+    Ok(Some(Named {
+        name: parse(name)?,
+        source: Source::Env,
+    }))
 }
 
 /// `--project`/`--env` and their environment variables, without the link.

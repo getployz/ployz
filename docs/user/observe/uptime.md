@@ -37,7 +37,8 @@ ployz uptime show web
 ployz uptime show web --project shop --environment staging --from 6h
 ```
 
-`--project` and `--environment` default to your default Project and its default Environment.
+`--project` and `--environment` default to where the directory is linked with `ployz link`,
+else to your default Project and its default Environment.
 `--from` and `--to` take an offset back from now such as `15m`, `6h` or `7d`, or a UTC instant.
 The range is the last hour when you leave them out.
 
