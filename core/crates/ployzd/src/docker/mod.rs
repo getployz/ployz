@@ -153,10 +153,29 @@ impl LocalDocker {
     }
 
     pub(crate) async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
-        let filters = HashMap::from([(
-            "label",
-            vec![LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID],
-        )]);
+        self.managed_ids_labelled(vec![
+            LABEL_MANAGED.to_owned(),
+            LABEL_NAMESPACE.to_owned(),
+            LABEL_SERVICE_ID.to_owned(),
+        ])
+        .await
+    }
+
+    async fn service_container_ids(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerId>, Error> {
+        self.managed_ids_labelled(vec![
+            LABEL_MANAGED.to_owned(),
+            LABEL_SERVICE_ID.to_owned(),
+            format!("{LABEL_NAMESPACE}={}", service.namespace),
+            format!("{LABEL_SERVICE_NAME}={}", service.name),
+        ])
+        .await
+    }
+
+    async fn managed_ids_labelled(&self, labels: Vec<String>) -> Result<Vec<ContainerId>, Error> {
+        let filters = HashMap::from([("label", labels)]);
         let options = ListContainersOptionsBuilder::default()
             .all(true)
             .filters(&filters)
@@ -386,8 +405,31 @@ impl ContainerRuntime {
         &self,
         machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Error> {
+        let listed = self.docker.managed_container_ids().await?;
+        self.inspect_listed(listed, machine_id).await
+    }
+
+    /// This Machine's copies of `service`, each with the rotation it recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker or the Machine database cannot be read.
+    pub async fn list_service(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<ContainerObservation>, Error> {
+        let listed = self.docker.service_container_ids(service).await?;
+        self.inspect_listed(listed, machine_id).await
+    }
+
+    async fn inspect_listed(
+        &self,
+        listed: Vec<ContainerId>,
+        machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, Error> {
         let mut observations = Vec::new();
-        let mut inspected = futures_util::stream::iter(self.docker.managed_container_ids().await?)
+        let mut inspected = futures_util::stream::iter(listed)
             .map(|container_id| async move {
                 (
                     container_id,

@@ -913,6 +913,31 @@ async fn last_in_ignores_a_sibling_on_a_down_machine() {
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
 }
 
+/// A newer local copy brought In while an In want read its guard rows is found under
+/// the turn, though the rows read before it never named that copy.
+#[tokio::test]
+async fn older_than_in_relists_local_copies_under_the_turn() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.pending(0, "a", "api", 1).await;
+    let before_turn = fleet.cluster.hold_query(CLUSTER_CONTAINERS, 2);
+
+    let (reply, b) = tokio::join!(
+        ensure(node, into(a, None, Some(CopyRotation::Pending))),
+        async {
+            before_turn.wait().await;
+            let b = fleet.routed(0, "b", "api", 2).await;
+            before_turn.wait().await;
+            b
+        }
+    );
+
+    let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
+    assert!(message.contains(&b.to_string()), "{message}");
+    assert_eq!(node.rotation(a).await, CopyRotation::Pending);
+    assert_eq!(node.rotation(b).await, CopyRotation::In);
+}
+
 #[tokio::test]
 async fn in_on_an_in_copy_starts_it() {
     let fleet = Fleet::start().await;

@@ -70,8 +70,8 @@ struct Routed {
     named: Vec<ContainerObservation>,
 }
 
-/// Read before the turn. Only this copy's rotation and the local copies' rotations
-/// are read again under it.
+/// Read before the turn. Only this copy's rotation and this Machine's copies are
+/// read again under it.
 enum GuardReads {
     None,
     /// Every copy's row, for the OlderThanIn guard.
@@ -309,17 +309,25 @@ impl LocalMachine {
         Ok(guard.map_or(Checked::Allowed(to), Checked::Refused))
     }
 
-    /// Refuse In while a newer copy of the Service is already In.
+    /// Refuse In while a newer copy of the Service is already In. This Machine's copies
+    /// are listed afresh, so one created since `observed` was read still counts.
     async fn newer_in(
         &self,
         copy: &CopyState,
         observed: Vec<ContainerObservation>,
     ) -> Result<Option<ContainerRefusal>, Error> {
-        let newer = self
-            .in_siblings(copy, observed)
-            .await?
+        let machine_id = self.record().id();
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let local = containers.list_service(&machine_id, &copy.service).await?;
+        let newer = observed
             .into_iter()
-            .filter(|sibling| sibling.copy_gen() > copy.r#gen)
+            .filter(|observed| observed.machine_id != machine_id)
+            .chain(local)
+            .filter(|sibling| {
+                is_sibling(copy, sibling)
+                    && *sibling.rotation() == CopyRotation::In
+                    && sibling.copy_gen() > copy.r#gen
+            })
             .max_by_key(|sibling| sibling.copy_gen());
         Ok(newer.map(|sibling| {
             refuse(
@@ -432,11 +440,7 @@ impl LocalMachine {
         let machine_id = self.record().id();
         let others = observed
             .into_iter()
-            .filter(|observed| {
-                observed.kind == ContainerKind::ServiceContainer
-                    && Some(observed.container_id) != copy.id
-                    && observed.identity() == copy.service
-            })
+            .filter(|observed| is_sibling(copy, observed))
             .collect::<Vec<_>>();
         let local = others
             .iter()
@@ -461,6 +465,12 @@ impl LocalMachine {
             })
             .collect())
     }
+}
+
+fn is_sibling(copy: &CopyState, observed: &ContainerObservation) -> bool {
+    observed.kind == ContainerKind::ServiceContainer
+        && Some(observed.container_id) != copy.id
+        && observed.identity() == copy.service
 }
 
 fn decide(copy: &CopyState, want: &RotationWant, expect: Option<&CopyRotation>) -> Checked {
