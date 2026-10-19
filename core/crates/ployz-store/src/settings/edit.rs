@@ -44,7 +44,7 @@ pub enum Change {
     /// Set a value. Text is accepted for any Setting type. A variable
     /// (`SERVICE.env.KEY`) takes text, `{"secret": true}` to keep its secret,
     /// `{"secret": "…"}` to seal a new one, or `{"secret": {"generate": true}}` to
-    /// seal a random one the Store makes.
+    /// seal a random one the Store makes unless it holds a sealed one already.
     Set {
         /// The Setting.
         path: SettingPath,
