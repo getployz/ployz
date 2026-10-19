@@ -48,6 +48,7 @@ struct FakeHost {
     /// A preparation that finishes, writing this state, while its unit is being checked.
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
+    member_of_cluster_as: Option<String>,
 }
 
 impl Host for FakeHost {
@@ -95,8 +96,8 @@ impl Host for FakeHost {
         Err("this fake does not enroll".to_owned())
     }
 
-    async fn participating(&self) -> bool {
-        false
+    async fn participating(&self) -> Option<String> {
+        self.member_of_cluster_as.clone()
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -2388,6 +2389,26 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Blocked");
     assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_server_in_another_cluster_is_blocked_before_enroll() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    let host = FakeHost {
+        member_of_cluster_as: Some("box-1".to_owned()),
+        ..FakeHost::default()
+    };
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(
+        request.contains(r#""code":"in_another_cluster""#),
+        "{request}"
+    );
+    assert!(request.contains("ployz server rm box-1"), "{request}");
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline().title, "Blocked");
 }
 
 #[tokio::test]
