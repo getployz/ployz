@@ -26,8 +26,7 @@ use crate::{
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
     PinnedAddresses, QualifiedService, ResolvedServiceSpec, SelectedEndpoint, ServingPointer,
-    StorageChoice,
-    WireGuardPublicKey,
+    StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;

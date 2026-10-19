@@ -947,6 +947,8 @@ async fn observing_containers_past_tonic_s_default_4_mib_succeeds() {
     let service = DiscoveryService::new(test_description());
     let container =
         ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
             display_name: "api-c".into(),
             created_at_unix_nanos: 1,
