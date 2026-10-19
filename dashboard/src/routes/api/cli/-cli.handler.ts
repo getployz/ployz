@@ -214,7 +214,12 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         revoking: yield* pendingServerRevocations(caller.organization.id),
       };
     case "POST tokens": {
-      if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can make tokens. No changes made.");
+      if (caller.credential.kind !== "session") {
+        return yield* requireClaimed(caller.organization.id, "mint_token").pipe(
+          Effect.as(personOnly("Only a signed-in person can make tokens. No changes made.")),
+          Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
+        );
+      }
       const input = yield* decodeBody(NewToken, request,
         "A token needs a name of 1 to 64 characters, expires_in_days of 1 to 365, and a kind of cli or agent.");
       const preset = yield* knownEnvironment(caller, yield* presetOf(input));
