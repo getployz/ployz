@@ -632,12 +632,23 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
         .filter(|reviewed| !reviewed.effects.is_empty())
         .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.effects))
         .collect();
+    let stale = remove
+        .version
+        .as_deref()
+        .is_some_and(|given| given != version);
+    let (changed, pass) = match stale {
+        true => (
+            "This changed since that version, so nothing was removed. ",
+            "Pass the new version",
+        ),
+        false => ("", "Pass the version"),
+    };
     let ask = match lost.is_empty() {
-        true => "Pass the version to go ahead",
-        false => "Pass the version and accept each lost Volume by name to go ahead",
+        true => format!("{pass} to go ahead"),
+        false => format!("{pass} and accept each lost Volume by name to go ahead"),
     };
     Err(error::confirmation_required(
-        format!("Removing this will {deletes}. {ask}"),
+        format!("{changed}Removing this will {deletes}. {ask}"),
         json!({
             "volumes": lost,
             "accept": accept,

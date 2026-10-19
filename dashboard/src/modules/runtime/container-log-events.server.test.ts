@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import type { LogEvent } from "@ployz/sdk";
+import type { LogEvent, LogMetadata } from "@ployz/sdk";
+import { asTestDouble } from "#/lib/test-double";
 import { backfillThenFollow, containerLogResponse, whileLogsShown } from "./container-log-events.server";
 
 it("answers live only after the whole tail, holding what the follow read meanwhile", async () => {
@@ -72,13 +73,13 @@ it("streams every record in order and closes its runtime scope", async () => {
   let closed = 0;
   async function* events() {
     yield { type: "live" as const };
-    for (let index = 0; index < 3; index++) yield { type: "source_error" as const, machineId: "m", containerId: "c", message: String(index) };
+    for (let index = 0; index < 3; index++) yield { type: "source_gone" as const, machineId: "m", containerId: String(index) };
   }
   const response = containerLogResponse(new Request("http://localhost/logs"), events(), async () => { closed++; });
   const body = await response.text();
   expect(body.startsWith("retry: 3000\n\nevent: live\n")).toBe(true);
   expect(body.match(/event: log/g)).toHaveLength(3);
-  expect(body.indexOf('"message":"0"')).toBeLessThan(body.indexOf('"message":"2"'));
+  expect(body.indexOf('"containerId":"0"')).toBeLessThan(body.indexOf('"containerId":"2"'));
   expect(closed).toBe(1);
 });
 
@@ -166,4 +167,23 @@ it("ends support's stream without hidden when what it may see can't be read, so 
   const seen: string[] = [];
   for await (const event of whileLogsShown(quiet(), () => Promise.reject(new Error("database down")), 5)) seen.push(event.type);
   expect(seen).toEqual([]);
+});
+
+it("sends a line it couldn't check as a hidden gap, and a Machine's error as fixed copy, never their text", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const source = asTestDouble<LogMetadata>()({ machine_id: "m", machine_name: "fsn-1", origin: { origin: "service" as const, service_id: "s", service_name: "api", container_id: "c", hook: null } });
+    async function* events(): AsyncIterable<LogEvent> {
+      yield { type: "record", record: { id: "m/c/100/000000000000", source, timestamp_nanos: "100", channel: "stdout", text: "hidden" } };
+      yield { type: "source_error", machineId: "m", containerId: "c", message: "boom: TOKEN=73519086427351908642" };
+    }
+    const body = await containerLogResponse(new Request("http://localhost/logs"), events(), async () => {}).text();
+    const logs = body.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+    expect(logs).toEqual([
+      { type: "record", record: { kind: "gap", id: "m/c/100/000000000000", timestamp: "100", until: "100", machineId: "m", machineName: "fsn-1", containerId: "c", serviceName: "api", reason: "hidden" } },
+      { type: "source_error", machineId: "m", containerId: "c", message: "Container logs are unavailable." },
+    ]);
+    expect(body).not.toContain("7351908642");
+    expect(error).toHaveBeenCalledWith("A container log source failed.", expect.objectContaining({ message: "boom: TOKEN=73519086427351908642" }));
+  } finally { error.mockRestore(); }
 });
