@@ -493,6 +493,25 @@ describe("callCloud", () => {
       expect(clicked).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
     }));
 
+  // Catches a human asked to approve a restart that can only be refused because another run holds the Service.
+  it.live("a stop or restart while the Service is busy is refused before anyone is asked", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller } = yield* deployedWeb;
+      const act = (verb: ServiceVerb, attempt: string): Act => ({
+        attempt: attempt.repeat(32),
+        digest: "d".repeat(64),
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb },
+      });
+      const stopped = yield* callCloud({ ...caller, via: "dashboard" }, { act: act("stop", "1") }).pipe(Effect.provide(services));
+      expect(stopped).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+
+      for (const [verb, attempt] of [["restart", "2"], ["stop", "3"]] as const) {
+        const busy = yield* callCloud(caller, { act: act(verb, attempt) }).pipe(Effect.provide(services));
+        expect(busy).toEqual({ ok: false, refusal: expect.objectContaining({ code: "conflict", message: "web is busy: stop web is still running." }) });
+      }
+      expect((yield* drizzle.select().from(serviceAct)).map((row) => row.verb)).toEqual(["stop"]);
+    }));
+
   it.live("a member's stop approved before production was protected asks a protector once it is", () =>
     Effect.gen(function* () {
       const { services, drizzle, caller, store } = yield* deployedWeb;

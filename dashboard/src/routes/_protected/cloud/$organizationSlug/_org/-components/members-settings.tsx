@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { LinkIcon, MailIcon, UserIcon } from "lucide-react";
@@ -23,6 +23,7 @@ import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
 import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
+import { distinctNames } from "#/lib/distinct-names";
 import { toErrorMessage } from "#/lib/error-message";
 import {
   inviteMemberServerFn,
@@ -141,31 +142,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
           })}
         </SettingsList>
       </SettingsSection>
-      <SettingsSection id="invites" title="Pending invites">
-        {data.invites.length > 0 ? (
-          <SettingsList label="Pending invites">
-            {data.invites.map((invite) => (
-              <SettingsListItem
-                key={invite.id}
-                media={invite.email ? <MailIcon /> : <LinkIcon />}
-                label={invite.email ?? "Anyone with the link"}
-                hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${formatDate(invite.expires_at)}`}
-                commit="change"
-                actions={manager ? (
-                  <Button variant="ghost" size="sm" onClick={() => revoke.mutate(invite.id)}>Revoke</Button>
-                ) : undefined}
-              />
-            ))}
-          </SettingsList>
-        ) : (
-          <SettingsEmpty title="No pending invites">An invite is a link that lets one person join.</SettingsEmpty>
-        )}
-        {manager ? (
-          <SettingsFoot>
-            <SettingsAddButton onClick={() => setInviting(true)}>Invite</SettingsAddButton>
-          </SettingsFoot>
-        ) : null}
-      </SettingsSection>
+      <PendingInvites invites={data.invites} manager={manager} onRevoke={(invite) => revoke.mutate(invite)} onInvite={() => setInviting(true)} />
       {inviting ? <InviteDialog organizationName={organizationName} mail={data.mail} invite={(input) => inviteMemberServerFn({ data: { organizationSlug, ...input } })} onInvited={refresh} onOpenChange={setInviting} /> : null}
       <AlertDialog
         open={confirming !== null}
@@ -208,6 +185,62 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   );
 }
 
+type PendingInvite = { id: string; email: string | null; role: InviteRole; invited_by: string; expires_at: string };
+
+export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
+  invites: readonly PendingInvite[];
+  manager: boolean;
+  onRevoke: (invite: string) => void;
+  onInvite: () => void;
+}) {
+  const revokeButtons = useRef(new Map<string, HTMLButtonElement>());
+  const inviteButton = useRef<HTMLButtonElement>(null);
+  const revokeNames = distinctNames(invites.map((invite) =>
+    [invite.email ?? `link expiring ${formatDate(invite.expires_at)}`, `from ${invite.invited_by}`, ROLE_LABELS[invite.role]]));
+  // The invite below takes the revoked one's place, so focus moves to it, or up, or to Invite when none is left.
+  function revoke(id: string) {
+    const index = invites.findIndex((row) => row.id === id);
+    const next = invites[index + 1] ?? invites[index - 1];
+    onRevoke(id);
+    (next ? revokeButtons.current.get(next.id) : inviteButton.current)?.focus();
+  }
+
+  return (
+    <SettingsSection id="invites" title="Pending invites">
+      {invites.length > 0 ? (
+        <SettingsList label="Pending invites">
+          {invites.map((invite, index) => (
+            <SettingsListItem
+              key={invite.id}
+              media={invite.email ? <MailIcon /> : <LinkIcon />}
+              label={invite.email ?? "Anyone with the link"}
+              hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${formatDate(invite.expires_at)}`}
+              commit="change"
+              actions={manager ? (
+                <Button variant="ghost" size="sm" onClick={() => revoke(invite.id)}
+                  aria-label={`Revoke ${revokeNames[index]}`}
+                  ref={(button) => {
+                    if (button) revokeButtons.current.set(invite.id, button);
+                    return () => { revokeButtons.current.delete(invite.id); };
+                  }}>
+                  Revoke
+                </Button>
+              ) : undefined}
+            />
+          ))}
+        </SettingsList>
+      ) : (
+        <SettingsEmpty title="No pending invites">An invite is a link that lets one person join.</SettingsEmpty>
+      )}
+      {manager ? (
+        <SettingsFoot>
+          <SettingsAddButton ref={inviteButton} onClick={onInvite}>Invite</SettingsAddButton>
+        </SettingsFoot>
+      ) : null}
+    </SettingsSection>
+  );
+}
+
 type InviteInput = { email: string | null; role: InviteRole };
 type Invited = Awaited<ReturnType<typeof inviteMemberServerFn>>;
 
@@ -243,7 +276,7 @@ export function InviteDialog({ organizationName, mail, invite: send, onInvited, 
         {invite.data ? (
           <div className="flex items-center gap-2">
             <Input readOnly aria-label="Invite link" className="ph-no-capture font-mono text-xs" value={invite.data.link} onFocus={(event) => event.target.select()} />
-            <CopyButton value={invite.data.link} label="Copy link" />
+            <CopyButton value={invite.data.link} label="Copy link" autoFocus />
           </div>
         ) : (
           <form
