@@ -11,7 +11,8 @@ use ployz_store::{
     Actor, Admit, Change, ConfigId, ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig,
     CreateProject, CreateService, Deploy, DeploymentId, DeploymentsQuery, DiffQuery, Edit, Edited,
     EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, PlanQuery, ProjectId,
-    ProjectName, PutConfigFile, RunnerId, SealingKey, ServiceLineageId, SettingPath,
+    ProjectName, PutConfigFile, RunnerId, SealedNamesQuery, SealingKey, ServiceLineageId,
+    SettingPath,
 };
 use serde_json::{Value, json};
 
@@ -397,15 +398,14 @@ fn claim_unseals(store: &ConfigStore, id: &DeploymentId) {
     let api = environment_of(&claimed, "api");
     assert_eq!(api["DATABASE_URL"], format!("postgres://{SECRET}@db/app"));
     assert_eq!(api["WEB"], "web.internal");
-    // The runner scrubs failed logs of exactly the values that are or reference a secret.
-    let secret_keys = |service: &str| {
-        claimed.secret_env[&ServiceName::parse(service).unwrap()]
+    assert_eq!(
+        claimed
+            .sealed_names
             .iter()
             .map(String::as_str)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(secret_keys("web"), ["PASSWORD"]);
-    assert_eq!(secret_keys("api"), ["DATABASE_URL"]);
+            .collect::<Vec<_>>(),
+        ["DATABASE_URL", "PASSWORD", "WEB"]
+    );
     // A Service waits for the Services its variables reference.
     let api = ServiceName::parse("api").unwrap();
     assert_eq!(
@@ -640,6 +640,47 @@ fn a_renamed_secret_stays_sealed_and_keeps_its_value() {
     assert_eq!(web["API_TOKEN"], SECRET);
     assert_eq!(web["PUBLIC_API_URL"], "https://api");
     assert!(web.get("TOKEN").is_none() && web.get("API_URL").is_none());
+}
+
+#[test]
+fn sealed_names_keep_every_name_ever_sealed_and_every_template() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.TOKEN", json!({ "secret": SECRET })),
+            ("web.env.OLD", json!({ "secret": "retired-value" })),
+            ("web.env.PLAIN", json!("hello-plain")),
+            ("api.env.URL", json!("http://${{ web.PLAIN }}")),
+        ],
+    )
+    .unwrap();
+    rename(&store, &[], "web.env.TOKEN", "API_TOKEN").unwrap();
+    unset(&store, "web.env.OLD");
+
+    let names = |store: &ConfigStore| {
+        store
+            .read(&who(), &SealedNamesQuery::default())
+            .unwrap()
+            .names
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&store), ["API_TOKEN", "OLD", "TOKEN", "URL"]);
+    let id = admit(&store, 1).unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    assert_eq!(
+        claimed.sealed_names.into_iter().collect::<Vec<_>>(),
+        ["API_TOKEN", "OLD", "TOKEN", "URL"]
+    );
+    assert!(
+        !json!(store.read(&who(), &SealedNamesQuery::default()).unwrap())
+            .to_string()
+            .contains("s3cr3t")
+    );
 }
 
 #[test]

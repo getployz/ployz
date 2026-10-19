@@ -391,8 +391,6 @@ pub(super) struct Lowered {
     /// The Services a narrowed Deploy ships once its builds and uploads land: the
     /// named ones and what they reference. Empty for a full Deploy.
     pub(super) shipped: BTreeSet<ServiceName>,
-    /// The environment keys of each lowered Service that hold a secret, by runtime name.
-    pub(super) secret_env: BTreeMap<ServiceName, BTreeSet<String>>,
     /// Service variables a secret without a value or a broken reference left out,
     /// then Config file references whose resolved value may break the file or is
     /// left empty. Only lowering with the sealing key sees every value, so only it
@@ -459,13 +457,6 @@ pub(super) fn lower(
                 },
             )),
             CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
-        })
-        .collect();
-    let secret_env = snapshots
-        .iter()
-        .filter_map(|(config, snapshot)| {
-            let keys = resolved.secret.remove(snapshot.service_id.as_deref()?)?;
-            Some((config.settings.private_dns.clone(), keys))
         })
         .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.
@@ -700,7 +691,6 @@ pub(super) fn lower(
         input: json_value(&input(with(false, false))),
         shipped,
         intent,
-        secret_env,
         warnings,
     })
 }

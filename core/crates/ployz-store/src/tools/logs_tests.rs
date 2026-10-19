@@ -1,38 +1,21 @@
-use std::collections::BTreeMap;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 
 use super::*;
 
-fn secrets(pairs: &[(&str, &str)]) -> SecretSet {
-    let mut set = SecretSet::from_store(
-        pairs
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
-        [],
-    );
-    set.add_machine_env(Some(&BTreeMap::new()));
-    set
-}
-
-fn shown(text: LogText) -> LogExcerpt {
-    match text {
-        LogText::Shown(excerpt) => excerpt,
-        LogText::Withheld { why } => panic!("expected shown text, got withheld {why:?}"),
-    }
+fn secrets(pairs: &[(&str, &str)]) -> SealedValues {
+    pairs
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect()
 }
 
 fn joined(excerpt: &LogExcerpt) -> String {
     excerpt.lines().join("\n")
 }
 
-fn scrub_text(text: &str, set: &SecretSet) -> LogExcerpt {
-    shown(LogExcerpt::scrub(
-        [text.to_owned()],
-        set,
-        LineCap::default(),
-    ))
+fn scrub_text(text: &str, set: &SealedValues) -> LogExcerpt {
+    LogExcerpt::scrub([text.to_owned()], set, LineCap::default())
 }
 
 /// xorshift64*: a fixed seed keeps failures reproducible without a property-test crate.
@@ -116,11 +99,11 @@ fn no_secret_form_survives_random_logs() {
                 String::from_utf8(head).unwrap(),
                 String::from_utf8(tail).unwrap(),
             ];
-            let out = joined(&shown(LogExcerpt::scrub(
+            let out = joined(&LogExcerpt::scrub(
                 frames,
                 &set,
                 LineCap::new(LineCap::MAX).unwrap(),
-            )));
+            ));
             for leaked in &forms {
                 assert!(
                     !out.contains(leaked.as_str()),
@@ -149,39 +132,10 @@ fn longer_secret_containing_a_shorter_one_is_replaced_whole() {
 }
 
 #[test]
-fn incomplete_secret_set_withholds_the_text() {
-    let raw = "DATABASE_URL=postgres://app:s3cr3t-pass@db/app";
-    let mut machine_unread = SecretSet::from_store([], []);
-    machine_unread.add_machine_env(None);
-    let mut no_store = SecretSet::unknown();
-    no_store.add_machine_env(Some(&BTreeMap::new()));
-    let mut one_unread = SecretSet::from_store([], []);
-    one_unread.add_machine_env(Some(&BTreeMap::new()));
-    one_unread.add_machine_env(None);
-    one_unread.add_machine_env(Some(&BTreeMap::new()));
-    for set in [machine_unread, no_store, one_unread, SecretSet::unknown()] {
-        let text = LogExcerpt::scrub([raw.to_owned()], &set, LineCap::default());
-        assert_eq!(
-            text,
-            LogText::Withheld {
-                why: Withheld::NoSecretContext
-            }
-        );
-        let json = serde_json::to_string(&text).unwrap();
-        assert!(!json.contains("s3cr3t"), "{json}");
-        assert!(!json.contains("DATABASE_URL"), "{json}");
-    }
-}
-
-#[test]
 fn a_cut_line_never_keeps_a_secret_prefix() {
     let value = "Zq8-straddling-secret-value-Zq8";
     let line = format!("{}{value}{}", "x".repeat(490), "y".repeat(100));
-    let out = shown(LogExcerpt::scrub(
-        [line],
-        &secrets(&[("TOKEN_A", value)]),
-        LineCap::default(),
-    ));
+    let out = LogExcerpt::scrub([line], &secrets(&[("TOKEN_A", value)]), LineCap::default());
     let text = joined(&out);
     for end in SHORT_VALUE..=value.len() {
         let prefix = value.get(..end).unwrap();
@@ -195,18 +149,18 @@ fn a_cut_line_never_keeps_a_secret_prefix() {
 fn dropped_lines_take_their_secrets_and_kept_lines_stay_readable() {
     let value = "multi-line-secret\nsecond-half-of-it";
     let text = format!("boot\n{value}\ncould not resolve host\n");
-    let out = shown(LogExcerpt::scrub(
+    let out = LogExcerpt::scrub(
         [text],
         &secrets(&[("CERT", value)]),
         LineCap::new(1).unwrap(),
-    ));
+    );
     assert_eq!(out.lines(), ["could not resolve host"]);
     assert!(out.cut());
-    let out = shown(LogExcerpt::scrub(
+    let out = LogExcerpt::scrub(
         [format!("{value}\ncould not resolve host")],
         &secrets(&[("CERT", value)]),
         LineCap::new(2).unwrap(),
-    ));
+    );
     let text = joined(&out);
     assert!(!text.contains("second-half"), "{text:?}");
     assert!(!text.contains("multi-line"), "{text:?}");
@@ -217,11 +171,7 @@ fn dropped_lines_take_their_secrets_and_kept_lines_stay_readable() {
 fn byte_cap_drops_oldest_lines() {
     let line = "z".repeat(400);
     let text: String = (0..100).map(|i| format!("{i:03}{line}\n")).collect();
-    let out = shown(LogExcerpt::scrub(
-        [text],
-        &secrets(&[]),
-        LineCap::new(LineCap::MAX).unwrap(),
-    ));
+    let out = LogExcerpt::scrub([text], &secrets(&[]), LineCap::new(LineCap::MAX).unwrap());
     let total: usize = out.lines().iter().map(String::len).sum();
     assert!(total <= TOTAL_BYTES);
     assert!(out.cut());
@@ -273,26 +223,18 @@ fn pem_block_is_redacted_across_lines() {
     assert_eq!(out.lines(), ["loading", "[redacted]", "done"]);
 }
 
+// Catches a value that is not Sealed, as image env like NODE_ENV, scrubbed from the text.
 #[test]
-fn machine_env_scrubs_what_the_store_does_not_know_as_plain() {
-    let mut set = SecretSet::from_store([], [("HOST".to_owned(), "db.internal".to_owned())]);
-    set.add_machine_env(Some(&BTreeMap::from([
-        ("HOST".to_owned(), "db.internal".to_owned()),
-        ("INJECTED".to_owned(), "machine-only-value".to_owned()),
-    ])));
-    let out = scrub_text("dial db.internal with machine-only-value", &set);
-    assert_eq!(joined(&out), "dial db.internal with [secret INJECTED]");
-}
-
-#[test]
-fn machine_env_overriding_a_plain_value_is_a_secret() {
-    let mut set = SecretSet::from_store([], [("HOST".to_owned(), "db.internal".to_owned())]);
-    set.add_machine_env(Some(&BTreeMap::from([(
-        "HOST".to_owned(),
-        "other.internal".to_owned(),
-    )])));
-    let out = scrub_text("dial other.internal", &set);
-    assert_eq!(joined(&out), "dial [secret HOST]");
+fn only_sealed_values_are_scrubbed() {
+    let out = scrub_text(
+        "npm warn config production Use `--omit=dev` instead. token sk-live-123456",
+        &secrets(&[("API_KEY", "sk-live-123456")]),
+    );
+    assert_eq!(
+        joined(&out),
+        "npm warn config production Use `--omit=dev` instead. token [secret API_KEY]"
+    );
+    assert_eq!(out.redacted(), 1);
 }
 
 #[test]
@@ -310,23 +252,10 @@ fn line_cap_bounds() {
     assert_eq!(LineCap::new(200).map(LineCap::get), Some(200));
 }
 
-// Catches a set covering several Containers that keeps only one value per name.
+// Catches a set covering several Services that keeps only one value per name.
 #[test]
-fn every_containers_value_under_a_shared_name_is_scrubbed() {
-    let mut set = SecretSet::from_store([], []);
-    for value in ["first-container-key", "second-container-key"] {
-        set.add_machine_env(Some(&BTreeMap::from([(
-            "KEY".to_owned(),
-            value.to_owned(),
-        )])));
-    }
-    let text = LogExcerpt::scrub(
-        ["a first-container-key\nb second-container-key\n".to_owned()],
-        &set,
-        LineCap::default(),
-    );
-    let LogText::Shown(excerpt) = text else {
-        panic!("withheld: {text:?}");
-    };
-    assert_eq!(excerpt.lines(), ["a [secret KEY]", "b [secret KEY]"]);
+fn every_sealed_value_under_a_shared_name_is_scrubbed() {
+    let set = secrets(&[("KEY", "first-service-key"), ("KEY", "second-service-key")]);
+    let out = scrub_text("a first-service-key\nb second-service-key\n", &set);
+    assert_eq!(out.lines(), ["a [secret KEY]", "b [secret KEY]"]);
 }

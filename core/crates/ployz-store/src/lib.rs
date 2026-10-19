@@ -41,6 +41,8 @@ mod typed_address;
 mod variables;
 mod volume;
 
+use std::collections::BTreeSet;
+
 use ployz_core::RpcError;
 
 pub use automation::{
@@ -267,6 +269,16 @@ impl ConfigStore {
     pub fn checks(&self, environment: &EnvironmentId) -> Result<Vec<PullRequestRef>, RpcError> {
         self.storage
             .read(|tx| pull_request::project_checks(tx, environment))
+    }
+
+    /// Every name under which any Container of `environment`, present or past, may hold
+    /// a Sealed value, as of now. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn sealed_names(&self, environment: &EnvironmentId) -> Result<BTreeSet<String>, RpcError> {
+        self.storage
+            .read(|tx| review::sealed::names(tx, environment.as_str()))
     }
 
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
