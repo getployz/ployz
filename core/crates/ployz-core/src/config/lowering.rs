@@ -16,7 +16,7 @@ use crate::{
     PortPublication, PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource,
     RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceConfigGraph, ServiceContainerSpec,
     ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceRemovals, ServiceVolume,
-    ServiceVolumeGraph, VolumeDriver,
+    ServiceVolumeGraph, UpdateConfig, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -60,6 +60,9 @@ pub struct LowerDeploymentInput {
     /// when there are some.
     #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
     pub removals: ServiceRemovals,
+    /// The Cluster Domain generated domains were expanded under, when any were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_domain: Option<IngressHost>,
 }
 
 /// One Service's captured settings and the runtime inputs resolved for it.
@@ -422,7 +425,10 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             ports,
             mount_graph: Default::default(),
             pre_deploy,
-            update: Default::default(),
+            update: UpdateConfig {
+                order: config.update_order.map(Into::into),
+                monitor_millis: None,
+            },
         };
         spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
             .map_err(mount_error)?;
@@ -452,7 +458,8 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         },
     )
     .with_dependencies(dependencies)
-    .with_volume_names(volume_names))
+    .with_volume_names(volume_names)
+    .with_cluster_domain(input.cluster_domain))
 }
 
 fn mount_error(error: crate::ServiceSpecGraphError) -> ConfigError {

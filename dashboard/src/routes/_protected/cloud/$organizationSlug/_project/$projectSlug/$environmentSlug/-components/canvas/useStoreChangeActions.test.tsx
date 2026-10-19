@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import { useStoreWriter } from "#/modules/config-store/store-write";
 import * as lens from "#/modules/runtime/use-runtime-lens";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
 import { useStoreChangeActions } from "./useStoreChangeActions";
@@ -30,10 +31,13 @@ const saves: boolean[] = [];
 const NO_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 const shown = (version: string) => `${version}#loss-shown`;
 
-function Deploy({ placementLoss }: { placementLoss: PlacementLoss }) {
-  const { deploy, save, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id), placementLoss);
+function Deploy({ placementLoss, version = "2:1:0" }: { placementLoss: PlacementLoss; version?: string }) {
+  const { deploy, save, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, version, (id) => admittedIds.push(id), placementLoss);
+  const writer = useStoreWriter("acme");
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
+    <button type="button" onClick={() => writer.edit({ environment: ref, changes: [{ op: "set", path: "web.replicas", value: 3 }] })}>Stage replicas</button>
+    <button type="button" onClick={() => writer.commit({ command: "set_volume_storage", environment: ref, volume: "pg-data", storage: { kind: "docker" } })}>Stage storage</button>
     <button type="button" onClick={() => void save("  Save this draft  ").then((saved) => saves.push(saved))}>Save now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
     <button type="button" onClick={() => neverSync("api.env.CACHE_TTL", "a:variables.CACHE_TTL" as RowId)}>Never sync CACHE_TTL</button>
@@ -51,10 +55,151 @@ function setup(placementLoss = NO_LOSS) {
   vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: {} } as never);
   const write = vi.spyOn(functions, "writeStoreServerFn");
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
-  render(<Deploy placementLoss={placementLoss} />, { wrapper });
+  const { rerender } = render(<Deploy placementLoss={placementLoss} />, { wrapper });
   const admits = () => write.mock.calls.map(([call]) => call?.data.command);
-  return { write, admits };
+  const shows = (version: string) => rerender(<Deploy placementLoss={placementLoss} version={version} />);
+  return { write, admits, shows, queryClient };
 }
+
+/** A pointer press, as a browser sends it: down, then the click. */
+function press(text: string) {
+  act(() => {
+    fireEvent.pointerDown(screen.getByText(text));
+    fireEvent.click(screen.getByText(text));
+  });
+}
+
+const edited = { ok: true, value: { written: "edited", environment: { revision: 3 } } } as never;
+
+it("sends nothing for a Deploy pressed while a field's draft still stages, then deploys the review that shows it", async () => {
+  const test = setup();
+  let land: (value: typeof edited) => void = () => {};
+  test.write.mockReturnValueOnce(new Promise<typeof edited>((resolve) => { land = resolve; })).mockResolvedValueOnce(admitted);
+
+  // Pressing Deploy leaves the field, which stages its draft; the click lands in the same gesture.
+  act(() => {
+    fireEvent.click(screen.getByText("Stage replicas"));
+    fireEvent.click(screen.getByText("Deploy now"));
+  });
+  land(edited);
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  expect(test.admits()).toMatchObject([{ command: "edit", changes: [{ path: "web.replicas", value: 3 }] }]);
+  expect(admittedIds).toEqual([]);
+
+  // The bar now shows the review with the draft; the next press ships exactly that.
+  test.shows("3:1:0");
+  press("Deploy now");
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0", message: "Ship the api" });
+  expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("sends nothing for a Deploy whose own press staged a draft that saved before the click, then deploys the next press", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce(admitted);
+
+  // The press begins, then the field it leaves stages its draft, which saves and shows before the button comes up.
+  fireEvent.pointerDown(screen.getByText("Deploy now"));
+  act(() => { fireEvent.click(screen.getByText("Stage replicas")); });
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  test.shows("3:1:0");
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await act(() => Promise.resolve());
+  expect(test.admits()).toMatchObject([{ command: "edit" }]);
+  expect(admittedIds).toEqual([]);
+
+  press("Deploy now");
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
+it("sends nothing for a Deploy held down while a draft saves, then deploys the next press", async () => {
+  const test = setup();
+  let land: (value: typeof edited) => void = () => {};
+  test.write.mockReturnValueOnce(new Promise<typeof edited>((resolve) => { land = resolve; })).mockResolvedValueOnce(admitted);
+  press("Stage replicas");
+
+  // The press begins while the draft still saves, which lands and shows before the button comes up.
+  fireEvent.pointerDown(screen.getByText("Deploy now"));
+  land(edited);
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  test.shows("3:1:0");
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await act(() => Promise.resolve());
+  expect(test.admits()).toMatchObject([{ command: "edit" }]);
+  expect(admittedIds).toEqual([]);
+
+  press("Deploy now");
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
+it("sends nothing for a Deploy whose Space is held while a draft saves", async () => {
+  const test = setup();
+  let land: (value: typeof edited) => void = () => {};
+  test.write.mockReturnValueOnce(new Promise<typeof edited>((resolve) => { land = resolve; }));
+  press("Stage replicas");
+
+  const deploy = screen.getByText("Deploy now");
+  fireEvent.keyDown(deploy, { key: " " });
+  land(edited);
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  test.shows("3:1:0");
+  fireEvent.keyDown(deploy, { key: " ", repeat: true });
+  act(() => { fireEvent.click(deploy); });
+  await act(() => Promise.resolve());
+  expect(test.admits()).toMatchObject([{ command: "edit" }]);
+  expect(admittedIds).toEqual([]);
+});
+
+it("judges each press with no pointer or key before it once, so the one after a staging press deploys", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce(admitted);
+  press("Stage replicas");
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  test.shows("3:1:0");
+
+  // Assistive tech activates the button without a pointer or key.
+  act(() => { screen.getByText("Deploy now").click(); });
+  await act(() => Promise.resolve());
+  expect(admittedIds).toEqual([]);
+  act(() => { screen.getByText("Deploy now").click(); });
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
+it("sends nothing for a Deploy pressed while a Volume's storage still saves", async () => {
+  const test = setup();
+  let land: (value: never) => void = () => {};
+  test.write.mockReturnValueOnce(new Promise((resolve) => { land = resolve; }));
+  press("Stage storage");
+  press("Deploy now");
+  land({ ok: true, value: { written: "volume", environment: { revision: 3 } } } as never);
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  expect(test.admits()).toMatchObject([{ command: "set_volume_storage" }]);
+  expect(admittedIds).toEqual([]);
+});
+
+it("reports a Save pressed while a field's draft still stages as not saved, and sends nothing", async () => {
+  const test = setup();
+  test.write.mockReturnValueOnce(new Promise(() => {}));
+  act(() => {
+    fireEvent.click(screen.getByText("Stage replicas"));
+    fireEvent.click(screen.getByText("Save now"));
+  });
+  await waitFor(() => expect(saves).toEqual([false]));
+  expect(test.admits()).toMatchObject([{ command: "edit" }]);
+  expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("leaves a Deploy the Store refused for a review that moved elsewhere unadmitted, saying so", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(refusal("conflict", { revision: 5 }));
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith("refused: conflict"));
+  expect(test.admits()).toMatchObject([{ command: "admit", version: "2:1:0" }]);
+  expect(admittedIds).toEqual([]);
+});
 
 it("asks before a Deploy deletes Volume data, then admits accepting exactly what the user read", async () => {
   const test = setup();

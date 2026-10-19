@@ -133,7 +133,7 @@ fn discard(
         who,
         &Discard {
             environment: EnvironmentRef::default(),
-            target: ployz_store::DiscardTarget::Head,
+            target: Some(ployz_store::DiscardTarget::Head),
             path: path.map(|path| SettingPath::parse(path).unwrap()),
             version: version.map(Into::into),
         },
@@ -578,7 +578,7 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("web").unwrap()),
                 version: None,
             },
@@ -703,6 +703,258 @@ fn history_undo_stages_only_its_delta_and_preserves_later_unrelated_edits() {
 }
 
 #[test]
+fn discard_of_a_never_deployed_save_lists_it_and_its_path_brings_it_back() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    let discard_path = |target, path: &str| {
+        store.write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target,
+                path: Some(SettingPath::parse(path).unwrap()),
+                version: None,
+            },
+        )
+    };
+    let reversed = |discarded: &Discarded| {
+        let mut names: Vec<_> = discarded
+            .reversed
+            .iter()
+            .map(|reversal| (reversal.change.name.clone(), reversal.change.lifecycle))
+            .collect();
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        names
+    };
+
+    let discarded = discard(&store, &who, None, None).unwrap();
+    assert!(discarded.changed);
+    let removed = vec![
+        ("api".to_owned(), ReviewLifecycleKind::Delete),
+        ("web".to_owned(), ReviewLifecycleKind::Delete),
+    ];
+    assert_eq!(reversed(&discarded), removed);
+    assert_eq!(value(&store, &who, "web.image"), None);
+    let view = diff(&store, &who);
+    assert_eq!(view.total_count, 0);
+    assert_eq!(view.review_changes().len(), 2);
+    assert!(view.review_count() >= 2, "status counts what diff lists");
+
+    let again = discard(&store, &who, None, None).unwrap();
+    assert!(!again.changed);
+    assert_eq!(reversed(&again), removed);
+
+    let error = discard_path(Some(ployz_store::DiscardTarget::Head), "web").unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+
+    assert!(discard_path(None, "web").unwrap().changed);
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("nginx:1")));
+    assert_eq!(value(&store, &who, "api.image"), None);
+    let view = diff(&store, &who);
+    assert_eq!(
+        view.review_changes()
+            .iter()
+            .map(|change| (change.name.as_str(), change.lifecycle))
+            .collect::<Vec<_>>(),
+        [
+            ("web", ReviewLifecycleKind::Create),
+            ("api", ReviewLifecycleKind::Delete)
+        ]
+    );
+    assert_eq!(view.reversals().len(), 1);
+}
+
+fn discard_all(
+    store: &ConfigStore,
+    who: &Actor,
+    target: Option<ployz_store::DiscardTarget>,
+) -> Discarded {
+    store
+        .write(
+            who,
+            &Discard {
+                target,
+                ..Discard::default()
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_plain_discard_sends_no_target_so_an_older_store_still_reads_it() {
+    let wire = serde_json::to_value(Discard::default()).unwrap();
+    assert_eq!(wire.get("target"), None, "{wire}");
+}
+
+#[test]
+fn a_replaced_service_of_the_same_name_comes_back_only_by_returning_to_saved() {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    remove_service(&store, &who, "web");
+    add_service(&store, &who, 5, "web");
+    publish(&store, &who, None).unwrap();
+
+    let discarded = discard_all(&store, &who, None);
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("nginx:1")));
+    let webs: Vec<_> = discarded
+        .reversed
+        .iter()
+        .filter(|reversal| reversal.change.name == "web")
+        .collect();
+    assert_eq!(webs.len(), 2, "{:?}", discarded.reversed);
+    for web in webs {
+        assert_eq!(web.way_back.path, None, "`discard web` picks one of two");
+        assert!(web.way_back.drops_unsaved);
+    }
+
+    assert!(discard_all(&store, &who, Some(ployz_store::DiscardTarget::Saved)).changed);
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("postgres:16")));
+    assert!(diff(&store, &who).reversals().is_empty());
+}
+
+#[test]
+fn a_saved_service_whose_name_a_staged_one_took_has_no_path_back() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    remove_service(&store, &who, "web");
+    add_service(&store, &who, 5, "web");
+
+    let discarded = discard(&store, &who, Some("api"), None).unwrap();
+    assert!(discarded.changed);
+    let way_back = |name: &str| {
+        discarded
+            .reversed
+            .iter()
+            .find(|reversal| reversal.change.name == name)
+            .map(|reversal| reversal.way_back.clone())
+            .unwrap_or_else(|| panic!("{name} is reversed: {:?}", discarded.reversed))
+    };
+    assert_eq!(
+        way_back("api").path.map(|path| path.to_string()),
+        Some("api".to_owned())
+    );
+    let web = way_back("web");
+    assert_eq!(web.path, None, "`discard web` names the staged web");
+    assert!(web.drops_unsaved);
+}
+
+#[test]
+fn a_config_comes_back_by_its_id_and_a_replaced_one_only_by_returning_to_saved() {
+    let (store, who) = shop();
+    let sentry = ployz_core::ConfigName::parse("sentry").unwrap();
+    let create = |n: u8, name: &ployz_core::ConfigName| {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateConfig {
+                    id: ployz_store::ConfigId::parse(format!(
+                        "00000000-0000-4000-8000-0000000000{n:02}"
+                    ))
+                    .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: name.clone(),
+                    mounts: Vec::new(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &ployz_store::PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: name.clone(),
+                    file: ployz_core::ConfigFileName::parse("sentry.yml").unwrap(),
+                    content: format!("version: {n}"),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    };
+    let working_config = || {
+        let view = store
+            .read(&who, &ployz_store::ConfigsQuery::default())
+            .unwrap();
+        let mut ids: Vec<_> = view
+            .configs
+            .into_iter()
+            .filter(|listing| listing.change != Some(ReviewLifecycleKind::Delete))
+            .map(|listing| listing.config.id.to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    create(10, &sentry);
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: sentry.clone(),
+            },
+        )
+        .unwrap();
+    create(11, &sentry);
+    create(12, &ployz_core::ConfigName::parse("errors").unwrap());
+    publish(&store, &who, None).unwrap();
+    let replacement = "00000000-0000-4000-8000-000000000011";
+
+    let errors = "00000000-0000-4000-8000-000000000012";
+    let discarded = discard_all(&store, &who, None);
+    assert_eq!(working_config(), ["00000000-0000-4000-8000-000000000010"]);
+    let back = discarded
+        .reversed
+        .iter()
+        .find(|reversal| reversal.change.node.id == errors)
+        .and_then(|reversal| reversal.way_back.path.clone())
+        .expect("errors has a way back");
+    assert_eq!(back.to_string(), format!("configs.@{errors}"));
+    let sentries: Vec<_> = discarded
+        .reversed
+        .iter()
+        .filter(|reversal| reversal.change.name == "sentry")
+        .collect();
+    assert_eq!(sentries.len(), 2, "{:?}", discarded.reversed);
+    for sentry in sentries {
+        assert_eq!(sentry.way_back.path, None, "one path brings back neither");
+    }
+    let alone = store
+        .write(
+            &who,
+            &Discard {
+                path: Some(SettingPath::parse(&format!("configs.@{replacement}")).unwrap()),
+                ..Discard::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        alone.code,
+        RpcErrorCode::Conflict,
+        "two Configs named sentry"
+    );
+
+    let restored = store
+        .write(
+            &who,
+            &Discard {
+                path: Some(back),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert!(restored.changed);
+    assert_eq!(
+        working_config(),
+        ["00000000-0000-4000-8000-000000000010", errors]
+    );
+
+    assert!(discard_all(&store, &who, Some(ployz_store::DiscardTarget::Saved)).changed);
+    assert_eq!(working_config(), [replacement, errors]);
+}
+
+#[test]
 fn discard_inverse_returns_to_saved_without_history_and_save_records_reversal() {
     let (store, who) = shop();
     backend::deploy(&store, &who, "production", 1);
@@ -731,7 +983,7 @@ fn discard_inverse_returns_to_saved_without_history_and_save_records_reversal() 
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(SettingPath::parse("web.replicas").unwrap()),
                 version: Some(reversed.version),
             },
@@ -778,7 +1030,7 @@ fn discard_review_restores_mixed_runtime_and_inverse_rows_once() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Review,
+                target: Some(ployz_store::DiscardTarget::Review),
                 version: Some(before.version),
                 ..Discard::default()
             },
@@ -815,7 +1067,7 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Review,
+                target: Some(ployz_store::DiscardTarget::Review),
                 version: Some(before.version),
                 ..Discard::default()
             },
@@ -923,7 +1175,7 @@ fn discard_to_saved(store: &ConfigStore, who: &Actor) {
             who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: None,
                 version: None,
             },
@@ -1129,6 +1381,32 @@ fn history_undo_of_a_service_removal_brings_back_what_it_referred_to() {
         Some(json!("${{ web.SOURCE }}"))
     );
     assert_eq!(value(&store, &who, "web.env.SOURCE"), Some(json!("old")));
+}
+
+#[test]
+fn history_undo_that_leaves_a_broken_reference_stages_and_the_review_lists_it() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    add_service(&store, &who, 10, "pg");
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "pg.env.PASS", json!("secret"));
+    set(&store, &who, "web.env.DATABASE", json!("${{ pg.PASS }}"));
+    publish(&store, &who, None).unwrap();
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert_eq!(value(&store, &who, "pg.image"), None);
+    let diff = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    let broken: Vec<String> = diff.broken.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        broken,
+        ["web.env.DATABASE references pg, which was removed"]
+    );
 }
 
 fn rename_service(store: &ConfigStore, who: &Actor, from: &str, to: &str) {
@@ -2390,7 +2668,7 @@ fn saved_discard_cannot_downgrade_a_sealed_variable() {
     let result = store.write(
         &who,
         &Discard {
-            target: ployz_store::DiscardTarget::Saved,
+            target: Some(ployz_store::DiscardTarget::Saved),
             path: Some(SettingPath::parse("web.env.KEY").unwrap()),
             ..Discard::default()
         },
@@ -2532,7 +2810,7 @@ fn undo_export_only_revision_preserves_later_value_and_review_discards_both_fiel
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Review,
+                target: Some(ployz_store::DiscardTarget::Review),
                 ..Discard::default()
             },
         )
@@ -2630,7 +2908,7 @@ fn review_discard_restores_custom_and_generated_domain_changes() {
             .write(
                 &who,
                 &Discard {
-                    target: ployz_store::DiscardTarget::Review,
+                    target: Some(ployz_store::DiscardTarget::Review),
                     version: Some(before.version),
                     ..Discard::default()
                 },
@@ -2680,7 +2958,7 @@ fn template_metadata_is_reviewed_and_undone_without_deploying() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(SettingPath::parse("web.template").unwrap()),
                 ..Discard::default()
             },
@@ -2931,7 +3209,7 @@ fn legacy_id_only_saved_and_review_discard_restore_the_visible_field() {
             .write(
                 who,
                 &Discard {
-                    target,
+                    target: Some(target),
                     path: (target == ployz_store::DiscardTarget::Saved)
                         .then(|| SettingPath::parse("web.env.KEY").unwrap()),
                     version: Some(review.version),
@@ -2984,7 +3262,7 @@ fn legacy_description_discard_is_individual_and_not_an_editor() {
         .write(
             who,
             &Discard {
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(path.clone()),
                 ..Discard::default()
             },
@@ -3215,7 +3493,7 @@ fn discarding_new_variable_export_preserves_its_value_and_owner() {
                 .write(
                     &who,
                     &Discard {
-                        target,
+                        target: Some(target),
                         path: Some(SettingPath::parse(&format!("{path}.exported")).unwrap()),
                         version: Some(diff(&store, &who).version),
                         ..Discard::default()
@@ -3240,7 +3518,7 @@ fn discarding_new_variable_export_preserves_its_value_and_owner() {
                 .write(
                     &who,
                     &Discard {
-                        target,
+                        target: Some(target),
                         path: Some(SettingPath::parse(&path).unwrap()),
                         version: Some(diff(&store, &who).version),
                         ..Discard::default()
@@ -3276,7 +3554,7 @@ fn discarding_new_legacy_description_preserves_other_variable_fields() {
             .write(
                 who,
                 &Discard {
-                    target,
+                    target: Some(target),
                     path: Some(SettingPath::parse("web.env.KEY.description").unwrap()),
                     version: Some(diff(store, who).version),
                     ..Discard::default()
@@ -3313,7 +3591,7 @@ fn discarding_missing_child_preserves_a_new_service_and_history() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(SettingPath::parse("worker.env.MISSING").unwrap()),
                 version: Some(diff(&store, &who).version),
                 ..Discard::default()
@@ -3377,7 +3655,7 @@ fn discarding_a_new_configs_child_never_deletes_its_owner() {
         let result = store.write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Saved,
+                target: Some(ployz_store::DiscardTarget::Saved),
                 path: Some(SettingPath::parse(&format!("configs.@{id}.files.{file}")).unwrap()),
                 version: Some(diff(&store, &who).version),
                 ..Discard::default()
@@ -3484,7 +3762,7 @@ fn reordered_routes_review_publish_and_discard() {
         .write(
             &who,
             &Discard {
-                target: ployz_store::DiscardTarget::Review,
+                target: Some(ployz_store::DiscardTarget::Review),
                 version: Some(review.version),
                 ..Discard::default()
             },

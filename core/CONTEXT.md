@@ -257,6 +257,10 @@ _Avoid_: Deployable name, DNS alias
 Another Service's private address written into a variable's text instead of referenced: `NAME.internal` anywhere, or a bare `NAME` where only a host can stand, a URL's host or the whole value of a host key such as `DB_HOST`. It reaches the same place in this Environment, but nothing links the two Services, so a Branch that doesn't copy the other can't reach it and a Deploy doesn't order them. An edit that writes one keeps it as typed and answers with the reference to set instead; nothing refuses or rewrites it.
 _Avoid_: Hardcoded host, literal link
 
+**Broken Reference**:
+A reference in a variable or Config file to a Service or variable the Environment doesn't have, because it was removed, unset, or never existed. No write refuses one: removing a Service, Discard, History, Sync and merges all stage it. Diff, status and `service rm` list each, and a Deploy leaves the variable out, with every variable that reads it, or leaves the reference empty in a Config file, and warns. A reference to a Service the Environment's Parent holds is not broken; it reads the Parent's live. Naming an unknown Service when writing a reference is still refused.
+_Avoid_: Dangling reference, missing dependency
+
 **Volume Kind**:
 The explicit, user-chosen kind of an Environment's Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local. Creation defaults to a Provisioned Volume; plain Docker storage requires an explicit opt-out. The kind and maximum can change in Working State until the first Deployment targeting that Volume is admitted. Admission fixes both, including failed, cancelled and pending attempts, because frozen attempts can prepare storage or be retried. Saved documents always carry the explicit kind and never infer it from a missing size.
 _Avoid_: Storage class, volume type dropdown
@@ -266,7 +270,7 @@ A Volume's opt-in to more than one writer: several replicas of one Service, or s
 _Avoid_: Multi-attach, ReadWriteMany, shared volume
 
 **Config**:
-A named Environment Resource holding text files for Services to mount read-only. Its name is a DNS label, unique in its Environment, and the Config is addressed `configs.NAME` or `configs.@UUID`, so no Service may be named `configs`. A name selects Working State for authoring; Discard refuses a name shared by distinct Working and Head identities. Review paths retain exact identity across rename and same-name replacement. Each file has a relative path of one to four segments, such as `config.d/override.xml` or `.htpasswd`, at most 256 KB of UTF-8 text, a mode up to `0777` (default `0444`), and a uid and gid (default 0). A Service mounts at most 768 KB of Config text across its Configs: put and mount count the text, and a Deploy counts it with variables resolved. A Config belongs to no Service, so its text references variables only as `${{ SERVICE.KEY }}`; a bare `${{ KEY }}` is refused. References are stored by Service lineage, so renaming the Service re-renders the file. Deleting a Service or variable a Config references is refused, as for a variable's references.
+A named Environment Resource holding text files for Services to mount read-only. Its name is a DNS label, unique in its Environment, and the Config is addressed `configs.NAME` or `configs.@UUID`, so no Service may be named `configs`. A name selects Working State for authoring; Discard refuses a name shared by distinct Working and Head identities. Review paths retain exact identity across rename and same-name replacement. Each file has a relative path of one to four segments, such as `config.d/override.xml` or `.htpasswd`, at most 256 KB of UTF-8 text, a mode up to `0777` (default `0444`), and a uid and gid (default 0). A Service mounts at most 768 KB of Config text across its Configs: put and mount count the text, and a Deploy counts it with variables resolved. A Config belongs to no Service, so its text references variables only as `${{ SERVICE.KEY }}`; a bare `${{ KEY }}` is refused. References are stored by Service lineage, so renaming the Service re-renders the file. Deleting a Service or variable a Config references leaves a Broken Reference, as for a variable's references.
 _Avoid_: Config file (one file of a Config), ConfigMap, Config Store
 
 **Config Mount**:
@@ -278,7 +282,7 @@ Current encrypted authentication material owned by a Service identity, with a ne
 _Avoid_: Saved credential contents, credential revision as configuration
 
 **Working State**:
-The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention. Every write keeps the Environment's rules: one writer per Volume without Shared Writes, references in variables and Config files only to Services and variables that exist, no reference cycle among variables, and Setup Commands only in Services it has. A write is refused only for a rule it breaks that neither the Working State it replaces nor what it copies or restores already broke, so older or inherited breaks keep editing and deploying.
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention. Every write keeps the Environment's rules: one writer per Volume without Shared Writes, no reference cycle among variables, and Setup Commands only in Services it has. A write is refused only for a rule it breaks that neither the Working State it replaces nor what it copies or restores already broke, so older or inherited breaks keep editing and deploying.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Saved State**:
@@ -344,7 +348,7 @@ The changes a PR Environment made since it started that go to its Destination wh
 _Avoid_: Offer, Conditional Sync, queue, approval
 
 **Merge landing**:
-The Saved revision "Merged #N" that a pull request's first merge writes into each Destination from its On merge list, and the deploy of what it changed. It happens once per pull request; Undo in History reverts it like any Saved revision. A node removal that the Destination still references is refused alone: the node stays and the rest lands. A removed Service's containers retire with the deploy; its Volumes and their data stay.
+The Saved revision "Merged #N" that a pull request's first merge writes into each Destination from its On merge list, and the deploy of what it changed. It happens once per pull request; Undo in History reverts it like any Saved revision. A Config removal that a Destination Service still mounts is refused alone: the Config stays and the rest lands. A reference never holds a removal; it becomes a Broken Reference. A removed Service's containers retire with the deploy; its Volumes and their data stay.
 _Avoid_: Conditional Save, auto-promote, Apply
 
 **Parent**:
@@ -576,6 +580,10 @@ _Avoid_: Selected Endpoint, current endpoint
 **Selected Endpoint**:
 The endpoint one observing Machine currently selects for reaching a target Machine. Different observers may select different endpoints for the same target.
 _Avoid_: Advertised Endpoint, globally current endpoint
+
+**Pinned Address**:
+A Machine's public IP or Advertised Endpoints when its operator chose them at enrollment or with `server set`. Daemon start rediscovers only unpinned addresses. The pin lives on the Machine and is never replicated.
+_Avoid_: static IP, address override
 
 **Cloud Pairing**:
 Cloud's Organization-scoped association with one Cluster generation, held on each Machine as the `cloud` Management Client. It scopes enrollment and connection candidates; the daemon never sees it, and it is neither Cluster membership nor evidence of reachability.

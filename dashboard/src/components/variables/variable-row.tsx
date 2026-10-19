@@ -85,7 +85,7 @@ export function VariableRow({
         exported={variable.exported}
         neverSynced={variable.neverSynced ?? false}
         showMetadata={showMetadata}
-        warnings={[brokenRefWarning]}
+        warnings={[variable.broken ? `Broken reference: ${variable.broken}` : brokenRefWarning]}
       />
 
       <div className="flex min-w-0 items-center gap-1.5">

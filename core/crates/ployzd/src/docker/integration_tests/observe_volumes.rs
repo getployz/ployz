@@ -38,6 +38,7 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
                 advertised_endpoints: vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let machine_id = local.record().id();

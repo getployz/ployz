@@ -25,7 +25,8 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    QualifiedService, ResolvedServiceSpec, ServingPointer, StorageChoice, WireGuardPublicKey,
+    PinnedAddresses, QualifiedService, ResolvedServiceSpec, SelectedEndpoint, ServingPointer,
+    StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -213,6 +214,8 @@ pub struct EnrollRequest {
     pub role: EnrollAs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "PinnedAddresses::is_empty")]
+    pub pinned: PinnedAddresses,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -380,6 +383,23 @@ pub struct SetPushTargetRequest {
 pub struct PushTargetSet {
     #[ts(type = "string | null")]
     pub url: Option<url::Url>,
+}
+
+/// An operator's endpoint for reaching `peer` from the Machine that takes the request.
+///
+/// It sets only that Machine's own Selected Endpoint; `peer`'s record is unchanged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectEndpointRequest {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
+}
+
+/// The Machine that took a [`SelectEndpointRequest`] now dials `endpoint` for `peer`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EndpointSelected {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
 }
 
 /// The place one Container creation lands on a Machine. The same slot names the
@@ -1352,6 +1372,7 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     PushTargetSet(PushTargetSet) => "push_target_set";
+    EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
@@ -1545,12 +1566,51 @@ impl RpcError {
         }
     }
 
+    /// An error the caller made because its target Machine didn't answer: the target
+    /// sent nothing, so it may answer later. Read back by [`Self::target_unanswered`].
+    #[must_use]
+    pub fn unanswered_target(code: RpcErrorCode, message: String) -> Self {
+        Self {
+            code,
+            message,
+            details: serde_json::json!({ "reason": TARGET_UNANSWERED_REASON }),
+            cause: Vec::new(),
+        }
+    }
+
+    /// Whether the target Machine didn't answer, rather than answering with this error.
+    #[must_use]
+    pub fn target_unanswered(&self) -> bool {
+        self.details.get("reason").and_then(Value::as_str) == Some(TARGET_UNANSWERED_REASON)
+    }
+
     /// The capability this error says its target Machine lacks, if it is a refusal.
     #[must_use]
     pub fn refusal(&self) -> Option<CapabilityRefusal> {
         CapabilityRefusal::new(&self.code, self.details.clone())
     }
+
+    /// `self` from a pull of `image`, naming the image when the answer is not found.
+    /// A registry answers not found for a missing tag and a private repository alike.
+    #[must_use]
+    pub fn pulling(mut self, image: &str) -> Self {
+        if self.code == RpcErrorCode::NotFound && self.details.is_null() {
+            self.details = serde_json::json!({ MISSING_IMAGE: image });
+        }
+        self
+    }
+
+    /// The image a not-found pull named through [`Self::pulling`].
+    #[must_use]
+    pub fn missing_image(&self) -> Option<&str> {
+        if self.code != RpcErrorCode::NotFound {
+            return None;
+        }
+        self.details.get(MISSING_IMAGE)?.as_str()
+    }
 }
+
+const MISSING_IMAGE: &str = "missing_image";
 
 /// A Machine refused a route because its Ployz lacks the route's capability.
 #[derive(Clone, Debug, PartialEq)]
@@ -1595,6 +1655,8 @@ impl fmt::Display for CapabilityRefusal {
 /// Metadata an entry Machine's router puts on a status it made because the target
 /// Machine did not answer the forwarded call. A status the target sent never has it.
 pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
+
+const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
 
 /// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
 #[cfg(not(target_arch = "wasm32"))]
@@ -1817,6 +1879,7 @@ mod set_management_client_wire {
                 advertised_endpoints: machine().advertised_endpoints,
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
         let member = serde_json::to_value(EnrollRequest {
@@ -1828,6 +1891,7 @@ mod set_management_client_wire {
                 },
             },
             wireguard_mtu: Some(1380),
+            pinned: Default::default(),
         })
         .unwrap();
         assert_eq!(founder.pointer("/as/kind"), Some(&json!("founder")));

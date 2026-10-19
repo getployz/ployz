@@ -194,6 +194,34 @@ describe("plan_from_copies_table", () => {
     });
   });
 
+  it.each([["move", move("fsn-3")], ["mirror", mirror("fsn-3")]])("names the copy on a third Server and its removal when a %s finds one", (_, input) => {
+    expect(planFromCopies(input, [member("fsn-1", "writer"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume mirror rm data-fsn-2" },
+    });
+  });
+
+  it("names release, not the removal mirror rm refuses, when a move from a stopped cut finds a copy on a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [member("fsn-1", "cut"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume release data" },
+    });
+  });
+
+  it("names the move onto the copy when a cut with no snapshot finds it on a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [bare("fsn-1", 9), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume move data --to fsn-2" },
+    });
+  });
+
+  it("names no next step when a cut with no snapshot has copies on the target and a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [bare("fsn-1", 9), member("fsn-2", "mirror"), member("fsn-3", "mirror")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2" },
+    });
+  });
+
   it.each([["release", release], ["sync", sync()], ["mirror rm", remove(null)]])("tells a %s facing two unfinished cuts to keep the newer and release it", (_, input) => {
     expect(planFromCopies(input, [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 })])).toEqual({
       ok: false,

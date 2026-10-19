@@ -71,7 +71,7 @@ impl Verb {
         match self {
             Self::Publish => "save",
             Self::Deploy => "deploy",
-            Self::Retry => "retry",
+            Self::Retry => "redeploy",
             Self::Drain => "drain",
             Self::Set => "change",
             Self::Clean => "cleanup",
@@ -216,7 +216,7 @@ fn things(count: usize) -> String {
     format!("{count} thing{}", if count == 1 { "" } else { "s" })
 }
 
-fn line(effect: &DestructiveEffect) -> String {
+pub(crate) fn line(effect: &DestructiveEffect) -> String {
     let name = &effect.name;
     match effect.kind {
         DestructiveKind::RemovesService => format!("removes Service {name}"),
@@ -233,6 +233,7 @@ fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::StopsService => format!("stops Service {name} until started again"),
         DestructiveKind::RestartsService => format!("restarts Service {name}"),
         DestructiveKind::UnprotectsEnvironment => format!("unprotects Environment {name}"),
+        DestructiveKind::RemovesOrganization => format!("removes Organization {name}"),
     }
 }
 

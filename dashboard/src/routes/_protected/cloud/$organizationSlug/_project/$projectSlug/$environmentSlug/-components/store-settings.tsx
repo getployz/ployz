@@ -202,7 +202,7 @@ function ProjectNameRow({ project, onRename }: { project: string; onRename: (nam
       hint="Changes the project URL."
       commit="confirm"
       control={(
-        <ConfirmableInput id="project-name" aria-label="Name" value={draft} onValueChange={setDraft} error={error}
+        <ConfirmableInput id="project-name" aria-label="Name" commit="check" value={draft} onValueChange={setDraft} error={error}
           isDirty={draft !== project} onCancel={() => setDraft(project)}
           onConfirm={() => { if (name !== project && !error) onRename(name); }} />
       )}

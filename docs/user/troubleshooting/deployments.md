@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting deployments
-description: Fix failed builds, failed health checks, failed pre-deploy commands, crashing services and pushes that don't deploy.
+description: Fix failed builds, missing images, failed health checks, failed pre-deploy commands, crashing services and pushes that don't deploy.
 ---
 
 Start on the deployment's page. Why it failed is under the header, in red, with the service's
@@ -35,7 +35,9 @@ Services or their dependencies, or to observed work the deploy affected. An Entr
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
 
-Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
+If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
+`Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line
+for `ployz deployment show N`. Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
 keeps running. The command returns its last known result when one is available, including
 a completion observed during interruption. An active
 Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests
@@ -159,6 +161,19 @@ deploy a card can read **Not running** or **Crashed** for a few seconds: if the 
 Pushing an image to your registry deploys nothing, and a server that already has a tag, like
 `latest`, keeps its copy. Give each release its own tag and change **Container image** to it. See
 [Ship a new version of your image](../deploy/docker-image.md#ship-a-new-version-of-your-image).
+
+## My image isn't found
+
+**Failed at pull**, with `Image nginx:1.27-alpne not found, or its registry needs credentials`
+
+Your servers couldn't download the image, so the deploy stopped before it changed anything. A
+version that was already running keeps running. A registry answers the same way for a tag that
+doesn't exist and for a private image you have no access to.
+
+- Check the name and tag under **Settings → Source**. Look for typos, and check that the tag is
+  published on the registry.
+- If the image is private, add **Registry credentials**, or replace a token that expired. See
+  [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
 ## Deploy says a service has nothing to run
 

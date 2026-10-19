@@ -19,6 +19,12 @@ export const Route = createFileRoute("/device")({
 });
 
 type Outcome = "approved" | "denied";
+type NamedOrganization = { id: string; slug: string };
+
+function organizationOf(session: { activeOrganizationId?: string | null; activeOrganizationSlug?: string | null }) {
+  const { activeOrganizationId: id, activeOrganizationSlug: slug } = session;
+  return id && slug ? { id, slug } : null;
+}
 
 function DevicePage() {
   const session = useAuth();
@@ -26,7 +32,7 @@ function DevicePage() {
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
         {/* Signed out: LoginPanel returns here, code included, after sign-in. */}
-        {session ? <DeviceApproval email={session.user.email} organization={session.session.activeOrganizationSlug ?? null} /> : <DeviceSignIn />}
+        {session ? <DeviceApproval email={session.user.email} organization={organizationOf(session.session)} /> : <DeviceSignIn />}
       </div>
     </main>
   );
@@ -37,7 +43,7 @@ function DeviceSignIn() {
   return <LoginPanel title="Sign in to Ployz" description="Push-to-deploy on your own servers." action="Continue with GitHub" callbackURL={callbackURL} />;
 }
 
-function DeviceApproval({ email, organization }: { email: string; organization: string | null }) {
+function DeviceApproval({ email, organization }: { email: string; organization: NamedOrganization | null }) {
   const search = Route.useSearch();
   const [code, setCode] = useState(search.user_code ?? "");
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -59,7 +65,9 @@ function DeviceApproval({ email, organization }: { email: string; organization: 
         return;
       }
       const decided = decision === "approved"
-        ? await authClient.device.approve({ userCode })
+        // The Organization this page named, not whichever one the session acts in by the time Approve lands.
+        // better-auth's typed body knows only userCode; fetchOptions.body merges into the request body.
+        ? await authClient.device.approve({ userCode, fetchOptions: { body: { organizationId: organization?.id } } })
         : await authClient.device.deny({ userCode });
       if (decided.error) {
         setError(decided.error.error_description);
@@ -92,7 +100,7 @@ function DeviceApproval({ email, organization }: { email: string; organization: 
       <div className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold">Sign in the Ployz CLI</h1>
         <p className="text-sm text-muted-foreground">
-          Signed in as {email}{organization ? ` in ${organization}` : ""}. Approve only if this code matches your terminal.
+          Signed in as {email}{organization ? ` in ${organization.slug}` : ""}. Approve only if this code matches your terminal.
         </p>
       </div>
       <Input

@@ -51,6 +51,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
                 },
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let local = RecordOwner::spawn(local).unwrap();

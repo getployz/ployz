@@ -427,22 +427,33 @@ it.live(
 );
 
 it.live(
-  "the CLI's write skips the dashboard's role check, and a Protected Environment's source and protection still need an owner or admin",
+  "the CLI's write skips the dashboard's role check, a Protected Environment's source and protection still need an owner or admin, and its unprotect waits on a human",
   () =>
     Effect.gen(function* () {
       const layer = yield* cloudLayer();
       yield* Effect.gen(function* () {
-        const { bob, organizationId, slug, protection, role } = yield* protectedShop();
+        const { alice, bob, organizationId, slug, protection, role } = yield* protectedShop();
         yield* activeIn(bob.userId, organizationId, slug);
+        const write = (command: ConfigCommand, approvalId?: string) => {
+          const headers = signedIn(bob.session);
+          if (approvalId !== undefined) headers.set("x-ployz-approval", approvalId);
+          return send("write", headers, command);
+        };
         const cli = (command: ConfigCommand) =>
-          request("write", bob.session, command).pipe(Effect.map(({ status, json }) => [status, json.error?.code, json.error?.message]));
+          write(command).pipe(Effect.map(({ status, json }) => [status, json.error?.code, json.error?.message]));
 
         assert.deepStrictEqual(yield* cli(protect(false)), [403, "forbidden", adminOnly]);
         assert.deepStrictEqual(yield* cli(branch("dev")), [403, "forbidden", adminOnly]);
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
 
         yield* role("admin");
-        assert.deepStrictEqual(yield* cli(protect(false)), [200, undefined, undefined], "an admin unprotects production from the CLI");
+        const asked = yield* write(protect(false));
+        assert.strictEqual(asked.json.error?.code, "approval_required", "an admin's unprotect from the CLI waits on a human");
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        const approvalId = asked.json.error?.details?.approval_id ?? assert.fail("no approval id");
+        const digest = asked.json.error?.details?.approval ?? assert.fail("no approval digest");
+        assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, approvalId, { approve: { digest } })).ok);
+        assert.strictEqual((yield* write(protect(false), approvalId)).status, 200, "an admin unprotects production from the CLI once approved");
         assert.deepStrictEqual(yield* protection(), [["production", false]]);
       }).pipe(Effect.provide(layer));
     }),
@@ -1616,20 +1627,21 @@ const ceilingLayer = Effect.gen(function* () {
 });
 const stagingOnly = "This token can deploy only to staging.";
 
-it.live("a token that may protect only staging protects and unprotects staging, and production refuses", () =>
+it.live("a token that may protect only staging protects staging, asks a human to unprotect it, and production refuses", () =>
   Effect.gen(function* () {
     yield* Effect.gen(function* () {
       const { headers, state, approvals } = yield* ceilingShop({ permissions: ["environments:protect"], environments: ["staging"] }, "cli");
-      assert.strictEqual((yield* send("write", headers, protectIn("staging", true))).status, 200);
-      assert.deepStrictEqual(yield* state, [["production", true], ["staging", true]]);
-      assert.strictEqual((yield* send("write", headers, protectIn("staging", false))).status, 200);
-      assert.deepStrictEqual(yield* state, [["production", true], ["staging", false]]);
       for (const on of [false, true]) {
         const refused = yield* send("write", headers, protectIn("production", on));
         assert.deepStrictEqual([refused.status, refused.json.error?.code, refused.json.error?.message], [403, "forbidden", stagingOnly]);
       }
-      assert.deepStrictEqual(yield* state, [["production", true], ["staging", false]]);
       assert.deepStrictEqual(yield* approvals, []);
+      assert.strictEqual((yield* send("write", headers, protectIn("staging", true))).status, 200);
+      assert.deepStrictEqual(yield* state, [["production", true], ["staging", true]]);
+      const asked = yield* send("write", headers, protectIn("staging", false));
+      assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"]);
+      assert.deepStrictEqual(yield* state, [["production", true], ["staging", true]]);
+      assert.lengthOf(yield* approvals, 1);
     }).pipe(Effect.provide(yield* ceilingLayer));
   }), 60_000);
 

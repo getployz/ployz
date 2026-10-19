@@ -19,6 +19,13 @@ a queued one now, and cancel one, like the
 [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
 read your GitHub repositories and work on your servers. It doesn't create environments.
 
+The agent never sees or sends a secret's value. It can ask Ployz to give a variable a new
+random secret, such as a database password that other services then reference. Ployz makes the
+value and seals it in the same step, so it never appears in the agent's chat, its tool calls or
+their results. A secret you already have, like an API key, you set yourself under **Variables**
+or with `printf %s "$VALUE" | ployz set web.env.API_KEY --secret`; the agent names the exact
+command.
+
 ## What it can do on your servers
 
 The agent asks your servers and Cloud directly, so its answers are as fresh as the servers that
@@ -26,8 +33,8 @@ replied. It can:
 
 - Show a server, a service's containers, and where each volume's copies live
   (**server show**, **service status**, **volume show**).
-- Read a service's recent logs from each server that ran it, with secrets from the container's
-  environment replaced (**service logs**). Ployz support sees them only if your organization
+- Read a service's recent logs from each server that ran it, with sealed variables and
+  secret-shaped values replaced (**service logs**). Ployz support sees them only if your organization
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
 - Read a server's own recent logs from the Ployz daemon, Docker or Corrosion, up to 200 lines,
   with secret-shaped values replaced (**server logs**). Ployz support can't read them.

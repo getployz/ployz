@@ -25,7 +25,8 @@ again, or `brew upgrade ployz`.
 3. On **Sign in the Ployz CLI**, check that the code matches your terminal, then click
    **Approve**.
 
-`ployz logout` signs this computer out.
+This computer starts in the organization the page names. Switching organization in the dashboard
+later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
@@ -180,7 +181,7 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
-shows each server's newest 200 lines at most, with secrets scrubbed, and can't use `--follow`,
+shows each server's newest 200 lines at most, with sealed variables scrubbed, and can't use `--follow`,
 `--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
 if the directory isn't linked. A `deploy` token reads only its own environment, so
 `ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
@@ -306,6 +307,13 @@ Scripts can tell failures apart by exit code:
 
 `ployz exec` exits with your command's own exit code.
 
+A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
+`service add` and other changes exit 1 with `Cloud ... stopped answering after it got this
+change, so it may have applied.` Its `inspect:` line names the read that shows whether it
+landed, such as `ployz diff` or, for a deploy, `ployz deployment ls`. Check there before you
+run it again. With `--json` the error's `details` says `"writes": "unknown"`. When Cloud
+can't be reached at all, the error says `Could not reach Cloud` and nothing changed.
+
 A command that deletes something, such as `ployz project rm shop`, shows what goes and asks you
 to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
 `--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
@@ -317,8 +325,10 @@ Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,
-and exits 3. Ployz finishes on its own once the server answers or you remove it with
-`ployz server rm`. With `--json` it reports `removal: removed` only once the environment is gone
+and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour after the server
+answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
+or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
+the first run did. With `--json` it reports `removal: removed` only once the environment is gone
 from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in

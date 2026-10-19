@@ -44,6 +44,9 @@ export { ployzVersion };
 
 export { machineUpgradeAttemptId, setVolumeCopyRefusal };
 
+/** The error an SDK call rejects with when a Machine or the Store refuses it. */
+export { RpcError } from "@ployz/sdk";
+
 export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
   sdkPromise("observe copies", () => observeCopies(connections));
 
@@ -124,8 +127,11 @@ export interface PloyzSession {
     machine: MachineTarget,
     container: string,
   ) => Effect.Effect<{ readonly container: ContainerObservation }, PloyzSdkError>;
-  /** Describes only the Services in `readable` Namespaces, or every Service when null. */
-  readonly agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null) => Effect.Effect<unknown, PloyzSdkError>;
+  /**
+   * Describes only the Services in `readable` Namespaces, or every Service when null. A logs ask scrubs Container
+   * values under the `sealed` names, or every value when null.
+   */
+  readonly agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
@@ -311,7 +317,7 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>
       sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
-    agentAsk: (query, readable) => sdkPromise("agent ask", () => client.agentAsk(query, readable)),
+    agentAsk: (query, readable, sealed) => sdkPromise("agent ask", () => client.agentAsk(query, readable, sealed)),
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
     stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
     startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),

@@ -50,6 +50,7 @@ const FIELDS: &[(&str, Setting)] = &[
     ("startCommand", Setting::StartCommand),
     ("restartPolicy", Setting::RestartPolicy),
     ("maxRetries", Setting::MaxRetries),
+    ("updateOrder", Setting::UpdateOrder),
     ("replicas", Setting::Replicas),
     ("cpuLimit", Setting::CpuLimit),
     ("memLimit", Setting::MemLimit),

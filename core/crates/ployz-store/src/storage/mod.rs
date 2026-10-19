@@ -95,6 +95,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0019_environment_protected",
         Step::Sql(include_str!("migrations/0019_environment_protected.sql")),
     ),
+    (
+        "0020_environment_removed",
+        Step::Sql(include_str!("migrations/0020_environment_removed.sql")),
+    ),
 ];
 
 enum Step {

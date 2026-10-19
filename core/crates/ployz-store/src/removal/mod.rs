@@ -229,6 +229,24 @@ impl Reviewed {
         )
     }
 
+    /// Whether `given` already accepts everything this member's removal deletes,
+    /// and every copy the caller now gives up.
+    fn within(&self, given: &Accepted) -> bool {
+        match given {
+            Accepted::Everything { .. } => true,
+            Accepted::EveryCopy(names) => {
+                self.every_copy.is_subset(names)
+                    && self.lost().all(|loss| names.contains(&loss.volume.name))
+            }
+            Accepted::Confirmed(deletes) => {
+                self.every_copy.is_empty()
+                    && self
+                        .lost()
+                        .all(|loss| loss.deletes.iter().all(|delete| deletes.contains(delete)))
+            }
+        }
+    }
+
     fn accepted(&self) -> Accepted {
         if self.every_copy.is_empty() {
             Accepted::Confirmed(self.lost().flat_map(|loss| loss.deletes.clone()).collect())
@@ -316,10 +334,24 @@ pub(crate) fn remove(
         )?);
     }
     refuse_unanswered(who, remove, &reviews, &target)?;
+    // A removal under way holds its remover's consent, and nothing deploys
+    // meanwhile: running it again needs no new version unless it now deletes
+    // more or gives up more copies. Each run still waits on a human's approval
+    // when Cloud asks for one.
+    let held = mark::of(tx, &target)?.is_some_and(|live| {
+        live.state == State::Removing
+            && reviews.iter().all(|reviewed| {
+                live.accepted
+                    .get(&reviewed.environment.summary.id)
+                    .is_some_and(|accepted| reviewed.within(accepted))
+            })
+    });
     let version = version(who, &target, &reviews, |reviewed| {
         reviewed.every_copy.clone()
     });
-    confirm(remove, &reviews, &version)?;
+    if !held {
+        confirm(remove, &reviews, &version)?;
+    }
     gate(
         who,
         &target,
@@ -347,7 +379,9 @@ pub(crate) fn remove(
     mark::clear_tombstone(tx, &target)?;
     let mut mark = match mark::of(tx, &target)? {
         Some(mut live) => {
-            live.accepted = accepted;
+            if !held {
+                live.accepted = accepted;
+            }
             live.retried = deployment::now();
             live
         }
@@ -592,6 +626,11 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
         .into_iter()
         .collect::<Vec<_>>()
         .join(", ");
+    let by_environment: BTreeMap<&EnvironmentName, &BTreeSet<DestructiveEffect>> = reviews
+        .iter()
+        .filter(|reviewed| !reviewed.effects.is_empty())
+        .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.effects))
+        .collect();
     let ask = match lost.is_empty() {
         true => "Pass the version to go ahead",
         false => "Pass the version and accept each lost Volume by name to go ahead",
@@ -602,6 +641,7 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
             "volumes": lost,
             "accept": accept,
             "effects": effects,
+            "effects_by_environment": by_environment,
             "version": version,
         }),
     ))

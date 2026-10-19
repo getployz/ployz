@@ -282,6 +282,42 @@ async fn a_registry_pull_failure_on_one_machine_fails_the_deploy_with_nothing_to
 }
 
 #[tokio::test]
+async fn a_missing_image_fails_the_deploy_naming_the_image() {
+    let one = machine('a', "one");
+    let service = DeployService::new(one.clone())
+        .missing_image()
+        .fail_pulls_on(one.machine.id);
+    let (mut client, server) = connected(service).await;
+
+    let outcome = client
+        .run(
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = outcome
+    else {
+        panic!("expected a failed Deploy: {outcome:?}");
+    };
+    let failure = ployz_store::Failure::of(&error, &[]);
+    assert_eq!(
+        failure.reason,
+        "Image nginx not found, or its registry needs credentials"
+    );
+    assert_eq!(
+        failure.cause,
+        ["Docker responded with status code 404: nginx:latest: not found"]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn volume_ensure_failure_is_reported_on_the_container_operation() {
     let machine = machine('a', "one");
     let (mut client, server) =
@@ -1145,8 +1181,12 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
         .collect::<Vec<_>>();
     assert_eq!(
         logs,
-        [Ok((3..=12)
+        [Ok((3..=10)
             .map(|n| format!("line {n}"))
+            .chain([
+                "plain from-docker".to_owned(),
+                "token=[redacted]".to_owned()
+            ])
             .collect::<Vec<_>>())]
     );
 }

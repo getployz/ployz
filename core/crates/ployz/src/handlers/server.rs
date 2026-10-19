@@ -11,7 +11,7 @@ use crate::cli::{
 };
 use ployz_core::{
     AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineName, MachineTarget, MachineUpdate,
-    PublicIpUpdate, RpcErrorCode, UpdateMachineRequest, op,
+    PublicIpUpdate, RpcErrorCode, SelectedEndpoint, UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ use crate::{
     cloud_account::{self, Credential, StoreCallError},
     cloud_login::{CredentialStore, LoginError},
     cluster::RoleWaitError,
-    connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
+    connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
 };
@@ -33,6 +33,7 @@ mod add;
 pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
+mod endpoint;
 pub(super) mod enroll;
 pub(super) mod forget;
 mod helpers;
@@ -196,6 +197,98 @@ pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result
     connect(matches, context).await.map(Reach::Dial)
 }
 
+/// What a forget reaches.
+pub(super) enum Reached {
+    Client(Client),
+    /// Through Cloud, whose Servers all failed to answer.
+    Unanswered(Credential),
+}
+
+/// Reach the Cluster the way [`connect`] does, except that through Cloud a Cluster none of
+/// whose Servers answers comes back with the credential, for Cloud to act alone.
+pub(super) async fn connect_or_unanswered(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Reached, Error> {
+    if matches.get_one::<String>("connect").is_none() && context.is_none() {
+        let store = CredentialStore::beside(&super::config_path(matches)?);
+        if let Ok(credential) = cloud_account::from_env(&store).await {
+            let access = cloud_account::server_access(&credential).await?;
+            return Ok(match answering(matches, access).await? {
+                Some(client) => Reached::Client(client),
+                None => Reached::Unanswered(credential),
+            });
+        }
+    }
+    connect(matches, context).await.map(Reached::Client)
+}
+
+/// Dial through Cloud's Server Access; `None` when Cloud knows Servers and none answers.
+async fn answering(
+    matches: &ArgMatches,
+    access: cloud_account::ServerAccess,
+) -> Result<Option<Client>, Error> {
+    if access.connections.is_empty() {
+        return match access.unreachable.is_empty() {
+            true => Err(no_servers()),
+            false => Ok(None),
+        };
+    }
+    match dial_connections(matches, access.connections).await {
+        Ok(client) => Ok(Some(client)),
+        Err(ConnectError::AllFailed { reached: false, .. }) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Every Server [`connect`] could enter by, in its order: Cloud's Server Access when
+/// signed in, else the `--connect`, `--context` or local daemon connections.
+async fn entries(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<SelectedConnections, Error> {
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let mut signed_out = false;
+    if direct.is_none() && context.is_none() {
+        let store = CredentialStore::beside(&super::config_path(matches)?);
+        match cloud_account::from_env(&store).await {
+            Ok(credential) => {
+                let access = cloud_account::server_access(&credential).await?;
+                if access.connections.is_empty() {
+                    return Err(if access.unreachable.is_empty() {
+                        no_servers()
+                    } else {
+                        no_reachable_server(access.unreachable, None)
+                    });
+                }
+                return Ok(SelectedConnections {
+                    source: ConnectionSource::Cloud,
+                    connections: access.connections,
+                });
+            }
+            Err(LoginError::SignedOut) => signed_out = true,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    crate::connect::resolve_connections(
+        &super::config_path(matches)?,
+        direct,
+        context,
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )
+    .map_err(|error| {
+        let no_config = matches!(
+            error,
+            crate::connect::ConnectError::Context(ContextError::NoConfig)
+        );
+        if signed_out && no_config && !super::store::local_mode() {
+            LoginError::SignedOut.into()
+        } else {
+            error.into()
+        }
+    })
+}
+
 /// Cloud's dial into this Organization's Servers, or `None` when it has none.
 async fn dial(
     matches: &ArgMatches,
@@ -205,30 +298,53 @@ async fn dial(
         if access.unreachable.is_empty() {
             return Ok(None);
         }
-        return Err(no_reachable_server(&access.unreachable));
+        return Err(no_reachable_server(access.unreachable, None));
     }
+    // Cloud hands back the connections it holds without probing their Servers.
+    let mut unreachable = access
+        .connections
+        .iter()
+        .filter_map(|connection| connection.machine_id().copied())
+        .collect::<Vec<_>>();
+    unreachable.extend(access.unreachable);
+    match dial_connections(matches, access.connections).await {
+        Ok(client) => Ok(Some(client)),
+        Err(error @ ConnectError::AllFailed { reached: false, .. }) if !unreachable.is_empty() => {
+            Err(no_reachable_server(unreachable, Some(error)))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn dial_connections(
+    matches: &ArgMatches,
+    connections: Vec<crate::context::Connection>,
+) -> Result<Client, ConnectError> {
     let selected = SelectedConnections {
         source: ConnectionSource::Cloud,
-        connections: access.connections,
+        connections,
     };
     let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(Some(
-        crate::connect::connect_selected_with(selected, Arc::new(connector)).await?,
-    ))
+    crate::connect::connect_selected_with(selected, Arc::new(connector)).await
 }
 
 fn no_servers() -> Error {
     Error::not_found("this Organization has no Servers").hint(Hint::Next("ployz server add".into()))
 }
 
-fn no_reachable_server(unreachable: &[ployz_core::MachineId]) -> Error {
-    Error::detailed(
+/// None of `unreachable` answered; `cause` says how the last attempt failed.
+fn no_reachable_server(
+    unreachable: Vec<ployz_core::MachineId>,
+    cause: Option<ConnectError>,
+) -> Error {
+    Error::detailed_caused(
         RpcErrorCode::Unavailable,
         format!(
             "no Server of this Organization is reachable now: {}",
-            super::joined(unreachable)
+            super::joined(&unreachable)
         ),
         json!({ "unreachable": unreachable }),
+        cause,
     )
 }
 
@@ -313,55 +429,138 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     );
     let rerun = super::rerun(matches, &args);
     let ingress = IngressImage::given_or(image.cloned(), IngressImage::Keep);
-    let accepts_ingress = update.accepts_ingress;
     let selector = MachineTarget::parse(selector)?;
-    let recovery_matches = matches.clone();
-    with_client(root, |client| {
-        Box::pin(async move {
-            let machine = client
-                .invoke::<op::UpdateMachine>(
-                    UpdateMachineRequest { update },
-                    &selector,
-                    Some(TARGET_RPC_TIMEOUT),
-                )
-                .await?
-                .machine;
-            crate::ui::stream(format_args!("Updated Server {}.", machine.name));
-            // The update is committed; starting the Ingress Proxy for a new ingress role is a
-            // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
-            // advertising the Server at its next sync, and `server rm` stops the proxy.
-            if accepts_ingress != Some(true) {
-                return crate::ui::emit(&json!({ "server": server_json(&machine) }));
-            }
-            let followed = async {
-                crate::cluster::wait_for_role(
-                    client,
-                    &machine.id,
-                    crate::cluster::RoleSetting::IngressOn,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map_err(|error| match error {
-                    RoleWaitError::Connect(error) => Error::from(error),
-                    error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
-                        Error::from(error)
-                    }
-                })?;
-                crate::ingress::follow_roles(client, ingress).await
-            }
-            .await;
-            crate::ui::emit_committed(
-                json!({ "server": server_json(&machine), "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
-                followed.map(drop).map_err(|error| {
-                    ingress_incomplete(
-                        "Server updated",
-                        super::ingress_hints(error, |args| super::rerun(&recovery_matches, args)),
-                        rerun,
-                    )
-                }),
-            )
-        })
+    let seed = update
+        .advertised_endpoints
+        .as_ref()
+        .and_then(|endpoints| endpoints.first())
+        .map(|endpoint| SelectedEndpoint(endpoint.0));
+    let recovery = matches.clone();
+    let Some(address) = seed else {
+        return with_client(root, |client| {
+            Box::pin(apply_update(
+                client, selector, update, None, ingress, rerun, recovery,
+            ))
+        });
+    };
+    super::runtime()?.block_on(async {
+        let context = matches.get_one::<String>("context").map(String::as_str);
+        let entries = entries(matches, context).await?;
+        let connector =
+            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+        let mut seeding = endpoint::seed(&entries, Arc::new(connector), &selector, address).await;
+        if let Some(sentence) = seeding.sentence() {
+            crate::ui::stream(sentence);
+        }
+        let Some(mut client) = seeding.updater.take() else {
+            return Err(unseeded(&seeding));
+        };
+        for missed in &seeding.failures {
+            crate::ui::warn(missed.sentence());
+        }
+        apply_update(
+            &mut client,
+            selector,
+            update,
+            Some(seeding),
+            ingress,
+            rerun,
+            recovery,
+        )
+        .await
     })
+}
+
+/// No Server took the endpoint and none was reached to update the target: the first failure.
+fn unseeded(seeding: &endpoint::Seeding) -> Error {
+    seeding.failures.first().map_or_else(
+        || Error::not_found("no Server took the endpoint"),
+        |missed| {
+            let what = if missed.error.code == RpcErrorCode::Unavailable {
+                "did not answer"
+            } else {
+                "refused the endpoint"
+            };
+            Error::from(missed.error.clone()).context(format!("{} {what}.", missed.entry))
+        },
+    )
+}
+
+/// Update the target's record. With `seeding`, a target that cannot be reached still
+/// leaves the other Servers dialing it, and the command succeeds.
+async fn apply_update(
+    client: &mut Client,
+    selector: MachineTarget,
+    update: MachineUpdate,
+    seeding: Option<endpoint::Seeding>,
+    ingress: IngressImage,
+    rerun: String,
+    recovery: ArgMatches,
+) -> Result<(), Error> {
+    let accepts_ingress = update.accepts_ingress;
+    let updated = client
+        .invoke::<op::UpdateMachine>(
+            UpdateMachineRequest { update },
+            &selector,
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await;
+    let machine = match (updated, &seeding) {
+        (Ok(updated), _) => updated.machine,
+        (Err(error), Some(seeding))
+            if error.code == RpcErrorCode::Unavailable && !seeding.dialed_by.is_empty() =>
+        {
+            let name = seeding.target.as_ref().map_or_else(
+                || selector.as_str().to_owned(),
+                |target| target.name.to_string(),
+            );
+            crate::ui::warn(format!("{name} unreachable; its record is unchanged."));
+            return crate::ui::emit(&json!({
+                "server": null,
+                "endpoint": seeding,
+                "target_error": error,
+            }));
+        }
+        (Err(error), _) => return Err(error.into()),
+    };
+    crate::ui::stream(format_args!("Updated Server {}.", machine.name));
+    // The update is committed; starting the Ingress Proxy for a new ingress role is a
+    // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
+    // advertising the Server at its next sync, and `server rm` stops the proxy.
+    if accepts_ingress != Some(true) {
+        return crate::ui::emit(&json!({ "server": server_json(&machine), "endpoint": seeding }));
+    }
+    let followed = async {
+        crate::cluster::wait_for_role(
+            client,
+            &machine.id,
+            crate::cluster::RoleSetting::IngressOn,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| match error {
+            RoleWaitError::Connect(error) => Error::from(error),
+            error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
+                Error::from(error)
+            }
+        })?;
+        crate::ingress::follow_roles(client, ingress).await
+    }
+    .await;
+    crate::ui::emit_committed(
+        json!({
+            "server": server_json(&machine),
+            "endpoint": seeding,
+            "ingress": followed.as_ref().ok().and_then(Option::as_ref),
+        }),
+        followed.map(drop).map_err(|error| {
+            ingress_incomplete(
+                "Server updated",
+                super::ingress_hints(error, |args| super::rerun(&recovery, args)),
+                rerun,
+            )
+        }),
+    )
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
@@ -562,7 +761,9 @@ pub(super) fn set_command(command: Command) -> Command {
                         .value_name("N|auto")
                         .help("Builds this Server runs at once; auto follows its roles and RAM"),
                 )
-                .arg(many("wg-endpoint", None))
+                .arg(many("wg-endpoint", None).value_name("IP[:PORT]").help(
+                    "Where peers reach this Server over WireGuard; every other Server the command reaches dials the first one now, even if this Server is unreachable",
+                ))
                 .arg(ingress_image())
                 .arg(positional("server", true))
 }
@@ -635,6 +836,29 @@ mod tests {
             ]
         );
         assert!(parse_endpoints(&["not-an-address".into()]).is_err());
+    }
+
+    #[test]
+    fn enrolling_pins_only_the_addresses_the_operator_names() {
+        let pinned = |flags: &[&str]| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(
+                    ["ployz", "server", "add", "--standalone", "root@host"]
+                        .iter()
+                        .chain(flags),
+                )
+                .unwrap();
+            helpers::pinned(&helpers::token_request(leaf_matches(&matches)).unwrap())
+        };
+        let pins = |public_ip, advertised_endpoints| ployz_core::PinnedAddresses {
+            public_ip,
+            advertised_endpoints,
+        };
+        assert_eq!(pinned(&[]), pins(false, false));
+        assert_eq!(pinned(&["--public-ip=auto"]), pins(false, false));
+        assert_eq!(pinned(&["--public-ip=none"]), pins(true, false));
+        assert_eq!(pinned(&["--public-ip=192.0.2.9"]), pins(true, false));
+        assert_eq!(pinned(&["--wg-endpoint=192.0.2.1"]), pins(false, true));
     }
 
     #[test]
@@ -765,5 +989,54 @@ mod tests {
             error.details.get("unreachable"),
             Some(&json!(["b".repeat(32)]))
         );
+    }
+
+    #[tokio::test]
+    async fn held_connections_that_reach_no_server_name_the_unreachable_servers() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "ls"])
+            .unwrap();
+        let (held, gone) = ("a".repeat(32), "b".repeat(32));
+        let access = cloud_account::ServerAccess {
+            connections: serde_json::from_value(json!([
+                { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
+            ]))
+            .unwrap(),
+            unreachable: vec![ployz_core::MachineId::parse(gone.clone()).unwrap()],
+        };
+        let Err(error) = dial(leaf_matches(&matches), access).await else {
+            panic!("dialed a Server that is not there");
+        };
+        assert!(
+            !error.causes().is_empty(),
+            "the connect error stays the cause"
+        );
+        let error = error.report();
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.details.get("unreachable"), Some(&json!([held, gone])));
+    }
+
+    #[tokio::test]
+    async fn a_cluster_whose_servers_all_fail_to_answer_comes_back_unanswered() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "forget", "web-1"])
+            .unwrap();
+        let matches = leaf_matches(&matches);
+        let unprovisioned = cloud_account::ServerAccess {
+            connections: Vec::new(),
+            unreachable: vec![ployz_core::MachineId::parse("b".repeat(32)).unwrap()],
+        };
+        assert!(answering(matches, unprovisioned).await.unwrap().is_none());
+
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let held: cloud_account::ServerAccess = serde_json::from_value(json!({
+            "connections": [{ "machine_id": "a".repeat(32), "tcp": closed.to_string() }],
+            "unreachable": [],
+        }))
+        .unwrap();
+        assert!(answering(matches, held).await.unwrap().is_none());
     }
 }

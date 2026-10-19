@@ -455,6 +455,7 @@ fn join(path: &Path) {
                         },
                     },
                     wireguard_mtu: None,
+                    pinned: Default::default(),
                 })
                 .encode()
                 .unwrap(),

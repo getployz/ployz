@@ -162,9 +162,9 @@ deploy_section() {
   id=$(latest)
   c $D "deployment show of the failed Deployment" -- $P deployment show "$id"
   c $D "deployment show --json of the failed Deployment" -- $P --json deployment show "$id"
-  m $D "deployment retry of the failed Deployment" -- $P deployment retry "$id"
+  m $D "deployment redeploy of the failed Deployment" -- $P deployment redeploy "$id"
   id=$(latest)
-  m $D "deployment retry --json of the failed Deployment" -- $P --json deployment retry "$id"
+  m $D "deployment redeploy --json of the failed Deployment" -- $P --json deployment redeploy "$id"
   m $D "fix the image" -- $P set worker.image=traefik/whoami:v1.10.3
   m $D "deploy the fix" -- $P deploy
 
@@ -196,7 +196,7 @@ deploy_section() {
   m $D "deployment cancel a running Deployment" -- $P deployment cancel "$id"
   settle
   c $D "deployment show of a cancelled Deployment" -- $P deployment show "$id"
-  m $D "deployment retry of a cancelled Deployment" -- $P deployment retry "$id"
+  m $D "deployment redeploy of a cancelled Deployment" -- $P deployment redeploy "$id"
   settle
   q set web.image=nginx:1.27-alpine; q unset web.env.GREETING; q deploy
 }
@@ -405,7 +405,6 @@ errors_section() {
     c $X "deploy with a stale --expect-version $j" -- $P $j deploy --expect-version 1:1:0.0
     c $X "deployment show of an unknown id $j" -- $P $j deployment show 00000000-0000-0000-0000-000000000000
     c $X "deployment show of an unknown number $j" -- $P $j deployment show 9999
-    c $X "deployment retry of an applied Deployment $j" -- $P $j deployment retry "$(latest)"
     c $X "deployment cancel of an applied Deployment $j" -- $P $j deployment cancel "$(latest)"
     c $X "deployment start of an applied Deployment $j" -- $P $j deployment start "$(latest)"
     c $X "domain check of an unknown domain $j" -- $P $j domain check nosuch.example.com

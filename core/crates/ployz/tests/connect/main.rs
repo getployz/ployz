@@ -46,6 +46,7 @@ mod sdk_update_machine;
 mod sdk_upgrade_machine;
 mod sdk_volumes;
 mod sdk_watch;
+mod server_endpoint_cli;
 mod support;
 mod unix_session;
 use support::*;
@@ -969,6 +970,8 @@ async fn observing_containers_past_tonic_s_default_4_mib_succeeds() {
             .unwrap(),
             address: None,
             labels: BTreeMap::new(),
+            rotation: None,
+            r#gen: None,
         })
         .unwrap();
     service.listed_containers.lock().unwrap().push(container);
