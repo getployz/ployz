@@ -1171,7 +1171,7 @@ fn port_mismatches(
             continue;
         }
         let mismatch = services.entry(&spec.name).or_insert_with(|| Mismatch {
-            service_id: spec.service_id.clone(),
+            service_id: spec.service_id,
             image,
             machines: BTreeSet::new(),
             exposed: BTreeSet::new(),
