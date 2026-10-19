@@ -201,7 +201,7 @@ Whichever you choose, visitors reach the new version only once every new replica
 | --- | --- | --- |
 | **Start first** | New replicas start beside the old ones, and the old ones stop once the new ones are ready. Two copies run for a moment. | None |
 | **Stop first** | On every server at once, each old replica stops, then its replacement starts. Traffic moves to the new replicas when they're all ready. | From the stop until every new replica is ready |
-| **Rolling** | Stop first, one server at a time. The old replicas on the other servers keep serving until the last server's turn. If a server's new replica fails, the servers after it keep the old version. | About the same as **Stop first**, and fewer replicas serve while it runs |
+| **Rolling** | Stop first, one server at a time. The old replicas on the other servers keep serving until the last server's turn. If a server's new replica fails, the servers after it keep the old version. | From the last server's stop until every new replica is ready |
 | **Automatic** | **Stop first** for a service with a volume, **Start first** for the rest. | As above |
 
 **Automatic** is the default. A service with a volume can use **Start first** only when the volume
