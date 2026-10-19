@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use ployz_core::rpc::op;
 use ployz_core::{
-    ContainerId, ContainerObservation, DeploymentLogId, LiveServices, MachineObservation,
-    MachineTarget, NotPointerPublisher, PublishServingPointerRequest, QualifiedService,
-    ReadRoutesRequest, RoutesRead, RpcError, ServingPointer, ServingPointerPublication,
+    ContainerId, DeploymentLogId, MachineObservation, MachineTarget, NotPointerPublisher,
+    PublishServingPointerRequest, QualifiedService, ReadRoutesRequest, RoutesRead, RpcError,
+    ServingPointer, ServingPointerPublication,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -204,7 +204,7 @@ pub(crate) fn publisher_among(machines: &[MachineObservation]) -> Option<Machine
 pub(crate) struct Rotation {
     pub(crate) joining: Vec<Join>,
     pub(crate) leaving: Vec<ContainerId>,
-    /// Retiring ids a complete listing proved absent; see `absent_retiring`.
+    /// Retiring ids a complete listing proved absent.
     pub(crate) pruning: Vec<ContainerId>,
 }
 
@@ -331,16 +331,6 @@ pub(crate) fn succession(
     }
 }
 
-/// The ids `read.retiring` names that `listed`, a complete listing taken after `read`,
-/// lacks. Only those leave `retiring` without passing through ployzd's retire.
-pub(crate) fn absent_retiring(read: &ServingPointer, listed: &[ContainerId]) -> Vec<ContainerId> {
-    read.retiring
-        .iter()
-        .filter(|id| !listed.contains(id))
-        .copied()
-        .collect()
-}
-
 /// What a read immediately before a stop or removal says about one copy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Protection {
@@ -461,29 +451,6 @@ fn unavailable(message: String) -> RpcError {
         details: serde_json::Value::Null,
         cause: Vec::new(),
     }
-}
-
-/// The Service's Containers in `live`, or `None` when some Machine did not answer, since a
-/// copy missing from a partial listing may still be serving.
-pub(crate) fn complete_members<E>(
-    live: &LiveServices<E>,
-    service: &QualifiedService,
-) -> Option<Vec<ContainerObservation>> {
-    if !live.containers.all_targets_succeeded() {
-        return None;
-    }
-    Some(
-        live.services()
-            .into_iter()
-            .find(|observed| observed.identity == *service)
-            .map(|observed| {
-                observed
-                    .members()
-                    .map(|container| container.as_observation().clone())
-                    .collect()
-            })
-            .unwrap_or_default(),
-    )
 }
 
 #[cfg(test)]
