@@ -183,14 +183,15 @@ pub(super) fn remove(
     let (removal, effects) = bound(&mut request, &what, prompted, |request| {
         store.remove(request, &refs)
     })
-    .map_err(|error| {
+    .map_err(|(error, effects)| {
         let first = goes_first(&error, project);
         let goes = first.is_some();
-        store.accepting(store::with_next(
+        let error = store.accepting(store::with_next(
             error,
             |_| goes,
             || first.unwrap_or_default(),
-        ))
+        ));
+        bound_to(error, &effects)
     })?;
     let mut ran = Vec::new();
     let result = (|| {
@@ -310,7 +311,16 @@ pub(super) fn remove(
             }
             crate::ui::emit_committed(committed, Err(error)).map(|()| None)
         }
-        Err(error) => Err(error),
+        Err(error) => Err(bound_to(error, &effects)),
+    }
+}
+
+/// `error` after the note named what the removal was bound to: its `--json`
+/// carries those `effects` too.
+fn bound_to(error: Error, effects: &[DestructiveEffect]) -> Error {
+    match effects.is_empty() {
+        true => error,
+        false => error.with_detail("effects", json!(effects)),
     }
 }
 
@@ -324,19 +334,23 @@ pub(super) fn remove(
 /// what changed since, when the refusal removes a Service or Volume the prompt
 /// didn't list under its Environment, or when the list read again now differs.
 /// `--confirm` showed nothing, so the name confirms the plan as it is. A plan that changed between the two sends refuses the second,
-/// saying so. Returns the effects the second send was bound to, none without one.
+/// saying so. Returns the effects the second send was bound to, none without one,
+/// and with an error that isn't the Store's refusal, which names what goes itself.
 fn bound(
     request: &mut Remove,
     what: &str,
     prompted: Option<(&Shown, impl FnOnce() -> Result<Shown, StoreCallError>)>,
     mut send: impl FnMut(&Remove) -> Result<Removal, StoreCallError>,
-) -> Result<(Removal, Vec<DestructiveEffect>), StoreCallError> {
+) -> Result<(Removal, Vec<DestructiveEffect>), (StoreCallError, Vec<DestructiveEffect>)> {
+    let unbound = |error| (error, Vec::new());
     if request.version.is_some() {
-        return send(request).map(|removal| (removal, Vec::new()));
+        return send(request)
+            .map(|removal| (removal, Vec::new()))
+            .map_err(unbound);
     }
     let refused = match send(request) {
         Err(StoreCallError::Refused(refused)) => refused,
-        sent => return sent.map(|removal| (removal, Vec::new())),
+        sent => return sent.map(|removal| (removal, Vec::new())).map_err(unbound),
     };
     let Some(Reviewed {
         version,
@@ -345,31 +359,36 @@ fn bound(
         unaccepted: false,
     }) = Reviewed::of(&refused, &request.accept_volume_loss)
     else {
-        return Err(StoreCallError::Refused(ask(
+        return Err(unbound(StoreCallError::Refused(ask(
             refused,
             request,
             what,
             &Changed::No,
-        )));
+        ))));
     };
     if let Some((shown, listed)) = prompted {
         let unlisted = shown.unlisted(&effects, by_environment.as_ref());
         let since = match unlisted.is_empty() {
             false => format!("it now {}", said(&unlisted)),
-            true => shown.changes(&listed()?).join(", "),
+            true => shown.changes(&listed().map_err(unbound)?).join(", "),
         };
         if !since.is_empty() {
             let since = Changed::SinceConfirmed(since);
-            return Err(StoreCallError::Refused(ask(refused, request, what, &since)));
+            return Err(unbound(StoreCallError::Refused(ask(
+                refused, request, what, &since,
+            ))));
         }
     }
     ui::note(format_args!("Removing {what} {}.", said(&effects)));
     request.version = Some(version);
     let removal = send(request).map_err(|error| match error {
-        StoreCallError::Refused(refused) => {
-            StoreCallError::Refused(ask(refused, request, what, &Changed::WhileRunning))
-        }
-        error => error,
+        StoreCallError::Refused(refused) => unbound(StoreCallError::Refused(ask(
+            refused,
+            request,
+            what,
+            &Changed::WhileRunning,
+        ))),
+        error => (error, effects.clone()),
     })?;
     Ok((removal, effects))
 }
@@ -931,7 +950,7 @@ mod tests {
             sent += 1;
             Err(asks(if sent == 1 { "v1" } else { "v2" }, "api"))
         });
-        let Err(StoreCallError::Refused(refused)) = refused else {
+        let Err((StoreCallError::Refused(refused), _)) = refused else {
             panic!("a changed plan goes ahead");
         };
         assert_eq!(sent, 2, "it does not loop");
@@ -959,7 +978,7 @@ mod tests {
             sent += 1;
             Err(asks("v1", "web"))
         });
-        let Err(StoreCallError::Refused(refused)) = refused else {
+        let Err((StoreCallError::Refused(refused), _)) = refused else {
             panic!("a staged worker the person never saw goes");
         };
         assert_eq!(
@@ -1015,7 +1034,7 @@ mod tests {
                 Err(asks_in("v1", "staging", "web"))
             },
         );
-        let Err(StoreCallError::Refused(refused)) = refused else {
+        let Err((StoreCallError::Refused(refused), _)) = refused else {
             panic!("staging/web goes though the person never saw it");
         };
         assert_eq!(
@@ -1049,7 +1068,7 @@ mod tests {
                 Err(asked)
             },
         );
-        assert!(matches!(refused, Err(StoreCallError::Refused(_))));
+        assert!(matches!(refused, Err((StoreCallError::Refused(_), _))));
         assert_eq!(sent, 1);
     }
 
@@ -1066,7 +1085,7 @@ mod tests {
                 Err(asks("v1", "api"))
             },
         );
-        let Err(StoreCallError::Refused(refused)) = refused else {
+        let Err((StoreCallError::Refused(refused), _)) = refused else {
             panic!("a Service the person never saw goes");
         };
         assert_eq!(
@@ -1108,6 +1127,26 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_send_that_fails_still_reports_what_it_was_bound_to() {
+        let mut sent = 0;
+        let failed = bound(&mut request(), "shop", unprompted(), |_| {
+            sent += 1;
+            match sent {
+                1 => Err(asks("v1", "web")),
+                _ => Err(StoreCallError::Stopped(Error::unavailable(
+                    "Cloud is down.",
+                ))),
+            }
+        });
+        let Err((StoreCallError::Stopped(_), effects)) = failed else {
+            panic!("the bound send didn't fail as Cloud did");
+        };
+        let report = bound_to(Error::unavailable("Cloud is down."), &effects).report();
+        assert_eq!(report.details["effects"][0]["name"], "web", "{report:?}");
+        assert_eq!(report.code, RpcErrorCode::Unavailable);
+    }
+
+    #[test]
     fn a_passed_version_is_sent_as_typed_and_only_once() {
         let mut request = Remove {
             version: Some("typed".to_owned()),
@@ -1119,7 +1158,7 @@ mod tests {
             Err(asks("v1", "web"))
         });
         assert_eq!(sent, 1);
-        let Err(StoreCallError::Refused(refused)) = refused else {
+        let Err((StoreCallError::Refused(refused), _)) = refused else {
             panic!("a stale version goes ahead");
         };
         assert_eq!(refused.details["version"], "v1");
