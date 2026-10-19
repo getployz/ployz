@@ -153,7 +153,7 @@ async fn a_server_that_fails_to_answer_makes_the_result_partial() {
 }
 
 #[tokio::test]
-async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
+async fn restart_reports_one_restart_or_the_start_that_failed() {
     for fail in [false, true] {
         let machine = machine('a', "one");
         let mut service = DeployService::new(machine.clone());
@@ -177,7 +177,7 @@ async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
             .collect::<Vec<_>>();
         if fail {
             assert_eq!(code, 3, "{restarted}");
-            assert_eq!(actions, ["stop"], "{restarted}");
+            assert!(actions.is_empty(), "{restarted}");
             assert_eq!(
                 restarted["container_failures"][0]["error"]["message"],
                 "no start"
@@ -185,7 +185,7 @@ async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
             assert_eq!(restarted["next"], "ployz ps", "{restarted}");
         } else {
             assert_eq!(code, 0, "{restarted}");
-            assert_eq!(actions, ["stop", "start"], "{restarted}");
+            assert_eq!(actions, ["restart"], "{restarted}");
             assert!(restarted.get("next").is_none(), "{restarted}");
         }
         server.abort();
