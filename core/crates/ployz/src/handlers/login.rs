@@ -112,7 +112,7 @@ pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
     let out = runtime()?.block_on(cloud_login::logout(&store))?;
     if let Some(error) = out.as_ref().and_then(|out| out.unrevoked.as_ref()) {
         crate::ui::warn(format!(
-            "{error} Signed out here only: Cloud still honours this device's sign-in until you remove it with ployz token rm."
+            "{error} Signed out here only: Cloud may still honour this device's sign-in until you remove it with ployz token rm."
         ));
     }
     let next = out.as_ref().and_then(|out| {

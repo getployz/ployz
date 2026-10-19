@@ -52,6 +52,11 @@ pub(crate) enum LoginError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error(
+        "The sign-in stored at {} is unreadable, so it cannot name the Cloud for PLOYZ_TOKEN. Set PLOYZ_CLOUD_URL, or forget the sign-in and sign in again.",
+        .0.display()
+    )]
+    TokenCloudUnreadable(PathBuf),
     #[error("signed in to {signed_in}, not {requested}; run ployz logout first")]
     OtherCloud {
         signed_in: String,
