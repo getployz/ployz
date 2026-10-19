@@ -826,6 +826,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             };
             restore_group(
                 client,
+                progress,
                 started,
                 stopped.remove(&group).unwrap_or_default(),
                 rows,
@@ -843,24 +844,59 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
 
 async fn restore_group<C: MachineOperations>(
     client: &C,
+    progress: &Progress,
     started: Vec<(MachineId, ContainerId)>,
     stopped: Vec<(&ReplacementOperation, cleanup::Copy)>,
     rows: &Rows<'_>,
     cancellation: &CancellationToken,
 ) {
-    join_all(started.iter().map(|(machine, id)| {
-        gone(
-            client,
-            machine,
-            ContainerLocator::Id(*id),
-            Drain::NONE,
-            AnonymousVolumes::Remove,
-        )
-    }))
+    join_all(
+        started
+            .iter()
+            .map(|(machine, id)| discard_new(client, progress, rows, machine, *id, cancellation)),
+    )
     .await;
     for (operation, old) in stopped {
         restore_old(client, &old, &operation.spec, rows, cancellation).await;
     }
+}
+
+/// Remove a new copy of a failed group. The owner refuses Gone on a copy that
+/// already came In, so that one leaves through Out and the unlisted wait first.
+async fn discard_new<C: MachineOperations>(
+    client: &C,
+    progress: &Progress,
+    rows: &Rows<'_>,
+    machine_id: &MachineId,
+    container_id: ContainerId,
+    cancellation: &CancellationToken,
+) {
+    let want = ContainerWant::Gone {
+        container: ContainerLocator::Id(container_id),
+        drain: Drain::NONE,
+        anonymous_volumes: AnonymousVolumes::Remove,
+    };
+    let Ok(EnsuredContainer::Refused { now, refusal }) =
+        client.ensure_unsettled(machine_id, want, None).await
+    else {
+        return;
+    };
+    let Some(observed) = now
+        .present()
+        .filter(|_| refusal.reason == ContainerRefusalReason::InRotation)
+    else {
+        return;
+    };
+    let copy = cleanup::Copy::observed(observed);
+    let reason =
+        match cleanup::retire(client, &copy, true, AnonymousVolumes::Remove, cancellation).await {
+            Ok(cleanup::Step::Done) => return,
+            Ok(cleanup::Step::Refused(refusal)) => refusal.message,
+            Ok(cleanup::Step::NotConfirmed(machines)) => rows.not_confirmed(&machines),
+            Ok(cleanup::Step::Cancelled) => "interrupted".into(),
+            Err(error) => error.message,
+        };
+    progress.warn(rows.left_running(&copy, reason));
 }
 
 /// The Deploy ends at `index` before any Container changed.
