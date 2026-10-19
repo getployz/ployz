@@ -46,14 +46,18 @@ pub(crate) fn branch_plan(
             .collect()
     };
     let owned = own(&planned);
-    // Each preset copies at least what the one before it does; one copying no more is no choice.
+    // Each preset copies at least what the one before it does; one copying no more is no choice,
+    // and is pressed as the offered one it copies the same as.
     let mut presets = Vec::new();
+    let mut pressed = planned.preset;
     let mut copied = None;
     for preset in [BranchPreset::Only, BranchPreset::Uses, BranchPreset::All] {
         let copies = Some(own(&plan(&BranchPicks::Preset { preset })?));
         if copies != copied {
             presets.push(preset);
             copied = copies;
+        } else if pressed == Some(preset) {
+            pressed = presets.last().copied();
         }
     }
     let role = |role: &BranchNodeRole| match role {
@@ -105,7 +109,7 @@ pub(crate) fn branch_plan(
         .collect::<Result<_, RpcError>>()?;
     Ok(BranchPlanView {
         from: from.summary.clone(),
-        preset: planned.preset,
+        preset: pressed,
         presets,
         nodes,
     })

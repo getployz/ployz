@@ -784,6 +784,29 @@ fn a_branch_of_nothing_offers_no_preset_that_copies_the_same() {
 }
 
 #[test]
+fn a_branch_plan_presses_the_offered_preset_its_preset_copies_the_same_as() {
+    // Nothing deployed: Only web already copies db, so Uses is no choice and All copies the same.
+    let (store, who) = shop();
+    let plan = |preset: &str| {
+        let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+            from: at("production"),
+            focus: vec![node("web")],
+            preset: Some(serde_json::from_value(json!(preset)).unwrap()),
+            ..Default::default()
+        });
+        let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
+            panic!("a branch plan");
+        };
+        (json!(plan.preset), json!(plan.presets))
+    };
+    for preset in ["only", "uses", "all"] {
+        let (pressed, offered) = plan(preset);
+        assert_eq!(offered, json!(["only"]), "{preset}");
+        assert_eq!(pressed, json!("only"), "{preset}");
+    }
+}
+
+#[test]
 fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
     let (store, who) = shop();
     let setup = |service: &str, command: &str| SetupCommand {

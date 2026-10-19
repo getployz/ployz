@@ -208,10 +208,11 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   );
 }
 
-/** A file's path in its Config: 1 to 4 segments, none empty, `.` or `..`. The Store checks the rest. */
+/** A file's path in its Config, as the Store checks it: 1 to 4 segments of at most 255 bytes, none empty, `.` or `..`. */
 const isConfigFileName = (name: string) => {
   const segments = name.split("/");
-  return segments.length <= 4 && segments.every((segment) => !["", ".", ".."].includes(segment) && !/\p{Cc}/u.test(segment));
+  return segments.length <= 4 && segments.every((segment) =>
+    !["", ".", ".."].includes(segment) && utf8Bytes(segment) <= 255 && !/\p{Cc}/u.test(segment));
 };
 
 function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf, hidden, targets, serviceNames, values, readOnly,

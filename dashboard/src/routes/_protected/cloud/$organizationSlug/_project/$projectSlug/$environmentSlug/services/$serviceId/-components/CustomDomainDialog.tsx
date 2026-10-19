@@ -36,8 +36,18 @@ const isHostname = (hostname: string) =>
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
 
-/** The Store keeps ASCII hostnames lowercase. */
-const storedHostname = (hostname: string) => isAscii(hostname) ? hostname.toLowerCase() : hostname;
+/** ASCII lowercase; the Store turns the rest to punycode itself. */
+const submittedHostname = (hostname: string) => isAscii(hostname) ? hostname.toLowerCase() : hostname;
+
+/** A hostname as the Store keeps it: IDNA's lowercase punycode, else lowercase where IDNA refuses it. */
+const storedHostname = (hostname: string) => {
+  if (NOT_A_HOSTNAME.test(hostname)) return hostname.toLowerCase();
+  try {
+    return new URL(`http://${hostname}`).hostname;
+  } catch {
+    return hostname.toLowerCase();
+  }
+};
 
 const customDomainFormSchema = (taken: ReadonlySet<string>) => Schema.toStandardSchemaV1(
   Schema.Struct({
@@ -59,7 +69,7 @@ const customDomainFormSchema = (taken: ReadonlySet<string>) => Schema.toStandard
       }),
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
-          hostname: storedHostname(hostname),
+          hostname: submittedHostname(hostname),
           targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({
