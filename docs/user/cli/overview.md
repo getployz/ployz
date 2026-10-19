@@ -319,7 +319,8 @@ Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 doesn't answer, the command returns with the environment still being removed, names the server,
 and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour after the server
 answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
-or `ployz project rm` again: it needs no new `--expect-version`. With `--json` it reports `removal: removed` only once the environment is gone
+or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
+the first run did. With `--json` it reports `removal: removed` only once the environment is gone
 from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in

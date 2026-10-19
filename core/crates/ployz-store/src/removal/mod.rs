@@ -328,7 +328,8 @@ pub(crate) fn remove(
     }
     refuse_unanswered(who, remove, &reviews, &target)?;
     // A removal under way holds its remover's consent, and nothing deploys
-    // meanwhile: running it again asks nothing new unless it now deletes more.
+    // meanwhile: running it again needs no new version unless it now deletes
+    // more. Each run still waits on a human's approval when Cloud asks for one.
     let held = mark::of(tx, &target)?.is_some_and(|live| {
         live.state == State::Removing
             && reviews.iter().all(|reviewed| {
@@ -337,32 +338,32 @@ pub(crate) fn remove(
                     .is_some_and(|accepted| reviewed.within(accepted))
             })
     });
+    let version = version(who, &target, &reviews, |reviewed| {
+        reviewed.every_copy.clone()
+    });
     if !held {
-        let version = version(who, &target, &reviews, |reviewed| {
-            reviewed.every_copy.clone()
-        });
         confirm(remove, &reviews, &version)?;
-        gate(
-            who,
-            &target,
-            &version,
-            reviews
-                .iter()
-                .flat_map(|reviewed| reviewed.effects.clone())
-                .collect(),
-            &trusted.approval,
-            || {
-                let diffs: BTreeMap<&EnvironmentName, &crate::DiffView> = reviews
-                    .iter()
-                    .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.diff))
-                    .collect();
-                match &target {
-                    Target::Environment(_) => json!(diffs.values().next()),
-                    Target::Project(_) => json!(diffs),
-                }
-            },
-        )?;
     }
+    gate(
+        who,
+        &target,
+        &version,
+        reviews
+            .iter()
+            .flat_map(|reviewed| reviewed.effects.clone())
+            .collect(),
+        &trusted.approval,
+        || {
+            let diffs: BTreeMap<&EnvironmentName, &crate::DiffView> = reviews
+                .iter()
+                .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.diff))
+                .collect();
+            match &target {
+                Target::Environment(_) => json!(diffs.values().next()),
+                Target::Project(_) => json!(diffs),
+            }
+        },
+    )?;
     let accepted: BTreeMap<EnvironmentId, Accepted> = reviews
         .iter()
         .map(|reviewed| (reviewed.environment.summary.id.clone(), reviewed.accepted()))

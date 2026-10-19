@@ -411,7 +411,13 @@ fn admit_member(
         Evidence {
             deployment: admitted.id.clone(),
             servers: trusted.servers,
-            unanswered: unanswered(trusted),
+            // Unseen, the Servers that didn't answer last time still count.
+            unanswered: unanswered(trusted).unwrap_or_else(|| {
+                mark.evidence
+                    .get(id)
+                    .map(|before| before.unanswered.clone())
+                    .unwrap_or_default()
+            }),
         },
     );
     mark::save(tx, who, mark)?;
@@ -421,14 +427,20 @@ fn admit_member(
     Ok(admitted)
 }
 
-fn unanswered(trusted: &Trusted) -> BTreeSet<ployz_core::MachineId> {
-    trusted
-        .volumes
-        .iter()
-        .flat_map(|observed| &observed.unanswered)
-        .chain(&trusted.unanswered)
-        .cloned()
-        .collect()
+/// The Servers that didn't answer Cloud now, or None when Cloud didn't look.
+fn unanswered(trusted: &Trusted) -> Option<BTreeSet<ployz_core::MachineId>> {
+    if trusted.volumes.is_none() && trusted.unanswered.is_none() {
+        return None;
+    }
+    Some(
+        trusted
+            .volumes
+            .iter()
+            .flat_map(|observed| &observed.unanswered)
+            .chain(trusted.unanswered.iter().flatten())
+            .cloned()
+            .collect(),
+    )
 }
 
 fn refuse_running(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
@@ -468,7 +480,7 @@ fn stalled(
         before
             .unanswered
             .iter()
-            .any(|server| !fresh.contains(server))
+            .any(|server| fresh.as_ref().is_some_and(|fresh| !fresh.contains(server)))
             || matches!((before.servers, trusted.servers), (Some(then), Some(now)) if now < then)
     });
     if mark.retried > failed.ended_at.unwrap_or(i64::MAX) || changed {
