@@ -1,3 +1,4 @@
+use super::flip::{execute_reported, left_running};
 use super::*;
 
 #[tokio::test]
@@ -538,9 +539,21 @@ async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_eve
             ),
             ok(Call::DiscardSlot(second, ContainerKind::ServiceContainer)),
             ok(Call::Restart(second, old_second)),
-            ok(Call::Discard(first, new_first)),
-            ok(Call::Restart(first, old_first)),
         ]);
+        // A Rolling step brought its new copy In, so it is held and stopped
+        // before the old copy comes back, and leaves only after.
+        if order == UpdateOrder::Rolling {
+            steps.extend([
+                ok(Call::Stop(first, new_first)),
+                ok(Call::Restart(first, old_first)),
+                ok(Call::Remove(first, new_first)),
+            ]);
+        } else {
+            steps.extend([
+                ok(Call::Discard(first, new_first)),
+                ok(Call::Restart(first, old_first)),
+            ]);
+        }
         let client = Scripted::new(steps)
             .with_copy(&first, &old_first, CopyRotation::In)
             .with_copy(&second, &old_second, CopyRotation::In);
@@ -552,7 +565,12 @@ async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_eve
             "{order:?}: {outcome:?}"
         );
         assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
-        assert_eq!(client.brought_in(), [old_second, old_first]);
+        let restored = [old_second, old_first];
+        if order == UpdateOrder::Rolling {
+            assert_eq!(client.brought_in()[1..], restored);
+        } else {
+            assert_eq!(client.brought_in(), restored);
+        }
         for old in [old_first, old_second] {
             assert_eq!(
                 client.rotation(&old),
@@ -705,8 +723,8 @@ async fn a_failed_group_stops_its_new_copies_before_it_restores_the_held_ones() 
                 Call::Run(second, ContainerKind::ServiceContainer),
                 &new_second,
             ),
-            ok(Call::Stop(first, new_first)),
             ok(Call::Discard(second, new_second)),
+            ok(Call::Stop(first, new_first)),
             ok(Call::Restart(first, old_first)),
             ok(Call::Restart(second, old_second)),
             ok(Call::Remove(first, new_first)),
@@ -942,5 +960,185 @@ async fn stop_error_restores_the_healthy_held_copy() {
         Some(CopyRotation::In),
         "a failed stop-first Deploy restores its healthy running copy to In"
     );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rolling_step_brings_its_new_copy_in_before_the_next_machine_withdraws() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let (new_first, new_second) = (container('c'), container('d'));
+    let plan = vec![
+        swap(&first, &old_first, UpdateOrder::Rolling),
+        swap(&second, &old_second, UpdateOrder::Rolling),
+    ];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(first, old_first), running()),
+        ok(Call::Stop(first, old_first)),
+        created(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            &new_first,
+        ),
+        observed(Call::Inspect(second, old_second), running()),
+        ok(Call::Stop(second, old_second)),
+        created(
+            Call::Run(second, ContainerKind::ServiceContainer),
+            &new_second,
+        ),
+        observed(Call::Inspect(first, old_first), running()),
+        ok(Call::Remove(first, old_first)),
+        observed(Call::Inspect(second, old_second), running()),
+        ok(Call::Remove(second, old_second)),
+    ])
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::New)]),
+        "{outcome:?}"
+    );
+    let moves = client.moves();
+    let at = |applied: Move| moves.iter().position(|other| *other == applied).unwrap();
+    assert!(
+        at(Move::To(new_first, CopyRotation::In))
+            < at(Move::To(old_second, CopyRotation::Held(run_id()))),
+        "the second Machine withdraws only once the first's new copy serves: {moves:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_hold_fails_the_stop_first_step_before_any_copy_starts() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let plan = vec![
+        swap(&first, &old_first, UpdateOrder::StopFirst),
+        swap(&second, &old_second, UpdateOrder::StopFirst),
+    ];
+    let rival = DeploymentLogId::parse("rival").unwrap();
+    let client = Scripted {
+        moved: Mutex::new(BTreeMap::from([(
+            (old_second, Ask::Held),
+            CopyRotation::Held(rival.clone()),
+        )])),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(first, old_first), running()),
+            observed(Call::Inspect(second, old_second), running()),
+        ])
+    }
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
+    assert_eq!(
+        client.rotation(&old_first),
+        Some(CopyRotation::In),
+        "the copy the step Held serves again"
+    );
+    assert_eq!(
+        client.rotation(&old_second),
+        Some(CopyRotation::Held(rival))
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_while_the_stop_first_step_withdraws_brings_every_held_copy_back() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let plan = vec![
+        swap(&first, &old_first, UpdateOrder::StopFirst),
+        swap(&second, &old_second, UpdateOrder::StopFirst),
+    ];
+    let cancellation = CancellationToken::new();
+    let client = Scripted {
+        withheld: BTreeMap::from([(api(), usize::MAX)]),
+        cancel_on_move: Some((
+            Move::To(old_second, CopyRotation::Held(run_id())),
+            cancellation.clone(),
+        )),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(first, old_first), running()),
+            observed(Call::Inspect(second, old_second), running()),
+        ])
+    }
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[first, second], &client, &cancellation).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    for old in [old_first, old_second] {
+        assert_eq!(client.rotation(&old), Some(CopyRotation::In));
+    }
+    assert_eq!(
+        warnings,
+        [
+            left_running("machine-1", "interrupted"),
+            left_running("machine-2", "interrupted"),
+        ]
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stop_first_task_the_machine_window_delays_is_withdrawn_with_its_step() {
+    let machines = [machine('1'), machine('2'), machine('3')];
+    let olds = "abcdef01".chars().map(container).collect::<Vec<_>>();
+    let news = "23456789".chars().map(container).collect::<Vec<_>>();
+    // Six copies on the first Machine: one more than its window starts at once.
+    let owners = [0, 0, 0, 0, 0, 0, 1, 2].map(|at| machines[at]);
+    let plan = owners
+        .iter()
+        .zip(&olds)
+        .map(|(owner, old)| swap(owner, old, UpdateOrder::StopFirst))
+        .collect::<Vec<_>>();
+    let order = [0, 1, 2, 3, 4, 6, 7, 5];
+    let mut steps = owners
+        .iter()
+        .zip(&olds)
+        .map(|(owner, old)| observed(Call::Inspect(*owner, *old), running()))
+        .collect::<Vec<_>>();
+    for task in order {
+        steps.push(ok(Call::Stop(owners[task], olds[task])));
+        steps.push(created(
+            Call::Run(owners[task], ContainerKind::ServiceContainer),
+            &news[task],
+        ));
+    }
+    for (owner, old) in owners.iter().zip(&olds) {
+        steps.push(observed(Call::Inspect(*owner, *old), running()));
+        steps.push(ok(Call::Remove(*owner, *old)));
+    }
+    let client = owners
+        .iter()
+        .zip(&olds)
+        .fold(Scripted::new(steps), |client, (owner, old)| {
+            client.with_copy(owner, old, CopyRotation::In)
+        });
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::New)]),
+        "{outcome:?}"
+    );
+    let mut brought_in = client.brought_in();
+    brought_in.sort();
+    assert_eq!(brought_in, news);
     client.assert_done();
 }
