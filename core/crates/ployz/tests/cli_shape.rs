@@ -368,9 +368,17 @@ fn run_human(args: &[&str]) -> (Option<i32>, String) {
 }
 
 fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let output = human_output(args, env);
+    (
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn human_output(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+    ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
@@ -383,11 +391,7 @@ fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) 
         .env_remove("CLICOLOR_FORCE")
         .envs(env.iter().copied())
         .output()
-        .unwrap();
-    (
-        output.status.code(),
-        String::from_utf8(output.stderr).unwrap(),
-    )
+        .unwrap()
 }
 
 #[test]
@@ -454,6 +458,16 @@ fn color_never_emits_no_escapes() {
         assert!(stderr.contains("--bogus"), "{args:?}: {stderr}");
         assert!(!stderr.contains('\x1b'), "{args:?}: {stderr:?}");
     }
+}
+
+#[test]
+fn color_always_keeps_a_piped_record_colored_and_auto_leaves_it_plain() {
+    let stdout = |args: &[&str]| String::from_utf8(human_output(args, &[]).stdout).unwrap();
+    assert_eq!(
+        stdout(&["status", "--color", "always"]),
+        "\x1b[2msigned in as\x1b[0m = no one\n"
+    );
+    assert_eq!(stdout(&["status"]), "signed in as = no one\n");
 }
 
 #[test]
