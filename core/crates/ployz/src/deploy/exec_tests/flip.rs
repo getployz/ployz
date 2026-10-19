@@ -1856,11 +1856,13 @@ async fn a_failed_restore_after_publication_is_reported() {
 
     assert_eq!(client.rotation(&old), Some(CopyRotation::Held(run_id())));
     assert_eq!(client.rotation(&new), None);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let [warning] = warnings.as_slice() else {
+        panic!("one warning: {warnings:?}");
+    };
     assert!(
-        warnings[0].contains("could not go back In")
-            && warnings[0].contains("the old copy could not be restored"),
-        "{warnings:?}"
+        warning.contains("could not go back In")
+            && warning.contains("the old copy could not be restored"),
+        "{warning}"
     );
     client.assert_done();
 }
