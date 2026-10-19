@@ -491,7 +491,10 @@ fn references_and_exports_round_trip_through_get_and_patch() {
     set(&store, &[("api.env.URL", json!("${{ web.HOST }}"))]).unwrap();
     let diff = store.read(&who(), &DiffQuery::default()).unwrap();
     let broken: Vec<String> = diff.broken.iter().map(ToString::to_string).collect();
-    assert_eq!(broken, ["api.env.URL references web.HOST, which doesn't exist"]);
+    assert_eq!(
+        broken,
+        ["api.env.URL references web.HOST, which doesn't exist"]
+    );
     set(
         &store,
         &[("api.env.PEER", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"))],
