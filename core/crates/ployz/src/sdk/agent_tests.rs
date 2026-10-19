@@ -339,7 +339,11 @@ async fn a_start_is_serving_once_its_health_wait_passes() {
     let rotations = service.rotations();
     assert_eq!(started(service).await, Started::Serving);
     assert_eq!(
-        rotations.lock().unwrap().get(&container_id('1')),
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
         Some(&CopyRotation::In)
     );
 }
@@ -351,7 +355,11 @@ async fn a_start_of_a_held_copy_brings_it_back_in() {
     let rotations = service.rotations();
     assert_eq!(started(service).await, Started::Serving);
     assert_eq!(
-        rotations.lock().unwrap().get(&container_id('1')),
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
         Some(&CopyRotation::In)
     );
 }
@@ -400,7 +408,11 @@ async fn a_stop_of_an_in_copy_holds_it_so_a_start_can_bring_it_back() {
     .await
     .unwrap();
     assert!(matches!(
-        rotations.lock().unwrap().get(&container_id('1')),
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
         Some(CopyRotation::Held(_))
     ));
     assert!(removed.lock().unwrap().is_empty());
@@ -419,7 +431,11 @@ async fn a_removal_of_a_stopped_in_copy_takes_it_out_then_removes_it() {
     .await
     .unwrap();
     assert_eq!(
-        rotations.lock().unwrap().get(&container_id('1')),
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
         Some(&CopyRotation::Out)
     );
     assert!(removed.lock().unwrap().contains(&container_id('1')));

@@ -82,8 +82,9 @@ pub(super) struct DeployService {
     pub(super) copies: Arc<Mutex<BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>>>,
     /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
     pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
-    /// Each copy whose rotation a want moved, or that this fake created. A listed
-    /// Container no want touched keeps the rotation it was listed with.
+    /// Each copy whose rotation a want moved, a test seeded, or that this fake created,
+    /// removed copies included. A listed Container no want touched keeps the rotation
+    /// it was listed with.
     rotations: Arc<Mutex<BTreeMap<ContainerId, Rotated>>>,
     /// Copies that were In and left: a proxy that never drops a route keeps them.
     unrouted: Arc<Mutex<BTreeSet<ContainerId>>>,
@@ -100,9 +101,9 @@ pub(super) struct DeployService {
 
 /// A copy's Service and rotation as its owner holds them.
 #[derive(Clone, Debug)]
-struct Rotated {
+pub(super) struct Rotated {
     service: QualifiedService,
-    rotation: CopyRotation,
+    pub(super) rotation: CopyRotation,
 }
 
 /// One `PullImage` a Machine answered.
@@ -249,8 +250,8 @@ impl DeployService {
         }
     }
 
-    /// The verdict a Machine answers a Settled creation with; a held health wait
-    /// never answers.
+    /// The verdict a Machine answers a health wait with; a held health wait times
+    /// out at its healthcheck's deadline, and without one never answers.
     async fn settle(&self) -> HealthVerdict {
         if let Some(at) = self.healthy_at {
             tokio::time::sleep_until(at).await;
@@ -263,7 +264,18 @@ impl DeployService {
             };
         };
         if *health == HealthObservation::Starting {
-            std::future::pending::<()>().await;
+            let Some(deadline) = self
+                .effective_healthcheck
+                .as_ref()
+                .and_then(HealthcheckSpec::deadline)
+            else {
+                return std::future::pending().await;
+            };
+            tokio::time::sleep(deadline).await;
+            return HealthVerdict::TimedOut {
+                deadline_millis: u64::try_from(deadline.as_millis()).ok(),
+                last_check: None,
+            };
         }
         if matches!(
             health,
@@ -330,6 +342,21 @@ impl DeployService {
         self.listed_containers.clone()
     }
 
+    /// `container` starts at `rotation`, as its owner last wrote it.
+    pub(super) fn with_rotation(self, container: ContainerId, rotation: CopyRotation) -> Self {
+        let service = self.identity(&container);
+        self.rotations
+            .lock()
+            .unwrap()
+            .insert(container, Rotated { service, rotation });
+        self
+    }
+
+    /// Each copy whose rotation a want moved, seeded, or that this fake created.
+    pub(super) fn rotations(&self) -> Arc<Mutex<BTreeMap<ContainerId, Rotated>>> {
+        self.rotations.clone()
+    }
+
     /// Copies that left In; a sticky proxy still routes them.
     pub(super) fn unrouted(&self) -> Arc<Mutex<BTreeSet<ContainerId>>> {
         self.unrouted.clone()
@@ -385,20 +412,25 @@ impl DeployService {
         if self.rotation(&container_id) == CopyRotation::In && rotation != CopyRotation::In {
             self.unrouted.lock().unwrap().insert(container_id);
         }
-        let listed = self
-            .listed_containers
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|container| container.container_id == container_id)
-            .map(ployz_core::ContainerObservation::identity);
+        let identity = self.identity(&container_id);
         let mut rotations = self.rotations.lock().unwrap();
         let service = rotations
             .get(&container_id)
-            .map(|rotated| rotated.service.clone())
-            .or(listed)
-            .expect("a rotated copy is listed or created here");
+            .map_or(identity, |rotated| rotated.service.clone());
         rotations.insert(container_id, Rotated { service, rotation });
+    }
+
+    /// The Service inspect reports `container_id` in: its listing's, else `app/web`.
+    fn identity(&self, container_id: &ContainerId) -> QualifiedService {
+        self.listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|container| container.container_id == *container_id)
+            .map_or_else(
+                || QualifiedService::new(Namespace::parse("app").unwrap(), spec("web").name),
+                ployz_core::ContainerObservation::identity,
+            )
     }
 
     /// What each Machine's proxy routes for `service`: every In copy, and on a sticky
@@ -723,17 +755,8 @@ impl FakeMachine for DeployService {
         if self.uninspectable.contains(&inspect.container_id) {
             return Err(Status::not_found("no such container"));
         }
-        let listed = self
-            .listed_containers
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|container| container.container_id == inspect.container_id)
-            .map(ployz_core::ContainerObservation::identity);
-        let name = listed
-            .as_ref()
-            .map_or_else(|| "web".to_owned(), |service| service.name.to_string());
-        let spec = spec(&name)
+        let service = self.identity(&inspect.container_id);
+        let spec = spec(service.name.as_str())
             .to_resolved(
                 ServiceId::random(),
                 ResolvedUpdateConfig {
@@ -760,10 +783,7 @@ impl FakeMachine for DeployService {
                     machine_id: target
                         .or_else(|| self.machines.first().map(|machine| machine.machine.id))
                         .unwrap_or_else(MachineId::random),
-                    namespace: listed.map_or_else(
-                        || Namespace::parse("app").unwrap(),
-                        |service| service.namespace,
-                    ),
+                    namespace: service.namespace,
                     kind: ContainerKind::ServiceContainer,
                     runtime: self.current_runtime(),
                     effective_healthcheck: self.effective_healthcheck.clone(),
@@ -917,7 +937,6 @@ impl FakeMachine for DeployService {
                     if let Err(answer) = turned(container_id).await {
                         return encoded(RpcResponse::from(answer));
                     }
-                    self.rotations.lock().unwrap().remove(&container_id);
                     self.removed.lock().unwrap().insert(container_id);
                 }
                 (ContainerNow::Absent { of: container }, None)

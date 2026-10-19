@@ -116,7 +116,8 @@ async fn deploy_returns_success_for_a_completed_run() {
 
 #[tokio::test]
 async fn service_lifecycle_commands_change_each_named_service_container() {
-    for action in ["start", "stop"] {
+    // A stop holds each In copy out of rotation before it stops it.
+    for (action, rpcs) in [("start", 2), ("stop", 4)] {
         let machine = machine('a', "one");
         let service = DeployService::new(machine.clone());
         let mut api = running_container(&machine, &spec("api"));
@@ -142,7 +143,7 @@ async fn service_lifecycle_commands_change_each_named_service_container() {
             "{action}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), 2, "{action}");
+        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), rpcs, "{action}");
         server.abort();
     }
 }
