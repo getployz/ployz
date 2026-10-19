@@ -378,9 +378,10 @@ When a server's release can't serve a feature, the feature names that server:
   Ployz on web-2".
 - **Drain** in Ployz Cloud names the servers to upgrade before it changes anything:
   "Drains need a newer Ployz on web-1".
-- **Deploy** of a service with a domain fails after 5 minutes while any server runs Ployz 0.2.4 or
-  0.3.0-beta.1, and names that server to upgrade. The same message names any newer server that
-  didn't route the new version in time.
+- **Deploy** of a service with a domain fails after 5 minutes while an online server runs Ployz
+  0.2.4 or 0.3.0-beta.1, because that server never confirms it routes the new version. The
+  message names it: "web-2 did not route the dependency's Deploy in time". Upgrade it, then
+  deploy again. The same message names any newer server that didn't route in time.
 - **Upgrade** off Ployz 0.2.4 that stops partway while the old Ployz keeps running looks like it's
   still going: Cloud waits until the upgrade times out, then shows its result as unknown rather
   than interrupted. Start the upgrade again.
