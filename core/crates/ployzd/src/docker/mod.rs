@@ -153,19 +153,23 @@ impl LocalDocker {
     }
 
     pub(crate) async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
-        self.managed_ids_labelled(vec![
-            LABEL_MANAGED.to_owned(),
-            LABEL_NAMESPACE.to_owned(),
-            LABEL_SERVICE_ID.to_owned(),
-        ])
-        .await
+        Ok(self
+            .labelled(vec![
+                LABEL_MANAGED.to_owned(),
+                LABEL_NAMESPACE.to_owned(),
+                LABEL_SERVICE_ID.to_owned(),
+            ])
+            .await?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect())
     }
 
-    async fn service_container_ids(
+    async fn service_containers(
         &self,
         service: &QualifiedService,
-    ) -> Result<Vec<ContainerId>, Error> {
-        self.managed_ids_labelled(vec![
+    ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
+        self.labelled(vec![
             LABEL_MANAGED.to_owned(),
             LABEL_SERVICE_ID.to_owned(),
             format!("{LABEL_NAMESPACE}={}", service.namespace),
@@ -174,7 +178,10 @@ impl LocalDocker {
         .await
     }
 
-    async fn managed_ids_labelled(&self, labels: Vec<String>) -> Result<Vec<ContainerId>, Error> {
+    async fn labelled(
+        &self,
+        labels: Vec<String>,
+    ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
         let filters = HashMap::from([("label", labels)]);
         let options = ListContainersOptionsBuilder::default()
             .all(true)
@@ -186,13 +193,22 @@ impl LocalDocker {
             .into_iter()
             .map(|container| {
                 let id = container.id.ok_or(Error::MissingField("container ID"))?;
-                ContainerId::parse(id).map_err(|source| Error::InvalidValue {
+                let id = ContainerId::parse(id).map_err(|source| Error::InvalidValue {
                     field: "container ID",
                     source,
-                })
+                })?;
+                Ok((id, container.labels.unwrap_or_default()))
             })
             .collect()
     }
+}
+
+/// One of this Machine's copies of a Service, from [`ContainerRuntime::service_copies`].
+#[derive(Clone, Debug)]
+pub struct ServiceCopy {
+    pub container_id: ContainerId,
+    pub r#gen: Gen,
+    pub rotation: ployz_core::CopyRotation,
 }
 
 /// One existing copy's rotation, read under the lock `remove` takes and held until
@@ -412,31 +428,8 @@ impl ContainerRuntime {
         &self,
         machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Error> {
-        let listed = self.docker.managed_container_ids().await?;
-        self.inspect_listed(listed, machine_id).await
-    }
-
-    /// This Machine's copies of `service`, each with the rotation it recorded.
-    ///
-    /// # Errors
-    ///
-    /// Returns when Docker or the Machine database cannot be read.
-    pub async fn list_service(
-        &self,
-        machine_id: &MachineId,
-        service: &QualifiedService,
-    ) -> Result<Vec<ContainerObservation>, Error> {
-        let listed = self.docker.service_container_ids(service).await?;
-        self.inspect_listed(listed, machine_id).await
-    }
-
-    async fn inspect_listed(
-        &self,
-        listed: Vec<ContainerId>,
-        machine_id: &MachineId,
-    ) -> Result<Vec<ContainerObservation>, Error> {
         let mut observations = Vec::new();
-        let mut inspected = futures_util::stream::iter(listed)
+        let mut inspected = futures_util::stream::iter(self.docker.managed_container_ids().await?)
             .map(|container_id| async move {
                 (
                     container_id,
@@ -457,6 +450,38 @@ impl ContainerRuntime {
             }
         }
         Ok(observations)
+    }
+
+    /// This Machine's Service Containers of `service`, each with the gen its labels
+    /// carry and the rotation this Machine recorded. Nothing is inspected, so no health
+    /// check runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker or the Machine database cannot be read.
+    pub async fn service_copies(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ServiceCopy>, Error> {
+        let listed = self
+            .docker
+            .service_containers(service)
+            .await?
+            .into_iter()
+            .filter(|(_, labels)| !labels.contains_key(LABEL_HOOK))
+            .collect::<Vec<_>>();
+        let mut rotations = self
+            .specs
+            .rotations(listed.iter().map(|(id, _)| *id).collect())
+            .await?;
+        Ok(listed
+            .into_iter()
+            .map(|(container_id, labels)| ServiceCopy {
+                container_id,
+                r#gen: label_gen(&labels),
+                rotation: rotations.remove(&container_id).unwrap_or_default(),
+            })
+            .collect())
     }
 
     /// Read fresh Docker bridge and host telemetry.
@@ -516,10 +541,7 @@ impl ContainerRuntime {
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
         let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
-        let r#gen = labels
-            .get(LABEL_GEN)
-            .and_then(|label| label.parse().ok())
-            .map_or(Gen::FIRST, Gen::new);
+        let r#gen = label_gen(labels);
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
         let address = container_address(&inspected);
@@ -843,6 +865,13 @@ impl ManagedLabels {
             },
         })
     }
+}
+
+fn label_gen(labels: &HashMap<String, String>) -> Gen {
+    labels
+        .get(LABEL_GEN)
+        .and_then(|label| label.parse().ok())
+        .map_or(Gen::FIRST, Gen::new)
 }
 
 fn required_label<'a>(

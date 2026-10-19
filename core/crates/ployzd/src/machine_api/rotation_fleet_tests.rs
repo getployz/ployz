@@ -7,8 +7,12 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    num::NonZeroU16,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -17,9 +21,9 @@ use ployz_core::{
     AdvertisedEndpoint, AnswerWhen, ConfiguredHealthcheck, ContainerId, ContainerLocator,
     ContainerNow, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId,
     EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
-    Machine, MachineId, MachineName, MachineRpc, MachineRuntime, NewContainer, QualifiedService,
-    ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation, RunTarget, WireGuardPublicKey,
-    op,
+    HttpHealthcheck, Machine, MachineId, MachineName, MachineRpc, MachineRuntime, NewContainer,
+    QualifiedService, ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation, RunTarget,
+    WireGuardPublicKey, op,
 };
 use serde_json::{Value, json};
 use tokio::{net::UnixListener, sync::Notify};
@@ -342,6 +346,24 @@ impl Node {
         }
     }
 
+    /// Give `container` an address on the Ployz network, where its HTTP check probes.
+    fn set_address(&self, container: ContainerId, address: &str) {
+        let id = container.to_string();
+        for named in self
+            .fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+        {
+            if named["Id"] == id.as_str() {
+                named["NetworkSettings"] = json!({"Networks": {"ployz": {"IPAddress": address}}});
+            }
+        }
+    }
+
     fn requests(&self) -> Vec<(axum::http::Method, String)> {
         self.fake.requests.lock().unwrap().clone()
     }
@@ -437,6 +459,31 @@ fn checked_spec(name: &str) -> ResolvedServiceSpec {
         deadline_millis: Some(60_000),
     }));
     spec
+}
+
+/// A Service whose HTTP check probes a listener that accepts and never answers.
+/// The counter reads how many probes it accepted.
+async fn hanging_check(name: &str) -> (ResolvedServiceSpec, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let probes = Arc::new(AtomicUsize::new(0));
+    tokio::spawn({
+        let probes = Arc::clone(&probes);
+        async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                probes.fetch_add(1, Ordering::SeqCst);
+                held.push(stream);
+            }
+        }
+    });
+    let mut spec = spec(name);
+    spec.container.healthcheck = Some(HealthcheckSpec::Http(HttpHealthcheck {
+        path: "/health".into(),
+        port: NonZeroU16::new(port).unwrap(),
+        timeout_seconds: 1,
+    }));
+    (spec, probes)
 }
 
 fn new_copy(key: &str, spec: ResolvedServiceSpec, r#gen: u64) -> NewContainer {
@@ -952,6 +999,32 @@ async fn older_than_in_relists_local_copies_under_the_turn() {
     assert!(message.contains(&b.to_string()), "{message}");
     assert_eq!(node.rotation(a).await, CopyRotation::Pending);
     assert_eq!(node.rotation(b).await, CopyRotation::In);
+}
+
+/// OlderThanIn reads this Machine's copies from their labels and record, so a local
+/// sibling whose health check hangs is never probed while the In want decides.
+#[tokio::test]
+async fn older_than_in_probes_no_local_copy() {
+    // No rescan, so only the wants under test inspect Containers.
+    let fleet = Fleet::rescanning(Duration::from_secs(3600)).await;
+    let node = fleet.node(0);
+    let (hanging, probes) = hanging_check("api").await;
+    let pending = |key, spec, r#gen| ContainerWant::Running {
+        container: RunTarget::New(new_copy(key, spec, r#gen)),
+        rotation: RunRotation::Pending,
+    };
+    let b = present(&ensure(node, pending("b", hanging, 2)).await);
+    let a = present(&ensure(node, pending("a", spec("api"), 1)).await);
+    node.record(b, CopyRotation::In).await;
+    // The publisher re-inspects every copy on a rotation write; let it finish first.
+    fleet.published(b, Some(CopyRotation::In)).await;
+    node.set_address(b, "127.0.0.1");
+
+    let reply = ensure(node, into(a, None, Some(CopyRotation::Pending))).await;
+
+    let message = refused(&reply, ContainerRefusalReason::OlderThanIn);
+    assert!(message.contains(&b.to_string()), "{message}");
+    assert_eq!(probes.load(Ordering::SeqCst), 0, "no health probe ran");
 }
 
 /// A Held and a Stopped that land while an In want reads its guard rows leave the

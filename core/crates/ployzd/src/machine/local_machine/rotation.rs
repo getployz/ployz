@@ -329,7 +329,8 @@ impl LocalMachine {
     }
 
     /// Refuse In while a newer copy of the Service is already In. This Machine's copies
-    /// are listed afresh, so one created since `observed` was read still counts.
+    /// are listed afresh from their labels and record, so one created since `observed`
+    /// was read still counts and no health check runs under the turn.
     async fn newer_in(
         &self,
         copy: &CopyState,
@@ -337,26 +338,29 @@ impl LocalMachine {
     ) -> Result<Option<ContainerRefusal>, Error> {
         let machine_id = self.record().id();
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        let local = containers.list_service(&machine_id, &copy.service).await?;
+        let local = containers
+            .service_copies(&copy.service)
+            .await?
+            .into_iter()
+            .filter(|local| local.rotation == CopyRotation::In)
+            .map(|local| (local.container_id, local.r#gen));
         let newer = observed
             .into_iter()
-            .filter(|observed| observed.machine_id != machine_id)
-            .chain(local)
-            .filter(|sibling| {
-                is_sibling(copy, sibling)
-                    && *sibling.rotation() == CopyRotation::In
-                    && sibling.copy_gen() > copy.r#gen
+            .filter(|observed| {
+                observed.machine_id != machine_id
+                    && is_sibling(copy, observed)
+                    && *observed.rotation() == CopyRotation::In
             })
-            .max_by_key(|sibling| sibling.copy_gen());
-        Ok(newer.map(|sibling| {
+            .map(|observed| (observed.container_id, observed.copy_gen()))
+            .chain(local)
+            .filter(|(id, r#gen)| Some(*id) != copy.id && *r#gen > copy.r#gen)
+            .max_by_key(|(_, r#gen)| *r#gen);
+        Ok(newer.map(|(id, r#gen)| {
             refuse(
                 ContainerRefusalReason::OlderThanIn,
                 format!(
-                    "copy {} of {} is In at gen {}, newer than this copy's gen {}",
-                    sibling.container_id,
-                    copy.service,
-                    sibling.copy_gen(),
-                    copy.r#gen
+                    "copy {id} of {} is In at gen {}, newer than this copy's gen {}",
+                    copy.service, r#gen, copy.r#gen
                 ),
             )
         }))
