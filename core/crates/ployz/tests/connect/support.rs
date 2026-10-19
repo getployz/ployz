@@ -1169,6 +1169,7 @@ impl FakeMachine for DiscoveryService {
                 all_routed: pointer.is_some(),
                 pointer,
                 acks,
+                unrouted: Vec::new(),
             })
             .encode()
             .unwrap(),

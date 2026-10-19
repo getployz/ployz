@@ -1224,6 +1224,21 @@ pub struct ServingPointerRead {
     /// while the Machine list is partly replicated.
     #[serde(default)]
     pub all_routed: bool,
+    /// Machines not reported Down that have not acked `pointer`; every such
+    /// Machine without a pointer. Empty while the Machine list is partly
+    /// replicated, and from a daemon older than the field.
+    #[serde(default)]
+    pub unrouted: Vec<IngressMachine>,
+}
+
+/// A Machine whose ingress must ack a Serving Pointer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct IngressMachine {
+    pub id: MachineId,
+    pub name: MachineName,
+    /// Its record lacks `ployz.serving.read.v1`, so it runs a Ployz that
+    /// never acks.
+    pub predates_acks: bool,
 }
 
 /// Refusal of a Serving Pointer read or publish by a Machine that is not the lowest-id

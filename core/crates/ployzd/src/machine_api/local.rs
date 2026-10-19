@@ -740,17 +740,22 @@ impl MachineRpc for MachineService {
                 .collect(),
             Err(error) => return respond(cluster_store_error(error)),
         };
-        let all_routed = match self.local.ingress_machines().await {
+        let (all_routed, unrouted) = match self.local.ingress_machines().await {
             Ok(Some(machines)) => {
-                pointer.is_some() && machines.iter().all(|machine| acks.contains_key(machine))
+                let unrouted: Vec<_> = machines
+                    .into_iter()
+                    .filter(|machine| !acks.contains_key(&machine.id))
+                    .collect();
+                (pointer.is_some() && unrouted.is_empty(), unrouted)
             }
-            Ok(None) => false,
+            Ok(None) => (false, Vec::new()),
             Err(error) => return local_error(error),
         };
         respond(ServingPointerRead {
+            all_routed,
             pointer,
             acks,
-            all_routed,
+            unrouted,
         })
     }
 }

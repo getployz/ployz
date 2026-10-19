@@ -3014,4 +3014,81 @@ mod serving_pointer {
         task.abort();
         std::fs::remove_dir_all(dir).ok();
     }
+
+    #[tokio::test]
+    async fn read_names_the_machines_that_have_not_acked_and_which_never_will() {
+        use crate::corrosion::{IngressRouteAck, IngressRouteChange};
+
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = enrolled(&dir);
+        let mut current = local.record().machine().unwrap().clone();
+        current.runtime.capabilities = ployz_core::served_capabilities();
+        let mut lagging: Machine = serde_json::from_value(json!({
+            "id": "e".repeat(32),
+            "name": "machine-4",
+            "subnet": "10.210.4.0/24",
+            "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+            "public_key": crate::network::WireGuardPrivateKey::from_bytes([4; 32]).public_key(),
+            "advertised_endpoints": ["192.0.2.4:51820"],
+        }))
+        .unwrap();
+        lagging.runtime.capabilities = ployz_core::served_capabilities();
+        let old: Machine = serde_json::from_value(json!({
+            "id": "f".repeat(32),
+            "name": "machine-5",
+            "subnet": "10.210.5.0/24",
+            "labels": {}, "accepts_builds": true, "accepts_services": true, "accepts_ingress": true,
+            "public_key": crate::network::WireGuardPrivateKey::from_bytes([5; 32]).public_key(),
+            "advertised_endpoints": ["192.0.2.5:51820"],
+        }))
+        .unwrap();
+        let (service, task) = serve(
+            &dir,
+            local,
+            corrosion_db(),
+            &[current.clone(), lagging.clone(), old.clone()],
+            Vec::new(),
+        )
+        .await;
+        let local = service.local();
+        let replicated = local.replicated().unwrap();
+        replicated
+            .compare_and_set_serving_pointer(&api(), None, &pointer("d1", "a"))
+            .await
+            .unwrap();
+        replicated
+            .publish_ingress_routes(
+                &current.id,
+                &BTreeMap::from([(
+                    api(),
+                    IngressRouteChange::Upsert(IngressRouteAck {
+                        deploy: DeploymentLogId::parse("d1").unwrap(),
+                        containers: [ContainerId::parse("a".repeat(64)).unwrap()].into(),
+                    }),
+                )]),
+            )
+            .await
+            .unwrap();
+
+        let read = read(&service).await.unwrap();
+        assert!(!read.all_routed);
+        assert_eq!(
+            read.unrouted,
+            [
+                ployz_core::IngressMachine {
+                    id: lagging.id,
+                    name: lagging.name,
+                    predates_acks: false,
+                },
+                ployz_core::IngressMachine {
+                    id: old.id,
+                    name: old.name,
+                    predates_acks: true,
+                },
+            ]
+        );
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

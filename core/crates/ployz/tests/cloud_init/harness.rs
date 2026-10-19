@@ -960,6 +960,7 @@ impl FakeMachine for JoinDaemon {
             all_routed: pointer.is_some(),
             pointer,
             acks,
+            unrouted: Vec::new(),
         })
     }
     async fn pull_image(

@@ -5,8 +5,8 @@ use std::{
 
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
-    HealthFailure, HealthObservation, LastHealthCheck, MembershipObservation, Namespace,
-    RpcErrorCode, ServiceName, ServiceResult, UpdateOrder,
+    HealthFailure, HealthObservation, LastHealthCheck, MachineName, MembershipObservation,
+    Namespace, RpcErrorCode, ServiceName, ServiceResult, UpdateOrder,
 };
 
 use crate::deploy::{DeployOutcome, FailedOperation};
@@ -166,6 +166,14 @@ struct Scripted {
     hold_taken_by: Option<ployz_core::DeploymentLogId>,
     /// No Machine routes a pin.
     unrouted_pin: bool,
+    /// An ingress Machine with no task here that never acks, and whether its
+    /// Ployz predates acks.
+    bystander: Option<(MachineId, bool)>,
+    /// The bystander joins after the pin, so only reads of this run's
+    /// pointers list it.
+    bystander_joins_late: bool,
+    /// Reads come from a daemon that names no unrouted Machines.
+    unnamed_reads: bool,
     /// No Machine routes a row naming one of these Containers.
     dead: Vec<ContainerId>,
     /// Another Deploy writes this row just before this run's pin.
@@ -200,6 +208,9 @@ impl Scripted {
             dropped_releases: Mutex::new(0),
             hold_taken_by: None,
             unrouted_pin: false,
+            bystander: None,
+            bystander_joins_late: false,
+            unnamed_reads: false,
             dead: Vec::new(),
             rival: None,
             pointers: Mutex::new(BTreeMap::new()),
@@ -478,11 +489,32 @@ impl MachineOperations for Scripted {
                 .collect(),
             _ => BTreeMap::new(),
         };
-        let all_routed = pointer.is_some() && routed && lagging.is_none();
+        let bystander = self
+            .bystander
+            .filter(|_| ours || !self.bystander_joins_late);
+        let all_routed = pointer.is_some() && routed && lagging.is_none() && bystander.is_none();
+        let mut ingress = self.pulled.lock().unwrap().clone();
+        ingress.extend(lagging);
+        let unrouted = if self.unnamed_reads {
+            Vec::new()
+        } else {
+            ingress
+                .into_iter()
+                .map(|machine| (machine, false))
+                .chain(bystander)
+                .filter(|(machine, _)| !acks.contains_key(machine))
+                .map(|(id, predates_acks)| IngressMachine {
+                    id,
+                    name: machine_name(&id),
+                    predates_acks,
+                })
+                .collect()
+        };
         Ok(ServingPointerRead {
             pointer,
             acks,
             all_routed,
+            unrouted,
         })
     }
 
@@ -713,6 +745,10 @@ fn serving(
 
 fn machine(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
+}
+
+fn machine_name(id: &MachineId) -> MachineName {
+    MachineName::parse(format!("machine-{}", &id.as_str()[..1])).unwrap()
 }
 
 fn container(hex: char) -> ContainerId {

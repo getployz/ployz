@@ -893,9 +893,25 @@ pub enum DependencyHealthFailure {
         container_id: ContainerId,
         failure: HealthFailure,
     },
-    /// The Machine a dependent starts on never routed the dependency's new Deploy.
+    /// These Machines never routed the dependency's new Deploy.
+    #[error("{} did not route the dependency's Deploy in time", list(machines))]
+    NotRouted { machines: Vec<MachineName> },
+    /// The Machine a dependent starts on never routed the dependency's new
+    /// Deploy, from a daemon that does not name the Machines that did not.
     #[error("machine {machine_id} did not route the dependency's Deploy in time")]
-    NotRouted { machine_id: MachineId },
+    NotRoutedOn { machine_id: MachineId },
+    /// These Machines run a Ployz that never acks a route, so the
+    /// dependency's Deploy can never count as routed.
+    #[error("Deploys need a newer Ployz on {}", list(machines))]
+    PredatesAcks { machines: Vec<MachineName> },
+}
+
+fn list(machines: &[MachineName]) -> String {
+    machines
+        .iter()
+        .map(MachineName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Why a pre-deploy hook container did not succeed.

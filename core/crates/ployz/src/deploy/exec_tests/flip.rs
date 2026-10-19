@@ -428,13 +428,11 @@ fn scale_down_groups(kept: &[ContainerId]) -> Vec<crate::deploy::schedule::Servi
     ]
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
-    let lagging = machine('2');
-    let machine = machine('1');
+/// One Machine replaces api's copy and removes a draining one once every
+/// Machine routes the new pointer.
+fn rollout_removal(machine: MachineId, client: Scripted) -> (Vec<DeployOperation>, Scripted) {
     let replaced = container('b');
     let draining = container('c');
-    let new = container('d');
     let plan = vec![
         DeployOperation::ReplaceContainer(ReplacementOperation {
             machine_id: machine,
@@ -448,13 +446,6 @@ async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
         },
     ];
-    let client = Scripted {
-        unrouted_machine: Some(lagging),
-        ..Scripted::new(vec![created(
-            Call::Run(machine, ContainerKind::ServiceContainer),
-            &new,
-        )])
-    };
     client.pointers.lock().unwrap().insert(
         api(),
         ServingPointer {
@@ -465,6 +456,24 @@ async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
             deciding: None,
         },
     );
+    (plan, client)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
+    let lagging = machine('2');
+    let machine = machine('1');
+    let (plan, client) = rollout_removal(
+        machine,
+        Scripted {
+            unrouted_machine: Some(lagging),
+            ..Scripted::new(vec![created(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                &container('d'),
+            )])
+        },
+    );
+    let began = Instant::now();
 
     let outcome = execute_groups(&plan, crate::deploy::planning::test_groups(&plan), &client).await;
 
@@ -475,17 +484,63 @@ async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
                 completed,
                 failed: FailedOperation::Operation {
                     error: ExecutionError::DependencyHealth {
-                        failure: DependencyHealthFailure::NotRouted { .. },
+                        failure: DependencyHealthFailure::NotRouted { machines },
                         ..
                     },
                     ..
                 },
                 ..
-            } if completed.len() == 1
+            } if completed.len() == 1 && *machines == [machine_name(&lagging)]
         ),
-        "{outcome:?}"
+        "the Machine that never acked is named, not the one the removal runs on: {outcome:?}"
     );
+    assert!(began.elapsed() >= ACK_WAIT);
     assert_eq!(client.publications().len(), 1);
+    assert!(client.removed_after.lock().unwrap().is_empty());
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_machine_too_old_to_ack_joining_mid_deploy_fails_the_removal_at_once() {
+    let old = machine('5');
+    let machine = machine('1');
+    let (plan, client) = rollout_removal(
+        machine,
+        Scripted {
+            bystander: Some((old, true)),
+            bystander_joins_late: true,
+            ..Scripted::new(vec![created(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                &container('d'),
+            )])
+        },
+    );
+    let began = Instant::now();
+
+    let outcome = execute_groups(&plan, crate::deploy::planning::test_groups(&plan), &client).await;
+
+    let DeployOutcome::Failed {
+        completed,
+        failed:
+            FailedOperation::Operation {
+                error:
+                    ExecutionError::DependencyHealth {
+                        failure: failure @ DependencyHealthFailure::PredatesAcks { .. },
+                        ..
+                    },
+                ..
+            },
+        ..
+    } = &outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(completed.len(), 1);
+    assert_eq!(
+        failure.to_string(),
+        "Deploys need a newer Ployz on machine-5"
+    );
+    assert!(began.elapsed() < ACK_POLL, "{:?}", began.elapsed());
     assert!(client.removed_after.lock().unwrap().is_empty());
     client.assert_done();
 }
@@ -548,7 +603,7 @@ async fn a_dependent_fails_when_its_machine_never_acks_the_dependency() {
                 failed: FailedOperation::Operation {
                     error: ExecutionError::DependencyHealth {
                         dependency,
-                        failure: DependencyHealthFailure::NotRouted { machine_id },
+                        failure: DependencyHealthFailure::NotRouted { machines },
                     },
                     ..
                 },
@@ -557,7 +612,7 @@ async fn a_dependent_fails_when_its_machine_never_acks_the_dependency() {
             } if completed.len() == 1
                 && unexecuted.is_empty()
                 && *dependency == api()
-                && *machine_id == machine
+                && *machines == [machine_name(&machine)]
         ),
         "{outcome:?}"
     );
@@ -1333,13 +1388,13 @@ async fn a_dependent_that_never_gets_its_ack_removes_what_it_started_elsewhere()
             DeployOutcome::Failed {
                 failed: FailedOperation::Operation {
                     error: ExecutionError::DependencyHealth {
-                        failure: DependencyHealthFailure::NotRouted { machine_id },
+                        failure: DependencyHealthFailure::NotRouted { machines },
                         ..
                     },
                     ..
                 },
                 ..
-            } if *machine_id == second
+            } if *machines == [machine_name(&second)]
         ),
         "{outcome:?}"
     );
@@ -1490,6 +1545,115 @@ async fn a_first_deploy_of_an_empty_service_starts_nothing_until_its_pin_is_rout
         .collect();
     assert_eq!(pins, [Vec::<ContainerId>::new()]);
     assert!(client.publications().is_empty());
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_machine_too_old_to_ack_fails_the_deploy_at_once_naming_it() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        observations: Some(Vec::new()),
+        bystander: Some((self::machine('5'), true)),
+        ..Scripted::new(Vec::new())
+    };
+    let began = Instant::now();
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    let DeployOutcome::Failed {
+        completed,
+        failed:
+            FailedOperation::Operation {
+                error:
+                    ExecutionError::DependencyHealth {
+                        failure: failure @ DependencyHealthFailure::PredatesAcks { .. },
+                        ..
+                    },
+                ..
+            },
+        ..
+    } = &outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert!(completed.is_empty());
+    assert_eq!(
+        failure.to_string(),
+        "Deploys need a newer Ployz on machine-5"
+    );
+    assert_eq!(began.elapsed(), Duration::ZERO);
+    assert!(client.pins().is_empty(), "nothing was written");
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pin_that_is_never_routed_names_the_machine_that_did_not_ack() {
+    let machine = machine('1');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        observations: Some(Vec::new()),
+        bystander: Some((self::machine('3'), false)),
+        ..Scripted::new(Vec::new())
+    };
+    let began = Instant::now();
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::DependencyHealth {
+                        failure: DependencyHealthFailure::NotRouted { machines },
+                        ..
+                    },
+                    ..
+                },
+                ..
+            } if *machines == [machine_name(&self::machine('3'))]
+        ),
+        "{outcome:?}"
+    );
+    assert!(began.elapsed() >= ACK_WAIT);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_daemon_that_names_no_machines_leaves_the_dependent_machine_to_blame() {
+    let machine = machine('1');
+    let plan = vec![
+        run(&machine, spec(None, None, None), true),
+        web_run(&machine),
+    ];
+    let client = Scripted {
+        unrouted: Some(ServiceName::parse("api").unwrap()),
+        unnamed_reads: true,
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('a'),
+        )])
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::DependencyHealth {
+                        failure: DependencyHealthFailure::NotRoutedOn { machine_id },
+                        ..
+                    },
+                    ..
+                },
+                ..
+            } if *machine_id == machine
+        ),
+        "{outcome:?}"
+    );
     client.assert_done();
 }
 

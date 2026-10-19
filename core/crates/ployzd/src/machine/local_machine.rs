@@ -302,18 +302,38 @@ impl LocalMachine {
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] without a Cluster store, and
     /// [`Error::Cluster`] when the Machine list cannot be read.
-    pub(crate) async fn ingress_machines(&self) -> Result<Option<BTreeSet<MachineId>>, Error> {
+    pub(crate) async fn ingress_machines(
+        &self,
+    ) -> Result<Option<Vec<ployz_core::IngressMachine>>, Error> {
         let cluster = self
             .cluster
             .as_ref()
             .ok_or(Error::ClusterStoreUnavailable)?;
         let machines = cluster.replicated.machines().await?;
+        let predates_acks: BTreeSet<MachineId> = machines
+            .observations
+            .iter()
+            .filter(|machine| {
+                !machine
+                    .runtime
+                    .capabilities
+                    .contains(ployz_core::READ_SERVING_POINTER_CAPABILITY)
+            })
+            .map(|machine| machine.id)
+            .collect();
         let membership =
             crate::retire::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
         Ok(match membership.ackers {
-            crate::retire::Ackers::Known(machines) if !machines.is_empty() => {
-                Some(machines.into_keys().collect())
-            }
+            crate::retire::Ackers::Known(machines) if !machines.is_empty() => Some(
+                machines
+                    .into_iter()
+                    .map(|(id, name)| ployz_core::IngressMachine {
+                        predates_acks: predates_acks.contains(&id),
+                        id,
+                        name,
+                    })
+                    .collect(),
+            ),
             crate::retire::Ackers::Known(_)
             | crate::retire::Ackers::Incomplete { .. }
             | crate::retire::Ackers::Unread => None,

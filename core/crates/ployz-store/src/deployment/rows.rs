@@ -330,6 +330,8 @@ impl Failure {
                     DependencyHealthFailure::Cancelled
                     | DependencyHealthFailure::NoContainers
                     | DependencyHealthFailure::NotRouted { .. }
+                    | DependencyHealthFailure::NotRoutedOn { .. }
+                    | DependencyHealthFailure::PredatesAcks { .. }
                     | DependencyHealthFailure::Container { .. } => vec![failure.to_string()],
                 },
             ),

@@ -864,6 +864,7 @@ impl FakeMachine for DeployService {
             all_routed: pointer.is_some(),
             pointer,
             acks,
+            unrouted: Vec::new(),
         }))
     }
     async fn prune_images(
