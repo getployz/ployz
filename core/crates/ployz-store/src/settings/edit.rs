@@ -105,6 +105,18 @@ pub struct Edited {
     // An older Cloud doesn't send it.
     #[serde(default)]
     pub typed_addresses: Vec<TypedAddresses>,
+    /// Settings this edit set whose value may not act, each with why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<SettingNote>>", optional)]
+    pub notes: Vec<SettingNote>,
+}
+
+/// Why a Setting an edit set may not act.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct SettingNote {
+    /// The Setting, as SERVICE.SETTING.
+    pub path: SettingPath,
+    pub note: String,
 }
 
 /// The Typed Addresses in one variable an edit set: whose they are, and what to set
@@ -172,10 +184,17 @@ pub(crate) fn edit(
     // Every Setting set must mean something to the source the edit leaves; unsetting never
     // has to, and an empty Service takes build settings for the uploads it builds. Checked
     // last, so a value of the wrong shape is named for its shape first.
+    let mut notes = Vec::<SettingNote>::new();
     for (service, setting) in set {
         let config = &editing.environment.service(&service)?.config;
         if !setting.applies(config) {
             return Err(setting.not_for(&service, &config.source));
+        }
+        let path = SettingPath::at(&service, Target::Setting(setting));
+        if let Some(note) = setting.note(config)
+            && !notes.iter().any(|noted| noted.path == path)
+        {
+            notes.push(SettingNote { path, note });
         }
     }
     let Editing {
@@ -195,6 +214,7 @@ pub(crate) fn edit(
         staged,
         immediate,
         typed_addresses,
+        notes,
     })
 }
 

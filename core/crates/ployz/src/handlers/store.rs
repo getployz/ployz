@@ -969,6 +969,7 @@ mod tests {
             default: serde_json::Value::Null,
             apply: serde_json::from_value(json!("staged")).unwrap(),
             row: None,
+            note: None,
         };
         assert_eq!(
             valued(&row("web.startCommand", json!("npm start"))),

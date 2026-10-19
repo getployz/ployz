@@ -4,7 +4,7 @@
 //! kept outside Working State, so a change takes effect at once and no Deploy ships it.
 
 use ployz_core::RpcError;
-use ployz_core::config::{AuthoredServiceConfig, ServiceSource};
+use ployz_core::config::{AuthoredServiceConfig, ServiceGitAccess, ServiceSource};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -104,7 +104,7 @@ impl PolicySetting {
     pub(crate) const fn description(self) -> &'static str {
         match self {
             Self::AutoDeploy => {
-                "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once."
+                "Deploy the Environment's Saved State when its branch gets a new commit. Pushes reach Ployz only through the GitHub App on the repository. Takes effect at once."
             }
             Self::WaitForCi => {
                 "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once."
@@ -154,6 +154,23 @@ impl PolicySetting {
     /// Only a Git Service deploys on push.
     pub(crate) const fn applies(config: &AuthoredServiceConfig) -> bool {
         matches!(config.source, ServiceSource::Git { .. })
+    }
+
+    /// What this Setting can't promise for `config`: Cloud added its repository as
+    /// public, without the GitHub App, so no push may reach Ployz. Worded as a
+    /// condition, since the App may be installed since and triggers ignore the access.
+    pub(crate) fn note(self, config: &AuthoredServiceConfig) -> Option<String> {
+        let ServiceSource::Git {
+            repository,
+            access: ServiceGitAccess::Public,
+            ..
+        } = &config.source
+        else {
+            return None;
+        };
+        matches!(self, Self::AutoDeploy | Self::WaitForCi).then(|| {
+            format!("Pushes reach Ployz only once the GitHub App is installed on {repository}.")
+        })
     }
 
     pub(crate) fn value(self, policy: &Policy) -> Value {

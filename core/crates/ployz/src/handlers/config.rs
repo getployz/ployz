@@ -160,7 +160,21 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         for line in &lines {
             crate::ui::stream(line);
         }
+        for note in noted(view.settings.iter().filter_map(|row| row.note.as_ref())) {
+            ui::note(note);
+        }
     })
+}
+
+/// Each distinct note once, in order: Settings that share a caveat say it once.
+fn noted<'a>(notes: impl Iterator<Item = &'a String>) -> Vec<&'a String> {
+    let mut seen = Vec::new();
+    for note in notes {
+        if !seen.contains(&note) {
+            seen.push(note);
+        }
+    }
+    seen
 }
 
 /// Whether the domains were read in another Environment or at another revision than
@@ -465,6 +479,9 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         }
         for typed in &edited.typed_addresses {
             say_typed_addresses(matches, typed);
+        }
+        for note in noted(edited.notes.iter().map(|noted| &noted.note)) {
+            ui::note(note);
         }
         if let Some(hint) = hint {
             ui::hint(&Hint::Next(hint));
