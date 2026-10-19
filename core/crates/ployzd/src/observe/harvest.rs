@@ -2623,6 +2623,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn history_shows_every_oom_kill_of_a_container_docker_keeps_restarting() {
+        let host = host().with_machine();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        let service = ("ployz.service.id", SERVICE_ID);
+        for (started, previous) in [(1, None), (4, Some(3))] {
+            let before = previous.map_or_else(
+                || self::running(started),
+                |finished| running_after(started, finished),
+            );
+            let harvester = &mut running.harvester;
+            harvester.on_inspected(id, inspected(&before));
+            harvester.on_docker_event(event("oom", T0 + started + 1, &[service]));
+            harvester.on_docker_event(event(
+                "die",
+                T0 + started + 2,
+                &[service, ("exitCode", "137")],
+            ));
+            running.settle_exits(|| inspected(&restarting(started, started + 2, 137, true)));
+            running
+                .harvester
+                .on_docker_event(event("start", T0 + started + 3, &[service]));
+        }
+        running
+            .harvester
+            .on_inspected(id, inspected(&running_after(7, 6)));
+
+        let query = super::super::query::Query::new(ployz_core::LogHistoryRequest {
+            namespace: Some("default".into()),
+            limit: 100,
+            ..ployz_core::LogHistoryRequest::default()
+        })
+        .unwrap();
+        let page = super::super::query::page(
+            &host.store,
+            &query,
+            &super::super::query::Bounds::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let exits: Vec<_> = page
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                ployz_core::HistoryRow::Exit {
+                    ts,
+                    exit_code,
+                    oom_killed,
+                    ..
+                } => Some((*ts, *exit_code, *oom_killed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            exits,
+            [(T0 + 3, Some(137), true), (T0 + 6, Some(137), true)]
+        );
+    }
+
+    #[tokio::test]
     async fn a_crash_loop_keeps_the_exit_of_its_last_run() {
         let (_, meta) = removed_after(&[
             Step::Inspect(running(1)),
