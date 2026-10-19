@@ -1205,21 +1205,20 @@ fn every_setting_set_must_apply_to_the_source_the_whole_edit_leaves() {
         ],
         "buildCommand: needs a repository source, and web runs an image",
     );
-    // An image and a repository in one edit: the later one is the source, and the other
-    // no longer applies to it.
+    // An image and a repository in one edit is two sources, in either order.
     refused(
         vec![
             set("web.image", json!("nginx:2")),
             set("web.repository", json!("acme/web")),
         ],
-        "image: needs an image source, and web builds a repository",
+        "Set web.image or web.repository, not both",
     );
     refused(
         vec![
             set("web.repository", json!("acme/web")),
             set("web.image", json!("nginx:2")),
         ],
-        "repository: needs a repository source, and web runs an image",
+        "Set web.image or web.repository, not both",
     );
     // Unsetting is never refused.
     store

@@ -138,7 +138,7 @@ export function SettingsWorkspace({ label, hint, tools, children }: {
   children: ReactNode;
 }) {
   return (
-    <Item data-archetype="workspace" className={`${CARD_CHILD} flex-col items-stretch`}>
+    <Item data-archetype="workspace" className={`${CARD_CHILD} flex-col flex-nowrap items-stretch`}>
       <ItemHeader>
         <SettingsText label={label} hint={hint} />
         {tools ? <ItemActions>{tools}</ItemActions> : null}

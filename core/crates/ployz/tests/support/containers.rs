@@ -5,8 +5,8 @@
 use ployz::connect::Client;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, CreationKey, Drain,
-    MachineId, Namespace, NewContainer, ResolvedServiceSpec, RpcError, RunTarget, SlotKey,
-    StopOptions,
+    MachineId, Namespace, NewContainer, ResolvedServiceSpec, RpcError, RunRotation, RunTarget,
+    SlotKey, StopOptions,
 };
 
 /// Create and start a Container in a fresh slot.
@@ -34,6 +34,7 @@ pub async fn run(
                 image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
             }),
+            rotation: RunRotation::Pending,
         },
     )
     .await?;
@@ -53,6 +54,7 @@ pub async fn start(
         machine_id,
         ContainerWant::Running {
             container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+            rotation: RunRotation::Pending,
         },
     )
     .await

@@ -22,6 +22,7 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { kindText, Value } from "./canvas/EnvironmentChangesReview";
 import { notSetToast, sealedOnlyPaths } from "./history-not-set";
+import { toErrorMessage } from "#/lib/error-message";
 
 /** How many more revisions each Show older reads. */
 const HISTORY_PAGE = 50;
@@ -143,7 +144,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
       else await stage(preview, false);
     } catch (error) {
       if (requested !== request.current) return;
-      setReview({ kind: "failed", message: error instanceof Error ? error.message : "Could not review this version." });
+      setReview({ kind: "failed", message: toErrorMessage(error, "Could not review this version.") });
     }
   }
 
