@@ -3,8 +3,9 @@ import { Effect, Layer } from "effect";
 import { expect } from "vitest";
 import { MAX_OFFERED_INSTALLATIONS } from "./github-connect";
 import { acceptGithubOfferInput } from "./github-connect.functions";
-import { acceptGithubOffer, completeGithubConnect, listGithubOffer, startGithubConnect } from "./github-connect.server";
+import { acceptGithubOffer, completeGithubConnect, listGithubOffer, listOrganizationGithub, startGithubConnect } from "./github-connect.server";
 import { listGithubInstallationsForOrganization } from "./github.repository";
+import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApiService } from "./github-observation.api";
 import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
@@ -43,7 +44,21 @@ const users = fakeGithubUsers({
   },
   "octo-code": { login: "octo", installations: MANY, adminOf: MANY.map((installation) => installation.login) },
 });
-const github = { ...fakeGithubApi().service, ...users.service };
+// Installation 9 holds more repositories than one page lists.
+const REPOSITORY_COUNTS = new Map([[8, 3], [9, 150]]);
+const installationRepositories: GithubApiService["installationRepositories"] = ({ installationId, page }) => {
+  const total = REPOSITORY_COUNTS.get(installationId) ?? 0;
+  const ids = Array.from({ length: total }, (_, index) => installationId * 1000 + index)
+    .slice((page - 1) * GITHUB_REPOSITORIES_PAGE_SIZE, page * GITHUB_REPOSITORIES_PAGE_SIZE);
+  return Effect.succeed({
+    total_count: total,
+    repositories: ids.map((id) => ({
+      id, name: `repo-${id}`, full_name: `owner/repo-${id}`, private: false, default_branch: "main",
+      html_url: `https://github.test/owner/repo-${id}`, updated_at: new Date("2026-01-01T00:00:00Z"),
+    })),
+  });
+};
+const github = { ...fakeGithubApi().service, ...users.service, installationRepositories };
 
 const stateOf = (location: string) => new URL(location).searchParams.get("state") ?? "";
 const landing = (path: string) => Object.fromEntries(new URL(path, "http://cloud").searchParams);
@@ -132,4 +147,23 @@ it.live("links only installations the person who started the connect owns on Git
     if (everyOffered.issues !== undefined) throw new Error(`accept rejected the full offer: ${everyOffered.issues[0]?.message}`);
     expect(yield* run(acceptGithubOffer(bob, everyOffered.value))).toEqual({ linked: MAX_OFFERED_INSTALLATIONS });
     expect(yield* linked(LAB)).toEqual([7, 9, ...[...OFFERED].sort((a, b) => a - b)]);
+  }), 60_000);
+
+it.live("lists a connected account's repositories as soon as the connect returns", () =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(yield* storeTestCloud({ github }));
+    const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
+    const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
+    const counts = () => run(listOrganizationGithub(ada, "shop")).pipe(
+      Effect.map(({ accounts }) => Object.fromEntries(accounts.map((account) => [account.login, account.repositories]))),
+    );
+
+    const install = stateOf(yield* run(startGithubConnect(ada, "shop", false)));
+    yield* run(completeGithubConnect(ada, new URLSearchParams({ state: install, code: "ada-code", installation_id: "8" })));
+    expect(yield* counts()).toEqual({ acme: 0, ada: 3 });
+
+    const existing = stateOf(yield* run(startGithubConnect(ada, "shop", true)));
+    const offer = landing(yield* run(completeGithubConnect(ada, new URLSearchParams({ state: existing, code: "carol-code" }))))["offer"] ?? "";
+    yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
+    expect(yield* counts()).toEqual({ acme: 0, ada: 3, hopper: 150 });
   }), 60_000);

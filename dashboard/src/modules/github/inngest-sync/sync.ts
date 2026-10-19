@@ -31,6 +31,30 @@ export type GithubSyncEffectRunner = <A, E extends Error>(
   effect: Effect.Effect<A, E, Database | AppConfig | GithubApi>,
 ) => Promise<A>;
 
+const syncRepositoryPage = Effect.fn("Github.syncRepositoryPage")(
+  function* (installationId: number, pageNumber: number, syncedAt: Date) {
+    const page = yield* listInstallationReposPage(installationId, pageNumber);
+    yield* upsertCachedGithubRepositories({
+      installationId,
+      repositories: page.repositories,
+      syncedAt,
+    });
+    return page;
+  },
+);
+
+/** The same sync as the Inngest function, in one go, for a caller that waits on it. */
+export const syncGithubRepositories = Effect.fn("Github.syncRepositories")(
+  function* (installationId: number) {
+    const syncedAt = new Date();
+    for (let pageNumber = 1; ; pageNumber++) {
+      const page = yield* syncRepositoryPage(installationId, pageNumber, syncedAt);
+      if (!page.hasNextPage) break;
+    }
+    yield* pruneCachedGithubRepositories(installationId, syncedAt);
+  },
+);
+
 export async function executeSyncGithubRepositories(
   {
     event,
@@ -56,20 +80,7 @@ export async function executeSyncGithubRepositories(
   while (true) {
     const pageNumber = currentPage;
     const repositoryPage = await step.run(`sync-page-${pageNumber}`, () =>
-      runEffect(
-        Effect.gen(function* () {
-          const page = yield* listInstallationReposPage(
-            installationId,
-            pageNumber,
-          );
-          yield* upsertCachedGithubRepositories({
-            installationId,
-            repositories: page.repositories,
-            syncedAt,
-          });
-          return page;
-        }),
-      ),
+      runEffect(syncRepositoryPage(installationId, pageNumber, syncedAt)),
     );
 
     processedPageCount += 1;
