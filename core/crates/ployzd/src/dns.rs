@@ -1,7 +1,7 @@
 //! Observer-local Internal DNS serving and answer projection.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
@@ -26,8 +26,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, MachineId, MembershipObservation, Namespace, QualifiedService, ServiceId,
-    service_containers, serving_containers, synthesize_membership,
+    ContainerObservation, MachineId, MembershipObservation, Namespace, ProxyRoutes,
+    QualifiedService, ServiceId, proxy_routes, service_containers, synthesize_membership,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -37,8 +37,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::corrosion::{
-    AdminClient, Error as CorrosionError, MachineView, ServingPointers,
-    membership_states_by_address,
+    AdminClient, Error as CorrosionError, MachineView, membership_states_by_address,
 };
 
 mod listeners;
@@ -75,47 +74,81 @@ struct Projection {
     caller_namespaces: HashMap<Ipv4Addr, Namespace>,
 }
 
-type Snapshot = (Vec<ContainerObservation>, ServingPointers);
-
 struct ProjectionInputs {
-    local_id: MachineId,
     observations: Vec<ContainerObservation>,
-    pointers: ServingPointers,
-    warned_pointers: BTreeSet<String>,
-    down_machines: Option<HashSet<MachineId>>,
+    down: DownMachines,
+    /// The routes the last projection answered with, which rule f keeps while
+    /// no copy of a Service is reachable.
+    routed: ProxyRoutes,
 }
 
 impl ProjectionInputs {
-    fn build(&self) -> Projection {
-        Projection::from_observations(
-            &self.observations,
-            &self.pointers,
-            &self.local_id,
-            self.down_machines.as_ref(),
-        )
+    fn new(local_id: MachineId) -> Self {
+        Self {
+            observations: Vec::new(),
+            down: DownMachines::new(local_id),
+            routed: ProxyRoutes::new(),
+        }
     }
 
-    fn replace_snapshot(&mut self, (observations, pointers): Snapshot) {
-        pointers.warn_newly_malformed(&mut self.warned_pointers);
-        self.observations = observations;
-        self.pointers = pointers;
+    fn build(&mut self) -> Projection {
+        let containers = service_containers(self.observations.iter().cloned());
+        let routes = proxy_routes(
+            &containers,
+            |machine| self.down.contains(machine),
+            &self.routed,
+        );
+        let projection = Projection::from_routes(&self.observations, &routes);
+        self.routed = routes;
+        projection
+    }
+}
+
+/// The Machines Internal DNS and Ingress drop from routes, from the last
+/// membership sample that loaded. Nothing is Down before the first one, and
+/// the local Machine never is.
+pub(crate) struct DownMachines {
+    local_id: MachineId,
+    down: Option<HashSet<MachineId>>,
+}
+
+impl DownMachines {
+    pub(crate) fn new(local_id: MachineId) -> Self {
+        Self {
+            local_id,
+            down: None,
+        }
     }
 
-    fn update_membership(&mut self, loaded: Result<HashSet<MachineId>, CorrosionError>) -> bool {
+    pub(crate) fn local_id(&self) -> MachineId {
+        self.local_id
+    }
+
+    pub(crate) fn contains(&self, machine: &MachineId) -> bool {
+        *machine != self.local_id
+            && self
+                .down
+                .as_ref()
+                .is_some_and(|down| down.contains(machine))
+    }
+
+    /// Take one sample, keeping the last loaded set when it failed. True when
+    /// the set changed.
+    pub(crate) fn update(&mut self, loaded: Result<HashSet<MachineId>, CorrosionError>) -> bool {
         match loaded {
-            Ok(down) if self.down_machines.as_ref() == Some(&down) => false,
+            Ok(down) if self.down.as_ref() == Some(&down) => false,
             Ok(down) => {
-                self.down_machines = Some(down);
+                self.down = Some(down);
                 true
             }
             Err(error) => {
-                let fallback = if self.down_machines.is_some() {
+                let fallback = if self.down.is_some() {
                     "keeping the last successful filter"
                 } else {
-                    "serving unfiltered answers"
+                    "routing every Machine"
                 };
                 eprintln!(
-                    "failed to load Internal DNS membership; {fallback}: {error}",
+                    "failed to load membership for routing; {fallback}: {error}",
                     error = ployz_core::error_chain::inline(&error),
                 );
                 false
@@ -142,23 +175,12 @@ impl ServiceAddresses {
 }
 
 impl Projection {
-    fn from_observations(
-        observations: &[ContainerObservation],
-        pointers: &ServingPointers,
-        local_id: &MachineId,
-        down_machines: Option<&HashSet<MachineId>>,
-    ) -> Self {
-        let containers = service_containers(observations.iter().cloned());
+    fn from_routes(observations: &[ContainerObservation], routes: &ProxyRoutes) -> Self {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        for serving in serving_containers(&containers, |service| pointers.get(service)) {
+        for serving in routes.values().flatten() {
             let observation = serving.as_observation();
-            if observation.machine_id != *local_id
-                && down_machines.is_some_and(|down| down.contains(&observation.machine_id))
-            {
-                continue;
-            }
             let address = serving.address();
             let identity = observation.identity();
             service_ids
@@ -603,7 +625,7 @@ async fn flush_udp(listen: SocketAddr) -> io::Result<()> {
     Ok(())
 }
 
-async fn load_down_machines(
+pub(crate) async fn load_down_machines(
     machines: &MachineView,
     admin: &AdminClient,
     local_id: &MachineId,
@@ -619,7 +641,7 @@ async fn load_down_machines(
         .map_err(|_| {
             CorrosionError::Io(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "Internal DNS membership sample timed out",
+                "membership sample timed out",
             ))
         })??;
     let states = membership_states_by_address(states);

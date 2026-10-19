@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     fs, io,
     net::SocketAddrV4,
     os::unix::fs::MetadataExt,
@@ -9,21 +8,20 @@ use std::{
 
 use futures_util::StreamExt;
 use hickory_server::Server;
-use ployz_core::MachineId;
+use ployz_core::{ContainerObservation, MachineId};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Answers, Handler, ProjectionInputs, Snapshot, Upstreams,
+    Answers, Handler, ProjectionInputs, Upstreams,
     listeners::{Keeper, Listeners, SystemdKeeper, adopt, names},
     load_down_machines, run_server,
     service::{Probe, Successor},
     spec::{CorrosionEndpoint, DnsSpec, SpecFile},
 };
 use crate::corrosion::{
-    AdminClient, ApiClient, Error as CorrosionError, MachineView, ReplicatedStore, ServingPointers,
-    Subscription,
+    AdminClient, ApiClient, Error as CorrosionError, MachineView, ReplicatedStore, Subscription,
 };
 
 /// Exit status for "the installed binary cannot serve DNS; port 53 was handed
@@ -206,7 +204,6 @@ struct Session {
 struct Connection {
     replicated: ReplicatedStore,
     changes: Subscription,
-    pointer_changes: Subscription,
     machines: MachineView,
     admin: AdminClient,
     token: String,
@@ -234,13 +231,7 @@ impl Session {
     fn new(machine: MachineId, endpoint: CorrosionEndpoint, backoff: Backoff) -> Self {
         Self {
             endpoint,
-            inputs: ProjectionInputs {
-                local_id: machine,
-                observations: Vec::new(),
-                pointers: ServingPointers::default(),
-                warned_pointers: BTreeSet::new(),
-                down_machines: None,
-            },
+            inputs: ProjectionInputs::new(machine),
             backoff,
         }
     }
@@ -254,8 +245,8 @@ impl Session {
     ) -> io::Result<Option<(Answers, Connection)>> {
         loop {
             match self.connect().await {
-                Ok((connection, snapshot)) => {
-                    self.inputs.replace_snapshot(snapshot);
+                Ok((connection, observations)) => {
+                    self.inputs.observations = observations;
                     let answers = Answers::loaded(self.inputs.build(), local_subnet, upstreams);
                     return Ok(Some((answers, connection)));
                 }
@@ -305,8 +296,8 @@ impl Session {
                     return Ok(());
                 }
                 match self.connect().await {
-                    Ok((connection, snapshot)) => {
-                        self.inputs.replace_snapshot(snapshot);
+                    Ok((connection, observations)) => {
+                        self.inputs.observations = observations;
                         answers.replace(self.inputs.build())?;
                         keeper.status("serving after reconnecting to Corrosion")?;
                         self.backoff.reset();
@@ -321,10 +312,10 @@ impl Session {
         }
     }
 
-    async fn connect(&self) -> Result<(Connection, Snapshot), Attempt> {
+    async fn connect(&self) -> Result<(Connection, Vec<ContainerObservation>), Attempt> {
         let token = read_token(&self.endpoint.token_file).map_err(|_| Attempt::NoToken)?;
         let replicated = ReplicatedStore::new(ApiClient::new(self.endpoint.api, &token)?);
-        let (changes, pointer_changes, snapshot) = subscribe_then_snapshot(&replicated).await?;
+        let (changes, observations) = subscribe_then_snapshot(&replicated).await?;
         let view_shutdown = CancellationToken::new();
         let machines = MachineView::start(replicated.clone(), view_shutdown.clone());
         let admin = AdminClient::new(&self.endpoint.admin_socket);
@@ -332,13 +323,12 @@ impl Session {
             Connection {
                 replicated,
                 changes,
-                pointer_changes,
                 machines,
                 admin,
                 token,
                 view_shutdown,
             },
-            snapshot,
+            observations,
         ))
     }
 
@@ -352,17 +342,16 @@ impl Session {
 
 async fn subscribe_then_snapshot(
     replicated: &ReplicatedStore,
-) -> Result<(Subscription, Subscription, Snapshot), CorrosionError> {
+) -> Result<(Subscription, Vec<ContainerObservation>), CorrosionError> {
     let changes = replicated.subscribe_container_changes().await?;
-    let pointer_changes = replicated.subscribe_serving_pointer_changes().await?;
-    let snapshot = load_snapshot(replicated).await?;
-    Ok((changes, pointer_changes, snapshot))
+    let observations = load_snapshot(replicated).await?;
+    Ok((changes, observations))
 }
 
-async fn load_snapshot(replicated: &ReplicatedStore) -> Result<Snapshot, CorrosionError> {
-    let (containers, pointers) =
-        tokio::try_join!(replicated.containers(), replicated.serving_pointers())?;
-    Ok((containers.observations, pointers))
+async fn load_snapshot(
+    replicated: &ReplicatedStore,
+) -> Result<Vec<ContainerObservation>, CorrosionError> {
+    Ok(replicated.containers().await?.observations)
 }
 
 fn read_token(path: &Path) -> io::Result<String> {
@@ -393,13 +382,12 @@ async fn watch_projection(
     let Connection {
         replicated,
         changes,
-        pointer_changes,
         machines,
         admin,
         token,
         ..
     } = connection;
-    let local_id = inputs.local_id;
+    let local_id = inputs.down.local_id();
     let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + tick, tick);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // `Then` retains an in-flight membership read when another select branch wins, so slow
@@ -417,18 +405,11 @@ async fn watch_projection(
                 pending_snapshot = true;
                 reload_snapshot(replicated, inputs, &mut pending_snapshot).await
             }
-            changed = pointer_changes.changed() => {
-                if let Err(error) = changed {
-                    return Ok(Watched::Lost(Lost::Stream(error)));
-                }
-                pending_snapshot = true;
-                reload_snapshot(replicated, inputs, &mut pending_snapshot).await
-            }
             Some(result) = membership.next() => {
                 if read_token(token_file).is_ok_and(|current| &current != token) {
                     return Ok(Watched::Lost(Lost::TokenRotated));
                 }
-                let membership = inputs.update_membership(result);
+                let membership = inputs.down.update(result);
                 let retried = pending_snapshot
                     && reload_snapshot(replicated, inputs, &mut pending_snapshot).await;
                 membership || retried
@@ -447,8 +428,8 @@ async fn reload_snapshot(
     pending: &mut bool,
 ) -> bool {
     match load_snapshot(replicated).await {
-        Ok(next) => {
-            inputs.replace_snapshot(next);
+        Ok(observations) => {
+            inputs.observations = observations;
             *pending = false;
             true
         }

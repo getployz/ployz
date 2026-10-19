@@ -8,6 +8,7 @@ use ployz_core::{
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
 use std::{
+    collections::HashSet,
     fmt::Write as _,
     future::Future,
     io,
@@ -19,7 +20,7 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    corrosion::{CertificateChallenge, ReplicatedStore},
+    corrosion::{CertificateChallenge, Error as CorrosionError, ReplicatedStore},
     filesystem::{atomic_write, set_ployz_group},
     ingress::{IngressEndpoint, IngressProjection, IngressSite, prepare_directory},
 };
@@ -132,22 +133,34 @@ pub(crate) fn config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("ingress").join("caddy").join(CONFIG_FILE)
 }
 
-pub async fn run(
+pub async fn run<LoadDown, DownFuture>(
     machine: Machine,
     replicated: ReplicatedStore,
+    load_down: LoadDown,
     config_file: PathBuf,
     admin_socket: PathBuf,
     shutdown: CancellationToken,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    LoadDown: FnMut() -> DownFuture,
+    DownFuture: Future<Output = Result<HashSet<MachineId>, CorrosionError>>,
+{
     prepare_directory(
         admin_socket
             .parent()
             .ok_or_else(|| io::Error::other("Caddy admin socket has no parent"))?,
     )?;
-    super::watch_caddy(machine, replicated, config_file, shutdown, move || {
-        let admin_socket = admin_socket.clone();
-        async move { AdminClient::connect_if_available(&admin_socket).await }
-    })
+    super::watch_caddy(
+        machine,
+        replicated,
+        load_down,
+        config_file,
+        shutdown,
+        move || {
+            let admin_socket = admin_socket.clone();
+            async move { AdminClient::connect_if_available(&admin_socket).await }
+        },
+    )
     .await
 }
 
