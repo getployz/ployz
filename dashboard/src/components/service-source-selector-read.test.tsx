@@ -103,7 +103,7 @@ it("selects the installation of the highlighted row when one repository is reach
     id: 42, installation_id, name: "repo", full_name: "acme/repo", default_branch: "main", private: true,
     html_url: "https://github.com/acme/repo", repo_updated_at: new Date().toISOString(), synced_at: new Date().toISOString(),
   });
-  queryClient.setQueryData(githubReposQueryKey(scope), [row(12), row(13)]);
+  const first = row(12); const start = Date.now(); while (Date.now() === start) {} queryClient.setQueryData(githubReposQueryKey(scope), [first, row(13)]);
   queryClient.setQueryData(githubKeys.access("shared-org"), { hasInstallations: true });
   queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com" });
   const select = vi.fn();
