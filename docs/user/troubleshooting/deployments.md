@@ -17,9 +17,10 @@ Server is ready it reads `switching N/N` until they switch together, then
 `switched N/N`. A row whose new Containers already serve shows a `draining old` line
 while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
 replacement leaves behind drain on each Server after the switch, so they show in
-`ployz ps`, not in the live block. A Service the deploy only removes reads
-`waiting to remove`, then `stopping` and `removing`, then `removed`. The block ends
-with a summary that counts the Servers involved. In CI or redirected output,
+`ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
+then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service
+the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. The block
+ends with a summary that counts the Servers involved. In CI or redirected output,
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
@@ -103,11 +104,13 @@ can show here.
 This service references another in its variables, and that one didn't come up healthy, so
 Ployz didn't start this one. Fix the service the message names first; its **Logs** say why.
 
-## My pre-deploy command failed
+## My setup or pre-deploy command failed
 
-`hook container … failed: exited with code 1`, or `failed: timed out`
+`The setup or pre-deploy command failed` with `exited with code 1`, or `timed out`
 
-None of the service's replicas were replaced, so the old version keeps running.
+None of the service's replicas were replaced, so the old version keeps running. Before a service
+starts, Ployz runs its pre-deploy command, then, the first time a new environment deploys it, its
+setup commands. The first one that fails stops the deploy.
 
 - Read the **Deploy** log: the command's output is there.
 - `timed out` means it ran longer than 5 minutes. Make it faster, or run the slow part outside

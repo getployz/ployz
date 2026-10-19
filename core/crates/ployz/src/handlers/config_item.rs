@@ -326,7 +326,7 @@ fn staged(matches: &ArgMatches, result: &ConfigStaged, what: &str) -> Result<(),
 fn config_name(matches: &ArgMatches, arg: &str) -> Result<ConfigName, Error> {
     ConfigName::parse(required(matches, arg)?).map_err(|_| {
         Error::usage(
-            "Expected a Config name: up to 63 lowercase letters, digits and -, like sentry",
+            "Expected a Config name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like sentry",
         )
     })
 }
