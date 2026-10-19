@@ -396,7 +396,7 @@ async fn docker_lookups_and_mounts_recover_existing_pools_without_create_or_capa
     use std::os::unix::fs::PermissionsExt;
 
     for pool in ["ployz-device", "ployz"] {
-        for endpoint in ["Get", "Mount", "Path", "List"] {
+        for endpoint in ["Get", "Mount", "Path", "List", "Remove"] {
             let test = TestDir::new();
             let (zpool, zfs) = fake_zfs(&test.0, "");
             let script = test.0.join("fake-zfs");
@@ -447,6 +447,12 @@ esac
             match endpoint {
                 "Get" => assert_eq!(reply.pointer("/Volume/Name"), Some(&json!("data"))),
                 "List" => assert_eq!(reply.pointer("/Volumes/0/Name"), Some(&json!("data"))),
+                "Remove" => assert!(
+                    fs::read_to_string(test.0.join("commands"))
+                        .unwrap()
+                        .contains(&format!("zfs destroy -r {pool}/ployz/data")),
+                    "{pool}: {reply}"
+                ),
                 _ => assert_eq!(
                     reply.get("Mountpoint"),
                     Some(&json!("/var/lib/ployz-volumes/data"))
@@ -490,5 +496,20 @@ async fn get_answers_absent_without_a_pool_and_hangs_up_while_one_is_not_importe
     fs::remove_dir(test.0.join("ployz-volumes")).unwrap();
     fs::write(test.0.join("machine-pool"), "").unwrap();
     assert_hangs_up(&socket, "/VolumeDriver.Get", br#"{"Name":"data"}"#).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn remove_refuses_while_a_held_pool_is_not_imported() {
+    let test = TestDir::new();
+    let (zpool, zfs) = fake_zfs(&test.0, "");
+    fs::create_dir(test.0.join("ployz-volumes")).unwrap();
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    let response = post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await;
+
+    assert!(error(&response).contains("not imported"), "{response}");
     server.abort();
 }
