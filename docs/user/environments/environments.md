@@ -34,7 +34,7 @@ database, so staging gets its own copy of both and its own data. Use your own se
 
 Ployz never copies data, so staging's database starts empty. A setup command runs once, before
 `web` first starts, to fill it. To give every new branch of production the same commands, add
-them under **Branches of production** in production's **Settings → Environment**.
+them under **Branch setup** in production's **Settings → Environment**.
 
 ## Test staging at its own address
 
