@@ -1173,7 +1173,7 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
     client.assert_done();
 }
 
-async fn execute_reported<C: MachineOperations>(
+pub(super) async fn execute_reported<C: MachineOperations>(
     plan: &[DeployOperation],
     named: &[MachineId],
     client: &C,
@@ -1194,7 +1194,7 @@ async fn execute_reported<C: MachineOperations>(
     (outcome, warnings)
 }
 
-fn left_running(machine: &str, reason: &str) -> String {
+pub(super) fn left_running(machine: &str, reason: &str) -> String {
     format!(
         "{} left running on {machine} ({reason}). The next deploy cleans it up.",
         api()

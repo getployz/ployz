@@ -21,7 +21,7 @@ use ployz_core::{
     NewContainer, OperationPhase, PortPublication, PullPolicy, QualifiedService, ReadRoutesRequest,
     RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError,
     RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, SlotKey,
-    StopOptions, TransportProtocol, op, OutOfMemory,
+    StopOptions, TransportProtocol, UpdateOrder, op, OutOfMemory,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -612,7 +612,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     loop {
         for action in schedule.next() {
             let next = match action {
-                Action::Start(index) => Either::Left(async move {
+                Action::Start(index) => Either::Left(Either::Left(async move {
                     let result = if cancellation.is_cancelled() {
                         Err(ExecutionError::Cancelled.into())
                     } else {
@@ -628,7 +628,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         .await
                     };
                     Done::Task(index, result)
-                }),
+                })),
                 Action::Publish(group) => {
                     let service = QualifiedService::new(
                         plan.namespace.clone(),
@@ -706,7 +706,32 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             completed.insert(index);
                             progress.set_completed(index);
                         }
-                        schedule.apply(Event::Completed(index));
+                        let service = schedule.group(group).publishing_service().map(|service| {
+                            QualifiedService::new(plan.namespace.clone(), service.clone())
+                        });
+                        if let Some((service, new)) = service
+                            .filter(|service| *service != QualifiedService::system_ingress())
+                            .zip(rolling_step(operation, ran.started))
+                        {
+                            inflight.push(Either::Left(Either::Right(async move {
+                                let new = [(index, new.0, new.1)];
+                                match route_new(
+                                    client,
+                                    operations,
+                                    rows,
+                                    &service,
+                                    &new,
+                                    cancellation,
+                                )
+                                .await
+                                {
+                                    Ok(()) => Done::Admitted(index),
+                                    Err(published) => Done::Publish(group, published),
+                                }
+                            })));
+                        } else {
+                            schedule.apply(Event::Completed(index));
+                        }
                     }
                     Err(OperationFailure::Ordinary(error)) => {
                         progress.fail(index, error.clone());
@@ -731,6 +756,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     }
                 }
             }
+            Some(Done::Admitted(index)) => schedule.apply(Event::Completed(index)),
             Some(Done::Publish(group, published)) => {
                 let service = schedule
                     .group(group)
@@ -812,6 +838,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
         }
         for group in schedule.failed_groups() {
+            rows.restore_unclaimed(client, progress, |task| schedule.group_of(task) == group)
+                .await;
             let started = started
                 .remove(&group)
                 .unwrap_or_default()
@@ -1054,6 +1082,8 @@ async fn ack_tick(cancellation: &CancellationToken, since: Option<Instant>) {
 
 enum Done {
     Task(usize, Result<Ran, OperationFailure>),
+    /// A Rolling step's new copy is In and listed, so the next step may begin.
+    Admitted(usize),
     Publish(usize, Published),
 }
 
@@ -1134,6 +1164,19 @@ async fn publish_group<C: MachineOperations>(
         }
     }
     Published::Listed
+}
+
+/// A Rolling replacement's new copy, which goes In before the next Machine's
+/// old copy is withdrawn: while it stays Pending, proxies keep that old copy.
+fn rolling_step(
+    operation: &DeployOperation,
+    started: Option<ContainerId>,
+) -> Option<(MachineId, ContainerId)> {
+    let DeployOperation::ReplaceContainer(replacement) = operation else {
+        return None;
+    };
+    (replacement.spec.update.order == UpdateOrder::Rolling)
+        .then_some((replacement.machine_id, started?))
 }
 
 async fn route_new<C: MachineOperations>(
@@ -1366,6 +1409,25 @@ struct StopFirstStep<'a> {
 
 struct Inspected {
     old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
+    /// A withdrawal that failed, so no task of the step creates a copy.
+    failed: Option<ExecutionError>,
+    withdrawn: std::sync::Mutex<BTreeMap<usize, StepCopy>>,
+}
+
+/// An old copy the step withdrew before any of its tasks created a copy:
+/// a new copy left Pending would keep every proxy routing the copies not
+/// yet withdrawn.
+enum StepCopy {
+    Unclaimed(cleanup::Copy),
+    /// The Service failed before the task claimed it, so it was brought back.
+    Restored,
+}
+
+enum Claim {
+    Withdrawn(cleanup::Copy),
+    Restored,
+    /// Not withdrawn for a step: the task withdraws it itself.
+    Own,
 }
 
 impl<'a> Rows<'a> {
@@ -1417,7 +1479,9 @@ impl<'a> Rows<'a> {
     async fn inspect_step<C: MachineOperations>(
         &self,
         client: &C,
+        progress: &Progress,
         index: usize,
+        cancellation: &CancellationToken,
     ) -> Result<Option<ContainerObservation>, ExecutionError> {
         let step = self
             .stop_first
@@ -1443,14 +1507,139 @@ impl<'a> Rows<'a> {
                         };
                     old.insert(*task, observed);
                 }
-                Inspected { old }
+                self.withdraw_step(client, progress, old, cancellation)
+                    .await
             })
             .await;
+        if let Some(error) = &inspected.failed {
+            return Err(error.clone());
+        }
         inspected
             .old
             .get(&index)
             .cloned()
             .expect("every task of the step was inspected")
+    }
+
+    /// Withdraw every old copy of a stop-first step together. If one is not
+    /// withdrawn, bring back each one this run Held, before any copy starts.
+    async fn withdraw_step<C: MachineOperations>(
+        &self,
+        client: &C,
+        progress: &Progress,
+        old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
+        cancellation: &CancellationToken,
+    ) -> Inspected {
+        let withdrawals = join_all(old.iter().filter_map(|(task, observed)| {
+            let observed = observed.as_ref().ok()?.as_ref()?;
+            Some(async move {
+                let (copy, step) = withdraw(client, observed, self, cancellation).await?;
+                Some((*task, observed, copy, step))
+            })
+        }))
+        .await;
+        let mut failed = None;
+        let mut withdrawn = Vec::new();
+        for (task, observed, mut copy, step) in withdrawals.into_iter().flatten() {
+            let (left, error) = match step {
+                Ok(cleanup::Step::Done) => (None, None),
+                Ok(cleanup::Step::NotConfirmed(machines)) => {
+                    let error = machine_error(
+                        MachineAction::StopContainer,
+                        unavailable(self.not_confirmed(&machines)),
+                    );
+                    (Some(Left::NotConfirmed(machines)), Some(error))
+                }
+                Ok(cleanup::Step::Cancelled) => {
+                    (Some(Left::Interrupted), Some(ExecutionError::Cancelled))
+                }
+                Ok(cleanup::Step::Refused(refusal)) => {
+                    copy.rotation = observed.rotation().clone();
+                    let error =
+                        machine_error(MachineAction::StopContainer, refusal.clone().into_error());
+                    (Some(Left::Refused(refusal)), Some(error))
+                }
+                Err(error) => (
+                    Some(Left::Failed(error.clone())),
+                    Some(machine_error(MachineAction::StopContainer, error)),
+                ),
+            };
+            if let Some(error) = error {
+                failed.get_or_insert(error);
+            }
+            withdrawn.push((task, observed, copy, left));
+        }
+        if failed.is_some() {
+            join_all(withdrawn.iter().map(|(_, observed, copy, left)| {
+                let left = left.clone().unwrap_or(Left::Interrupted);
+                leave_unstopped(client, progress, copy, &observed.resolved_spec, self, left)
+            }))
+            .await;
+            withdrawn.clear();
+        }
+        let withdrawn = withdrawn
+            .into_iter()
+            .map(|(task, _, copy, _)| (task, StepCopy::Unclaimed(copy)))
+            .collect();
+        Inspected {
+            old,
+            failed,
+            withdrawn: std::sync::Mutex::new(withdrawn),
+        }
+    }
+
+    fn claim(&self, index: usize) -> Claim {
+        let Some(inspected) = self
+            .stop_first
+            .iter()
+            .find(|step| step.tasks.iter().any(|(task, _)| *task == index))
+            .and_then(|step| step.ready.get())
+        else {
+            return Claim::Own;
+        };
+        let mut withdrawn = inspected.withdrawn.lock().expect("withdrawn copies lock");
+        match withdrawn.remove(&index) {
+            Some(StepCopy::Unclaimed(copy)) => Claim::Withdrawn(copy),
+            Some(StepCopy::Restored) => {
+                withdrawn.insert(index, StepCopy::Restored);
+                Claim::Restored
+            }
+            None => Claim::Own,
+        }
+    }
+
+    /// Bring back each old copy a failed group's steps withdrew that no task claimed.
+    async fn restore_unclaimed<C: MachineOperations>(
+        &self,
+        client: &C,
+        progress: &Progress,
+        in_group: impl Fn(usize) -> bool,
+    ) {
+        let mut unclaimed = Vec::new();
+        for step in &self.stop_first {
+            let Some(inspected) = step.ready.get() else {
+                continue;
+            };
+            let mut withdrawn = inspected.withdrawn.lock().expect("withdrawn copies lock");
+            for (task, entry) in withdrawn.iter_mut() {
+                if !in_group(*task) {
+                    continue;
+                }
+                if let StepCopy::Unclaimed(copy) = std::mem::replace(entry, StepCopy::Restored) {
+                    let spec = match inspected.old.get(task) {
+                        Some(Ok(Some(observed))) => observed.resolved_spec.clone(),
+                        Some(Ok(None) | Err(_)) | None => {
+                            unreachable!("only an inspected copy is withdrawn")
+                        }
+                    };
+                    unclaimed.push((copy, spec));
+                }
+            }
+        }
+        join_all(unclaimed.iter().map(|(copy, spec)| {
+            leave_unstopped(client, progress, copy, spec, self, Left::Interrupted)
+        }))
+        .await;
     }
 
     fn service(&self, spec: &ResolvedServiceSpec) -> QualifiedService {
@@ -1551,6 +1740,7 @@ fn unanswered(error: &RpcError) -> bool {
     error.code == RpcErrorCode::Unavailable || error.target_unanswered()
 }
 
+#[derive(Clone)]
 enum Left {
     NotConfirmed(Vec<MachineId>),
     Interrupted,
@@ -1696,7 +1886,9 @@ async fn execute_operation<C: MachineOperations>(
                 .gen_for(client, &rows.service(&replacement.spec))
                 .await?;
             if replacement.spec.update.order.stops_first() {
-                let old = rows.inspect_step(client, index).await?;
+                let old = rows
+                    .inspect_step(client, progress, index, cancellation)
+                    .await?;
                 return replace_stop_first(
                     client,
                     index,
@@ -2246,6 +2438,34 @@ async fn replace_stop_first<C: MachineOperations>(
 
 /// An In copy is Held for this run so a failed Service can bring it back; a
 /// copy another run holds goes Out, since Held never passes between runs.
+/// Returns the copy as it now is, or `None` when it needs no withdrawal.
+async fn withdraw<C: MachineOperations>(
+    client: &C,
+    old: &ContainerObservation,
+    rows: &Rows<'_>,
+    cancellation: &CancellationToken,
+) -> Option<(cleanup::Copy, Result<cleanup::Step, RpcError>)> {
+    let mut copy = cleanup::Copy::observed(old);
+    let (step, now) = match &copy.rotation {
+        CopyRotation::Pending | CopyRotation::Out => return None,
+        _ if crate::ingress::is_system_ingress(old) => return None,
+        CopyRotation::In => (
+            cleanup::hold(client, &copy, rows.run.clone(), cancellation).await,
+            CopyRotation::Held(rows.run.clone()),
+        ),
+        CopyRotation::Held(run) if run == rows.run => (
+            cleanup::hold(client, &copy, rows.run.clone(), cancellation).await,
+            copy.rotation.clone(),
+        ),
+        CopyRotation::Held(_) => (
+            cleanup::take_out(client, &copy, false, cancellation).await,
+            CopyRotation::Out,
+        ),
+    };
+    copy.rotation = now;
+    Some((copy, step))
+}
+
 async fn stop_old_copy<C: MachineOperations>(
     client: &C,
     index: usize,
@@ -2254,25 +2474,14 @@ async fn stop_old_copy<C: MachineOperations>(
     rows: &Rows<'_>,
     cancellation: &CancellationToken,
 ) -> Result<cleanup::Copy, ExecutionError> {
+    match rows.claim(index) {
+        Claim::Withdrawn(copy) => return stop_held(client, index, progress, old, rows, copy).await,
+        Claim::Restored => return Err(ExecutionError::Cancelled),
+        Claim::Own => {}
+    }
     let mut copy = cleanup::Copy::observed(old);
-    let system_ingress = crate::ingress::is_system_ingress(old);
-    let withdrawn = match &copy.rotation {
-        CopyRotation::Pending | CopyRotation::Out => None,
-        _ if system_ingress => None,
-        CopyRotation::In => Some((
-            cleanup::hold(client, &copy, rows.run.clone(), cancellation).await,
-            CopyRotation::Held(rows.run.clone()),
-        )),
-        CopyRotation::Held(run) if run == rows.run => Some((
-            cleanup::hold(client, &copy, rows.run.clone(), cancellation).await,
-            copy.rotation.clone(),
-        )),
-        CopyRotation::Held(_) => Some((
-            cleanup::take_out(client, &copy, false, cancellation).await,
-            CopyRotation::Out,
-        )),
-    };
-    if let Some((step, now)) = withdrawn {
+    if let Some((withdrawn, step)) = withdraw(client, old, rows, cancellation).await {
+        let now = withdrawn.rotation;
         progress.set_running(
             index,
             OperationPhase::WaitingForSwitch {
@@ -2282,15 +2491,7 @@ async fn stop_old_copy<C: MachineOperations>(
         let (left, error) = match step {
             Ok(cleanup::Step::Done) => {
                 copy.rotation = now;
-                return match stop_withdrawn(client, index, progress, &copy).await {
-                    Ok(()) => Ok(copy),
-                    Err(error) => {
-                        let left = left_by(error.clone());
-                        leave_unstopped(client, progress, &copy, &old.resolved_spec, rows, left)
-                            .await;
-                        Err(error)
-                    }
-                };
+                return stop_held(client, index, progress, old, rows, copy).await;
             }
             Ok(cleanup::Step::Refused(refusal)) => {
                 return Err(machine_error(
@@ -2318,6 +2519,24 @@ async fn stop_old_copy<C: MachineOperations>(
     }
     stop_withdrawn(client, index, progress, &copy).await?;
     Ok(copy)
+}
+
+async fn stop_held<C: MachineOperations>(
+    client: &C,
+    index: usize,
+    progress: &Progress,
+    old: &ContainerObservation,
+    rows: &Rows<'_>,
+    copy: cleanup::Copy,
+) -> Result<cleanup::Copy, ExecutionError> {
+    match stop_withdrawn(client, index, progress, &copy).await {
+        Ok(()) => Ok(copy),
+        Err(error) => {
+            let left = left_by(error.clone());
+            leave_unstopped(client, progress, &copy, &old.resolved_spec, rows, left).await;
+            Err(error)
+        }
+    }
 }
 
 async fn stop_withdrawn<C: MachineOperations>(
