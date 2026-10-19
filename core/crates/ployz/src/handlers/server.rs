@@ -1,6 +1,6 @@
 use std::{
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -10,8 +10,8 @@ use crate::cli::{
     base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
 use ployz_core::{
-    AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineName, MachineTarget, MachineUpdate,
-    PublicIpUpdate, RpcErrorCode, UpdateMachineRequest, op,
+    AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineId, MachineName, MachineTarget,
+    MachineUpdate, PublicIpUpdate, RpcErrorCode, UpdateMachineRequest, op,
 };
 
 use serde_json::{Value, json};
@@ -78,30 +78,71 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
 /// to Cloud or holding `PLOYZ_TOKEN`, it dials through this credential's own Server Access;
 /// signed out, through the current context or the local daemon.
 pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Result<Client, Error> {
-    if matches.get_one::<String>("connect").is_none() && context.is_none() {
-        let store = CredentialStore::beside(&super::config_path(matches)?);
-        match cloud_account::from_env(&store).await {
-            Ok(credential) => return through_cloud(matches, &credential).await,
-            Err(LoginError::SignedOut) => {
-                // Signed out with no context or local daemon: the fix is signing in, not a
-                // config file. The hidden test Store is never signed in, so it keeps the cause.
-                return super::connect_context(matches, context)
-                    .await
-                    .map_err(|error| {
-                        let no_config = std::error::Error::source(&error)
-                            .and_then(|source| source.downcast_ref::<ContextError>())
-                            .is_some_and(|source| *source == ContextError::NoConfig);
-                        if no_config && !super::store::local_mode() {
-                            LoginError::SignedOut.into()
-                        } else {
-                            error
-                        }
-                    });
-            }
-            Err(error) => return Err(error.into()),
+    enter(matches, selection(matches, context).await?).await
+}
+
+pub(super) async fn connect_avoiding(
+    matches: &ArgMatches,
+    context: Option<&str>,
+    leaving: &Machine,
+) -> Result<(Client, MachineId), Error> {
+    let mut selected = selection(matches, context).await?;
+    let source = selected.source.clone();
+    selected
+        .connections
+        .retain(|connection| connection.machine_id() != Some(&leaving.id));
+    if !selected.connections.is_empty() {
+        let mut client = enter(matches, selected).await?;
+        let entry = client
+            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, None)
+            .await?
+            .machine_id;
+        if entry != leaving.id {
+            return Ok((client, entry));
         }
     }
-    super::connect_context(matches, context).await
+    Err(Error::conflict(format!(
+        "Server {} is the only Server reachable through {source}, so it cannot carry its own removal. \
+         Connect through another Server, then retry. No changes made.",
+        leaving.name
+    )))
+}
+
+async fn selection(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<SelectedConnections, Error> {
+    let connect = matches.get_one::<String>("connect").map(String::as_str);
+    let local = async || -> Result<SelectedConnections, Error> {
+        Ok(crate::connect::resolve_connections(
+            &super::config_path(matches)?,
+            connect,
+            context,
+            Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        )?)
+    };
+    if connect.is_some() || context.is_some() {
+        return local().await;
+    }
+    let store = CredentialStore::beside(&super::config_path(matches)?);
+    match cloud_account::from_env(&store).await {
+        Ok(credential) => cloud_selection(cloud_account::server_access(&credential).await?),
+        Err(LoginError::SignedOut) => local().await.map_err(sign_in_unless_local),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Signed out with no context or local daemon, the fix is signing in, not a config file.
+/// The hidden test Store is never signed in, so it keeps the cause.
+fn sign_in_unless_local(error: Error) -> Error {
+    let no_config = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<ContextError>())
+        .is_some_and(|source| *source == ContextError::NoConfig);
+    if no_config && !super::store::local_mode() {
+        LoginError::SignedOut.into()
+    } else {
+        error
+    }
 }
 
 /// The credential Cloud runs a Server operation under: signed in, with neither `--connect`
@@ -180,18 +221,21 @@ pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result
     connect(matches, context).await.map(Reach::Dial)
 }
 
-async fn through_cloud(matches: &ArgMatches, credential: &Credential) -> Result<Client, Error> {
-    dial(matches, cloud_account::server_access(credential).await?).await
+async fn dial(matches: &ArgMatches, access: cloud_account::ServerAccess) -> Result<Client, Error> {
+    enter(matches, cloud_selection(access)?).await
 }
 
-async fn dial(matches: &ArgMatches, access: cloud_account::ServerAccess) -> Result<Client, Error> {
+fn cloud_selection(access: cloud_account::ServerAccess) -> Result<SelectedConnections, Error> {
     if access.connections.is_empty() {
         return Err(no_reachable_server(access.unreachable));
     }
-    let selected = SelectedConnections {
+    Ok(SelectedConnections {
         source: ConnectionSource::Cloud,
         connections: access.connections,
-    };
+    })
+}
+
+async fn enter(matches: &ArgMatches, selected: SelectedConnections) -> Result<Client, Error> {
     let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
     Ok(crate::connect::connect_selected_with(selected, Arc::new(connector)).await?)
 }
@@ -739,7 +783,8 @@ mod tests {
             .try_get_matches_from(["ployz", "server", "ls"])
             .unwrap();
         let credential = cloud(json!({ "connections": [], "unreachable": [] }));
-        let Err(error) = through_cloud(leaf_matches(&matches), &credential).await else {
+        let access = cloud_account::server_access(&credential).await.unwrap();
+        let Err(error) = dial(leaf_matches(&matches), access).await else {
             panic!("dialed without a Server");
         };
         let error = error.report();
@@ -748,7 +793,8 @@ mod tests {
 
         let offline = "b".repeat(32);
         let credential = cloud(json!({ "connections": [], "unreachable": [offline] }));
-        let Err(error) = through_cloud(leaf_matches(&matches), &credential).await else {
+        let access = cloud_account::server_access(&credential).await.unwrap();
+        let Err(error) = dial(leaf_matches(&matches), access).await else {
             panic!("dialed without a Server");
         };
         let error = error.report();

@@ -55,14 +55,13 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         let observation =
             crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
         let selected = observation.machine.clone();
-        let current = client
+        let mut current = client
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await?
             .machine_id;
         if selected.id == current && machines.len() > 1 {
-            return Err(Error::conflict(
-                "the current entry Server cannot be removed while another Server is visible",
-            ));
+            (client, current) =
+                super::connect_avoiding(matches, options.context(), &selected).await?;
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let held = match removal {
