@@ -13,7 +13,8 @@ features=${PLOYZ_SDK_FEATURES:-}
 # Each is cached under its own profile, and a local run takes either.
 release="features=$features profile=release"
 extra=$release
-if [ -z "${CI:-}" ] || [ "${PLOYZ_SDK_PROFILE:-}" = dev ]; then
+profile=${PLOYZ_SDK_PROFILE:-$([ -n "${CI:-}" ] && echo release || echo dev)}
+if [ "$profile" = dev ]; then
   extra="features=$features profile=dev"
 fi
 key=
