@@ -22,7 +22,7 @@ use ployz_core::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashSet,
+    collections::BTreeSet,
     convert::Infallible,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -523,7 +523,7 @@ async fn a_down_machine_leaves_caddy_while_another_copy_serves() {
         Some([10, 210, 2, 2]),
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     ));
-    let down = Arc::new(Mutex::new(HashSet::new()));
+    let down = Arc::new(Mutex::new(BTreeSet::new()));
     let load_down = {
         let down = Arc::clone(&down);
         move || std::future::ready(Ok(down.lock().unwrap().clone()))
@@ -893,8 +893,8 @@ async fn no_ack_when_the_caddy_load_fails() {
 
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
-fn no_down() -> std::future::Ready<Result<HashSet<MachineId>, CorrosionError>> {
-    std::future::ready(Ok(HashSet::new()))
+fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
+    std::future::ready(Ok(BTreeSet::new()))
 }
 
 /// The ack row this Machine writes for the fixture's API Service.
