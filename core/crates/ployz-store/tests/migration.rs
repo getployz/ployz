@@ -96,7 +96,16 @@ const BEFORE_OFFERS: &str = "
         value TEXT NOT NULL,
         PRIMARY KEY (environment_id, repository_id, number, lineage, at)
     );
-    ALTER TABLE config_waiting_deploy ADD COLUMN syncs TEXT NOT NULL DEFAULT '[]';
+    CREATE TABLE config_waiting_deploy (
+        environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+        repository_id BIGINT NOT NULL,
+        branch TEXT NOT NULL,
+        organization_id TEXT NOT NULL,
+        head TEXT NOT NULL,
+        services TEXT NOT NULL,
+        syncs TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (environment_id, repository_id, branch)
+    );
     DELETE FROM config_migration WHERE name IN
     ('0008_proposal_offer', '0009_offer_conditional_syncs', '0010_drop_conditional_sync',
     '0011_retire_offers', '0012_on_merge', '0014_merge_removed_services');
@@ -610,6 +619,48 @@ fn a_seal_only_working_state_held_at_upgrade_keeps_history_from_plain_text() {
             "Restoring the plain revision brought back the value sealed at upgrade"
         ),
     }
+}
+
+#[test]
+fn a_push_held_for_ci_lives_on_its_deployment_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    drop(ConfigStore::open(&url, backend::key()).unwrap());
+    let (tables, columns, indexes) = if url.starts_with("sqlite:") {
+        (
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'config_%'",
+            "SELECT name FROM pragma_table_info('config_deployment') WHERE name LIKE 'push_%'",
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN \
+             ('config_deployment_hold_branch', 'config_deployment_hold_head', \
+             'config_check_suite_head') ORDER BY name",
+        )
+    } else {
+        (
+            "SELECT table_name::text FROM information_schema.tables \
+             WHERE table_schema = current_schema() AND table_name LIKE 'config_%'",
+            "SELECT column_name::text FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = 'config_deployment' \
+             AND column_name LIKE 'push_%'",
+            "SELECT indexname::text FROM pg_indexes WHERE schemaname = current_schema() \
+             AND indexname IN ('config_deployment_hold_branch', 'config_deployment_hold_head', \
+             'config_check_suite_head') ORDER BY indexname",
+        )
+    };
+    let tables: Vec<String> = select(&url, tables).into_iter().flatten().collect();
+    assert!(tables.iter().any(|table| table == "config_deployment"));
+    assert!(!tables.iter().any(|table| table == "config_waiting_deploy"));
+    let mut columns: Vec<String> = select(&url, columns).into_iter().flatten().collect();
+    columns.sort();
+    assert_eq!(columns, ["push_branch", "push_head", "push_repository_id"]);
+    let indexes: Vec<String> = select(&url, indexes).into_iter().flatten().collect();
+    assert_eq!(
+        indexes,
+        [
+            "config_check_suite_head",
+            "config_deployment_hold_branch",
+            "config_deployment_hold_head"
+        ]
+    );
 }
 
 fn publish(store: &ConfigStore, who: &Actor) {

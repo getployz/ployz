@@ -307,6 +307,8 @@ pub(crate) fn close(
     }) {
         deployment::cancel(tx, who, &running.id)?;
     }
+    // A push held for CI here would otherwise wait forever.
+    deployment::cancel_held_in(tx, id)?;
     settle(tx, who, &mut mark, automated)
 }
 
@@ -401,7 +403,15 @@ fn admit_member(
     let admitted = deployment::admit(
         tx,
         who,
-        (deployment_id, &[], None, None),
+        (
+            deployment::Admission::New {
+                id: deployment_id,
+                push: None,
+            },
+            &[],
+            None,
+            None,
+        ),
         id,
         deployment::NOTHING,
         &frozen,
@@ -668,7 +678,15 @@ pub(crate) fn shut_down(
     let admitted = deployment::admit(
         tx,
         who,
-        (&admit.id, &[], None, None),
+        (
+            deployment::Admission::New {
+                id: &admit.id,
+                push: None,
+            },
+            &[],
+            None,
+            None,
+        ),
         id,
         deployment::NOTHING,
         &frozen,

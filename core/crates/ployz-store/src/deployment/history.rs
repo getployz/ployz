@@ -2,16 +2,19 @@
 
 use super::*;
 
-/// `environment`'s latest `limit` Deployments that weren't superseded, newest first.
+/// `environment`'s latest `limit` Deployments that were admitted and weren't
+/// superseded, newest first: none waiting for CI.
 pub(crate) fn history(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     limit: i64,
 ) -> Result<Vec<DeploymentSummary>, RpcError> {
+    let columns = COLUMNS.as_str();
     tx.query(
         &format!(
-            "SELECT {COLUMNS} FROM config_deployment \
-             WHERE environment_id = ?1 AND status <> 'superseded' ORDER BY number DESC LIMIT ?2"
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND status NOT IN ('superseded', 'waiting_for_ci') \
+             ORDER BY number DESC LIMIT ?2"
         ),
         &[environment.as_str().into(), limit.into()],
     )?
@@ -45,7 +48,8 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         .query(
             &format!(
                 "SELECT COUNT(*) FROM config_deployment \
-                 WHERE environment_id = ?1 AND status <> 'superseded' AND NOT {in_flight}"
+                 WHERE environment_id = ?1 AND status NOT IN ('superseded', 'waiting_for_ci') \
+                 AND NOT {in_flight}"
             ),
             &[id.as_str().into()],
         )?
@@ -220,15 +224,70 @@ pub(super) fn latest_where(
     environment: &EnvironmentId,
     condition: &str,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
+    let columns = COLUMNS.as_str();
     tx.query(
         &format!(
-            "SELECT {COLUMNS} FROM config_deployment \
+            "SELECT {columns} FROM config_deployment \
              WHERE environment_id = ?1 AND {condition} ORDER BY number DESC LIMIT 1"
         ),
         &[environment.as_str().into()],
     )?
     .first()
     .map(|row| stored(row).map(|stored| stored.summary))
+    .transpose()
+}
+
+/// Every Deployment of `who`'s Organization waiting for CI of commit `head` of
+/// `repository_id`, with its Environment and push, by Environment.
+pub(crate) fn held_for_head(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: RepositoryId,
+    head: &CommitSha,
+) -> Result<Vec<(DeploymentId, EnvironmentId, GitPush)>, RpcError> {
+    tx.query(
+        "SELECT id, environment_id, push_branch FROM config_deployment \
+         WHERE organization_id = ?1 AND push_repository_id = ?2 AND push_head = ?3 \
+         AND status = 'waiting_for_ci' ORDER BY environment_id, number",
+        &[
+            who.organization.as_str().into(),
+            repository_id.into(),
+            head.as_str().into(),
+        ],
+    )?
+    .iter()
+    .map(|row| {
+        Ok((
+            row.parse(0, "identity")?,
+            row.parse(1, "identity")?,
+            GitPush {
+                repository_id,
+                branch: row.parse(2, "Deployment push")?,
+                head: head.clone(),
+            },
+        ))
+    })
+    .collect()
+}
+
+/// `environment`'s Deployment waiting for CI of `push`, if any.
+pub(crate) fn held_by_push(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    push: &GitPush,
+) -> Result<Option<DeploymentId>, RpcError> {
+    tx.query(
+        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND push_repository_id = ?2 \
+         AND push_branch = ?3 AND push_head = ?4 AND status = 'waiting_for_ci'",
+        &[
+            environment.as_str().into(),
+            push.repository_id.into(),
+            push.branch.as_str().into(),
+            push.head.as_str().into(),
+        ],
+    )?
+    .first()
+    .map(|row| row.parse(0, "identity"))
     .transpose()
 }
 
@@ -278,7 +337,8 @@ pub(crate) fn view(
                 ) => NodeStatus::Pending,
                 (
                     None,
-                    DeploymentStatus::Superseded
+                    DeploymentStatus::WaitingForCi
+                    | DeploymentStatus::Superseded
                     | DeploymentStatus::Applied
                     | DeploymentStatus::Failed
                     | DeploymentStatus::Cancelled,
@@ -326,9 +386,10 @@ pub(crate) fn page(
     before: Option<u64>,
 ) -> Result<(Vec<DeploymentSummary>, Option<u64>), RpcError> {
     let before = i64::try_from(before.unwrap_or(u64::MAX >> 1)).unwrap_or(i64::MAX);
+    let columns = COLUMNS.as_str();
     let rows = tx.query(
         &format!(
-            "SELECT {COLUMNS} FROM config_deployment WHERE environment_id = ?1 AND number < ?2 \
+            "SELECT {columns} FROM config_deployment WHERE environment_id = ?1 AND number < ?2 \
              ORDER BY number DESC LIMIT ?3"
         ),
         &[

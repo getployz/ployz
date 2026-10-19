@@ -716,6 +716,10 @@ pub struct Batched {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "written", rename_all = "snake_case")]
 #[ts(rename = "ConfigWritten")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one per command, serialized at once: boxing a Deployment saves nothing"
+)]
 pub enum Written {
     /// A Project was created.
     Project(ProjectCreated),
