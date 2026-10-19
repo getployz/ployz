@@ -10,6 +10,9 @@ export const Actor = Schema.Struct({
 /** A user, and the credential they act through: the Organization gate narrows a token's Access to its grant. */
 export type Actor = typeof Actor.Type & { readonly credential?: Credential };
 
+/** A dashboard request's Actor: the browser session it came through is what opening an Organization moves. */
+export type SessionActor = Actor & { readonly credential: { readonly kind: "session"; readonly id: string } };
+
 /** A session (the dashboard or `ployz login`), an Organization Token, or a remote agent's OAuth grant. */
 export type CredentialKind = "session" | "token" | "oauth";
 
