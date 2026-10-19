@@ -461,10 +461,12 @@ enum Received {
 
 /// An EnsureContainer reads, in the ledger and in faults, as the state it wants, so a
 /// stop and a start stay apart.
-const ENSURE_WANTS: [&str; 3] = [
+const ENSURE_WANTS: [&str; 5] = [
     "ensure_container:running",
     "ensure_container:stopped",
     "ensure_container:gone",
+    "ensure_container:out",
+    "ensure_container:held",
 ];
 
 impl Received {
@@ -478,6 +480,8 @@ impl Received {
                     ContainerWant::Running { .. } => "ensure_container:running",
                     ContainerWant::Stopped { .. } => "ensure_container:stopped",
                     ContainerWant::Gone { .. } => "ensure_container:gone",
+                    ContainerWant::Out { .. } => "ensure_container:out",
+                    ContainerWant::Held { .. } => "ensure_container:held",
                 }
             }
             Self::Bare(command) => command,
@@ -796,6 +800,7 @@ impl Fleet {
                 let (container_id, state) = match request.want {
                     ContainerWant::Running {
                         container: RunTarget::Existing(ContainerLocator::Id(id)),
+                        ..
                     } => (id, RunState::Running),
                     ContainerWant::Stopped {
                         container: ContainerLocator::Id(id),

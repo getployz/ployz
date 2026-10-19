@@ -557,7 +557,7 @@ mod rpc {
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerNow, EnsuredContainer, LocalMachinePhase,
         MachineDetails, MachineList, MachineObservation, MembershipObservation, OpaquePayload,
-        RpcRequestBody, RpcResponse, ServingPointer, ServingPointerPublication, ServingPointerRead,
+        RoutesRead, RpcRequestBody, RpcResponse, ServingPointer, ServingPointerPublication,
     };
     use tonic::{Request, Response};
 
@@ -637,12 +637,10 @@ mod rpc {
                             }
                             RpcResponse::from(ContainerList { containers: listed })
                         }
-                        RpcRequestBody::ReadServingPointer(_) => {
-                            RpcResponse::from(ServingPointerRead {
-                                pointer: row.lock().unwrap().clone(),
-                                ..Default::default()
-                            })
-                        }
+                        RpcRequestBody::ReadRoutes(_) => RpcResponse::from(RoutesRead {
+                            pointer: row.lock().unwrap().clone(),
+                            ..Default::default()
+                        }),
                         RpcRequestBody::PublishServingPointer(request) => {
                             let mut row = row.lock().unwrap();
                             RpcResponse::from(if *row == request.read {

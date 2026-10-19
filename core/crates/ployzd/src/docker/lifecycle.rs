@@ -560,6 +560,17 @@ impl ContainerRuntime {
         force: bool,
     ) -> Result<(), Error> {
         let mut config_operation = self.specs.config_operation().await;
+        self.remove_locked(&mut config_operation, container_id, remove_volumes, force)
+            .await
+    }
+
+    pub(super) async fn remove_locked(
+        &self,
+        config_operation: &mut super::spec_store::ConfigOperation<'_>,
+        container_id: &ContainerId,
+        remove_volumes: bool,
+        force: bool,
+    ) -> Result<(), Error> {
         match self.ensure_managed(container_id).await {
             Ok(_) => {}
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {

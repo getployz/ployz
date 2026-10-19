@@ -396,8 +396,8 @@ mod plan {
         AnonymousVolumes, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
         ContainerNow, ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
         ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
-        LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
-        SlotKey, StopOptions,
+        LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunRotation,
+        RunTarget, SlotKey, StopOptions,
     };
     use serde_json::json;
 
@@ -485,6 +485,7 @@ mod plan {
                 slot: hook_slot(),
                 ..new_container("img")
             }),
+            rotation: RunRotation::Pending,
         }
     }
 
@@ -509,12 +510,14 @@ mod plan {
     fn run_new(image: &str) -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::New(new_container(image)),
+            rotation: RunRotation::Pending,
         }
     }
 
     fn run_existing() -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::Existing(ContainerLocator::Id(id('a'))),
+            rotation: RunRotation::Pending,
         }
     }
 
@@ -716,7 +719,10 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
             .count()
     };
 
-    assert_eq!(local.create_and_start(new.clone()).await.unwrap(), None);
+    assert_eq!(
+        local.create_and_start(new.clone(), None).await.unwrap(),
+        None
+    );
     assert_eq!(starts(), 1);
     // The first request's hook ran and exited; a second request that saw the slot empty
     // reaches the create and adopts it.
@@ -730,7 +736,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     {
         container["State"] = json!({"Status":"exited", "ExitCode":0});
     }
-    assert_eq!(local.create_and_start(new).await.unwrap(), None);
+    assert_eq!(local.create_and_start(new, None).await.unwrap(), None);
     assert_eq!(starts(), 1, "the adopted hook is not run again");
     std::fs::remove_dir_all(data_dir).unwrap();
 }
@@ -741,7 +747,7 @@ mod settled {
     use ployz_core::{
         ConfiguredHealthcheck, ContainerNow, ContainerRuntimeObservation, ContainerWant,
         EnsuredContainer, HealthObservation, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
-        MachineName, NewContainer, RunTarget,
+        MachineName, NewContainer, RunRotation, RunTarget,
     };
     use serde_json::{Value, json};
 
@@ -801,6 +807,7 @@ mod settled {
     fn run(new: NewContainer) -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::New(new),
+            rotation: RunRotation::Pending,
         }
     }
 
