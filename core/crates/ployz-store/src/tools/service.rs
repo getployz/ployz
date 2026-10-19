@@ -398,14 +398,10 @@ impl ServiceUpdate {
         }
         for (from, to) in &self.rename_env {
             let Some(to) = to.as_str() else {
-                return Err(Refusal::invalid(
-                    "A new variable name is text",
-                    &format!("rename_env.{from}"),
-                )
-                .into());
+                return Err(Refusal::invalid("A new variable name is text", "rename_env").into());
             };
             changes.push(Change::Rename {
-                path: path(&format!("rename_env.{from}"), &format!("env.{from}"))?,
+                path: path("rename_env", &format!("env.{from}"))?,
                 to: to.to_owned(),
                 update_references: self.update_references,
             });

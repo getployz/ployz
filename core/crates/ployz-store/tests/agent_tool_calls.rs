@@ -1555,6 +1555,37 @@ fn an_unknown_key_another_tool_takes_is_named() {
 }
 
 #[test]
+fn a_map_key_the_caller_chose_is_never_the_refused_field() {
+    let store = shop();
+    let long = "k".repeat(4096);
+    for (tool, input) in [
+        (
+            "config_write",
+            json!({ "config": "app", "files": { "鍵🔒": 1 } }),
+        ),
+        (
+            "config_write",
+            json!({ "config": "app", "files": { long.clone(): 1 } }),
+        ),
+        (
+            "config_write",
+            json!({ "config": "app", "files": { "../鍵🔒": "a" } }),
+        ),
+        (
+            "service_update",
+            json!({ "service": "web", "rename_env": { "鍵🔒": 1 } }),
+        ),
+    ] {
+        let refusal = call(&store, tool, input, "map-1").refused();
+        let field = refusal.field.as_deref().unwrap_or_default();
+        assert!(["files", "rename_env"].contains(&field), "{field}");
+        for key in ["鍵🔒", long.as_str()] {
+            assert!(!refusal.message.contains(key), "{}", refusal.message);
+        }
+    }
+}
+
+#[test]
 fn service_add_says_which_of_image_and_repository_is_wrong() {
     let store = shop();
     for (input, message) in [
