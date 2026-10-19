@@ -115,6 +115,34 @@ it("carries a review forward through this tab's own edits, and stops at a revisi
   ]);
 });
 
+it("forgets its own edits when another Environment takes the name, so a review of the new one goes as read", async () => {
+  const test = setup(view(2, 1));
+  test.write.mockResolvedValueOnce(edited(3));
+  await test.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise;
+  // shop/production was removed and made again: the new Environment is at revision 2 too, which this tab's edit never touched.
+  const replacement = { ...view(2, 1), environment: { ...view(2, 1).environment, id: "env-2" } };
+  test.store.current = replacement;
+  const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
+  test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { view: "environment", ...replacement } });
+
+  // SAFETY: these tests read nothing of a Deploy but that it was sent.
+  test.write.mockResolvedValue({ ok: true, value: { written: "deployment" } } as never);
+  await test.writer.commit({ command: "admit", admit: "deploy", id: "dep-1", environment: ref, version: "2:1:0" }).isPersisted.promise;
+  expect(test.write.mock.calls.at(-1)?.[0].data.command).toMatchObject({ command: "admit", version: "2:1:0" });
+});
+
+it("sends a History restore at the exact version it previewed, even behind this tab's own edit", async () => {
+  const test = setup(view(2, 1));
+  test.write.mockResolvedValueOnce(edited(3));
+  await test.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise;
+
+  // SAFETY: these tests read nothing of a restore but that it was sent and what revision it made.
+  test.write.mockResolvedValue({ ok: true, value: { written: "history_staged", environment: { ...view(4, 1).environment }, saved: null, changed: true, not_set: [] } } as never);
+  // The preview listed what revision 2 would overwrite; the edit that moved to 3 was never in it.
+  await test.writer.commit({ command: "stage_history", environment: ref, revision: 1, action: "restore", version: "2:1:0", accept_overwrite: true }).isPersisted.promise;
+  expect(test.write.mock.calls.at(-1)?.[0].data.command).toMatchObject({ command: "stage_history", version: "2:1:0" });
+});
+
 it("undoes an edit the Store refuses as a conflict and shows what changed elsewhere", async () => {
   const test = setup(view(2, 1));
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
