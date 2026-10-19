@@ -1193,6 +1193,8 @@ fn container_on(
     hex: char,
 ) -> ployz_core::ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ployz_core::ContainerId::parse(hex.to_string().repeat(64)).unwrap(),
         display_name: format!("{}-{hex}", spec.name),
         created_at_unix_nanos: 1,

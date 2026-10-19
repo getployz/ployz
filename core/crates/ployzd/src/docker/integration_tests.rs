@@ -1140,6 +1140,8 @@ fn fixture_observation(
     service_name: ServiceName,
 ) -> ContainerObservation {
     ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         display_name: format!("{service_name}-stale"),
         created_at_unix_nanos: 0,
         machine_id,

@@ -404,6 +404,8 @@ mod tests {
         last_check: Option<LastHealthCheck>,
     ) -> ContainerDetails {
         let container = ContainerObservation::try_from(crate::ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: crate::ContainerId::parse("a".repeat(64)).unwrap(),
             display_name: "api".into(),
             created_at_unix_nanos: 0,

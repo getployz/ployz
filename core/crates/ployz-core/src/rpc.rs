@@ -467,6 +467,8 @@ pub enum RunTarget {
 pub struct NewContainer {
     pub slot: SlotKey,
     pub resolved_spec: ResolvedServiceSpec,
+    /// Orders this copy among its Service's copies; stamped as the `ployz.gen` label.
+    pub r#gen: crate::Gen,
     /// Correlation metadata, never part of the Service configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<crate::DeploymentLogId>,

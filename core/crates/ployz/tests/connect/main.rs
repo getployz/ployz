@@ -869,6 +869,8 @@ fn listing_container(
     let service_id = ployz_core::ServiceId::parse(service_hex.to_string().repeat(32)).unwrap();
     let service_name = ployz_core::ServiceName::parse(name).unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ployz_core::ContainerId::parse(container_hex.to_string().repeat(64)).unwrap(),
         display_name: format!("{name}-{container_hex}"),
         created_at_unix_nanos: 1,
