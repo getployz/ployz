@@ -292,7 +292,7 @@ jobs:
   # The binaries the verify harness runs, built once per change on main so local runs download them.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
-    needs: [changes, runner]
+    needs: runner
     if: github.event_name != 'pull_request'
     defaults:
       run:
