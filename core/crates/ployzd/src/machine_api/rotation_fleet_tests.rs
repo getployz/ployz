@@ -100,6 +100,7 @@ impl Fleet {
             let (runtime, fake) = fake_runtime_with(FakeDocker {
                 named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
                 list_named: true,
+                stamp_starts: true,
                 ..Default::default()
             })
             .await;
@@ -998,6 +999,163 @@ async fn unhealthy_in_keeps_rotation() {
         assert_eq!(rotation_of(&reply), rotation);
         assert_eq!(node.rotation(copy).await, rotation);
     }
+}
+
+/// A Service without a healthcheck whose copies must stay up `MONITOR` to count
+/// as started.
+fn monitored_spec(name: &str) -> ResolvedServiceSpec {
+    let mut spec = spec(name);
+    spec.update.monitor_millis = Some(u64::try_from(MONITOR.as_millis()).unwrap());
+    spec
+}
+
+const MONITOR: Duration = Duration::from_secs(3);
+
+/// A Pending copy of `spec` on `node` that `deploy` created and waited healthy.
+async fn settled_by(
+    node: &Node,
+    key: &str,
+    spec: ResolvedServiceSpec,
+    deploy: &str,
+) -> ContainerId {
+    let mut new = new_copy(key, spec, 1);
+    new.answer = AnswerWhen::Settled;
+    new.deployment_id = Some(run(deploy));
+    let reply = ensure(
+        node,
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+            rotation: RunRotation::Pending,
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            reply,
+            EnsuredContainer::Ensured {
+                health: Some(HealthVerdict::Healthy),
+                ..
+            }
+        ),
+        "{reply:?}"
+    );
+    present(&reply)
+}
+
+/// An In from the run that created a copy and waited it healthy reuses that
+/// verdict instead of waiting the monitor window again.
+#[tokio::test]
+async fn in_reuses_the_health_its_run_settled() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+
+    let started = std::time::Instant::now();
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    assert_eq!(node.service.local.settles_for_test(&copy), 1);
+    assert!(
+        started.elapsed() < MONITOR * 2 / 3,
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// A copy another run settled waits out its monitor window again.
+#[tokio::test]
+async fn in_from_another_run_settles_again() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+
+    let started = std::time::Instant::now();
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-b")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    assert_eq!(node.service.local.settles_for_test(&copy), 2);
+    assert!(
+        started.elapsed() >= MONITOR * 3 / 4,
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// A copy restarted since its run settled it is a new Docker run, and settles again.
+#[tokio::test]
+async fn in_after_a_restart_settles_again() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+    node.set_state(
+        copy,
+        json!({"Status": "running", "StartedAt": chrono::Utc::now().to_rfc3339()}),
+    );
+
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    assert_eq!(node.service.local.settles_for_test(&copy), 2);
+}
+
+/// A copy its run settled healthy but whose check fails now is refused In.
+#[tokio::test]
+async fn in_for_a_settled_copy_now_unhealthy_is_refused() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+    let started_at = node.container(copy).unwrap()["State"]["StartedAt"].clone();
+    node.set_state(
+        copy,
+        json!({"Status": "running", "StartedAt": started_at, "Health": {"Status": "unhealthy"}}),
+    );
+
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    let EnsuredContainer::Ensured {
+        health: Some(health),
+        ..
+    } = &reply
+    else {
+        panic!("expected Ensured with a health verdict, got {reply:?}");
+    };
+    assert!(matches!(health, HealthVerdict::Failed { .. }), "{health:?}");
+    assert_eq!(node.rotation(copy).await, CopyRotation::Pending);
+}
+
+/// A copy its run settled that has since stopped starts again for the In, and
+/// that new Docker run settles again.
+#[tokio::test]
+async fn in_for_a_settled_copy_since_stopped_settles_again() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+    node.set_state(copy, json!({"Status": "exited", "ExitCode": 1}));
+
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    assert_eq!(node.service.local.settles_for_test(&copy), 2);
 }
 
 /// An In write that lands after a Stopped want planned its stop, but before it took
