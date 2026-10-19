@@ -299,6 +299,10 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     for hint in hints {
         failure = failure.hint(hint);
     }
+    // A Deploy can't retry a removal or shutdown: the command that ran it names its own retry.
+    if view.deployment.remove {
+        return failure;
+    }
     failure.hint(Hint::Retry(command(&[
         "deploy",
         "--project",
@@ -385,6 +389,22 @@ mod tests {
             ]]
         );
     }
+
+    #[test]
+    fn a_failed_removal_never_says_to_retry_with_deploy() {
+        let retries = |view: &DeploymentView| {
+            failure(view, command)
+                .hints()
+                .iter()
+                .filter(|hint| matches!(hint, Hint::Retry(_)))
+                .count()
+        };
+        let mut removal = view();
+        assert_eq!(retries(&removal), 1);
+        removal.deployment.remove = true;
+        assert_eq!(retries(&removal), 0);
+    }
+
     #[test]
     fn applied_result_with_a_qualified_gap_is_partial_without_changing_its_status() {
         use ployz_core::{

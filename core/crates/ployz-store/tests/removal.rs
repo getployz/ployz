@@ -1142,6 +1142,62 @@ fn a_failed_removal_goes_again_only_on_new_evidence_or_a_retry() {
 }
 
 #[test]
+fn a_removal_that_failed_on_a_silent_server_goes_again_once_it_answers() {
+    let (store, who) = branched();
+    // `fix` has no Volume, so only whether its Server answered is evidence.
+    let silent = Trusted {
+        servers: Some(1),
+        unanswered: vec![server('a')],
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &silent).unwrap();
+    let failed = taking_off(&removing, "fix");
+    store.claim(&failed, &runner()).unwrap();
+    store
+        .record(
+            &failed,
+            &runner(),
+            RunEvidence::NotExecuted("Ployz couldn't reach your Servers.".into()),
+        )
+        .unwrap();
+
+    // The hourly sweep asks again while the Server is still silent: it stalls.
+    assert_eq!(names(&sweep(&store, &who).closing), ["fix"]);
+    let stalled = refusal(admit_removal(&store, &who, "fix", 3, &silent));
+    assert!(stalled.message.contains("stalled"), "{}", stalled.message);
+
+    // The Server answers: the next sweep's admission takes it off.
+    let answers = Trusted {
+        servers: Some(1),
+        ..Trusted::default()
+    };
+    let admitted = admit_removal(&store, &who, "fix", 3, &answers).unwrap();
+    run(&store, &admitted.id, &["web"], Vec::new());
+    assert_eq!(names(&sweep(&store, &who).removed), ["fix"]);
+}
+
+#[test]
+fn rerunning_a_removal_under_way_needs_no_new_version() {
+    let (store, who) = branched();
+    let removing = confirmed(&store, &who, request(Some("fix")), &Trusted::default()).unwrap();
+    fail(&store, &taking_off(&removing, "fix"), &["web"]);
+
+    // Each failed removal moves the review on, so the first version is stale.
+    let stale = Remove {
+        version: Some("stale".into()),
+        ..request(Some("fix"))
+    };
+    for rerun in [request(Some("fix")), stale] {
+        let again = store
+            .write_trusted(&who, &rerun, &Trusted::default())
+            .unwrap();
+        let taking = taking_off(&again, "fix");
+        assert_eq!(left(again), [("fix".into(), LeftStatus::Removing)]);
+        fail(&store, &taking, &["web"]);
+    }
+}
+
+#[test]
 fn a_shutdown_asks_approval_only_when_it_accepts_volume_loss() {
     let (store, who) = branched();
     set_default(&store, &who, "staging");

@@ -1,5 +1,6 @@
 import { it } from "@effect/vitest";
 import type { ConfigCommand, ConfigQuery, ConfigWritten, Connection, SystemEvent, VolumeObservation } from "@ployz/sdk";
+import { RpcError } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { expect, vi } from "vitest";
 import type { JsonObject, JsonValue } from "#/db/tables";
@@ -8,7 +9,7 @@ import { callStore, storeSystem } from "#/modules/config-store/config-store.serv
 import { permissionsOf } from "#/modules/organization/permissions";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { StoreRead } from "#/modules/config-store/store.contract";
-import { gatherVolumeEvidence, systemVolumeEvidence, VolumeObserver } from "#/modules/config-store/volume-evidence.server";
+import { gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence, VolumeObserver } from "#/modules/config-store/volume-evidence.server";
 import { machineId } from "#/test/ids";
 import { enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
@@ -99,6 +100,28 @@ it.live("a removal gathers for each Environment it takes off, and a shutdown for
     expect(yield* gathered({ command: "remove", project: "shop" }))
       .toEqual([{ query: "environments", project: "shop" }, removing("production"), removing("staging")]);
     expect(yield* gathered({ command: "admit", admit: "shut_down", environment: staging })).toEqual([removing("staging")]);
+  }));
+
+it.live("a removal names the Servers that didn't answer, Volumes or not, and every one when none can be reached", () =>
+  Effect.gen(function* () {
+    const services = yield* cloud();
+    const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
+    const silent = machineId("1");
+    const unanswered = (command: JsonObject, observe: (connections: Connection[], sought: string[]) => Promise<VolumeObservation>) =>
+      provided(gatherUnanswered(ORGANIZATION, { operation: "write", command: raw(command) }, undefined)
+        .pipe(Effect.provideService(VolumeObserver, { observe })));
+    const remove = { command: "remove", project: "shop", environment: "staging" };
+    const admit = { command: "admit", admit: "remove", environment: staging };
+    const answers = (unanswered: VolumeObservation["unanswered"]) => async (): Promise<VolumeObservation> => ({ sought: [], held: [], unanswered });
+
+    expect(yield* unanswered(remove, answers([silent]))).toBeUndefined();
+    yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
+
+    expect(yield* unanswered(remove, answers([silent]))).toEqual([silent]);
+    expect(yield* unanswered(admit, answers([]))).toEqual([]);
+    expect(yield* unanswered(admit, () => Promise.reject(new RpcError({ code: "unavailable", message: "management connection timed out", details: null })))).toEqual([machineId("0")]);
+    expect(yield* unanswered({ command: "admit", admit: "deploy", environment: staging, services: [] }, answers([silent])))
+      .toBeUndefined();
   }));
 
 it.live("a Publish naming no Environment gathers for the default one, and a malformed one gathers nothing", () =>

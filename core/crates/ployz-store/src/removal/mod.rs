@@ -229,6 +229,17 @@ impl Reviewed {
         )
     }
 
+    /// Whether `given` already accepts everything this member's removal deletes.
+    fn within(&self, given: &Accepted) -> bool {
+        self.lost().all(|loss| match given {
+            Accepted::Everything { .. } => true,
+            Accepted::EveryCopy(names) => names.contains(&loss.volume.name),
+            Accepted::Confirmed(deletes) => {
+                loss.deletes.iter().all(|delete| deletes.contains(delete))
+            }
+        })
+    }
+
     fn accepted(&self) -> Accepted {
         if self.every_copy.is_empty() {
             Accepted::Confirmed(self.lost().flat_map(|loss| loss.deletes.clone()).collect())
@@ -316,30 +327,42 @@ pub(crate) fn remove(
         )?);
     }
     refuse_unanswered(who, remove, &reviews, &target)?;
-    let version = version(who, &target, &reviews, |reviewed| {
-        reviewed.every_copy.clone()
+    // A removal under way holds its remover's consent, and nothing deploys
+    // meanwhile: running it again asks nothing new unless it now deletes more.
+    let held = mark::of(tx, &target)?.is_some_and(|live| {
+        live.state == State::Removing
+            && reviews.iter().all(|reviewed| {
+                live.accepted
+                    .get(&reviewed.environment.summary.id)
+                    .is_some_and(|accepted| reviewed.within(accepted))
+            })
     });
-    confirm(remove, &reviews, &version)?;
-    gate(
-        who,
-        &target,
-        &version,
-        reviews
-            .iter()
-            .flat_map(|reviewed| reviewed.effects.clone())
-            .collect(),
-        &trusted.approval,
-        || {
-            let diffs: BTreeMap<&EnvironmentName, &crate::DiffView> = reviews
+    if !held {
+        let version = version(who, &target, &reviews, |reviewed| {
+            reviewed.every_copy.clone()
+        });
+        confirm(remove, &reviews, &version)?;
+        gate(
+            who,
+            &target,
+            &version,
+            reviews
                 .iter()
-                .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.diff))
-                .collect();
-            match &target {
-                Target::Environment(_) => json!(diffs.values().next()),
-                Target::Project(_) => json!(diffs),
-            }
-        },
-    )?;
+                .flat_map(|reviewed| reviewed.effects.clone())
+                .collect(),
+            &trusted.approval,
+            || {
+                let diffs: BTreeMap<&EnvironmentName, &crate::DiffView> = reviews
+                    .iter()
+                    .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.diff))
+                    .collect();
+                match &target {
+                    Target::Environment(_) => json!(diffs.values().next()),
+                    Target::Project(_) => json!(diffs),
+                }
+            },
+        )?;
+    }
     let accepted: BTreeMap<EnvironmentId, Accepted> = reviews
         .iter()
         .map(|reviewed| (reviewed.environment.summary.id.clone(), reviewed.accepted()))
@@ -347,7 +370,9 @@ pub(crate) fn remove(
     mark::clear_tombstone(tx, &target)?;
     let mut mark = match mark::of(tx, &target)? {
         Some(mut live) => {
-            live.accepted = accepted;
+            if !held {
+                live.accepted = accepted;
+            }
             live.retried = deployment::now();
             live
         }

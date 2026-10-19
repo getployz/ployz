@@ -510,10 +510,11 @@ pub(super) fn unfinished(
             deploy::say_view(view);
         },
     )?;
-    ran.and_then(|()| match matches.get_flag("detach") {
-        true => Ok(()),
-        false => Err(Error::partial()),
-    })
+    ran.map_err(|error| error.hint(Hint::Retry(again.to_owned())))
+        .and_then(|()| match matches.get_flag("detach") {
+            true => Ok(()),
+            false => Err(Error::partial()),
+        })
 }
 
 /// What removing an Environment deletes: its Services and Volumes, by name.

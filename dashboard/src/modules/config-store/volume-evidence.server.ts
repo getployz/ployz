@@ -55,6 +55,31 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
 });
 
 /**
+ * For a removal's admission: which Servers didn't answer Cloud just now, every one when none could be reached. A removal
+ * that failed goes again once one of them answers, Volumes or not. `volumes` already names them when it was gathered.
+ */
+export const gatherUnanswered = Effect.fn("ConfigStore.gatherUnanswered")(function* (
+  organizationId: string,
+  call: StoreCall,
+  volumes: VolumeObservation | undefined,
+) {
+  if (call.operation !== "write") return undefined;
+  const command = call.command;
+  const removes = command.command === "remove" || (command.command === "admit" && command.admit === "remove");
+  if (!removes) return undefined;
+  if (volumes !== undefined) return volumes.unanswered;
+  const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
+  const connections = Option.getOrUndefined(loaded);
+  if (connections?.kind !== "ready" || connections.connections.length === 0) return undefined;
+  const { observe } = yield* VolumeObserver;
+  const observed = yield* storeTry(() => observe(connections.connections, [])).pipe(Effect.option);
+  return Option.match(observed, {
+    onNone: () => connections.connections.flatMap((connection) => connection.machine_id ?? []),
+    onSome: (observation) => observation.unanswered,
+  });
+});
+
+/**
  * For a Git push: which Servers hold the Volumes whose loss was accepted when they were saved. Without it, or when the
  * Servers can't be reached, the push keeps their data and the next Deploy asks again.
  */

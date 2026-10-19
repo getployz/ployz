@@ -425,7 +425,9 @@ fn unanswered(trusted: &Trusted) -> BTreeSet<ployz_core::MachineId> {
     trusted
         .volumes
         .iter()
-        .flat_map(|observed| observed.unanswered.iter().cloned())
+        .flat_map(|observed| &observed.unanswered)
+        .chain(&trusted.unanswered)
+        .cloned()
         .collect()
 }
 
