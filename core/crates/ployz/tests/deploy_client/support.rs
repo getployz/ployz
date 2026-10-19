@@ -89,6 +89,8 @@ pub(super) struct DeployService {
     rotations: Arc<Mutex<BTreeMap<ContainerId, Rotated>>>,
     /// Copies that were In and left: a proxy that never drops a route keeps them.
     unrouted: Arc<Mutex<BTreeSet<ContainerId>>>,
+    /// What each proxy last routed, kept by the real rule.
+    served: Arc<Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>>,
     /// Machines whose proxy adds copies as they go In but never drops one.
     sticky_proxies: BTreeSet<MachineId>,
     image_pulls: Arc<Mutex<Vec<ImagePullCall>>>,
@@ -156,6 +158,7 @@ impl DeployService {
             pointers: Arc::new(Mutex::new(BTreeMap::new())),
             rotations: Arc::new(Mutex::new(BTreeMap::new())),
             unrouted: Arc::new(Mutex::new(BTreeSet::new())),
+            served: Arc::default(),
             sticky_proxies: BTreeSet::new(),
             image_pulls: Arc::new(Mutex::new(Vec::new())),
             creation_pulls: Arc::new(AtomicUsize::new(0)),
@@ -434,6 +437,39 @@ impl DeployService {
             )
     }
 
+    /// How a proxy sees a copy: addressed, with the rotation its owner wrote.
+    fn proxied(
+        &self,
+        container_id: ContainerId,
+        service: &QualifiedService,
+    ) -> ployz_core::ContainerObservation {
+        let listed = self
+            .listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|container| container.container_id == container_id)
+            .cloned();
+        let mut observed = listed.unwrap_or_else(|| {
+            let machine_id = self.machines.first().unwrap().machine.id;
+            self.observed(machine_id, container_id, resolved(spec("web")))
+        });
+        let rotation = self.rotation(&container_id);
+        observed
+            .try_update(|parts| {
+                parts.namespace = service.namespace.clone();
+                parts.resolved_spec.name = service.name.clone();
+                parts.rotation = Some(rotation);
+                parts.address = parts.address.or(Some(ployz_core::ContainerAddress(
+                    "10.210.1.2".parse().unwrap(),
+                )));
+            })
+            .unwrap();
+        observed
+    }
+
+    /// Each proxy routes by the real proxy rule; a sticky one still lists every
+    /// copy that left In.
     fn routes(&self, service: &QualifiedService) -> RoutesRead {
         let removed = self.removed.lock().unwrap().clone();
         let mut copies: BTreeMap<ContainerId, QualifiedService> = self
@@ -451,11 +487,12 @@ impl DeployService {
                 .map(|(id, rotated)| (*id, rotated.service.clone())),
         );
         let ours = |id: &ContainerId| copies.get(id) == Some(service) && !removed.contains(id);
-        let routed: BTreeSet<ContainerId> = copies
-            .keys()
-            .filter(|id| ours(id) && self.rotation(id) == CopyRotation::In)
-            .copied()
-            .collect();
+        let siblings = ployz_core::service_containers(
+            copies
+                .keys()
+                .filter(|id| ours(id))
+                .map(|id| self.proxied(*id, service)),
+        );
         let unrouted: BTreeSet<ContainerId> = self
             .unrouted
             .lock()
@@ -464,18 +501,29 @@ impl DeployService {
             .filter(|id| ours(id))
             .copied()
             .collect();
+        let mut served = self.served.lock().unwrap();
         RoutesRead {
             routes: self
                 .machines
                 .iter()
                 .map(|observed| {
                     let id = observed.machine.id;
-                    let route = if self.sticky_proxies.contains(&id) {
-                        routed.union(&unrouted).copied().collect()
+                    let current = served.entry(id).or_default();
+                    let next = ployz_core::proxy_routes(&siblings, |_| false, current);
+                    let route = next.get(service).cloned().unwrap_or_default();
+                    let mut listed: BTreeSet<ContainerId> = route
+                        .iter()
+                        .map(|serving| serving.as_observation().container_id)
+                        .collect();
+                    if next.contains_key(service) {
+                        current.insert(service.clone(), route);
                     } else {
-                        routed.clone()
-                    };
-                    (id, Some(route))
+                        current.remove(service);
+                    }
+                    if self.sticky_proxies.contains(&id) {
+                        listed.extend(unrouted.iter().copied());
+                    }
+                    (id, Some(listed))
                 })
                 .collect(),
             complete: true,
