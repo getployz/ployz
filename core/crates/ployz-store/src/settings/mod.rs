@@ -230,6 +230,7 @@ impl ServiceSetting {
             | Self::RestartPolicy
             | Self::StartCommand
             | Self::Template
+            | Self::UpdateOrder
             | Self::Git(_) => None,
         }
     }
