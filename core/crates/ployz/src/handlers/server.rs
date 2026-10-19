@@ -487,7 +487,9 @@ async fn apply_update(
         .await;
     let machine = match (updated, &seeding) {
         (Ok(updated), _) => updated.machine,
-        (Err(error), Some(seeding)) if !seeding.dialed_by.is_empty() => {
+        (Err(error), Some(seeding))
+            if error.code == RpcErrorCode::Unavailable && !seeding.dialed_by.is_empty() =>
+        {
             let name = seeding.target.as_ref().map_or_else(
                 || selector.as_str().to_owned(),
                 |target| target.name.to_string(),

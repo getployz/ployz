@@ -374,6 +374,7 @@ impl Daemon {
                         )
                         .await
                 } else {
+                    drop(endpoint_choices);
                     shutdown.cancelled().await;
                     Ok(())
                 }
