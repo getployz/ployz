@@ -798,9 +798,9 @@ impl LocalMachine {
                     refusal,
                 });
             }
-            ContainerStep::CreateAndStart(new) => self.create_and_start(new).await?,
-            ContainerStep::Start(id) => match fence.zip(now.present()) {
-                Some(((run, expect), observed)) => self.start_routed(observed, run, expect).await?,
+            ContainerStep::CreateAndStart(new) => self.create_and_start(new, fence).await?,
+            ContainerStep::Start(id) => match fence {
+                Some((run, expect)) => self.start_routed(id, run, expect).await?,
                 None => {
                     self.start_container(id).await?;
                     None
@@ -918,7 +918,13 @@ impl LocalMachine {
         ))
     }
 
-    async fn create_and_start(&self, new: NewContainer) -> Result<Option<ContainerRefusal>, Error> {
+    /// A create may adopt a copy another request made since the slot was read, so an
+    /// In want's start is fenced like any start of an existing copy.
+    async fn create_and_start(
+        &self,
+        new: NewContainer,
+        fence: Option<StartFence>,
+    ) -> Result<Option<ContainerRefusal>, Error> {
         let local = self.clone();
         let outcome = self
             .finish_mutation(async move {
@@ -950,6 +956,15 @@ impl LocalMachine {
                     if !never_started(&adopted) {
                         return Ok(None);
                     }
+                }
+                if let Some((run, expect)) = fence {
+                    return rotation::start_fenced(
+                        containers,
+                        &created.container_id,
+                        run,
+                        expect.as_ref(),
+                    )
+                    .await;
                 }
                 containers.start(&created.container_id).await?;
                 Ok(None)
@@ -1159,9 +1174,9 @@ fn plan_container(
 }
 
 /// The run and rotation an In want's start must still match.
-fn start_fence(
-    want: &ContainerWant,
-) -> Option<(Option<ployz_core::DeploymentLogId>, Option<CopyRotation>)> {
+type StartFence = (Option<ployz_core::DeploymentLogId>, Option<CopyRotation>);
+
+fn start_fence(want: &ContainerWant) -> Option<StartFence> {
     match want {
         ContainerWant::Running {
             rotation: RunRotation::In { run, expect },

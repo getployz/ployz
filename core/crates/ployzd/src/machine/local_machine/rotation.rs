@@ -17,6 +17,7 @@ use ployz_core::{
 };
 
 use super::{Error, LocalMachine, not_found_refusal, redacted, refuse};
+use crate::docker::ContainerRuntime;
 use crate::route_acks::{Ackers, Membership, routed};
 
 #[derive(Clone, Debug)]
@@ -114,7 +115,7 @@ impl LocalMachine {
             return Ok(refused(now, not_found_refusal(&locator)));
         };
         let copy = CopyState::of(observed);
-        match decide(&copy, &want, expect.as_ref()) {
+        match decide(&copy.rotation, &want, expect.as_ref()) {
             Checked::Met => Ok(EnsuredContainer::Ensured {
                 now: redacted(now),
                 health: None,
@@ -153,7 +154,7 @@ impl LocalMachine {
                 return Ok(refused(now, not_found_refusal(&locator)));
             }
         };
-        let checked = match decide(&copy, &want, expect.as_ref()) {
+        let checked = match decide(&copy.rotation, &want, expect.as_ref()) {
             Checked::Allowed(_) => {
                 let reads = self.guard_reads(&copy, &want).await?;
                 self.check(&copy, &want, expect.as_ref(), reads).await?
@@ -209,31 +210,17 @@ impl LocalMachine {
             .await
     }
 
-    /// Starts an In want's copy only if the want still holds against this Machine's
-    /// record, so a refused In starts nothing.
+    /// Starts an existing copy for an In want, as [`start_fenced`] does.
     pub(super) async fn start_routed(
         &self,
-        observed: &ContainerObservation,
+        id: ContainerId,
         run: Option<DeploymentLogId>,
         expect: Option<CopyRotation>,
     ) -> Result<Option<ContainerRefusal>, Error> {
-        let id = observed.container_id;
-        let copy = CopyState::of(observed);
         let local = self.clone();
         self.finish_mutation(async move {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            let turn = containers.rotation_turn(&id).await?;
-            let copy = CopyState {
-                rotation: turn.rotation().clone(),
-                ..copy
-            };
-            match decide(&copy, &RotationWant::In { run }, expect.as_ref()) {
-                Checked::Refused(refusal) => return Ok(Some(refusal)),
-                Checked::Met | Checked::Allowed(_) => {}
-            }
-            containers.start(&id).await?;
-            drop(turn);
-            Ok(None)
+            start_fenced(containers, &id, run, expect.as_ref()).await
         })
         .await
     }
@@ -329,7 +316,7 @@ impl LocalMachine {
         expect: Option<&CopyRotation>,
         reads: GuardReads,
     ) -> Result<Checked, Error> {
-        let to = match decide(copy, want, expect) {
+        let to = match decide(&copy.rotation, want, expect) {
             Checked::Allowed(to) => to,
             decided @ (Checked::Met | Checked::Refused(_)) => return Ok(decided),
         };
@@ -505,25 +492,44 @@ fn is_sibling(copy: &CopyState, observed: &ContainerObservation) -> bool {
         && observed.identity() == copy.service
 }
 
-fn decide(copy: &CopyState, want: &RotationWant, expect: Option<&CopyRotation>) -> Checked {
-    if want.met_by(&copy.rotation) {
+/// Starts `id` for an In want with `run` and `expect` only if the want still holds
+/// against this Machine's record, read under the copy's rotation turn, so a refused
+/// In starts nothing. The caller holds the admission turn.
+pub(super) async fn start_fenced(
+    containers: &ContainerRuntime,
+    id: &ContainerId,
+    run: Option<DeploymentLogId>,
+    expect: Option<&CopyRotation>,
+) -> Result<Option<ContainerRefusal>, Error> {
+    let turn = containers.rotation_turn(id).await?;
+    match decide(turn.rotation(), &RotationWant::In { run }, expect) {
+        Checked::Refused(refusal) => return Ok(Some(refusal)),
+        Checked::Met | Checked::Allowed(_) => {}
+    }
+    containers.start(id).await?;
+    drop(turn);
+    Ok(None)
+}
+
+fn decide(rotation: &CopyRotation, want: &RotationWant, expect: Option<&CopyRotation>) -> Checked {
+    if want.met_by(rotation) {
         return Checked::Met;
     }
     if let Some(expect) = expect
-        && *expect != copy.rotation
+        && expect != rotation
     {
         return Checked::Refused(refuse(
             ContainerRefusalReason::RotationMismatch,
             format!(
                 "the copy is {}, not {} as expected",
-                describe(&copy.rotation),
+                describe(rotation),
                 describe(expect)
             ),
         ));
     }
-    match copy.rotation.edge(&want.target()) {
+    match rotation.edge(&want.target()) {
         RotationEdge::Write(to) => Checked::Allowed(to),
-        RotationEdge::Refused(refusal) => Checked::Refused(edge_refusal(refusal, copy, want)),
+        RotationEdge::Refused(refusal) => Checked::Refused(edge_refusal(refusal, rotation, want)),
         RotationEdge::Keep | RotationEdge::Remove => {
             unreachable!("a met want returned early, and no rotation want removes")
         }
@@ -532,10 +538,10 @@ fn decide(copy: &CopyState, want: &RotationWant, expect: Option<&CopyRotation>) 
 
 fn edge_refusal(
     refusal: RotationRefusal,
-    copy: &CopyState,
+    rotation: &CopyRotation,
     want: &RotationWant,
 ) -> ContainerRefusal {
-    let from = describe(&copy.rotation);
+    let from = describe(rotation);
     match refusal {
         RotationRefusal::HeldByOtherRun => refuse(
             ContainerRefusalReason::HeldByOtherRun,

@@ -288,6 +288,14 @@ impl Node {
         gate
     }
 
+    /// Answer this Machine's next Container inspect as Docker then sees it, but hold
+    /// the answer until the gate is waited on twice.
+    fn hold_answered(&self) -> Arc<tokio::sync::Barrier> {
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *self.fake.answered_hold.lock().unwrap() = Some(Arc::clone(&gate));
+        gate
+    }
+
     /// Withdrawn means the stop was planned and is draining or waiting for the turn.
     async fn withdrawn(&self, container: ContainerId) {
         tokio::time::timeout(SETTLE, async {
@@ -964,6 +972,44 @@ async fn refused_in_starts_nothing() {
             reading.wait().await;
         }
     );
+
+    refused(&reply, ContainerRefusalReason::RotationMismatch);
+    assert!(!node.running(a), "the refused In started nothing");
+    assert_eq!(node.rotation(a).await, CopyRotation::Held(run("run-b")));
+}
+
+/// Another run creates the slot, holds and stops the copy while an In want's create
+/// still reads the slot as empty. The create adopts that copy and starts nothing.
+#[tokio::test]
+async fn an_in_that_adopts_a_held_copy_starts_nothing() {
+    // No rescan, so only the wants under test inspect the Container.
+    let fleet = Fleet::rescanning(Duration::from_secs(3600)).await;
+    let node = fleet.node(0);
+    let api = spec("api");
+    let pending = ContainerWant::Running {
+        container: RunTarget::New(new_copy("a", api.clone(), 1)),
+        rotation: RunRotation::Pending,
+    };
+    let routed = ContainerWant::Running {
+        container: RunTarget::New(new_copy("a", api, 1)),
+        rotation: RunRotation::In {
+            run: None,
+            expect: Some(CopyRotation::Pending),
+        },
+    };
+    let checking = node.hold_inspect();
+
+    let (reply, a) = tokio::join!(ensure(node, routed), async {
+        checking.wait().await;
+        let creating = node.hold_answered();
+        checking.wait().await;
+        creating.wait().await;
+        let a = present(&ensure(node, pending).await);
+        ensured(&ensure(node, held(a, "run-b", Some(CopyRotation::Pending))).await);
+        ensured(&ensure(node, stopped(a)).await);
+        creating.wait().await;
+        a
+    });
 
     refused(&reply, ContainerRefusalReason::RotationMismatch);
     assert!(!node.running(a), "the refused In started nothing");

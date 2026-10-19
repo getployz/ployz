@@ -41,6 +41,8 @@ pub(crate) struct FakeDocker {
     /// A start waits here twice: once to announce it began, once to be released.
     pub(crate) start_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) inspect_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
+    /// The next inspect reads the Container first, then its answer waits here twice.
+    pub(crate) answered_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
     pub(crate) reject_list: Arc<AtomicBool>,
     /// Named mode: every stop fails and leaves the Container as it was.
     pub(crate) refuse_stop: Arc<AtomicBool>,
@@ -65,6 +67,22 @@ async fn fake_docker(
     uri: Uri,
     body: Bytes,
 ) -> Response {
+    let hold = (method == Method::GET && is_inspect(uri.path()))
+        .then(|| fake.answered_hold.lock().unwrap().take())
+        .flatten();
+    let response = answer(fake, method, uri, body).await;
+    if let Some(hold) = hold {
+        hold.wait().await;
+        hold.wait().await;
+    }
+    response
+}
+
+fn is_inspect(path: &str) -> bool {
+    path.contains("/containers/") && path.ends_with("/json") && !path.ends_with("/containers/json")
+}
+
+async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Response {
     let path = uri.path().to_owned();
     fake.requests
         .lock()
@@ -85,11 +103,7 @@ async fn fake_docker(
         >())
         .into_response();
     }
-    let inspect = method == Method::GET
-        && path.contains("/containers/")
-        && path.ends_with("/json")
-        && !path.ends_with("/containers/json");
-    let hold = inspect
+    let hold = (method == Method::GET && is_inspect(&path))
         .then(|| fake.inspect_hold.lock().unwrap().take())
         .flatten();
     if let Some(hold) = hold {
