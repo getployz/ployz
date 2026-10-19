@@ -300,29 +300,19 @@ impl LocalMachine {
         .await
     }
 
-    /// Machines whose ingress must route a Serving Pointer before a Deploy relies on
-    /// it, or `None` while the Machine list is partly replicated.
+    /// The Machines whose proxies must ack a route change, and those reported Down.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] without a Cluster store, and
     /// [`Error::Cluster`] when the Machine list cannot be read.
-    pub(crate) async fn ingress_machines(&self) -> Result<Option<BTreeSet<MachineId>>, Error> {
+    pub(crate) async fn route_membership(&self) -> Result<crate::route_acks::Membership, Error> {
         let cluster = self
             .cluster
             .as_ref()
             .ok_or(Error::ClusterStoreUnavailable)?;
         let machines = cluster.replicated.machines().await?;
-        let membership =
-            crate::route_acks::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
-        Ok(match membership.ackers {
-            crate::route_acks::Ackers::Known(machines) if !machines.is_empty() => {
-                Some(machines.into_keys().collect())
-            }
-            crate::route_acks::Ackers::Known(_)
-            | crate::route_acks::Ackers::Incomplete { .. }
-            | crate::route_acks::Ackers::Unread => None,
-        })
+        Ok(crate::route_acks::sample_ackers(machines, &self.record().id(), &cluster.admin).await)
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {

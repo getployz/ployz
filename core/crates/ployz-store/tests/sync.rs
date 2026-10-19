@@ -12,11 +12,12 @@ use std::collections::BTreeMap;
 
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Discard,
-    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, OrganizationId, Permission,
-    ProjectId, ProjectName, Publish, RemoveService, RenameService, SecretRow, ServiceLineageId,
-    ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView,
-    Synced, Trusted, UndoSync,
+    Actor, Admit, AdmitRemoval, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject,
+    CreateService, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
+    EnvironmentRemoval, EnvironmentsQuery, KeepBranch, OrganizationId, Permission, ProjectId,
+    ProjectName, Publish, Removal, Remove, RemoveService, RemovedBecause, RenameService, SecretRow,
+    ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery,
+    SyncRow, SyncView, Synced, Trusted, UndoSync,
 };
 use serde_json::{Value, json};
 
@@ -885,6 +886,84 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         )
         .unwrap_err();
     assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_branch_a_sync_closed_lists_its_removal_before_and_after_the_sweep_starts_it() {
+    let (store, who) = shop(true);
+    deploy(&store, &who, "fix-web", 30);
+    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+    let closing = SyncChanges {
+        close_after: true,
+        ..sync(&view(&store, &who), None)
+    };
+    assert!(store.write(&who, &closing).unwrap().closing);
+    let removal = || {
+        store
+            .read(&who, &EnvironmentsQuery::default())
+            .unwrap()
+            .environments
+            .into_iter()
+            .find(|listing| listing.name.as_str() == "fix-web")
+            .unwrap()
+            .removal
+    };
+    // Before the sweep starts its Deployment, the close is pending.
+    assert!(
+        matches!(
+            removal(),
+            Some(EnvironmentRemoval::Pending {
+                because: RemovedBecause::Synced,
+                since,
+            }) if since > 0
+        ),
+        "{:?}",
+        removal()
+    );
+
+    let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Remove(AdmitRemoval {
+                id: id.clone(),
+                environment: at("fix-web"),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            removal(),
+            Some(EnvironmentRemoval::Deployment(running)) if running.id == id && running.in_flight
+        ),
+        "{:?}",
+        removal()
+    );
+}
+
+#[test]
+fn removing_a_branch_whose_close_waits_for_the_sweep_needs_no_new_confirmation() {
+    let (store, who) = shop(true);
+    deploy(&store, &who, "fix-web", 30);
+    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+    let closing = SyncChanges {
+        close_after: true,
+        ..sync(&view(&store, &who), None)
+    };
+    assert!(store.write(&who, &closing).unwrap().closing);
+
+    let again = Remove {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: Some(EnvironmentName::parse("fix-web").unwrap()),
+        version: None,
+        accept_volume_loss: BTreeMap::new(),
+        every_copy: BTreeMap::new(),
+    };
+    assert!(matches!(
+        store.write_trusted(&who, &again, &Trusted::default()),
+        Ok(Removal::Removing { .. })
+    ));
 }
 
 #[test]
