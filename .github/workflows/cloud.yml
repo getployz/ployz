@@ -7,6 +7,10 @@ on:
         description: Build this release tag and publish ghcr.io/getployz/ployz-cloud:<tag>
         type: string
         default: ''
+      runner:
+        description: Linux runner label; release builds keep the GitHub-hosted default
+        type: string
+        default: ubuntu-24.04
     secrets:
       KACHE_S3_ACCESS_KEY_ID:
         required: false
@@ -53,7 +57,7 @@ env:
 jobs:
   static:
     needs: [sdk]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -78,7 +82,7 @@ jobs:
 
   sdk:
     name: Prepare matching SDK
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 15
     # The SDK built from these sources: an earlier run's upload, or this run's build.
     outputs:
@@ -136,7 +140,7 @@ jobs:
       contents: read
       packages: write
     needs: [sdk, static, test]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -180,7 +184,7 @@ jobs:
 
   test:
     needs: [sdk]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 10
     # The suite is CPU-bound on a 4-vCPU runner. Two shards keep each job near three minutes;
     # a third saved about a minute of wall time but billed a setup and a rounded-up minute more.
