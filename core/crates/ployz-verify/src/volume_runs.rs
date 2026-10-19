@@ -11,8 +11,9 @@
 //! - Cloud ending the Move's row at any moment, which hands the Volume to a Release:
 //!   back to A while warm (`releaseVolume`), forward to B once committed
 //!   (`finishRelease`);
-//! - the Move's driver carrying on after its row ended, as a cancelled Inngest run
-//!   can, and resending any request, so an earlier copy lands late;
+//! - the Move resending any request while its row runs, and every request it sent
+//!   landing at any later moment, even after its row ended. Once the row ends, the
+//!   driver's next step stops at `requireOwner`, so it sends nothing new;
 //! - each Machine running `SetVolumeCopy`
 //!   (`ployzd/src/machine_api/local_volume_copy.rs`), with each lock and floor check
 //!   of the code as its own step, and the transition picked by the real
@@ -33,7 +34,7 @@ use stateright::{Checker, HasDiscoveries, Model, Property};
 /// The Move's lane `gen`, and the Release's after it.
 const MOVE_GEN: u8 = 1;
 const RELEASE_GEN: u8 = 2;
-/// A's Writer epoch before the Move, the Move's, and the Release's from `takeEpoch`.
+/// A's Writer epoch before the Move, the Move's, and a warm Release's from `takeEpoch`.
 const OLD_EPOCH: u32 = 1;
 const MOVE_EPOCH: u32 = 2;
 const RELEASE_EPOCH: u32 = 3;
@@ -378,8 +379,9 @@ impl State {
 struct Broken {
     /// Every `admit` passes: no Machine keeps a floor.
     floors: bool,
-    /// `commitMove` commits a row that already ended.
-    commit_gate: bool,
+    /// `requireOwner` and `commitMove` let a Move whose row ended carry on: it commits,
+    /// sends new requests, and resends.
+    owner_checks: bool,
     /// `cut_volume_copy` skips its floor checks after the drain.
     cut_floor: bool,
     /// `start_volume_holder` skips its floor check.
@@ -832,6 +834,12 @@ impl VolumeRuns {
     }
 
     fn move_step(&self, state: &mut State) {
+        // Every Move step that talks to a Machine or the row checks ownership first.
+        if !state.row.running() && !self.broken.owner_checks {
+            state.moving.step = MoveStep::Over;
+            state.moving.waiting = None;
+            return;
+        }
         let driver = state.moving;
         let reply = state.replied(driver.waiting);
         let next = |state: &mut State, step: MoveStep| {
@@ -865,7 +873,7 @@ impl VolumeRuns {
             }
             (MoveStep::Commit, _, _) => {
                 // `commitMove`: only a row still running commits.
-                if state.row.running() || self.broken.commit_gate {
+                if state.row.running() || self.broken.owner_checks {
                     if state.row == Row::Warm {
                         state.row = Row::Committed;
                     }
@@ -1099,9 +1107,11 @@ impl VolumeRuns {
                 let Some(at) = copy.newest() else {
                     return fail(state);
                 };
+                // A committed Move's Release inherits the Move's epoch (`endAndRelease`), and
+                // `takeEpoch` keeps it.
                 let epoch = match copy {
                     Held::Root { epoch, .. } => epoch,
-                    Held::Slot { .. } | Held::None => RELEASE_EPOCH,
+                    Held::Slot { .. } | Held::None => MOVE_EPOCH,
                 };
                 let start = if state.b.holder == Holder::Running {
                     return next(state, ReleaseStep::RemoveForward);
@@ -1296,10 +1306,16 @@ impl Model for VolumeRuns {
                 actions.push(Action::Crash(index));
             }
         }
-        if state.moving.step != MoveStep::Over && steps(state, state.moving) {
+        // A Move whose row ended stops whenever its step next runs or retries, leaving
+        // what it sent in flight.
+        let stopped = !state.row.running() && !self.broken.owner_checks;
+        if state.moving.step != MoveStep::Over && (stopped || steps(state, state.moving)) {
             actions.push(Action::Move);
         }
-        if state.moving.step != MoveStep::Over && resendable(state, state.moving) {
+        if state.moving.step != MoveStep::Over
+            && (state.row.running() || self.broken.owner_checks)
+            && resendable(state, state.moving)
+        {
             actions.push(Action::MoveResend);
         }
         if state.row.running() {
@@ -1376,7 +1392,7 @@ impl Model for VolumeRuns {
                     || state
                         .release
                         .as_ref()
-                        .is_none_or(|release| release.forward || release.row == Row::Done)
+                        .is_none_or(|release| release.row == Row::Done)
             }),
             Property::sometimes("a Move finishes", |_, state: &State| state.row == Row::Done),
             Property::sometimes("a Release back to A finishes", |_, state: &State| {
@@ -1411,7 +1427,7 @@ const ONE_SERVICE: &str = "the Service runs on one Machine at most";
 const SERVICE_ON_WRITER: &str = "a running Service sits on its Machine's Writer";
 const NOTHING_STUCK: &str = "every run ends";
 const DONE_HOLDS: &str = "a run that finished done still holds at rest";
-const RELEASE_WINS: &str = "a Release back to A finishes whatever the dead Move still sends";
+const RELEASE_WINS: &str = "a Release finishes whatever the dead Move still sends";
 
 fn at_rest(model: &VolumeRuns, state: &State) -> bool {
     let mut actions = Vec::new();
@@ -1484,10 +1500,10 @@ mod tests {
     }
 
     #[test]
-    fn floors_and_the_commit_gate_keep_one_writer() {
+    fn floors_and_owner_checks_keep_one_writer() {
         let broken = Broken {
             floors: true,
-            commit_gate: true,
+            owner_checks: true,
             ..Broken::default()
         };
         breaks(broken, &[NEVER_TWO_WRITERS, ONE_SERVICE, DONE_HOLDS]);

@@ -5,7 +5,7 @@ description: Model-check Volume Runs (Move, Release, late steps from a dead run)
 
 # Verify Volume Runs
 
-The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interleaving of one Move, the Release that takes it over, and every late `SetVolumeCopy` the dead Move can still deliver. It calls the real `ployz_core::plan`, so a planner change is checked as written. Everything else (the Machine's lock and floor steps, the Inngest drivers, the Postgres commit gate) is a hand copy of the code, and drifts unless you keep it in step.
+The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interleaving of one Move, the Release that takes it over, and every `SetVolumeCopy` the dead Move already sent landing late. Once its row ends, the Move sends nothing new: each step checks ownership first. It calls the real `ployz_core::plan`, so a planner change is checked as written. Everything else (the Machine's lock and floor steps, the Inngest drivers, `requireOwner` and the `commitMove` gate) is a hand copy of the code, and drifts unless you keep it in step.
 
 ## Run it
 
@@ -13,7 +13,7 @@ The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interl
 cd core && cargo test -p ployz-verify
 ```
 
-About 30 s with the build, 6 s warm. CI runs it in the workspace nextest, so a red model blocks the PR.
+A few minutes on a cold build, about 5 s warm. CI runs it in the workspace nextest, so a red model blocks the PR.
 
 The run is green when all five tests pass:
 
@@ -56,7 +56,7 @@ When a change intentionally alters the protocol (a new guard, a new step, a reor
 
 1. Update the matching model step, citing the file and function it copies.
 2. If the change adds a guard, add a `Broken` flag that removes it and a `breaks` test naming the property it keeps. A guard with no failing variant is untested.
-3. If a property's meaning changes, change its text and say why in the PR body. A property narrows only when the old one was wrong about the design, as `RELEASE_WINS` was for forward Releases, where a dead Move's own start on B legitimately lands first.
+3. If a property's meaning changes, change its text and say why in the PR body. Narrow a property only when the code is right and the property was wrong about the design. Before narrowing, recheck the model step the counterexample runs through: a forward Release once failed "Release wins" only because the model gave it a fresh epoch where `endAndRelease` hands it the Move's.
 
 ## Bounds and blind spots
 
