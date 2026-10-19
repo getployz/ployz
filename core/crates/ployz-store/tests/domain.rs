@@ -362,11 +362,55 @@ fn a_domain_is_removed_by_hostname_or_prefix() {
         json!(["app.example.com", "web.acme.ployz.app"])
     );
     assert!(!missing.message.contains("nope"));
+    store
+        .write_trusted(&who, &add(Some("пример.рф"), None), &cloud())
+        .unwrap();
+    remove("Пример.рф", &cloud()).unwrap();
+    store
+        .write_trusted(&who, &add_prefix("xn--zz"), &cloud())
+        .unwrap();
+    remove("xn--zz", &cloud()).unwrap();
     remove("App.Example.com", &cloud()).unwrap();
     // Without the Cluster Domain, a generated domain goes by its prefix.
     let removed = remove("web", &Trusted::default()).unwrap();
     assert_eq!(removed.staged.len(), 1);
     assert!(rows(&store, &who, &cloud()).is_empty());
+}
+
+#[test]
+fn a_hostname_is_kept_lowercase_and_in_punycode() {
+    let kept = |name: &str| Hostname::parse(name).unwrap().as_str().to_owned();
+    assert_eq!(kept("пример.рф"), "xn--e1afmkfd.xn--p1ai");
+    assert_eq!(kept(" Apple.COM "), "apple.com");
+    assert_eq!(kept("xn--pple-43d.com"), "xn--pple-43d.com");
+    assert_eq!(kept("аpple.com"), "xn--pple-43d.com");
+    assert_eq!(kept("XN--ZZ.example.com"), "xn--zz.example.com");
+    let long = format!("{}.com", "a".repeat(64));
+    for refused in [
+        "has space.com",
+        "under_score.com",
+        "*.example.com",
+        "localhost",
+        "при мер.рф",
+        long.as_str(),
+    ] {
+        let error = Hostname::parse(refused).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{refused}");
+        assert_eq!(error.message, "Expected a hostname like app.example.com");
+    }
+}
+
+#[test]
+fn a_unicode_custom_domain_is_listed_in_punycode() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add(Some("Пример.рф"), None), &cloud())
+        .unwrap();
+    let shown: Vec<String> = rows(&store, &who, &cloud())
+        .iter()
+        .map(|row| row.domain.shown().to_owned())
+        .collect();
+    assert_eq!(shown, ["xn--e1afmkfd.xn--p1ai"]);
 }
 
 fn deployment(n: u8) -> DeploymentId {
