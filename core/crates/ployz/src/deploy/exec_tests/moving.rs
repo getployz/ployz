@@ -1,6 +1,11 @@
-//! Placement convergence's one move: what each failure leaves behind.
+//! Placement convergence's one move: what each step leaves behind.
+
+use ployz_core::{DeploymentLogId, Gen, MachineName};
 
 use super::*;
+use crate::deploy::cleanup::Copy;
+use crate::deploy::convergence::{RelocateError, relocate};
+use crate::deploy::{MachineRef, OldCopyEnd, Unconfirmed};
 
 const FROM: char = '1';
 const TO: char = '2';
@@ -9,16 +14,15 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
     move_container(
         client,
         &test_namespace(),
-        (&spec(Some(0), None, None), None),
+        &spec(Some(0), None, None),
         &machine(TO),
         (&machine(FROM), &container('a')),
-        &mut true,
         &CancellationToken::new(),
     )
     .await
 }
 
-/// A move first reads the source copy's gen.
+/// A move first reads the source copy's gen and deploy label.
 fn moving(steps: Vec<Step>) -> Scripted {
     let mut script = vec![observed(
         Call::Inspect(machine(FROM), container('a')),
@@ -35,70 +39,149 @@ fn served() -> Vec<Step> {
     )]
 }
 
-#[tokio::test]
-async fn a_move_is_done_once_the_old_container_is_removed() {
-    let mut steps = served();
-    steps.extend([
-        ok(Call::Stop(machine(FROM), container('a'))),
-        ok(Call::Discard(machine(FROM), container('a'))),
-    ]);
-    let client = moving(steps);
-    assert_eq!(move_with(&client).await.unwrap(), container('b'));
-    client.assert_done();
+fn old_copy() -> Copy {
+    Copy {
+        machine_id: machine(FROM),
+        service: api(),
+        container_id: container('a'),
+        rotation: CopyRotation::In,
+    }
 }
 
-#[tokio::test]
-async fn a_move_that_keeps_the_old_container_never_stops_or_removes_it() {
-    let client = moving(served());
-    let moved = move_container(
-        &client,
+fn name(id: &MachineId) -> MachineRef {
+    MachineRef {
+        id: *id,
+        name: MachineName::parse(format!("m{id}")).unwrap(),
+    }
+}
+
+async fn relocate_with(
+    client: &Scripted,
+    cancellation: &CancellationToken,
+) -> Result<OldCopyEnd, RelocateError> {
+    relocate(
+        client,
         &test_namespace(),
-        (&spec(Some(0), None, None), None),
+        &spec(Some(0), None, None),
         &machine(TO),
-        (&machine(FROM), &container('a')),
-        &mut false,
-        &CancellationToken::new(),
+        &old_copy(),
+        &name,
+        cancellation,
     )
-    .await;
-    assert_eq!(moved.unwrap(), container('b'));
+    .await
+}
+
+#[tokio::test]
+async fn a_move_brings_the_new_copy_in_and_retires_the_old_one() {
+    let mut steps = served();
+    steps.push(ok(Call::Remove(machine(FROM), container('a'))));
+    let client = moving(steps).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
+    let end = relocate_with(&client, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(end, OldCopyEnd::Stopped);
+    assert_eq!(client.rotation(&container('b')), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&container('a')), None);
     client.assert_done();
 }
 
 #[tokio::test]
-async fn an_old_container_that_would_not_stop_still_serves() {
+async fn a_refused_in_discards_the_new_copy_and_keeps_the_old_one() {
     let mut steps = served();
-    steps.push(failed(
-        Call::Stop(machine(FROM), container('a')),
-        "stop failed",
-    ));
-    let client = moving(steps);
-    assert!(matches!(
-        move_with(&client).await,
-        Err(MoveContainerError::OldNotRemoved {
-            old_stopped: false,
-            ..
-        })
-    ));
-    client.assert_done();
-}
-
-#[tokio::test]
-async fn an_old_container_that_stopped_but_would_not_go_is_told_apart() {
-    let mut steps = served();
-    steps.extend([
-        ok(Call::Stop(machine(FROM), container('a'))),
-        failed(
-            Call::Discard(machine(FROM), container('a')),
-            "remove failed",
-        ),
-    ]);
-    let client = moving(steps);
-    let Err(MoveContainerError::OldNotRemoved { error, old_stopped }) = move_with(&client).await
+    steps.push(ok(Call::Remove(machine(TO), container('b'))));
+    let mut client = moving(steps).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
+    client.unhealthy_in.insert(
+        container('b'),
+        HealthVerdict::Failed {
+            observation: unhealthy(),
+            last_check: None,
+        },
+    );
+    let Err(RelocateError::NotServing {
+        replacement_removed,
+        ..
+    }) = relocate_with(&client, &CancellationToken::new()).await
     else {
-        panic!("the old Container stayed");
+        panic!("a copy that did not go In serves nothing");
     };
-    assert!(old_stopped);
-    assert!(error.to_string().contains("remove failed"), "{error}");
+    assert!(replacement_removed);
+    assert_eq!(client.rotation(&container('a')), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&container('b')), None);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unconfirmed_listing_leaves_both_copies_in() {
+    let mut client = moving(served()).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
+    client.acks.insert(machine('3'), Ack::Never);
+    let end = relocate_with(&client, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        end,
+        OldCopyEnd::In {
+            unconfirmed: Unconfirmed::Proxies {
+                servers: vec![name(&machine('3'))],
+            },
+        }
+    );
+    assert_eq!(client.rotation(&container('a')), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&container('b')), Some(CopyRotation::In));
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn the_last_copy_in_rotation_stays() {
+    let client = moving(served()).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
+    client.moved_sibling.lock().unwrap().insert(
+        (container('a'), Ask::Out),
+        (container('b'), CopyRotation::Out),
+    );
+    let Err(RelocateError::LastIn) = relocate_with(&client, &CancellationToken::new()).await else {
+        panic!("Out on the last In copy is refused");
+    };
+    assert_eq!(client.rotation(&container('a')), Some(CopyRotation::In));
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_cancel_between_in_and_out_leaves_both_copies_in() {
+    let cancellation = CancellationToken::new();
+    let mut client = moving(served()).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
+    client.cancel_on_move = Some((
+        Move::To(container('b'), CopyRotation::In),
+        cancellation.clone(),
+    ));
+    let end = relocate_with(&client, &cancellation).await.unwrap();
+    assert_eq!(
+        end,
+        OldCopyEnd::In {
+            unconfirmed: Unconfirmed::Cancelled,
+        }
+    );
+    assert_eq!(client.rotation(&container('a')), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&container('b')), Some(CopyRotation::In));
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn the_moved_copy_keeps_the_source_gen_and_deploy_label() {
+    let deploy = DeploymentLogId::parse("kept").unwrap();
+    let client = moving(served())
+        .with_copy_at(
+            &api(),
+            &machine(FROM),
+            &container('a'),
+            CopyRotation::In,
+            Gen::new(3),
+        )
+        .with_deploy(&container('a'), &deploy);
+    assert_eq!(move_with(&client).await.unwrap(), container('b'));
+    assert_eq!(
+        client.copies.lock().unwrap()[&container('b')].r#gen,
+        Gen::new(3)
+    );
+    assert_eq!(*client.deploys.lock().unwrap(), vec![Some(deploy)]);
     client.assert_done();
 }
 
@@ -127,7 +210,7 @@ async fn a_replacement_is_claimed_removed_only_when_its_removal_was_acknowledged
             ),
             removal,
         ]);
-        let Err(MoveContainerError::NotServing {
+        let Err(MoveContainerError {
             replacement_removed,
             ..
         }) = move_with(&client).await
@@ -146,10 +229,6 @@ async fn a_run_whose_reply_was_lost_is_resent_to_the_same_slot() {
         "connection reset",
     )];
     steps.extend(served());
-    steps.extend([
-        ok(Call::Stop(machine(FROM), container('a'))),
-        ok(Call::Discard(machine(FROM), container('a'))),
-    ]);
     let client = moving(steps);
     assert_eq!(move_with(&client).await.unwrap(), container('b'));
     let slots = client.slots.lock().unwrap();
@@ -172,7 +251,7 @@ async fn a_failed_run_removes_its_slot() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    let Err(MoveContainerError::NotServing {
+    let Err(MoveContainerError {
         replacement_removed,
         ..
     }) = move_with(&client).await
@@ -183,15 +262,15 @@ async fn a_failed_run_removes_its_slot() {
     client.assert_done();
 }
 
-/// Only a missing source copy falls back to the first gen; an unreadable one would start
-/// the replacement at a gen older than the copy it replaces.
+/// The replacement takes its gen and deploy label from the source copy, so a source it
+/// cannot read starts nothing.
 #[tokio::test]
 async fn an_unreadable_source_copy_starts_no_replacement() {
     let client = Scripted::new(vec![failed(
         Call::Inspect(machine(FROM), container('a')),
         "daemon unreachable",
     )]);
-    let Err(MoveContainerError::NotServing {
+    let Err(MoveContainerError {
         error: ExecutionError::Machine { action, .. },
         replacement_removed,
     }) = move_with(&client).await
@@ -203,10 +282,37 @@ async fn an_unreadable_source_copy_starts_no_replacement() {
     client.assert_done();
 }
 
-#[tokio::test]
-async fn a_cancelled_global_move_removes_its_replacement() {
+async fn cancelled_global_move(client: &Scripted) -> bool {
     let mut global = spec(Some(0), None, None);
     global.mode = ployz_core::ServiceMode::Global;
+    let cancellation = CancellationToken::new();
+    let (namespace, to, from, old) = (test_namespace(), machine(TO), machine(FROM), container('a'));
+    let moving = move_container(
+        client,
+        &namespace,
+        &global,
+        &to,
+        (&from, &old),
+        &cancellation,
+    );
+    tokio::pin!(moving);
+    tokio::select! {
+        moved = &mut moving => panic!("the move returned before cancel: {moved:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    cancellation.cancel();
+    let Err(MoveContainerError {
+        error: ExecutionError::Cancelled,
+        replacement_removed,
+    }) = moving.await
+    else {
+        panic!("a cancelled move serves nothing");
+    };
+    replacement_removed
+}
+
+#[tokio::test]
+async fn a_cancelled_global_move_removes_its_replacement() {
     let client = moving(vec![
         Step(
             Call::Run(machine(TO), ContainerKind::ServiceContainer),
@@ -217,404 +323,17 @@ async fn a_cancelled_global_move_removes_its_replacement() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    let cancellation = CancellationToken::new();
-    let (namespace, to, from, old) = (test_namespace(), machine(TO), machine(FROM), container('a'));
-    let mut removes = true;
-    let moving = move_container(
-        &client,
-        &namespace,
-        (&global, None),
-        &to,
-        (&from, &old),
-        &mut removes,
-        &cancellation,
-    );
-    tokio::pin!(moving);
-    tokio::select! {
-        moved = &mut moving => panic!("the move returned before cancel: {moved:?}"),
-        () = tokio::task::yield_now() => {}
-    }
-    cancellation.cancel();
-    let Err(MoveContainerError::NotServing {
-        error: ExecutionError::Cancelled,
-        replacement_removed,
-    }) = moving.await
-    else {
-        panic!("a cancelled move serves nothing");
-    };
-    assert!(replacement_removed);
+    assert!(cancelled_global_move(&client).await);
     client.assert_done();
 }
 
 #[tokio::test]
 async fn a_cancelled_global_move_keeps_an_adopted_replica() {
-    let mut global = spec(Some(0), None, None);
-    global.mode = ployz_core::ServiceMode::Global;
     let mut client = moving(vec![Step(
         Call::Run(machine(TO), ContainerKind::ServiceContainer),
         Reply::Pending,
     )]);
     client.runs_global = true;
-    let cancellation = CancellationToken::new();
-    let (namespace, to, from, old) = (test_namespace(), machine(TO), machine(FROM), container('a'));
-    let mut removes = true;
-    let moving = move_container(
-        &client,
-        &namespace,
-        (&global, None),
-        &to,
-        (&from, &old),
-        &mut removes,
-        &cancellation,
-    );
-    tokio::pin!(moving);
-    tokio::select! {
-        moved = &mut moving => panic!("the move returned before cancel: {moved:?}"),
-        () = tokio::task::yield_now() => {}
-    }
-    cancellation.cancel();
-    let Err(MoveContainerError::NotServing {
-        error: ExecutionError::Cancelled,
-        replacement_removed,
-    }) = moving.await
-    else {
-        panic!("a cancelled move serves nothing");
-    };
-    assert!(!replacement_removed);
+    assert!(!cancelled_global_move(&client).await);
     client.assert_done();
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_first_pointer_published_while_the_replacement_starts_keeps_the_old_container() {
-    use crate::deploy::convergence::{AtRemoval, OldCopyGate};
-    use crate::serving_publish::tests::{FakeRow, pointer};
-
-    for published in [true, false] {
-        let mut steps = vec![Step(
-            Call::Run(machine(TO), ContainerKind::ServiceContainer),
-            Reply::CreatedAfter(container('b'), std::time::Duration::from_secs(10)),
-        )];
-        if !published {
-            steps.extend([
-                ok(Call::Stop(machine(FROM), container('a'))),
-                ok(Call::Discard(machine(FROM), container('a'))),
-            ]);
-        }
-        let client = moving(steps);
-        let row = FakeRow::default();
-        let service = QualifiedService::parse("app/web").unwrap();
-        let (namespace, spec, to, from, old) = (
-            test_namespace(),
-            spec(Some(0), None, None),
-            machine(TO),
-            machine(FROM),
-            container('a'),
-        );
-        let cancellation = CancellationToken::new();
-        let mut gate = OldCopyGate {
-            at_removal: AtRemoval::Remove,
-            reader: row.clone(),
-            service: &service,
-            old: &old,
-        };
-        let publish = async {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            if published {
-                *row.row.lock().unwrap() = Some(pointer('a', &['a'], &[]));
-            }
-        };
-        let (moved, ()) = tokio::join!(
-            move_container(
-                &client,
-                &namespace,
-                (&spec, None),
-                &to,
-                (&from, &old),
-                &mut gate,
-                &cancellation,
-            ),
-            publish,
-        );
-        assert_eq!(moved.unwrap(), container('b'));
-        client.assert_done();
-    }
-}
-
-#[tokio::test]
-async fn a_kept_old_copy_is_never_stopped_and_a_removed_one_is() {
-    use crate::deploy::convergence::{AtRemoval, OldCopy, OldCopyGate};
-    use crate::serving_publish::tests::{FakeRow, pointer};
-
-    let kept = pointer('c', &['a'], &[]);
-    for old_copy in [OldCopy::Keep { pointer: &kept }, OldCopy::Remove] {
-        let mut steps = vec![created(
-            Call::Run(machine(TO), ContainerKind::ServiceContainer),
-            &container('b'),
-        )];
-        if old_copy == OldCopy::Remove {
-            steps.extend([
-                ok(Call::Stop(machine(FROM), container('a'))),
-                ok(Call::Discard(machine(FROM), container('a'))),
-            ]);
-        }
-        let client = moving(steps);
-        let reader = FakeRow::default();
-        if old_copy != OldCopy::Remove {
-            *reader.row.lock().unwrap() = Some(kept.clone());
-        }
-        let service = QualifiedService::parse("app/web").unwrap();
-        let (namespace, spec, to, from, old) = (
-            test_namespace(),
-            spec(Some(0), None, None),
-            machine(TO),
-            machine(FROM),
-            container('a'),
-        );
-        let cancellation = CancellationToken::new();
-        let mut gate = OldCopyGate {
-            at_removal: AtRemoval::of(old_copy, &old),
-            reader,
-            service: &service,
-            old: &old,
-        };
-        let deploy = gate.at_removal.replacement_deploy();
-        let moved = move_container(
-            &client,
-            &namespace,
-            (&spec, deploy.as_ref()),
-            &to,
-            (&from, &old),
-            &mut gate,
-            &cancellation,
-        )
-        .await;
-        assert_eq!(moved.unwrap(), container('b'), "{old_copy:?}");
-        client.assert_done();
-        let kept_deploy = (old_copy != OldCopy::Remove).then(|| kept.deploy.clone());
-        assert_eq!(
-            *client.deploys.lock().unwrap(),
-            vec![kept_deploy],
-            "a kept copy's replacement carries its pointer's deployment label"
-        );
-    }
-}
-
-#[tokio::test]
-async fn a_pointer_whose_row_does_not_name_the_old_copy_lets_the_move_remove_it() {
-    use crate::deploy::convergence::{AtRemoval, OldCopy, OldCopyGate};
-    use crate::serving_publish::tests::{FakeRow, pointer};
-
-    let unrelated = pointer('c', &['c'], &[]);
-    let client = moving(vec![
-        created(
-            Call::Run(machine(TO), ContainerKind::ServiceContainer),
-            &container('b'),
-        ),
-        ok(Call::Stop(machine(FROM), container('a'))),
-        ok(Call::Discard(machine(FROM), container('a'))),
-    ]);
-    let reader = FakeRow::default();
-    *reader.row.lock().unwrap() = Some(unrelated.clone());
-    let service = QualifiedService::parse("app/web").unwrap();
-    let (namespace, spec, to, from, old) = (
-        test_namespace(),
-        spec(Some(0), None, None),
-        machine(TO),
-        machine(FROM),
-        container('a'),
-    );
-    let mut gate = OldCopyGate {
-        at_removal: AtRemoval::of(
-            OldCopy::Keep {
-                pointer: &unrelated,
-            },
-            &old,
-        ),
-        reader,
-        service: &service,
-        old: &old,
-    };
-    assert_eq!(gate.at_removal, AtRemoval::Remove);
-    let deploy = gate.at_removal.replacement_deploy();
-    let moved = move_container(
-        &client,
-        &namespace,
-        (&spec, deploy.as_ref()),
-        &to,
-        (&from, &old),
-        &mut gate,
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(moved.unwrap(), container('b'));
-    client.assert_done();
-    assert_eq!(gate.at_removal, AtRemoval::Remove);
-}
-
-#[tokio::test]
-async fn a_pointer_published_after_the_stop_keeps_the_old_container_unremoved() {
-    use crate::deploy::convergence::{AtRemoval, OldCopy, OldCopyGate};
-    use crate::serving_publish::PointerClient;
-    use crate::serving_publish::tests::{FakeRow, pointer};
-
-    struct PointedOnSecondRead {
-        row: FakeRow,
-        reads: u32,
-    }
-
-    impl PointerClient for PointedOnSecondRead {
-        async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
-            self.row.pointer_publisher().await
-        }
-
-        async fn read_pointer_at(
-            &mut self,
-            at: &mut ployz_core::MachineTarget,
-            service: &QualifiedService,
-        ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-            let read = self.row.read_pointer_at(at, service).await;
-            self.reads += 1;
-            if self.reads == 1 {
-                *self.row.row.lock().unwrap() = Some(pointer('a', &['a'], &[]));
-            }
-            read
-        }
-
-        async fn publish_pointer_at(
-            &mut self,
-            at: &mut ployz_core::MachineTarget,
-            request: ployz_core::PublishServingPointerRequest,
-        ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-            self.row.publish_pointer_at(at, request).await
-        }
-    }
-
-    let client = moving(vec![
-        created(
-            Call::Run(machine(TO), ContainerKind::ServiceContainer),
-            &container('b'),
-        ),
-        ok(Call::Stop(machine(FROM), container('a'))),
-    ]);
-    let service = QualifiedService::parse("app/web").unwrap();
-    let (namespace, spec, to, from, old) = (
-        test_namespace(),
-        spec(Some(0), None, None),
-        machine(TO),
-        machine(FROM),
-        container('a'),
-    );
-    let mut gate = OldCopyGate {
-        at_removal: AtRemoval::of(OldCopy::Remove, &old),
-        reader: PointedOnSecondRead {
-            row: FakeRow::default(),
-            reads: 0,
-        },
-        service: &service,
-        old: &old,
-    };
-    let moved = move_container(
-        &client,
-        &namespace,
-        (&spec, None),
-        &to,
-        (&from, &old),
-        &mut gate,
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(moved.unwrap(), container('b'));
-    client.assert_done();
-    assert_eq!(
-        gate.reader.reads, 2,
-        "one read before the stop, one before the removal"
-    );
-    assert_eq!(
-        gate.at_removal,
-        AtRemoval::Pointed(pointer('a', &[], &[]).deploy),
-        "the stopped copy is left for its pointer's retire path"
-    );
-}
-
-#[tokio::test]
-async fn an_unreadable_pointer_after_the_stop_reports_the_old_container_stopped() {
-    use crate::deploy::convergence::{AtRemoval, OldCopy, OldCopyGate};
-    use crate::serving_publish::PointerClient;
-    use crate::serving_publish::tests::FakeRow;
-
-    struct UnreadableOnSecondRead {
-        row: FakeRow,
-        reads: u32,
-    }
-
-    impl PointerClient for UnreadableOnSecondRead {
-        async fn pointer_publisher(&mut self) -> Result<ployz_core::MachineTarget, RpcError> {
-            self.row.pointer_publisher().await
-        }
-
-        async fn read_pointer_at(
-            &mut self,
-            at: &mut ployz_core::MachineTarget,
-            service: &QualifiedService,
-        ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-            self.reads += 1;
-            if self.reads == 2 {
-                return Err(unavailable("the publisher is away"));
-            }
-            self.row.read_pointer_at(at, service).await
-        }
-
-        async fn publish_pointer_at(
-            &mut self,
-            at: &mut ployz_core::MachineTarget,
-            request: ployz_core::PublishServingPointerRequest,
-        ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-            self.row.publish_pointer_at(at, request).await
-        }
-    }
-
-    let client = moving(vec![
-        created(
-            Call::Run(machine(TO), ContainerKind::ServiceContainer),
-            &container('b'),
-        ),
-        ok(Call::Stop(machine(FROM), container('a'))),
-    ]);
-    let service = QualifiedService::parse("app/web").unwrap();
-    let (namespace, spec, to, from, old) = (
-        test_namespace(),
-        spec(Some(0), None, None),
-        machine(TO),
-        machine(FROM),
-        container('a'),
-    );
-    let mut gate = OldCopyGate {
-        at_removal: AtRemoval::of(OldCopy::Remove, &old),
-        reader: UnreadableOnSecondRead {
-            row: FakeRow::default(),
-            reads: 0,
-        },
-        service: &service,
-        old: &old,
-    };
-    let moved = move_container(
-        &client,
-        &namespace,
-        (&spec, None),
-        &to,
-        (&from, &old),
-        &mut gate,
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(moved.unwrap(), container('b'), "the replacement stays");
-    client.assert_done();
-    assert_eq!(
-        gate.at_removal,
-        AtRemoval::Unread {
-            detail: crate::ui::row(&unavailable("the publisher is away")),
-            old_stopped: true,
-        },
-        "the stop that already happened is reported"
-    );
 }

@@ -10,9 +10,8 @@
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
 use ployz_core::{
-    DeploymentLogId, EnvironmentValues, LiveServices, Machine, MachineId, MachineName,
-    MachineTarget, MachineUpdate, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode,
-    ServingPointer, UpdateMachineRequest, op,
+    EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget, MachineUpdate,
+    Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode, UpdateMachineRequest, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -20,14 +19,15 @@ use ts_rs::TS;
 
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
-use crate::deploy::{Converged, OldCopy, Replacement, can_move, converge};
-use crate::serving_publish::{Amendment, Join, PointerClient, Provenance, Rotation, amend_pointer};
+use crate::deploy::{Converged, can_move, converge};
 
 pub(crate) mod retirement;
 
 use retirement::{Retirement, retire_globals};
 
-pub use crate::deploy::{DrainStop, MachineRef, Move, MoveFailure, StayReason};
+pub use crate::deploy::{
+    DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
+};
 
 /// Which user Services a Drain acts on. Those of reserved Namespaces never are.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -387,22 +387,11 @@ trait DrainClient {
         globals: &[QualifiedService],
         cancellation: &CancellationToken,
     ) -> Vec<(QualifiedService, Retirement)>;
-    async fn pointer(
-        &mut self,
-        service: &QualifiedService,
-    ) -> Result<Option<ServingPointer>, RpcError>;
     async fn converge(
         &mut self,
         service: &QualifiedService,
-        old: OldCopy<'_>,
         cancellation: &CancellationToken,
     ) -> Converged;
-    async fn repoint(
-        &mut self,
-        service: &QualifiedService,
-        deploy: &DeploymentLogId,
-        replaced: &[Replacement],
-    ) -> Result<Amendment, RpcError>;
 }
 
 impl DrainClient for Client {
@@ -428,60 +417,13 @@ impl DrainClient for Client {
         retire_globals(self, server, globals, cancellation).await
     }
 
-    async fn pointer(
-        &mut self,
-        service: &QualifiedService,
-    ) -> Result<Option<ServingPointer>, RpcError> {
-        self.read_pointer(service).await
-    }
-
     async fn converge(
         &mut self,
         service: &QualifiedService,
-        old: OldCopy<'_>,
         cancellation: &CancellationToken,
     ) -> Converged {
-        converge(self, service, old, cancellation).await
+        converge(self, service, cancellation).await
     }
-
-    async fn repoint(
-        &mut self,
-        service: &QualifiedService,
-        deploy: &DeploymentLogId,
-        replaced: &[Replacement],
-    ) -> Result<Amendment, RpcError> {
-        publish_replacements_past_cancel(self, service, deploy, replaced).await
-    }
-}
-
-async fn publish_replacements_past_cancel<C: PointerClient>(
-    client: &mut C,
-    service: &QualifiedService,
-    deploy: &DeploymentLogId,
-    replaced: &[Replacement],
-) -> Result<Amendment, RpcError> {
-    let rotation = Rotation {
-        joining: replaced
-            .iter()
-            .map(|step| Join {
-                copy: step.new,
-                provenance: Provenance {
-                    source: step.old,
-                    source_deploy: None,
-                },
-            })
-            .collect(),
-        leaving: replaced.iter().map(|step| step.old).collect(),
-        pruning: Vec::new(),
-    };
-    amend_pointer(
-        client,
-        service,
-        deploy,
-        &CancellationToken::new(),
-        &rotation,
-    )
-    .await
 }
 
 /// Globals, then each replicated Service, then what remains. Infallible: every problem
@@ -546,55 +488,13 @@ async fn execute<C: DrainClient>(
                 record.stop(DrainStop::Cancelled, rest);
                 break 'work;
             }
-            let pointer = match client.pointer(service).await {
-                Ok(pointer) => pointer,
-                Err(error) => {
-                    record.push(
-                        service.clone(),
-                        DrainOutcome::Stays {
-                            reason: StayReason::PointerUnread {
-                                detail: error.message,
-                            },
-                        },
-                    );
-                    rest = after;
-                    continue;
-                }
-            };
-            let old = match &pointer {
-                None => OldCopy::Remove,
-                Some(pointer) => OldCopy::Keep { pointer },
-            };
-            let outcome = match client.converge(service, old, cancellation).await {
-                Converged::Moved { moves, replaced } => {
-                    match repoint(client, service, &moves, &replaced).await {
-                        Ok(()) => DrainOutcome::Moved { moves },
-                        Err(failure) => DrainOutcome::Failed { moves, failure },
-                    }
-                }
+            let outcome = match client.converge(service, cancellation).await {
+                Converged::Moved { moves } => DrainOutcome::Moved { moves },
                 Converged::NothingToMove => DrainOutcome::NothingToMove,
-                Converged::Failed {
-                    moves,
-                    replaced,
-                    failure,
-                } => {
-                    let failure = repoint(client, service, &moves, &replaced)
-                        .await
-                        .err()
-                        .unwrap_or(failure);
-                    DrainOutcome::Failed { moves, failure }
-                }
+                Converged::Failed { moves, failure } => DrainOutcome::Failed { moves, failure },
                 Converged::Stays { reason } => DrainOutcome::Stays { reason },
-                Converged::Stopped {
-                    moves,
-                    replaced,
-                    stop,
-                } => {
-                    let outcome = match repoint(client, service, &moves, &replaced).await {
-                        Ok(()) => DrainOutcome::Interrupted { moves },
-                        Err(failure) => DrainOutcome::Failed { moves, failure },
-                    };
-                    record.push(service.clone(), outcome);
+                Converged::Stopped { moves, stop } => {
+                    record.push(service.clone(), DrainOutcome::Interrupted { moves });
                     record.stop(stop, after);
                     break 'work;
                 }
@@ -624,41 +524,6 @@ async fn execute<C: DrainClient>(
         stopped,
         remaining,
     }
-}
-
-async fn repoint<C: DrainClient>(
-    client: &mut C,
-    service: &QualifiedService,
-    moves: &[Move],
-    replaced: &[Replacement],
-) -> Result<(), MoveFailure> {
-    let mut deploys = Vec::new();
-    for step in replaced {
-        if !deploys.contains(&&step.deploy) {
-            deploys.push(&step.deploy);
-        }
-    }
-    for deploy in deploys {
-        let group = replaced
-            .iter()
-            .filter(|step| step.deploy == *deploy)
-            .cloned()
-            .collect::<Vec<_>>();
-        let detail = match client.repoint(service, deploy, &group).await {
-            Ok(Amendment::Published { .. } | Amendment::Unchanged) => continue,
-            Ok(Amendment::Outdated) => "a newer deploy replaced it".to_owned(),
-            Ok(Amendment::NoPointer) => "it has none to retire the old copy".to_owned(),
-            Err(error) => crate::ui::row(&error),
-        };
-        let last = moves.last().expect("every kept old copy is a move");
-        return Err(MoveFailure::NotServing {
-            from: last.from.clone(),
-            to: last.to.clone(),
-            detail: format!("publishing its Serving Pointer: {detail}"),
-            replacement_removed: false,
-        });
-    }
-    Ok(())
 }
 
 /// The report's Services as they land, each handed to `progress`.
