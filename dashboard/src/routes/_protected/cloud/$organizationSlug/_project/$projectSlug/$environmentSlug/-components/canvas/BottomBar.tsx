@@ -53,8 +53,8 @@ type BottomBarProps = {
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
   /**
-   * Its latest ended Deployments, newest first, or undefined until they load. The newest shows Failed until dismissed;
-   * one seen in flight here shows how it ended.
+   * Its latest ended Deployments, newest first, or undefined until they load. The newest numbered one shows Failed
+   * until dismissed; one seen in flight here shows how it ended. A hold that never ran has no number and no outcome.
    */
   ended?: DeploymentSummary[];
   /** A running Deploy's storage step, in words, while it moves or copies a Volume before its Services. */
@@ -131,7 +131,7 @@ export function BottomBar({
     for (const deployment of active) seen.add(deployment.id);
     for (const id of seen) if (seen.size > WATCHED_LIMIT) seen.delete(id);
   }, [active]);
-  const latest = active.length > 0 ? undefined : ended?.[0];
+  const latest = active.length > 0 ? undefined : ended?.find((deployment) => deployment.number !== null);
   const showsLatest = latest !== undefined && (latest.status === "failed" ? latest.id !== dismissedFailure : watched.current.has(latest.id));
   const outcome = shown || !showsLatest || dismissed.has(latest.id) ? undefined : latest;
   const dismiss = (deployment: DeploymentSummary) => {

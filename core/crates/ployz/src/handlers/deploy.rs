@@ -1169,7 +1169,7 @@ pub(super) fn say_view(view: &DeploymentView) {
         view.deployment.label(),
         view.environment.project,
         view.environment.name,
-        super::store::word(&view.deployment.status)
+        status_word(&view.deployment)
     ));
     if let Some(upload) = &view.deployment.upload {
         crate::ui::stream(format_args!("  {}", provenance(upload)));

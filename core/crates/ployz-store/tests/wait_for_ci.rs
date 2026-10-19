@@ -836,7 +836,7 @@ fn a_cancelled_hold_is_not_the_latest_deployment() {
     // The list shows the cancelled hold and #1; the hold the push superseded is noise.
     let listed: Vec<_> = beside(&store, &who, &opened)
         .iter()
-        .map(|deployment| (deployment.number, deployment.status.clone()))
+        .map(|deployment| (deployment.number, deployment.status))
         .collect();
     assert_eq!(
         listed,
@@ -976,4 +976,77 @@ fn pages_reach_holds_past_the_first_page() {
         },
     );
     assert_eq!(bad.unwrap_err().code, RpcErrorCode::InvalidArgument);
+}
+
+/// Deployments #1 to #3, then a hold on `H2`, which leads the list: within a second
+/// a hold sorts before numbered rows, and later it is newer. A page of one ends on
+/// the hold; `between` then changes the Store before the pages after it are read.
+/// The hold, and what those pages list in order.
+fn paged_past_a_hold(
+    between: impl FnOnce(&ConfigStore, &DeploymentSummary),
+) -> (DeploymentSummary, Vec<DeploymentSummary>) {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    publish(&store, &who);
+    for n in 1..=3 {
+        let id = backend::admit(&store, &who, "production", n);
+        backend::run(&store, &id);
+    }
+    system(&store, &push(None, Some(H2), None));
+    let page = |cursor: Option<String>| {
+        store
+            .read(
+                &who,
+                &DeploymentsQuery {
+                    limit: Some(1),
+                    cursor,
+                    ..DeploymentsQuery::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = page(None);
+    let [hold] = <[_; 1]>::try_from(first.deployments).unwrap();
+    assert_eq!(hold.status, DeploymentStatus::WaitingForCi);
+    between(&store, &hold);
+    let mut rest = Vec::new();
+    let mut cursor = first.next_cursor;
+    while let Some(word) = cursor {
+        let next = page(Some(word));
+        rest.extend(next.deployments);
+        cursor = next.next_cursor;
+    }
+    (hold, rest)
+}
+
+/// A hold a page ended on, superseded before the next page is read: the pages
+/// after it still reach every numbered Deployment once, and never the hold.
+#[test]
+fn pages_past_a_superseded_hold() {
+    let (hold, rest) = paged_past_a_hold(|store, _| {
+        system(store, &push(Some(H2), Some(H3), None));
+    });
+    assert!(rest.iter().all(|row| row.id != hold.id));
+    assert!(
+        rest.iter()
+            .all(|row| row.status != DeploymentStatus::Superseded)
+    );
+    let numbered: Vec<_> = rest.iter().filter_map(|row| row.number).collect();
+    assert_eq!(numbered, [3, 2, 1]);
+    // The hold on H3 is newer than the page bound; at most it reads once.
+    let ids: std::collections::BTreeSet<_> = rest.iter().map(|row| &row.id).collect();
+    assert_eq!(ids.len(), rest.len());
+}
+
+/// A hold a page ended on, promoted before the next page is read: the previous page
+/// showed it, so the pages after reach the numbered Deployments once and not it.
+#[test]
+fn pages_past_a_promoted_hold() {
+    let (hold, rest) = paged_past_a_hold(|store, _| {
+        let promoted = passed(store, H2, 10);
+        assert_eq!(promoted.admitted[0].deployment.number, Some(4));
+    });
+    assert!(rest.iter().all(|row| row.id != hold.id));
+    let numbered: Vec<_> = rest.iter().map(|row| row.number).collect();
+    assert_eq!(numbered, [Some(3), Some(2), Some(1)]);
 }

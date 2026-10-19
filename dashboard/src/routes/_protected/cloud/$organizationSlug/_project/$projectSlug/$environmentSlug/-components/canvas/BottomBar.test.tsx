@@ -14,7 +14,7 @@ import { AgentDock } from "#/components/agent-sidebar/agent-dock";
 import { BottomBar, BottomBarSlot } from "./BottomBar";
 
 const [running, queued] = ["aaaa1111-uuid", "aaaa2222-uuid"];
-const deployment = (id: string, status: DeploymentSummary["status"], number: number) =>
+const deployment = (id: string, status: DeploymentSummary["status"], number: number | null) =>
   asTestDouble<DeploymentSummary>()({ id, status, number, services: [], upload: null });
 const replicas: ChangeGroup = asTestDouble<ChangeGroup>()({
   nodeType: "service", nodeId: "api", nodeName: "api", canDiscard: true, changeCount: 1, lifecycle: "update",
@@ -285,6 +285,12 @@ it("shows the newest Deployment Failed on a fresh mount, until dismissed, and ke
   open(canvasUrl);
   await act(async () => {});
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+it("keeps the newest numbered Deployment's Failed notice when a newer hold never ran", async () => {
+  ended = [deployment("hold", "waiting_for_ci", null), deployment("dropped", "cancelled", null), deployment(running, "failed", 1)];
+  open(canvasUrl);
+  expect((await bar()).getByText("Failed · Deployment #1")).toBeTruthy();
 });
 
 it("hides while nothing is staged or running", async () => {

@@ -291,8 +291,8 @@ pub(crate) fn page(
         .cursor
         .as_deref()
         .map(|cursor| {
-            DeploymentId::parse(cursor)
-                .map_err(|_| error::invalid("Expected a cursor from a previous page", json!({})))
+            deployment::Cursor::decode(cursor)
+                .ok_or_else(|| error::invalid("Expected a cursor from a previous page", json!({})))
         })
         .transpose()?;
     let environment = scope::environment(tx, who, &query.environment)?;
@@ -301,6 +301,6 @@ pub(crate) fn page(
     Ok(DeploymentsView {
         environment: environment.summary,
         deployments,
-        next_cursor: next.map(|id| id.as_str().to_owned()),
+        next_cursor: next.map(|cursor| cursor.encode()),
     })
 }

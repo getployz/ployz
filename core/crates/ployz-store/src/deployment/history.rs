@@ -407,46 +407,98 @@ pub(crate) fn build_log(
 /// burst of them would push real Deployments off the first page.
 const LISTED: &str = "(number IS NOT NULL OR status <> 'superseded')";
 
-/// The order a list reads in: by admission, newest first. Within one second a
-/// hold (unnumbered) leads, and numbered ones keep their number order; the id
-/// settles the rest. Every row has each key, so a page cursor can't skip one.
+/// A number no Deployment reaches, standing in for none: within one second a
+/// hold (unnumbered) leads, and numbered ones keep their number order.
+const UNNUMBERED: i64 = i64::MAX;
+
+/// The order a list reads in: by admission, newest first, then by number, then
+/// by id. Every row has each key, so a page cursor can't skip one.
 const LIST_KEY: &str = "admitted DESC, COALESCE(number, 9223372036854775807) DESC, id DESC";
 
+/// Where a page ended: the [`LIST_KEY`] of its last row, as it read when the page
+/// was handed out. The next page starts after that key whatever became of the row
+/// since. Superseded, it leaves the list but its key still bounds the page.
+/// Promoted, it re-admits as a numbered Deployment with a new key, so the next
+/// page leaves it out by id: the previous page already showed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Cursor {
+    admitted: i64,
+    number: Option<u64>,
+    id: DeploymentId,
+}
+
+impl Cursor {
+    fn of(last: &DeploymentSummary) -> Self {
+        Self {
+            admitted: last.admitted_at,
+            number: last.number,
+            id: last.id.clone(),
+        }
+    }
+
+    /// An opaque word for the API: the key, base64 without padding.
+    pub(crate) fn encode(&self) -> String {
+        use base64::Engine as _;
+        let number = self
+            .number
+            .map(|number| number.to_string())
+            .unwrap_or_default();
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(
+            "{}:{number}:{}",
+            self.admitted,
+            self.id.as_str()
+        ))
+    }
+
+    /// The key an [`encode`](Self::encode)d word carries; none for any other text.
+    pub(crate) fn decode(word: &str) -> Option<Self> {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(word)
+            .ok()?;
+        let text = String::from_utf8(bytes).ok()?;
+        let mut parts = text.splitn(3, ':');
+        let admitted = parts.next()?.parse().ok()?;
+        let number = match parts.next()? {
+            "" => None,
+            number => Some(number.parse().ok()?),
+        };
+        let id = DeploymentId::parse(parts.next()?).ok()?;
+        Some(Self {
+            admitted,
+            number,
+            id,
+        })
+    }
+}
+
 /// One page of `environment`'s [`LISTED`] Deployments in [`LIST_KEY`] order, after
-/// the one `after` names: the last of the previous page. The second element names
-/// the last of this page when another follows.
+/// the key `after` carries: where the previous page ended. The second element says
+/// where this page ended when another follows.
 pub(crate) fn page(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     limit: usize,
-    after: Option<&DeploymentId>,
-) -> Result<(Vec<DeploymentSummary>, Option<DeploymentId>), RpcError> {
+    after: Option<&Cursor>,
+) -> Result<(Vec<DeploymentSummary>, Option<Cursor>), RpcError> {
     let columns = COLUMNS.as_str();
     let mut params: Vec<crate::storage::Param<'_>> = vec![
         environment.as_str().into(),
         i64::try_from(limit + 1).unwrap_or(i64::MAX).into(),
     ];
-    let mut after_sql = String::new();
+    let mut after_sql = "";
     if let Some(after) = after {
-        let known = tx.query(
-            &format!(
-                "SELECT 1 FROM config_deployment \
-                 WHERE environment_id = ?1 AND id = ?2 AND {LISTED}"
-            ),
-            &[environment.as_str().into(), after.as_str().into()],
-        )?;
-        if known.is_empty() {
-            return Err(error::invalid(
-                "Expected a cursor from a previous page",
-                json!({}),
-            ));
-        }
-        params.push(after.as_str().into());
-        // Rows later than `after` in LIST_KEY order, each key compared in turn.
-        after_sql = " AND (admitted, COALESCE(number, 9223372036854775807), id) < \
-             (SELECT admitted, COALESCE(number, 9223372036854775807), id \
-              FROM config_deployment WHERE id = ?3)"
-            .to_owned();
+        let number = after
+            .number
+            .and_then(|number| i64::try_from(number).ok())
+            .unwrap_or(UNNUMBERED);
+        params.push(after.admitted.into());
+        params.push(number.into());
+        params.push(after.id.as_str().into());
+        // Rows later than the bound in LIST_KEY order, each key compared in turn,
+        // never the bound row itself under a key it took on since.
+        after_sql = " AND id <> ?5 \
+             AND (admitted, COALESCE(number, 9223372036854775807), id) < (?3, ?4, ?5)";
     }
     let rows = tx.query(
         &format!(
@@ -462,7 +514,7 @@ pub(crate) fn page(
         .collect::<Result<Vec<_>, _>>()?;
     let next = (page.len() > limit).then(|| {
         page.truncate(limit);
-        page.last().map(|last| last.id.clone())
+        page.last().map(Cursor::of)
     });
     Ok((page, next.flatten()))
 }
