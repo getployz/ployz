@@ -395,18 +395,29 @@ impl Tool for DeploymentRetry {
             number,
         };
         let source = cx.one(&query)?;
+        // A human approves the exact set it rolls back, so the agent confirms none.
         let retry = Admit::Retry(Retry {
             id,
             deployment: source.deployment.id.clone(),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         });
         let summary = cx.write(&retry)?;
         let retries = Some(source.deployment.number);
+        // On a replay the source's newer runs include this redeploy and any after it.
+        let rolls_back: Vec<u64> = source
+            .rolls_back
+            .iter()
+            .copied()
+            .filter(|number| *number < summary.number)
+            .collect();
         Ok(retried(
             cx,
             &source.environment,
             &summary,
             retries,
-            &source.newer_applied,
+            &rolls_back,
         ))
     }
 }

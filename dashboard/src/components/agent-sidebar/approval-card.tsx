@@ -9,7 +9,7 @@ import { Kbd } from "#/components/ui/kbd";
 import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, redeployLine } from "#/modules/approvals/approvals";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 
@@ -46,6 +46,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
   const [refused, setRefused] = useState<string | null>(null);
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
+  const redeploy = redeployLine(approval.command, approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const { asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
@@ -85,6 +86,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
         <Badge variant="destructive">{approvalBadge(approval.command, approval.review)}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
+        {redeploy !== null && <p className="text-xs">{redeploy}</p>}
         {effects.length > 0 && (
           <ul aria-label="Destroys" className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
             {effects.map((effect) => {

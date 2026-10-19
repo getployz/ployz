@@ -82,6 +82,11 @@ pub struct RemovalsQuery {
     /// deletes every deployed Volume.
     #[serde(default)]
     pub remove: bool,
+    /// Ask about redeploying this Deployment instead: what rolling back to it
+    /// removes. Redeploying one that rolls nothing back reviews nothing.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub deployment: Option<crate::id::DeploymentId>,
 }
 
 /// What a full Deploy would remove from the Servers: observe these Docker Volumes
@@ -140,6 +145,21 @@ pub(crate) fn removals(
     who: &Actor,
     query: &RemovalsQuery,
 ) -> Result<RemovalsView, RpcError> {
+    if let Some(deployment) = &query.deployment {
+        let stored = crate::deployment::owned(tx, who, deployment)?;
+        let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
+        let volumes = match crate::deployment::undone(tx, &stored.summary)?.is_empty() {
+            true => Vec::new(),
+            false => {
+                let review = review::review(tx, &environment)?;
+                crate::deployment::rollback_removed(tx, &stored, &review.head.applied)?
+            }
+        };
+        return Ok(RemovalsView {
+            environment: environment.summary,
+            volumes,
+        });
+    }
     let environment = scope::environment(tx, who, &query.environment)?;
     let review = review::review(tx, &environment)?;
     let volumes = if review.head.applied.volumes.is_empty() {

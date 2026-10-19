@@ -336,18 +336,33 @@ function primaryAction(status: DeploymentStatus, noServers: boolean): Deployment
 }
 
 /**
- * The confirm Redeploy opens when it rolls back Deployments that applied after this one; null when it rolls nothing back
+ * The confirm Redeploy opens when it rolls back Deployments that ran after this one; null when it rolls nothing back
  * and redeploys in one click.
  */
-export function rollbackConfirm(deployment: Pick<DeploymentView, "number" | "newer_applied">) {
-  const undone = deployment.newer_applied.map((number) => `#${number}`);
+export function rollbackConfirm(deployment: Pick<DeploymentView, "number" | "rolls_back">) {
+  const undone = deployment.rolls_back.map((number) => `#${number}`);
   if (undone.length === 0) return null;
   const list = undone.length === 1 ? undone[0] : `${undone.slice(0, -1).join(", ")} and ${undone.at(-1)}`;
   return { title: `Roll back to #${deployment.number}`, body: `Undoes ${list}` };
 }
 
-/** The action a Deployment page shows, and whether Cancel waits in its menu beside another one. */
-export function deploymentActions(status: DeploymentStatus, noServers: boolean) {
-  const primary = primaryAction(status, noServers);
+/**
+ * What a redeploy rolls back now, from the Store's refusal when it changed after the person confirmed; null for any
+ * other refusal.
+ */
+export function freshRollback(refusal: { code: string; details: unknown }): readonly number[] | null {
+  if (refusal.code !== "confirmation_required") return null;
+  return Option.getOrNull(decodeRollback(refusal.details))?.rolls_back ?? null;
+}
+
+const decodeRollback = Schema.decodeUnknownOption(Schema.Struct({ rolls_back: Schema.Array(Schema.Number) }));
+
+/**
+ * The action a Deployment page shows, and whether Cancel waits in its menu beside another one. A removal that applied
+ * left nothing to redeploy.
+ */
+export function deploymentActions(deployment: Pick<DeploymentSummary, "status" | "remove">, noServers: boolean) {
+  const { status } = deployment;
+  const primary = deployment.remove && status === "applied" ? null : primaryAction(status, noServers);
   return { primary, cancelInMenu: (status === "queued" || status === "running") && primary !== "cancel" };
 }

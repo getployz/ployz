@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel,
+  freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -132,23 +132,33 @@ it("reads a pending node as its Deployment does, and a vanished runner's node as
 });
 
 it("shows one action: redeploy once a Deployment ended, start while queued, cancel before it ends", () => {
-  expect(deploymentActions("failed", false)).toEqual({ primary: "redeploy", cancelInMenu: false });
-  expect(deploymentActions("queued", false)).toEqual({ primary: "start", cancelInMenu: true });
-  expect(deploymentActions("running", false)).toEqual({ primary: "cancel", cancelInMenu: false });
-  expect(deploymentActions("cancelling", false)).toEqual({ primary: null, cancelInMenu: false });
-  expect(deploymentActions("applied", false)).toEqual({ primary: "redeploy", cancelInMenu: false });
-  expect(deploymentActions("superseded", false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "failed", remove: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "queued", remove: false }, false)).toEqual({ primary: "start", cancelInMenu: true });
+  expect(deploymentActions({ status: "running", remove: false }, false)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "cancelling", remove: false }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "applied", remove: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "superseded", remove: false }, false)).toEqual({ primary: null, cancelInMenu: false });
   // With no Server nothing can run it, so adding one comes first; a running one can still be cancelled.
-  expect(deploymentActions("failed", true)).toEqual({ primary: "add_server", cancelInMenu: false });
-  expect(deploymentActions("queued", true)).toEqual({ primary: "add_server", cancelInMenu: true });
-  expect(deploymentActions("running", true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "failed", remove: false }, true)).toEqual({ primary: "add_server", cancelInMenu: false });
+  expect(deploymentActions({ status: "queued", remove: false }, true)).toEqual({ primary: "add_server", cancelInMenu: true });
+  expect(deploymentActions({ status: "running", remove: false }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  // A removal that applied left nothing to redeploy; one that failed redeploys.
+  expect(deploymentActions({ status: "applied", remove: true }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "failed", remove: true }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
 });
 
-it("asks before a redeploy that rolls back Deployments that applied after it, and only then", () => {
-  expect(rollbackConfirm({ number: 6, newer_applied: [] })).toBeNull();
-  expect(rollbackConfirm({ number: 4, newer_applied: [5] })).toEqual({ title: "Roll back to #4", body: "Undoes #5" });
-  expect(rollbackConfirm({ number: 4, newer_applied: [5, 6] })).toEqual({ title: "Roll back to #4", body: "Undoes #5 and #6" });
-  expect(rollbackConfirm({ number: 3, newer_applied: [5, 6, 8] })).toEqual({ title: "Roll back to #3", body: "Undoes #5, #6 and #8" });
+it("asks before a redeploy that rolls back Deployments that ran after it, and only then", () => {
+  expect(rollbackConfirm({ number: 6, rolls_back: [] })).toBeNull();
+  expect(rollbackConfirm({ number: 4, rolls_back: [5] })).toEqual({ title: "Roll back to #4", body: "Undoes #5" });
+  expect(rollbackConfirm({ number: 4, rolls_back: [5, 6] })).toEqual({ title: "Roll back to #4", body: "Undoes #5 and #6" });
+  expect(rollbackConfirm({ number: 3, rolls_back: [5, 6, 8] })).toEqual({ title: "Roll back to #3", body: "Undoes #5, #6 and #8" });
+});
+
+it("reads what a redeploy rolls back now from the Store's refusal, and nothing from any other", () => {
+  expect(freshRollback({ code: "confirmation_required", details: { deployment: "d", number: 4, rolls_back: [5, 6] } })).toEqual([5, 6]);
+  expect(freshRollback({ code: "confirmation_required", details: { rolls_back: [] } })).toEqual([]);
+  expect(freshRollback({ code: "confirmation_required", details: { volumes: [] } })).toBeNull();
+  expect(freshRollback({ code: "conflict", details: { rolls_back: [5] } })).toBeNull();
 });
 
 it("names an upload's provenance, and its uploader only when someone else started the Deployment", () => {

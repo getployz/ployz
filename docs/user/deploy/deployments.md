@@ -152,11 +152,13 @@ their recorded outcomes.
   for Deploy** beside the button says so when volume changes are staged. To ship a fix, change it
   and deploy instead. A deployment whose restore failed can't be redeployed, because it would mount
   the new volume empty. Redeploy refuses with "Restore failed. Restore again."
-- **Roll back** by clicking **Redeploy** on a deployment older than one that applied. Ployz asks
-  first, in **Roll back to #4**, and names what it undoes, such as **Undoes #5 and #6**. The
-  rollback ships #4's commit and settings. It never deletes volume data: a volume that #4 didn't
-  have, or that a later deployment brought back, keeps running with its data. Settings saved
-  after #4 show as staged changes again.
+- **Roll back** by clicking **Redeploy** on a deployment older than one that ran, even one that
+  failed partway. Ployz asks first, in **Roll back to #4**, and names what it undoes, such as
+  **Undoes #5 and #6**. The rollback ships #4's commit and settings. Services added after #4 stop,
+  and they and the other settings saved after #4 show as staged changes again. A volume #4 deleted
+  that a later deployment brought back is deleted again only after you type its name in **Deletes
+  data**. If another deployment runs while you confirm, Ployz asks again with the new list.
+- A finished removal or shutdown can't be redeployed: there is nothing left to ship.
 - **A rollback lasts until your next push or deploy**, which ships your latest commit and saved
   settings again. To keep it, revert the commit in Git and change the settings back.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
@@ -166,6 +168,8 @@ their recorded outcomes.
 
 The CLI does the same with `ployz deployment redeploy`, `start` and `cancel`. Before a rollback,
 `ployz deployment redeploy 4` asks in a terminal; outside one, or with `--json`, it needs `--yes`.
+A rollback that deletes volume data also needs `--accept-volume-loss <volume>` and the
+`--expect-version` it prints.
 [The agent](../account/agent-sidebar.md) can too, and its redeploys wait for you to approve.
 
 ## Deploy without downtime

@@ -119,6 +119,7 @@ pub(super) fn remove(
         let deletes = store.read(&RemovalsQuery {
             environment: at(name),
             remove: true,
+            deployment: None,
         })?;
         let accepted: Vec<_> = accept
             .iter()

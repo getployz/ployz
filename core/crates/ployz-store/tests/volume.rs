@@ -731,6 +731,9 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -739,11 +742,66 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
     assert_eq!(claimed.deletes, [held('a')]);
 }
 
-#[test]
-fn rolling_back_to_a_deployment_that_deleted_a_volume_keeps_its_data() {
+/// Claim Deployment `n` and run `web` and `api`: both deploy, or `web` deploys and
+/// `api` fails. It deletes `removed`.
+fn run_both(store: &ConfigStore, n: u8, api_fails: bool, removed: Vec<VolumeRemoval>) {
+    let runner = RunnerId::parse("runner").unwrap();
+    let op = |container: &str| json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": container.repeat(64)});
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [
+            {"index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+             "operation": op("a"), "status": {"type": "pending"}},
+            {"index": 1, "machine_id": "a".repeat(32), "service_name": "api",
+             "operation": op("b"), "status": {"type": "pending"}}
+        ],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store.claim(&id(n), &runner).unwrap();
+    store
+        .record(&id(n), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome = match api_fails {
+        false => json!({ "type": "success", "completed": [op("a"), op("b")] }),
+        true => json!({
+            "type": "failed", "completed": [op("a")],
+            "failed": {"type": "operation", "operation": op("b"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }),
+    };
+    store
+        .record(
+            &id(n),
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(serde_json::from_value(outcome).unwrap()),
+                removed,
+            },
+        )
+        .unwrap();
+}
+
+/// #2 deleted `data`, then #3 brought it back, applying it fully or only partly
+/// before it failed. Redeploying #2 rolls #3 back: its data is reviewed afresh and
+/// deleted only once a person accepts it again.
+fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(api_fails: bool) {
     let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-00000000000a").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
     admit(&store, &who, 1, &[], None).unwrap();
-    run(&store, 1, Vec::new());
+    run_both(&store, 1, false, Vec::new());
     store
         .write(
             &who,
@@ -754,11 +812,11 @@ fn rolling_back_to_a_deployment_that_deleted_a_volume_keeps_its_data() {
         )
         .unwrap();
     admit(&store, &who, 2, &["data"], Some(observed(&['a']))).unwrap();
-    let removed = VolumeRemoval {
+    let removed = || VolumeRemoval {
         id: held('a'),
         outcome: VolumeRemovalOutcome::Removed,
     };
-    assert_eq!(run(&store, 2, vec![removed]).deletes, [held('a')]);
+    run_both(&store, 2, false, vec![removed()]);
     // The Volume comes back under the same identity, so its new data lives in the
     // same Docker Volume #2 deleted.
     let first = store
@@ -791,25 +849,59 @@ fn rolling_back_to_a_deployment_that_deleted_a_volume_keeps_its_data() {
         )
         .unwrap();
     admit(&store, &who, 3, &[], None).unwrap();
-    run(&store, 3, Vec::new());
+    run_both(&store, 3, api_fails, Vec::new());
     assert!(listed(&store, &who)[0].deployed);
 
-    // Redeploying #2 rolls #3 back, and never deletes the data #3's Volume holds now.
     let rolled_back = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
         .unwrap();
-    assert_eq!(rolled_back.newer_applied, [3]);
-    store
-        .write_trusted(
+    assert_eq!(rolled_back.rolls_back, [3]);
+    // What a rollback asks about is what it deletes now, not what #2 accepted.
+    let removals = store
+        .read(
+            &who,
+            &RemovalsQuery {
+                deployment: Some(id(2)),
+                ..RemovalsQuery::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(removals.volumes.len(), 1);
+    let redeploy = |accept: &[&str], version: Option<String>| {
+        store.write_trusted(
             &who,
             &Admit::Retry(Retry {
                 id: id(4),
                 deployment: id(2),
+                rolls_back: Some(vec![3]),
+                version,
+                accept_volume_loss: accept
+                    .iter()
+                    .map(|name| VolumeName::parse(*name).unwrap())
+                    .collect(),
             }),
-            &Trusted::default(),
+            &Trusted {
+                volumes: Some(observed(&['a'])),
+                ..Trusted::default()
+            },
         )
-        .unwrap();
-    assert!(run(&store, 4, Vec::new()).deletes.is_empty());
+    };
+    let asked = redeploy(&[], None).unwrap_err();
+    assert_eq!(asked.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(asked.details["volumes"][0]["name"], json!("data"));
+    let version = asked.details["version"].as_str().unwrap().to_owned();
+    redeploy(&["data"], Some(version)).unwrap();
+    assert_eq!(prepare(&store, 4, &["web"]).deletes, [held('a')]);
+}
+
+#[test]
+fn rolling_back_past_a_deployment_that_brought_a_volume_back_asks_before_deleting_it() {
+    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(false);
+}
+
+#[test]
+fn rolling_back_past_a_partly_applied_deployment_asks_before_deleting_what_it_brought_back() {
+    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(true);
 }
 
 #[test]

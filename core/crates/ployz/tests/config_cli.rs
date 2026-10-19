@@ -2785,7 +2785,7 @@ fn redeploying_an_older_deployment_asks_before_it_rolls_back() {
     assert_eq!(asked["details"]["rolls_back"], json!([2]));
     assert_eq!(
         asked["details"]["retry"],
-        json!("ployz deployment redeploy 1 --yes")
+        json!("ployz --json deployment redeploy 1 --yes")
     );
 
     let rolled_back = no_server_answers(&store, &["deployment", "redeploy", "1", "--yes"]);

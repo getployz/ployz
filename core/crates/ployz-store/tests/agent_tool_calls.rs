@@ -1872,6 +1872,32 @@ fn the_newest_applied_deployment_redeploys_and_rolls_nothing_back() {
     assert_eq!(redeployed["deployment"], 2);
     assert_eq!(redeployed["retries"], 1);
     assert_eq!(redeployed["rolls_back"], json!([]));
+
+    // #2 starts, so redeploying #1 rolls it back.
+    let numbered = |number| {
+        store
+            .read(
+                &who(),
+                &ployz_store::NumberedDeploymentQuery {
+                    environment: EnvironmentRef::default(),
+                    number,
+                },
+            )
+            .unwrap()
+            .deployment
+            .id
+    };
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&numbered(2), &runner).unwrap();
+    let rollback = json!({ "deployment": 1, "request_key": "rollback-0001" });
+    let rolled_back = call(&store, "deployment_retry", rollback.clone(), "retry-2").ok();
+    assert_eq!(rolled_back["deployment"], 3);
+    assert_eq!(rolled_back["rolls_back"], json!([2]));
+    // Once #3 starts, a replay still names what it rolled back, not itself.
+    store.claim(&numbered(3), &runner).unwrap();
+    let replayed = call(&store, "deployment_retry", rollback, "retry-3").ok();
+    assert_eq!(replayed["deployment"], 3);
+    assert_eq!(replayed["rolls_back"], json!([2]));
 }
 
 /// Cloud's metrics answer with `events`, one CPU row and nothing unanswered.

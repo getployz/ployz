@@ -383,20 +383,24 @@ pub(crate) fn approve(
 /// Refuse retrying Deployment `source` unless Cloud holds a human's approval of this
 /// retry, when [`Gate::asks_retry`]: a retry ships nothing a review hasn't.
 /// `review` is taken before the retry queues, so its version moves once it does: one
-/// approval admits one retry.
+/// approval admits one retry. The approval binds the Deployments a rollback undoes,
+/// and says so.
 ///
 /// # Errors
-/// `approval_required`, naming the `version:digest` to approve and the `diff`.
+/// `approval_required`, naming the `version:digest` to approve, the `diff` and the
+/// `redeploy`: its Deployment's number and what it rolls back.
 pub(crate) fn approve_retry(
     who: &Actor,
     review: &Review,
-    source: &DeploymentId,
+    (source, rollback): (&DeploymentId, &crate::deployment::Rollback),
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
     let bound = json!({
         "organization": who.organization,
         "environment": review.view.environment.id,
         "retry": source,
+        "number": rollback.number,
+        "rolls_back": rollback.rolls_back,
     });
     // The retry ships its source's frozen state: none of the staged changes, and it
     // destroys only what its source's review already accepted.
@@ -404,10 +408,24 @@ pub(crate) fn approve_retry(
     diff.effects.clear();
     diff.changes.clear();
     diff.total_count = 0;
-    let message = gate.message(&diff, "deploy", || {
-        "A human must approve this redeploy first.".to_owned()
+    let undoes = crate::deployment::numbered(&rollback.rolls_back);
+    let message = gate.message(&diff, "deploy", || match &undoes {
+        Some(undoes) => format!(
+            "A human must approve rolling back to #{} first: it undoes {undoes}.",
+            rollback.number
+        ),
+        None => "A human must approve this redeploy first.".to_owned(),
     });
     gate.require(bound, message, (&BTreeSet::new(), &diff))
+        .map_err(|mut refused| {
+            if let Some(details) = refused.details.as_object_mut() {
+                details.insert(
+                    "redeploy".to_owned(),
+                    json!({ "deployment": rollback.number, "rolls_back": rollback.rolls_back }),
+                );
+            }
+            refused
+        })
 }
 
 /// What a Sync or Take moves into an Environment: from which source, and the

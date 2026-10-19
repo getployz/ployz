@@ -272,7 +272,7 @@ pub(crate) const DEPLOYMENT_LS: Verb =
     Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls);
 pub(crate) const DEPLOYMENT_REDEPLOY: Verb = Verb::cloud(
     "deployment redeploy",
-    Never,
+    Depends,
     deploy::redeploy_command,
     deploy::redeploy,
 )

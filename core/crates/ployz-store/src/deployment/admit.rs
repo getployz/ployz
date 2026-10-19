@@ -84,13 +84,28 @@ pub struct Deploy {
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
 /// credentials, upload and pinned commits, whatever was saved since. Redeploying
-/// one older than a Deployment that applied rolls that back.
+/// one older than a Deployment that may have changed the Servers rolls that back.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Retry {
     pub id: DeploymentId,
     /// The Deployment it ships again.
     pub deployment: DeploymentId,
+    /// The newer Deployments the caller confirmed this rolls back, by number. It
+    /// refuses with `confirmation_required`, naming the fresh `rolls_back`, when
+    /// they changed. None checks nothing.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub rolls_back: Option<Vec<u64>>,
+    /// As [`Deploy::version`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub version: Option<String>,
+    /// As [`Deploy::accept_volume_loss`]: a rollback reviews what it deletes
+    /// against what the Servers hold now, never its source's consent.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<VolumeName>>", optional)]
+    pub accept_volume_loss: Vec<VolumeName>,
 }
 
 /// Take an Environment off the Servers under the `remove` that marked it, or its
@@ -143,15 +158,15 @@ pub(crate) fn admit(
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     match admit {
-        // The retry deletes exactly the Docker Volumes its source's review accepted,
-        // which the copied target nodes carry, and a rollback deletes none: nothing
-        // new, so no new destructive review. Only an agent's retry asks a human.
+        // A plain retry deletes exactly the Docker Volumes its source's review
+        // accepted, which the copied target nodes carry; a rollback reviews its
+        // deletes afresh. Only an agent's retry asks a human.
         Admit::Retry(retry) => {
             let asked = retry_review(tx, who, &retry.deployment, trusted)?;
-            let retried = deployment::retry(tx, who, &retry.id, &retry.deployment)?;
+            let (retried, rollback) = deployment::retry(tx, who, retry, trusted)?;
             if let Some((review, gate)) = asked {
                 trusted.writes(&scope::load_by_id(tx, &retried.environment_id)?.summary.name)?;
-                review::approve_retry(who, &review, &retry.deployment, &gate)?;
+                review::approve_retry(who, &review, (&retry.deployment, &rollback), &gate)?;
             }
             if retried.remove
                 && let Some(outcome) =

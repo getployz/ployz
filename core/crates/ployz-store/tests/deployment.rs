@@ -2136,6 +2136,9 @@ fn retry(
         &Admit::Retry(Retry {
             id: id(n),
             deployment: id(source),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         }),
         &ployz_store::Trusted::default(),
     )
@@ -2234,11 +2237,11 @@ fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
     intent
 }
 
-fn newer_applied(store: &ConfigStore, who: &Actor, n: u8) -> Vec<u64> {
+fn rolls_back(store: &ConfigStore, who: &Actor, n: u8) -> Vec<u64> {
     store
         .read(who, &ployz_store::DeploymentQuery { id: id(n) })
         .unwrap()
-        .newer_applied
+        .rolls_back
 }
 
 #[test]
@@ -2250,8 +2253,8 @@ fn redeploying_an_older_deployment_rolls_back_to_what_it_froze() {
     let second = admit(&store, &who, 2, &[], None).unwrap();
     apply(&store, 2);
     assert_ne!(second.saved, first.saved);
-    assert_eq!(newer_applied(&store, &who, 1), [2]);
-    assert!(newer_applied(&store, &who, 2).is_empty());
+    assert_eq!(rolls_back(&store, &who, 1), [2]);
+    assert!(rolls_back(&store, &who, 2).is_empty());
 
     // #1 applied and #2 applied after it: redeploying #1 ships #1's revision again.
     let rolled_back = retry(&store, &who, 3, 1).unwrap();
@@ -2260,7 +2263,7 @@ fn redeploying_an_older_deployment_rolls_back_to_what_it_froze() {
         (3, DeploymentStatus::Queued, first.saved)
     );
     assert_eq!(apply(&store, 3), frozen);
-    assert_eq!(newer_applied(&store, &who, 1), [2, 3]);
+    assert_eq!(rolls_back(&store, &who, 1), [2, 3]);
     // What #2 saved is still the latest Saved revision, so it shows as a change to
     // deploy, and the next Deploy moves forward to it.
     assert_eq!(changed(&store, &who), ["web"]);
@@ -2271,7 +2274,7 @@ fn redeploying_an_older_deployment_rolls_back_to_what_it_froze() {
 
     // The newest applied Deployment redeploys too, rolling nothing back.
     apply(&store, 4);
-    assert!(newer_applied(&store, &who, 4).is_empty());
+    assert!(rolls_back(&store, &who, 4).is_empty());
     assert_eq!(retry(&store, &who, 5, 4).unwrap().saved, second.saved);
 }
 
@@ -2312,6 +2315,98 @@ fn a_redeploy_is_refused_unless_its_deployment_ended() {
     assert_eq!(status(&store, &who, 9), DeploymentStatus::Superseded);
     assert_eq!(retry(&store, &who, 7, 1).unwrap().number, 7);
     assert_eq!(status(&store, &who, 6), DeploymentStatus::Superseded);
+}
+
+/// Redeploy `source` as `n`, confirming that it rolls back `confirmed`.
+fn rollback(
+    store: &ConfigStore,
+    who: &Actor,
+    (n, source): (u8, u8),
+    confirmed: &[u64],
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Retry(Retry {
+            id: id(n),
+            deployment: id(source),
+            rolls_back: Some(confirmed.to_vec()),
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        &ployz_store::Trusted::default(),
+    )
+}
+
+#[test]
+fn a_redeploy_rolls_back_every_newer_deployment_that_may_have_changed_the_servers() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    // #2 lost track after preparing: it may have changed the Servers.
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+    // #3 was cancelled before it started, #4 superseded and #5 still queued: none ran.
+    admit(&store, &who, 3, &[], None).unwrap();
+    cancel(&store, &who, 3).unwrap();
+    admit(&store, &who, 4, &[], None).unwrap();
+    admit(&store, &who, 5, &[], None).unwrap();
+    assert_eq!(rolls_back(&store, &who, 1), [2]);
+
+    // What the caller confirmed must still be what it rolls back.
+    let stale = rollback(&store, &who, (6, 1), &[]).unwrap_err();
+    assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(stale.details["rolls_back"], json!([2]));
+    assert_eq!(status(&store, &who, 5), DeploymentStatus::Queued);
+    assert_eq!(rollback(&store, &who, (6, 1), &[2]).unwrap().number, 6);
+}
+
+#[test]
+fn a_full_rollback_retires_the_services_added_since() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    // #2 adds `cron`.
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("cron").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+    assert!(changed(&store, &who).is_empty());
+
+    // Rolling back to #1 takes `cron` off, and its saved settings show as staged.
+    retry(&store, &who, 3, 1).unwrap();
+    assert!(
+        nodes(&store, &who, 3)
+            .iter()
+            .any(|(name, _)| name == "cron")
+    );
+    apply(&store, 3);
+    assert_eq!(changed(&store, &who), ["cron"]);
 }
 
 #[test]
@@ -2878,6 +2973,9 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
             &Admit::Retry(ployz_store::Retry {
                 id: id(2),
                 deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -3433,6 +3531,9 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
             &Admit::Retry(Retry {
                 id: id(4),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &Trusted {
                 approval: Approval::Required,
@@ -3580,6 +3681,9 @@ fn agent_retries(
         &Admit::Retry(Retry {
             id: id(n),
             deployment: id(source),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -3610,6 +3714,9 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &staging,
         )
@@ -3763,6 +3870,9 @@ fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -3944,6 +4054,9 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &unprotecting(approval),
         )

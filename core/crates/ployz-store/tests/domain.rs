@@ -756,6 +756,9 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
             &Command::Admit(Admit::Retry(Retry {
                 id: deployment(2),
                 deployment: deployment(1),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             })),
             &Trusted::default(),
         )

@@ -195,9 +195,10 @@ impl<'m> Store<'m> {
     /// Cloud gathers its own evidence.
     pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
         let volumes = match &self.backend {
-            Backend::Local(..) => {
-                self.observe(std::slice::from_ref(&publish.environment), false)?
-            }
+            Backend::Local(..) => self.observe([RemovalsQuery {
+                environment: publish.environment.clone(),
+                ..RemovalsQuery::default()
+            }])?,
             Backend::Cloud(..) => None,
         };
         self.approved(
@@ -212,16 +213,25 @@ impl<'m> Store<'m> {
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
     /// Servers this CLI observes; over HTTPS, Cloud gathers its own evidence.
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
+        let removing = |environment: &EnvironmentRef, remove| RemovalsQuery {
+            environment: environment.clone(),
+            remove,
+            deployment: None,
+        };
         let volumes = match (&self.backend, admit) {
             (Backend::Local(..), Admit::Deploy(deploy)) if deploy.services.is_empty() => {
-                self.observe(std::slice::from_ref(&deploy.environment), false)?
+                self.observe([removing(&deploy.environment, false)])?
             }
             (Backend::Local(..), Admit::Remove(removal)) => {
-                self.observe(std::slice::from_ref(&removal.environment), true)?
+                self.observe([removing(&removal.environment, true)])?
             }
             (Backend::Local(..), Admit::ShutDown(shut_down)) => {
-                self.observe(std::slice::from_ref(&shut_down.environment), true)?
+                self.observe([removing(&shut_down.environment, true)])?
             }
+            (Backend::Local(..), Admit::Retry(retry)) => self.observe([RemovalsQuery {
+                deployment: Some(retry.deployment.clone()),
+                ..RemovalsQuery::default()
+            }])?,
             _ => None,
         };
         self.approved(
@@ -241,7 +251,13 @@ impl<'m> Store<'m> {
         members: &[EnvironmentRef],
     ) -> Result<Removal, StoreCallError> {
         let volumes = match &self.backend {
-            Backend::Local(..) => self.observe(members, true)?,
+            Backend::Local(..) => {
+                self.observe(members.iter().map(|environment| RemovalsQuery {
+                    environment: environment.clone(),
+                    remove: true,
+                    deployment: None,
+                }))?
+            }
             Backend::Cloud(..) => None,
         };
         self.approved(
@@ -261,20 +277,16 @@ impl<'m> Store<'m> {
         }
     }
 
-    /// Which Servers hold the data of the Volumes a Deploy (or a removal: `remove`)
-    /// of `environments` deletes. A Cluster this can't reach leaves the evidence out,
-    /// so the Store refuses.
+    /// Which Servers hold the data of the Volumes each of `queries` removes: a
+    /// Deploy, removal or rollback. A Cluster this can't reach leaves the evidence
+    /// out, so the Store refuses.
     fn observe(
         &self,
-        environments: &[EnvironmentRef],
-        remove: bool,
+        queries: impl IntoIterator<Item = RemovalsQuery>,
     ) -> Result<Option<VolumeObservation>, StoreCallError> {
         let mut sought = Vec::new();
-        for environment in environments {
-            let removals = self.backend.read(&RemovalsQuery {
-                environment: environment.clone(),
-                remove,
-            })?;
+        for query in queries {
+            let removals = self.backend.read(&query)?;
             sought.extend(
                 removals
                     .volumes
