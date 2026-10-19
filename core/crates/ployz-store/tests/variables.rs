@@ -207,6 +207,47 @@ fn null_environment_values_are_refused_before_any_setting_changes() {
 }
 
 #[test]
+fn a_value_too_long_for_the_environment_is_refused_when_set() {
+    let store = backend::open();
+    shop(&store);
+    // Linux passes each `KEY=value` string, with its NUL, in at most 128 KiB.
+    let fits = "x".repeat(128 * 1024 - "BIG=".len() - 1);
+    set(&store, &[("web.env.BIG", json!(fits))]).unwrap();
+    let before = get(&store, None);
+    let over = format!("{fits}x");
+    for value in [json!(over), json!({ "secret": over })] {
+        let error = set(&store, &[("web.env.BIG", value)]).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            error.message,
+            "BIG: too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
+        );
+        assert_eq!(get(&store, None), before);
+    }
+}
+
+#[test]
+fn a_reference_that_resolves_too_long_refuses_the_deploy() {
+    let store = backend::open();
+    shop(&store);
+    let half = "x".repeat(70 * 1024);
+    set(
+        &store,
+        &[
+            ("api.env.HALF", json!(half)),
+            ("web.env.BOTH", json!("${{ api.HALF }}${{ api.HALF }}")),
+        ],
+    )
+    .unwrap();
+    let error = admit(&store, 1).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        "web.env.BOTH is too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
+    );
+}
+
+#[test]
 fn a_typed_private_address_answers_with_its_reference() {
     let store = backend::open();
     shop(&store);

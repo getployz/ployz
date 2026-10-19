@@ -533,13 +533,26 @@ pub(crate) fn stored(mut parts: Vec<ValuePart>) -> SavedVariableValue {
     }
 }
 
+/// The longest `KEY=value` string Linux passes a program, with its closing NUL:
+/// `MAX_ARG_STRLEN`. A Container given a longer one never starts.
+const MAX_ENV_STRING: usize = 128 * 1024;
+
+const TOO_LONG: &str = "too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
+
+fn too_long(key: &str, value: &str) -> bool {
+    key.len() + value.len() + 2 > MAX_ENV_STRING
+}
+
 /// Plain and secret values must survive the container's environment unchanged.
 ///
 /// # Errors
-/// Refuses NUL bytes without echoing the value.
+/// Refuses NUL bytes, or a value too long for the environment, without echoing it.
 pub(crate) fn validate_text(key: &VariableKey, text: &str) -> Result<(), RpcError> {
     if text.contains('\0') {
         return Err(invalid(key, "null characters are not allowed"));
+    }
+    if too_long(key.as_str(), text) {
+        return Err(invalid(key, TOO_LONG));
     }
     Ok(())
 }
@@ -709,8 +722,8 @@ pub(crate) struct Resolved {
 /// reference, reaches is always left out; in a file either is empty.
 ///
 /// # Errors
-/// Returns `invalid_argument` for a reference cycle, or `internal` when a sealed
-/// value can't be opened.
+/// Returns `invalid_argument` for a reference cycle or a value too long for the
+/// environment, or `internal` when a sealed value can't be opened.
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
     unseal: Option<&SealingKey>,
@@ -813,6 +826,12 @@ pub(crate) fn resolve(
                 } => open(encrypted_value.as_ref())?,
             };
             if let Some(value) = value {
+                if too_long(key, &value) {
+                    return Err(error::invalid(
+                        format!("{}.env.{key} is {TOO_LONG}", config.settings.private_dns),
+                        json!({ "variable": key }),
+                    ));
+                }
                 env.insert(key.clone(), value);
             }
         }
