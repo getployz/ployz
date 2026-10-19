@@ -1,8 +1,8 @@
 use ployz_core::{
-    ContainerRuntimeObservation, CopyRotation, DEFAULT_HEALTH_MONITOR, DependencyHealthFailure,
-    DeploymentLogId, ExecutionError, HEALTH_POLL_INTERVAL, HealthExpectation, HealthObservation,
-    HealthPoll, HealthcheckSpec, OperationPhase, QualifiedService, classify_health,
-    health_deadline_for, healthcheck_deadline, observed_health,
+    ContainerObservation, ContainerRuntimeObservation, CopyRotation, DEFAULT_HEALTH_MONITOR,
+    DependencyHealthFailure, DeploymentLogId, ExecutionError, HEALTH_POLL_INTERVAL,
+    HealthExpectation, HealthObservation, HealthPoll, HealthcheckSpec, OperationPhase,
+    QualifiedService, classify_health, health_deadline_for, healthcheck_deadline, observed_health,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -39,21 +39,17 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
         // This run's copies are the ones it is bringing up: Pending or In.
         // Without any, the copies already In serve the dependent; a copy
         // Held or Out by another run is leaving and must not fail it.
-        let this_run: Vec<_> = containers
-            .iter()
-            .filter(|container| {
-                container.deploy_label().as_ref() == Some(run)
-                    && matches!(
-                        container.rotation(),
-                        CopyRotation::Pending | CopyRotation::In
-                    )
-            })
-            .cloned()
-            .collect();
-        if this_run.is_empty() {
-            containers.retain(|container| *container.rotation() == CopyRotation::In);
+        let of_this_run = |container: &ContainerObservation| {
+            container.deploy_label().as_ref() == Some(run)
+                && matches!(
+                    container.rotation(),
+                    CopyRotation::Pending | CopyRotation::In
+                )
+        };
+        if containers.iter().any(of_this_run) {
+            containers.retain(of_this_run);
         } else {
-            containers = this_run;
+            containers.retain(|container| *container.rotation() == CopyRotation::In);
         }
         if containers.is_empty() {
             return Err(dependency_health_error(
