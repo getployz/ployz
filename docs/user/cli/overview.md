@@ -25,7 +25,8 @@ again, or `brew upgrade ployz`.
 3. On **Sign in the Ployz CLI**, check that the code matches your terminal, then click
    **Approve**.
 
-`ployz logout` signs this computer out.
+This computer starts in the organization the page names. Switching organization in the dashboard
+later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in

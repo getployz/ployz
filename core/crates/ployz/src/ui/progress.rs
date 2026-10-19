@@ -532,7 +532,15 @@ fn drive(
 }
 
 fn terminal_size() -> (usize, usize) {
-    crossterm::terminal::size().map_or((80, 24), |(w, h)| (usize::from(w), usize::from(h)))
+    window(crossterm::terminal::size())
+}
+
+/// A pseudo-terminal nobody sized reports 0x0, which is no size at all.
+fn window(size: io::Result<(u16, u16)>) -> (usize, usize) {
+    match size {
+        Ok((w, h)) if w > 0 && h > 0 => (usize::from(w), usize::from(h)),
+        Ok(_) | Err(_) => (80, 24),
+    }
 }
 
 fn label(subject: &Subject, frame: &Frame) -> String {
