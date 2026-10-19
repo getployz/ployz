@@ -219,6 +219,40 @@ fn reach<'schema>(schema: &'schema Value, field: &str) -> &'schema Value {
     here
 }
 
+/// The first number in `input` past a bound `schema` declares, as its dotted
+/// path and the bound.
+pub(crate) fn out_of_range(schema: &Value, input: &Value) -> Option<(String, String)> {
+    match input {
+        Value::Object(fields) => fields.iter().find_map(|(name, value)| {
+            let inner = schema.get("properties")?.get(name)?;
+            out_of_range(inner, value).map(|(path, reason)| match path.is_empty() {
+                true => (name.clone(), reason),
+                false => (format!("{name}.{path}"), reason),
+            })
+        }),
+        Value::Array(items) => {
+            let inner = schema.get("items")?;
+            items.iter().enumerate().find_map(|(index, value)| {
+                out_of_range(inner, value).map(|(path, reason)| match path.is_empty() {
+                    true => (index.to_string(), reason),
+                    false => (format!("{index}.{path}"), reason),
+                })
+            })
+        }
+        Value::Number(number) => {
+            let number = number.as_f64()?;
+            let bound = |key: &str| schema.get(key).and_then(Value::as_f64);
+            if let Some(minimum) = bound("minimum").filter(|minimum| number < *minimum) {
+                return Some((String::new(), format!("at least {minimum}")));
+            }
+            bound("maximum")
+                .filter(|maximum| number > *maximum)
+                .map(|maximum| (String::new(), format!("at most {maximum}")))
+        }
+        Value::Null | Value::Bool(_) | Value::String(_) => None,
+    }
+}
+
 /// Where `schema` is not portable, as one line per problem; empty when it is.
 #[must_use]
 pub fn lint(schema: &Value) -> Vec<String> {
