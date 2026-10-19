@@ -27,6 +27,9 @@ again, or `brew upgrade ployz`.
 
 This computer starts in the organization the page names. Switching organization in the dashboard
 later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
+If Cloud can't be reached, `ployz logout` still forgets the sign-in here and warns that Cloud
+honours it until you remove it with `ployz token rm`. An unreadable sign-in is forgotten too, and
+`ployz login` replaces it.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in

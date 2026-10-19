@@ -187,6 +187,14 @@ impl CredentialStore {
         }
     }
 
+    /// [`Self::load`], reading an unreadable sign-in as none, so a new one replaces it.
+    fn replaceable(&self) -> Result<Option<Stored>, LoginError> {
+        match self.load() {
+            Err(LoginError::Corrupt { .. }) => Ok(None),
+            stored => stored,
+        }
+    }
+
     fn save(&self, stored: &Stored) -> Result<(), LoginError> {
         let dir = self.path.parent().unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).map_err(|source| self.failed(source))?;
@@ -283,7 +291,7 @@ pub(crate) enum Start {
 pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
     let cloud = crate::cloud_enroll::cloud_origin(cloud);
     let http = http()?;
-    match store.load()? {
+    match store.replaceable()? {
         Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {
             return Err(LoginError::OtherCloud {
                 signed_in: signed_in.cloud,
@@ -349,17 +357,20 @@ pub(crate) struct SignedOut {
     pub(crate) cloud: String,
     pub(crate) device: Option<String>,
     pub(crate) servers: crate::cloud_account::ServerClears,
+    /// Why Cloud could not end the sign-in, which this device only forgot.
+    pub(crate) unrevoked: Option<LoginError>,
 }
 
 /// End this device's sign-in: Cloud first (which also clears its key on each Server), then
-/// the stored credential. A sign-in Cloud already ended is only forgotten.
+/// the stored credential. A sign-in Cloud already ended, or that Cloud cannot be reached
+/// to end, is only forgotten.
 ///
-/// Returns `None` when nothing was signed in.
+/// Returns `None` when nothing readable was signed in.
 ///
 /// # Errors
 ///
-/// Returns a Cloud failure, keeping the stored sign-in so logout can be retried,
-/// or a store failure.
+/// Returns a failure Cloud answered with, keeping the stored sign-in so logout can be
+/// retried, or a store failure.
 pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>, LoginError> {
     #[derive(Deserialize)]
     struct Reply {
@@ -370,31 +381,43 @@ pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>,
     struct Device {
         id: String,
     }
-    let signed_out = match store.load()? {
-        None => return Ok(None),
+    let signed_out = match store.replaceable()? {
+        None => {
+            store.clear()?;
+            return Ok(None);
+        }
         Some(Stored::Pending(pending)) => SignedOut {
             cloud: pending.cloud,
             device: None,
             servers: Default::default(),
+            unrevoked: None,
         },
         Some(Stored::SignedIn(signed_in)) => {
             let url = format!("{}/api/cli/logout", signed_in.cloud);
-            let response = http()?
+            let sent = http()?
                 .post(url)
                 .bearer_auth(&signed_in.token.0)
                 .send()
-                .await
-                .map_err(|error| unreachable(&signed_in.cloud, error))?;
-            let (device, servers) = if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-                (None, Default::default())
-            } else {
-                let reply: Reply = decode(ensure_success(response).await?)?;
-                (Some(reply.signed_out.id), reply.servers)
+                .await;
+            let (device, servers, unrevoked) = match sent {
+                Err(error) => (
+                    None,
+                    Default::default(),
+                    Some(unreachable(&signed_in.cloud, error)),
+                ),
+                Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                    (None, Default::default(), None)
+                }
+                Ok(response) => {
+                    let reply: Reply = decode(ensure_success(response).await?)?;
+                    (Some(reply.signed_out.id), reply.servers, None)
+                }
             };
             SignedOut {
                 cloud: signed_in.cloud,
                 device,
                 servers,
+                unrevoked,
             }
         }
     };
@@ -863,6 +886,11 @@ pub(crate) mod tests {
         let out = logout(&store).await.unwrap().unwrap();
         assert_eq!(out.cloud, gone);
         assert!(out.device.is_none());
+        assert!(
+            matches!(out.unrevoked, Some(LoginError::Unreachable { .. })),
+            "{:?}",
+            out.unrevoked
+        );
         assert!(matches!(
             signed_in(&store).await,
             Err(LoginError::SignedOut)

@@ -87,6 +87,11 @@ pub(crate) fn named_cloud(
     let cloud = cloud.filter(|cloud| !cloud.trim().is_empty());
     let named = match cloud {
         Some(cloud) if token => Some(cloud),
+        // A token never needs the stored sign-in, so an unreadable one names no Cloud.
+        None if token => match store.cloud() {
+            Err(LoginError::Corrupt { .. }) => None,
+            stored => stored?,
+        },
         cloud => store.cloud()?.or(cloud),
     };
     Ok(named.map(|cloud| cloud_origin(&cloud)))
