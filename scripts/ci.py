@@ -21,14 +21,16 @@ CONTRACT_SCRIPTS = {
 }
 
 
-def select(paths):
+def select(paths, pull_request=False):
     selected = select_normal(paths)
     # Only release builds exercise the release profile, features, linker flags, and native dependencies on every target.
     cargo_changed = any(
         path.startswith("core/.cargo/") or (path.startswith("core/") and Path(path).name in {"Cargo.toml", "Cargo.lock"})
         for path in paths
     )
-    if cargo_changed or release_inputs_changed(paths):
+    # A Cargo-only PR leaves the release builds to its merge's main run: two macOS builds cost a PR more than
+    # every other check together, and they almost never fail where the Linux checks pass.
+    if release_inputs_changed(paths) or (cargo_changed and not pull_request):
         selected.add("release-contracts")
     return selected
 
@@ -147,7 +149,7 @@ def main():
     args = parser.parse_args()
     if args.command == "select":
         # A manual quick run covers every normal check, without release/cluster work.
-        selected = select(changed_paths(args.base, args.head)) if args.base and set(args.base) != {"0"} else NORMAL
+        selected = select(changed_paths(args.base, args.head), os.environ.get("GITHUB_EVENT_NAME") == "pull_request") if args.base and set(args.base) != {"0"} else NORMAL
         output = json.dumps(sorted(selected))
         print(output)
         if os.environ.get("GITHUB_OUTPUT"):
