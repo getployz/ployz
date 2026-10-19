@@ -199,7 +199,7 @@ unprotected.
 To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
 `ployz env protect production --off` and `ployz env protect production`. Members see the switch
 disabled. `ployz env ls` shows which are Protected. Branches and preview environments can't be
-Protected. When an agent turns protection off, it waits for you to approve.
+Protected. Turning protection off from the CLI or an agent waits for you to approve.
 
 A member can still ask for changes in a Protected environment. Their buttons read **Request
 deploy**, **Request sync**, **Request restart** and **Request stop**, and clicking one shows

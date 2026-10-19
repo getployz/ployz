@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import type { Gate } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import { lacks, requireAccess } from "#/modules/organization/access.server";
@@ -20,12 +21,13 @@ import { Database } from "#/server/database.server";
  * through the one teardown path. The Store forgets its configuration; then pairing removal clears every device key and
  * Cloud's own key on each Server. A Server that doesn't confirm keeps the Organization, its pairing disabled, until a
  * rerun confirms it; only then do Cloud's rows go. `deleting` wraps the row delete inside that transaction, for a caller
- * with rows of its own to take along or a last check to make under the Organization's lock.
+ * with rows of its own to take along or a last check to make under the Organization's lock. `gate` asks a human first
+ * once nothing but the Organization stands in the way.
  */
 export const removeOrganization = Effect.fn("Organization.remove")(function* <E = never>(
   caller: Pick<Caller, "userId" | "organization" | "role"> & Partial<Pick<Caller, "credential">>,
   organizationId: string,
-  deleting: Deleting<E> = (drop) => drop,
+  { deleting = (drop) => drop, gate }: { deleting?: Deleting<E>; gate?: Gate } = {},
 ) {
   const { id, slug } = caller.organization;
   if (organizationId !== id) {
@@ -37,8 +39,20 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* <E 
   }
   const lacking = lacks({ ...caller, support: null }, "org:delete");
   if (lacking !== null) return refused({ code: "forbidden", message: `${lacking} No changes made.`, details: { permission: "org:delete" } });
-  const refusal = yield* cloudStore.pipe(
-    Effect.flatMap((store) => storeTry(() => store.removeOrganization(id))),
+  const store = yield* cloudStore;
+  // A Project refuses the removal anyway, so the Store names it before anyone is asked to approve.
+  const { projects } = gate === undefined ? { projects: [] } : yield* storeTry(() => store.read(id, { query: "projects" })).pipe(Effect.orDie);
+  if (gate !== undefined && projects.length === 0) {
+    const gated = yield* gate({
+      subject: `organization:${id}`,
+      verb: "remove",
+      name: slug,
+      preview: { organization: slug },
+      effects: [{ kind: "removes_organization", name: slug, node: id, path: `organizations/${id}` }],
+    });
+    if (!gated.ok) return refused(gated.refusal);
+  }
+  const refusal = yield* storeTry(() => store.removeOrganization(id)).pipe(
     Effect.as(null),
     Effect.catchTag("StoreRefused", (error) => Effect.succeed(error.refusal)),
   );

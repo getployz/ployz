@@ -66,17 +66,18 @@ export function approvalCommand(command: ConfigCommand) {
 const agentShips = (via: Caller["via"], command: ConfigCommand) =>
   via === "agent" && command.command === "admit" && (command.admit === "deploy" || command.admit === "retry");
 
-const agentDestroys = (via: Caller["via"], command: ConfigCommand) =>
-  via === "agent" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
+/** Cloud can't tell a person running `ployz` from an agent running it, so only a dashboard confirm stands as the approval. */
+const askedRemoval = (via: Caller["via"], command: ConfigCommand) =>
+  via !== "dashboard" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
 
 /**
  * The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, a Sync or Take (into a Protected
- * Environment), an agent's retry, and an agent's Project or Environment removal or shutdown.
+ * Environment), an agent's retry, and a Project or Environment removal or shutdown from `ployz` or an agent.
  */
 export function asksApproval(via: Caller["via"], command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")
     || command.command === "sync" || command.command === "take"
-    || agentShips(via, command) || agentDestroys(via, command);
+    || agentShips(via, command) || askedRemoval(via, command);
 }
 
 /** Which Deploys wait for a human: every Deploy or retry an agent asks for, else only a Deploy that destroys something. */
@@ -103,6 +104,7 @@ const destroys = {
   stops_service: { verb: "Stops", noun: "service", after: " until started again" },
   restarts_service: { verb: "Restarts", noun: "service", after: "" },
   unprotects_environment: { verb: "Unprotects", noun: "environment", after: "" },
+  removes_organization: { verb: "Removes", noun: "organization", after: ". Not recoverable." },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
 /**

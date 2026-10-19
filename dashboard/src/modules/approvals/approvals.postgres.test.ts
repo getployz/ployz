@@ -639,28 +639,30 @@ const marks = Effect.gen(function* () {
   return rows[0]?.marks;
 });
 
-it.live("an agent's Project removal waits on a human to approve it, and removes nothing until then", () =>
-  Effect.gen(function* () {
-    const { provided, caller, cli } = yield* shopRemovingWeb(false);
-    yield* provided(enrollStoreServer(ORGANIZATION));
-    yield* provided(ran);
+for (const [who, via] of [["an agent's", "agent"], ["the CLI's", undefined]] as const) {
+  it.live(`${who} Project removal waits on a human to approve it, and removes nothing until then`, () =>
+    Effect.gen(function* () {
+      const { provided, caller, cli } = yield* shopRemovingWeb(false);
+      yield* provided(enrollStoreServer(ORGANIZATION));
+      yield* provided(ran);
 
-    const version = confirmed(yield* cli(removeShop(), undefined, "agent"));
-    const asked = yield* cli(removeShop(version), undefined, "agent");
-    expect(asked.status).toBe(409);
-    expect(asked.json.error).toMatchObject({
-      code: "approval_required",
-      details: { approval_id: expect.any(String), operation: { verb: "remove", name: "shop" }, organization: "shop" },
-    });
-    expect(yield* provided(marks)).toBe(0);
+      const version = confirmed(yield* cli(removeShop(), undefined, via));
+      const asked = yield* cli(removeShop(version), undefined, via);
+      expect(asked.status).toBe(409);
+      expect(asked.json.error).toMatchObject({
+        code: "approval_required",
+        details: { approval_id: expect.any(String), operation: { verb: "remove", name: "shop" }, organization: "shop" },
+      });
+      expect(yield* provided(marks)).toBe(0);
 
-    const id = asked.json.error?.details?.approval_id ?? expect.fail("no approval_id");
-    const digest = asked.json.error?.details?.approval ?? expect.fail("no digest");
-    const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
-    expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
-    expect(yield* cli(removeShop(version), id, "agent")).toMatchObject({ status: 200, json: { written: "removal" } });
-    expect(yield* provided(marks)).toBe(1);
-  }));
+      const id = asked.json.error?.details?.approval_id ?? expect.fail("no approval_id");
+      const digest = asked.json.error?.details?.approval ?? expect.fail("no digest");
+      const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
+      expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
+      expect(yield* cli(removeShop(version), id, via)).toMatchObject({ status: 200, json: { written: "removal" } });
+      expect(yield* provided(marks)).toBe(1);
+    }));
+}
 
 it.live("an anonymous agent's Project removal goes through without asking", () =>
   Effect.gen(function* () {

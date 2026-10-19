@@ -720,19 +720,15 @@ pub(crate) async fn check_forget_servers(
 ///
 /// # Errors
 ///
-/// As [`check_forget_servers`], and `invalid_argument` for another Organization than
-/// the credential's.
+/// As [`check_forget_servers`], `invalid_argument` for another Organization than the
+/// credential's, and `approval_required` until a human approves it.
 pub(crate) async fn forget_servers(
     credential: &Credential,
     organization: &str,
+    approval: Option<&str>,
 ) -> Result<ServersForgotten, StoreCallError> {
-    let url = format!("{}/api/cli/forget-servers", credential.cloud());
     let body = serde_json::json!({ "organization": organization });
-    store_answer(
-        credential,
-        send(credential, Method::POST, &url, Some(&body)).await?,
-    )
-    .await
+    approved_answer(credential, Method::POST, "forget-servers", &body, approval).await
 }
 
 /// What `org rm` did: whether the Organization is gone, and which Servers confirmed
@@ -750,15 +746,20 @@ pub(crate) struct OrganizationRemoval {
 /// # Errors
 ///
 /// Returns Cloud's refusal (`conflict` while it has a Project, `invalid_argument`
-/// for another Organization than the credential's), or a Cloud failure.
+/// for another Organization than the credential's, `approval_required` until a human
+/// approves it), or a Cloud failure.
 pub(crate) async fn remove_organization(
     credential: &Credential,
     id: &str,
+    approval: Option<&str>,
 ) -> Result<OrganizationRemoval, StoreCallError> {
-    let url = format!("{}/api/cli/organizations/{id}", credential.cloud());
-    store_answer(
+    let path = format!("organizations/{id}");
+    approved_answer(
         credential,
-        send(credential, Method::DELETE, &url, None).await?,
+        Method::DELETE,
+        &path,
+        &serde_json::json!({}),
+        approval,
     )
     .await
 }

@@ -95,7 +95,8 @@ else you can, including a value it can't read, but it can't delete the organizat
 A coding agent working through the CLI can save or deploy a change that removes a running
 service, deletes a volume and its data, detaches a volume from a service, or removes a domain. It
 can also drain or remove a server, or clean up what a deleted environment left on your servers.
-Ployz refuses that command with `approval_required`, naming what it would remove and the approval
+It can remove a project, an environment or the whole organization, forget every server, or turn
+an environment's protection off. Ployz refuses that command with `approval_required`, naming what it would remove and the approval
 it opened for you. Every organization works this way, and no setting turns it off.
 
 How you answer depends on where the command runs:
@@ -124,6 +125,9 @@ How you answer depends on where the command runs:
   [connected to Ployz Cloud](connect-an-agent.md). An agent's save still asks only when it removes
   something, and one approval covers one deploy or redeploy. Redeploying from the CLI or the
   dashboard never asks.
+- `ployz project rm`, `ployz env rm` and `ployz env shutdown` ask when they would take something
+  off the servers. `ployz org rm`, `ployz server forget` with no server named and
+  `ployz env protect --off` always ask.
 - Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
   would stop a service or delete volume data. `ployz server upgrade` never asks.

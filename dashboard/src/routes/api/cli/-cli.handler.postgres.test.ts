@@ -21,9 +21,12 @@ import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
+import { decideApproval } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import type { Caller } from "#/modules/identity/actor";
+import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { forgetServer } from "#/modules/operations/operations.server";
+import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
@@ -164,7 +167,10 @@ const Reply = Schema.Struct({
   removed: Schema.optionalKey(Schema.Union([Schema.Boolean, Named])),
   connections: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, management: Schema.String }))),
   unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
-  servers: Schema.optionalKey(Schema.Struct({ confirmed: Schema.Array(Schema.String), unconfirmed: Schema.Array(Schema.String) })),
+  servers: Schema.optionalKey(Schema.Union([
+    Schema.Struct({ confirmed: Schema.Array(Schema.String), unconfirmed: Schema.Array(Schema.String) }),
+    Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, reach: Schema.String })),
+  ])),
   signed_out: Schema.optionalKey(Schema.Struct({ id: Schema.String })),
   ready: Schema.optionalKey(Schema.Boolean),
   connect_url: Schema.optionalKey(Schema.String),
@@ -267,6 +273,15 @@ const signUp = Effect.fn(function* (name: string) {
   const orgs = yield* cli("GET", "organizations", { session });
   const organization = orgs.json.organizations?.[0] ?? assert.fail("no personal Organization");
   return { session, cookie, organization };
+});
+
+/** Approves what `asked` waits on, as `userId` in the dashboard, and returns the approval's ID for the retry. */
+const approveAsked = Effect.fn(function* (asked: { json: Reply; text: string }, userId: string, organizationId: string) {
+  assert.strictEqual(asked.json.error?.code, "approval_required", asked.text);
+  const id = asked.json.error?.details?.approval_id ?? assert.fail("no approval id");
+  const digest = Schema.decodeUnknownSync(Schema.String)(asked.json.error?.details?.approval);
+  assert.isTrue((yield* decideApproval({ userId, organization: { id: organizationId }, via: "dashboard" }, id, { approve: { digest } })).ok);
+  return id;
 });
 
 /** Signs `name` back in from the CLI, as a new device. */
@@ -893,18 +908,23 @@ it.live(
         assert.strictEqual(refused.status, 409);
         assert.deepStrictEqual(refused.json.error?.details?.next, { tool: "remove", input: { project: "shop" } });
         assert.isTrue(server.slots.has("cloud"));
+        assert.lengthOf(yield* database.drizzle.select().from(operationApprovals), 0, "a Project refuses it before anyone is asked");
         assert.isTrue((yield* write({ operation: "write", command: { command: "remove", project: "shop" } })).ok);
+
+        // From `ployz`, a human approves it first.
+        const approval = yield* approveAsked(yield* cli("DELETE", `organizations/${alice.organization.id}`, alice), userId, alice.organization.id);
+        assert.isTrue(server.slots.has("cloud"));
 
         // A Server offline: the Organization stays, disabled, and says which Server must still confirm.
         server.online = false;
-        const partial = yield* cli("DELETE", `organizations/${alice.organization.id}`, alice);
+        const partial = yield* cli("DELETE", `organizations/${alice.organization.id}`, { ...alice, approval });
         assert.deepInclude(partial.json, { organization: slug, removed: false, servers: { confirmed: [], unconfirmed: [machine] } });
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 1);
 
         // The same command confirms it once the Server is back, clearing Cloud's key and every device key.
         server.online = true;
-        const removed = yield* cli("DELETE", `organizations/${alice.organization.id}`, alice);
+        const removed = yield* cli("DELETE", `organizations/${alice.organization.id}`, { ...alice, approval });
         assert.deepInclude(removed.json, { organization: slug, removed: true, servers: { confirmed: [machine], unconfirmed: [] } });
         assert.deepStrictEqual([...server.slots.keys()], []);
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
@@ -939,6 +959,71 @@ it.live(
           assert.strictEqual(refused.json.error?.code, "forbidden");
           assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
         }
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "org rm and forgetting every Server wait on a human for a CLI or agent token, and ask nothing from the dashboard",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const ownerOf = Effect.fn(function* (organizationId: string) {
+          const [owner] = yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, organizationId));
+          return owner?.userId ?? assert.fail("no member");
+        });
+        /** An Organization whose one Server is gone, so forgetting it is all that's left before its removal. */
+        const goneServer = Effect.fn(function* (organizationId: string, machine: MachineId) {
+          yield* enroll(organizationId, machine, true);
+          yield* drizzle.update(organizationPairing).set({ founderMachineId: machine }).where(eq(organizationPairing.organizationId, organizationId));
+          fake.servers.set(machine, { online: false, slots: new Map() });
+        });
+        const pairings = (organizationId: string) =>
+          drizzle.select().from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+        const organizations = (organizationId: string) => drizzle.select().from(organization).where(eq(organization.id, organizationId));
+
+        const ada = yield* signUp("ada");
+        const adaId = yield* ownerOf(ada.organization.id);
+        yield* goneServer(ada.organization.id, ids.machineId("00000000000000000000000000001270"));
+        assert.isTrue((yield* forgetServers({ userId: adaId, organizationId: ada.organization.id })).ok);
+        assert.isTrue((yield* removeOrganizationAsMember({ userId: adaId }, ada.organization.slug)).ok);
+        assert.lengthOf(yield* organizations(ada.organization.id), 0);
+        assert.lengthOf(yield* drizzle.select().from(operationApprovals), 0, "the dashboard's confirm is the approval");
+
+        const alice = yield* signUp("alice");
+        const { id: organizationId, slug } = alice.organization;
+        const userId = yield* ownerOf(organizationId);
+        const machine = ids.machineId("00000000000000000000000000001271");
+        yield* goneServer(organizationId, machine);
+        const tokens = yield* Effect.forEach(["cli", "agent"] as const, (kind) => cli("POST", "tokens", alice, { name: kind, expires_in_days: 1, kind }).pipe(
+          Effect.map((made) => made.json.token ?? assert.fail("no token")),
+        ));
+        const asked = (reply: { json: Reply }) => {
+          const details = reply.json.error?.details;
+          return [reply.json.error?.code, details?.operation, details?.effects?.map(({ kind, name }) => [kind, name])];
+        };
+        for (const token of tokens) {
+          const forget = yield* cli("POST", "forget-servers", { bearer: token.secret }, { organization: slug });
+          assert.deepStrictEqual(asked(forget), ["approval_required", { verb: "forget", name: slug }, [["removes_server", machine]]], token.kind);
+          const remove = yield* cli("DELETE", `organizations/${organizationId}`, { bearer: token.secret });
+          assert.deepStrictEqual(asked(remove), ["approval_required", { verb: "remove", name: slug }, [["removes_organization", slug]]], token.kind);
+        }
+        assert.lengthOf(yield* pairings(organizationId), 1);
+        assert.lengthOf(yield* organizations(organizationId), 1);
+
+        const [cliToken] = tokens;
+        const bearer = cliToken?.secret ?? assert.fail("no cli token");
+        const forgetting = yield* approveAsked(yield* cli("POST", "forget-servers", { bearer }, { organization: slug }), userId, organizationId);
+        const forgotten = yield* cli("POST", "forget-servers", { bearer, approval: forgetting }, { organization: slug });
+        assert.deepInclude(forgotten.json, { organization: slug, servers: [{ id: machine, name: machine, reach: "didnt_answer" }] }, forgotten.text);
+        assert.lengthOf(yield* pairings(organizationId), 0);
+        const removing = yield* approveAsked(yield* cli("DELETE", `organizations/${organizationId}`, { bearer }), userId, organizationId);
+        assert.deepInclude((yield* cli("DELETE", `organizations/${organizationId}`, { bearer, approval: removing })).json, { organization: slug, removed: true });
+        assert.lengthOf(yield* organizations(organizationId), 0);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
