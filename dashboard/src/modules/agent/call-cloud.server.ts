@@ -145,6 +145,30 @@ const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (
   return yield* runtimeAsk(caller.organization.id, query, readable, sealed);
 });
 
+const SEALED_REREADS = 2;
+
+/**
+ * Read container logs scrubbed under the names the Store holds Sealed. A Deploy may seal a new variable and start its
+ * Container while the runtime is being read, so the names are read again afterwards; a name the read didn't scrub under
+ * reruns the read with it, up to `SEALED_REREADS` times, and a set that never settles withholds the logs. Only growth
+ * matters: a name that left the set left nothing unscrubbed.
+ */
+const logsRead = Effect.fn("CallCloud.logsRead")(function* (caller: Caller, query: Extract<CloudQuery, { query: "logs" }>) {
+  const organizationId = caller.organization.id;
+  let sealed = yield* sealedNames(organizationId, query.namespace);
+  for (let rerun = 0; ; rerun++) {
+    const used = sealed;
+    const heard = yield* runtimeRead(caller, query, "logs:read", query.namespace, { sealed: used });
+    if (used === null || !heard.ok) return heard;
+    const fresh = yield* sealedNames(organizationId, query.namespace);
+    if (fresh !== null && fresh.every((name) => used.includes(name))) return heard;
+    if (rerun === SEALED_REREADS) {
+      return refusal("unavailable", "Sealed variables kept changing while the logs were read. Ask again.");
+    }
+    sealed = fresh === null ? null : [...new Set([...used, ...fresh])].sort((a, b) => a.localeCompare(b));
+  }
+});
+
 const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQuery) {
   const organizationId = caller.organization.id;
   switch (query.query) {
@@ -186,7 +210,7 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
       if (caller.support !== null && !caller.support.logs) {
         return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
       }
-      return yield* runtimeRead(caller, query, "logs:read", query.namespace, { sealed: yield* sealedNames(organizationId, query.namespace) });
+      return yield* logsRead(caller, query);
     case "server_logs":
       // The support logs switch promises only Container output, so it never opens a Server's own logs.
       if (caller.support !== null) {

@@ -143,6 +143,49 @@ describe("callCloud", () => {
       expect(asked).toHaveLength(3);
     }));
 
+  it.live("reruns a logs ask under a name sealed while the runtime was being read, and withholds one that never settles", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const store = yield* cloudStore.pipe(Effect.provide(services));
+      const production = { project: "shop", environment: null };
+      const seal = (name: string) => store.write(ORGANIZATION, {
+        command: "edit", environment: production, expect: null, changes: [{ op: "set", path: `web.env.${name}`, value: { secret: `${name}-value-long` } }],
+      });
+      yield* Effect.promise(async () => {
+        await store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
+        await store.write(ORGANIZATION, { command: "create_service", id: SERVICE, environment: production, name: "web", image: "whoami:1" });
+        await seal("TOKEN");
+      });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.execute(sql`insert into config_namespace (organization_id, namespace, environment_id) values (${ORGANIZATION}, 'shop-production', ${ENVIRONMENT})`);
+      }).pipe(Effect.provide(services), Effect.orDie);
+      const sealeds: Array<ReadonlyArray<string> | null> = [];
+      const racing = (sealing: Array<string | null>): ScopedRuntimeClientSession => ({
+        status: "connected",
+        connected: asTestDouble<PloyzSession>()({
+          agentAsk: (_query: CloudQuery, _readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) => Effect.promise(async () => {
+            sealeds.push(sealed);
+            const name = sealing.shift();
+            if (name !== undefined && name !== null) await seal(name);
+            return TAIL;
+          }),
+        }),
+      });
+      const heard = (sealing: Array<string | null>) => callCloud(member, { ask: LOGS }).pipe(runtime(racing(sealing), []), Effect.provide(services));
+
+      expect(yield* heard(["DURING", null])).toEqual({ ok: true, value: TAIL });
+      expect(sealeds).toEqual([["TOKEN"], ["DURING", "TOKEN"]]);
+
+      sealeds.length = 0;
+      expect(yield* heard(["ONE", "TWO", "THREE"])).toEqual({
+        ok: false,
+        refusal: { code: "unavailable", message: "Sealed variables kept changing while the logs were read. Ask again.", details: null },
+      });
+      expect(sealeds).toEqual([["DURING", "TOKEN"], ["DURING", "ONE", "TOKEN"], ["DURING", "ONE", "TOKEN", "TWO"]]);
+    }));
+
   // Catches support reading logs the Organization keeps from it, which the Logs tab refuses.
   it.live("refuses support the Organization doesn't show its logs to, before opening the runtime", () =>
     Effect.gen(function* () {
