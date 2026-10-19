@@ -46,6 +46,7 @@ import {
   takeEpoch,
 } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
+import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
 
 type StepTools = Pick<PloyzStepTools, "run" | "sleep" | "sleepUntil">;
@@ -493,6 +494,10 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   const name = run.volumeName;
   let source = phase.writer.view.copy;
   let copy = phase.target.view.copy;
+  let service = "the Service";
+  let stoppedAt: number | null = null;
+  let downtime: string | null = null;
+  const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)).then(() => Date.now()));
 
   if (phase.start === "rounds") {
     const found = await step.run("02-service", () => runEffect(findHolder(run, runId, A)));
@@ -500,6 +505,8 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
       return { runId: run.id, refused: found.refusal };
     }
+    service = found.holder.redactedSpec.name;
+    await note("02-copying", `Copying to ${B.name}; ${service} keeps running`);
     try {
       ({ copy } = await runRounds(steps, { A: phase.writer, B, copy, epoch }));
     } catch (error) {
@@ -513,6 +520,8 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
         Effect.tap((found) => (found.ok ? copyImage(run, runId, A, found.holder, B) : Effect.void)),
       )));
       if (!imaged.ok) throw new NonRetriableError(imaged.refusal.message);
+      service = imaged.holder.redactedSpec.name;
+      stoppedAt = await note("05-stopping", `${service} stopped for the final copy`);
       source = await mustSet(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
         kind: "mirror",
         from: null,
@@ -523,6 +532,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     const cut = slotAt(source);
     if (cut === null) throw new NonRetriableError(`${copyName(name, A.name)} holds no final snapshot`);
     if (phase.start !== "start") copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest });
+    await note("07-starting", `Starting ${service} on ${B.name}`);
     const started = await settle(steps, "07-start", commitAndStart(run, runId, {
       to: B,
       from: A,
@@ -531,11 +541,13 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       epoch: copy?.kind === "root" ? copy.epoch : epoch,
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
+    const startedAt = await step.run("07-started", () => Date.now());
     await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
+    downtime = stoppedAt === null ? null : `${service} was stopped ${formatDuration((startedAt - stoppedAt) / 1000)}`;
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }
-  await finish(steps, "09-finish");
+  await finish(steps, "09-finish", downtime);
   return { runId: run.id, moved: B.name };
 }
 

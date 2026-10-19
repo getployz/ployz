@@ -1450,7 +1450,7 @@ describe("volume runs", () => {
 
       expect(output.error).toBeDefined();
       expect(verbs.at(-1)).toBe("cut@fsn-1(f-1)");
-      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", inngest_run_id: "run-taker", message: null, finished_at: null })]);
+      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", inngest_run_id: "run-taker", message: "web stopped for the final copy", finished_at: null })]);
     });
 
     it("a run that loses the commit stops like a Stale run, and never tells B to start", async () => {
@@ -2100,6 +2100,18 @@ describe("volume runs", () => {
       expect(named("fsn-2").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1, newest: G });
       expect(containers).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${G.guid}`, running: true }]);
       expect(await rows()).toMatchObject([{ state: "done", epoch: "1" }]);
+    });
+
+    it("says each step on the row as it reaches it, then how long the Service was stopped", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      const seen: Array<string | null> = [];
+      const message = async () => (await rows())[0]?.message ?? null;
+      for (const key of ["snapshot@fsn-1", "cut@fsn-1", "writer@fsn-2"]) beforeSet.set(key, async () => { seen.push(await message()); });
+
+      await execute(run.id);
+
+      expect(seen).toEqual(["Copying to fsn-2; web keeps running", "web stopped for the final copy", "Starting web on fsn-2"]);
+      expect(await rows()).toMatchObject([{ state: "done", message: expect.stringMatching(/^web was stopped \d+s$/) }]);
     });
 
     it("a cut answered busy is asked again until the Container stopped", async () => {
