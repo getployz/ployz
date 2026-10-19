@@ -1643,12 +1643,12 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         serde_json::to_value(&running).unwrap(),
         json!({ "want": { "state": "running", "container": { "new": {
             "slot": slot_json, "resolved_spec": spec, "gen": 1
-        } } } })
+        } }, "rotation": "pending" } })
     );
     let settled: EnsureContainerRequest = serde_json::from_value(json!({
         "want": { "state": "running", "container": { "new": {
             "slot": slot_json, "resolved_spec": spec, "gen": 1, "answer": "settled"
-        } } }
+        } }, "rotation": "pending" }
     }))
     .unwrap();
     let ContainerWant::Running {
