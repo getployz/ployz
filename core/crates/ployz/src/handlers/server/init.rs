@@ -20,7 +20,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     let options = ConnectionOptions::from_matches(root)?;
-    let mut config = options.load_or_empty_config()?;
+    let config = options.load_or_empty_config()?;
     let context_name = matches
         .get_one::<String>("context")
         .cloned()
@@ -98,17 +98,16 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>((machine, connection))
     })?;
 
-    config.contexts.insert(
-        context_name.clone(),
-        Context {
-            connections: vec![connection.clone()],
-        },
-    );
-    config.set_current_context(Some(context_name.clone()))?;
-    config.save()?;
-    if let Some(current_context) = config.current_context() {
-        crate::ui::note(format_args!("Switched context to {current_context}."));
-    }
+    config.update(|latest| {
+        latest.contexts.insert(
+            context_name.clone(),
+            Context {
+                connections: vec![connection.clone()],
+            },
+        );
+        Ok(latest.set_current_context(Some(context_name.clone()))?)
+    })?;
+    crate::ui::note(format_args!("Switched context to {context_name}."));
     crate::ui::stream(format_args!("Initialised Server {}.", machine.name));
     let ingress_recovery = super::super::recovery_command(
         matches,

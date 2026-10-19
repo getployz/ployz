@@ -160,16 +160,34 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
         }
     };
     config.set_current_context(Some(selected.clone()))?;
-    let context = config
-        .contexts
-        .get_mut(&selected)
-        .expect("set_current_context accepted a known context");
-    if let Some(requested) = requested_connection {
-        let index = connection_index(&selected, &context.connections, requested)?;
-        context.select_connection(index);
-    }
-    let connection = context.connections.first().map(ToString::to_string);
-    config.save()?;
+    let chosen = match requested_connection {
+        Some(requested) => {
+            let connections = config
+                .contexts
+                .get(&selected)
+                .map(|context| context.connections.as_slice())
+                .unwrap_or_default();
+            let index = connection_index(&selected, connections, requested)?;
+            connections.get(index).cloned()
+        }
+        None => None,
+    };
+    let mut connection = None;
+    config.update(|latest| {
+        latest.set_current_context(Some(selected.clone()))?;
+        let context = latest
+            .contexts
+            .get_mut(&selected)
+            .expect("set_current_context accepted a known context");
+        if let Some(index) = chosen
+            .as_ref()
+            .and_then(|chosen| context.connections.iter().position(|saved| saved == chosen))
+        {
+            context.select_connection(index);
+        }
+        connection = context.connections.first().map(ToString::to_string);
+        Ok(())
+    })?;
     crate::ui::finish(
         &json!({ "context": selected, "connection": connection }),
         || {
@@ -192,8 +210,11 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
 pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
     let mut config = config(matches)?;
     let name = required(leaf_matches(matches), "context-name")?;
-    let removed = config.remove_context(&name)?;
-    config.save()?;
+    let mut removed = config.remove_context(&name)?;
+    config.update(|latest| {
+        removed = latest.remove_context(&name)?;
+        Ok(())
+    })?;
     let was_current = removed == RemovedContext::Current;
     crate::ui::finish(
         &json!({ "removed": name, "was_current": was_current }),

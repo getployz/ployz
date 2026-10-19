@@ -183,13 +183,18 @@ impl Config {
         })
     }
 
-    pub fn save(&self) -> Result<(), ConfigError> {
-        let yaml = serde_norway::to_string(self).map_err(ConfigError::Encode)?;
-        let parent = self
-            .path
+    fn parent(&self) -> &Path {
+        self.path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
+            .unwrap_or_else(|| Path::new("."))
+    }
+
+    /// Replace the saved file with this copy. A command that loaded the config
+    /// earlier and edits part of it uses [`Config::update`] instead.
+    pub fn save(&self) -> Result<(), ConfigError> {
+        let yaml = serde_norway::to_string(self).map_err(ConfigError::Encode)?;
+        let parent = self.parent();
         create_private_directories(parent)?;
         if self.has_capability() {
             require_private_parent(&self.path)?;
@@ -228,7 +233,7 @@ impl Config {
         context_name: &str,
         connection: Connection,
     ) -> Result<(), ConfigError> {
-        self.update_saved(|latest| {
+        self.update(|latest| {
             let context = latest.contexts.get_mut(context_name).ok_or_else(|| {
                 ContextError::ContextNotFound {
                     name: context_name.to_owned(),
@@ -250,7 +255,7 @@ impl Config {
         &self,
         capability: &ManagementCapability,
     ) -> Result<(), ConfigError> {
-        self.update_saved(|latest| {
+        self.update(|latest| {
             let mut replaced = false;
             for context in latest.contexts.values_mut() {
                 for connection in &mut context.connections {
@@ -269,7 +274,12 @@ impl Config {
         })
     }
 
-    fn update_saved(
+    /// Apply `update` to the latest saved config under the config lock, so
+    /// writes from other commands since this copy was loaded survive.
+    ///
+    /// # Errors
+    /// Returns lock, load or atomic save failures, or the error from `update`.
+    pub fn update(
         &self,
         update: impl FnOnce(&mut Self) -> Result<(), ConfigError>,
     ) -> Result<(), ConfigError> {
@@ -277,6 +287,7 @@ impl Config {
             path: self.path.clone(),
             source,
         };
+        create_private_directories(self.parent())?;
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -287,7 +298,7 @@ impl Config {
             .map_err(write_error)?;
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
             .map_err(|error| write_error(error.into()))?;
-        let mut latest = Self::load(&self.path)?;
+        let mut latest = Self::load_or_empty(&self.path)?;
         update(&mut latest)?;
         latest.save()
     }
