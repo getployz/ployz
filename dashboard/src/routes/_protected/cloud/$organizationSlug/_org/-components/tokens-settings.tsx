@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useBlocker } from "@tanstack/react-router";
 import { KeyRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
@@ -12,6 +13,7 @@ import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
+import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
 import { toErrorMessage } from "#/lib/error-message";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { createTokenServerFn, revokeTokenServerFn } from "#/modules/identity/organization-token.functions";
@@ -99,14 +101,15 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
   const [choice, setChoice] = useState<Choice>("deploy");
   const [environment, setEnvironment] = useState(environments.includes("staging") ? "staging" : (environments[0] ?? ""));
   const preset: TokenPreset = choice === "deploy" ? { preset: "deploy", environment } : { preset: choice };
-  const make = useMutation({
+  const make = useExclusiveMutation({
     mutationFn: () => createTokenServerFn({ data: { organizationSlug, name: name.trim(), expiresInDays: 90, preset } }),
     onSuccess: onMade,
   });
   const ready = name.trim() !== "" && (choice !== "deploy" || environment !== "");
+  useBlocker({ shouldBlockFn: () => true, disabled: !make.isPending });
 
   return (
-    <Dialog open onOpenChange={onOpenChange}>
+    <Dialog open onOpenChange={(open) => make.isPending || onOpenChange(open)}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>New token</DialogTitle>
@@ -124,7 +127,7 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
             id="token-form"
             onSubmit={(event) => {
               event.preventDefault();
-              if (ready && !make.isPending) make.mutate();
+              if (ready) make.mutate();
             }}
           >
             <FieldGroup>
@@ -155,7 +158,7 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
             <DialogClose render={<Button />}>Done</DialogClose>
           ) : (
             <>
-              <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+              <DialogClose render={<Button variant="outline" disabled={make.isPending} />}>Cancel</DialogClose>
               <Button type="submit" form="token-form" disabled={!ready || make.isPending}>
                 {make.isPending ? <Spinner data-icon="inline-start" /> : null}
                 Make token

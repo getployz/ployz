@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useBlocker } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import type { ButtonVariants } from "#/components/ui/button-variants";
@@ -12,7 +13,7 @@ import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machin
 import { installLines, cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
 import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { InstallTabs } from "./copy-block";
-import { useMintFleetToken } from "./use-waiting";
+import { useMintFleetToken, useMintingFleetToken } from "./use-waiting";
 
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -25,13 +26,15 @@ export function AddServersDialog({ organizationSlug, label = "Add servers", vari
   variant?: ButtonVariants["variant"];
 }) {
   const [open, setOpen] = useState(false);
+  const minting = useMintingFleetToken(organizationSlug);
+  useBlocker({ shouldBlockFn: () => true, disabled: !minting });
   return (
     <>
       <Button type="button" variant={variant} onClick={() => setOpen(true)}>
         <PlusIcon data-icon="inline-start" />
         {label}
       </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(next) => minting || setOpen(next)}>
         <DialogContent className="sm:max-w-xl">
           {open ? <MintFlow organizationSlug={organizationSlug} onDone={() => setOpen(false)} /> : null}
         </DialogContent>
@@ -116,7 +119,7 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
         ) : null}
       </FieldGroup>
       <DialogFooter>
-        <Button type="button" variant="outline" onClick={onDone}>Cancel</Button>
+        <Button type="button" variant="outline" disabled={mint.isPending} onClick={onDone}>Cancel</Button>
         <Button type="submit" variant="ink" disabled={!nameOk || !maxOk || mint.isPending}>
           {mint.isPending ? <Spinner data-icon="inline-start" /> : null}
           Create

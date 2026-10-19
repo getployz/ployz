@@ -22,6 +22,7 @@ import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
+import { useExclusiveMutation } from "#/hooks/use-exclusive-mutation";
 import { toErrorMessage } from "#/lib/error-message";
 import {
   inviteMemberServerFn,
@@ -219,7 +220,7 @@ export function InviteDialog({ organizationName, mail, invite: send, onInvited, 
 }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<InviteRole>("member");
-  const invite = useMutation({
+  const invite = useExclusiveMutation({
     mutationFn: () => send({ email: email.trim() || null, role }),
     onSuccess: onInvited,
   });
@@ -249,7 +250,7 @@ export function InviteDialog({ organizationName, mail, invite: send, onInvited, 
             id="invite-form"
             onSubmit={(event) => {
               event.preventDefault();
-              if (!invite.isPending) invite.mutate();
+              invite.mutate();
             }}
           >
             <FieldGroup>
