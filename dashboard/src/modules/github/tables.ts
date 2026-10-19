@@ -9,6 +9,8 @@ export const githubInstallation = pgTable("github_installation", {
   accountType: text("account_type").notNull(),
   accountAvatarUrl: text("account_avatar_url"),
   suspendedAt: timestamp("suspended_at", { mode: "date", withTimezone: true }),
+  /** When a sync last cached the installation's repositories; null until the first one lands. */
+  repositoriesSyncedAt: timestamp("repositories_synced_at", { mode: "date", withTimezone: true }),
   createdAt,
   updatedAt,
 });

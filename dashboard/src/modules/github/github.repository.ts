@@ -47,6 +47,7 @@ const linkedInstallation = {
   accountLogin: schemaGithubInstallation.accountLogin,
   accountType: schemaGithubInstallation.accountType,
   accountAvatarUrl: schemaGithubInstallation.accountAvatarUrl,
+  repositoriesSyncedAt: schemaGithubInstallation.repositoriesSyncedAt,
   connectedGithubLogin: schemaLink.connectedGithubLogin,
   connectedByName: schemaUser.name,
   connectedAt: schemaLink.connectedAt,
@@ -155,6 +156,14 @@ export const lockGithubRepositoryCache = Effect.fn("Github.lockRepositoryCache")
   const { drizzle } = yield* Database;
   yield* drizzle.execute(sql`select pg_advisory_xact_lock(${GITHUB_REPOSITORY_CACHE_LOCK}, ${installationId})`);
 });
+
+export const markGithubRepositoriesSynced = Effect.fn("Github.markRepositoriesSynced")(
+  function* (installationId: number, syncedAt: Date) {
+    const database = yield* Database;
+    yield* database.drizzle.update(schemaGithubInstallation).set({ repositoriesSyncedAt: syncedAt })
+      .where(eq(schemaGithubInstallation.installationId, installationId));
+  },
+);
 
 export const deleteCachedGithubRepositoriesForInstallation = Effect.fn(
   "Github.deleteCachedRepositoriesForInstallation",

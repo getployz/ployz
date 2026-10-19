@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer, Schedule } from "effect";
+import { Effect, Fiber, Layer, Schedule } from "effect";
 import { eq, sql } from "drizzle-orm";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
@@ -7,7 +7,7 @@ import { MAX_OFFERED_INSTALLATIONS } from "./github-connect";
 import { acceptGithubOfferInput } from "./github-connect.functions";
 import { acceptGithubOffer, completeGithubConnect, listGithubOffer, listOrganizationGithub, startGithubConnect } from "./github-connect.server";
 import {
-  deleteCachedGithubRepositoriesById, findGithubRepositoryByNameForOrganization, listGithubInstallationsForOrganization, lockGithubRepositoryCache,
+  deleteCachedGithubRepositoriesById, findGithubRepositoryByNameForOrganization, listGithubInstallationsForOrganization,
   pruneCachedGithubRepositories, upsertCachedGithubRepositories, upsertGithubInstallation,
 } from "./github.repository";
 import { processGithubInstallationRepositoriesEvent } from "./github.server";
@@ -59,33 +59,19 @@ const REPOSITORY_COUNTS = new Map([[8, 3], [9, 150]]);
 const revoked = new Set<number>();
 // Repositories renamed on GitHub, which made them private on a new default branch too.
 const renamed = new Map<number, string>();
-// Runs once, after a writer holding the cache lock re-reads installation 9's second page and before it gets it.
+// Runs once, after a sync reads installation 9's second page and before it gets it.
 let afterSecondPage: Effect.Effect<void> | undefined;
-// Runs once, while a writer first lists installation 9, before it holds any connection.
-let whileListing: Effect.Effect<void> | undefined;
-const installationRepositories: GithubApiService["installationRepositories"] = ({ installationId, page, etag }) =>
-  listRepositories({ installationId, page, etag }).pipe(Effect.tap(() => {
-    if (installationId !== 9) return Effect.void;
-    if (etag === undefined && page === 1) {
-      const hook = whileListing;
-      whileListing = undefined;
-      return hook ?? Effect.void;
-    }
-    if (etag !== undefined && page === 2) {
-      const hook = afterSecondPage;
-      afterSecondPage = undefined;
-      return hook ?? Effect.void;
-    }
-    return Effect.void;
-  }));
-// Answers a conditional read with "not-modified" while the page's ids, names and total still match its ETag.
-const listRepositories: GithubApiService["installationRepositories"] = ({ installationId, page, etag }) => {
+// While false, listing an installation's repositories fails the test.
+let listingAllowed = true;
+const installationRepositories: GithubApiService["installationRepositories"] = ({ installationId, page }) => {
+  if (!listingAllowed) return Effect.die(new Error(`Listed installation ${installationId}'s repositories.`));
   const granted = Array.from({ length: REPOSITORY_COUNTS.get(installationId) ?? 0 }, (_, index) => installationId * 1000 + index)
     .filter((id) => !revoked.has(id));
-  const repositories = granted.slice((page - 1) * GITHUB_REPOSITORIES_PAGE_SIZE, page * GITHUB_REPOSITORIES_PAGE_SIZE).map(repository);
-  const current = JSON.stringify([granted.length, repositories.map((listed) => [listed.id, listed.name])]);
-  if (etag === current) return Effect.succeed("not-modified" as const);
-  return Effect.succeed({ total_count: granted.length, repositories, etag: current });
+  const listing = { total_count: granted.length, repositories: granted.slice((page - 1) * GITHUB_REPOSITORIES_PAGE_SIZE, page * GITHUB_REPOSITORIES_PAGE_SIZE).map(repository) };
+  if (installationId !== 9 || page !== 2) return Effect.succeed(listing);
+  const hook = afterSecondPage;
+  afterSecondPage = undefined;
+  return (hook ?? Effect.void).pipe(Effect.as(listing));
 };
 const repository = (id: number) => {
   const name = renamed.get(id) ?? `repo-${id}`;
@@ -185,23 +171,35 @@ it.live("links only installations the person who started the connect owns on Git
     expect(yield* linked(LAB)).toEqual([7, 9, ...[...OFFERED].sort((a, b) => a - b)]);
   }), 60_000);
 
-it.live("lists a connected account's repositories as soon as the connect returns", () =>
+it.live("returns from a connect without listing GitHub, queues a sync for every linked account, and counts once those land", () =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(yield* storeTestCloud({ github }));
-    const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
-    const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
-    const counts = () => run(listOrganizationGithub(ada, "shop")).pipe(
-      Effect.map(({ accounts }) => Object.fromEntries(accounts.map((account) => [account.login, account.repositories]))),
-    );
+    const { send, run, ada, syncQueued } = yield* hopperCloud();
+    const accounts = () => run(listOrganizationGithub(ada, "shop")).pipe(Effect.map(({ accounts }) => Object.fromEntries(
+      accounts.map((account) => [account.login, { repositories: account.repositories, synced: account.repositoriesSynced }]),
+    )));
+    const queued = () => send.mock.calls.flatMap(([events]) => [events].flat()).map((event) => event.data);
 
+    listingAllowed = false;
     const install = stateOf(yield* run(startGithubConnect(ada, "shop", false)));
     yield* run(completeGithubConnect(ada, new URLSearchParams({ state: install, code: "ada-code", installation_id: "8" })));
-    expect(yield* counts()).toEqual({ acme: 0, ada: 3 });
-
     const existing = stateOf(yield* run(startGithubConnect(ada, "shop", true)));
     const offer = landing(yield* run(completeGithubConnect(ada, new URLSearchParams({ state: existing, code: "carol-code" }))))["offer"] ?? "";
-    yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
-    expect(yield* counts()).toEqual({ acme: 0, ada: 3, hopper: 150 });
+    expect(yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9, 13] }))).toEqual({ linked: 2 });
+    expect(queued()).toEqual([
+      { installationId: 8, reason: "manual-refresh" },
+      { installationId: 9, reason: "manual-refresh" },
+      { installationId: 13, reason: "manual-refresh" },
+    ]);
+    // The seeded cloud already links acme, which no sync has listed either.
+    expect(yield* accounts()).toEqual({
+      acme: { repositories: 0, synced: false }, ada: { repositories: 0, synced: false }, Carol: { repositories: 0, synced: false }, hopper: { repositories: 0, synced: false },
+    });
+
+    listingAllowed = true;
+    for (const event of queued()) yield* syncQueued(event.installationId);
+    expect(yield* accounts()).toEqual({
+      acme: { repositories: 0, synced: false }, ada: { repositories: 3, synced: true }, Carol: { repositories: 0, synced: true }, hopper: { repositories: 150, synced: true },
+    });
   }), 60_000);
 
 // A cloud where Ada owns `shop` and may connect `hopper`, installation 9, which GitHub already told it about.
@@ -211,7 +209,7 @@ const hopperCloud = Effect.fn(function* () {
   revoked.clear();
   renamed.clear();
   afterSecondPage = undefined;
-  whileListing = undefined;
+  listingAllowed = true;
   const services = yield* Layer.build(yield* storeTestCloud({ github, inngest }));
   const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
   const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
@@ -221,10 +219,11 @@ const hopperCloud = Effect.fn(function* () {
     const offer = landing(yield* run(completeGithubConnect(ada, new URLSearchParams({ state: existing, code: "carol-code" }))))["offer"] ?? "";
     return yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
   });
-  const sync = Effect.promise(() => executeSyncGithubRepositories(
-    { event: { data: { installationId: 9 } }, step: { run: async (_id, operation, ...input) => JSON.parse(JSON.stringify(await operation(...input) ?? null)) } },
+  const syncQueued = (installationId: number) => Effect.promise(() => executeSyncGithubRepositories(
+    { event: { data: { installationId } }, step: { run: async (_id, operation, ...input) => JSON.parse(JSON.stringify(await operation(...input) ?? null)) } },
     (program) => Effect.runPromise(program.pipe(Effect.provide(services))),
   ));
+  const sync = syncQueued(9);
   const cached = run(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const rows = yield* drizzle.select({ repositoryId: githubRepositoryCache.repositoryId }).from(githubRepositoryCache)
@@ -244,31 +243,33 @@ const hopperCloud = Effect.fn(function* () {
       if ((waiting?.count ?? 0) === 0) return yield* Effect.fail("not waiting");
     }).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis") }), Effect.orDie)))),
   );
-  return { send, run, connectHopper, sync, cached, elsewhere, settled };
+  return { send, run, ada, connectHopper, syncQueued, sync, cached, elsewhere, settled };
 });
 
-it.live("keeps a repository the connect listed when a sync that listed before GitHub granted it finishes later", () =>
+it.live("keeps a repository a later sync listed when a sync that listed before GitHub granted it finishes later", () =>
   Effect.gen(function* () {
     const { connectHopper, sync, cached, elsewhere, settled } = yield* hopperCloud();
+    yield* connectHopper;
     yield* sync;
 
-    // A sync lists while GitHub has 9120 revoked. GitHub grants it again, and Ada connects, before that sync prunes.
+    // A sync lists while GitHub has 9120 revoked. GitHub grants it again, and another sync starts, before the first prunes.
     revoked.add(9120);
-    let connect: Fiber.Fiber<unknown, unknown> | undefined;
+    let later: Fiber.Fiber<unknown, unknown> | undefined;
     afterSecondPage = Effect.gen(function* () {
       revoked.delete(9120);
-      connect = yield* elsewhere(connectHopper);
-      yield* settled(connect);
+      later = yield* elsewhere(sync);
+      yield* settled(later);
     });
     yield* sync;
-    if (connect === undefined) throw new Error("The sync never listed its second page.");
-    yield* Fiber.join(connect);
+    if (later === undefined) throw new Error("The sync never listed its second page.");
+    yield* Fiber.join(later);
     expect((yield* cached).has(9120)).toBe(true);
   }), 60_000);
 
-it.live("removes a repository GitHub revoked while the connect listed it, once the connect has written", () =>
+it.live("removes a repository GitHub revoked while a sync listed it, once the sync has written", () =>
   Effect.gen(function* () {
-    const { connectHopper, cached, elsewhere, settled } = yield* hopperCloud();
+    const { connectHopper, sync, cached, elsewhere, settled } = yield* hopperCloud();
+    yield* connectHopper;
 
     let webhook: Fiber.Fiber<unknown, unknown> | undefined;
     afterSecondPage = Effect.gen(function* () {
@@ -279,8 +280,8 @@ it.live("removes a repository GitHub revoked while the connect listed it, once t
       }));
       yield* settled(webhook);
     });
-    yield* connectHopper;
-    if (webhook === undefined) throw new Error("The connect never listed its second page.");
+    yield* sync;
+    if (webhook === undefined) throw new Error("The sync never listed its second page.");
     yield* Fiber.join(webhook);
     const repositories = yield* cached;
     expect(repositories.has(9120)).toBe(false);
@@ -303,65 +304,6 @@ it.live("writes what GitHub lists and drops the rest, whatever stamps another wr
     expect(yield* run(findGithubRepositoryByNameForOrganization({ organizationId: SHOP, fullName: "owner/secret" })))
       .toEqual({ fullName: "owner/secret", repositoryId: 9000, installationId: 9, defaultBranch: "trunk" });
     expect((yield* cached).has(9999)).toBe(false);
-  }), 60_000);
-
-it.live("leaves the listing to a queued sync when another writer holds the cache past the connect's wait", () =>
-  Effect.gen(function* () {
-    const { send, run, connectHopper, cached } = yield* hopperCloud();
-    const release = yield* Deferred.make<void>();
-    const held = yield* Deferred.make<void>();
-    const holder = yield* Effect.forkDetach(run(Effect.gen(function* () {
-      const database = yield* Database;
-      yield* database.transaction(Effect.gen(function* () {
-        yield* lockGithubRepositoryCache(9);
-        yield* Deferred.succeed(held, undefined);
-        yield* Deferred.await(release);
-      }));
-    })));
-    yield* Deferred.await(held);
-
-    expect(yield* connectHopper).toEqual({ linked: 1 });
-    expect((yield* cached).size).toBe(0);
-    expect(send.mock.calls.flatMap(([events]) => [events].flat()).map((event) => event.data))
-      .toEqual([{ installationId: 9, reason: "manual-refresh" }]);
-    yield* Deferred.succeed(release, undefined);
-    yield* Fiber.join(holder);
-  }), 60_000);
-
-it.live("returns within its wait and leaves the listing to a queued sync while other writers hold every pooled connection", () =>
-  Effect.gen(function* () {
-    const { send, connectHopper, cached, elsewhere } = yield* hopperCloud();
-    const release = yield* Deferred.make<void>();
-    const holders: Fiber.Fiber<unknown, unknown>[] = [];
-    // While the connect lists GitHub, other writers take every connection in node-postgres's default pool of 10.
-    whileListing = Effect.gen(function* () {
-      const held = yield* Effect.forEach(Array.from({ length: 10 }), () => Deferred.make<void>());
-      for (const taken of held) {
-        holders.push(yield* elsewhere(Effect.gen(function* () {
-          const database = yield* Database;
-          yield* database.transaction(Effect.gen(function* () {
-            yield* Deferred.succeed(taken, undefined);
-            yield* Deferred.await(release);
-          }));
-        })));
-      }
-      yield* Effect.forEach(held, Deferred.await, { discard: true });
-    });
-
-    const started = Date.now();
-    expect(yield* connectHopper).toEqual({ linked: 1 });
-    expect(Date.now() - started).toBeLessThan(7_000);
-    expect(send.mock.calls.flatMap(([events]) => [events].flat()).map((event) => event.data))
-      .toEqual([{ installationId: 9, reason: "manual-refresh" }]);
-
-    yield* Deferred.succeed(release, undefined);
-    for (const holder of holders) yield* Fiber.join(holder);
-    // The connect's sync takes a connection once one frees, so none leaked, and caches the listing.
-    yield* cached.pipe(
-      Effect.flatMap((repositories) => repositories.size === 150 ? Effect.void : Effect.fail("not cached yet")),
-      Effect.retry({ schedule: Schedule.spaced("20 millis") }),
-      Effect.timeout("10 seconds"),
-    );
   }), 60_000);
 
 it.live("caches and prunes in one call past the 65,535 parameters Postgres binds to a statement", () =>
