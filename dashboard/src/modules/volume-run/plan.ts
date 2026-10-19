@@ -230,7 +230,7 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   if (root !== null) {
     if (elsewhere !== undefined) {
       const refusal = copyElsewhere(name, elsewhere);
-      return { ok: false, refusal: roleOf(root) === "cutting" ? { ...refusal, next: cutStep(name, root, others) } : refusal };
+      return { ok: false, refusal: roleOf(root) === "cutting" ? { ...refusal, next: cutStep(name, root, answered.filter((member) => member.view.copy?.kind === "slot")) } : refusal };
     }
     return move(root, roleOf(root) === "cutting" ? "cut" : "rounds");
   }
