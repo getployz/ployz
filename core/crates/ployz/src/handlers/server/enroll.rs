@@ -114,13 +114,11 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Some(enrollment) = matches.get_one::<String>("wait") {
         return runtime.block_on(wait_joined(&acting, enrollment));
     }
+    // Before Cloud mints a token, so a bad flag costs none.
+    let name = check_shape(matches)?;
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
         let storage = matches.get_one::<StoragePreparation>("storage").cloned();
-        let name = matches
-            .get_one::<String>("name")
-            .map(MachineName::parse)
-            .transpose()?;
         return runtime.block_on(paste(&acting, &minted, storage, name.as_ref()));
     }
     drop(runtime);
@@ -129,6 +127,16 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         CloudEnrollToken::parse(minted.token)?,
         acting.credential.cloud(),
     )
+}
+
+/// Parse every flag that shapes the Server as enrollment will.
+fn check_shape(matches: &ArgMatches) -> Result<Option<MachineName>, Error> {
+    super::enrollment_policy(matches)?;
+    super::helpers::token_request(matches)?;
+    Ok(matches
+        .get_one::<String>("name")
+        .map(MachineName::parse)
+        .transpose()?)
 }
 
 /// The enrollment token from its one source: `--token-stdin`, `--token-file` or
