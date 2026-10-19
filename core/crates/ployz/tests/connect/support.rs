@@ -191,6 +191,9 @@ pub(super) struct DiscoveryService {
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
     /// Serving Pointers published so far; every Machine acks a pointer as soon as it lands.
     pointers: Arc<Mutex<BTreeMap<QualifiedService, ServingPointer>>>,
+    /// Copies a want touched, with their rotation; removed copies leave. A listed
+    /// Container no want touched keeps the rotation it was listed with.
+    copies: Arc<Mutex<BTreeMap<ContainerId, ployz_core::ContainerObservation>>>,
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     /// Inspect fails, so who manages the Machine can't be read.
     pub(super) inspect_fails: bool,
@@ -266,6 +269,7 @@ impl DiscoveryService {
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             pointers: Arc::new(Mutex::new(BTreeMap::new())),
+            copies: Arc::default(),
             management_clients: Arc::default(),
             inspect_fails: false,
             leave_unavailable: false,
@@ -318,6 +322,91 @@ impl DiscoveryService {
 
     pub(super) fn end_watch(&self) {
         self.watch.live.lock().unwrap().clear();
+    }
+
+    #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
+    fn copy(
+        &self,
+        locator: &ployz_core::ContainerLocator,
+    ) -> Result<ployz_core::ContainerObservation, Status> {
+        let ployz_core::ContainerLocator::Id(container_id) = locator else {
+            return Err(Status::unimplemented("unused"));
+        };
+        if let Some(copy) = self.copies.lock().unwrap().get(container_id) {
+            return Ok(copy.clone());
+        }
+        self.listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|listed| listed.container_id == *container_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found("no such Container"))
+    }
+
+    /// Apply `want` to the copy by the edge table; a copy goes In as soon as asked,
+    /// since every copy here is healthy.
+    fn turn(
+        &self,
+        mut copy: ployz_core::ContainerObservation,
+        want: &ployz_core::ContainerWant,
+    ) -> Result<
+        (ployz_core::ContainerNow, Option<ployz_core::HealthVerdict>),
+        ployz_core::EnsuredContainer,
+    > {
+        let health = match ployz_testkit::rotation::decide(copy.rotation(), want) {
+            Err(refusal) => {
+                return Err(ployz_core::EnsuredContainer::Refused {
+                    now: ployz_core::ContainerNow::Present(copy),
+                    refusal,
+                });
+            }
+            Ok(ployz_core::RotationEdge::Write(rotation)) => {
+                let health = (rotation == ployz_core::CopyRotation::In)
+                    .then_some(ployz_core::HealthVerdict::Healthy);
+                copy.try_update(|parts| parts.rotation = Some(rotation))
+                    .unwrap();
+                self.copies
+                    .lock()
+                    .unwrap()
+                    .insert(copy.container_id, copy.clone());
+                health
+            }
+            Ok(
+                ployz_core::RotationEdge::Keep
+                | ployz_core::RotationEdge::Remove
+                | ployz_core::RotationEdge::Refused(_),
+            ) => None,
+        };
+        Ok((ployz_core::ContainerNow::Present(copy), health))
+    }
+
+    /// Every Machine's proxy routes exactly the Service's In copies.
+    fn routes(&self, service: &QualifiedService) -> RoutesRead {
+        let mut copies: BTreeMap<ContainerId, ployz_core::ContainerObservation> = self
+            .listed_containers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|listed| (listed.container_id, listed.clone()))
+            .collect();
+        copies.extend(self.copies.lock().unwrap().clone());
+        let routed: std::collections::BTreeSet<ContainerId> = copies
+            .values()
+            .filter(|copy| {
+                copy.identity() == *service && *copy.rotation() == ployz_core::CopyRotation::In
+            })
+            .map(|copy| copy.container_id)
+            .collect();
+        RoutesRead {
+            routes: self
+                .machines
+                .iter()
+                .map(|observed| (observed.machine.id, Some(routed.clone())))
+                .collect(),
+            complete: true,
+            ..RoutesRead::default()
+        }
     }
 }
 
@@ -910,17 +999,25 @@ impl FakeMachine for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
         let RpcRequestBody::EnsureContainer(ensure) = request.body else {
             return Err(Status::invalid_argument("expected ensure_container"));
         };
-        let now = match ensure.want {
+        let want = ensure.want.clone();
+        let (now, health) = match ensure.want {
             ployz_core::ContainerWant::Running {
                 container: ployz_core::RunTarget::New(new),
                 ..
             } => {
                 let resolved_spec = new.resolved_spec.clone();
-                self.created_containers.lock().unwrap().push(new);
+                let created = {
+                    let mut created = self.created_containers.lock().unwrap();
+                    created.push(new);
+                    created.len()
+                };
+                let container_id = ContainerId::parse(format!("{created:064x}")).unwrap();
                 if let Some(builds) = &self.builds
                     && builds.retain_images
                 {
@@ -943,20 +1040,41 @@ impl FakeMachine for DiscoveryService {
                         RpcResponse::from(error.clone()).encode().unwrap(),
                     ));
                 }
-                ployz_core::ContainerNow::Present(created_container(resolved_spec))
+                let copy = created_container(machine_id, container_id, resolved_spec);
+                self.copies
+                    .lock()
+                    .unwrap()
+                    .insert(container_id, copy.clone());
+                (ployz_core::ContainerNow::Present(copy), None)
+            }
+            ployz_core::ContainerWant::Running {
+                container: ployz_core::RunTarget::Existing(container),
+                ..
+            }
+            | ployz_core::ContainerWant::Stopped { container, .. }
+            | ployz_core::ContainerWant::Out { container, .. }
+            | ployz_core::ContainerWant::Held { container, .. } => {
+                let copy = self.copy(&container)?;
+                match self.turn(copy, &want) {
+                    Ok(turned) => turned,
+                    Err(refused) => {
+                        return Ok(Response::new(RpcResponse::from(refused).encode().unwrap()));
+                    }
+                }
             }
             ployz_core::ContainerWant::Gone { container, .. } => {
-                ployz_core::ContainerNow::Absent { of: container }
-            }
-            ployz_core::ContainerWant::Running { .. }
-            | ployz_core::ContainerWant::Stopped { .. }
-            | ployz_core::ContainerWant::Out { .. }
-            | ployz_core::ContainerWant::Held { .. } => {
-                return Err(Status::unimplemented("unused"));
+                if let Ok(copy) = self.copy(&container) {
+                    let container_id = copy.container_id;
+                    if let Err(refused) = self.turn(copy, &want) {
+                        return Ok(Response::new(RpcResponse::from(refused).encode().unwrap()));
+                    }
+                    self.copies.lock().unwrap().remove(&container_id);
+                }
+                (ployz_core::ContainerNow::Absent { of: container }, None)
             }
         };
         Ok(Response::new(
-            RpcResponse::from(ployz_core::EnsuredContainer::Ensured { now, health: None })
+            RpcResponse::from(ployz_core::EnsuredContainer::Ensured { now, health })
                 .encode()
                 .unwrap(),
         ))
@@ -1179,6 +1297,13 @@ impl FakeMachine for DiscoveryService {
         else {
             panic!("expected pointer read");
         };
+        if read.routes_only {
+            return Ok(Response::new(
+                RpcResponse::from(self.routes(&read.service))
+                    .encode()
+                    .unwrap(),
+            ));
+        }
         let pointer = self.pointers.lock().unwrap().get(&read.service).cloned();
         let acks = pointer
             .iter()
@@ -1397,15 +1522,17 @@ pub(super) fn created_volume(machine_id: MachineId, create: CreateVolumeRequest)
 }
 
 fn created_container(
+    machine_id: MachineId,
+    container_id: ContainerId,
     resolved_spec: ployz_core::ResolvedServiceSpec,
 ) -> ployz_core::ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-        rotation: None,
+        rotation: Some(ployz_core::CopyRotation::Pending),
         r#gen: None,
-        container_id: ContainerId::parse("1".repeat(64)).unwrap(),
+        container_id,
         display_name: "web-1".into(),
         created_at_unix_nanos: 1,
-        machine_id: MachineId::random(),
+        machine_id,
         namespace: ployz_core::Namespace::parse("app").unwrap(),
         kind: ployz_core::ContainerKind::ServiceContainer,
         runtime: ployz_core::ContainerRuntimeObservation::Running {
