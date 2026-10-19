@@ -72,11 +72,11 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
     let dependent = QualifiedService::parse("app/web").unwrap();
     let first_id = container('a');
     let second_id = container('b');
-    let mut first = observation(&machine('1'), &first_id, healthy());
+    let mut first = routed(&machine('1'), &first_id, healthy());
     first
         .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
         .unwrap();
-    let mut second = observation(&machine('2'), &second_id, starting());
+    let mut second = routed(&machine('2'), &second_id, starting());
     second
         .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
         .unwrap();
@@ -111,7 +111,7 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
 }
 
 #[tokio::test(start_paused = true)]
-async fn dependency_gate_ignores_a_copy_the_dependency_row_no_longer_names() {
+async fn dependency_gate_ignores_a_copy_out_of_rotation() {
     let dependency = QualifiedService::parse("app/api").unwrap();
     let dependent = QualifiedService::parse("app/web").unwrap();
     let serving_id = container('a');
@@ -136,28 +136,19 @@ async fn dependency_gate_ignores_a_copy_the_dependency_row_no_longer_names() {
     ];
     let client = Scripted {
         observations: Some(vec![serving, superseded]),
-        cancel_on_prepare: None,
         ..Scripted::new(vec![created(
             Call::Run(machine('1'), ContainerKind::ServiceContainer),
             &container('c'),
         )])
-    };
-    client.pointers.lock().unwrap().insert(
-        dependency,
-        ServingPointer {
-            deploy: run_id(),
-            containers: vec![serving_id],
-            previous: None,
-            retiring: vec![],
-            deciding: None,
-        },
-    );
+    }
+    .with_copy(&machine('1'), &serving_id, CopyRotation::In)
+    .with_copy(&machine('1'), &superseded_id, CopyRotation::Out);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(
         matches!(outcome, DeployOutcome::Success { .. }),
-        "a superseded copy awaiting unroute must not fail the dependent, got {outcome:?}"
+        "an Out copy awaiting removal must not fail the dependent, got {outcome:?}"
     );
     client.assert_done();
 }
@@ -165,7 +156,7 @@ async fn dependency_gate_ignores_a_copy_the_dependency_row_no_longer_names() {
 #[tokio::test(start_paused = true)]
 async fn a_dependency_wait_reports_its_elapsed_and_deadline_clocks() {
     let dependency = QualifiedService::parse("app/api").unwrap();
-    let mut observed = observation(&machine('1'), &container('a'), starting());
+    let mut observed = routed(&machine('1'), &container('a'), starting());
     observed
         .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
         .unwrap();
@@ -264,7 +255,7 @@ async fn dependency_gate_rejects_zero_service_containers_and_hooks() {
 async fn dependency_gate_accepts_a_container_that_passed_once_and_is_failing_now() {
     let dependency = QualifiedService::parse("app/api").unwrap();
     let id = container('a');
-    let mut observed = observation(&machine('1'), &id, failing());
+    let mut observed = routed(&machine('1'), &id, failing());
     observed
         .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
         .unwrap();
@@ -294,7 +285,7 @@ async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines
         (starting(), Some(3_000), 3, "timed_out"),
     ] {
         let id = container('a');
-        let mut observed = observation(&machine('1'), &id, runtime);
+        let mut observed = routed(&machine('1'), &id, runtime);
         observed
             .try_update(|parts| {
                 parts.resolved_spec.container.healthcheck = Some(

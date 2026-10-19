@@ -18,6 +18,16 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveContainerError>
     .await
 }
 
+/// A move first reads the source copy's gen.
+fn moving(steps: Vec<Step>) -> Scripted {
+    let mut script = vec![observed(
+        Call::Inspect(machine(FROM), container('a')),
+        running(),
+    )];
+    script.extend(steps);
+    Scripted::new(script)
+}
+
 fn served() -> Vec<Step> {
     vec![created(
         Call::Run(machine(TO), ContainerKind::ServiceContainer),
@@ -32,14 +42,14 @@ async fn a_move_is_done_once_the_old_container_is_removed() {
         ok(Call::Stop(machine(FROM), container('a'))),
         ok(Call::Discard(machine(FROM), container('a'))),
     ]);
-    let client = Scripted::new(steps);
+    let client = moving(steps);
     assert_eq!(move_with(&client).await.unwrap(), container('b'));
     client.assert_done();
 }
 
 #[tokio::test]
 async fn a_move_that_keeps_the_old_container_never_stops_or_removes_it() {
-    let client = Scripted::new(served());
+    let client = moving(served());
     let moved = move_container(
         &client,
         &test_namespace(),
@@ -61,7 +71,7 @@ async fn an_old_container_that_would_not_stop_still_serves() {
         Call::Stop(machine(FROM), container('a')),
         "stop failed",
     ));
-    let client = Scripted::new(steps);
+    let client = moving(steps);
     assert!(matches!(
         move_with(&client).await,
         Err(MoveContainerError::OldNotRemoved {
@@ -82,7 +92,7 @@ async fn an_old_container_that_stopped_but_would_not_go_is_told_apart() {
             "remove failed",
         ),
     ]);
-    let client = Scripted::new(steps);
+    let client = moving(steps);
     let Err(MoveContainerError::OldNotRemoved { error, old_stopped }) = move_with(&client).await
     else {
         panic!("the old Container stayed");
@@ -110,7 +120,7 @@ async fn a_replacement_is_claimed_removed_only_when_its_removal_was_acknowledged
             false,
         ),
     ] {
-        let client = Scripted::new(vec![
+        let client = moving(vec![
             failed(
                 Call::Run(machine(TO), ContainerKind::ServiceContainer),
                 "start failed",
@@ -140,7 +150,7 @@ async fn a_run_whose_reply_was_lost_is_resent_to_the_same_slot() {
         ok(Call::Stop(machine(FROM), container('a'))),
         ok(Call::Discard(machine(FROM), container('a'))),
     ]);
-    let client = Scripted::new(steps);
+    let client = moving(steps);
     assert_eq!(move_with(&client).await.unwrap(), container('b'));
     let slots = client.slots.lock().unwrap();
     let [first, second] = slots.as_slice() else {
@@ -152,7 +162,7 @@ async fn a_run_whose_reply_was_lost_is_resent_to_the_same_slot() {
 
 #[tokio::test]
 async fn a_failed_run_removes_its_slot() {
-    let client = Scripted::new(vec![
+    let client = moving(vec![
         failed(
             Call::Run(machine(TO), ContainerKind::ServiceContainer),
             "image not found",
@@ -177,7 +187,7 @@ async fn a_failed_run_removes_its_slot() {
 async fn a_cancelled_global_move_removes_its_replacement() {
     let mut global = spec(Some(0), None, None);
     global.mode = ployz_core::ServiceMode::Global;
-    let client = Scripted::new(vec![
+    let client = moving(vec![
         Step(
             Call::Run(machine(TO), ContainerKind::ServiceContainer),
             Reply::Pending,
@@ -220,7 +230,7 @@ async fn a_cancelled_global_move_removes_its_replacement() {
 async fn a_cancelled_global_move_keeps_an_adopted_replica() {
     let mut global = spec(Some(0), None, None);
     global.mode = ployz_core::ServiceMode::Global;
-    let mut client = Scripted::new(vec![Step(
+    let mut client = moving(vec![Step(
         Call::Run(machine(TO), ContainerKind::ServiceContainer),
         Reply::Pending,
     )]);
@@ -270,7 +280,7 @@ async fn a_first_pointer_published_while_the_replacement_starts_keeps_the_old_co
                 ok(Call::Discard(machine(FROM), container('a'))),
             ]);
         }
-        let client = Scripted::new(steps);
+        let client = moving(steps);
         let row = FakeRow::default();
         let service = QualifiedService::parse("app/web").unwrap();
         let (namespace, spec, to, from, old) = (
@@ -327,7 +337,7 @@ async fn a_kept_old_copy_is_never_stopped_and_a_removed_one_is() {
                 ok(Call::Discard(machine(FROM), container('a'))),
             ]);
         }
-        let client = Scripted::new(steps);
+        let client = moving(steps);
         let reader = FakeRow::default();
         if old_copy != OldCopy::Remove {
             *reader.row.lock().unwrap() = Some(kept.clone());
@@ -375,7 +385,7 @@ async fn a_pointer_whose_row_does_not_name_the_old_copy_lets_the_move_remove_it(
     use crate::serving_publish::tests::{FakeRow, pointer};
 
     let unrelated = pointer('c', &['c'], &[]);
-    let client = Scripted::new(vec![
+    let client = moving(vec![
         created(
             Call::Run(machine(TO), ContainerKind::ServiceContainer),
             &container('b'),
@@ -459,7 +469,7 @@ async fn a_pointer_published_after_the_stop_keeps_the_old_container_unremoved() 
         }
     }
 
-    let client = Scripted::new(vec![
+    let client = moving(vec![
         created(
             Call::Run(machine(TO), ContainerKind::ServiceContainer),
             &container('b'),
@@ -543,7 +553,7 @@ async fn an_unreadable_pointer_after_the_stop_reports_the_old_container_stopped(
         }
     }
 
-    let client = Scripted::new(vec![
+    let client = moving(vec![
         created(
             Call::Run(machine(TO), ContainerKind::ServiceContainer),
             &container('b'),
