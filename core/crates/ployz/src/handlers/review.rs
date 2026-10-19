@@ -287,7 +287,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "history")))?;
     crate::ui::finish(&staged, || {
         crate::ui::stream(format_args!(
-            "{} version #{} in the draft. Review before saving or deploying.",
+            "{} Saved revision {} in the draft. Review before saving or deploying.",
             if action == ployz_store::HistoryAction::Restore {
                 "Restored"
             } else {
