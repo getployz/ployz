@@ -792,7 +792,7 @@ fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
                     details: serde_json::Value::Null,
                     cause: vec![docker.into()],
                 }
-                .pulling("nginx:doesnotexist"),
+                .pulling("nginx:doesnotexist", ployz_core::PullPolicy::Missing),
             },
         },
         unexecuted: Vec::new(),
