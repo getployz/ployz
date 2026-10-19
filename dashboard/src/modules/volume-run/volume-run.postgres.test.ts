@@ -1450,7 +1450,7 @@ describe("volume runs", () => {
 
       expect(output.error).toBeDefined();
       expect(verbs.at(-1)).toBe("cut@fsn-1(f-1)");
-      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", inngest_run_id: "run-taker", message: "web stopped for the final copy", finished_at: null })]);
+      expect(await rows()).toEqual([expect.objectContaining({ kind: "move", state: "running", inngest_run_id: "run-taker", message: "Copying to fsn-2", finished_at: null })]);
     });
 
     it("a run that loses the commit stops like a Stale run, and never tells B to start", async () => {
@@ -2110,8 +2110,42 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(seen).toEqual(["Copying to fsn-2; web keeps running", "web stopped for the final copy", "Starting web on fsn-2"]);
+      expect(seen).toEqual(["Copying to fsn-2", "Copying to fsn-2", "Starting web on fsn-2"]);
       expect(await rows()).toMatchObject([{ state: "done", message: expect.stringMatching(/^web was stopped \d+s$/) }]);
+    });
+
+    it("says the Service stopped only once a cut answered busy stops it, and times the stop from that answer to B's", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      const seen: Array<string | null> = [];
+      const message = async () => (await rows())[0]?.message ?? null;
+      let clock = 0;
+      const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+      failNext.set("cut@fsn-1", "busy");
+      beforeSet.set("cut@fsn-1", async () => {
+        seen.push(await message());
+        beforeSet.set("cut@fsn-1", async () => {
+          seen.push(await message());
+          clock = 60_000;
+        });
+      });
+      const finalPull = async () => {
+        if (named("fsn-1").copy?.kind === "slot") seen.push(await message());
+        else beforeSet.set("pull@fsn-2", finalPull);
+      };
+      beforeSet.set("pull@fsn-2", finalPull);
+      beforeSet.set("writer@fsn-2", () => {
+        clock = 86_000;
+      });
+
+      try {
+        await execute(run.id);
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(verbs.filter((verb) => verb.startsWith("cut@"))).toHaveLength(2);
+      expect(seen).toEqual(["Copying to fsn-2", "Copying to fsn-2", "web stopped for the final copy"]);
+      expect(await rows()).toMatchObject([{ state: "done", message: "web was stopped 26s" }]);
     });
 
     it("a cut answered busy is asked again until the Container stopped", async () => {

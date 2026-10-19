@@ -170,12 +170,14 @@ const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: 
 
 /**
  * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
- * sleeps and asks again with the same request, which spends no retry.
+ * sleeps and asks again with the same request, which spends no retry. `at` is when the Machine answered, in ms; a step
+ * an older version of this function memoized has none.
  */
 async function settle({ step, runEffect, run, runId }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
   for (let check = 0; check < BUSY_CHECKS; check += 1) {
     if (check > 0) await step.sleep(`${id}-wait-${check}`, BUSY_WAIT);
-    const answer = await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(ask));
+    const answer: CopyAnswer & { readonly at?: number } = await step.run(check === 0 ? id : `${id}-${check}`, () =>
+      runEffect(ask).then((answered) => ({ ...answered, at: Date.now() })));
     if (!answer.ok && answer.reason === "stale") {
       await step.run(`${id}-stale`, () => runEffect(endRun(run, runId, "failed", answer.message)));
       throw new Stale(answer.message);
@@ -497,7 +499,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   let service = "the Service";
   let stoppedAt: number | null = null;
   let downtime: string | null = null;
-  const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)).then(() => Date.now()));
+  const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)));
 
   if (phase.start === "rounds") {
     const found = await step.run("02-service", () => runEffect(findHolder(run, runId, A)));
@@ -506,7 +508,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       return { runId: run.id, refused: found.refusal };
     }
     service = found.holder.redactedSpec.name;
-    await note("02-copying", `Copying to ${B.name}; ${service} keeps running`);
+    await note("02-copying", `Copying to ${B.name}`);
     try {
       ({ copy } = await runRounds(steps, { A: phase.writer, B, copy, epoch }));
     } catch (error) {
@@ -521,13 +523,16 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       )));
       if (!imaged.ok) throw new NonRetriableError(imaged.refusal.message);
       service = imaged.holder.redactedSpec.name;
-      stoppedAt = await note("05-stopping", `${service} stopped for the final copy`);
-      source = await mustSet(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
+      const stopped = await setCopy(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
         kind: "mirror",
         from: null,
         target: `f-${epoch}`,
         drain: DRAIN_MS,
       }, `${A.name} is still stopping ${name}'s Service`);
+      if (!stopped.ok) throw new NonRetriableError(stopped.message);
+      source = stopped.copy;
+      stoppedAt = stopped.at ?? null;
+      await note("05-stopped", `${service} stopped for the final copy`);
     }
     const cut = slotAt(source);
     if (cut === null) throw new NonRetriableError(`${copyName(name, A.name)} holds no final snapshot`);
@@ -541,9 +546,8 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       epoch: copy?.kind === "root" ? copy.epoch : epoch,
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
-    const startedAt = await step.run("07-started", () => Date.now());
     await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
-    downtime = stoppedAt === null ? null : `${service} was stopped ${formatDuration((startedAt - stoppedAt) / 1000)}`;
+    downtime = stoppedAt === null || started.at === undefined ? null : `${service} was stopped ${formatDuration((started.at - stoppedAt) / 1000)}`;
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }
