@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    ContainerId, DockerVolumeName, ManagementAddress, Namespace, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, SlotId, SnapshotGuid, SnapshotName, VolumeCopy,
+    ContainerId, DockerVolumeName, Gen, ManagementAddress, Namespace, ResolvedServiceSpec,
+    RpcError, RpcErrorCode, RunRotation, SlotId, SnapshotGuid, SnapshotName, VolumeCopy,
 };
 
 /// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
@@ -234,10 +234,14 @@ pub enum Start {
     Kept {
         container_id: ContainerId,
     },
+    /// A Move's destination copy, created at the source copy's `gen`. With `In`, the
+    /// owner routes it once healthy, as an In want does.
     Create {
         namespace: Namespace,
         resolved_spec: ResolvedServiceSpec,
         creation_key: CreationKey,
+        r#gen: Gen,
+        rotation: RunRotation,
     },
 }
 

@@ -1125,11 +1125,11 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
 });
 
 /**
- * B becomes the writer at G and creates the Service from the source's stopped Container; a B already running it is left
- * alone. With no source named, a B whose stopped Service is the only one left becomes the writer and stays stopped: an
- * earlier start moved the Service there, and a Deploy's placement may have removed the source since. `ownedBy` is the
- * Inngest run that must still own the row when B is told, or null for a Deploy following another run's committed lane,
- * which owns no row.
+ * B becomes the writer at G and creates the Service from the source's stopped Container, at its gen and routed once
+ * healthy when the source was routed; a B already running it is left alone. With no source named, a B whose stopped
+ * Service is the only one left becomes the writer and stays stopped: an earlier start moved the Service there, and a
+ * Deploy's placement may have removed the source since. `ownedBy` is the Inngest run that must still own the row when
+ * B is told, or null for a Deploy following another run's committed lane, which owns no row.
  */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
   const { to, from } = start;
@@ -1168,6 +1168,8 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
       namespace: holder.namespace,
       resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
       creation_key: creationKey(ctx, start.at),
+      gen: container.gen ?? 1,
+      rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
     },
   });
 }, Effect.scoped);

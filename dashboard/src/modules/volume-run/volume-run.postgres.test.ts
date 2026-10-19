@@ -3,6 +3,7 @@ import type {
   ContainerId,
   CopyObservation,
   CopyRefusal,
+  CopyRotation,
   ExpectedCopy,
   MachineId,
   RuntimeWatchView,
@@ -96,7 +97,7 @@ type FakeMachine = {
   floor?: number;
 };
 
-type FakeContainer = { machine: string; id: string; running: boolean; created?: number };
+type FakeContainer = { machine: string; id: string; running: boolean; created?: number; rotation?: CopyRotation; gen?: number };
 
 /**
  * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail to answer, or
@@ -341,9 +342,12 @@ describe("volume runs", () => {
     },
     inspectContainer: (target: string, container: string) => Effect.promise(async () => {
       await beforeStart?.();
+      const { rotation, gen } = containers.find((entry) => entry.id === container) ?? {};
       return {
         container: {
           container_id: container,
+          rotation,
+          gen,
           resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
         },
       };
@@ -1529,6 +1533,19 @@ describe("volume runs", () => {
       await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: A, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
 
       expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } } } });
+    });
+
+    it.each([
+      { rotation: "in", sent: { in: { run: null, expect: "pending" } } },
+      { rotation: { held: "run-user" }, sent: "pending" },
+      { rotation: "pending", sent: "pending" },
+    ] as const)("starts B at A's gen, routed only when A's copy was: $rotation", async ({ rotation, sent: wanted }) => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, rotation, gen: 3 }];
+
+      await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: { id: idOf("fsn-1"), name: "fsn-1" }, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", gen: 3, rotation: wanted } });
     });
 
     it("with no source named, refuses to guess between stopped Containers on two Machines", async () => {
