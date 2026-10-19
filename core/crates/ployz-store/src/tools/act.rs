@@ -26,14 +26,24 @@ pub(crate) fn server_show(server: Option<&ServerName>) -> Call {
     Call::new("server_show", input)
 }
 
+/// How Cloud's refusal for an Organization with no Servers begins
+/// (`NO_SERVERS_MESSAGE` in `dashboard/src/modules/agent/call-cloud.server.ts`).
+/// It shares the `unavailable` code and fix with the refusal for Servers that
+/// did not answer; only the message tells them apart.
+const NO_SERVERS_YET: &str = "This Organization has no servers yet";
+
 /// The Servers a name is checked against. Unread because no Server answers, the
-/// refusal says the name went unchecked.
+/// refusal says the name went unchecked. With no Servers at all, Cloud's
+/// refusal already says so and passes through unchanged.
 pub(crate) fn roster(
     cx: &Cx<'_>,
     answer: Option<Result<Value, RpcError>>,
 ) -> Result<ServersAnswer, Stop> {
     cx.cloud(answer).map_err(|stop| match stop {
-        Stop::Refuse(mut refusal) if refusal.code == RpcErrorCode::Unavailable => {
+        Stop::Refuse(mut refusal)
+            if refusal.code == RpcErrorCode::Unavailable
+                && !refusal.message.starts_with(NO_SERVERS_YET) =>
+        {
             refusal.message = format!("Can't check that name. {}", refusal.message);
             Stop::Refuse(refusal)
         }
