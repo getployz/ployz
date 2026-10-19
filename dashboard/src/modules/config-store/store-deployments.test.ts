@@ -1,10 +1,10 @@
-import type { DeploymentView, DiffView, JsonValue, Outcome, RowId, ServiceListing } from "@ployz/sdk";
+import type { DeploymentView, DiffView, JsonValue, MachineId, Outcome, RowId, ServiceId, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel,
+  freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -330,6 +330,21 @@ it("words what a Deployment shipped despite", () => {
     .toBe("Ingress isn't running on web-1: image pull failed");
   expect(deploymentWarningText({ cause: "Couldn't list the Cluster's Servers." }))
     .toBe("Couldn't check ingress: Couldn't list the Cluster's Servers. Deploy again to retry");
+  const mismatch = { warning: { type: "image_port_mismatch" as const, service: "web", service_id: "f".repeat(32) as ServiceId, image: "nginx", machines: ["a".repeat(32) as MachineId], exposed: [80], routed: [8080, 8081] } };
+  expect(deploymentWarningText(mismatch)).toBe("web's image nginx exposes 80; its domains send to 8080, 8081");
+  expect(deploymentWarningText(mismatch, "frontend")).toBe("frontend's image nginx exposes 80; its domains send to 8080, 8081");
+});
+
+it("links a port warning to the Service by its runtime name, so a rename keeps the link and a namesake never takes it", () => {
+  const mismatch = { warning: { type: "image_port_mismatch" as const, service: "web", service_id: "f".repeat(32) as ServiceId, image: "nginx", machines: [], exposed: [80], routed: [8080] } };
+  // The warned Service was web when it got its DNS name and is frontend now; another Service took the name web.
+  const nodes = [node("frontend", "deployed"), node("web", "deployed")];
+  const runtime_names = { frontend: "web", web: "web-2" };
+  expect(warnedService({ nodes, runtime_names }, mismatch)?.id).toBe("id-frontend");
+  // A Service that never changed name matches by its own name.
+  expect(warnedService({ nodes: [node("web", "deployed")], runtime_names: { web: "web" } }, mismatch)?.id).toBe("id-web");
+  expect(warnedService({ nodes: [node("api", "deployed")], runtime_names: { api: "api" } }, mismatch)).toBeUndefined();
+  expect(warnedService({ nodes, runtime_names }, { service: "web", variable: "TOKEN" })).toBeUndefined();
 });
 
 it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and leaves an ended one alone", () => {

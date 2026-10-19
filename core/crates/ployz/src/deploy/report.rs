@@ -294,6 +294,13 @@ impl Direct {
         self.operations = operations.to_vec();
     }
 
+    /// Show `warning` with the deploy's other notices, once.
+    pub(super) fn notice(&mut self, warning: ployz_core::DeployWarning) {
+        if !self.notices.contains(&warning) {
+            self.notices.push(warning);
+        }
+    }
+
     pub(super) fn frame(&self) -> Frame {
         let services: BTreeSet<_> = self.rows.keys().map(|(service, _)| service).collect();
         let mut rows: Vec<_> = services

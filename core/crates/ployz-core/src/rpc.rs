@@ -736,8 +736,38 @@ pub struct PullImageRequest {
 }
 
 /// Successful `PullImage` and `PullImageFromMachine` payload.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ImagePulled {}
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImagePulled {
+    /// The ports the image's config exposes, as Docker reports them. A Machine that
+    /// doesn't report them sends none, which claims nothing about the image.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exposed_ports: Vec<ExposedPort>,
+}
+
+/// One port an image's config exposes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+pub struct ExposedPort {
+    pub port: std::num::NonZeroU16,
+    pub protocol: crate::TransportProtocol,
+}
+
+impl ExposedPort {
+    /// Read one of Docker's exposed-port keys, such as `80/tcp`. Answers `None` for a
+    /// protocol Ployz doesn't route (sctp) and for anything it can't read.
+    #[must_use]
+    pub fn from_docker(key: &str) -> Option<Self> {
+        let (port, protocol) = key.split_once('/').unwrap_or((key, "tcp"));
+        let protocol = match protocol {
+            "tcp" => crate::TransportProtocol::Tcp,
+            "udp" => crate::TransportProtocol::Udp,
+            _ => return None,
+        };
+        Some(Self {
+            port: port.parse().ok()?,
+            protocol,
+        })
+    }
+}
 
 /// Remove the superseded build images of each repository from this Machine's store.
 /// Repositories are Docker's short names, so a registry prefix stays. Never forced:

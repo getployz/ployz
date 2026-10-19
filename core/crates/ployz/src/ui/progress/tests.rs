@@ -732,3 +732,39 @@ fn a_retained_row_fits_the_terminal_with_its_count_whole() {
     assert!(row.contains('…'), "{visible}");
     assert!(row.width() < 80, "{visible}");
 }
+
+#[test]
+fn a_notice_raised_mid_deploy_shows_under_the_live_rows_and_in_plain_output() {
+    let warning = DeployWarning::ImagePortMismatch {
+        service: ployz_core::ServiceName::parse("web").unwrap(),
+        service_id: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+        image: "nginx".into(),
+        machines: vec![ployz_core::MachineId::parse("a".repeat(32)).unwrap()],
+        exposed: vec![80],
+        routed: vec![8080],
+    };
+    let line =
+        "! web's image nginx exposes 80; its domains send to 8080. Set the domain port or PORT.";
+    let initial = frame(State::Running(RowPhase::Starting));
+    let mut warned = initial.clone();
+    warned.notices.push(warning);
+
+    let lines = live_lines(&warned, 0, 200, 10, false);
+    assert_eq!(lines.last().map(String::as_str), Some(line), "{lines:?}");
+    assert!(
+        live_lines(&warned, 0, 200, 2, false)
+            .iter()
+            .all(|row| row != line)
+    );
+
+    let mut done = warned.clone();
+    done.rows.first_mut().unwrap().state = State::Completed;
+    let text = plain(
+        initial,
+        vec![
+            (1, Message::Update(warned)),
+            (2, Message::Finish(done, Disposition::Settled)),
+        ],
+    );
+    assert_eq!(text.matches(line).count(), 1, "{text}");
+}

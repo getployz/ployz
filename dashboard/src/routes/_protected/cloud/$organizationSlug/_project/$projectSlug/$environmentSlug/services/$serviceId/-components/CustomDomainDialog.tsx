@@ -147,7 +147,11 @@ export function CustomDomainDialog({
                         ? "Uses PORT"
                         : String(defaultTargetPort)
                     }
-                    description="Leave blank to use PORT."
+                    description={
+                      defaultTargetPort === null
+                        ? "Leave blank to use PORT, 8080 unless set."
+                        : "Leave blank to use PORT."
+                    }
                   />
                 )}
               </form.Field>

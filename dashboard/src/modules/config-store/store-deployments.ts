@@ -289,8 +289,18 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
 
-/** What a Deployment shipped despite, in words: "TOKEN not set", a broken reference left out, where a Config file left one empty, a Server left without ingress, or ingress it couldn't check. */
-export function deploymentWarningText(warning: DeploymentWarning) {
+/**
+ * What a Deployment shipped despite, in words: "TOKEN not set", a broken reference left out, where a Config file left
+ * one empty, a Server left without ingress, ingress it couldn't check, or an image exposing a port its domains don't
+ * send to.
+ */
+export function deploymentWarningText(warning: DeploymentWarning, service?: string) {
+  if ("warning" in warning) {
+    const found = warning.warning;
+    return found.type === "image_port_mismatch"
+      ? `${service ?? found.service}'s image ${found.image} exposes ${found.exposed.join(", ")}; its domains send to ${found.routed.join(", ")}`
+      : "The deployment found something to check";
+  }
   if ("cause" in warning) return `Couldn't check ingress: ${warning.cause.replace(/\.$/, "")}. Deploy again to retry`;
   if ("ingress" in warning) {
     return warning.ingress.type === "port_taken"
@@ -305,6 +315,17 @@ export function deploymentWarningText(warning: DeploymentWarning) {
     return warning.broken ? `Broken reference: ${warning.secret} in ${at}` : `${warning.secret} not set in ${at}`;
   }
   return `${warning.variable} may break ${warning.config}/${warning.file}`;
+}
+
+/**
+ * The Service node a deploy warning is about. The engine names Services by their runtime (Private DNS) name, which
+ * outlives a rename, so the match goes through `runtime_names` rather than the node's shown name: a Service renamed
+ * since keeps its link, and another one that took its old name is never chosen.
+ */
+export function warnedService(deployment: Pick<DeploymentView, "nodes" | "runtime_names">, warning: DeploymentWarning) {
+  if (!("warning" in warning) || warning.warning.type !== "image_port_mismatch") return undefined;
+  const runtime = warning.warning.service;
+  return deployment.nodes.find((node) => node.type === "service" && (deployment.runtime_names[node.name] ?? node.name) === runtime);
 }
 
 /** Why a Deployment ended: its reason and deepest cause, or what a forgotten removal left. */

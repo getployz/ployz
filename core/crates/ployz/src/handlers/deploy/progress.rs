@@ -112,6 +112,19 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             .preview
             .iter()
             .flat_map(|preview| &preview.warnings)
+            .chain(
+                view.deployment
+                    .warnings
+                    .iter()
+                    .filter_map(|warning| match warning {
+                        DeploymentWarning::Deploy { warning } => Some(warning),
+                        DeploymentWarning::Fragile { .. }
+                        | DeploymentWarning::NotSet { .. }
+                        | DeploymentWarning::NotSetInFile { .. }
+                        | DeploymentWarning::IngressNotServing { .. }
+                        | DeploymentWarning::IngressUnchecked { .. } => None,
+                    }),
+            )
             .cloned()
             .collect(),
     }
@@ -175,7 +188,8 @@ fn ingress_unchecked(view: &DeploymentView) -> impl Iterator<Item = &str> {
             DeploymentWarning::Fragile { .. }
             | DeploymentWarning::NotSet { .. }
             | DeploymentWarning::NotSetInFile { .. }
-            | DeploymentWarning::IngressNotServing { .. } => None,
+            | DeploymentWarning::IngressNotServing { .. }
+            | DeploymentWarning::Deploy { .. } => None,
         })
 }
 
@@ -212,7 +226,8 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
                     variable,
                 } => format!("{variable} may break {config}/{file}."),
                 DeploymentWarning::IngressNotServing { .. }
-                | DeploymentWarning::IngressUnchecked { .. } => return None,
+                | DeploymentWarning::IngressUnchecked { .. }
+                | DeploymentWarning::Deploy { .. } => return None,
             })
         })
         .collect()

@@ -1171,15 +1171,9 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
         RunEvidence::IngressUnchecked(cause) => {
-            running(&stored)?;
-            let unchecked = DeploymentWarning::IngressUnchecked { cause };
-            if !stored.run.warnings.contains(&unchecked) {
-                stored.run.warnings.push(unchecked);
-            }
-            stored.summary.warnings = stored.run.summary_warnings();
-            save(tx, &mut stored)?;
-            Ok(stored.summary)
+            warn(tx, stored, DeploymentWarning::IngressUnchecked { cause })
         }
+        RunEvidence::Warned(warning) => warn(tx, stored, DeploymentWarning::Deploy { warning }),
         RunEvidence::UploadNeeded(services) => {
             let names = services
                 .iter()
@@ -1227,6 +1221,21 @@ pub(crate) fn record(
 
 /// Why a Deploy failed, for users: the failed operation's Service, by its current
 /// name, and its error. None when it succeeded.
+/// Add `warning` to a running Deployment once.
+fn warn(
+    tx: &mut dyn Tx,
+    mut stored: Stored,
+    warning: DeploymentWarning,
+) -> Result<DeploymentSummary, RpcError> {
+    running(&stored)?;
+    if !stored.run.warnings.contains(&warning) {
+        stored.run.warnings.push(warning);
+    }
+    stored.summary.warnings = stored.run.summary_warnings();
+    save(tx, &mut stored)?;
+    Ok(stored.summary)
+}
+
 fn failure(
     outcome: &DeployOutcome<ExecutionError>,
     nodes: &[TargetNode],

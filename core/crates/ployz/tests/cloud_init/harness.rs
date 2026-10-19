@@ -968,7 +968,7 @@ impl FakeMachine for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(ployz_core::ImagePulled {})
+        rpc_ok(ployz_core::ImagePulled::default())
     }
     async fn leave(
         &self,

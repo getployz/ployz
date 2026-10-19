@@ -371,7 +371,7 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
                 };
                 requests.lock().unwrap().push(request);
                 Ok(Response::new(
-                    ployz_core::RpcResponse::from(ployz_core::ImagePulled {})
+                    ployz_core::RpcResponse::from(ployz_core::ImagePulled::default())
                         .encode()
                         .unwrap(),
                 ))
@@ -716,7 +716,9 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         *row = Some(publish.pointer);
                         RpcResponse::from(ServingPointerPublication::Published)
                     }
-                    RpcRequestBody::PullImage(_) => RpcResponse::from(ployz_core::ImagePulled {}),
+                    RpcRequestBody::PullImage(_) => {
+                        RpcResponse::from(ployz_core::ImagePulled::default())
+                    }
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                         containers: remote.clone(),
                     }),

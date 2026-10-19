@@ -99,7 +99,7 @@ impl BuildFixture {
         }
         self.pulls.lock().unwrap().push((machine, pull));
         failure.map_or_else(
-            || ployz_core::RpcResponse::from(ployz_core::ImagePulled {}),
+            || ployz_core::RpcResponse::from(ployz_core::ImagePulled::default()),
             ployz_core::RpcResponse::from,
         )
     }

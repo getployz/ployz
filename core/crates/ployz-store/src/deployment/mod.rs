@@ -33,9 +33,10 @@ use ployz_core::config::{
     parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
-    ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId,
-    ExecutionError, FailedOperation, MachineId, Namespace, RpcError, ServiceAttempt, ServiceName,
-    ServiceOutcome, ServiceRemovals, VolumeRemoval, VolumeRemovalOutcome,
+    ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DeployWarning,
+    DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace, RpcError,
+    ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals, VolumeRemoval,
+    VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -178,6 +179,9 @@ pub enum DeploymentWarning {
     },
     /// The Deploy couldn't check the Cluster's Ingress Proxies, so it brought none back.
     IngressUnchecked { cause: String },
+    /// Something the Deploy found while executing, such as an image that exposes a
+    /// port none of a Service's domains send to.
+    Deploy { warning: DeployWarning },
 }
 
 /// What a Deploy did to one Server's missing or stopped Ingress Proxy. It only
@@ -406,6 +410,9 @@ pub enum RunEvidence {
     /// Checking the Cluster's Ingress Proxies after execution failed, so none was
     /// filled. It warns; it never fails the Deployment.
     IngressUnchecked(String),
+    /// Something the Deploy found while executing. It warns; it never fails the
+    /// Deployment.
+    Warned(DeployWarning),
     /// The runner still holds the Deployment: it renews the lease and reads the
     /// status back, which says whether it was cancelled.
     Alive,

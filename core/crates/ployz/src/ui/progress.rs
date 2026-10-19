@@ -714,6 +714,22 @@ pub(crate) fn live_lines(
     height: usize,
     color: bool,
 ) -> Vec<String> {
+    let notes = notices(frame);
+    // Notices give way to the rows on a terminal too short for both.
+    if notes.is_empty() || height < notes.len() + 3 {
+        return row_lines(frame, tick, width, height, color);
+    }
+    let mut lines = row_lines(frame, tick, width, height - notes.len(), color);
+    let width = width.saturating_sub(1 + usize::from(terminal::ECHO_ROOM));
+    lines.extend(
+        notes
+            .iter()
+            .map(|notice| paint(&clip(&format!("! {notice}"), width), Tone::Change, color)),
+    );
+    lines
+}
+
+fn row_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bool) -> Vec<String> {
     let width = width.saturating_sub(1 + usize::from(terminal::ECHO_ROOM));
     let height = height.saturating_sub(1).max(1);
     let mut rows: Vec<_> = frame.rows.iter().collect();
@@ -890,7 +906,8 @@ fn notices(frame: &Frame) -> Vec<String> {
                     | DeployWarning::StorageObservationUnknown { .. }
                     | DeployWarning::IngressHostname { .. }
                     | DeployWarning::ObserverRelativeHostnameConflict
-                    | DeployWarning::SkippedDependencyHealth { .. } => None,
+                    | DeployWarning::SkippedDependencyHealth { .. }
+                    | DeployWarning::ImagePortMismatch { .. } => None,
                 })
                 .collect::<BTreeSet<_>>();
             Some(format!(

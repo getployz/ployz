@@ -49,8 +49,10 @@ If your app listens on a fixed port, like 3000, do one of these and deploy:
 
 Either way the health check follows, since it checks the port your domains send traffic to.
 
-The domain's row shows where traffic goes: **→ Uses PORT** or **→ Port 3000**. The dashboard
-ignores `EXPOSE` in your Dockerfile.
+The domain's row shows where traffic goes: **→ Uses PORT** or **→ Port 3000**. Ployz doesn't
+send traffic to the port your image exposes, but the deployment warns when none of its domains
+send to one: "web's image nginx exposes 80; its domains send to 8080. Set the domain port or
+PORT." The deployment still goes ahead.
 
 ## Add a custom domain
 

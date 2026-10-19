@@ -147,6 +147,8 @@ struct Scripted {
     cancel_on: Option<(Call, CancellationToken)>,
     runs_global: bool,
     pull_error: Option<RpcError>,
+    /// What each Machine reports of each image it pulls; none when absent.
+    pull_replies: BTreeMap<MachineId, ImagePulled>,
     pulled: Mutex<BTreeSet<MachineId>>,
     /// No Machine acks this run's pointer of this Service.
     unrouted: Option<ServiceName>,
@@ -189,6 +191,7 @@ impl Scripted {
             cancel_on: None,
             runs_global: false,
             pull_error: None,
+            pull_replies: BTreeMap::new(),
             pulled: Mutex::new(BTreeSet::new()),
             unrouted: None,
             unrouted_machine: None,
@@ -442,9 +445,18 @@ impl MachineOperations for Scripted {
         &self,
         machine_id: &MachineId,
         _spec: &ResolvedServiceSpec,
-    ) -> Result<(), RpcError> {
+    ) -> Result<ImagePulled, RpcError> {
         self.pulled.lock().unwrap().insert(*machine_id);
-        self.pull_error.clone().map_or(Ok(()), Err)
+        self.pull_error.clone().map_or_else(
+            || {
+                Ok(self
+                    .pull_replies
+                    .get(machine_id)
+                    .cloned()
+                    .unwrap_or_default())
+            },
+            Err,
+        )
     }
 
     async fn read_pointer(
@@ -570,6 +582,8 @@ mod flip;
 mod health;
 #[path = "exec_tests/hooks.rs"]
 mod hooks;
+#[path = "exec_tests/image_ports.rs"]
+mod image_ports;
 #[path = "exec_tests/moving.rs"]
 mod moving;
 #[path = "exec_tests/replacement.rs"]
