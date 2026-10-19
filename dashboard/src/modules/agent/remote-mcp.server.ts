@@ -51,6 +51,8 @@ const APPROVAL = {
   description: "The ID of an approval a person granted. Send it when calling this tool again after it answered approval_required.",
 };
 
+const BAD_APPROVAL = { code: "invalid_argument", message: "This input does not fit: approval is an approval's ID, a string.", field: "approval", expected: APPROVAL, writes: "none" };
+
 /** Every argument reaches the tool, which refuses a bad one in the same shape as any other refusal. */
 const toolValidates: jsonSchemaValidator = {
   getValidator<T>(): JsonSchemaValidator<T> {
@@ -111,7 +113,10 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
       inputSchema: fromJsonSchema<JsonObject>(toolSchema(tool), toolValidates),
       annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.destructive },
     }, async (args) => {
-      const { approval, ...input } = asRecord(args) ?? {};
+      const fields = asRecord(args) ?? {};
+      const { approval, ...rest } = fields;
+      if (tool.gated && approval !== undefined && asString(approval) === null) return text({ ok: false, refusal: BAD_APPROVAL }, true);
+      const input = tool.gated ? rest : fields;
       const sentKey = asString(input["request_key"]);
       const given = sentKey === null ? headerKey : requestKeyOf(sentKey);
       if (!given.ok) return text({ ok: false, refusal: given.refusal }, true);
@@ -122,7 +127,7 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
         tool: tool.name,
         input: projectJsonValue(sent) ?? null,
         key,
-        approvalId: asString(approval),
+        approvalId: tool.gated ? asString(approval) : null,
         page: { at: "organization" },
       }));
       const refused = "outcome" in result && "refusal" in result.outcome ? result.outcome.refusal : null;

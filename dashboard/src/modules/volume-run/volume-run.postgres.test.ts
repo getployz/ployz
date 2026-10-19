@@ -664,6 +664,13 @@ describe("volume runs", () => {
       expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
     });
 
+    it("a move onto the Server holding the writer is settled, so nothing offers it again", async () => {
+      expect(await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "move", args: { to: "fsn-1" } }))).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data's writer is already on fsn-1", details: { settled: true } },
+      });
+    });
+
     it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
       const removal = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
 

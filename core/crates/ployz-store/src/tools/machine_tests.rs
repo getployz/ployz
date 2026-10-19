@@ -259,3 +259,32 @@ fn an_ambiguous_refusal_leaves_the_choice_to_the_agent_instead_of_a_retry() {
     assert_eq!(refusal.valid, ["blog", "shop"]);
     assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
 }
+
+#[test]
+fn a_move_to_where_the_volume_already_is_offers_no_retry() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "volume_move")
+        .unwrap();
+    let call = Call::new(
+        "volume_move",
+        json!({ "volume": "files", "to": "machine-1" }),
+    );
+    let shown = Call::new("volume_show", json!({ "volume": "files" }));
+    let Stop::Refuse(refusal) = refused_act(
+        RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "files's writer is already on machine-1".into(),
+            details: json!({ "settled": true }),
+            cause: Vec::new(),
+        },
+        &call,
+        shown.clone(),
+    ) else {
+        panic!("a refused act stops with a refusal");
+    };
+    let refusal = finish(*refusal, entry, &call, "call-1");
+    assert_eq!(refusal.code, RpcErrorCode::Conflict);
+    assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
+    assert_eq!(refusal.next, [shown]);
+}

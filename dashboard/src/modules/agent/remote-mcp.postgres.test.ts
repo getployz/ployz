@@ -347,6 +347,18 @@ it.live("a call missing an argument is refused in the tools' own shape, not the 
     }
   }).pipe(Effect.scoped), 30_000);
 
+it.live("an approval its schema doesn't take is refused before anything is written", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const writes = vi.spyOn(shop.store, "write");
+    for (const tool of ["discard", "deploy"]) {
+      const refused = yield* Effect.promise(() => agent.client.callTool({ name: tool, arguments: { ...SHOP, approval: 42 } }));
+      expect(refused).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument", writes: "none" } } });
+    }
+    expect(writes).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
