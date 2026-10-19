@@ -182,7 +182,8 @@ sending it requests, and the replica stops a few seconds later.
   fails the check. Without a health check, the old replica stops a few seconds after the new one
   starts, ready or not. The databases Ployz creates come with one.
 - **A service with a [volume](../services/volumes.md) has a short gap.** Its old replica stops
-  first, so two never write the same files.
+  first, so two never write the same files. To change that, see
+  [Choose how a deploy replaces replicas](#choose-how-a-deploy-replaces-replicas).
 - **Migrations run first.** A **Pre-deploy command**, like `npm run migrate`, runs once with the
   new code before any replica is replaced. If it fails or runs past 5 minutes, the deployment
   fails and the old version keeps running.
@@ -190,6 +191,23 @@ sending it requests, and the replica stops a few seconds later.
   [variables](../services/variables.md) reference `${{ postgres.DATABASE_URL }}`, `postgres`
   switches first, and passes its health check first if it has one. Services that don't depend on
   each other deploy at the same time.
+
+## Choose how a deploy replaces replicas
+
+Under **Settings → Deploy**, **Update order** picks how a deploy swaps old replicas for new ones.
+
+| Update order | What happens | Downtime |
+| --- | --- | --- |
+| **Start first** | New replicas start beside the old ones, and the old ones stop once the new ones are ready. Two copies run for a moment. | None |
+| **Stop first** | Every old replica stops, then the new ones start. | From the stop until the new replicas are ready |
+| **Rolling** | Stop first, one server at a time. The other servers keep serving while one switches. | None while another server has a replica; with one server, the same as **Stop first** |
+| **Automatic** | **Stop first** for a service with a volume, **Start first** for the rest. | As above |
+
+**Automatic** is the default. A service with a volume can use **Start first** only when the volume
+allows shared writes, because both copies write to it at once. Otherwise Ployz refuses the change
+and says to choose **Stop first** or allow shared writes.
+
+If a new replica fails, Ployz starts the old replicas it stopped again, whichever order you chose.
 
 ## When a deploy fails
 
