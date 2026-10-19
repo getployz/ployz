@@ -15,6 +15,7 @@ import { authClient } from "#/auth/auth-client";
 import type { AuthSession } from "#/auth/auth";
 import { Route as RootRoute } from "#/routes/__root";
 import { organizationKeys } from "#/modules/organization/organization-state.queries";
+import { failOnStoreUnmountAfterWindow } from "#/test/window-teardown";
 
 // Better Auth captures fetch when the client is created.
 const transport = vi.hoisted(() => {
@@ -45,6 +46,7 @@ beforeEach(() => {
     value({ top = 0, left = 0 }: ScrollToOptions) { this.scrollTop = top; this.scrollLeft = left; },
   });
 });
+failOnStoreUnmountAfterWindow();
 afterEach(() => {
   cleanup();
   cleanStores(...Object.values(authClient.$store.atoms));

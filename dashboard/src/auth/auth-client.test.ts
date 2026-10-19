@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test, vi } from "vitest";
 import type { AuthSession } from "./auth";
+import { failOnStoreUnmountAfterWindow } from "#/test/window-teardown";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
+failOnStoreUnmountAfterWindow();
 
 test("boots from SSR without waiting for the auth transport", async () => {
   vi.resetModules();
