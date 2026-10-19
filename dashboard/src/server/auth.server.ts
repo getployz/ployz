@@ -235,9 +235,16 @@ const deviceOrganizationBinding = (bind: BindDeviceOrganization) => ({
     before: [{
       matcher: (context) => context.path === "/device/approve",
       handler: createAuthMiddleware(async (context) => {
-        const approval = decodeDeviceApproval(context.body);
         const approver = await getSessionFromCtx(context);
-        if (Option.isNone(approval) || approver === null) return;
+        if (approver === null) return;
+        // Every approve names its Organization and rewrites the binding, so one left by a failed approve never leaks.
+        const approval = decodeDeviceApproval(context.body);
+        if (Option.isNone(approval)) {
+          throw new APIError("BAD_REQUEST", {
+            error: "invalid_request",
+            error_description: "Reload this page and approve again",
+          });
+        }
         const { userCode, organizationId } = approval.value;
         if (!(await bind(approver.user.id, userCode, organizationId))) {
           throw new APIError("FORBIDDEN", {

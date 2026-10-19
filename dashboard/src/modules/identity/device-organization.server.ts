@@ -22,17 +22,22 @@ const isMember = Effect.fn("Identity.isMember")(function* (userId: string, organ
 export const bindDeviceOrganization = Effect.fn("Identity.bindDeviceOrganization")(
   function* (userId: string, userCode: string, organizationId: string) {
     if (!(yield* isMember(userId, organizationId))) return false;
-    const { drizzle } = yield* Database;
     // better-auth also accepts the default alphabet's code typed with separators or in lower case.
     const codes = [userCode, userCode.replace(/[^a-zA-Z0-9]/g, "").toUpperCase()];
-    const [pending] = yield* drizzle.select({ deviceCode: deviceCode.deviceCode, expiresAt: deviceCode.expiresAt })
-      .from(deviceCode)
-      .where(and(eq(deviceCode.userId, userId), eq(deviceCode.status, "pending"), inArray(deviceCode.userCode, codes)))
-      .limit(1);
-    if (pending === undefined) return true;
-    const identifier = bindingIdentifier(pending.deviceCode);
-    yield* drizzle.delete(verification).where(eq(verification.identifier, identifier));
-    yield* drizzle.insert(verification).values({ identifier, value: organizationId, expiresAt: pending.expiresAt });
+    const database = yield* Database;
+    // The lock waits out an approval in flight, so a duplicate approve finds the code approved and leaves its binding.
+    yield* database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [pending] = yield* drizzle.select({ deviceCode: deviceCode.deviceCode, expiresAt: deviceCode.expiresAt })
+        .from(deviceCode)
+        .where(and(eq(deviceCode.userId, userId), eq(deviceCode.status, "pending"), inArray(deviceCode.userCode, codes)))
+        .limit(1)
+        .for("update");
+      if (pending === undefined) return;
+      const identifier = bindingIdentifier(pending.deviceCode);
+      yield* drizzle.delete(verification).where(eq(verification.identifier, identifier));
+      yield* drizzle.insert(verification).values({ identifier, value: organizationId, expiresAt: pending.expiresAt });
+    }));
     return true;
   },
 );

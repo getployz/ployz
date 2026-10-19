@@ -192,6 +192,12 @@ it.live(
       yield* Effect.gen(function* () {
         const owner = yield* signUp("owner");
         const intruder = yield* signUp("intruder");
+        const organizationOf = Effect.fn(function* (cookie: string) {
+          const signedIn = yield* (yield* Auth).getSession(new Headers({ cookie }));
+          return signedIn?.session.activeOrganizationId ?? assert.fail("no active Organization");
+        });
+        const ownerOrganizationId = yield* organizationOf(owner);
+        const intruderOrganizationId = yield* organizationOf(intruder);
 
         const refused = yield* call("/device/code", { body: { client_id: "someone-else" } });
         assert.strictEqual(refused.status, 400);
@@ -202,7 +208,7 @@ it.live(
         assert.strictEqual((yield* device.poll()).json?.error, "authorization_pending");
 
         // An unclaimed code can't be approved, even by the user about to claim it.
-        const unclaimed = yield* call("/device/approve", { cookie: owner, body: { userCode } });
+        const unclaimed = yield* call("/device/approve", { cookie: owner, body: { userCode, organizationId: ownerOrganizationId } });
         assert.strictEqual(unclaimed.status, 400);
 
         const claimed = yield* call(`/device?user_code=${userCode}`, { cookie: owner });
@@ -213,11 +219,11 @@ it.live(
         const looked = yield* call(`/device?user_code=${userCode}`, { cookie: intruder });
         assert.isUndefined(looked.json?.client_id);
         for (const decision of ["/device/approve", "/device/deny"]) {
-          const rejected = yield* call(decision, { cookie: intruder, body: { userCode } });
+          const rejected = yield* call(decision, { cookie: intruder, body: { userCode, organizationId: intruderOrganizationId } });
           assert.strictEqual(rejected.status, 403, decision);
         }
 
-        const approved = yield* call("/device/approve", { cookie: owner, body: { userCode } });
+        const approved = yield* call("/device/approve", { cookie: owner, body: { userCode, organizationId: ownerOrganizationId } });
         assert.strictEqual(approved.status, 200);
         assert.strictEqual((yield* device.poll()).json?.error, "slow_down");
         // RFC 8628's default five-second polling interval.
