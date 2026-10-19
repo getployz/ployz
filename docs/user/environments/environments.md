@@ -170,11 +170,12 @@ syncing** in the Sync dialog.
   Open the Sync button's ▾ menu, then **Close staging…**. Ployz lists what goes, including changes
   you haven't synced. Type `my-app/staging` and click **Close branch**.
 
-A branch that closes as you sync it, or after 7 days, comes off your servers at Ployz's next
-hourly sweep. Until then the Sync button reads **Closing**, and `ployz env ls` shows
-`pending (synced)` or `pending (idle)` under REMOVAL. If its removal hasn't started, close it
-again from the ▾ menu or with `ployz env rm`. Once its removal runs, REMOVAL shows that
-deployment and its status, such as `#4 running`.
+A branch that closes as you sync it starts coming off your servers right away. A branch idle for
+7 days closes at Ployz's next hourly sweep. If a removal can't start yet, for example because a
+deployment is still stopping, it waits for the next hourly sweep. Until it starts, the Sync button
+reads **Closing**, and `ployz env ls` shows `pending (synced)` or `pending (idle)` under REMOVAL.
+If its removal hasn't started, close it again from the ▾ menu or with `ployz env rm`. Once its
+removal runs, REMOVAL shows that deployment and its status, such as `#4 running`.
 
 ### Production's changes follow into staging
 

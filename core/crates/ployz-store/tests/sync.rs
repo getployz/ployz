@@ -16,8 +16,8 @@ use ployz_store::{
     CreateService, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
     EnvironmentRemoval, EnvironmentsQuery, KeepBranch, OrganizationId, Permission, ProjectId,
     ProjectName, Publish, Removal, Remove, RemoveService, RemovedBecause, RenameService, SecretRow,
-    ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery,
-    SyncRow, SyncView, Synced, Trusted, UndoSync,
+    ServiceLineageId, ServiceQuery, SettingPath, Sweep, SyncChange, SyncChanges, SyncId, SyncQuery,
+    SyncRow, SyncView, Synced, SystemEvent, Trusted, UndoSync, Written,
 };
 use serde_json::{Value, json};
 
@@ -940,6 +940,72 @@ fn a_branch_a_sync_closed_lists_its_removal_before_and_after_the_sweep_starts_it
         "{:?}",
         removal()
     );
+}
+
+#[test]
+fn two_sweeps_that_both_find_a_close_due_admit_one_removal() {
+    let (store, who) = shop(true);
+    deploy(&store, &who, "fix-web", 30);
+    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+    let closing = SyncChanges {
+        close_after: true,
+        ..sync(&view(&store, &who), None)
+    };
+    assert!(store.write(&who, &closing).unwrap().closing);
+    let sweep = || {
+        let Written::Automated(automated) = store
+            .system(
+                &who.organization,
+                &SystemEvent::Sweep(Sweep { now: 0 }),
+                &Trusted::default(),
+            )
+            .unwrap()
+        else {
+            panic!("a sweep writes Automated");
+        };
+        automated
+            .closing
+            .into_iter()
+            .map(|environment| environment.name.to_string())
+            .collect::<Vec<_>>()
+    };
+    // The hourly sweep and one a close asked for both read the mark before either admits.
+    assert_eq!(
+        (sweep(), sweep()),
+        (vec!["fix-web".to_owned()], vec!["fix-web".to_owned()])
+    );
+    let admit = || {
+        let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+        let admitted = store.write_trusted(
+            &who,
+            &Admit::Remove(AdmitRemoval {
+                id: id.clone(),
+                environment: at("fix-web"),
+            }),
+            &Trusted::default(),
+        );
+        (id, admitted)
+    };
+    let (first, admitted) = admit();
+    admitted.unwrap();
+    let (_, again) = admit();
+    assert_eq!(again.unwrap_err().code, RpcErrorCode::Conflict);
+    let removal = store
+        .read(&who, &EnvironmentsQuery::default())
+        .unwrap()
+        .environments
+        .into_iter()
+        .find(|listing| listing.name.as_str() == "fix-web")
+        .unwrap()
+        .removal;
+    assert!(
+        matches!(
+            &removal,
+            Some(EnvironmentRemoval::Deployment(running)) if running.id == first && running.in_flight
+        ),
+        "{removal:?}"
+    );
+    assert_eq!(sweep(), Vec::<String>::new());
 }
 
 #[test]

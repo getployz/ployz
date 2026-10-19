@@ -1023,6 +1023,42 @@ it.live(
 );
 
 it.live(
+  "a Sync that closes its Branch asks its Organization's Store to sweep now",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "config-store-test" });
+      const sent: unknown[] = [];
+      vi.spyOn(inngest, "send").mockImplementation(async (event) => {
+        sent.push(event);
+        return { ids: [] };
+      });
+      const layer = yield* cloudLayer({}, inngest);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const organizationId = (yield* resolveCaller(signedIn(alice))).organization.id;
+        yield* request("write", alice, shop);
+        yield* request("write", alice, web);
+        const fixWeb = { project: null, environment: "fix-web" };
+        const production = { project: null, environment: "production" };
+        assert.strictEqual((yield* request("write", alice, {
+          command: "create_branch", id: "00000000-0000-4000-8000-000000000005", from: production, name: "fix-web",
+          copy: ["web"], live: [], setup: [], keep: false,
+        })).status, 200);
+        assert.strictEqual((yield* request("write", alice, {
+          command: "edit", environment: fixWeb, expect: null, changes: [{ op: "set", path: "web.image", value: "web:2" }],
+        })).status, 200);
+        const sweep = { name: "config/sweep.requested", data: { organizationId } };
+        const read = yield* callStore(organizationId, null, { operation: "read", query: { query: "sync", from: fixWeb, into: production } });
+        const version = read.ok && read.value.view === "sync" ? read.value.version : assert.fail("no sync");
+        const sync: ConfigCommand = { command: "sync", from: fixWeb, into: production, version, close_after: true };
+        assert.deepInclude((yield* request("write", alice, sync)).json, { written: "synced" });
+        expect(sent).toContainEqual(sweep);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a Deploy meets the copies it takes before the Store sees it, on every path to the Store",
   () =>
     Effect.gen(function* () {

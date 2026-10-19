@@ -270,9 +270,10 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
   // A removal that applied at admission (nothing on a Server) is deleted by the next sweep, and admits what is due
-  // after it: no worker will ask for that sweep, so ask now.
+  // after it, as is the removal a Sync's close marked: no worker will ask for that sweep, so ask now.
   const removed = written.written === "deployment" ? written.remove && written.status === "applied"
-    : written.written === "removal" && written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied");
+    : written.written === "removal" ? written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied")
+    : written.written === "synced" && written.closing;
   if (removed) yield* sendInngestEvent(createConfigSweepRequestedEvent({ organizationId }));
   yield* requestChecks(organizationId, written.checks);
 });
