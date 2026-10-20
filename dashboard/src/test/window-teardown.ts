@@ -1,10 +1,12 @@
-import { STORE_UNMOUNT_DELAY } from "nanostores";
-import { afterAll, afterEach } from "vitest";
+import { afterAll, afterEach, expect } from "vitest";
 
-/** Vitest removes `window` when a jsdom file ends, so a store unmount still pending then throws in whatever runs next. */
-export function failOnStoreUnmountAfterWindow() {
-  afterAll(async () => {
-    await withoutWindow(STORE_UNMOUNT_DELAY + 100);
+/**
+ * Vitest removes `window` when a jsdom file ends, so a store still mounted then unmounts a second later and throws in
+ * whatever file runs next. Nano Stores keeps `active` set from mount until that delayed unmount runs.
+ */
+export function failOnMountedStore(name: string, store: () => { active?: boolean; lc: number } | undefined) {
+  afterAll(() => {
+    expect(store()?.active ?? false, `${name} store is still mounted when the file ends`).toBe(false);
   });
 }
 
@@ -14,13 +16,28 @@ export function failOnStoreUnmountAfterWindow() {
  */
 export function failOnRenderAfterTest() {
   afterEach(async () => {
-    await withoutWindow(50);
+    const reads = await reactWindowReads(50);
+    expect(reads[0], "React work ran after the test's cleanup").toBeUndefined();
   });
 }
 
-async function withoutWindow(ms: number) {
+async function reactWindowReads(ms: number) {
   const jsdomWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  Reflect.deleteProperty(globalThis, "window");
-  await new Promise((resolve) => setTimeout(resolve, ms));
-  if (jsdomWindow) Object.defineProperty(globalThis, "window", jsdomWindow);
+  if (!jsdomWindow) return [];
+  const value: unknown = jsdomWindow.get ? jsdomWindow.get.call(globalThis) : jsdomWindow.value;
+  const reads: string[] = [];
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    get() {
+      const stack = new Error("window read").stack ?? "";
+      if (stack.includes("/react-dom/")) reads.push(stack);
+      return value;
+    },
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  } finally {
+    Object.defineProperty(globalThis, "window", jsdomWindow);
+  }
+  return reads;
 }

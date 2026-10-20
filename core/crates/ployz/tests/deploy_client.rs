@@ -2003,4 +2003,17 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
             "Server {machine} isn't answering. Check that its Ployz daemon is running, then retry."
         )
     );
+
+    // A connection that names no Server, as `--connect` gives the CLI's runner: it says
+    // the one Server's daemon, not "your Servers", and the sentence is not repeated.
+    let (reason, cause) = outcome(
+        "00000000-0000-4000-8000-000000000103",
+        serde_json::json!({ "tcp": closed }),
+    )
+    .await;
+    assert_eq!(reason, "Ployz couldn't reach your Server's daemon.");
+    assert!(
+        cause.iter().all(|line| !line.contains("reach your Server")),
+        "{cause:?}"
+    );
 }

@@ -5139,3 +5139,34 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
         )])
     );
 }
+
+#[test]
+fn verifier_failed_retry_of_a_pre_0022_upload_does_not_replace_current_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    deploy_sent(&store, &who, 1, Some('b'));
+    fail(&store, 1);
+    backend::execute(&url, "UPDATE config_deployment SET service_uploads = NULL");
+    deploy_sent(&store, &who, 2, Some('a'));
+    fail(&store, 2);
+    assert_eq!(kept_of(&store, &who, &[1, 2]), [false, true]);
+    retry(&store, &who, 3, 1).unwrap();
+    fail(&store, 3);
+    assert_eq!(
+        deploy_sent(&store, &who, 4, None).upload,
+        Some(digested('a'))
+    );
+}

@@ -103,12 +103,13 @@ fn applied(deployment: &Stored, service: &str) -> bool {
 
 /// Whether `deployment` moved `service` onto the upload it builds it from: it sent
 /// that upload, or applied `service`. A retry leaves a Service it didn't apply on
-/// its latest, and one that never ran leaves every one.
+/// its latest, and one that never ran leaves every one. One admitted before uploads
+/// were kept per Service may be a retry, so only applying moves it.
 fn moved(deployment: &Stored, service: &str) -> bool {
     deployment
         .service_uploads
         .as_ref()
-        .is_none_or(|uploads| uploads.sent)
+        .is_some_and(|uploads| uploads.sent)
         || applied(deployment, service)
 }
 

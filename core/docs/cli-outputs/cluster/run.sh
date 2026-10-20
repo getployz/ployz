@@ -6,8 +6,9 @@
 #   - Docker that can run --privileged containers.
 #   - Debug binaries of this checkout: (cd core && cargo build -p ployz -p ployzd)
 #   - Base testkit image: docker pull ghcr.io/getployz/ployz-testkit:main
-#     This script layers this checkout's debug ployzd/ployz on top of it as
-#     ployz-cli-capture:ID, so the daemon matches the CLI.
+#     This script layers this checkout's debug ployzd/ployz and testkit
+#     entrypoint on top of it as ployz-cli-capture:ID, so the daemon matches
+#     the CLI.
 #
 # Nothing touches ~/.config/ployz or real Servers: HOME is a fresh
 # /tmp/ployz-cap-home-ID.XXXXXX, the Config Store is the hidden SQLite one
@@ -78,7 +79,8 @@ printf '#!/bin/sh\nexec /usr/bin/ssh -F %s/.ssh/config "$@"\n' "$HOME" >"$HOME/b
 export PATH="$HOME/bin:$PATH"
 build_ctx=$(mktemp -d) || exit 1
 cp "$CORE/target/debug/ployzd" "$CORE/target/debug/ployz" "$build_ctx/"
-printf 'FROM ghcr.io/getployz/ployz-testkit:main\nCOPY ployzd ployz /usr/local/bin/\n' >"$build_ctx/Dockerfile"
+cp "$CORE/crates/ployz-testkit/entrypoint.sh" "$build_ctx/"
+printf 'FROM ghcr.io/getployz/ployz-testkit:main\nCOPY ployzd ployz /usr/local/bin/\nCOPY --chmod=755 entrypoint.sh /usr/local/bin/ployz-testkit-entrypoint\n' >"$build_ctx/Dockerfile"
 docker build -q -t "$IMAGE" "$build_ctx" >/dev/null
 rm -rf "$build_ctx"
 docker network create --label dev.ployz.testkit=true --label "dev.ployz.testkit.cluster=$NAME" "$NET" >/dev/null
