@@ -1381,26 +1381,50 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_forget_check_waits_past_the_cluster_time_cloud_may_spend_on_it() {
+    #[tokio::test]
+    async fn a_forget_check_waits_past_the_cluster_time_cloud_may_spend_on_it() {
         // Cloud tries every Server at once: a connect (10s), then its name (2s).
-        let cloud_bound = Duration::from_secs(12);
-        let check = operation_request(
-            &token("https://cloud.test"),
-            Method::GET,
-            "forget-servers",
-            None,
-        )
-        .unwrap()
-        .build()
-        .unwrap();
-        assert!(
-            check
-                .timeout()
-                .is_some_and(|waits| *waits >= cloud_bound + Duration::from_secs(5)),
-            "{:?}",
-            check.timeout()
-        );
+        let answers_after = Duration::from_secs(12) + Duration::from_secs(5);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cloud = format!("http://{}", listener.local_addr().unwrap());
+        let id = "a".repeat(32);
+        let reply = serde_json::json!({
+            "organization": "acme",
+            "servers": [{ "id": id, "name": "web-1", "reach": "didnt_answer" }],
+            "volumes": [],
+        })
+        .to_string();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let read = tokio::io::AsyncReadExt::read(&mut stream, &mut request)
+                .await
+                .unwrap();
+            assert!(
+                request
+                    .get(..read)
+                    .unwrap()
+                    .starts_with(b"GET /api/cli/forget-servers ")
+            );
+            tokio::time::pause();
+            tokio::time::sleep(answers_after).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+                .await
+                .unwrap();
+        });
+
+        let check = check_forget_servers(&token(&cloud)).await.unwrap();
+        assert_eq!(check.organization, "acme");
+        let [server] = check.servers.as_slice() else {
+            panic!("{:?}", check.servers)
+        };
+        assert_eq!(server.id, MachineId::parse(id).unwrap());
+        assert_eq!(server.reach, Reach::DidntAnswer);
+        assert!(check.volumes.is_empty());
     }
 
     #[test]
