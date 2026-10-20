@@ -1106,6 +1106,42 @@ fn a_build_names_the_server_that_built_it_and_why_github_passed_it_on() {
     );
 }
 
+#[test]
+fn a_build_github_takes_after_skipping_it_no_longer_says_github_skipped_it() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+    let skip = GithubEnd::Skipped {
+        message: "the run ran out of time".into(),
+    };
+    store.github_end(&id, Some(RUN), &skip).unwrap();
+    let skipped = || {
+        store
+            .read(
+                &who,
+                &BuildLogQuery {
+                    deployment: id.deployment.clone(),
+                    service: ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap()
+            .build
+            .github_skipped
+    };
+    assert_eq!(skipped().as_deref(), Some("the run ran out of time"));
+
+    store.github_dispatched(&id, &github_run(RUN + 1)).unwrap();
+    assert_eq!(skipped(), None, "a new GitHub run takes the build back");
+    store.github_check_in(&id, RUN + 1, &grant()).unwrap();
+    let receipt = json!({ "fingerprint": "f".repeat(64), "machine_id": grant().machine });
+    assert_eq!(
+        store
+            .github_end(&id, Some(RUN + 1), &GithubEnd::Built { receipt })
+            .unwrap(),
+        BuildStatus::Built
+    );
+    assert_eq!(skipped(), None, "GitHub built it");
+}
+
 fn source(store: &ConfigStore, who: &Actor) -> SourceKind {
     let query = ServiceQuery {
         environment: EnvironmentRef::default(),

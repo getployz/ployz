@@ -341,7 +341,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         .map(|(path, value)| {
             Ok(Change::Set {
                 path: SettingPath::parse(path)?,
-                value: Value::String(resolved(path, value, &servers)?),
+                value: Value::String(resolved(path, value, Some(&servers))?),
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -350,10 +350,15 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
 
 /// `value` as `set` sends it for `path`: a Server named as a Preferred Builder becomes
 /// its Machine ID, which is all the Store takes, as only the Servers know their names.
-fn resolved(path: &str, value: &str, servers: &[MachineObservation]) -> Result<String, Error> {
+fn resolved(
+    path: &str,
+    value: &str,
+    servers: Option<&[MachineObservation]>,
+) -> Result<String, Error> {
     if !names_a_server(path, value) {
         return Ok(value.to_owned());
     }
+    let servers = servers.unwrap_or_default();
     let server = crate::cluster::visible_machine(&MachineTarget::parse(value)?, servers)?;
     Ok(server.machine.id.to_string())
 }
@@ -598,7 +603,7 @@ mod tests {
         let servers = [server(1, "machine-1"), server(2, "machine-2")];
         let id = format!("{:032x}", 2);
         assert_eq!(
-            resolved("web.preferredBuilder", "machine-2", &servers).unwrap(),
+            resolved("web.preferredBuilder", "machine-2", Some(&servers)).unwrap(),
             id
         );
         for (path, value) in [
@@ -607,10 +612,46 @@ mod tests {
             ("web.env.preferredBuilder", "machine-2"),
             ("web.image", "machine-2"),
         ] {
-            assert_eq!(resolved(path, value, &[]).unwrap(), value, "{path}={value}");
+            assert_eq!(
+                resolved(path, value, None).unwrap(),
+                value,
+                "{path}={value}"
+            );
         }
-        let missing = resolved("web.preferredBuilder", "machine-9", &servers).unwrap_err();
+        let missing = resolved("web.preferredBuilder", "machine-9", Some(&servers)).unwrap_err();
         assert!(missing.to_string().contains("machine-9"), "{missing}");
+    }
+
+    #[test]
+    fn an_id_shaped_value_resolves_as_server_commands_do_an_exact_id_first() {
+        let named_like_an_id = "a".repeat(32);
+        let servers = [server(1, &named_like_an_id), server(0xaa, "machine-aa")];
+        assert_eq!(
+            resolved(
+                "web.preferredBuilder",
+                &format!("{:032x}", 0xaa),
+                Some(&servers)
+            )
+            .unwrap(),
+            format!("{:032x}", 0xaa),
+            "an exact Machine ID wins"
+        );
+        assert_eq!(
+            resolved(
+                "web.preferredBuilder",
+                &named_like_an_id,
+                Some(&servers[..1])
+            )
+            .unwrap(),
+            format!("{:032x}", 1),
+            "a Server named like an ID resolves to its own ID"
+        );
+        let both = [server(1, &format!("{:032x}", 2)), server(2, "machine-2")];
+        assert_eq!(
+            resolved("web.preferredBuilder", &format!("{:032x}", 2), Some(&both)).unwrap(),
+            format!("{:032x}", 2),
+            "one Server's ID beats another's name"
+        );
     }
 
     fn row(path: &str, value: Value, default: Value) -> SettingRow {
