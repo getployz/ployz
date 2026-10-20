@@ -4779,3 +4779,55 @@ fn verifier_superseding_a_queued_retry_keeps_latest_sent_upload() {
     assert_eq!(status(&store, &who, 4), DeploymentStatus::Superseded);
     assert_eq!(next.upload, Some(digested('a')));
 }
+
+#[test]
+fn a_deploy_admitted_behind_a_running_retry_builds_from_the_retried_upload() {
+    let (store, who) = shop();
+    for name in ["web", "api"] {
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse(&format!("{name}.image")).unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    let a = runner("cli-a");
+    for (n, digest) in [(1, 'a'), (2, 'b')] {
+        deploy_sent(&store, &who, n, Some(digest));
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    }
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    admit(&store, &who, 4, &["web"], None).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Running);
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2, 3]),
+        [false, true, true],
+        "web runs b until the retry lands"
+    );
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+}
