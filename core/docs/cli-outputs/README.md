@@ -178,7 +178,7 @@ Raw upstream errors pass through:
 - `Machine RPC failed: Docker operation failed: Docker responded with status code 409: container … is not running` ([cloud-cluster/errors.md](cloud-cluster/errors.md))
 - `create Container failed: Docker operation failed: Docker responded with status code 500: error from registry: denied` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md))
 - `inspect Machine upgrade worker: No such file or directory (os error 2)` ([cluster/server.md](cluster/server.md))
-- `Ployz couldn't reach your Server's daemon: connection attempt failed: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
+- `error: Ployz couldn't reach your Server's daemon.` with `cause: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
 
 ## 7. Follow-up hints
 
