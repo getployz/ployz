@@ -220,7 +220,7 @@ enum StorageChange {
     Stage(VolumeKind),
     /// A deployed Managed Volume asked for another Managed size: a resize run on Ployz Cloud.
     /// Cloud, not the CLI, refuses a smaller size. The size it already has stages nothing, on
-    /// any backend.
+    /// any backend, and the size its Servers hold stages back over a restore of an older size.
     Resize(ProvisionedVolumeMaximumBytes),
 }
 
@@ -232,7 +232,9 @@ fn storage_change(listing: &VolumeListing, asked: VolumeKind) -> StorageChange {
                 maximum_bytes: current,
             },
             VolumeKind::Provisioned { maximum_bytes },
-        ) if maximum_bytes != current => StorageChange::Resize(maximum_bytes),
+        ) if maximum_bytes != current && listing.recorded_storage != Some(maximum_bytes) => {
+            StorageChange::Resize(maximum_bytes)
+        }
         _ => StorageChange::Stage(asked),
     }
 }
@@ -483,7 +485,7 @@ mod tests {
     #[test]
     fn only_a_deployed_managed_volume_asked_for_a_size_resizes() {
         let gb = |size| ProvisionedVolumeMaximumBytes::parse_gb(size).unwrap();
-        let listing = |storage_locked, storage| VolumeListing {
+        let listing = |storage_locked, storage, recorded_storage| VolumeListing {
             volume: ployz_store::VolumeSummary {
                 id: VolumeId::parse(store::mint()).unwrap(),
                 name: VolumeName::parse("data").unwrap(),
@@ -493,7 +495,7 @@ mod tests {
             mounts: Vec::new(),
             deployed: storage_locked,
             storage_locked,
-            recorded_storage: None,
+            recorded_storage,
             change: None,
         };
         let managed = VolumeKind::Provisioned {
@@ -503,17 +505,54 @@ mod tests {
             maximum_bytes: gb("20"),
         };
         let docker = VolumeKind::Docker {};
-        for (locked, storage, asked, change) in [
-            (false, managed, twenty, StorageChange::Stage(twenty)),
-            (true, managed, twenty, StorageChange::Resize(gb("20"))),
-            (true, managed, managed, StorageChange::Stage(managed)),
-            (true, managed, docker, StorageChange::Stage(docker)),
-            (true, docker, twenty, StorageChange::Stage(twenty)),
+        let thirty = VolumeKind::Provisioned {
+            maximum_bytes: gb("30"),
+        };
+        for (locked, storage, recorded, asked, change) in [
+            (false, managed, None, twenty, StorageChange::Stage(twenty)),
+            (
+                true,
+                managed,
+                Some(gb("10")),
+                twenty,
+                StorageChange::Resize(gb("20")),
+            ),
+            (
+                true,
+                managed,
+                Some(gb("10")),
+                managed,
+                StorageChange::Stage(managed),
+            ),
+            (
+                true,
+                managed,
+                Some(gb("10")),
+                docker,
+                StorageChange::Stage(docker),
+            ),
+            (true, docker, None, twenty, StorageChange::Stage(twenty)),
+            // A restore staged the older size: the size the Servers hold stages back,
+            // another size resizes.
+            (
+                true,
+                managed,
+                Some(gb("20")),
+                twenty,
+                StorageChange::Stage(twenty),
+            ),
+            (
+                true,
+                managed,
+                Some(gb("20")),
+                thirty,
+                StorageChange::Resize(gb("30")),
+            ),
         ] {
             assert_eq!(
-                storage_change(&listing(locked, storage), asked),
+                storage_change(&listing(locked, storage, recorded), asked),
                 change,
-                "locked {locked}, {storage:?} asked {asked:?}"
+                "locked {locked}, {storage:?} recorded {recorded:?} asked {asked:?}"
             );
         }
     }

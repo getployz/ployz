@@ -226,17 +226,18 @@ pub(crate) fn check_storage<'a>(
                 VolumeKind::Provisioned {
                     maximum_bytes: asked,
                 },
-            ) if edited => {
-                let verb = if asked > fixed { "grow" } else { "shrink" };
-                error::conflict(
+            ) if edited => error::conflict(
+                if asked > fixed {
                     format!(
-                        "{name} is deployed at {fixed}; {verb} it with ployz volume set {name} \
+                        "{name} is deployed at {fixed}; grow it with ployz volume set {name} \
                          --size {}",
                         gb(*asked)
-                    ),
-                    json!({ "volume": name, "storage_locked": true, "recorded": fixed }),
-                )
-            }
+                    )
+                } else {
+                    format!("{name} is deployed at {fixed}; a deployed Volume can't shrink yet")
+                },
+                json!({ "volume": name, "storage_locked": true, "recorded": fixed }),
+            ),
             (
                 VolumeKind::Provisioned {
                     maximum_bytes: fixed,

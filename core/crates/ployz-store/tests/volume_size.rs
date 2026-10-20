@@ -572,6 +572,24 @@ fn a_partial_deploy_after_a_record_needs_no_volume_evidence() {
 }
 
 #[test]
+fn the_held_size_typed_over_a_staged_restore_clears_it() {
+    let (store, who) = shop(managed(10));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 10, 20).unwrap();
+    restore(&store, &who, revision_of(&store, &who, 1)).unwrap();
+    assert_eq!(
+        draft_storage_row(&store, &who),
+        Some((storage_json(20), storage_json(10)))
+    );
+
+    set_storage(&store, &who, "data", managed(20)).unwrap();
+
+    assert_eq!(draft_storage_row(&store, &who), None);
+    assert_eq!(listing(&store, &who, "data").volume.storage, managed(20));
+}
+
+#[test]
 fn a_replayed_record_writes_nothing() {
     let (store, who) = shop(managed(10));
     deploy(&store, &who, 1);
@@ -770,7 +788,7 @@ fn a_hand_typed_size_for_a_deployed_volume_points_at_volume_set() {
         ),
         (
             managed(5),
-            "data is deployed at 10 GB; shrink it with ployz volume set data --size 5",
+            "data is deployed at 10 GB; a deployed Volume can't shrink yet",
         ),
     ] {
         let refused = set_storage(&store, &who, "data", asked).unwrap_err();
