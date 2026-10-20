@@ -712,8 +712,9 @@ fn admit(
     let retire = match shut_down {
         true => Vec::new(),
         false => {
+            let head = deployment::head(tx, &environment)?;
             let mut removed = landed.removals.clone();
-            for service in deployment::head(tx, &environment)?
+            for service in deployment::Landing::of(&head)
                 .dropped(&saved.intent)
                 .services
             {
@@ -993,19 +994,15 @@ pub(crate) fn auto_admit(
         trusted,
     )?;
     let head = deployment::head(tx, environment)?;
+    // Diffed against what may run once the Deployments in flight end, not Applied
+    // State alone: those may still add, change or remove any node.
+    let landing = deployment::Landing::of(&head);
     let full = services.is_empty() && retire.is_empty();
-    let dropped = head.dropped(&saved.intent);
-    // A full Deploy removes what Applied State holds, a narrowed one all it drops.
-    let losses = consented(
-        if full { &head.applied } else { &dropped },
-        saved,
-        &namespace,
-        trusted,
-    )?;
+    let losses = consented(&landing.dropped(&saved.intent), saved, &namespace, trusted)?;
     let mut frozen = deployment::freeze(
         id,
         &saved.intent,
-        &head.applied,
+        &landing,
         if full {
             deployment::Scope::All { losses: &losses }
         } else {
@@ -1013,7 +1010,7 @@ pub(crate) fn auto_admit(
                 services,
                 retire,
                 losses: &losses,
-                dropped: Some(&dropped),
+                every_saved: true,
             }
         },
         namespace,
@@ -1056,16 +1053,16 @@ pub(crate) fn auto_admit(
     Ok(summary)
 }
 
-/// The losses of the Volumes `held` that `saved` drops and holds consent for, while
-/// the Servers still show them unchanged. Without that evidence a push keeps the
-/// data, and the next Deploy asks again.
+/// The losses of the Volumes `dropped` that `saved` holds consent for, while the
+/// Servers still show them unchanged. Without that evidence a push keeps the data,
+/// and the next Deploy asks again.
 fn consented(
-    held: &SavedEnvironmentIntent,
+    dropped: &SavedEnvironmentIntent,
     saved: &review::Saved,
     namespace: &ployz_core::Namespace,
     trusted: &Trusted,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
-    let removed: Vec<_> = crate::removal::removed(held, &saved.intent, namespace)?
+    let removed: Vec<_> = crate::removal::removed(dropped, &saved.intent, namespace)?
         .into_iter()
         .filter(|volume| {
             saved

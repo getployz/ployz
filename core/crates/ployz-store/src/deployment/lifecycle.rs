@@ -270,7 +270,8 @@ pub(crate) fn forget(
 /// `saved` runs: superseding it must not leave them running. A node of that Service
 /// becomes its teardown, so the next Deployment to supersede this one takes it over.
 /// Each Service it adds takes along the removed Configs that leave with it:
-/// [`unmounted`] from `shipped`, the revision these nodes ship.
+/// [`unmounted`] from `shipped`, the revision these nodes ship, over what may run
+/// once the Deployments in flight end.
 fn inherit(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -324,8 +325,9 @@ fn inherit(
         }
     }
     if nodes.len() > given {
-        let applied = applied_state(tx, environment, shipped)?;
-        let unmounted = unmounted(shipped, &applied, nodes)?;
+        let whole = crate::scope::load_by_id(tx, environment)?;
+        let head = head(tx, &whole)?;
+        let unmounted = unmounted(shipped, &Landing::of(&head), nodes)?;
         nodes.extend(unmounted);
     }
     Ok(())
@@ -897,7 +899,7 @@ fn retried(
                 freeze(
                     environment,
                     &source,
-                    applied,
+                    &Landing::applied(applied),
                     Scope::All { losses },
                     stored.namespace.clone(),
                     stored.cluster_domain.as_ref(),

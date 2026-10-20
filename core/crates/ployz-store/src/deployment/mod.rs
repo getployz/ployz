@@ -6,6 +6,7 @@
 
 pub(crate) mod admit;
 mod history;
+mod landing;
 mod lifecycle;
 mod lowering;
 pub(crate) mod query;
@@ -15,6 +16,7 @@ mod reference_tests;
 mod retire_tests;
 mod rows;
 pub(crate) use history::*;
+pub(crate) use landing::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
 pub use rows::{

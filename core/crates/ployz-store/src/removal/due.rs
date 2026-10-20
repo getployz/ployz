@@ -395,7 +395,7 @@ fn admit_member(
     let frozen = deployment::freeze(
         id,
         &empty,
-        &review.head.applied,
+        &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::All { losses: &losses },
         namespace,
         None,
@@ -671,7 +671,7 @@ pub(crate) fn shut_down(
     let frozen = deployment::freeze(
         id,
         &empty,
-        &review.head.applied,
+        &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::All { losses: &losses },
         namespace,
         None,

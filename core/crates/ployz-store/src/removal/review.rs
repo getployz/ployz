@@ -69,7 +69,8 @@ pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, R
             continue;
         };
         let environment = crate::scope::load_by_id(tx, &id)?;
-        let dropped = crate::deployment::head(tx, &environment)?.dropped(&saved.intent);
+        let head = crate::deployment::head(tx, &environment)?;
+        let dropped = crate::deployment::Landing::of(&head).dropped(&saved.intent);
         volumes.extend(
             saved
                 .accepted

@@ -197,57 +197,8 @@ pub(crate) struct InFlight {
     pub(crate) services: Vec<SavedServiceIntent>,
     pub(crate) volumes: Vec<SavedVolumeIntent>,
     pub(crate) configs: Vec<SavedConfigIntent>,
-}
-
-impl Head {
-    /// What `saved` drops of what runs or is on its way: each Service, Volume and
-    /// Config that Applied State or a Deployment in flight holds and `saved` lacks.
-    /// Secrets ship inside the Services, so they go with them.
-    pub(crate) fn dropped(&self, saved: &SavedEnvironmentIntent) -> SavedEnvironmentIntent {
-        fn gone<'a, T: Clone + 'a>(
-            held: impl Iterator<Item = &'a T>,
-            kept: &[T],
-            id: impl Fn(&T) -> &str,
-        ) -> Vec<T> {
-            let mut gone: Vec<T> = Vec::new();
-            for item in held {
-                let same = |other: &T| id(other) == id(item);
-                if !kept.iter().any(same) && !gone.iter().any(same) {
-                    gone.push(item.clone());
-                }
-            }
-            gone
-        }
-        let flights = || self.in_flight.iter();
-        SavedEnvironmentIntent {
-            version: self.applied.version,
-            environment_slug: self.applied.environment_slug.clone(),
-            services: gone(
-                self.applied
-                    .services
-                    .iter()
-                    .chain(flights().flat_map(|target| &target.services)),
-                &saved.services,
-                |service| &service.id,
-            ),
-            volumes: gone(
-                self.applied
-                    .volumes
-                    .iter()
-                    .chain(flights().flat_map(|target| &target.volumes)),
-                &saved.volumes,
-                |volume| &volume.resource_id,
-            ),
-            configs: gone(
-                self.applied
-                    .configs
-                    .iter()
-                    .chain(flights().flat_map(|target| &target.configs)),
-                &saved.configs,
-                |config| &config.resource_id,
-            ),
-        }
-    }
+    /// The ID of each node it removes.
+    pub(crate) removes: BTreeSet<String>,
 }
 
 /// A review and the bases it was computed on.

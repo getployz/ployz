@@ -408,12 +408,12 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
                 super::freeze(
                     &environment.summary.id,
                     &saved.intent,
-                    &saved.intent,
+                    &super::Landing::applied(&saved.intent),
                     Scope::Narrow {
                         services: &[],
                         retire: &[retire],
                         losses: &[],
-                        dropped: None,
+                        every_saved: false,
                     },
                     ployz_core::Namespace::parse("shop-production").unwrap(),
                     None,

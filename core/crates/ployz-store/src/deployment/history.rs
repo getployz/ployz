@@ -78,7 +78,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     for row in &rows {
         let saved = saved_at(tx, id, row.number(1, "revision")?)?;
         let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
-        let target = InFlight {
+        let mut target = InFlight {
             cluster_domain: row.parse_optional(3, "Cluster Domain")?,
             services: nodes
                 .iter()
@@ -118,7 +118,24 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                 })
                 .cloned()
                 .collect(),
+            removes: BTreeSet::new(),
         };
+        target.removes = nodes
+            .iter()
+            .map(TargetNode::id)
+            .filter(|id| {
+                !target.services.iter().any(|service| service.id == *id)
+                    && !target
+                        .volumes
+                        .iter()
+                        .any(|volume| volume.resource_id == *id)
+                    && !target
+                        .configs
+                        .iter()
+                        .any(|config| config.resource_id == *id)
+            })
+            .map(str::to_owned)
+            .collect();
         if head.in_flight.is_empty() {
             head.token = format!("{}.{ended}", row.int(0)?);
             let intent = &mut head.intent;
