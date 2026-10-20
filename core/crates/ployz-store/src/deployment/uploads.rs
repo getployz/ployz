@@ -219,7 +219,6 @@ pub(crate) fn claimed(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcErr
         ],
     )?;
     stored.service_uploads = Some(uploads);
-    stored.summary.chooses_upload_at_start = false;
     Ok(())
 }
 

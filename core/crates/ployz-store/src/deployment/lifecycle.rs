@@ -209,9 +209,10 @@ pub(crate) fn admit(
         ships: shipped(&nodes),
         runner: None,
         upload,
-        chooses_upload_at_start: service_uploads
-            .as_ref()
-            .is_some_and(|uploads| uploads.provisional),
+        chooses_upload_at_start: super::chooses_upload_at_start(
+            DeploymentStatus::Queued,
+            service_uploads.as_ref(),
+        ),
         remove: saved == NOTHING,
         admitted_by: who.principal.clone(),
         admitted_at,

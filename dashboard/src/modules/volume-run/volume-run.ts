@@ -1,4 +1,4 @@
-import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, VolumeCopyView } from "@ployz/sdk";
+import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, SlotRole, VolumeCopyView } from "@ployz/sdk";
 
 export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "cancelled", "lost", "not_started", "yielded"] as const;
 export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
@@ -31,7 +31,12 @@ export type ReleasePlan = {
 export type VolumeRunArgs = {
   mirror: Destination;
   sync: { readonly full: boolean };
-  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId };
+  /**
+   * `role` is what the request was admitted to delete: an old copy, or a mirror a Deploy removes. The run's Forget names it,
+   * so the Machine refuses a slot that holds the other role by then. `any` is `volume mirror rm`, which deletes either. A
+   * row without one was admitted before runs recorded it, and is refused rather than guessed.
+   */
+  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" };
   move: Destination;
   /** `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. */
   release: { readonly plan?: ReleasePlan; readonly follows?: MachineId };

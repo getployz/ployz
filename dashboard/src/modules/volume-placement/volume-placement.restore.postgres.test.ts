@@ -94,7 +94,7 @@ it.live("refuses a restore from a point on an old copy being deleted, and stages
     const { drizzle } = yield* Database;
     yield* drizzle.insert(volumeRun).values({
       organizationId: ORGANIZATION, environmentId: "env", volumeId: SOURCE, volumeName: "data", dockerVolume: "data",
-      kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null }, state: "running",
+      kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "any" }, state: "running",
     });
   }).pipe(Effect.provide(services));
   const members = [member("web-1", "writer"), member("web-3", "behind")];

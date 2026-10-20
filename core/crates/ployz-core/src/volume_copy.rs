@@ -182,8 +182,19 @@ pub struct SetVolumeCopyRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExpectedCopy {
-    Writer { epoch: WriterEpoch },
-    Mirror { newest: SnapshotGuid, slot: SlotId },
+    Writer {
+        epoch: WriterEpoch,
+    },
+    /// A slot at `newest`. With a `role`, only a slot this Machine still records in that
+    /// role matches: an old copy's delete names it, so a pull that made the slot the mirror
+    /// at the same snapshot refuses the delete. A Machine that predates it ignores it.
+    Mirror {
+        newest: SnapshotGuid,
+        slot: SlotId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        role: Option<SlotRole>,
+    },
     None,
 }
 
@@ -491,13 +502,19 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
             Some(VolumeCopy::Slot {
                 slot,
                 newest: Some(newest),
+                role,
                 ..
             }),
             ExpectedCopy::Mirror {
                 newest: expected,
                 slot: expected_slot,
+                role: expected_role,
             },
-        ) => newest.guid == *expected && slot == expected_slot,
+        ) => {
+            newest.guid == *expected
+                && slot == expected_slot
+                && expected_role.is_none_or(|expected| expected == *role)
+        }
         (Some(VolumeCopy::Slot { newest: None, .. }) | None, ExpectedCopy::None) => true,
         _ => false,
     }
@@ -587,6 +604,13 @@ mod tests {
     const MIRROR_AT_10: ExpectedCopy = ExpectedCopy::Mirror {
         newest: SnapshotGuid::new(10),
         slot: SLOT,
+        role: None,
+    };
+
+    const OLD_COPY_AT_10: ExpectedCopy = ExpectedCopy::Mirror {
+        newest: SnapshotGuid::new(10),
+        slot: SLOT,
+        role: Some(SlotRole::OldCopy),
     };
 
     type Row = (
@@ -707,6 +731,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 writer(10, 2, true),
                 Refuse(Behind),
@@ -718,6 +743,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 writer(10, 2, true),
                 Refuse(Mismatch),
@@ -801,6 +827,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -812,6 +839,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -831,6 +859,7 @@ mod tests {
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
+                    role: None,
                 },
                 mirror(false, "f-1"),
                 Refuse(NoSource),
@@ -974,6 +1003,22 @@ mod tests {
                 Transition(MirrorToForget),
             ),
             (
+                "destroy an old copy named by its role",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                OLD_COPY_AT_10,
+                WantedCopy::Forget,
+                Transition(MirrorToForget),
+            ),
+            (
+                "destroy an old copy that became the mirror",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                OLD_COPY_AT_10,
+                WantedCopy::Forget,
+                Refuse(Mismatch),
+            ),
+            (
                 "destroy an empty slot",
                 Some(slot(None, None)),
                 false,
@@ -1005,6 +1050,18 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn a_mirror_expect_without_a_role_keeps_its_wire_shape() {
+        let wire = serde_json::to_value(MIRROR_AT_10).unwrap();
+        assert_eq!(wire.get("role"), None, "{wire}");
+        assert_eq!(
+            serde_json::from_value::<ExpectedCopy>(wire).unwrap(),
+            MIRROR_AT_10
+        );
+        let named = serde_json::to_value(OLD_COPY_AT_10).unwrap();
+        assert_eq!(named.get("role"), Some(&serde_json::json!("old_copy")));
     }
 
     #[test]

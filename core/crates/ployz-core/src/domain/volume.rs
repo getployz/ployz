@@ -265,7 +265,7 @@ impl ProvisionedVolumeMaximumBytes {
 }
 
 /// Bytes in the GB every storage limit is written in.
-const GB: u64 = 1_000_000_000;
+pub(crate) const GB: u64 = 1_000_000_000;
 
 impl ProvisionedVolumeMaximumBytes {
     /// Parse a limit in GB, like `5`, `5GB` or `1.5 GB`, exact to the byte.

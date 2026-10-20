@@ -178,7 +178,7 @@ describe("volume placement", () => {
   it("refuses deleting an old copy staged back onto the Volume between the check and the run", async () => {
     await stage("web-1", ["web-2"]);
     between = { query: "volumes", run: async () => { await stage("web-1", ["web-2", "web-3"]); } };
-    const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } } as const;
+    const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "any" } } as const;
     expect(await run(requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null })))
       .toEqual({ ok: false, refusal: { message: "Not an old copy" } });
     expect(between).toBeNull();
@@ -186,7 +186,7 @@ describe("volume placement", () => {
   });
 
   describe("an old copy its Server reports", () => {
-    const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } } as const;
+    const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "old_copy" } } as const;
     const request = (inspect: () => Effect.Effect<Member[], Error>) =>
       requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null }, inspect);
     const recorded = (mirrors: string[]) => harness.pool.query(
@@ -309,7 +309,7 @@ describe("volume placement", () => {
 
   describe("an old copy a staged restore reads", () => {
     const deleting = () => run(requestUnclaimedRun({ userId: null, organizationId },
-      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }, { server: web("web-3"), point: "10" },
+      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "old_copy" } }, { server: web("web-3"), point: "10" },
       () => Effect.succeed([member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")])));
     const restoring = (guid: string, deploymentId: string | null = null) => harness.pool.query(
       "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged, deployment_id) values ('vol3', $1, 'env-1', '[]', $2, $3)",
@@ -370,7 +370,7 @@ describe("volume placement", () => {
   it("requests a run once the Deploy that stamped the Volume has ended, as staging does, and not while it runs", async () => {
     await stage("web-1", ["web-2"]);
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
-    const request = () => run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }));
+    const request = () => run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "any" } }));
     expect(await request()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     inFlight = false;
     expect(await request()).toMatchObject({ ok: true });
@@ -380,7 +380,7 @@ describe("volume placement", () => {
   it("refuses a run when a Deploy stamps the Volume between the caller's check and the insert", async () => {
     await stage("web-1", ["web-2"]);
     between = { query: "volumes", run: () => run(stampPlacements(organizationId, [volumeId], "dep-1")) };
-    const requested = await run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }));
+    const requested = await run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null, role: "any" } }));
     expect(requested).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
   });
