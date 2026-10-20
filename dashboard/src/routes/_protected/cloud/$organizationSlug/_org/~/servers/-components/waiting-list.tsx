@@ -8,11 +8,10 @@ import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select"
 import { Separator } from "#/components/ui/separator";
 import { useMediaQuery } from "#/hooks/use-media-query";
 import { cn } from "#/lib/utils";
-import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { EnrollSheet } from "./enroll-sheet";
-import { EnrollingList, enrollingRows, STAGES } from "./enrolling-list";
+import { EnrollingList, enrollingRows } from "./enrolling-list";
 import { useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
@@ -319,11 +318,7 @@ function WaitingStatus({ id }: { id: string }) {
   const server = servers.find((row) => row.id === id);
   if (server === undefined) return null;
   const status = statusCell(server, now);
-  const returned = server.returned;
-  const stage = ENROLLMENT_STAGES.find((stage) => stage === returned?.stage);
-  const reason = returned === null ? null : returned.state === "cancelled" ? "Cancelled"
-    : stage === undefined ? "Failed" : `Failed at ${STAGES[stage]}`;
-  const detail = reason === null ? status.detail : `${status.detail} · ${reason}${returned?.message ? ` · ${returned.message}` : ""}`;
+  const detail = server.returned === null ? status.detail : `${status.detail} · Last enroll ${server.returned.state}`;
   return <TwoLineCell className="text-right sm:text-left">
     <span className={cn("font-medium", readiness(server) === "blocked" && "text-warning")}>{status.bold}</span>
     <span title={detail}>{detail}</span>
