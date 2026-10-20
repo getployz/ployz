@@ -20,7 +20,7 @@ replacement leaves behind drain on each Server after the switch, so they show in
 `ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
 then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service
 the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. When the
-deploy leaves old copies running, the row reads like `switched 3/3, 2 left running` and the
+deploy leaves old replicas running, the row reads like `switched 3/3, 2 left running` and the
 summary adds `2 copies left running`; see
 [Old and new versions answer at once](#old-and-new-versions-answer-at-once). The block
 ends with a summary that counts the Servers involved. In CI or redirected output,
