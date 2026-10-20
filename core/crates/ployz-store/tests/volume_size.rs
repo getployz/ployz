@@ -14,10 +14,11 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
-    DeploymentId, DeploymentQuery, Edit, EnvironmentId, EnvironmentRef, HistoryAction,
-    HistoryPreviewQuery, Mount, OrganizationId, ProjectId, ProjectName, Publish, Retry, Revision,
-    RunEvidence, RunnerId, ServiceLineageId, SetVolumeStorage, SettingPath, StageHistory,
-    SystemEvent, Trusted, VolumeId, VolumeListing, VolumeName, VolumeResized, VolumesQuery,
+    DeploymentId, DeploymentQuery, Discard, DiscardTarget, Edit, EnvironmentId, EnvironmentRef,
+    HistoryAction, HistoryPreviewQuery, Mount, OrganizationId, ProjectId, ProjectName, Publish,
+    Retry, Revision, RunEvidence, RunnerId, ServiceLineageId, SetVolumeStorage, SettingPath,
+    StageHistory, SystemEvent, Trusted, VolumeId, VolumeListing, VolumeName, VolumeResized,
+    VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -403,6 +404,50 @@ fn a_record_is_no_draft_against_the_saved_revision_it_outgrew() {
         draft_storage_row(&store, &who),
         Some((storage_json(20), storage_json(10)))
     );
+}
+
+/// Discard every draft back to `target`.
+fn discard(store: &ConfigStore, who: &Actor, target: DiscardTarget) {
+    store
+        .write(
+            who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(target),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_discard_after_a_record_keeps_the_recorded_size() {
+    for target in [
+        DiscardTarget::Saved,
+        DiscardTarget::Review,
+        DiscardTarget::Head,
+    ] {
+        let (store, who) = shop(managed(10));
+        publish(&store, &who);
+        deploy(&store, &who, 1);
+        resize(&store, 10, 20).unwrap();
+        set(&store, &who, "web.image", json!("postgres:18"));
+
+        discard(&store, &who, target);
+
+        let view = store
+            .read(&who, &ployz_store::DiffQuery::default())
+            .unwrap();
+        assert_eq!(
+            listing(&store, &who, "data").volume.storage,
+            managed(20),
+            "{target:?}"
+        );
+        assert_eq!(draft_storage_row(&store, &who), None, "{target:?}");
+        assert_eq!(view.draft_count, 0, "{target:?}");
+        assert_eq!(view.total_count, 0, "{target:?}");
+    }
 }
 
 #[test]
