@@ -13,6 +13,7 @@ use ployz_core::{
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
 use super::volumes::VolumePlacement;
 use super::{DeployOperation, PlanError, PlanOptions, ReplacementOperation};
+use ployz_core::LimitsUpdateOperation;
 
 pub(super) struct PlacementState {
     unobserved: BTreeMap<MachineId, ployz_core::MachineObservation>,
@@ -334,15 +335,14 @@ pub(super) fn plan_global(
         }) {
             let observation = container.as_observation();
             used.insert(observation.container_id);
-            operations.push(DeployOperation::UpdateContainer(ReplacementOperation {
+            operations.push(DeployOperation::UpdateContainer(LimitsUpdateOperation {
                 machine_id,
-                old_container_id: observation.container_id,
+                container_id: observation.container_id,
                 spec: resolve(
                     requested,
                     *service_id,
                     determine_update_order(Some(container), requested),
                 ),
-                skip_health_monitor: options.skip_health_monitor,
             }));
             continue;
         }
@@ -559,15 +559,14 @@ pub(super) fn plan_replicated(
                 let container = by_id
                     .get(&container_id)
                     .expect("placement choices retain observed Containers");
-                operations.push(DeployOperation::UpdateContainer(ReplacementOperation {
+                operations.push(DeployOperation::UpdateContainer(LimitsUpdateOperation {
                     machine_id,
-                    old_container_id: container_id,
+                    container_id,
                     spec: resolve(
                         requested,
                         *service_id,
                         determine_update_order(Some(container), requested),
                     ),
-                    skip_health_monitor: options.skip_health_monitor,
                 }));
             }
             ReplicaAction::Replace {

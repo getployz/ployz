@@ -600,8 +600,8 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
             .operations
             .iter()
             .find_map(|row| match &row.operation {
-                DeployOperation::ReplaceContainer(operation)
-                | DeployOperation::UpdateContainer(operation) => Some(operation.spec.update.order),
+                DeployOperation::ReplaceContainer(operation) => Some(operation.spec.update.order),
+                DeployOperation::UpdateContainer(update) => Some(update.spec.update.order),
                 DeployOperation::WaitHealthy { .. }
                 | DeployOperation::RunContainer { .. }
                 | DeployOperation::StopContainer { .. }

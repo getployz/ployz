@@ -103,12 +103,14 @@ fn outcome_from(
             compensation,
         }) => {
             let operation = operation_at(operations, index);
-            let failed = match (operation.replacement(), compensation) {
-                (Some(replacement), Some(compensation)) => FailedOperation::Replacement {
-                    operation: replacement.clone(),
-                    error,
-                    compensation,
-                },
+            let failed = match (operation, compensation) {
+                (DeployOperation::ReplaceContainer(replacement), Some(compensation)) => {
+                    FailedOperation::Replacement {
+                        operation: replacement.clone(),
+                        error,
+                        compensation,
+                    }
+                }
                 (_, _) => FailedOperation::Operation {
                     operation: operation.clone(),
                     error,
@@ -398,22 +400,12 @@ struct Ran {
     started: Option<ContainerId>,
     /// The old copy it withdrew and stopped, which a failed Service restores.
     held_old: Option<Box<(ResolvedServiceSpec, cleanup::Copy)>>,
-    /// The running copy it changed in place. It stays In under the same id, so
-    /// the group's cleanup leaves it alone and a failed Service never removes it.
-    updated: Option<ContainerId>,
 }
 
 impl Ran {
     fn started(id: ContainerId) -> Self {
         Self {
             started: Some(id),
-            ..Self::default()
-        }
-    }
-
-    fn updated(id: ContainerId) -> Self {
-        Self {
-            updated: Some(id),
             ..Self::default()
         }
     }
@@ -650,7 +642,6 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let rows = Rows::new(plan, run);
     let mut started: BTreeMap<usize, Vec<(usize, MachineId, ContainerId)>> = BTreeMap::new();
     let mut stopped: BTreeMap<usize, Vec<(ResolvedServiceSpec, cleanup::Copy)>> = BTreeMap::new();
-    let mut kept = BTreeSet::new();
     let mut awaiting_flip: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut unread = BTreeSet::new();
     let mut stop = None;
@@ -689,7 +680,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             .expect("only Service groups publish"),
                     );
                     let new = started.get(&group).cloned().unwrap_or_default();
-                    let old = old_copies(schedule.group(group), operations, &kept);
+                    let old = old_copies(schedule.group(group), operations);
                     Either::Right(async move {
                         let published = publish_group(
                             client,
@@ -743,9 +734,6 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     Ok(ran) => {
                         if let Some(old) = ran.held_old {
                             stopped.entry(group).or_default().push(*old);
-                        }
-                        if ran.updated.is_some() {
-                            kept.insert(index);
                         }
                         if let (true, Some(container_id)) =
                             (schedule.group(group).publish, ran.started)
@@ -1347,7 +1335,9 @@ fn rolling_step(
     operation: &DeployOperation,
     started: Option<ContainerId>,
 ) -> Option<(MachineId, ContainerId)> {
-    let replacement = operation.replacement()?;
+    let DeployOperation::ReplaceContainer(replacement) = operation else {
+        return None;
+    };
     (replacement.spec.update.order == UpdateOrder::Rolling)
         .then_some((replacement.machine_id, started?))
 }
@@ -1410,12 +1400,11 @@ async fn route_new<C: MachineOperations>(
     Ok(())
 }
 
-/// The copies the group's publish retires. A copy `kept` in place, updated
-/// rather than replaced, is one of the Service's serving copies and stays.
+/// The copies the group's publish retires. A copy updated in place is one of
+/// the Service's serving copies and stays.
 fn old_copies(
     group: &ServiceGroup,
     operations: &[DeployOperation],
-    kept: &BTreeSet<usize>,
 ) -> Vec<(MachineId, ContainerId)> {
     group
         .steps
@@ -1424,10 +1413,11 @@ fn old_copies(
             Step::Serial(index) => vec![*index],
             Step::Parallel(indices) => indices.clone(),
         })
-        .filter(|index| !kept.contains(index))
-        .filter_map(|index| {
-            let replacement = operation_at(operations, index).replacement()?;
-            Some((replacement.machine_id, replacement.old_container_id))
+        .filter_map(|index| match operation_at(operations, index) {
+            DeployOperation::ReplaceContainer(replacement) => {
+                Some((replacement.machine_id, replacement.old_container_id))
+            }
+            _ => None,
         })
         .collect()
 }
@@ -1602,31 +1592,27 @@ impl<'a> Rows<'a> {
             .groups()
             .iter()
             .flat_map(|group| &group.steps)
-            .flat_map(|step| {
+            .map(|step| {
                 let tasks = match step {
                     Step::Serial(index) => vec![*index],
                     Step::Parallel(indices) => indices.clone(),
                 };
-                let mut replaces = Vec::new();
-                let mut updates = Vec::new();
-                for index in tasks {
-                    let operation = operation_at(operations, index);
-                    let Some(replacement) = operation.replacement() else {
-                        continue;
-                    };
-                    if !replacement.spec.update.order.stops_first() {
-                        continue;
-                    }
-                    // An update withdraws its old copy only once it falls back to
-                    // a replace, so it is a step of its own: a sibling's step must
-                    // not withdraw a copy that stays In.
-                    if matches!(operation, DeployOperation::UpdateContainer(_)) {
-                        updates.push(vec![(index, replacement)]);
-                    } else {
-                        replaces.push((index, replacement));
-                    }
-                }
-                std::iter::once(replaces).chain(updates)
+                tasks
+                    .into_iter()
+                    .filter_map(|index| {
+                        let DeployOperation::ReplaceContainer(replacement) =
+                            operation_at(operations, index)
+                        else {
+                            return None;
+                        };
+                        replacement
+                            .spec
+                            .update
+                            .order
+                            .stops_first()
+                            .then_some((index, replacement))
+                    })
+                    .collect::<Vec<_>>()
             })
             .filter(|tasks| !tasks.is_empty())
             .map(|tasks| StopFirstStep {
@@ -2193,48 +2179,59 @@ async fn execute_operation<C: MachineOperations>(
             }
         }
         DeployOperation::ReplaceContainer(replacement) => {
-            replace(
-                client,
+            let slot = slots.slot(
+                ContainerKind::ServiceContainer,
+                &replacement.spec,
                 index,
-                progress,
-                replacement,
-                slots,
-                rows,
-                cancellation,
-            )
-            .await
-        }
-        DeployOperation::UpdateContainer(replacement) => {
-            progress.set_running(index, OperationPhase::UpdatingContainer);
-            let refusal = match client
-                .update_container_limits(
-                    &replacement.machine_id,
-                    &replacement.old_container_id,
-                    &replacement.spec,
+                Some(replacement.old_container_id),
+            );
+            let r#gen = rows
+                .gen_for(client, &rows.service(&replacement.spec))
+                .await?;
+            if replacement.spec.update.order.stops_first() {
+                let old = rows
+                    .inspect_step(client, progress, index, cancellation)
+                    .await?;
+                return replace_stop_first(
+                    client,
+                    index,
+                    progress,
+                    replacement,
+                    old,
+                    slot,
+                    r#gen,
+                    rows,
+                    cancellation,
                 )
-                .await
-            {
-                Ok(updated) => return Ok(Ran::updated(updated.container_id)),
-                Err(error) => error,
-            };
-            // Whatever the cause, the Deploy still lands the spec: it replaces the
-            // Container as a plan without the capability would have, and says so.
-            progress.warn(DeployWarning::LimitsUpdateFellBack {
-                service: rows.service(&replacement.spec),
-                container_id: replacement.old_container_id,
-                machine: rows.machine_name(&replacement.machine_id),
-                reason: refusal.message,
-            });
-            replace(
+                .await;
+            }
+            // The old Container keeps serving until every new copy of the
+            // Service is In and listed; it retires in the group's cleanup.
+            start(
                 client,
                 index,
                 progress,
-                replacement,
-                slots,
-                rows,
+                &replacement.machine_id,
+                slot,
+                (&replacement.spec, rows.run),
+                r#gen,
+                answer_when(replacement.skip_health_monitor),
+                FailedStart::Discard,
                 cancellation,
             )
             .await
+            .map(Ran::started)
+            .map_err(Into::into)
+        }
+        // The copy stays In under its own id either way: with the new limits, or
+        // with its old ones when the Machine refuses or fails.
+        DeployOperation::UpdateContainer(update) => {
+            progress.set_running(index, OperationPhase::UpdatingContainer);
+            client
+                .update_container_limits(&update.machine_id, &update.container_id, &update.spec)
+                .await
+                .map(|_| Ran::default())
+                .map_err(|error| machine_error(MachineAction::UpdateContainerLimits, error).into())
         }
         DeployOperation::StopHook {
             machine_id,
@@ -2661,60 +2658,6 @@ fn answer_when(skip_health_monitor: bool) -> AnswerWhen {
     }
 }
 
-async fn replace<C: MachineOperations>(
-    client: &C,
-    index: usize,
-    progress: &Progress,
-    replacement: &ReplacementOperation,
-    slots: &Slots<'_>,
-    rows: &Rows<'_>,
-    cancellation: &CancellationToken,
-) -> Result<Ran, OperationFailure> {
-    let slot = slots.slot(
-        ContainerKind::ServiceContainer,
-        &replacement.spec,
-        index,
-        Some(replacement.old_container_id),
-    );
-    let r#gen = rows
-        .gen_for(client, &rows.service(&replacement.spec))
-        .await?;
-    if replacement.spec.update.order.stops_first() {
-        let old = rows
-            .inspect_step(client, progress, index, cancellation)
-            .await?;
-        return replace_stop_first(
-            client,
-            index,
-            progress,
-            replacement,
-            old,
-            slot,
-            r#gen,
-            rows,
-            cancellation,
-        )
-        .await;
-    }
-    // The old Container keeps serving until every new copy of the
-    // Service is In and listed; it retires in the group's cleanup.
-    start(
-        client,
-        index,
-        progress,
-        &replacement.machine_id,
-        slot,
-        (&replacement.spec, rows.run),
-        r#gen,
-        answer_when(replacement.skip_health_monitor),
-        FailedStart::Discard,
-        cancellation,
-    )
-    .await
-    .map(Ran::started)
-    .map_err(Into::into)
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "one call site; the rows travel with the slot"
@@ -2766,7 +2709,6 @@ async fn replace_stop_first<C: MachineOperations>(
         Ok(new_container) => Ok(Ran {
             started: Some(new_container),
             held_old: held_old.map(Box::new),
-            updated: None,
         }),
         Err(error) => Err(compensate(
             client,

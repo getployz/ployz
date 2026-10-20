@@ -2,7 +2,9 @@
 //! whose daemon can, and replaces it everywhere else.
 
 use super::support::*;
-use ployz_core::{ByteQuantity, CpuNanos, UPDATE_CONTAINER_LIMITS_CAPABILITY};
+use ployz_core::{
+    ByteQuantity, CpuNanos, LimitsUpdateOperation, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+};
 
 fn capable(hex: char, name: &str) -> MachineObservation {
     let mut observed = machine(hex, name);
@@ -57,7 +59,7 @@ fn a_limits_only_change_updates_the_running_container_on_a_capable_server() {
                 operations(&plan)
             );
         };
-        assert_eq!(update.old_container_id, container_id('b'));
+        assert_eq!(update.container_id, container_id('b'));
         assert_eq!(update.machine_id, machine_id('1'));
         assert_eq!(
             update.spec.container.resources.limits(),
@@ -167,8 +169,8 @@ fn an_update_needs_no_spare_endpoint_and_runs_no_pre_deploy_hook() {
         assert!(
             matches!(
                 single_operation(&plan),
-                DeployOperation::UpdateContainer(ReplacementOperation { old_container_id, .. })
-                    if old_container_id == container_id('b')
+                DeployOperation::UpdateContainer(LimitsUpdateOperation { container_id: id, .. })
+                    if id == container_id('b')
             ),
             "{:?}",
             operations(&plan)
@@ -187,10 +189,7 @@ fn kinds(preview: &DeployPreview) -> Vec<String> {
         .iter()
         .map(|operation| match operation {
             DeployOperation::UpdateContainer(update) => {
-                format!(
-                    "update {} on {}",
-                    update.old_container_id, update.machine_id
-                )
+                format!("update {} on {}", update.container_id, update.machine_id)
             }
             DeployOperation::ReplaceContainer(replacement) => format!(
                 "replace {} on {}",

@@ -29,6 +29,9 @@ pub(crate) enum TaskKind {
     /// Removes a copy the Service's previous pointer named, so it waits until
     /// every Machine routes the new pointer.
     Unroute,
+    /// Changes a serving copy in place: it starts nothing, so it takes no window
+    /// slot and waits on no route.
+    Update,
     Other,
 }
 
@@ -40,9 +43,10 @@ impl TaskKind {
                 purpose: RemoveContainerPurpose::Rollout,
                 ..
             } => Self::Unroute,
-            DeployOperation::RunContainer { .. }
-            | DeployOperation::ReplaceContainer(_)
-            | DeployOperation::UpdateContainer(_) => Self::Start,
+            DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => {
+                Self::Start
+            }
+            DeployOperation::UpdateContainer(_) => Self::Update,
             DeployOperation::PrepareVolumes { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
@@ -212,6 +216,7 @@ impl Schedule {
             .filter_map(|(index, Slot { group, phase })| {
                 let result = match phase {
                     _ if self.unconfirmed.contains(&index) => ServiceResult::Unconfirmed,
+                    Phase::Done if self.updates_in_place(group) => ServiceResult::Updated,
                     Phase::Done => ServiceResult::New,
                     Phase::Waiting => ServiceResult::NotStarted,
                     Phase::Active { .. } | Phase::Publishing | Phase::Failed => ServiceResult::Old,
@@ -222,6 +227,18 @@ impl Schedule {
                     .map(|service| ServiceOutcome { service, result })
             })
             .collect()
+    }
+
+    /// The group changes its serving copies in place and starts none.
+    fn updates_in_place(&self, group: &ServiceGroup) -> bool {
+        let kinds = || {
+            group
+                .steps
+                .iter()
+                .flat_map(step_tasks)
+                .map(|task| self.task(task).kind)
+        };
+        kinds().any(|kind| kind == TaskKind::Update) && kinds().all(|kind| kind != TaskKind::Start)
     }
 
     /// The group's tasks, or the following group's when a Service only
@@ -451,7 +468,7 @@ impl Schedule {
         group: &'a ServiceGroup,
         task: usize,
     ) -> impl Iterator<Item = &'a ServiceName> {
-        let waits = self.task(task).kind != TaskKind::Other;
+        let waits = !matches!(self.task(task).kind, TaskKind::Other | TaskKind::Update);
         group.dependencies.iter().filter(move |dependency| {
             waits && self.published.contains(*dependency) && !self.routed.contains(*dependency)
         })

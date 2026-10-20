@@ -3,7 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use ployz_core::{DeployOperation, HttpProtocol, PortPublication, ReplacementOperation};
+use ployz_core::{
+    DeployOperation, HttpProtocol, LimitsUpdateOperation, PortPublication, ReplacementOperation,
+};
 
 pub(super) fn endpoints_footer(completed: &[DeployOperation]) -> String {
     let mut by_service = BTreeMap::<_, BTreeSet<_>>::new();
@@ -11,7 +13,7 @@ pub(super) fn endpoints_footer(completed: &[DeployOperation]) -> String {
         let spec = match operation {
             DeployOperation::RunContainer { spec, .. } => spec,
             DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })
-            | DeployOperation::UpdateContainer(ReplacementOperation { spec, .. }) => spec,
+            | DeployOperation::UpdateContainer(LimitsUpdateOperation { spec, .. }) => spec,
             DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }

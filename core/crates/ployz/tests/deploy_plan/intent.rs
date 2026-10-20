@@ -313,8 +313,8 @@ fn targets_container(plan: &ployz::deploy::DeployPreview, id: &ContainerId) -> b
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }
         | DeployOperation::StopHook { container_id, .. } => container_id == id,
-        DeployOperation::ReplaceContainer(replacement)
-        | DeployOperation::UpdateContainer(replacement) => &replacement.old_container_id == id,
+        DeployOperation::ReplaceContainer(replacement) => &replacement.old_container_id == id,
+        DeployOperation::UpdateContainer(update) => &update.container_id == id,
         DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::RunHook { .. }

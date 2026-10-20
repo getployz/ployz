@@ -1,28 +1,21 @@
-//! An in-place limits update keeps the copy In; a refusal replaces it.
+//! An in-place limits update keeps the copy In, whether it lands or fails.
 
 use super::flip::execute_reported;
 use super::*;
+use ployz_core::{LimitsUpdateOperation, MachineAction, RpcError};
 
 fn update(
     machine_id: &MachineId,
-    old_container_id: &ContainerId,
+    container_id: &ContainerId,
     order: UpdateOrder,
-) -> ReplacementOperation {
+) -> LimitsUpdateOperation {
     let mut spec = spec(None, None, None);
     spec.update.order = order;
-    ReplacementOperation {
+    LimitsUpdateOperation {
         machine_id: *machine_id,
-        old_container_id: *old_container_id,
+        container_id: *container_id,
         spec,
-        skip_health_monitor: true,
     }
-}
-
-fn fell_back(machine: &MachineId, container_id: &ContainerId, reason: &str) -> String {
-    format!(
-        "{}'s Container {container_id} was not updated in place on {machine} ({reason}), so the Deploy replaces it.",
-        api()
-    )
 }
 
 fn touched(client: &Scripted, container_id: &ContainerId) -> bool {
@@ -53,7 +46,7 @@ async fn an_update_keeps_the_same_copy_in_and_starts_nothing() {
         outcome,
         DeployOutcome::Success {
             completed: plan,
-            services: ended(&[("api", ServiceResult::New)]),
+            services: ended(&[("api", ServiceResult::Updated)]),
         }
     );
     assert_eq!(warnings, Vec::<String>::new());
@@ -62,25 +55,29 @@ async fn an_update_keeps_the_same_copy_in_and_starts_nothing() {
     client.assert_done();
 }
 
+/// Docker's own words travel with the failure: the Deploy neither replaces the
+/// copy nor restates the cause.
 #[tokio::test]
-async fn a_refused_update_replaces_the_copy_and_says_so() {
+async fn a_failed_update_fails_the_operation_and_leaves_the_copy_serving() {
     let machine = machine('1');
     let old = container('a');
-    let new = container('b');
     let plan = vec![DeployOperation::UpdateContainer(update(
         &machine,
         &old,
-        UpdateOrder::StartFirst,
+        UpdateOrder::StopFirst,
     ))];
-    let client = Scripted::new(vec![
-        Step(
-            Call::UpdateLimits(machine, old),
-            Reply::Error(error("the change needs a new Container")),
-        ),
-        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-        observed(Call::Inspect(machine, old), running()),
-        ok(Call::Remove(machine, old)),
-    ])
+    let docker = RpcError {
+        code: RpcErrorCode::Internal,
+        message: "Docker operation failed".into(),
+        details: serde_json::Value::Null,
+        cause: vec![
+            "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set".into(),
+        ],
+    };
+    let client = Scripted::new(vec![Step(
+        Call::UpdateLimits(machine, old),
+        Reply::Error(docker.clone()),
+    )])
     .with_copy(&machine, &old, CopyRotation::In);
 
     let (outcome, warnings) =
@@ -88,68 +85,22 @@ async fn a_refused_update_replaces_the_copy_and_says_so() {
 
     assert_eq!(
         outcome,
-        DeployOutcome::Success {
-            completed: plan,
-            services: ended(&[("api", ServiceResult::New)]),
+        DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::Operation {
+                operation: plan[0].clone(),
+                error: ExecutionError::Machine {
+                    action: MachineAction::UpdateContainerLimits,
+                    error: docker,
+                },
+            },
+            unexecuted: Vec::new(),
+            services: ended(&[("api", ServiceResult::Old)]),
         }
     );
-    assert_eq!(
-        warnings,
-        [fell_back(
-            &machine,
-            &old,
-            "the change needs a new Container"
-        )]
-    );
-    assert_eq!(client.brought_in(), [new]);
-    assert_eq!(client.rotation(&old), None, "the old copy retires");
-    client.assert_done();
-}
-
-#[tokio::test]
-async fn a_refused_stop_first_update_falls_back_with_the_replacement_compensation() {
-    let machine = machine('1');
-    let old = container('a');
-    let replacement = update(&machine, &old, UpdateOrder::StopFirst);
-    let plan = vec![DeployOperation::UpdateContainer(replacement.clone())];
-    let client = Scripted::new(vec![
-        Step(
-            Call::UpdateLimits(machine, old),
-            Reply::Error(error("refused")),
-        ),
-        observed(Call::Inspect(machine, old), running()),
-        ok(Call::Stop(machine, old)),
-        failed(
-            Call::Run(machine, ContainerKind::ServiceContainer),
-            "start failed",
-        ),
-        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
-        ok(Call::Restart(machine, old)),
-    ])
-    .with_copy(&machine, &old, CopyRotation::In);
-
-    let (outcome, warnings) =
-        execute_reported(&plan, &[], &client, &CancellationToken::new()).await;
-
-    assert_eq!(warnings, [fell_back(&machine, &old, "refused")]);
-    assert!(
-        matches!(
-            &outcome,
-            DeployOutcome::Failed {
-                failed: FailedOperation::Replacement {
-                    operation,
-                    compensation: ReplacementCompensation::OldStopped {
-                        stop_new_container: None,
-                        restore_old_container: RestoreAttempt::Restored,
-                    },
-                    ..
-                },
-                ..
-            } if *operation == replacement
-        ),
-        "{outcome:?}"
-    );
+    assert_eq!(warnings, Vec::<String>::new());
     assert_eq!(client.rotation(&old), Some(CopyRotation::In));
+    assert!(!touched(&client, &old), "{:?}", client.moves());
     client.assert_done();
 }
 
@@ -160,7 +111,7 @@ async fn a_stop_first_sibling_replace_leaves_the_updated_copy_in() {
     let new_second = container('c');
     let plan = vec![
         DeployOperation::UpdateContainer(update(&first, &old_first, UpdateOrder::StopFirst)),
-        DeployOperation::ReplaceContainer(update(&second, &old_second, UpdateOrder::StopFirst)),
+        replacement(&second, &old_second, UpdateOrder::StopFirst),
     ];
     let client = Scripted::new(vec![
         ok(Call::UpdateLimits(first, old_first)),
@@ -202,7 +153,7 @@ async fn a_failed_sibling_never_removes_the_updated_copy() {
     let (old_first, old_second) = (container('a'), container('b'));
     let plan = vec![
         DeployOperation::UpdateContainer(update(&first, &old_first, UpdateOrder::StartFirst)),
-        DeployOperation::ReplaceContainer(update(&second, &old_second, UpdateOrder::StartFirst)),
+        replacement(&second, &old_second, UpdateOrder::StartFirst),
     ];
     let client = Scripted::new(vec![
         ok(Call::UpdateLimits(first, old_first)),
