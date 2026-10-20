@@ -254,6 +254,11 @@ struct Scripted {
     incomplete: bool,
     /// Once this move is applied, every route read fails.
     reads_fail_after: Option<Move>,
+    /// Once this move is applied, a route read sent to this Machine goes
+    /// unanswered, as when it is cut off.
+    cut_off_after: Option<(Move, MachineId)>,
+    /// This many entry route reads go unanswered before the next one answers.
+    blipped_entry_reads: Mutex<usize>,
     /// What each proxy last routed, kept by the real rule.
     served: Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>,
     moves: Mutex<Vec<Move>>,
@@ -295,6 +300,8 @@ impl Scripted {
             lagging: Mutex::new(BTreeMap::new()),
             incomplete: false,
             reads_fail_after: None,
+            cut_off_after: None,
+            blipped_entry_reads: Mutex::new(0),
             served: Mutex::new(BTreeMap::new()),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
@@ -333,6 +340,52 @@ impl Scripted {
             },
         );
         self
+    }
+
+    /// A route read through `machine_id`, or through the entry when `None`.
+    async fn read_at(
+        &self,
+        machine_id: Option<&MachineId>,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        if self.read_latency {
+            tokio::task::yield_now().await;
+        }
+        {
+            let mut failing = self.failed_route_reads.lock().unwrap();
+            if *failing > 0 {
+                *failing -= 1;
+                return Err(error("the route query failed"));
+            }
+        }
+        if self
+            .reads_fail_after
+            .as_ref()
+            .is_some_and(|applied| self.moves().contains(applied))
+        {
+            return Err(unavailable("the route read failed"));
+        }
+        if self
+            .cut_off_after
+            .as_ref()
+            .is_some_and(|(applied, cut)| Some(cut) == machine_id && self.moves().contains(applied))
+        {
+            return Err(RpcError::unanswered_target(
+                RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            ));
+        }
+        let routes = if machine_id.is_some_and(|machine_id| self.lags(machine_id, true)) {
+            self.before(service)
+        } else {
+            self.routes(service, true)
+        };
+        Ok(RoutesRead {
+            routes,
+            complete: !self.incomplete,
+            down: self.down.clone(),
+            ..RoutesRead::default()
+        })
     }
 
     /// Every proxy already routes the In copies of `service`, as it would
@@ -1106,34 +1159,21 @@ impl MachineOperations for Scripted {
         machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<RoutesRead, RpcError> {
-        if self.read_latency {
-            tokio::task::yield_now().await;
-        }
+        self.read_at(Some(machine_id), service).await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         {
-            let mut failing = self.failed_route_reads.lock().unwrap();
-            if *failing > 0 {
-                *failing -= 1;
-                return Err(error("the route query failed"));
+            let mut blipped = self.blipped_entry_reads.lock().unwrap();
+            if *blipped > 0 {
+                *blipped -= 1;
+                return Err(RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    "target Machine RPC timed out".into(),
+                ));
             }
         }
-        if self
-            .reads_fail_after
-            .as_ref()
-            .is_some_and(|applied| self.moves().contains(applied))
-        {
-            return Err(unavailable("the route read failed"));
-        }
-        let routes = if self.lags(machine_id, true) {
-            self.before(service)
-        } else {
-            self.routes(service, true)
-        };
-        Ok(RoutesRead {
-            routes,
-            complete: !self.incomplete,
-            down: self.down.clone(),
-            ..RoutesRead::default()
-        })
+        self.read_at(None, service).await
     }
 
     async fn inspect_container(

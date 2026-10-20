@@ -2168,10 +2168,103 @@ async fn a_failed_route_read_after_the_outs_leaves_every_old_copy_of_the_group_r
     assert_eq!(
         warnings,
         [
-            left_running("machine-1", "the route read failed"),
-            left_running("machine-2", "the route read failed"),
+            left_running(
+                "machine-1",
+                "the routes could not be read through the Machine this Deploy connects to: the route read failed",
+            ),
+            left_running(
+                "machine-2",
+                "the routes could not be read through the Machine this Deploy connects to: the route read failed",
+            ),
         ]
     );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cut_off_owner_leaves_only_its_own_old_copy_of_the_group_running() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (one, two) = (container('a'), container('b'));
+    let (new_one, new_two) = (container('c'), container('d'));
+    let plan = vec![
+        global_replacement(&first, &one, UpdateOrder::StartFirst),
+        global_replacement(&second, &two, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted {
+        cut_off_after: Some((Move::To(one, CopyRotation::Out), first)),
+        ..Scripted::new(vec![
+            created(Call::Run(first, ContainerKind::ServiceContainer), &new_one),
+            created(Call::Run(second, ContainerKind::ServiceContainer), &new_two),
+            observed(Call::Inspect(first, one), running()),
+            observed(Call::Inspect(second, two), running()),
+            Step(
+                Call::Remove(first, one),
+                Reply::Error(RpcError::unanswered_target(
+                    RpcErrorCode::Internal,
+                    "target Machine RPC timed out".into(),
+                )),
+            ),
+            ok(Call::Remove(second, two)),
+        ])
+    }
+    .with_copy(&first, &one, CopyRotation::In)
+    .with_copy(&second, &two, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[first, second], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "an applied Deploy that left a copy running exits partial: {outcome:?}"
+    );
+    assert_eq!(
+        client.rotation(&two),
+        None,
+        "the reachable owner's old copy is retired"
+    );
+    assert_eq!(
+        warnings,
+        [
+            left_running("machine-1", "machine-1 did not answer"),
+            mixed_after_return("machine-1"),
+        ]
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_brief_unanswered_route_read_does_not_end_the_group_wait() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (one, two) = (container('a'), container('b'));
+    let (new_one, new_two) = (container('c'), container('d'));
+    let plan = vec![
+        global_replacement(&first, &one, UpdateOrder::StartFirst),
+        global_replacement(&second, &two, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted {
+        blipped_entry_reads: Mutex::new(3),
+        ..Scripted::new(vec![
+            created(Call::Run(first, ContainerKind::ServiceContainer), &new_one),
+            created(Call::Run(second, ContainerKind::ServiceContainer), &new_two),
+            observed(Call::Inspect(first, one), running()),
+            observed(Call::Inspect(second, two), running()),
+            ok(Call::Remove(first, one)),
+            ok(Call::Remove(second, two)),
+        ])
+    }
+    .with_copy(&first, &one, CopyRotation::In)
+    .with_copy(&second, &two, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[first, second], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.rotation(&one), None);
+    assert_eq!(client.rotation(&two), None);
+    assert!(warnings.is_empty(), "{warnings:?}");
     client.assert_done();
 }
 
@@ -2264,8 +2357,14 @@ async fn only_the_machine_that_did_not_answer_is_named_away() {
         [
             left_running("machine-3", "machine-3 did not answer"),
             mixed_after_return("machine-3"),
-            left_running("machine-1", "the route read failed"),
-            left_running("machine-2", "the route read failed"),
+            left_running(
+                "machine-1",
+                "the routes could not be read through the Machine this Deploy connects to: the route read failed",
+            ),
+            left_running(
+                "machine-2",
+                "the routes could not be read through the Machine this Deploy connects to: the route read failed",
+            ),
         ],
         "the route read failed on no Machine the run can name"
     );
@@ -2591,8 +2690,14 @@ async fn an_owner_whose_calls_time_out_on_this_client_is_named_away() {
         [
             left_running("machine-3", "machine-3 did not answer"),
             mixed_after_return("machine-3"),
-            left_running("machine-1", "the route read failed"),
-            left_running("machine-2", "the route read failed"),
+            left_running(
+                "machine-1",
+                "the routes could not be read through the Machine this Deploy connects to: the route read failed",
+            ),
+            left_running(
+                "machine-2",
+                "the routes could not be read through the Machine this Deploy connects to: the route read failed",
+            ),
         ]
     );
     assert!(

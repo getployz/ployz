@@ -383,6 +383,11 @@ pub struct NodeOutcome {
     #[serde(flatten)]
     pub node: DeployedNode,
     pub outcome: NodeStatus,
+    /// The Deployment's cancel stopped its work, so it reads Cancelled. Set only
+    /// on a Failed `outcome`, which a reader from before Cancelled reads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub cancelled: bool,
     /// Its work on each Server, once its runner started executing.
     #[serde(default)]
     pub rows: Vec<ServerRow>,
@@ -743,6 +748,11 @@ struct Run {
     /// Each target node's Node Outcome, by node ID, once execution ran.
     #[serde(default)]
     nodes: BTreeMap<String, NodeStatus>,
+    /// The Failed nodes only the Deployment's cancel stopped, which read
+    /// Cancelled. Kept apart from `nodes` so a Store from before Cancelled reads
+    /// them Failed.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    cancelled: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<DeploymentWarning>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

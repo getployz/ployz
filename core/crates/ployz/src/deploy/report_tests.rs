@@ -221,6 +221,16 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
+            cancelled: false,
+        },
+        "cancelled" => RowState::Failed {
+            reason: "Cancelled".into(),
+            cause: Vec::new(),
+            step: Some(ployz_store::FailedAt::Create),
+            log: None,
+            unanswered: false,
+            out_of_memory: None,
+            cancelled: true,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),
@@ -443,6 +453,32 @@ fn a_failure_leaves_every_later_service_not_started() {
             "depth 2",
             "  ⊘ web  not started",
             "  ⊘ worker  not started",
+        ]
+    );
+}
+
+#[test]
+fn a_cancel_reads_cancelled_where_it_stopped_work_and_failed_where_work_failed() {
+    let frame = graph_frame(
+        &[
+            group("db", &[]),
+            group("api", &["db"]),
+            group("web", &["db"]),
+        ],
+        &[
+            ("db", &["completed"]),
+            ("api", &["cancelled", "completed"]),
+            ("web", &["failed", "cancelled"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ✔ db  switched 1/1",
+            "depth 1",
+            "  ⊘ api  cancelled (1/2 ready)",
+            "  ✘ web  failed (0/2 ready)",
         ]
     );
 }
