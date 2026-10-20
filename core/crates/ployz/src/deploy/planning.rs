@@ -25,7 +25,7 @@ mod volumes;
 
 use placement::{
     CapacityAdmission, GlobalPlacement, PlacementReservations, PlacementState, ReplicatedPlacement,
-    is_up_to_date, plan_global, plan_replicated,
+    plan_global, plan_replicated,
 };
 use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
 
@@ -684,7 +684,8 @@ fn assemble_plan(
             | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
                 Some(*machine_id)
             }
-            DeployOperation::WaitHealthy { .. }
+            DeployOperation::UpdateContainer(_)
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
@@ -984,7 +985,7 @@ fn plan_one_service<'snapshot>(
                 machines
                     .iter()
                     .any(|machine| machine.machine.id == container.as_observation().machine_id)
-                    && is_up_to_date(container, requested, options)
+                    && placement.keeps_container(container, requested, options)
             })
             .count();
         if requested.pre_deploy.is_some() && up_to_date < replicas.get() as usize {
@@ -998,7 +999,7 @@ fn plan_one_service<'snapshot>(
         machines.retain(|machine| {
             current.iter().any(|container| {
                 container.as_observation().machine_id == machine.machine.id
-                    && is_up_to_date(container, requested, options)
+                    && placement.keeps_container(container, requested, options)
             }) || placement.capacity_fits(&machine.machine.id, 1)
         });
         if machines.is_empty() {
@@ -1288,8 +1289,10 @@ fn pre_deploy_operations(
             | DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id, spec, ..
             }) if hook_machine == Some(machine_id) => Some((machine_id, spec)),
-            DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => None,
-            DeployOperation::WaitHealthy { .. }
+            DeployOperation::RunContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }

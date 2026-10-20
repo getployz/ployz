@@ -299,6 +299,7 @@ fn run_names(plan: &ployz::deploy::DeployPreview) -> Vec<&str> {
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::PrepareVolumes { .. }
@@ -312,7 +313,8 @@ fn targets_container(plan: &ployz::deploy::DeployPreview, id: &ContainerId) -> b
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }
         | DeployOperation::StopHook { container_id, .. } => container_id == id,
-        DeployOperation::ReplaceContainer(replacement) => &replacement.old_container_id == id,
+        DeployOperation::ReplaceContainer(replacement)
+        | DeployOperation::UpdateContainer(replacement) => &replacement.old_container_id == id,
         DeployOperation::WaitHealthy { .. }
         | DeployOperation::RunContainer { .. }
         | DeployOperation::RunHook { .. }
@@ -853,6 +855,7 @@ fn unchanged_ingress_follows_a_role_change_on_only_that_server() {
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::RemoveVolume { .. } => None,

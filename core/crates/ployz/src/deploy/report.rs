@@ -495,7 +495,8 @@ fn visible_name(
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
             spec.name.to_string()
         }
-        DeployOperation::ReplaceContainer(replacement) => replacement.spec.name.to_string(),
+        DeployOperation::ReplaceContainer(replacement)
+        | DeployOperation::UpdateContainer(replacement) => replacement.spec.name.to_string(),
         DeployOperation::RemoveVolume { id } => id.name.to_string(),
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }

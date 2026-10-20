@@ -572,6 +572,10 @@ pub enum DeployOperation {
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),
+    /// Apply the replacement spec's CPU and memory limits to `old_container_id` in place.
+    /// The Container keeps serving under the same id. A Machine that refuses the update
+    /// gets the same replacement as [`Self::ReplaceContainer`].
+    UpdateContainer(ReplacementOperation),
     /// Stop a pre-deploy hook container that is still running, before [`Self::RunHook`]
     /// starts the next one.
     StopHook {
@@ -819,6 +823,15 @@ pub enum DeployWarning {
         /// The Machine's name when the plan knows it, else its id.
         machine: String,
     },
+    /// The Machine did not change `container_id`'s limits in place, so the Deploy
+    /// replaced the Container as a plan without the capability would have.
+    LimitsUpdateFellBack {
+        service: QualifiedService,
+        container_id: ContainerId,
+        /// The Machine's name when the plan knows it, else its id.
+        machine: String,
+        reason: String,
+    },
 }
 
 impl DeployWarning {
@@ -849,7 +862,8 @@ impl DeployWarning {
             | Self::SkippedDependencyHealth { .. }
             | Self::ImagePortMismatch { .. }
             | Self::LeftRunning { .. }
-            | Self::MixedAfterReturn { .. } => None,
+            | Self::MixedAfterReturn { .. }
+            | Self::LimitsUpdateFellBack { .. } => None,
         }
     }
 }
@@ -907,6 +921,15 @@ impl Display for DeployWarning {
                 f,
                 "Once {machine} is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy."
             ),
+            Self::LimitsUpdateFellBack {
+                service,
+                container_id,
+                machine,
+                reason,
+            } => write!(
+                f,
+                "{service}'s Container {container_id} was not updated in place on {machine} ({reason}), so the Deploy replaces it."
+            ),
         }
     }
 }
@@ -930,6 +953,8 @@ pub enum MachineAction {
     StopContainer,
     RemoveContainer,
     RemoveVolume,
+    /// Change a running Container's CPU and memory limits in place.
+    UpdateContainerLimits,
     /// Make a Service image present before any Container changes.
     PullImage,
     ListContainers,
@@ -947,6 +972,7 @@ impl Display for MachineAction {
             Self::StopContainer => "stop Container",
             Self::RemoveContainer => "remove Container",
             Self::RemoveVolume => "remove Volume",
+            Self::UpdateContainerLimits => "update Container limits",
             Self::PullImage => "pull image",
             Self::ListContainers => "list Containers",
             Self::ReadRoutes => "read routes",
@@ -1215,6 +1241,8 @@ pub enum OperationPhase {
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
+    /// Docker is changing the running Container's limits in place.
+    UpdatingContainer,
     Compensating,
 }
 
@@ -1261,7 +1289,9 @@ impl DeployOperation {
             | Self::RemoveContainer { machine_id, .. }
             | Self::StopHook { machine_id, .. }
             | Self::RunHook { machine_id, .. } => *machine_id,
-            Self::ReplaceContainer(replacement) => replacement.machine_id,
+            Self::ReplaceContainer(replacement) | Self::UpdateContainer(replacement) => {
+                replacement.machine_id
+            }
             Self::RemoveVolume { id } => id.machine_id,
         }
     }
@@ -1272,7 +1302,9 @@ impl DeployOperation {
         match self {
             Self::WaitHealthy { dependent, .. } => Some(&dependent.name),
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
-            Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
+            Self::ReplaceContainer(replacement) | Self::UpdateContainer(replacement) => {
+                Some(&replacement.spec.name)
+            }
             Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
@@ -1288,7 +1320,9 @@ impl DeployOperation {
             Self::StopContainer { container_id, .. }
             | Self::RemoveContainer { container_id, .. }
             | Self::StopHook { container_id, .. } => Some(*container_id),
-            Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
+            Self::ReplaceContainer(replacement) | Self::UpdateContainer(replacement) => {
+                Some(replacement.old_container_id)
+            }
             Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
@@ -1302,8 +1336,29 @@ impl DeployOperation {
     pub fn spec(&self) -> Option<&ResolvedServiceSpec> {
         match self {
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(spec),
-            Self::ReplaceContainer(replacement) => Some(&replacement.spec),
+            Self::ReplaceContainer(replacement) | Self::UpdateContainer(replacement) => {
+                Some(&replacement.spec)
+            }
             Self::WaitHealthy { .. }
+            | Self::StopContainer { .. }
+            | Self::RemoveContainer { .. }
+            | Self::StopHook { .. }
+            | Self::PrepareVolumes { .. }
+            | Self::RemoveVolume { .. } => None,
+        }
+    }
+
+    /// The replacement this operation carries: a replace, or an update whose refusal
+    /// falls back to that replace.
+    #[must_use]
+    pub fn replacement(&self) -> Option<&ReplacementOperation> {
+        match self {
+            Self::ReplaceContainer(replacement) | Self::UpdateContainer(replacement) => {
+                Some(replacement)
+            }
+            Self::WaitHealthy { .. }
+            | Self::RunContainer { .. }
+            | Self::RunHook { .. }
             | Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }

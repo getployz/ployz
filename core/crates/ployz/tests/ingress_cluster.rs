@@ -691,7 +691,8 @@ async fn deploy(
         .find_map(|row| match &row.operation {
             ployz::deploy::DeployOperation::RunContainer { spec, .. }
             | ployz::deploy::DeployOperation::RunHook { spec, .. } => Some(spec.service_id),
-            ployz::deploy::DeployOperation::ReplaceContainer(replacement) => {
+            ployz::deploy::DeployOperation::ReplaceContainer(replacement)
+            | ployz::deploy::DeployOperation::UpdateContainer(replacement) => {
                 Some(replacement.spec.service_id)
             }
             ployz::deploy::DeployOperation::PrepareVolumes { .. }

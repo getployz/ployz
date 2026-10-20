@@ -39,7 +39,8 @@ pub(super) fn warnings(
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. }
             | DeployWarning::LeftRunning { .. }
-            | DeployWarning::MixedAfterReturn { .. } => continue,
+            | DeployWarning::MixedAfterReturn { .. }
+            | DeployWarning::LimitsUpdateFellBack { .. } => continue,
         };
         let Some(machine) = snapshot
             .machines

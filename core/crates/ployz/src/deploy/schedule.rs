@@ -40,9 +40,9 @@ impl TaskKind {
                 purpose: RemoveContainerPurpose::Rollout,
                 ..
             } => Self::Unroute,
-            DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => {
-                Self::Start
-            }
+            DeployOperation::RunContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_) => Self::Start,
             DeployOperation::PrepareVolumes { .. }
             | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }

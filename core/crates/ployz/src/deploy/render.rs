@@ -10,7 +10,8 @@ pub(super) fn endpoints_footer(completed: &[DeployOperation]) -> String {
     for operation in completed {
         let spec = match operation {
             DeployOperation::RunContainer { spec, .. } => spec,
-            DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. }) => spec,
+            DeployOperation::ReplaceContainer(ReplacementOperation { spec, .. })
+            | DeployOperation::UpdateContainer(ReplacementOperation { spec, .. }) => spec,
             DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }

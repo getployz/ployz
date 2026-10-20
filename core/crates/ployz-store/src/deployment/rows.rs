@@ -108,6 +108,7 @@ impl FailedAt {
                 MachineAction::RemoveContainer => Some(Self::Remove),
                 MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
+                | MachineAction::UpdateContainerLimits
                 | MachineAction::ListContainers
                 | MachineAction::ReadRoutes
                 | MachineAction::PublishServingPointer => from_phase(),
@@ -153,6 +154,7 @@ pub enum RowPhase {
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
+    UpdatingContainer,
     Compensating,
 }
 
@@ -166,7 +168,10 @@ impl RowPhase {
             Self::StoppingContainer => Some(FailedAt::Stop),
             Self::RemovingContainer => Some(FailedAt::Remove),
             Self::RemovingVolume => Some(FailedAt::Volume),
-            Self::Starting | Self::WaitingForSwitch | Self::Compensating => None,
+            Self::Starting
+            | Self::WaitingForSwitch
+            | Self::UpdatingContainer
+            | Self::Compensating => None,
         }
     }
 }
@@ -183,6 +188,7 @@ impl From<&OperationPhase> for RowPhase {
             OperationPhase::StoppingContainer => Self::StoppingContainer,
             OperationPhase::RemovingContainer => Self::RemovingContainer,
             OperationPhase::RemovingVolume => Self::RemovingVolume,
+            OperationPhase::UpdatingContainer => Self::UpdatingContainer,
             OperationPhase::Compensating => Self::Compensating,
         }
     }
@@ -437,12 +443,15 @@ impl Failure {
 
 type Key = (ServiceName, MachineId);
 
-/// Whether `operation` starts a new Service Container.
+/// Whether `operation` leaves a Service Container serving the new spec: a fresh
+/// start, or a running Container updated in place.
 #[must_use]
 pub const fn starts_container(operation: &DeployOperation) -> bool {
     matches!(
         operation,
-        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_)
+        DeployOperation::RunContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
     )
 }
 
@@ -536,9 +545,9 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             OperationPhase::WaitingForHealth { container_id, .. }
             | OperationPhase::WaitingForHook { container_id, .. }
             | OperationPhase::WaitingForSwitch { container_id } => Some(*container_id),
-            OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => {
-                row.operation.container_id()
-            }
+            OperationPhase::StoppingContainer
+            | OperationPhase::RemovingContainer
+            | OperationPhase::UpdatingContainer => row.operation.container_id(),
             OperationPhase::Starting
             | OperationPhase::CreatingContainer
             | OperationPhase::StartingContainer
@@ -549,9 +558,9 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             ExecutionError::Health { container_id, .. }
             | ExecutionError::Hook { container_id, .. } => Some(*container_id),
             ExecutionError::Machine { action, .. } => match action {
-                MachineAction::StopContainer | MachineAction::RemoveContainer => {
-                    row.operation.container_id()
-                }
+                MachineAction::StopContainer
+                | MachineAction::RemoveContainer
+                | MachineAction::UpdateContainerLimits => row.operation.container_id(),
                 MachineAction::InspectContainer => last,
                 MachineAction::CreateContainer
                 | MachineAction::StartContainer

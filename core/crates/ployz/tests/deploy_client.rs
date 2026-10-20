@@ -594,7 +594,8 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. } => false,
+            | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::LimitsUpdateFellBack { .. } => false,
         }),
         "DNS warning must match the CLI body: {:?}",
         preview.warnings

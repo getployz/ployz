@@ -32,6 +32,7 @@ export function rowPhaseLabel(phase: RowPhase): string {
     case "stopping_container": return "Stopping container";
     case "removing_container": return "Removing container";
     case "removing_volume": return "Removing volume";
+    case "updating_container": return "Updating limits";
     case "compensating": return "Rolling back";
     default:
       return phase satisfies never;

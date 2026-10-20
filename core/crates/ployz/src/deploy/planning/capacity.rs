@@ -29,13 +29,22 @@ pub(super) struct EndpointDemand {
 #[derive(Clone, Copy)]
 pub(super) enum EndpointOperation {
     Unchanged,
+    /// The running Container stays and takes new limits in place.
+    Update,
     Create,
     Replace,
 }
 
+impl EndpointOperation {
+    /// Whether the current Container keeps running under its own endpoint and ports.
+    pub(super) const fn keeps_container(self) -> bool {
+        matches!(self, Self::Unchanged | Self::Update)
+    }
+}
+
 impl EndpointDemand {
     pub(super) fn for_operation(operation: EndpointOperation, hook_pending: bool) -> Self {
-        let changes = !matches!(operation, EndpointOperation::Unchanged);
+        let changes = !operation.keeps_container();
         let uses_hook = changes && hook_pending;
         Self {
             peak: u64::from(changes) + u64::from(uses_hook),

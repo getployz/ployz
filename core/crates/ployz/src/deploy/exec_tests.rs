@@ -84,6 +84,8 @@ enum Call {
     /// Gone with no drain, by the slot of a new Container of this kind.
     DiscardSlot(MachineId, ContainerKind),
     RemoveVolume(DockerVolumeId),
+    /// Limits of a running Container changed in place.
+    UpdateLimits(MachineId, ContainerId),
 }
 
 #[derive(Clone)]
@@ -1007,7 +1009,8 @@ impl Scripted {
                 | Call::Run(..)
                 | Call::Inspect(..)
                 | Call::DiscardSlot(..)
-                | Call::RemoveVolume(_) => {}
+                | Call::RemoveVolume(_)
+                | Call::UpdateLimits(..) => {}
             }
         }
         answer
@@ -1233,6 +1236,20 @@ impl MachineOperations for Scripted {
         unit(self.next(Call::RemoveVolume(id.clone())))
     }
 
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        unit(self.next(Call::UpdateLimits(*machine_id, *container_id))).map(|()| {
+            ContainerLimitsUpdated {
+                container_id: *container_id,
+                limits: spec.container.resources.limits(),
+            }
+        })
+    }
+
     async fn runs_global(
         &self,
         _machine_id: &MachineId,
@@ -1295,6 +1312,8 @@ mod health;
 mod hooks;
 #[path = "exec_tests/image_ports.rs"]
 mod image_ports;
+#[path = "exec_tests/limits.rs"]
+mod limits;
 #[path = "exec_tests/moving.rs"]
 mod moving;
 #[path = "exec_tests/replacement.rs"]

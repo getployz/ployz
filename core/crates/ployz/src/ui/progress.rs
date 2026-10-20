@@ -141,6 +141,7 @@ impl GraphService {
                 RowPhase::StoppingContainer => "stopping old",
                 RowPhase::RemovingContainer => "removing old",
                 RowPhase::RemovingVolume => "removing volume",
+                RowPhase::UpdatingContainer => "updating limits",
                 RowPhase::WaitingForHealth => "waiting for health",
                 RowPhase::Compensating => "rolling back",
                 RowPhase::WaitingForSwitch => "switching",
@@ -215,6 +216,7 @@ impl State {
                 RowPhase::StoppingContainer => "stopping",
                 RowPhase::RemovingContainer => "removing",
                 RowPhase::RemovingVolume => "removing volume",
+                RowPhase::UpdatingContainer => "updating limits",
                 RowPhase::Compensating => "compensating",
             },
             Self::Completed => "completed",
@@ -640,7 +642,8 @@ fn left_running(row: &Row, frame: &Frame) -> usize {
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. }
-            | DeployWarning::MixedAfterReturn { .. } => None,
+            | DeployWarning::MixedAfterReturn { .. }
+            | DeployWarning::LimitsUpdateFellBack { .. } => None,
         })
         .collect::<BTreeSet<_>>()
         .len()
@@ -966,7 +969,8 @@ fn notices(frame: &Frame) -> Vec<String> {
                     | DeployWarning::SkippedDependencyHealth { .. }
                     | DeployWarning::ImagePortMismatch { .. }
                     | DeployWarning::LeftRunning { .. }
-                    | DeployWarning::MixedAfterReturn { .. } => None,
+                    | DeployWarning::MixedAfterReturn { .. }
+                    | DeployWarning::LimitsUpdateFellBack { .. } => None,
                 })
                 .collect::<BTreeSet<_>>();
             Some(format!(
