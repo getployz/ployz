@@ -336,17 +336,68 @@ fn a_push_keeps_saved_loss_data_while_a_server_is_unanswered_or_unsought() {
 }
 
 #[test]
-fn a_push_that_leaves_out_the_service_mounting_the_volume_keeps_its_data() {
+fn a_push_that_builds_another_service_still_deletes_the_accepted_data() {
     let (store, who) = saved_volume_loss();
     set(&store, &who, "web.watchPaths", json!(["web/**"]));
-    system(&store, &push(None, Some(H1), None));
-    // Consent stays for a later push that ships web.
+    system(&store, &push(None, Some(H1), Some(&["web/main.rs"])));
     let narrow = push(Some(H1), Some(H2), Some(&["api/main.rs"]));
-    assert!(deletes_of(&store, &narrow, Some(held_on_a())).is_empty());
     assert_eq!(
-        deletes_of(&store, &push(Some(H2), Some(H3), None), Some(held_on_a())),
+        deletes_of(&store, &narrow, Some(held_on_a())),
         [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
     );
+}
+
+#[test]
+fn a_push_never_deletes_data_no_save_accepted() {
+    let (store, who) = shop();
+    let data = || ployz_store::VolumeName::parse("data").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data(),
+            },
+        )
+        .unwrap();
+    // No Server held it at Save, so the Save asked nothing and accepted no loss.
+    let mut empty = held_on_a();
+    empty.held.clear();
+    store
+        .write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                volumes: Some(empty),
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+    assert!(pushed_deletes(&store, Some(held_on_a())).is_empty());
 }
 
 #[test]
@@ -753,6 +804,72 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
         )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+}
+
+#[test]
+fn a_push_ships_every_saved_change_and_builds_only_what_it_selects() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    set(&store, &who, "api.watchPaths", json!(["api/**"]));
+    publish(&store, &who);
+    let first = system(&store, &push(None, Some(H1), None));
+    let first = &first.admitted[0].deployment.id;
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    store.claim(first, &runner).unwrap();
+    store
+        .record(
+            first,
+            &runner,
+            ployz_store::RunEvidence::Build(ployz_store::BuildReport {
+                service: ServiceName::parse("api").unwrap(),
+                status: ployz_store::BuildStatus::Built,
+                message: None,
+                log: String::new(),
+            }),
+        )
+        .unwrap();
+    set(&store, &who, "api.replicas", json!(3));
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    assert_eq!(
+        deployed(&store, &who, &automated),
+        vec![(vec!["web".to_owned()], 2)]
+    );
+    assert_eq!(pinned(&store, &automated, "web").as_deref(), Some(H2));
+    // api's Saved change ships too, on the commit it last built.
+    assert_eq!(pinned(&store, &automated, "api").as_deref(), Some(H1));
+}
+
+#[test]
+fn a_push_tears_down_a_service_a_save_removed() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    publish(&store, &who);
+    system(&store, &push(None, Some(H1), None));
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    assert_eq!(
+        deployed(&store, &who, &automated),
+        vec![(vec!["web".to_owned(), "api".to_owned()], 2)]
+    );
 }
 
 #[test]
