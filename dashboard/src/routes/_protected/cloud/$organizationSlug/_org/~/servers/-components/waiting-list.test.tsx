@@ -271,7 +271,7 @@ it("selects at most the cap, says so, and rejects no more than that", async () =
 const planFor = (ids: readonly string[]) => ({
   rows: ids.map((id) => ({ waitingServerId: id, fleetTokenId: "fleet", hostname: id.replace("id-", ""), role: "joiner" as const,
     instruction: { name: id.replace("id-", ""), storage: { kind: "zfs" as const }, policy: { labels: {}, acceptsBuilds: true, acceptsServices: true, acceptsIngress: true } } })),
-  skipped: [], spread: { providers: 1, networks: 1 },
+  skipped: [], spread: { providers: 1, networks: 1 }, serversOffline: false,
 });
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};
@@ -329,7 +329,9 @@ it.each(["failed", "cancelled"] as const)("keeps the live status primary after a
   const row: WaitingServerView = { ...host("returned", { status: "offline" }), returned: { state, stage: "storage", message: "Disk missing" } };
   const { rerender } = renderList([row]);
   expect(statusOf("returned")).toMatch(/^Offline/);
-  expect(statusOf("returned")).toContain(state === "cancelled" ? "Cancelled" : "Failed at Setting up ZFS");
+  expect(statusOf("returned")).toContain(`Last enroll ${state}`);
+  expect(statusOf("returned")).not.toContain("Setting up ZFS");
+  expect(statusOf("returned")).not.toContain("Disk missing");
   rerender([{ ...row, status: "blocked", report: { ...row.report, blockers: [{ code: "docker_stopped", message: "Start Docker" }] } }]);
   expect(statusOf("returned")).toMatch(/^Docker stoppedStart Docker/);
   rerender([{ ...row, status: "waiting" }]);
@@ -450,6 +452,16 @@ it("enrolls the server its detail sheet shows", async () => {
   const sheet = await screen.findByRole("dialog");
   fireEvent.click(await within(sheet).findByRole("button", { name: "Enroll" }));
   await vi.waitFor(() => expect(preview.mock.calls.at(-1)?.[0]?.data.ids).toEqual([one.id]));
+});
+
+it.each([["failed", "Failed at Setting up ZFS"], ["cancelled", "Cancelled"]] as const)("shows how a %s attempt ended and its message in the detail sheet", async (state, reason) => {
+  const one: WaitingServerView = { ...host("one"), returned: { state, stage: "storage", message: "Disk missing" } };
+  vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...one, report, probe: null } as never);
+  renderList([one]);
+  fireEvent.click(screen.getByRole("button", { name: "one" }));
+  const last = await within(await screen.findByRole("dialog")).findByRole("region", { name: "Last enroll" });
+  expect(last.textContent).toContain(reason);
+  expect(last.textContent).toContain("Disk missing");
 });
 
 it("says nothing joins on its own until the first server is enrolled by hand", () => {

@@ -4,6 +4,7 @@ use std::{
 };
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 
 use chrono::{DateTime, Local, SecondsFormat, Utc};
 use clap::{Arg, ArgAction, Command};
@@ -83,6 +84,82 @@ pub(super) fn ps_command(command: Command) -> Command {
     )
 }
 
+/// Flags other tools take for a container ID column. `ps` shows one only where two rows
+/// would read the same, so an ask for it names where every ID is instead.
+const CONTAINER_COLUMN_ASKS: [&str; 11] = [
+    "--container",
+    "--containers",
+    "--wide",
+    "-w",
+    "--output",
+    "-o",
+    "--format",
+    "--columns",
+    "--no-trunc",
+    "--quiet",
+    "-q",
+];
+
+/// `error` for `ployz ps` asked for a CONTAINER column, rewritten to say where the IDs are.
+/// clap's partial parse of `args` names the command that rejected the flag, and keeps
+/// clap's error when the flag stood where an option's value was due (`--sort --wide`).
+pub(super) fn container_column_asked(error: clap::Error, args: &[OsString]) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if error.kind() != ErrorKind::UnknownArgument {
+        return error;
+    }
+    let Some(ContextValue::String(invalid)) = error.get(ContextKind::InvalidArg) else {
+        return error;
+    };
+    let flag = invalid.split('=').next().unwrap_or_default();
+    if !CONTAINER_COLUMN_ASKS.contains(&flag) {
+        return error;
+    }
+    let argv = |words: &mut dyn Iterator<Item = &OsString>| {
+        std::iter::once(OsString::from("ployz"))
+            .chain(words.cloned())
+            .collect::<Vec<_>>()
+    };
+    let Ok(parsed) = crate::cli::compiled()
+        .ignore_errors(true)
+        .try_get_matches_from(argv(&mut args.iter()))
+    else {
+        return error;
+    };
+    let Some(("ps", ps)) = parsed.subcommand() else {
+        return error;
+    };
+    // After `--` the flag is a positional word. Nothing before `ps` takes a hyphen value,
+    // so the first bare `--` is ps's own: keep clap's error unless clap still rejects the
+    // flag in the words before it.
+    if args.iter().any(|arg| arg == "--") {
+        let before = crate::cli::compiled()
+            .try_get_matches_from(argv(&mut args.iter().take_while(|arg| *arg != "--")));
+        let rejected_before = before.err().is_some_and(|before| {
+            before.kind() == ErrorKind::UnknownArgument
+                && before.get(ContextKind::InvalidArg) == error.get(ContextKind::InvalidArg)
+        });
+        if !rejected_before {
+            return error;
+        }
+    }
+    let value_missing = ps.ids().any(|id| {
+        ps.value_source(id.as_str()) == Some(ValueSource::CommandLine)
+            && ps
+                .get_raw(id.as_str())
+                .is_some_and(|values| values.len() == 0)
+    });
+    if value_missing {
+        return error;
+    }
+    clap::Error::raw(
+        ErrorKind::UnknownArgument,
+        format!(
+            "ployz ps has no '{flag}': it shows a CONTAINER column only where two rows would read the same\n\n  tip: with server access, 'ployz ps --json' lists each container's container_id, which 'ployz exec --container' takes\n"
+        ),
+    )
+}
+
 /// The Namespace the addressed Project and Environment run in, so a bare Service name
 /// means that Environment's Service. `None` keeps the whole Cluster in view: nothing
 /// was asked for, and no Config Store is reachable, it has no Project yet, or
@@ -139,6 +216,17 @@ impl From<ployz_store::NamespaceView> for Scoped {
 }
 
 impl Scoped {
+    /// The name a Service has now, for the runtime name its Containers carry.
+    pub(super) fn service_name<'a>(
+        &'a self,
+        runtime: &'a ployz_core::ServiceName,
+    ) -> &'a ployz_core::ServiceName {
+        self.services
+            .iter()
+            .find_map(|(name, other)| (other == runtime).then_some(name))
+            .unwrap_or(runtime)
+    }
+
     /// The bare Service Name in `selector` this Environment has neither deployed nor
     /// authored. A removed Service is one, and may still have retained logs.
     pub(super) fn unknown(&self, selector: &ServiceSelector) -> Option<ployz_core::ServiceName> {

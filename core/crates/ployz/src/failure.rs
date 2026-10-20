@@ -90,7 +90,8 @@ impl Failure {
         self
     }
 
-    /// End the process with the remote command's exit code. Only `ployz exec` uses it.
+    /// End the process with `code`, whatever it printed already said: the remote
+    /// command's exit code, a cancelled prompt, or clap's help.
     #[must_use]
     pub fn exit(code: u8) -> Self {
         Self {

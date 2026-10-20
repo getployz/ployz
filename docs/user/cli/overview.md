@@ -18,6 +18,14 @@ brew install getployz/ployz/ployz
 It runs on Linux and macOS. On Windows, install it inside WSL. To upgrade, run the same command
 again, or `brew upgrade ployz`.
 
+The script installs the stable release to `/usr/local/bin`. For the beta, or one version, name it
+after `sh -s --`. To install somewhere else, set `INSTALL_BIN_DIR` to a directory that exists:
+
+```sh
+curl -fsSL https://ployz.sh | sh -s -- beta
+curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
+```
+
 ## Sign in
 
 1. Run `ployz login`. It prints a code and opens your browser.
@@ -34,7 +42,10 @@ and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
-`ployz ctx` shows where commands act from here.
+`ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
+which projects there are: it names your only project, or says the organization has several and
+how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
+`ployz link` step.
 
 ## Set up your coding agent
 
@@ -143,7 +154,7 @@ who runs it gets `Needs changes:deploy` and exit code 1. See
 
 Some commands come from Ployz Cloud instead of the CLI itself, so a new one reaches you without
 an upgrade. Today they include `ployz server upgrade-policy show` and `set`, `ployz org approval
-ls`, `show`, `approve` and `deny`, and the team commands below.
+ls`, `show`, `approve` and `deny`, `ployz uptime show` and `check`, and the team commands below.
 
 When you're signed in, `ployz --help` lists them with the others, and they take `--json` like any
 command. `ployz schema --json` marks each one `"origin": "cloud"`. The first one you run fetches
@@ -256,7 +267,9 @@ are `full`. You can also make, see and revoke tokens under **Organization → To
 dashboard.
 
 Whoever holds a `full` token can deploy and run commands in your services. A token expires after 90 days unless you pass `--expires-in` (1 to 365 days), and stops
-working at once if you leave the organization or are removed from it. To revoke it,
+working at once if you leave the organization, are removed from it, or the organization is
+deleted. Then unset `PLOYZ_TOKEN` and run `ployz login`, or make a new token in an organization
+you're still in. To revoke it,
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
 offline, run it again once that server is back. Owners and admins see and can revoke every
 organization token in the organization, not only their own. Members see only theirs.
@@ -301,16 +314,20 @@ Add `--json` to any command to get one JSON object instead of text. A stream, su
 prints JSON Lines instead: one object per line. If the command fails before it prints anything,
 that object is `{"error": {...}}`. A stream that fails after it printed names the failure on stderr
 and exits with code 3. Its `cause` lists every underlying error, outermost first, and
-`details` holds the next command to run when there is one.
+`details` holds the next command to run when there is one. When a Ployz Cloud command such as
+`ployz org member rm` refuses, `details` also says whether it wrote anything (`writes`), and for
+an input it can't take, the JSON Schema `expected`. `field` names the input that is wrong. It is
+left out when the input isn't a JSON object, and when it has a name the command doesn't take,
+because Cloud never repeats that name.
 
 Scripts can tell failures apart by exit code:
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
+| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
-| 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
+| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, or some work couldn't be done, such as a `ployz server drain` that leaves a service where it is because no other server can take it. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
 
 `ployz exec` exits with your command's own exit code.
@@ -337,7 +354,12 @@ and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour a
 answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
 or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
 the first run did. With `--json` it reports `removal: removed` only once the environment is gone
-from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
+from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Until then it reports
+`removal: removing`, with the removal's `id` and the removal deployments it ran in `deployments`.
+When one of them didn't apply, it also reports that deployment in full under `deployment` (its
+`status`, `outcome` and `nodes`) and `next`: the command that finishes it, with the same
+`--ployz-config` when you passed one. Each server it waits on is under `waiting_on`, by its name
+in `server` and its machine ID in `server_id`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

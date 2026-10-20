@@ -8,7 +8,7 @@ mod run;
 mod wire;
 
 pub(crate) use graft::attach;
-pub(crate) use run::{run, run_on};
+pub(crate) use run::{check_scope_env, run, run_on};
 pub(crate) use wire::Ran;
 
 use std::collections::BTreeSet;
@@ -124,6 +124,9 @@ pub(crate) enum PublishError {
     /// The command asks for a typed name and there is no terminal to type it on.
     #[error("ployz {path} asks for the Organization's name on a terminal")]
     NeedsTerminal { path: String },
+    /// An agent token ran a command Cloud keeps for people, so ployz never asks for the name.
+    #[error("an agent token can't run ployz {path}; a person has to")]
+    AgentRefused { path: String },
     /// The commands were read from one Cloud and the credential acts in another.
     #[error(
         "the published commands came from Ployz Cloud at {published}, but ployz acts in {acting}"
@@ -145,6 +148,7 @@ impl PublishError {
             }
             Self::Gone { .. } => RpcErrorCode::NotFound,
             Self::NeedsTerminal { .. } => RpcErrorCode::ConfirmationRequired,
+            Self::AgentRefused { .. } => RpcErrorCode::from("forbidden"),
             Self::OtherCloud { .. } => RpcErrorCode::Conflict,
             Self::Slow { .. } => RpcErrorCode::Unavailable,
         }

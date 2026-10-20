@@ -143,7 +143,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
         name: config_name(matches, "name")?,
         mounts,
     })?;
-    staged(matches, &created, "Staged new Config")
+    staged(matches, &created, "Staged new Config", "")
 }
 
 pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
@@ -167,16 +167,18 @@ pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
     } else {
         matches.get_one::<FileMode>("mode").copied()
     };
+    let config = config_name(matches, "config")?;
+    let unchanged = format!("Config {config} already holds {file} as given");
     let put = store::store(root)?.write(&PutConfigFile {
         environment: store::environment(matches)?,
-        config: config_name(matches, "config")?,
+        config,
         file,
         content,
         mode,
         uid: matches.get_one("uid").copied(),
         gid: matches.get_one("gid").copied(),
     })?;
-    staged(matches, &put, "Staged Config")
+    staged(matches, &put, "Staged Config", &unchanged)
 }
 
 pub(super) fn remove_file(root: &ArgMatches) -> Result<(), Error> {
@@ -186,7 +188,7 @@ pub(super) fn remove_file(root: &ArgMatches) -> Result<(), Error> {
         config: config_name(matches, "config")?,
         file: file_name(matches)?,
     })?;
-    staged(matches, &removed, "Staged Config")
+    staged(matches, &removed, "Staged Config", "")
 }
 
 pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -211,10 +213,22 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn next_deploy(listing: &ConfigListing) -> Option<String> {
-    if listing.deployed || listing.change == Some(ReviewLifecycleKind::Delete) {
-        return listing.change.as_ref().map(super::store::word);
+    if !listing.deployed && listing.change != Some(ReviewLifecycleKind::Delete) {
+        return Some("new".to_owned());
     }
-    Some("new".to_owned())
+    if let Some(change) = &listing.change {
+        return Some(super::store::word(change));
+    }
+    let mounts: Vec<String> = listing
+        .mount_changes
+        .iter()
+        .map(|change| match (&change.before, &change.after) {
+            (None, _) => format!("mount on {}", change.service),
+            (_, None) => format!("unmount from {}", change.service),
+            (Some(_), Some(_)) => format!("move on {}", change.service),
+        })
+        .collect();
+    (!mounts.is_empty()).then(|| mounts.join(", "))
 }
 
 pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
@@ -257,7 +271,8 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
         config: config_name(matches, "config")?,
         name: config_name(matches, "name")?,
     })?;
-    staged(matches, &renamed, "Staged rename of Config")
+    let unchanged = format!("Config {} already has that name", renamed.config.name);
+    staged(matches, &renamed, "Staged rename of Config", &unchanged)
 }
 
 pub(super) fn delete(root: &ArgMatches) -> Result<(), Error> {
@@ -266,28 +281,35 @@ pub(super) fn delete(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         config: config_name(matches, "config")?,
     })?;
-    staged(matches, &deleted, "Staged delete of Config")
+    staged(matches, &deleted, "Staged delete of Config", "")
 }
 
 pub(super) fn mount(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let service = service_name(matches)?;
     let mounted = store::store(root)?.write(&AttachConfig {
         environment: store::environment(matches)?,
-        service: service_name(matches)?,
+        service: service.clone(),
         config: config_name(matches, "config")?,
         dir: required(matches, "dir")?,
     })?;
-    staged(matches, &mounted, "Staged mount of Config")
+    let unchanged = format!(
+        "{service} already mounts Config {} there",
+        mounted.config.name
+    );
+    staged(matches, &mounted, "Staged mount of Config", &unchanged)
 }
 
 pub(super) fn unmount(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let service = service_name(matches)?;
     let unmounted = store::store(root)?.write(&DetachConfig {
         environment: store::environment(matches)?,
-        service: service_name(matches)?,
+        service: service.clone(),
         config: config_name(matches, "config")?,
     })?;
-    staged(matches, &unmounted, "Staged unmount of Config")
+    let unchanged = format!("{service} does not mount Config {}", unmounted.config.name);
+    staged(matches, &unmounted, "Staged unmount of Config", &unchanged)
 }
 
 fn files_word(config: &ConfigSummary) -> String {
@@ -307,7 +329,23 @@ fn mounts_word(mounts: &[ConfigMountAt]) -> String {
         .join(",")
 }
 
-fn staged(matches: &ArgMatches, result: &ConfigStaged, what: &str) -> Result<(), Error> {
+/// A staged Config change and `ployz diff` to review it. A change that was already
+/// so says nothing changed and why: `unchanged`.
+fn staged(
+    matches: &ArgMatches,
+    result: &ConfigStaged,
+    what: &str,
+    unchanged: &str,
+) -> Result<(), Error> {
+    if result.staged.is_empty() {
+        return crate::ui::done(
+            &Next::new(result, None),
+            format_args!(
+                "Nothing changed in {}/{}; {unchanged}.",
+                result.environment.project, result.environment.name
+            ),
+        );
+    }
     let hint = store::next(matches, &["diff"]);
     crate::ui::finish(&Next::new(result, Some(hint)), || {
         crate::ui::stream(format_args!(
