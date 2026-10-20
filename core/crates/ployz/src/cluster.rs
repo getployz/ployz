@@ -98,10 +98,17 @@ impl Client {
         &self.source
     }
 
-    /// The entry Machine this client reaches: as the daemon described itself when
-    /// confirmed, else its connection's. None when neither says.
+    /// The entry Machine this client reaches, as the daemon on its current channel
+    /// described itself when confirmed. None when it didn't.
     pub(crate) fn entry_machine(&self) -> Option<MachineId> {
-        self.entry.or_else(|| self.connection.machine_id().copied())
+        self.entry
+    }
+
+    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
+    async fn redial(&mut self) -> Result<(), ConnectError> {
+        self.entry = None;
+        self.channel = self.connector.connect(&self.connection).await?;
+        self.confirm_entry().await
     }
 
     /// One-shot check that this channel reaches a daemon. No unary retry — a
@@ -342,11 +349,7 @@ impl Client {
         deadline: tokio::time::Instant,
     ) -> Result<T::Response, ConnectError> {
         if redial {
-            let reconnect = async {
-                self.channel = self.connector.connect(&self.connection).await?;
-                self.confirm_entry().await
-            };
-            match tokio::time::timeout_at(deadline, reconnect).await {
+            match tokio::time::timeout_at(deadline, self.redial()).await {
                 Ok(confirmed) => confirmed?,
                 Err(_) => {
                     return Err(tonic::Status::deadline_exceeded(
@@ -372,8 +375,7 @@ impl Client {
         redial: bool,
     ) -> Result<T::Response, ConnectError> {
         if redial {
-            self.channel = self.connector.connect(&self.connection).await?;
-            self.confirm_entry().await?;
+            self.redial().await?;
         }
         self.call_once::<T>(payload, target).await
     }
