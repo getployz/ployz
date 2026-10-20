@@ -311,6 +311,7 @@ async fn down_proxy() {
 
 /// A file-backed store, so the test edits the rows the store's server reads.
 async fn store_at_version(dir: &TestDir, version: i64) -> (ReplicatedStore, rusqlite::Connection) {
+    std::fs::create_dir_all(&dir.0).unwrap();
     let path = dir.0.join("corrosion.db");
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch(&format!(
