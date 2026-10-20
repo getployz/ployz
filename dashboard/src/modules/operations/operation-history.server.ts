@@ -91,11 +91,11 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
     hex === null ? undefined : eq(serverUpgradeAttempt.attemptId, hex),
   )).orderBy(desc(serverUpgradeAttempt.startedAt)).limit(limit);
   const now = Date.now();
-  // A row keeps the name its run started under; older rows have none, so Cloud looks it up for them.
+  // A row keeps the name its run started under, even on a replayed act; older rows have none, so Cloud looks it up for them.
   const looked = known || [...drains, ...removals, ...upgrades].every((row) => row.serverName !== null)
     ? undefined
     : (yield* serverNames(organizationId, [machine])).get(machine);
-  const name = (row: { serverName: string | null }) => known || row.serverName || looked || machine;
+  const name = (row: { serverName: string | null }) => row.serverName || known || looked || machine;
   return [
     ...drains.map((row) => operation({
       attempt: row.id, run: `drain ${name(row)}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: drainEndMessage(row),
