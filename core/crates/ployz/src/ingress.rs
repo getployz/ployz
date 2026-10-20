@@ -16,7 +16,7 @@ use ts_rs::TS;
 
 use crate::{
     cluster::HealthWaitError,
-    connect::{Client, TARGET_RPC_TIMEOUT},
+    connect::{Client, ConnectError, TARGET_RPC_TIMEOUT},
     deploy::{DeployIntent, DeployPlan, Outcome, SlotAction},
     failure::Failure,
 };
@@ -156,6 +156,29 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
         repairs: runs.into_iter().map(|(shown, _)| shown).collect(),
         unchecked,
     })
+}
+
+/// Why the ingress check through `server` failed, on one line: the Server named where
+/// it is known, and when no daemon replied, that it isn't answering and the
+/// transport's last word.
+pub(crate) fn unchecked(failure: &Failure, server: Option<String>) -> String {
+    let connect = failure.connect_error();
+    let named = match connect {
+        Some(ConnectError::AllFailed { server, .. }) => server.clone(),
+        _ => None,
+    };
+    let unanswered = connect.is_some_and(|error| error.unreached() || error.unreplied());
+    match (named, server) {
+        (Some(server), _) | (None, Some(server)) if unanswered => {
+            match ployz_core::error_chain::causes(failure).pop() {
+                Some(why) => format!("Server {server} isn't answering ({why})"),
+                None => format!("Server {server} isn't answering"),
+            }
+        }
+        // The failure names the Server it tried itself.
+        (Some(_), _) | (None, None) => crate::ui::row(failure),
+        (None, Some(server)) => format!("{} (on Server {server})", crate::ui::row(failure)),
+    }
 }
 
 enum Work {
@@ -376,6 +399,46 @@ mod tests {
         ContainerNow::Absent {
             of: ContainerLocator::Id(ContainerId::parse("1".repeat(64)).unwrap()),
         }
+    }
+
+    #[test]
+    fn an_unchecked_ingress_names_the_server_and_why() {
+        let silent = Failure::from(ConnectError::Rpc(
+            crate::connect::TransportError::budget_expired("no reply"),
+        ));
+        assert_eq!(
+            unchecked(&silent, Some("box-node-09c8".into())),
+            "Server box-node-09c8 isn't answering (no reply)"
+        );
+        // Unnamed, it keeps the whole line.
+        assert_eq!(unchecked(&silent, None), crate::ui::row(&silent));
+
+        let answered = Failure::from(ConnectError::Remote(RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Docker is down".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }));
+        assert_eq!(
+            unchecked(&answered, Some("box-node-09c8".into())),
+            "Docker is down (on Server box-node-09c8)"
+        );
+
+        // A connection that failed names its own Server, over the one the caller passed.
+        let refused = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 1,
+            server: Some("web-2".into()),
+            retry: ployz_core::Retry::Never,
+            reached: false,
+            last: Some(Box::new(ConnectError::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            unchecked(&refused, Some("other".into())),
+            "Server web-2 isn't answering (connection refused)"
+        );
     }
 
     #[tokio::test]

@@ -178,6 +178,7 @@ Raw upstream errors pass through:
 - `inspect Machine upgrade worker: No such file or directory (os error 2)` ([cluster/server.md](cluster/server.md))
 - `error: Ployz couldn't reach your Server's daemon.` with `cause: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
 - `error: Server box-node-09c8 isn't answering. Check that its Ployz daemon is running, then retry.` with the connection's `cause:`, when a connection Cloud handed over fails; by Machine ID when Cloud holds no name. No capture yet: pinned by `cli_shape::a_server_cloud_handed_a_connection_for_that_does_not_answer_is_named`
+- `Couldn't check ingress: Server 0123456789abcdef0123456789abcdef isn't answering (Connection refused (os error 111)).` on `deploy --plan`, and as the deploy's `! Couldn't check ingress: … Deploy again to retry.` warning, when the Server the check goes through doesn't answer. A connection that names no Server keeps the whole line. No capture yet: pinned by `config_cli::an_agent_adds_checks_and_removes_domains` and `ingress::tests::an_unchecked_ingress_names_the_server_and_why`
 
 ## 7. Follow-up hints
 
