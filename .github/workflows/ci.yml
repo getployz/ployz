@@ -36,71 +36,9 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # Linux jobs run on the self-hosted pool when CI_SELF_HOSTED is on, the run is a push or a same-repo PR
-  # (fork PRs never), and a ployz-boat runner is online and idle. Otherwise, or on any error, GitHub's.
-  # pool answers whether any ployz-boat runner is online. Only then do picks share one group:
-  # ported from mikehardy/runner-fallback-action, they happen one at a time, each after a pause that lets
-  # the previous pick's jobs claim their runners, and queue: max keeps every waiting pick. With the pool
-  # offline every pick is GitHub's, so each run picks at once in its own group.
-  pool:
-    name: Check runner pool
+  changes:
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    outputs:
-      online: ${{ steps.check.outputs.online }}
-    steps:
-      - id: check
-        env:
-          TRUSTED: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-          # Fine-grained PAT with Administration: Read on this repo; GITHUB_TOKEN cannot list runners.
-          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
-        run: |
-          online=false
-          if [ "$TRUSTED" = true ]; then
-            if count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and any(.labels[]; .name == "ployz-boat"))] | length'); then
-              echo "Online ployz-boat runners: $count"
-              [ "$count" -ge 1 ] && online=true
-            else
-              echo "::warning::Could not list self-hosted runners; using GitHub's"
-            fi
-          fi
-          echo "online=$online" >> "$GITHUB_OUTPUT"
-
-  runner:
-    name: Pick runner
-    needs: pool
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    concurrency:
-      group: ${{ needs.pool.outputs.online == 'true' && 'ci-runner-pick' || format('ci-runner-pick-{0}', github.run_id) }}
-      cancel-in-progress: false
-      queue: max
-    outputs:
-      runner: ${{ steps.pick.outputs.runner }}
-    steps:
-      - id: pick
-        env:
-          ONLINE: ${{ needs.pool.outputs.online }}
-          # Fine-grained PAT with Administration: Read on this repo; GITHUB_TOKEN cannot list runners.
-          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
-        run: |
-          runner=ubuntu-24.04
-          if [ "$ONLINE" = true ]; then
-            sleep 5
-            if idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == "ployz-boat"))] | length'); then
-              echo "Idle ployz-boat runners: $idle"
-              [ "$idle" -ge 1 ] && runner=ployz-boat
-            else
-              echo "::warning::Could not list self-hosted runners; using $runner"
-            fi
-          fi
-          echo "runner=$runner" >> "$GITHUB_OUTPUT"
-          echo "Selected runner: $runner" >> "$GITHUB_STEP_SUMMARY"
-
-  changes:
-    needs: runner
-    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 5
     outputs:
       jobs: ${{ steps.select.outputs.jobs }}
@@ -118,8 +56,8 @@ jobs:
         run: python3 scripts/ci.py select "$BASE_SHA" "$GITHUB_SHA"
 
   contracts:
-    needs: [changes, runner]
-    runs-on: ${{ needs.runner.outputs.runner }}
+    needs: changes
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -153,9 +91,9 @@ jobs:
     defaults:
       run:
         working-directory: core
-    needs: [changes, runner]
+    needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
-    runs-on: ${{ needs.runner.outputs.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -178,9 +116,9 @@ jobs:
     defaults:
       run:
         working-directory: core
-    needs: [changes, runner]
+    needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
-    runs-on: ${{ needs.runner.outputs.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
       contents: read
@@ -191,7 +129,8 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
-        options: --health-cmd pg_isready --health-interval 2s --health-retries 15
+        # Docker's 64 MB /dev/shm can run out over the suite's thousand databases.
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 15 --shm-size=256m
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -208,6 +147,8 @@ jobs:
       - name: Test with a hostile ambient Ployz context
         env:
           PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+          # Built above with `eval`; the SDK tests would otherwise rebuild it with other features.
+          PLOYZ_SDK_ADDON: ${{ github.workspace }}/core/target/debug/libployz_sdk.so
         run: |
           cat > "$PLOYZ_CONFIG" <<'EOF'
           current_context: hostile
@@ -218,6 +159,15 @@ jobs:
           EOF
           cargo nextest run --workspace --all-features --locked --no-fail-fast
           cargo test --doc --workspace --all-features --locked
+      # A throwaway server: durability only slows each test's new database.
+      - name: Stop the test Postgres syncing to disk
+        if: needs.changes.outputs.postgres == 'true'
+        run: >-
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -q
+          -c 'ALTER SYSTEM SET fsync = off'
+          -c 'ALTER SYSTEM SET synchronous_commit = off'
+          -c 'ALTER SYSTEM SET full_page_writes = off'
+          -c 'SELECT pg_reload_conf()'
       # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres
         if: needs.changes.outputs.postgres == 'true'
@@ -251,10 +201,10 @@ jobs:
     defaults:
       run:
         working-directory: dashboard/uptime
-    needs: [changes, runner]
+    needs: changes
     # Main always runs it, so every main commit has a ployz-uptime:<sha> for Railway to pin.
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
-    runs-on: ${{ needs.runner.outputs.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -302,7 +252,7 @@ jobs:
       - run: cargo check --package ployz --all-targets --locked
 
   cloud:
-    needs: [changes, runner]
+    needs: changes
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'cloud')
     uses: ./.github/workflows/cloud.yml
     permissions:
@@ -310,8 +260,6 @@ jobs:
       actions: write
       # Main commits and release tags publish the Cloud image.
       packages: write
-    with:
-      runner: ${{ needs.runner.outputs.runner }}
     secrets: inherit
 
   release-contracts:
@@ -326,12 +274,12 @@ jobs:
   # The binaries the verify harness runs, built once per change on main so local runs download them.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
-    needs: [changes, runner]
+    needs: changes
     if: github.event_name != 'pull_request'
     defaults:
       run:
         working-directory: core
-    runs-on: ${{ needs.runner.outputs.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -372,8 +320,8 @@ jobs:
   ready:
     name: CI ready
     if: ${{ always() && !github.event.pull_request.draft }}
-    needs: [runner, changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
-    runs-on: ${{ needs.runner.outputs.runner || 'ubuntu-24.04' }}
+    needs: [changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4

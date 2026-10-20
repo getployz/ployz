@@ -1705,10 +1705,17 @@ impl RpcError {
                 .and_then(|policy| PullPolicy::deserialize(policy).ok()),
         })
     }
+
+    /// The full disk a failed pull ran into, as [`DiskFull::details`] named it.
+    #[must_use]
+    pub fn disk_full(&self) -> Option<DiskFull> {
+        serde_json::from_value(self.details.get(DISK_FULL)?.clone()).ok()
+    }
 }
 
 const MISSING_IMAGE: &str = "missing_image";
 const PULL_POLICY: &str = "pull_policy";
+const DISK_FULL: &str = "disk_full";
 
 /// An image a pull answered not found for, from [`RpcError::missing_image`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1716,6 +1723,32 @@ pub struct MissingImage<'a> {
     pub image: &'a str,
     /// The policy it was pulled under, when the error recorded one.
     pub policy: Option<PullPolicy>,
+}
+
+/// A pull failed while the Docker root had almost no free space.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiskFull {
+    pub docker_root: String,
+    pub free_bytes: u64,
+}
+
+impl DiskFull {
+    /// [`RpcError`] details that [`RpcError::disk_full`] reads back.
+    #[must_use]
+    pub fn details(&self) -> Value {
+        serde_json::json!({ DISK_FULL: self })
+    }
+}
+
+impl fmt::Display for DiskFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "The Server's disk is full: {} MB free under {}",
+            self.free_bytes / 1_000_000,
+            self.docker_root
+        )
+    }
 }
 
 /// A Machine refused a route because its Ployz lacks the route's capability.

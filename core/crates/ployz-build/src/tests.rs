@@ -845,3 +845,18 @@ fn railpack_prepares_a_python_requirements_app() {
     drop(preparation);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn the_builder_cache_is_not_user_data() {
+    let cache = format!("buildx_buildkit_{}0_state", super::builder_name());
+    assert!(super::is_builder_cache(&cache), "{cache}");
+    assert!(super::is_builder_cache("buildx_buildkit_ployz-00_state"));
+    for data in [
+        "shop-production_pgdata",
+        "buildx_buildkit_ployz-00",
+        "buildx_buildkit_other-00_state",
+        "buildx_buildkit_ployz-_state",
+    ] {
+        assert!(!super::is_builder_cache(data), "{data}");
+    }
+}

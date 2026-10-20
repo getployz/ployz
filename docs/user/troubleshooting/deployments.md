@@ -211,20 +211,47 @@ doesn't exist and for a private image you have no access to.
 - If the image is private, add **Registry credentials**, or replace a token that expired. See
   [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
+## My server's disk is full
+
+**Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
+
+The server ran out of disk space while it downloaded the image, so the deploy stopped before it
+changed anything. A version that was already running keeps running. The cause line under it is
+Docker's own error.
+
+- Free space on that server: remove files you don't need, or remove old images with
+  `docker image prune`.
+- Give the server a bigger disk if it fills up again.
+- Run the deploy again.
+
 ## Deploy says a service has nothing to run
 
-`api has nothing to run yet: add an image or connect a repository`
+`api has nothing to run yet: add an image, connect a repository, or run ployz up in its directory`
 
 The service has no source, and its card shows **No source**. Ployz won't deploy the environment
 until it has one. Open its **Settings → Source** and click **Git repository** or **Container
-image**, or delete the service.
+image**, or delete the service. A service you uploaded with `ployz up` has no source in a new
+branch: run `ployz up --env <branch>` from your app's directory.
 
 ## My uploaded code is gone
 
 `api has no source to build: its last upload is gone and no image is left to reuse. Upload it again or add an image.`
 
+Ployz keeps a service's latest upload, up to 95 MiB, until you upload again or delete the service
+or its environment. You see this when that upload is gone and no image of it is left.
+
 Run `ployz up` again from your app's directory, or click **Add an image to api** on the
 deployment's page.
+
+## Deploy says a service must build again from an earlier upload
+
+`web must build again from an earlier upload than this Deployment's, and a Deployment builds from one upload. Deploy it on its own: ployz deploy web`
+
+You uploaded `api` and `web` separately, and a deploy of both changed something `web`'s build
+reads, such as one of its variables. Each service keeps its own upload, but one deploy builds from
+only one of them. Services that don't need a new build reuse their images, so this only stops when
+the service with the older upload must build again. Run the command it shows, and `web` builds
+from its own upload.
 
 ## Deploy asks me to confirm it deletes data
 
