@@ -67,7 +67,7 @@ Once you have a server, or one is waiting, make more tokens with **Add servers**
    **cloud-init** or **Terraform** tab; each holds the same token. Not on Ubuntu, Debian or Amazon
    Linux, or can't run ZFS? See [Start without ZFS](#start-without-zfs).
 
-![The Add servers dialog with its install line](../images/add-servers-dialog.png)
+![The Add servers dialog with its install line and the token to paste](../images/add-servers-dialog.png)
 
 Run the same line, and paste the same token, on as many servers as you like while the token
 works. Each one installs Docker and Ployz and shows up under **Waiting to join** on the **Servers** page within seconds, in a tray
