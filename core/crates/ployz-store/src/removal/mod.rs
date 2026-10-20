@@ -16,7 +16,7 @@ mod review;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{MachineId, RpcError, ServiceName};
+use ployz_core::{MachineId, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -263,7 +263,12 @@ pub(crate) fn remove(
     remove: &Remove,
     trusted: &Trusted,
 ) -> Result<Removal, RpcError> {
-    let project = scope::project(tx, who, Some(&remove.project))?;
+    let project = scope::project(tx, who, Some(&remove.project)).map_err(|refused| {
+        match refused.code == RpcErrorCode::NotFound {
+            true => error::not_found(refused.message, json!({ "next": "ployz project ls" })),
+            false => refused,
+        }
+    })?;
     lock_project(tx, &project.id)?;
     let (target, target_name, members) = match &remove.environment {
         Some(name) => {
