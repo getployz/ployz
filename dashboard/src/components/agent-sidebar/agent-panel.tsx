@@ -329,7 +329,7 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
     }) satisfies CallState;
     return [
       ...(approvalId ? [{ kind: "block", key: `a${part.id}`, node: (
-        <ApprovalCard organizationSlug={organizationSlug} id={approvalId} autoFocus={waitingOn !== undefined} onSettled={settle} />
+        <ApprovalCard organizationSlug={organizationSlug} id={approvalId} onSettled={settle} />
       ) } as const] : []),
       ...((!approvalId || Option.isSome(outcome)) && !deniedOnCard ? [{
         kind: "step", key: part.id, call: ended,

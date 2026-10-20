@@ -1,9 +1,8 @@
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::RpcErrorCode;
 use ployz_store::{
     Actor, CheckSuite, ConfigStore, EnvironmentName, EnvironmentRef, EnvironmentsQuery,
     HistoryAction, HistoryPreviewQuery, NeverSync, OnMergeCheck, OnMergeConclusion, ProjectName,
-    PullRequest, Ride, ServiceLineageId, SetPrPlan, StageHistory, SyncChanges, SyncQuery,
-    SystemEvent,
+    PullRequest, Ride, SetPrPlan, StageHistory, SyncChanges, SyncQuery, SystemEvent,
 };
 use serde_json::{Value, json};
 
@@ -11,7 +10,7 @@ use crate::backend;
 use crate::support::{
     HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_value, merged,
     merged_within, on_merge, preview_listed, production_diff, pull, push, row, rows, save, set,
-    shop, shop_with, system, unset, uuid, value, watching,
+    shop, shop_with, system, unset, value, watching,
 };
 
 #[test]
@@ -599,8 +598,8 @@ fn what_landed_waits_for_ci_with_the_push() {
     system(&store, &who, &push(None, HEAD, None));
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
-    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(pushed.waiting.len(), 1, "{pushed:?}");
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(crate::support::held(&store, &who, "production"), [MERGE]);
     let passed = system(
         &store,
         &who,
@@ -654,26 +653,14 @@ fn a_merge_into_a_branch_nothing_deploys_keeps_the_preview() {
 #[test]
 fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
     let (store, who) = shop();
-    // A rides naming api, which stays here.
-    store
-        .write(
-            &who,
-            &ployz_store::CreateService {
-                id: ServiceLineageId::parse(uuid(9)).unwrap(),
-                environment: at("pr-5"),
-                name: ServiceName::parse("api").unwrap(),
-                image: Some("api:1".into()),
-                template: None,
-            },
-        )
-        .unwrap();
+    // A reads B, which production made read A since: the merge would close a cycle.
+    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ B }}"))]);
     set(
         &store,
         &who,
-        "pr-5",
-        &[("web.env.A", json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"))],
+        "production",
+        &[("web.env.B", json!("${{ A }}"))],
     );
-    exclude(&store, &who, "api", false);
     let before = history(&store, &who).len();
     assert_eq!(listed_merged(&store, &who), Some(false));
 
@@ -701,7 +688,7 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
     assert!(
         stuck
             .summary
-            .contains("web references a removed Service (A)"),
+            .contains("web.A and web.B reference each other in a cycle"),
         "{stuck:?}"
     );
     // It links production's History: the PR Environment may be gone.

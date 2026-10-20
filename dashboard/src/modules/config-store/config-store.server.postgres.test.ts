@@ -25,7 +25,7 @@ import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
-import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
+import { receiveUpload, releaseUpload, UPLOAD_LIMIT } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import type { TokenGrant } from "#/modules/identity/token-grant";
@@ -97,7 +97,7 @@ const Reply = Schema.Struct({
     code: Schema.String,
     message: Schema.optionalKey(Schema.String),
     details: Schema.NullOr(Schema.Struct({
-      revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String),
+      revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String), max_bytes: Schema.optionalKey(Schema.Number),
       approval: Schema.optionalKey(Schema.String), approval_id: Schema.optionalKey(Schema.String),
     })),
   })),
@@ -213,6 +213,29 @@ it.live(
         assert.strictEqual(invalid.json.error?.code, "invalid_argument");
         assert.strictEqual((yield* request("claim", alice, get(null))).status, 404);
         assert.strictEqual((yield* request("read", alice, undefined, "GET")).status, 404);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a write over the body cap is refused with the cap, and nothing is staged",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        assert.strictEqual((yield* request("write", alice, shop)).status, 200);
+        assert.strictEqual((yield* request("write", alice, web)).status, 200);
+
+        const huge = yield* request("write", alice, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.env.HUGE", value: "Z".repeat(4 * 1024 * 1024) }],
+        });
+        assert.strictEqual(huge.status, 422);
+        assert.strictEqual(huge.json.error?.code, "invalid_argument");
+        assert.strictEqual(huge.json.error?.message, "The request is over 4 MiB.");
+        assert.deepStrictEqual(huge.json.error?.details, { max_bytes: 4 * 1024 * 1024 });
+        assert.deepStrictEqual((yield* request("read", alice, get("web.env.HUGE"))).json.settings ?? [], []);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -404,22 +427,33 @@ it.live(
 );
 
 it.live(
-  "the CLI's write skips the dashboard's role check, and a Protected Environment's source and protection still need an owner or admin",
+  "the CLI's write skips the dashboard's role check, a Protected Environment's source and protection still need an owner or admin, and its unprotect waits on a human",
   () =>
     Effect.gen(function* () {
       const layer = yield* cloudLayer();
       yield* Effect.gen(function* () {
-        const { bob, organizationId, slug, protection, role } = yield* protectedShop();
+        const { alice, bob, organizationId, slug, protection, role } = yield* protectedShop();
         yield* activeIn(bob.userId, organizationId, slug);
+        const write = (command: ConfigCommand, approvalId?: string) => {
+          const headers = signedIn(bob.session);
+          if (approvalId !== undefined) headers.set("x-ployz-approval", approvalId);
+          return send("write", headers, command);
+        };
         const cli = (command: ConfigCommand) =>
-          request("write", bob.session, command).pipe(Effect.map(({ status, json }) => [status, json.error?.code, json.error?.message]));
+          write(command).pipe(Effect.map(({ status, json }) => [status, json.error?.code, json.error?.message]));
 
         assert.deepStrictEqual(yield* cli(protect(false)), [403, "forbidden", adminOnly]);
         assert.deepStrictEqual(yield* cli(branch("dev")), [403, "forbidden", adminOnly]);
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
 
         yield* role("admin");
-        assert.deepStrictEqual(yield* cli(protect(false)), [200, undefined, undefined], "an admin unprotects production from the CLI");
+        const asked = yield* write(protect(false));
+        assert.strictEqual(asked.json.error?.code, "approval_required", "an admin's unprotect from the CLI waits on a human");
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        const approvalId = asked.json.error?.details?.approval_id ?? assert.fail("no approval id");
+        const digest = asked.json.error?.details?.approval ?? assert.fail("no approval digest");
+        assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, approvalId, { approve: { digest } })).ok);
+        assert.strictEqual((yield* write(protect(false), approvalId)).status, 200, "an admin unprotects production from the CLI once approved");
         assert.deepStrictEqual(yield* protection(), [["production", false]]);
       }).pipe(Effect.provide(layer));
     }),
@@ -989,6 +1023,42 @@ it.live(
 );
 
 it.live(
+  "a Sync that closes its Branch asks its Organization's Store to sweep now",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "config-store-test" });
+      const sent: unknown[] = [];
+      vi.spyOn(inngest, "send").mockImplementation(async (event) => {
+        sent.push(event);
+        return { ids: [] };
+      });
+      const layer = yield* cloudLayer({}, inngest);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const organizationId = (yield* resolveCaller(signedIn(alice))).organization.id;
+        yield* request("write", alice, shop);
+        yield* request("write", alice, web);
+        const fixWeb = { project: null, environment: "fix-web" };
+        const production = { project: null, environment: "production" };
+        assert.strictEqual((yield* request("write", alice, {
+          command: "create_branch", id: "00000000-0000-4000-8000-000000000005", from: production, name: "fix-web",
+          copy: ["web"], live: [], setup: [], keep: false,
+        })).status, 200);
+        assert.strictEqual((yield* request("write", alice, {
+          command: "edit", environment: fixWeb, expect: null, changes: [{ op: "set", path: "web.image", value: "web:2" }],
+        })).status, 200);
+        const sweep = { name: "config/sweep.requested", data: { organizationId } };
+        const read = yield* callStore(organizationId, null, { operation: "read", query: { query: "sync", from: fixWeb, into: production } });
+        const version = read.ok && read.value.view === "sync" ? read.value.version : assert.fail("no sync");
+        const sync: ConfigCommand = { command: "sync", from: fixWeb, into: production, version, close_after: true };
+        assert.deepInclude((yield* request("write", alice, sync)).json, { written: "synced" });
+        expect(sent).toContainEqual(sweep);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a Deploy meets the copies it takes before the Store sees it, on every path to the Store",
   () =>
     Effect.gen(function* () {
@@ -1292,7 +1362,7 @@ it.live(
 );
 
 it.live(
-  "domains: a custom one is free, and a generated one reserves the Cluster Domain when it is first admitted",
+  "domains: a custom one is free, and a generated one reserves the Cluster Domain when it is first staged",
   () =>
     Effect.gen(function* () {
       const hostedDns = yield* Effect.acquireRelease(Effect.promise(startFakeHostedDns), (fake) => Effect.promise(() => fake.close()));
@@ -1317,25 +1387,39 @@ it.live(
         const custom: ConfigCommand = { command: "add_domain", environment: here, service: "web", hostname: "app.example.com", port: null };
         assert.strictEqual((yield* request("write", alice, custom)).status, 200);
 
-        const generated = yield* request("write", alice, { ...custom, hostname: null });
-        // No Cluster Domain yet: only admission reserves one.
-        assert.deepInclude(generated.json.domain, { kind: "generated", prefix: "web", hostname: null });
-        assert.lengthOf(hostedDns.requests, 0);
+        const reservations = () => hostedDns.requests.filter((call) => call.method === "POST").length;
+        const reserved = () => Effect.gen(function* () {
+          const { drizzle } = yield* Database;
+          return yield* drizzle.execute<{ name: string }>(sql`select name from organization_cluster_domain`, "objects");
+        });
+        const generate: ConfigCommand = { ...custom, hostname: null };
+        const staged = yield* Effect.all([request("write", alice, generate), request("write", alice, generate)], { concurrency: "unbounded" });
+        const hostname = staged[0].json.domain?.hostname ?? "";
+        assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/, "staging a generated domain names it in full");
+        assert.strictEqual(staged[1].json.domain?.hostname, hostname, "two stages at once share one Cluster Domain");
+        assert.lengthOf(yield* reserved(), 1);
         const listed = yield* request("read", alice, { query: "domains", environment: here, service: null });
-        assert.deepStrictEqual(listed.json.domains?.map((domain) => [domain.status, domain.action?.type]), [
-          ["setting_up", "deploy"],
-          ["setting_up", "deploy"],
+        assert.deepStrictEqual(listed.json.domains?.map((domain) => [domain.hostname, domain.status, domain.action?.type]), [
+          ["app.example.com", "setting_up", "deploy"],
+          [hostname, "setting_up", "deploy"],
         ]);
+        for (const query of [{ query: "diff", environment: here }, { query: "service", environment: here, service: "web" }] as const) {
+          const shown = JSON.stringify((yield* request("read", alice, query)).json);
+          assert.include(shown, hostname, `${query.query} names the staged domain in full`);
+          assert.notInclude(shown, "<cluster domain>");
+        }
+
+        const before = reservations();
+        assert.strictEqual((yield* request("write", alice, { command: "remove_domain", environment: here, domain: "web" })).status, 200);
+        assert.strictEqual((yield* request("write", alice, generate)).json.domain?.hostname, hostname);
+        assert.strictEqual(reservations(), before, "re-staging reserves nothing more");
 
         const admit: ConfigCommand = {
           command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
           accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
-        assert.lengthOf(hostedDns.requests.filter((call) => call.method === "POST"), 1);
-        const deploying = yield* request("read", alice, { query: "domains", environment: here, service: null });
-        const hostname = deploying.json.domains?.[1]?.hostname ?? "";
-        assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/);
+        assert.strictEqual(reservations(), before, "admitting under a reserved Cluster Domain reserves nothing more");
 
         const caller = yield* resolveCaller(signedIn(alice));
         const listQuery: ConfigQuery = { query: "domains", environment: here, service: null };
@@ -1434,6 +1518,20 @@ it.live(
         const tooBig = yield* receiveUpload(store, organizationId, "00000000-0000-4000-8000-000000000203",
           new Blob([archive]).stream(), archive.length - 1);
         assert.strictEqual(tooBig?.code, "invalid_argument");
+        // Under Cloudflare's 100 MB request cap, so an oversized upload meets Cloud's refusal, not a proxy's error page.
+        assert.strictEqual(UPLOAD_LIMIT, 95 * 1024 * 1024);
+        const piece = new Uint8Array(1024 * 1024);
+        let sent = 0;
+        const overCap = new ReadableStream<Uint8Array>({
+          pull: (controller) => {
+            if (sent > UPLOAD_LIMIT) return controller.close();
+            sent += piece.length;
+            controller.enqueue(piece);
+          },
+        });
+        const overCloudflare = yield* receiveUpload(store, organizationId, "00000000-0000-4000-8000-000000000204", overCap);
+        assert.strictEqual(overCloudflare?.code, "invalid_argument");
+        assert.strictEqual(overCloudflare?.message, "The upload is over the 95 MiB compressed source limit.");
 
         // Cloud, not the caller, names who uploaded it.
         const admitted = yield* request("write", alice, {
@@ -1579,20 +1677,21 @@ const ceilingLayer = Effect.gen(function* () {
 });
 const stagingOnly = "This token can deploy only to staging.";
 
-it.live("a token that may protect only staging protects and unprotects staging, and production refuses", () =>
+it.live("a token that may protect only staging protects staging, asks a human to unprotect it, and production refuses", () =>
   Effect.gen(function* () {
     yield* Effect.gen(function* () {
       const { headers, state, approvals } = yield* ceilingShop({ permissions: ["environments:protect"], environments: ["staging"] }, "cli");
-      assert.strictEqual((yield* send("write", headers, protectIn("staging", true))).status, 200);
-      assert.deepStrictEqual(yield* state, [["production", true], ["staging", true]]);
-      assert.strictEqual((yield* send("write", headers, protectIn("staging", false))).status, 200);
-      assert.deepStrictEqual(yield* state, [["production", true], ["staging", false]]);
       for (const on of [false, true]) {
         const refused = yield* send("write", headers, protectIn("production", on));
         assert.deepStrictEqual([refused.status, refused.json.error?.code, refused.json.error?.message], [403, "forbidden", stagingOnly]);
       }
-      assert.deepStrictEqual(yield* state, [["production", true], ["staging", false]]);
       assert.deepStrictEqual(yield* approvals, []);
+      assert.strictEqual((yield* send("write", headers, protectIn("staging", true))).status, 200);
+      assert.deepStrictEqual(yield* state, [["production", true], ["staging", true]]);
+      const asked = yield* send("write", headers, protectIn("staging", false));
+      assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"]);
+      assert.deepStrictEqual(yield* state, [["production", true], ["staging", true]]);
+      assert.lengthOf(yield* approvals, 1);
     }).pipe(Effect.provide(yield* ceilingLayer));
   }), 60_000);
 

@@ -8,8 +8,8 @@ $ ployz volume add data --docker --mount web:/data
 stderr:
 ```
 WARNING: Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.
-data is attached to web; set replicas to 1, or allow shared writes: ployz volume set data --shared-writes
-next: ployz volume set data --shared-writes --env production --project shop
+data would be attached to web; set replicas to 1, or add it with shared writes on
+next: ployz volume add data --mount web:/data --docker --shared-writes --env production --project shop
 ```
 
 ### volume add --docker
@@ -21,7 +21,7 @@ $ ployz volume add data --docker --mount api:/data
 
 stdout:
 ```
-Staged new Volume data in shop/production (revision 11).
+Staged new Volume data in shop/production.
 Storage: Docker volume (no size limit)
 ```
 
@@ -247,7 +247,7 @@ $ ployz volume rename data store
 
 stdout:
 ```
-Staged rename of Volume store in shop/production (revision 14).
+Staged rename of Volume store in shop/production.
 ```
 
 ### volume rm (never-deployed Managed volume)
@@ -259,7 +259,7 @@ $ ployz volume rm cache
 
 stdout:
 ```
-Staged removal of Volume cache in shop/production (revision 15).
+Staged removal of Volume cache in shop/production.
 ```
 
 ### deploy with volumes
@@ -302,7 +302,7 @@ $ ployz volume rm store
 
 stdout:
 ```
-Staged removal of Volume store in shop/production (revision 16).
+Staged removal of Volume store in shop/production.
 ```
 
 ### deploy refused: volume loss

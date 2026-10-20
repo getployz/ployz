@@ -329,10 +329,14 @@ fn cut_off(tool: &str, deadline: Duration) -> RpcError {
 /// Whether Cloud may have acted on a request that failed this way.
 fn may_have_landed(error: &LoginError) -> bool {
     match error {
-        LoginError::Unreachable { .. } | LoginError::Status { .. } | LoginError::Reply(_) => true,
+        LoginError::Unreachable { .. }
+        | LoginError::Unanswered { .. }
+        | LoginError::Status { .. }
+        | LoginError::Reply(_) => true,
         LoginError::Unsupported(_)
         | LoginError::Store { .. }
         | LoginError::Corrupt { .. }
+        | LoginError::TokenCloudUnreadable(_)
         | LoginError::OtherCloud { .. }
         | LoginError::SignedOut
         | LoginError::Expired
@@ -608,7 +612,19 @@ impl Server {
                 if error.code.as_str() == published::UNKNOWN_COMMAND {
                     self.forget(tool, context).await;
                 }
-                CallToolResult::structured_error(json!(error))
+                match error.details.get("approval_id").and_then(Value::as_str) {
+                    Some(id) if error.code.as_str() == approval::APPROVAL_REQUIRED => {
+                        let url = waiting_on_you(&credential).await;
+                        let text = format!(
+                            "{message} Nothing ran; the approval stays pending. Ask a human to \
+                             open {url} and approve {id} under Waiting on you. Once they \
+                             approve, call this tool again with `approval` set to `{id}`.",
+                            message = error.message,
+                        );
+                        approval_required(text, id, &error.message, &url)
+                    }
+                    _ => CallToolResult::structured_error(json!(error)),
+                }
             }
             Err(error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_))) => {
                 refused(Error::from(error).to_string())
@@ -925,7 +941,8 @@ impl Server {
 const APPROVAL: &str = "approval";
 
 /// Whether the host can show a person a form and hand back their answer mid-call. A host
-/// that cannot gets no form: the call waits for the approval in Ployz Cloud instead.
+/// that cannot gets no form: the call returns at once naming the approval and where it
+/// waits in Ployz Cloud, and the agent calls again with it once approved.
 fn can_ask(context: &RequestContext<RoleServer>) -> bool {
     let form = context
         .client_capabilities()
@@ -1020,10 +1037,12 @@ impl Server {
                         }
                     };
                     let asked = match (&written, call.backend) {
-                        (Err(error), Backend::Cloud(_)) => Asked::of(error),
+                        (Err(error), Backend::Cloud(_)) => {
+                            Asked::of(error).map(|asked| (asked, error.message.clone()))
+                        }
                         _ => None,
                     };
-                    let Some(asked) = asked else {
+                    let Some((asked, message)) = asked else {
                         if written.is_ok() {
                             self.move_links_after_project_rename(call, &write).await;
                         }
@@ -1043,18 +1062,8 @@ impl Server {
                             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
                         answered = Some((asked, answer));
                     } else {
-                        tokio::select! {
-                            biased;
-                            decided = approval::decided(credential, &asked.id) => {
-                                if let Err(error) = decided {
-                                    return Ok(refused(Error::from(error).to_string()).into());
-                                }
-                                approval = Some(asked.id);
-                            }
-                            () = tokio::time::sleep_until(call.until) => {
-                                return Ok(pending(verb, &asked, self.deadline).into());
-                            }
-                        }
+                        let url = waiting_on_you(credential).await;
+                        return Ok(pending(verb, &asked, &message, &url).into());
                     }
                     step = Step::Write { write };
                     continue;
@@ -1173,18 +1182,45 @@ fn form(verb: Verb, asked: &Asked, typed: Option<&str>) -> ElicitRequestParams {
     }
 }
 
-fn pending(verb: Verb, asked: &Asked, deadline: Duration) -> CallToolResult {
-    refused(format!(
-        "A human must approve {what} in Ployz Cloud, and nobody answered within {span}. \
-         Nothing was {past}; the approval stays pending. Show them what it destroys, then \
-         ask them to approve {what} in the Ployz Cloud sidebar. Once they approve, call this \
-         tool again with `approval` set to `{id}`.\n{review}",
+/// Where a person approves a call in Ployz Cloud: the agent sidebar of the Organization
+/// `credential` acts in, which lists the approval under Waiting on you. Cloud itself when
+/// the Organization can't be read.
+async fn waiting_on_you(credential: &Credential) -> String {
+    let cloud = credential.cloud().trim_end_matches('/');
+    match cloud_account::acting_in(credential).await {
+        Ok(organization) => format!(
+            "{cloud}/cloud/{}?chat={}",
+            organization.slug,
+            uuid::Uuid::new_v4()
+        ),
+        Err(_) => cloud.to_owned(),
+    }
+}
+
+/// The refusal a host that can't show a form gets.
+fn pending(verb: Verb, asked: &Asked, message: &str, url: &str) -> CallToolResult {
+    let text = format!(
+        "A human must approve {what} in Ployz Cloud. Nothing was {past}; the approval stays \
+         pending. Show them what it destroys, then ask them to open {url} and approve {id} \
+         under Waiting on you. Once they approve, call this tool again with `approval` set \
+         to `{id}`.\n{review}",
         what = asked.what(verb),
-        span = span(deadline),
         past = verb.past(),
         id = asked.id,
         review = asked.review(verb).join("\n"),
-    ))
+    );
+    approval_required(text, &asked.id, message, url)
+}
+
+/// A call refused until a person approves it, in the shape Cloud's `/mcp` gives a remote
+/// agent: the approval's id, Cloud's message and where a person approves it.
+fn approval_required(text: String, id: &str, message: &str, url: &str) -> CallToolResult {
+    let mut result = refused(text);
+    result.structured_content = Some(json!({
+        "ok": false,
+        "approval_required": { "approval_id": id, "message": message, "url": url },
+    }));
+    result
 }
 
 fn refused(text: String) -> CallToolResult {

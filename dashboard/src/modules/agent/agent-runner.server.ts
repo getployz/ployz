@@ -41,7 +41,7 @@ export type AgentTool = {
   readonly inputSchema: JsonObject;
   readonly gated: boolean;
   readonly readOnly: boolean;
-  /** It removes or revokes something, now or at the deploy it ships. */
+  /** It removes or deletes something when it runs; a staged removal is not destructive. */
   readonly destructive: boolean;
   /** The input takes a `request_key`, so a client's key is the one the Store admits. */
   readonly keyed: boolean;

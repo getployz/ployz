@@ -5,9 +5,22 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 
 fn run() -> (Run, ployz_store::Actor) {
+    admitted(None)
+}
+
+/// A claimed Deploy of an uploaded `app` Service.
+fn uploaded() -> (Run, ployz_store::Actor) {
+    admitted(Some(ployz_store::UploadedSource {
+        digest: UploadDigest::parse("d".repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    }))
+}
+
+fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::Actor) {
     use ployz_store::{
-        Actor, Admit, CreateProject, Deploy, EnvironmentId, EnvironmentRef, OrganizationId,
-        ProjectId, ProjectName, SealingKey,
+        Actor, Admit, CreateProject, CreateService, Deploy, EnvironmentRef, OrganizationId,
+        ProjectId, ProjectName, SealingKey, ServiceLineageId,
     };
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap());
@@ -18,11 +31,24 @@ fn run() -> (Run, ployz_store::Actor) {
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
                 name: ProjectName::parse("test").unwrap(),
-                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
-                    .unwrap(),
+                default_environment: environment(),
             },
         )
         .unwrap();
+    if upload.is_some() {
+        store
+            .write(
+                &actor,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("app").unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
     let deployment = DeploymentId::parse("00000000-0000-4000-8000-000000000003").unwrap();
     store
         .write_trusted(
@@ -32,7 +58,7 @@ fn run() -> (Run, ployz_store::Actor) {
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
-                upload: None,
+                upload,
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
@@ -252,40 +278,298 @@ async fn a_launch_or_initial_report_failure_settles_all_started_builds_and_keeps
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_queued_build_says_so_in_its_log_while_it_waits() {
+    let (run, actor) = uploaded();
+    let target = Target {
+        service: ServiceName::parse("app").unwrap(),
+        build: Build::Upload {
+            digest: UploadDigest::parse("d".repeat(64)).unwrap(),
+            source: None,
+            github_skipped: false,
+        },
+    };
+    run.report(&target.service, BuildStatus::Building, None, String::new())
+        .await
+        .unwrap();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let running =
+        super::super::running::Running::spawn(CancellationToken::new(), |reporter| async move {
+            reporter.report(super::super::prepare::Progress::Build(
+                ployz_build::Progress::Stage(ployz_build::Stage::Queued),
+            ));
+            let _ = released.await;
+            Err(internal("released"))
+        });
+    let log = || {
+        run.store
+            .read(
+                &actor,
+                &ployz_store::BuildLogQuery {
+                    deployment: run.deployment.clone(),
+                    service: target.service.clone(),
+                },
+            )
+            .unwrap()
+            .log
+    };
+    let watch = async {
+        let shown = tokio::time::timeout(Duration::from_secs(30), async {
+            while !log().contains("Waiting for a build slot") {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        release.send(()).unwrap();
+        shown
+    };
+    let (followed, shown) = tokio::join!(run.follow(&target, &running), watch);
+    assert!(followed.unwrap().is_err());
+    assert!(
+        shown.is_ok(),
+        "the log said nothing while queued: {:?}",
+        log()
+    );
+}
+
+fn scrub_target() -> Scrub {
+    let spec = |name: &str, env: serde_json::Value| -> ployz_core::RequestedServiceSpec {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "nginx", "pull_policy": "missing", "environment": env },
+        }))
+        .unwrap()
+    };
+    let target = [
+        spec(
+            "web",
+            serde_json::json!({ "DB_PASSWORD": "hunter2-long", "LOG_LEVEL": "debug-verbose" }),
+        ),
+        spec(
+            "worker",
+            serde_json::json!({ "API_TOKEN": "tok-worker-9", "MIRROR": "hunter2-long" }),
+        ),
+    ];
+    Scrub {
+        environment: environment(),
+        sealed_at_claim: sealed(["DB_PASSWORD", "API_TOKEN"]),
+        claim: target
+            .iter()
+            .flat_map(|spec| spec.container.environment.iter())
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    }
+}
+
+fn environment() -> ployz_store::EnvironmentId {
+    ployz_store::EnvironmentId::parse("00000000-0000-4000-8000-000000000002").unwrap()
+}
+
+fn sealed<const N: usize>(names: [&str; N]) -> BTreeSet<String> {
+    names.map(str::to_owned).into_iter().collect()
+}
+
+fn seal(run: &Run, actor: &ployz_store::Actor, name: &str) {
+    use ployz_store::{Change, CreateService, Edit, EnvironmentRef, ServiceLineageId, SettingPath};
+    run.store
+        .write(
+            actor,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    run.store
+        .write(
+            actor,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse(&format!("web.env.{name}")).unwrap(),
+                    value: serde_json::json!({ "secret": "sealed-later" }),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+// Catches a failed log that shows a Sealed value, from its own Service or another the
+// claim lowered, even where a plain variable holds the same value, or that scrubs a plain
+// or image value such as NODE_ENV=production.
 #[test]
-fn a_failed_log_is_scrubbed_of_secret_and_machine_only_values_and_keeps_plain_ones() {
-    use ployz_store::tools::{LineCap, LogExcerpt, LogText, Withheld};
-    let web = ServiceName::parse("web").unwrap();
-    let env: BTreeMap<String, String> = [
-        ("DB_PASSWORD", "hunter2-long"),
-        ("LOG_LEVEL", "debug-verbose"),
-    ]
-    .into_iter()
-    .map(|(key, value)| (key.to_owned(), value.to_owned()))
-    .collect();
-    let scrub = Scrub {
-        env: BTreeMap::from([(web.clone(), env.clone())]),
-        secret: BTreeMap::from([(web.clone(), ["DB_PASSWORD".to_owned()].into())]),
-    };
-    let mut machine = env;
-    machine.insert("IMAGE_ONLY".into(), "image-value-x".into());
-    let mut secrets = scrub.secrets(&web);
-    secrets.add_machine_env(Some(&machine));
-    let line = "login hunter2-long at debug-verbose via image-value-x\n".to_owned();
-    let LogText::Shown(excerpt) = LogExcerpt::scrub([line.clone()], &secrets, LineCap::default())
-    else {
-        panic!("a lowered Service has secret context");
-    };
+fn a_failed_log_is_scrubbed_of_sealed_values_only() {
+    use ployz_store::tools::{LineCap, LogExcerpt};
+    let scrub = scrub_target();
+    let sealed = scrub.values(&scrub.sealed_at_claim, BTreeMap::new());
+    let line = "npm warn config production; login hunter2-long at debug-verbose with tok-worker-9 password=open-sesame\n";
+    let excerpt = LogExcerpt::scrub([line.to_owned()], &sealed, LineCap::default());
     assert_eq!(
         excerpt.lines(),
-        ["login [secret DB_PASSWORD] at debug-verbose via [secret IMAGE_ONLY]"]
+        [
+            "npm warn config production; login [secret DB_PASSWORD] at debug-verbose with [secret API_TOKEN] password=[redacted]"
+        ]
     );
-    let mut unknown = scrub.secrets(&ServiceName::parse("api").unwrap());
-    unknown.add_machine_env(Some(&machine));
+}
+
+#[test]
+fn an_older_containers_log_is_scrubbed_of_its_own_sealed_values_too() {
+    use ployz_store::tools::{LineCap, LogExcerpt};
+    let env = BTreeMap::from([
+        ("DB_PASSWORD".to_owned(), "old-rotated-out".to_owned()),
+        ("LOG_LEVEL".to_owned(), "debug-verbose".to_owned()),
+    ]);
+    let scrub = scrub_target();
+    let sealed = scrub.values(&scrub.sealed_at_claim, env);
+    let line = "was old-rotated-out now hunter2-long at debug-verbose\n";
+    let excerpt = LogExcerpt::scrub([line.to_owned()], &sealed, LineCap::default());
     assert_eq!(
-        LogExcerpt::scrub([line], &unknown, LineCap::default()),
-        LogText::Withheld {
-            why: Withheld::NoSecretContext
-        }
+        excerpt.lines(),
+        ["was [secret DB_PASSWORD] now [secret DB_PASSWORD] at debug-verbose"]
+    );
+}
+
+async fn mock_machine() -> (
+    Session,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    MachineId,
+) {
+    use crate::global_fixtures::container_id;
+    use crate::sdk::test_support as support;
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    service.uninspectable.insert(container_id('d'));
+    let (address, server) = support::listening(service).await;
+    let session = connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    (session, server, one.machine.id)
+}
+
+fn lines(log: &LogText) -> Vec<String> {
+    match log {
+        LogText::Shown(excerpt) => excerpt.lines().to_vec(),
+        withheld => panic!("a read tail is shown: {withheld:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_reports() {
+    use crate::global_fixtures::container_id;
+    let (run, _) = run();
+    let (session, server, machine) = mock_machine().await;
+    let client = session.client().unwrap();
+    let scrub = Scrub {
+        environment: environment(),
+        sealed_at_claim: sealed(["PLAIN"]),
+        claim: BTreeSet::from([("PLAIN".to_owned(), "rotated-new-value".to_owned())]),
+    };
+
+    let older = run
+        .failed_log(&client, &scrub, machine, container_id('c'))
+        .await;
+    let unreadable = run
+        .failed_log(&client, &scrub, machine, container_id('d'))
+        .await;
+    session.close().await;
+    server.abort();
+
+    assert!(
+        lines(&older).contains(&"plain [secret PLAIN]".to_owned()),
+        "{older:?}"
+    );
+    assert!(
+        matches!(
+            unreadable,
+            LogText::Withheld {
+                why: Withheld::NoSecretContext
+            }
+        ),
+        "{unreadable:?}"
+    );
+}
+
+// Catches a failed tail scrubbed under the names Sealed at the claim alone: a name sealed
+// after the claim and before the tail is read must be scrubbed too.
+#[tokio::test]
+async fn a_name_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
+    use crate::global_fixtures::container_id;
+    let (run, actor) = run();
+    let (session, server, machine) = mock_machine().await;
+    let client = session.client().unwrap();
+    let scrub = Scrub {
+        environment: environment(),
+        sealed_at_claim: BTreeSet::new(),
+        claim: BTreeSet::from([("PLAIN".to_owned(), "from-docker".to_owned())]),
+    };
+    seal(&run, &actor, "PLAIN");
+
+    let log = run
+        .failed_log(&client, &scrub, machine, container_id('c'))
+        .await;
+    session.close().await;
+    server.abort();
+
+    let lines = lines(&log);
+    assert!(
+        lines.contains(&"plain [secret PLAIN]".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("from-docker")),
+        "{lines:?}"
+    );
+}
+
+// Catches a failed tail scrubbed of the claim's values alone: an image can supply a
+// variable the claim never named, and a Machine reports it. Sealed after the claim, its
+// value must be scrubbed, and withheld when the Machine cannot report it.
+#[tokio::test]
+async fn an_image_supplied_value_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
+    use crate::global_fixtures::container_id;
+    let (run, actor) = run();
+    let (session, server, machine) = mock_machine().await;
+    let client = session.client().unwrap();
+    let scrub = Scrub {
+        environment: environment(),
+        sealed_at_claim: BTreeSet::new(),
+        claim: BTreeSet::new(),
+    };
+    seal(&run, &actor, "PLAIN");
+
+    let log = run
+        .failed_log(&client, &scrub, machine, container_id('c'))
+        .await;
+    let unreadable = run
+        .failed_log(&client, &scrub, machine, container_id('d'))
+        .await;
+    session.close().await;
+    server.abort();
+
+    let lines = lines(&log);
+    assert!(
+        lines.contains(&"plain [secret PLAIN]".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("from-docker")),
+        "{lines:?}"
+    );
+    assert!(
+        matches!(
+            unreadable,
+            LogText::Withheld {
+                why: Withheld::NoSecretContext
+            }
+        ),
+        "{unreadable:?}"
     );
 }

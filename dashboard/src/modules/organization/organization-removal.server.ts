@@ -1,44 +1,63 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import type { Gate, OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import { lacks, requireAccess } from "#/modules/organization/access.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { deleteEnrollmentTokens, lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
-import { eq } from "drizzle-orm";
-import { session } from "#/modules/identity/tables";
+import { and, asc, eq } from "drizzle-orm";
+import { member, session } from "#/modules/identity/tables";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { organization, organizationChange } from "./tables";
 import { Database } from "#/server/database.server";
 
+/** Removing an Organization as a human approves it, named by the slug `ployz org rm` confirms. */
+export const organizationRemovalAsked = ({ id, slug }: { id: string; slug: string }): OperationAsked => ({
+  subject: `organization:${id}`,
+  verb: "remove",
+  name: slug,
+  preview: { organization: slug },
+  effects: [{ kind: "removes_organization", name: slug, node: id, path: `organizations/${id}` }],
+});
+
 /**
- * `ployz org rm`: remove the Caller's Organization once it has no Project, whose Environments all left the Servers
+ * `ployz org rm`: remove the Caller's Organization, named by its ID, once it has no Project, whose Environments all left the Servers
  * through the one teardown path. The Store forgets its configuration; then pairing removal clears every device key and
  * Cloud's own key on each Server. A Server that doesn't confirm keeps the Organization, its pairing disabled, until a
  * rerun confirms it; only then do Cloud's rows go. `deleting` wraps the row delete inside that transaction, for a caller
- * with rows of its own to take along or a last check to make under the Organization's lock.
+ * with rows of its own to take along or a last check to make under the Organization's lock. `gate` asks a human first
+ * once nothing but the Organization stands in the way.
  */
 export const removeOrganization = Effect.fn("Organization.remove")(function* <E = never>(
   caller: Pick<Caller, "userId" | "organization" | "role"> & Partial<Pick<Caller, "credential">>,
-  slug: string,
-  deleting: Deleting<E> = (drop) => drop,
+  organizationId: string,
+  { deleting = (drop) => drop, gate }: { deleting?: Deleting<E>; gate?: Gate } = {},
 ) {
-  const { id, slug: current } = caller.organization;
-  if (slug !== current) {
+  const { id, slug } = caller.organization;
+  if (organizationId !== id) {
     return refused({
       code: "invalid_argument",
-      message: `This credential acts in Organization ${current}, not ${slug}. No changes made.`,
-      details: { next: `ployz org use ${slug}` },
+      message: `This credential acts in Organization ${slug}, not the one named. No changes made.`,
+      details: { next: "ployz org ls" },
     });
   }
   const lacking = lacks({ ...caller, support: null }, "org:delete");
   if (lacking !== null) return refused({ code: "forbidden", message: `${lacking} No changes made.`, details: { permission: "org:delete" } });
-  const refusal = yield* cloudStore.pipe(
-    Effect.flatMap((store) => storeTry(() => store.removeOrganization(id))),
+  const store = yield* cloudStore;
+  // A Project refuses the removal anyway, so the Store names it before anyone is asked to approve.
+  if (gate !== undefined) {
+    const { projects } = yield* storeTry(() => store.read(id, { query: "projects" })).pipe(Effect.orDie);
+    if (projects.length === 0) {
+      const gated = yield* gate(organizationRemovalAsked(caller.organization));
+      if (!gated.ok) return refused(gated.refusal);
+    }
+  }
+  const refusal = yield* storeTry(() => store.removeOrganization(id)).pipe(
     Effect.as(null),
     Effect.catchTag("StoreRefused", (error) => Effect.succeed(error.refusal)),
   );
@@ -68,7 +87,7 @@ export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember
     Effect.catchTag("Forbidden", (error) => Effect.succeed(refused({ code: "forbidden", message: error.message, details: null }))),
   );
   if ("ok" in access) return access;
-  return yield* removeOrganization({ userId: actor.userId, organization: access.organization, role: "owner" }, organizationSlug);
+  return yield* removeOrganization({ userId: actor.userId, organization: access.organization, role: "owner" }, access.organization.id);
 });
 
 /**
@@ -94,8 +113,15 @@ const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* <E>(or
   yield* deleting(drizzle.delete(organization).where(eq(organization.id, organizationId)).pipe(Effect.asVoid, Effect.orDie));
   // The cascade's statement triggers logged the deletes under the Organization's id; the log goes with it.
   yield* drizzle.delete(organizationChange).where(eq(organizationChange.organizationId, organizationId));
-  // Sessions in it act nowhere now: /cloud offers the next Organization or a new one.
-  yield* drizzle.update(session).set({ activeOrganizationId: null, activeOrganizationSlug: null })
-    .where(eq(session.activeOrganizationId, organizationId));
+  // Sessions in it move to their user's next Organization, or none: /cloud then offers a new one.
+  const users = yield* drizzle.selectDistinct({ userId: session.userId }).from(session).where(eq(session.activeOrganizationId, organizationId));
+  yield* Effect.forEach(users, ({ userId }) => Effect.gen(function* () {
+    const [next] = yield* drizzle.select({ id: organization.id, slug: organization.slug }).from(member)
+      .innerJoin(organization, eq(organization.id, member.organizationId))
+      .where(eq(member.userId, userId)).orderBy(asc(member.createdAt)).limit(1);
+    yield* drizzle.update(session)
+      .set({ activeOrganizationId: next?.id ?? null, activeOrganizationSlug: next?.slug ?? null, updatedAt: new Date() })
+      .where(and(eq(session.userId, userId), eq(session.activeOrganizationId, organizationId)));
+  }));
   return domain ?? null;
 });

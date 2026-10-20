@@ -9,7 +9,7 @@ The Canvas draws an Environment's services, volumes, configs and domains as node
 - Volume drawer: Mounts (Mount on a service; row menu has Edit directory and Unmount), Storage, Danger
 - Inspector tabs: Deployments, Variables, Logs, Settings
 - Settings sections: Source (image, credentials), Networking (domains, private address), Storage (only a database without a volume warning), Scale (Replicas, CPU limit, Memory limit), Deploy (Start command, Pre-deploy command, Healthcheck, Restart policy), Danger (Delete service)
-- Variables: "N Service Variables", Raw editor, New Variable, and per row Show value, Copy value and Variable actions; then "Ployz reference defaults"
+- Variables: "N Service Variables", Raw editor, New Variable, and per row Show KEY, Copy KEY and Actions for KEY (a sealed row has an image "Sealed" instead of Show and Copy); then "Ployz reference defaults"
 - Find (`/`) and Create (adds a service, volume, config or domain)
 
 ## How to get to it (user POV)
@@ -33,6 +33,7 @@ agent-browser --session $S find role tab click --name Variables
 
 ## Gotchas
 
-- Inspector textboxes commit on Enter. Fill, press Enter, then check **Details** (a new row appears) and reload (the value stays).
+- Inspector textboxes commit on Enter or when focus leaves them; a registry token commits only on Enter or its ✓, so its Cancel discards it. Fill, press Enter or Tab, then check **Details** (a new row appears) and reload (the value stays).
+- After a reload, wait until the page hydrates before typing: `eval 'Object.keys(document.body.firstElementChild||{}).some(k=>k.startsWith("__react"))'` reads `true`. Typing into the server-rendered page saves nothing.
 - Status always reads Queued · Can't reach servers, because no Server is running. Don't treat it as a bug.
 - Code: `ENV/-components/CanvasInspectorOverlay.tsx`, `ENV/-components/canvas/`, `ENV/services/`, `ENV/resources/$resourceId/-components/StoreConfigDrawer.tsx`.

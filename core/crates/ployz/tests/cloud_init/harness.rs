@@ -15,9 +15,9 @@ use ployz_core::{
     EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
     LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
     MachineNow, MachineObservation, MachineToken, MembershipObservation, NewContainer,
-    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Registered, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RunTarget, ServingPointer, ServingPointerPublication,
-    ServingPointerRead, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
+    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Registered, RoutesRead, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget, ServingPointer,
+    ServingPointerPublication, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
 };
 
 /// The Management Capability the fake daemon mints for any Management Client Set.
@@ -375,6 +375,8 @@ impl JoinDaemon {
                 let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
                 let container =
                     ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                        rotation: None,
+                        r#gen: None,
                         container_id,
                         display_name: format!("{}-{n}", new.resolved_spec.name),
                         created_at_unix_nanos: n as i64,
@@ -872,9 +874,11 @@ impl FakeMachine for JoinDaemon {
         match ensure.want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
+                ..
             } => self.run_new(new),
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+                ..
             } => {
                 let container = self.set_running(container_id)?;
                 ensured(ContainerNow::Present(container))
@@ -894,12 +898,15 @@ impl FakeMachine for JoinDaemon {
             }
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Key(_)),
+                ..
             }
             | ContainerWant::Gone {
                 container: ContainerLocator::Key(_),
                 ..
             }
-            | ContainerWant::Stopped { .. } => unused(),
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => unused(),
         }
     }
     async fn list_images(
@@ -933,7 +940,7 @@ impl FakeMachine for JoinDaemon {
         };
         rpc_ok(publication)
     }
-    async fn read_serving_pointer(
+    async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -941,8 +948,8 @@ impl FakeMachine for JoinDaemon {
             .into_inner()
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::ReadServingPointer(read) = request.body else {
-            return Err(Status::invalid_argument("expected ReadServingPointer"));
+        let RpcRequestBody::ReadRoutes(read) = request.body else {
+            return Err(Status::invalid_argument("expected ReadRoutes"));
         };
         let pointer = self
             .inner
@@ -956,17 +963,18 @@ impl FakeMachine for JoinDaemon {
             .iter()
             .map(|pointer| (machine, pointer.deploy.clone()))
             .collect();
-        rpc_ok(ServingPointerRead {
+        rpc_ok(RoutesRead {
             all_routed: pointer.is_some(),
             pointer,
             acks,
+            ..RoutesRead::default()
         })
     }
     async fn pull_image(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(ployz_core::ImagePulled {})
+        rpc_ok(ployz_core::ImagePulled::default())
     }
     async fn leave(
         &self,
@@ -1016,6 +1024,8 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         )
         .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse("a".repeat(64)).unwrap(),
         display_name: "ingress-a".into(),
         created_at_unix_nanos: 1,

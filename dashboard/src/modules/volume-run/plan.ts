@@ -12,6 +12,7 @@ export type RefusalCode =
   | "volume_switching"
   | "second_mirror"
   | "invalid"
+  | "already_on"
   | "no_mirror"
   | "no_copy"
   | "another_copy"
@@ -23,7 +24,8 @@ export type RefusalCode =
  */
 export type MoveStart = "rounds" | "cut" | "final" | "start";
 
-export type Refusal = { readonly code: RefusalCode; readonly message: string };
+/** `next` is the one command that clears the refusal; the CLI prints it on its own line. */
+export type Refusal = { readonly code: RefusalCode; readonly message: string; readonly next?: string };
 
 /**
  * What a Release finds in flight: a cut that stopped on a read-only root, a writer that may still keep the moved-off
@@ -179,7 +181,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const { to } = input.args;
   if (isDestination(input.args, root)) return { ok: false, refusal: alreadyOn(name, to) };
   const elsewhere = mirrors.find((member) => !isDestination(input.args, member));
-  if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
+  if (elsewhere !== undefined) return { ok: false, refusal: copyElsewhere(name, elsewhere) };
   const target = answered.find((member) => isDestination(input.args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
   return { ok: true, phase: { kind: "mirror", writer: root, target } };
@@ -227,7 +229,10 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   }
   const elsewhere = others.find((member) => member !== root);
   if (root !== null) {
-    if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
+    if (elsewhere !== undefined) {
+      const refusal = copyElsewhere(name, elsewhere);
+      return { ok: false, refusal: roleOf(root) === "cutting" ? { ...refusal, next: cutStep(name, root, answered.filter((member) => member.view.copy?.kind === "slot")) } : refusal };
+    }
     return move(root, roleOf(root) === "cutting" ? "cut" : "rounds");
   }
 
@@ -239,7 +244,19 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
 }
 
-export const alreadyOn = (name: string, server: string): Refusal => ({ code: "invalid", message: `${name}'s writer is already on ${server}` });
+/** mirror rm refuses beside a stopped cut, so its step goes first; a step that needs server rm too is no one command. */
+function cutStep(name: string, cut: AnsweredMember, slots: readonly AnsweredMember[]): string | undefined {
+  const { remove, step } = releaseOrMoveOntoSlot(name, cut, slots);
+  return remove.length === 0 ? step : undefined;
+}
+
+/** A Server cannot tell a mirror from the copy a move left, so this names it a copy. */
+function copyElsewhere(name: string, copy: Member): Refusal {
+  const slot = copyName(name, copy.machine.name);
+  return { code: "second_mirror", message: `${name} already has a copy on ${copy.machine.name}, ${slot}`, next: `ployz volume mirror rm ${slot}` };
+}
+
+export const alreadyOn = (name: string, server: string): Refusal => ({ code: "already_on", message: `${name}'s writer is already on ${server}` });
 
 /** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
 function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], answered: readonly AnsweredMember[]): Planned {

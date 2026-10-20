@@ -51,6 +51,7 @@ async fn catch_up_waits_for_removal_and_rechecks_phase() {
                 },
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let local = RecordOwner::spawn(local).unwrap();
@@ -1149,5 +1150,59 @@ async fn published_material_is_left_alone_by_acme_and_clear_hands_it_back() {
         .await
         .unwrap();
     assert_eq!(store.certificate(&hostname).await.unwrap(), Some(issued));
+    task.abort();
+}
+
+#[tokio::test]
+async fn container_rows_expose_rotation_and_gen_against_the_schema() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let observation = |id: &str, extra: serde_json::Value| -> ployz_core::ContainerObservation {
+        let mut parts = json!({
+            "container_id": id.repeat(64),
+            "display_name": "api-1",
+            "machine_id": machine,
+            "namespace": "app",
+            "kind": "service_container",
+            "runtime": {"state": "running", "health": "healthy"},
+            "resolved_spec": crate::docker::test_support::spec_with_sources(vec![]),
+        });
+        parts
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(parts).unwrap()
+    };
+    store
+        .machine_publication()
+        .await
+        .apply_container_rows(
+            &machine,
+            &[],
+            &[
+                observation("b", json!({"rotation": "in", "gen": 2})),
+                observation("c", json!({})),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let rows = store
+        .api()
+        .query(Statement::new(
+            "SELECT rotation, gen FROM containers ORDER BY id",
+            [],
+        ))
+        .await
+        .unwrap()
+        .rows(["rotation", "gen"])
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            [json!("in"), json!(2)],
+            [serde_json::Value::Null, serde_json::Value::Null]
+        ]
+    );
     task.abort();
 }

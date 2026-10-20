@@ -21,16 +21,38 @@ CONTRACT_SCRIPTS = {
 }
 
 
-def select(paths):
+def select(paths, pull_request=False):
     selected = select_normal(paths)
     # Only release builds exercise the release profile, features, linker flags, and native dependencies on every target.
     cargo_changed = any(
         path.startswith("core/.cargo/") or (path.startswith("core/") and Path(path).name in {"Cargo.toml", "Cargo.lock"})
         for path in paths
     )
-    if cargo_changed or release_inputs_changed(paths):
+    # A Cargo-only PR leaves the release builds to its merge's main run: two macOS builds cost a PR more than
+    # every other check together, and they almost never fail where the Linux checks pass.
+    if release_inputs_changed(paths) or (cargo_changed and not pull_request):
         selected.add("release-contracts")
+    # The macOS check runs after merge: macOS minutes cost ten times Linux ones, and over two weeks
+    # it never failed on a PR without another check failing too.
+    if pull_request:
+        selected.discard("macos-cli")
     return selected
+
+
+# Everything the ployz-store tests compile or read: the crate, its one path dependency, the docs its build
+# script embeds, and one fixture.
+STORE_INPUTS = (
+    "core/crates/ployz-store/", "core/crates/ployz-core/", "docs/user/",
+    "core/crates/ployz/tests/fixtures/published-manifest.json",
+)
+
+
+def store_postgres(paths, pull_request=False):
+    """Whether rust-tests reruns the ployz-store tests on Postgres; their result can't change otherwise."""
+    return not pull_request or select_normal(paths) == NORMAL or any(
+        path.startswith(STORE_INPUTS) or path.startswith("core/.cargo/") or Path(path).name in {"Cargo.toml", "Cargo.lock"}
+        for path in paths
+    )
 
 
 def release_inputs_changed(paths):
@@ -147,12 +169,17 @@ def main():
     args = parser.parse_args()
     if args.command == "select":
         # A manual quick run covers every normal check, without release/cluster work.
-        selected = select(changed_paths(args.base, args.head)) if args.base and set(args.base) != {"0"} else NORMAL
+        pull_request = os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+        if args.base and set(args.base) != {"0"}:
+            paths = changed_paths(args.base, args.head)
+            selected, postgres = select(paths, pull_request), store_postgres(paths, pull_request)
+        else:
+            selected, postgres = NORMAL, True
         output = json.dumps(sorted(selected))
         print(output)
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a") as file:
-                file.write(f"jobs={output}\n")
+                file.write(f"jobs={output}\npostgres={str(postgres).lower()}\n")
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as file:
                 file.write("| Check | Selection |\n|---|---|\n")

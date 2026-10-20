@@ -10,7 +10,7 @@ web (create)
   web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
   web.env.LOG_LEVEL: null → "info"
 pgdata (create)
-next: ployz deploy --skip-deploy --expect-version 21:0:0.0 --project shop
+next: ployz deploy --project shop
 
 === diff --json (staged changes) :: $ ployz --json diff
 {
@@ -310,7 +310,7 @@ next: ployz deploy --skip-deploy --expect-version 21:0:0.0 --project shop
   "holds_staged": false,
   "included": [],
   "incoming": [],
-  "next": "ployz deploy --skip-deploy --expect-version 21:0:0.0 --project shop",
+  "next": "ployz deploy --project shop",
   "saved": null,
   "total_count": 11,
   "version": "21:0:0.0"
@@ -326,8 +326,8 @@ web (create)
   web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
   web.env.LOG_LEVEL: null → "info"
 pgdata (create)
-Saved as #1. Not deployed.
-next: ployz deploy --expect-version 23:1:0.0 --project shop
+Saved as version #1. Not deployed.
+next: ployz deploy --project shop
 
 === diff (nothing staged) :: $ ployz diff --project empty
 No staged changes in empty/production.
@@ -371,7 +371,7 @@ web (delete)
 pgdata (delete)
   volumes.pgdata.storage: {"kind":"provisioned","maximumBytes":5000000000} → null
   deletes this Volume's data on the Servers: deploy asks to accept it by name
-next: ployz deploy --skip-deploy --expect-version 26:2:0.0 --project shop
+next: ployz deploy --skip-deploy --project shop
 
 === diff in the Parent after a Sync :: $ ployz diff
 web (create)
@@ -382,7 +382,7 @@ web (create)
 db (create)
   db.mounts.pgdata: null → "/var/lib/postgresql/data"
 pgdata (create)
-next: ployz deploy --skip-deploy --expect-version 33:3:0.0 --project shop
+next: ployz deploy --project shop
 
 === diff --json in the Parent after a Sync :: $ ployz --json diff
 {
@@ -547,7 +547,7 @@ next: ployz deploy --skip-deploy --expect-version 33:3:0.0 --project shop
     }
   ],
   "incoming": [],
-  "next": "ployz deploy --skip-deploy --expect-version 33:3:0.0 --project shop",
+  "next": "ployz deploy --project shop",
   "saved": 3,
   "total_count": 8,
   "version": "33:3:0.0"

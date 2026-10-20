@@ -175,7 +175,7 @@ $ ployz set web.env.GREETING=hello
 
 stdout:
 ```
-Staged web.env.GREETING in shop/production (revision 27).
+Staged web.env.GREETING in shop/production.
 ```
 
 ### diff
@@ -189,7 +189,7 @@ stdout:
 ```
 web (update)
   web.env.GREETING: null -> "hello"
-next: ployz deploy --expect-version 27:16:0.34
+next: ployz deploy
 ```
 
 ### deploy --plan with a staged change
@@ -923,7 +923,7 @@ $ ployz set worker.image=ghcr.io/getployz/does-not-exist:nope
 
 stdout:
 ```
-Staged worker.image in shop/production (revision 32).
+Staged worker.image in shop/production.
 ```
 
 ### deploy that fails
@@ -1549,7 +1549,7 @@ $ ployz set worker.image=traefik/whoami:v1.10.3
 
 stdout:
 ```
-Staged worker.image in shop/production (revision 33).
+Staged worker.image in shop/production.
 ```
 
 ### deploy the fix
@@ -1922,7 +1922,7 @@ Options:
           Reset the --server if it already runs Ployz, before adding it
 
       --accept-volume-loss <name>
-          Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this
+          Accept permanent deletion: repeat once per exact volume name in the full deletion list
 
       --expect-version <VERSION>
           Refuse unless this is still the reviewed version; a data-loss refusal names it

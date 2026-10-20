@@ -39,6 +39,11 @@ pub enum RowState {
         step: Option<FailedAt>,
         #[serde(default, deserialize_with = "stored_log")]
         log: Option<LogText>,
+        /// The Server didn't answer, so it may succeed once it does. False when it
+        /// answered with this failure.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        unanswered: bool,
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
@@ -60,6 +65,7 @@ impl RowState {
 #[serde(rename_all = "snake_case")]
 pub enum FailedAt {
     Build,
+    Pull,
     Create,
     Start,
     Health,
@@ -89,10 +95,10 @@ impl FailedAt {
                 MachineAction::StartContainer => Some(Self::Start),
                 MachineAction::StopContainer => Some(Self::Stop),
                 MachineAction::RemoveContainer => Some(Self::Remove),
-                MachineAction::PullImage => Some(Self::Create),
+                MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
                 | MachineAction::ListContainers
-                | MachineAction::ReadServingPointer
+                | MachineAction::ReadRoutes
                 | MachineAction::PublishServingPointer => from_phase(),
             },
             ExecutionError::Health { .. } | ExecutionError::DependencyHealth { .. } => {
@@ -287,6 +293,13 @@ impl Failure {
                 };
                 (refusal.to_string(), Vec::new())
             }
+            ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
+            } if let Some(image) = error.missing_image() => (
+                format!("Image {image} not found, or its registry needs credentials"),
+                ployz_core::error_chain::causes(error),
+            ),
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
@@ -334,7 +347,7 @@ impl Failure {
                 },
             ),
             ExecutionError::Hook { failure, .. } => (
-                "The hook Container failed".to_owned(),
+                "The setup or pre-deploy command failed".to_owned(),
                 match failure {
                     HookFailure::Cancelled {
                         stop_error: Some(error),
@@ -483,7 +496,7 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
                 | MachineAction::RemoveVolume
                 | MachineAction::PullImage
                 | MachineAction::ListContainers
-                | MachineAction::ReadServingPointer
+                | MachineAction::ReadRoutes
                 | MachineAction::PublishServingPointer => None,
             },
             ExecutionError::DependencyHealth { .. } | ExecutionError::Cancelled => None,
@@ -527,6 +540,7 @@ fn state(
             log: container.then_some(LogText::Withheld {
                 why: Withheld::Unanswered,
             }),
+            unanswered: matches!(error, ExecutionError::Machine { error, .. } if error.target_unanswered()),
         };
     }
     if let Some(phase) = running {
@@ -775,8 +789,8 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, MachineAction,
-        OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HookFailure,
+        MachineAction, OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
     };
 
     use super::{Failure, RowPhase, RowState};
@@ -853,22 +867,35 @@ mod tests {
             error: RpcError {
                 code: RpcErrorCode::Unsupported,
                 message: "unimplemented".into(),
-                details: serde_json::json!({"capability": "ployz.serving.read.v1", "target": machine_id}),
+                details: serde_json::json!({"capability": "ployz.serving.routes.v1", "target": machine_id}),
                 cause: vec!["unimplemented".into()],
             },
         };
         let named = Failure::of(&error, &operations);
         assert_eq!(
             named.reason,
-            "Server prod-1 needs a newer Ployz. It cannot serve ployz.serving.read.v1."
+            "Server prod-1 needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
         );
         assert!(named.cause.is_empty());
         assert_eq!(
             Failure::of(&error, &[]).reason,
             format!(
-                "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.read.v1."
+                "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
             )
         );
+    }
+
+    #[test]
+    fn a_failed_hook_names_both_commands_it_can_run() {
+        let failed = Failure::of(
+            &ExecutionError::Hook {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                failure: HookFailure::Exit { code: 3 },
+            },
+            &[],
+        );
+        assert_eq!(failed.reason, "The setup or pre-deploy command failed");
+        assert_eq!(failed.cause, ["exited with code 3"]);
     }
 
     #[test]

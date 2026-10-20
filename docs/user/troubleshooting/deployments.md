@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting deployments
-description: Fix failed builds, failed health checks, failed pre-deploy commands, crashing services and pushes that don't deploy.
+description: Fix failed builds, missing images, failed health checks, failed pre-deploy commands, crashing services and pushes that don't deploy.
 ---
 
 Start on the deployment's page. Why it failed is under the header, in red, with the service's
@@ -17,9 +17,10 @@ Server is ready it reads `switching N/N` until they switch together, then
 `switched N/N`. A row whose new Containers already serve shows a `draining old` line
 while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
 replacement leaves behind drain on each Server after the switch, so they show in
-`ployz ps`, not in the live block. A Service the deploy only removes reads
-`waiting to remove`, then `stopping` and `removing`, then `removed`. The block ends
-with a summary that counts the Servers involved. In CI or redirected output,
+`ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
+then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service
+the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. The block
+ends with a summary that counts the Servers involved. In CI or redirected output,
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
@@ -27,15 +28,32 @@ records the existing Deployment events as NDJSON. Source builds appear against t
 Service before the Deploy is planned, without a depth. A failure names the Server
 where it happened.
 
-A failed deploy shows the deepest cause, available failed-container log tails, and
-`inspect:` and `retry:` commands. A Deployment result that did not fully succeed exits
-with code 3. A warning that names an incomplete Server observation also makes an
+A failed deploy shows the deepest cause, available failed-container log tails, and a
+`retry:` command. It adds at most one `inspect:` command per failed Service, chosen from
+every Server where that Service failed, in this order:
+
+1. `ployz logs <service>` when any of them failed while starting, health-checking, running a
+   hook for, stopping or removing a Container, or failed at an unknown step and has a
+   Container log.
+2. Otherwise, `ployz get <service>.image` when any of them failed to pull the image. A Service
+   built from source has no `image` setting, so it gets no `inspect:` line.
+3. Otherwise no `inspect:` line. A failed build, or a failure before any Container exists,
+   such as creating the Container or preparing its Volumes, leaves nothing new to inspect:
+   `ployz logs` would show only the old Container.
+
+So a Service that failed to pull on one Server and to start on another shows only
+`ployz logs <service>`.
+
+A Deployment result that did not fully succeed exits with code 3. A warning that
+names an incomplete Server observation also makes an
 otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
 
-Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
+If Cloud stops answering while the CLI follows a Deployment, the command exits 1 with
+`Stopped following Deployment #N; it keeps running in Ployz Cloud.` and an `inspect:` line
+for `ployz deployment show N`. Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
 keeps running. The command returns its last known result when one is available, including
 a completion observed during interruption. An active
 Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests
@@ -101,11 +119,13 @@ can show here.
 This service references another in its variables, and that one didn't come up healthy, so
 Ployz didn't start this one. Fix the service the message names first; its **Logs** say why.
 
-## My pre-deploy command failed
+## My setup or pre-deploy command failed
 
-`hook container … failed: exited with code 1`, or `failed: timed out`
+`The setup or pre-deploy command failed` with `exited with code 1`, or `timed out`
 
-None of the service's replicas were replaced, so the old version keeps running.
+None of the service's replicas were replaced, so the old version keeps running. Before a service
+starts, Ployz runs its pre-deploy command, then, the first time a new environment deploys it, its
+setup commands. The first one that fails stops the deploy.
 
 - Read the **Deploy** log: the command's output is there.
 - `timed out` means it ran longer than 5 minutes. Make it faster, or run the slow part outside
@@ -134,6 +154,14 @@ deploy a card can read **Not running** or **Crashed** for a few seconds: if the 
   ployz service restart api
   ```
 
+## My service shows Server offline
+
+Every replica of the service is on a server that's **Offline**, so the service is down. See
+[A server shows Offline](servers.md#a-server-shows-offline) and
+[When a server goes down](../services/scaling.md#when-a-server-goes-down). A service with replicas
+on other servers keeps serving from them, and reads **Degraded** while fewer serve than it asks
+for.
+
 ## My deployment stays Queued
 
 - Another deployment of the environment is running. Yours runs after it; cancel that one from
@@ -159,6 +187,19 @@ deploy a card can read **Not running** or **Crashed** for a few seconds: if the 
 Pushing an image to your registry deploys nothing, and a server that already has a tag, like
 `latest`, keeps its copy. Give each release its own tag and change **Container image** to it. See
 [Ship a new version of your image](../deploy/docker-image.md#ship-a-new-version-of-your-image).
+
+## My image isn't found
+
+**Failed at pull**, with `Image nginx:1.27-alpne not found, or its registry needs credentials`
+
+Your servers couldn't download the image, so the deploy stopped before it changed anything. A
+version that was already running keeps running. A registry answers the same way for a tag that
+doesn't exist and for a private image you have no access to.
+
+- Check the name and tag under **Settings → Source**. Look for typos, and check that the tag is
+  published on the registry.
+- If the image is private, add **Registry credentials**, or replace a token that expired. See
+  [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
 ## Deploy says a service has nothing to run
 

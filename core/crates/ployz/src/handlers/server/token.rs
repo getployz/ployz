@@ -232,14 +232,17 @@ fn lasts(expires: &str) -> &str {
     }
 }
 
-/// The line a host runs to install Ployz and ask to join with `token`.
+/// The line a host runs to install this release of Ployz and ask to join with `token`.
 fn install_line(cloud: &str, token: &str) -> String {
     let cloud_env = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
     } else {
         format!("PLOYZ_CLOUD_URL='{cloud}' ")
     };
-    format!("curl -fsSL {INSTALLER_URL} | sudo {cloud_env}PLOYZ_ENROLL_TOKEN={token} sh")
+    let version = env!("CARGO_PKG_VERSION");
+    format!(
+        "curl -fsSL {INSTALLER_URL} | sudo {cloud_env}PLOYZ_ENROLL_TOKEN={token} sh -s -- {version}"
+    )
 }
 
 #[cfg(test)]
@@ -247,14 +250,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_line_carries_the_token_and_names_a_non_default_cloud() {
+    fn install_line_pins_this_release_carries_the_token_and_names_a_non_default_cloud() {
+        let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
             install_line("https://ployz.dev", "pflt_abc"),
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_abc sh"
+            format!(
+                "curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_abc sh -s -- {version}"
+            )
         );
         assert_eq!(
             install_line("http://localhost:3000", "pflt_abc"),
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' PLOYZ_ENROLL_TOKEN=pflt_abc sh"
+            format!(
+                "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' PLOYZ_ENROLL_TOKEN=pflt_abc sh -s -- {version}"
+            )
         );
     }
 

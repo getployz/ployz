@@ -12,13 +12,13 @@ pub(crate) use path::{
 };
 pub use path::{NodeName, SettingPath};
 
-mod size;
+pub(crate) mod size;
 
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
     MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, ServiceBuildConfig, ServiceHealthcheck,
-    ServiceImageCredentials, ServiceSource, default_max_retries, default_replicas,
+    ServiceImageCredentials, ServiceSource, UPDATE_ORDERS, default_max_retries, default_replicas,
     parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
@@ -29,6 +29,7 @@ use ts_rs::TS;
 use crate::error;
 use crate::git::GitSetting;
 use crate::policy::{Policy, PolicySetting};
+use crate::scope::EnvironmentSummary;
 use crate::trusted::Trusted;
 
 /// Whether a change waits for a Deploy or takes effect at once.
@@ -61,6 +62,7 @@ pub(crate) enum ServiceSetting {
     StartCommand,
     /// The Service Template it was created from.
     Template,
+    UpdateOrder,
     /// A Git-backed Service's source and build.
     Git(GitSetting),
     /// A Git-backed Service's Deployment Policy; see [`crate::policy`].
@@ -69,7 +71,7 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 22] = [
+    pub(crate) const ALL: [Self; 23] = [
         Self::CpuLimit,
         Self::Healthcheck,
         Self::Image,
@@ -82,6 +84,7 @@ impl ServiceSetting {
         Self::RestartPolicy,
         Self::StartCommand,
         Self::Template,
+        Self::UpdateOrder,
         Self::Git(GitSetting::Repository),
         Self::Git(GitSetting::Branch),
         Self::Git(GitSetting::RootDir),
@@ -105,6 +108,7 @@ impl ServiceSetting {
             Core::Healthcheck => Self::Healthcheck,
             Core::RestartPolicy => Self::RestartPolicy,
             Core::MaxRetries => Self::MaxRetries,
+            Core::UpdateOrder => Self::UpdateOrder,
             Core::Replicas => Self::Replicas,
             Core::CpuLimit => Self::CpuLimit,
             Core::MemLimit => Self::MemLimit,
@@ -150,6 +154,7 @@ impl ServiceSetting {
             Self::RestartPolicy => "restartPolicy",
             Self::StartCommand => "startCommand",
             Self::Template => "template",
+            Self::UpdateOrder => "updateOrder",
             Self::Git(git) => git.name(),
             Self::Policy(policy) => policy.name(),
         }
@@ -170,6 +175,7 @@ impl ServiceSetting {
             Self::RestartPolicy => "Restart policy",
             Self::StartCommand => "Start command",
             Self::Template => "Template",
+            Self::UpdateOrder => "Update order",
             Self::Git(git) => git.label(),
             Self::Policy(policy) => policy.label(),
         }
@@ -201,8 +207,32 @@ impl ServiceSetting {
             Self::Template => {
                 "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it."
             }
+            Self::UpdateOrder => {
+                "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without."
+            }
             Self::Git(git) => git.description(),
             Self::Policy(policy) => policy.description(),
+        }
+    }
+
+    /// A caveat on this Setting for a Service with `config`: why its value may not act.
+    pub(crate) fn note(self, config: &AuthoredServiceConfig) -> Option<String> {
+        match self {
+            Self::Policy(policy) => policy.note(config),
+            Self::CpuLimit
+            | Self::Healthcheck
+            | Self::Image
+            | Self::MaxRetries
+            | Self::MemLimit
+            | Self::PreDeployCommand
+            | Self::PrivateDns
+            | Self::RegistryCredential
+            | Self::Replicas
+            | Self::RestartPolicy
+            | Self::StartCommand
+            | Self::Template
+            | Self::UpdateOrder
+            | Self::Git(_) => None,
         }
     }
 
@@ -222,7 +252,8 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template => self.name(),
+            | Self::Template
+            | Self::UpdateOrder => self.name(),
         }
     }
 
@@ -238,6 +269,7 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
+            | Self::UpdateOrder
             | Self::Git(_) => Apply::Staged,
             // ponytail: a tag, not runtime config; nothing lowers it, so a Deploy never ships it.
             Self::Template | Self::RegistryCredential | Self::Policy(_) => Apply::Immediate,
@@ -257,7 +289,8 @@ impl ServiceSetting {
             | Self::PreDeployCommand
             | Self::RegistryCredential
             | Self::StartCommand
-            | Self::Template => Value::Null,
+            | Self::Template
+            | Self::UpdateOrder => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
             Self::Replicas => json!(default_replicas()),
             Self::RestartPolicy => json!("unless-stopped"),
@@ -274,7 +307,7 @@ impl ServiceSetting {
             }
             Self::MemLimit => json!({
                 "anyOf": [
-                    { "type": "number", "exclusiveMinimum": 0, "maximum": MEM_LIMIT_MAX },
+                    { "type": "number", "minimum": size::MEM_LIMIT_MIN, "maximum": MEM_LIMIT_MAX },
                     { "type": "string", "pattern": size::PATTERN },
                 ],
             }),
@@ -323,6 +356,7 @@ impl ServiceSetting {
                 json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": COMMAND_MAX })
             }
             Self::RestartPolicy => json!({ "type": "string", "enum": RESTART_POLICIES }),
+            Self::UpdateOrder => json!({ "type": "string", "enum": UPDATE_ORDERS }),
             Self::Template => json!({
                 "type": "object",
                 "properties": {
@@ -367,6 +401,7 @@ impl ServiceSetting {
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
             Self::Template => json!([{ "id": "postgres", "version": 1 }]),
+            Self::UpdateOrder => json!(["rolling"]),
             Self::Git(git) => git.examples(),
             Self::Policy(policy) => policy.examples(),
         }
@@ -394,7 +429,8 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template => true,
+            | Self::Template
+            | Self::UpdateOrder => true,
         }
     }
 
@@ -413,7 +449,8 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template => "a repository source",
+            | Self::Template
+            | Self::UpdateOrder => "a repository source",
         };
         let has = match source {
             ServiceSource::Image { .. } => "runs an image",
@@ -478,7 +515,8 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template => value,
+            | Self::Template
+            | Self::UpdateOrder => value,
         }
     }
 
@@ -575,15 +613,22 @@ impl ServiceSetting {
     }
 
     /// A memory limit in GB from a number, text spelling one, or a size with a unit,
-    /// rounded to whole bytes. A number of bytes is refused with its size.
+    /// rounded to whole bytes. A number of bytes is refused with its size, and one under
+    /// [`size::MEM_LIMIT_MIN`] as too small to run.
     fn mem_limit(self, value: Value) -> Result<Value, RpcError> {
-        if let Some(bytes) = value.as_str().and_then(|text| size::bytes(text.trim())) {
-            return Ok(json!(bytes / 1e9));
+        let value = match value.as_str().and_then(|text| size::bytes(text.trim())) {
+            Some(bytes) => json!(bytes / 1e9),
+            None => self.coerce_number(value),
+        };
+        if value.as_f64().is_some_and(|gb| gb < size::MEM_LIMIT_MIN) {
+            return Err(self.invalid(&format!(
+                "expected at least {} GB (10 MB): Docker refuses less than 6 MiB",
+                size::MEM_LIMIT_MIN
+            )));
         }
-        let value = self.coerce_number(value);
         if value.is_string() {
             return Err(self.invalid(
-                "expected GB above 0 and up to 1024, or a size with a unit such as \"512MiB\" or \"1GiB\"",
+                "expected GB from 0.01 to 1024, or a size with a unit such as \"512MiB\" or \"1GiB\"",
             ));
         }
         if let Some((size, text)) = value.as_f64().and_then(size::looks_like_bytes) {
@@ -718,6 +763,31 @@ impl ServiceSetting {
                 error::invalid("Unknown Service Setting", details.into())
             })
     }
+}
+
+/// Whether `value` is text that names no HTTP path and spells no object.
+pub(crate) fn is_healthcheck_text(value: &Value) -> bool {
+    matches!(ServiceSetting::Healthcheck.coerce(value.clone()), Value::String(text) if !text.starts_with('/'))
+}
+
+/// Healthcheck text that is not a path: a command or a timeout takes an object.
+pub(crate) fn healthcheck_text(service: &ServiceName, summary: &EnvironmentSummary) -> RpcError {
+    let setting = ServiceSetting::Healthcheck;
+    error::invalid(
+        format!(
+            "{}: text sets an HTTP path like /health; a command takes an object like {{\"command\":\"pg_isready\",\"timeoutSeconds\":60}}, and an HTTP check's timeout one like {{\"path\":\"/health\",\"timeoutSeconds\":60}}",
+            setting.name()
+        ),
+        json!({
+            "setting": setting.name(),
+            "expected": setting.expected(),
+            "example": setting.examples().get(0),
+            "next": format!(
+                "ployz set {service} --patch '{{\"healthcheck\":{{\"command\":\"pg_isready\"}}}}' --env {} --project {}",
+                summary.name, summary.project
+            ),
+        }),
+    )
 }
 
 /// A core change row's value at `field` as reads show it: never a secret, a

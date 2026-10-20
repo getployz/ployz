@@ -7,6 +7,7 @@ import type { JsonValue } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
 import { invitation, member, user } from "#/modules/identity/tables";
+import { operationApprovals } from "#/modules/approvals/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { acceptInvite, readInvite, revokeInvite } from "#/modules/organization/invitation.server";
 import { orgInviteLs, orgInviteRevoke, orgLeave, orgMemberInvite, orgMemberRm, orgMemberRole } from "#/modules/organization/members.commands.server";
@@ -45,14 +46,14 @@ const COMMANDS = {
 };
 
 /** Runs a member command as `who`, holding whatever role they have in Acme now. */
-const as = async (who: keyof typeof ids, name: keyof typeof COMMANDS, input: JsonValue) => {
+const as = async (who: keyof typeof ids, name: keyof typeof COMMANDS, input: JsonValue, via: Caller["via"] = "dashboard") => {
   const caller: Caller = {
     userId: ids[who],
     organization: { id: ACME, slug: "acme" },
     credential: { kind: "session", id: `${who}-session` },
     role: await roleOf(ids[who]),
     support: null,
-    via: "dashboard",
+    via,
   };
   const command: { invoke: (caller: Caller, raw: JsonValue, call: { approvalId: null; key: null }) => Effect.Effect<
     { ok: true; output: unknown } | { ok: false; refusal: { code: string; message: string } },
@@ -99,26 +100,37 @@ describe("invite links", () => {
     const { link } = await invite("ada", { role: "admin" });
     expect(link.startsWith("http://localhost:3000/invite/")).toBe(true);
     const token = tokenOf(link);
-    expect(await run(readInvite(token))).toMatchObject({ organization: "Acme", slug: "acme", invitedBy: "Ada", role: "admin", state: "pending" });
+    expect(await run(readInvite(token, null))).toMatchObject({ organization: "Acme", slug: "acme", invitedBy: "Ada", role: "admin", state: "pending" });
 
     expect(await run(acceptInvite(token, ids.bob))).toEqual({ slug: "acme" });
     expect(await roleOf(ids.bob)).toBe("admin");
-    expect((await run(readInvite(token)))?.state).toBe("accepted");
+    expect((await run(readInvite(token, null)))?.state).toBe("accepted");
     expect(await outcome(acceptInvite(token, ids.dan))).toBe("Conflict");
     expect(await roleOf(ids.dan)).toBeNull();
+  });
+
+  it("tells whoever opens the link whether they are in the Organization already", async () => {
+    const token = tokenOf((await invite("ada", { role: "member" })).link);
+    expect((await run(readInvite(token, null)))?.member).toBe(false);
+    expect((await run(readInvite(token, ids.eve)))?.member).toBe(false);
+    expect((await run(readInvite(token, ids.ada)))).toMatchObject({ state: "pending", member: true });
+
+    await run(acceptInvite(token, ids.eve));
+    expect((await run(readInvite(token, ids.eve)))).toMatchObject({ state: "accepted", member: true });
+    await harness.db.delete(member).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.eve)));
   });
 
   it("keeps only a hash of the token, so the stored row cannot be replayed as a link", async () => {
     const { id, link } = await invite("ada", {});
     const [row] = await harness.db.select({ tokenHash: invitation.tokenHash }).from(invitation).where(eq(invitation.id, id));
     expect(row?.tokenHash).not.toContain(tokenOf(link));
-    expect(await run(readInvite(row?.tokenHash ?? ""))).toBeNull();
+    expect(await run(readInvite(row?.tokenHash ?? "", null))).toBeNull();
   });
 
   it("refuses an expired link and a revoked one", async () => {
     const expired = await invite("ada", { email: "dan@example.test" });
     await harness.db.update(invitation).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(invitation.id, expired.id));
-    expect((await run(readInvite(tokenOf(expired.link))))?.state).toBe("expired");
+    expect((await run(readInvite(tokenOf(expired.link), null)))?.state).toBe("expired");
     expect(await outcome(acceptInvite(tokenOf(expired.link), ids.dan))).toBe("Conflict");
 
     const revoked = await invite("carol", { email: "dan@example.test" });
@@ -132,10 +144,18 @@ describe("invite links", () => {
     });
     expect(await pendingIds()).not.toContain(expired.id);
     expect(await as("carol", "org_invite_revoke", { invite: "dan@example.test" })).toMatchObject({ ok: true });
-    expect((await run(readInvite(tokenOf(revoked.link))))?.state).toBe("revoked");
+    expect((await run(readInvite(tokenOf(revoked.link), null)))?.state).toBe("revoked");
     expect(await outcome(acceptInvite(tokenOf(revoked.link), ids.dan))).toBe("Conflict");
     expect(await roleOf(ids.dan)).toBeNull();
     expect(await pendingIds()).not.toContain(revoked.id);
+  });
+
+  it("asks to revoke a link invite by its role, not its id", async () => {
+    const { id } = await invite("ada", { role: "admin" });
+    expect(await as("carol", "org_invite_revoke", { invite: id }, "cli")).toMatchObject({ ok: false });
+    const [asked] = await harness.db.select({ review: operationApprovals.review }).from(operationApprovals)
+      .where(eq(operationApprovals.organizationId, ACME));
+    expect(asked?.review).toMatchObject({ effects: [{ kind: "revokes_invite", name: "admin link" }] });
   });
 
   it("refuses to revoke a link someone joins through while the revoke runs", async () => {
@@ -148,7 +168,7 @@ describe("invite links", () => {
       return { revoke };
     });
     expect(await revoke).toBe("Conflict");
-    expect((await run(readInvite(tokenOf(link))))?.state).toBe("accepted");
+    expect((await run(readInvite(tokenOf(link), null)))?.state).toBe("accepted");
   });
 
   it("refuses a link whose sender stops being an admin while someone joins through it", async () => {
@@ -167,7 +187,7 @@ describe("invite links", () => {
   it("shows a link from a sender who is no longer an admin as revoked, and lets someone else invite that email again", async () => {
     const sent = await invite("carol", { email: "dan@example.test" });
     await harness.db.update(member).set({ role: "member" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
-    expect((await run(readInvite(tokenOf(sent.link))))?.state).toBe("revoked");
+    expect((await run(readInvite(tokenOf(sent.link), null)))?.state).toBe("revoked");
     const listed = await as("ada", "org_invite_ls", {});
     expect(listed.ok ? (listed.output as Array<{ id: string }>).map((row) => row.id) : null).not.toContain(sent.id);
     const again = await invite("ada", { email: "dan@example.test" });
@@ -200,12 +220,12 @@ describe("member commands", () => {
 
   it("refuses the last owner who leaves or steps down, and lets them once another owner exists", async () => {
     expect(await as("ada", "org_member_rm", { member: "eve@example.test" })).toMatchObject({ ok: true });
-    expect(await as("ada", "org_leave", { organization: "acme" })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+    expect(await as("ada", "org_leave", { organization: ACME })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await as("ada", "org_member_role", { member: "ada@example.test", role: "admin" })).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await roleOf(ids.ada)).toBe("owner");
 
     expect(await as("ada", "org_member_role", { member: "Carol", role: "owner" })).toMatchObject({ ok: true });
-    expect(await as("ada", "org_leave", { organization: "acme" })).toMatchObject({ ok: true });
+    expect(await as("ada", "org_leave", { organization: ACME })).toMatchObject({ ok: true });
     expect(await roleOf(ids.ada)).toBeNull();
   });
 
@@ -250,21 +270,24 @@ describe("org leave", () => {
 
   it("leaves the Organization it names even when the session acts in another", async () => {
     const session = { kind: "session", id: "fay-session" } as const;
-    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "bravo")).toMatchObject({ ok: true, output: { organization: "bravo" } });
+    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, BRAVO)).toMatchObject({ ok: true, output: { organization: "bravo" } });
     expect(await membershipsOf(fay)).toEqual(["charlie"]);
   });
 
   it("refuses an Organization the caller may not act in and changes nothing", async () => {
     const session = { kind: "session", id: "fay-session" } as const;
-    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "acme")).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, ACME)).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    // A slug no longer names the Organization to leave; only its ID does.
+    expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "charlie")).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    expect(await membershipsOf(fay)).toEqual(["charlie"]);
   });
 
   it("refuses a token, even a full one leaving its own Organization, and changes nothing", async () => {
     const token = { kind: "token", id: "fay-token", grant: FULL_GRANT } as const;
     await harness.db.insert(member).values({ userId: fay, organizationId: BRAVO, role: "member" });
     const refusal = { code: "forbidden", message: "A token can't leave for you. Run `ployz login`, then leave." };
-    expect(await leave(token, { id: CHARLIE, slug: "charlie" }, "bravo")).toMatchObject({ ok: false, refusal });
-    expect(await leave(token, { id: BRAVO, slug: "bravo" }, "bravo")).toMatchObject({ ok: false, refusal });
+    expect(await leave(token, { id: CHARLIE, slug: "charlie" }, BRAVO)).toMatchObject({ ok: false, refusal });
+    expect(await leave(token, { id: BRAVO, slug: "bravo" }, BRAVO)).toMatchObject({ ok: false, refusal });
     expect(await membershipsOf(fay)).toEqual(["bravo", "charlie"]);
   });
 });

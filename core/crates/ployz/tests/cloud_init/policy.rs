@@ -39,6 +39,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
                         advertised_endpoints: founder.advertised_endpoints,
                     },
                     wireguard_mtu: None,
+                    pinned: Default::default(),
                 },
                 None,
             )

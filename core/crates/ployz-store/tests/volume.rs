@@ -7,16 +7,18 @@
 
 use ployz_core::config::{ReviewLifecycleKind, VolumeKind};
 use ployz_core::{
-    DeployOutcome, DeployPreview, DockerVolumeId, DockerVolumeName, MachineId, RpcError,
-    RpcErrorCode, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
+    DeployOutcome, DeployPreview, DockerVolumeId, DockerVolumeName, MachineId,
+    ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode, ServiceName, VolumeRemoval,
+    VolumeRemovalOutcome,
 };
 use ployz_store::{
-    Actor, Admit, Approval, ApprovalDigest, Change, ConfigStore, CreateProject, CreateService,
-    CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard,
-    Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId,
-    ProjectId, ProjectName, Publish, Published, RemovalsQuery, RemoveVolume, RenameVolume, Retry,
-    RunEvidence, RunnerId, ServiceLineageId, SetVolumeSharedWrites, SetVolumeStorage, SettingPath,
-    Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    Actor, Admit, Approval, ApprovalDigest, Batch, BatchCommand, Change, ConfigStore,
+    CreateProject, CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentStatus,
+    DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount,
+    NodeStatus, OrganizationId, ProjectId, ProjectName, Publish, Published, RemovalsQuery,
+    RemoveVolume, RenameVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
+    SetVolumeSharedWrites, SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing,
+    VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -497,7 +499,7 @@ fn a_deployed_volume_removal_discards_alone() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("volumes.data").unwrap()),
                 version: None,
             },
@@ -644,10 +646,10 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     };
     let failed = VolumeRemovalOutcome::Failed {
         error: RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "in use".into(),
+            code: RpcErrorCode::Conflict,
+            message: "provider stderr token=review-sentinel".into(),
             details: Value::Null,
-            cause: Vec::new(),
+            cause: vec!["token=review-sentinel".into()],
         },
     };
     let claimed = run(&store, 2, vec![removal(failed)]);
@@ -665,6 +667,14 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
         .find(|node| node.node.name() == "data")
         .unwrap();
     assert_eq!(data.outcome, NodeStatus::Failed);
+    // The reason is fixed words: what the provider printed stays out of it.
+    let outcome = serde_json::to_value(&failed.deployment.outcome).unwrap();
+    assert_eq!(
+        outcome["reason"],
+        json!("data: deleting its data failed: it is still in use on a Server")
+    );
+    let shown = serde_json::to_string(&failed).unwrap();
+    assert!(!shown.contains("review-sentinel"), "{shown}");
 
     admit(&store, &who, 3, &["data"], Some(observed(&['a']))).unwrap();
     // A Volume being removed waits while it runs.
@@ -731,12 +741,204 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
             &Admit::Retry(Retry {
                 id: id(3),
                 deployment: id(2),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
             &Trusted::default(),
         )
         .unwrap();
     let claimed = store.claim(&id(3), &runner).unwrap();
     assert_eq!(claimed.deletes, [held('a')]);
+}
+
+/// Claim Deployment `n` and run `web` and `api`: both deploy, or `web` deploys and
+/// `api` fails. It deletes `removed`.
+fn run_both(store: &ConfigStore, n: u8, api_fails: bool, removed: Vec<VolumeRemoval>) {
+    let runner = RunnerId::parse("runner").unwrap();
+    let op = |container: &str| json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": container.repeat(64)});
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [
+            {"index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+             "operation": op("a"), "status": {"type": "pending"}},
+            {"index": 1, "machine_id": "a".repeat(32), "service_name": "api",
+             "operation": op("b"), "status": {"type": "pending"}}
+        ],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store.claim(&id(n), &runner).unwrap();
+    store
+        .record(&id(n), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome = match api_fails {
+        false => json!({ "type": "success", "completed": [op("a"), op("b")] }),
+        true => json!({
+            "type": "failed", "completed": [op("a")],
+            "failed": {"type": "operation", "operation": op("b"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }),
+    };
+    store
+        .record(
+            &id(n),
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(serde_json::from_value(outcome).unwrap()),
+                removed,
+            },
+        )
+        .unwrap();
+}
+
+/// How the Deployment that brought `data` back ended.
+#[derive(Clone, Copy, PartialEq)]
+enum Ended {
+    Applied,
+    Failed,
+    /// It prepared, then lost track, so Applied State never lists `data` again.
+    Unknown,
+}
+
+/// #2 deleted `data`, then #3 brought it back, and ended as `ended`. Redeploying #2
+/// rolls #3 back: its data is reviewed afresh and deleted only once a person
+/// accepts it again.
+fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(ended: Ended) {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-00000000000a").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run_both(&store, 1, false, Vec::new());
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 2, &["data"], Some(observed(&['a']))).unwrap();
+    let removed = || VolumeRemoval {
+        id: held('a'),
+        outcome: VolumeRemovalOutcome::Removed,
+    };
+    run_both(&store, 2, false, vec![removed()]);
+    // The Volume comes back under the same identity, so its new data lives in the
+    // same Docker Volume #2 deleted.
+    let first = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .deployment
+        .saved;
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: first,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: first,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 3, &[], None).unwrap();
+    match ended {
+        Ended::Applied | Ended::Failed => {
+            run_both(&store, 3, ended == Ended::Failed, Vec::new());
+            assert!(listed(&store, &who)[0].deployed);
+        }
+        Ended::Unknown => {
+            let runner = RunnerId::parse("runner").unwrap();
+            prepare(&store, 3, &["web", "api"]);
+            store
+                .record(&id(3), &runner, RunEvidence::Abandoned)
+                .unwrap();
+            assert!(!listed(&store, &who)[0].deployed);
+        }
+    }
+
+    let rolled_back = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
+    assert_eq!(rolled_back.rolls_back, [3]);
+    // What a rollback asks about is what it deletes now, not what #2 accepted.
+    let removals = store
+        .read(
+            &who,
+            &RemovalsQuery {
+                deployment: Some(id(2)),
+                ..RemovalsQuery::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(removals.volumes.len(), 1);
+    let redeploy = |accept: &[&str], version: Option<String>| {
+        store.write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(4),
+                deployment: id(2),
+                rolls_back: Some(vec![3]),
+                version,
+                accept_volume_loss: accept
+                    .iter()
+                    .map(|name| VolumeName::parse(*name).unwrap())
+                    .collect(),
+            }),
+            &Trusted {
+                volumes: Some(observed(&['a'])),
+                ..Trusted::default()
+            },
+        )
+    };
+    let asked = redeploy(&[], None).unwrap_err();
+    assert_eq!(asked.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(asked.details["volumes"][0]["name"], json!("data"));
+    let version = asked.details["version"].as_str().unwrap().to_owned();
+    redeploy(&["data"], Some(version)).unwrap();
+    assert_eq!(prepare(&store, 4, &["web"]).deletes, [held('a')]);
+}
+
+#[test]
+fn rolling_back_past_a_deployment_that_brought_a_volume_back_asks_before_deleting_it() {
+    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(Ended::Applied);
+}
+
+#[test]
+fn rolling_back_past_a_partly_applied_deployment_asks_before_deleting_what_it_brought_back() {
+    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(Ended::Failed);
+}
+
+#[test]
+fn rolling_back_past_a_deployment_that_lost_track_asks_before_deleting_what_it_may_have_brought_back()
+ {
+    rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(Ended::Unknown);
 }
 
 #[test]
@@ -1120,7 +1322,7 @@ fn a_deployed_volume_rename_discards_by_its_row() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(path(&row.path)),
                 version: None,
             },
@@ -1394,12 +1596,129 @@ fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "uploads is already mounted by web; allow shared writes first: ployz volume set uploads --shared-writes"
+        "uploads would be mounted by web, api; add it with shared writes on"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume add uploads --mount web:/uploads --mount api:/uploads --docker --shared-writes --env production --project shop"
     );
     assert!(store.write(&who, &both(true)).unwrap().volume.shared_writes);
 
     set_shared_writes(&store, &who, true).unwrap();
     edit(&store, &who, mount()).unwrap();
+}
+
+#[test]
+fn a_new_volume_on_a_second_replica_is_refused_with_an_add_that_works() {
+    let (store, who) = shop();
+    add_api(&store, &who);
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("api.replicas"),
+            value: json!(2),
+        },
+    )
+    .unwrap();
+    let add = |shared_writes| CreateVolume {
+        shared_writes,
+        storage_locked: true,
+        storage: VolumeKind::Provisioned {
+            maximum_bytes: ProvisionedVolumeMaximumBytes::parse_gb("1.5GB").unwrap(),
+        },
+        id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
+        environment: EnvironmentRef::default(),
+        name: VolumeName::parse("uploads").unwrap(),
+        mounts: vec![Mount {
+            service: ServiceName::parse("api").unwrap(),
+            path: "/my $uploads".into(),
+        }],
+    };
+    let refused = store.write(&who, &add(false)).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "uploads would be attached to api; set replicas to 1, or add it with shared writes on"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume add uploads --mount 'api:/my $uploads' --size 1.5GB --shared-writes --env production --project shop"
+    );
+    let words = shell_words::split(refused.details["next"].as_str().unwrap()).unwrap();
+    assert!(words.contains(&"api:/my $uploads".to_owned()), "{words:?}");
+    assert!(store.write(&who, &add(true)).unwrap().volume.shared_writes);
+}
+
+#[test]
+fn a_new_volume_refused_in_a_batch_that_creates_its_service_has_no_next() {
+    let (store, who) = shop();
+    let batch = Batch {
+        environment: EnvironmentRef::default(),
+        commands: vec![
+            BatchCommand::CreateService(CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("caddy:2".into()),
+                template: None,
+            }),
+            BatchCommand::Edit(Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: path("api.replicas"),
+                    value: json!(2),
+                }],
+            }),
+            BatchCommand::CreateVolume(CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("uploads").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("api").unwrap(),
+                    path: "/uploads".into(),
+                }],
+            }),
+        ],
+        expect: None,
+    };
+    let refused = store.write(&who, &batch).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "uploads would be attached to api; set replicas to 1, or add it with shared writes on"
+    );
+    assert!(refused.details.get("next").is_none(), "{}", refused.details);
+}
+
+#[test]
+fn start_first_on_a_volume_is_refused_until_shared_writes_is_on() {
+    let (store, who) = shop();
+    let order = |order: &str| Change::Set {
+        path: path("web.updateOrder"),
+        value: json!(order),
+    };
+    edit(&store, &who, order("rolling")).unwrap();
+    edit(&store, &who, order("stop-first")).unwrap();
+    let refused = edit(&store, &who, order("start-first")).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "web mounts data, and start-first runs two copies on it; set web.updateOrder=stop-first, or allow shared writes: ployz volume set data --shared-writes"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz set web.updateOrder=stop-first --env production --project shop"
+    );
+
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(&store, &who, order("start-first")).unwrap();
+    let refused = set_shared_writes(&store, &who, false).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{}", refused.message);
 }
 
 #[test]
@@ -1434,7 +1753,7 @@ fn discarding_one_setting_cannot_bring_back_a_second_writer() {
     set_shared_writes(&store, &who, false).unwrap();
     let discard = |path: Option<&str>| Discard {
         environment: EnvironmentRef::default(),
-        target: ployz_store::DiscardTarget::Head,
+        target: Some(ployz_store::DiscardTarget::Head),
         path: path.map(|path| SettingPath::parse(path).unwrap()),
         version: None,
     };
@@ -1445,4 +1764,30 @@ fn discarding_one_setting_cannot_bring_back_a_second_writer() {
     // Returning wholly to what was saved is never refused.
     store.write(&who, &discard(None)).unwrap();
     assert!(listed(&store, &who)[0].volume.shared_writes);
+}
+
+#[test]
+fn shared_writes_applies_at_once_and_is_no_diff_row() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    set_shared_writes(&store, &who, true).unwrap();
+    let view = diff(&store, &who);
+    assert!(view.changes.is_empty(), "{:?}", view.changes);
+    assert!(view.draft_changes.is_empty(), "{:?}", view.draft_changes);
+    assert_eq!((view.total_count, view.draft_count), (0, 0));
+
+    // Discarding the whole Volume returns it to the deployed value.
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: Some(SettingPath::parse("volumes.data").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(!listed(&store, &who)[0].volume.shared_writes);
 }

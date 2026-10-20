@@ -21,10 +21,10 @@ describe("ClusterDomainSection", () => {
     document.body.replaceChildren();
   });
 
-  it("says when the domain arrives before the first deploy", () => {
+  it("says when the domain arrives before the first generated domain", () => {
     render(<ClusterDomainSection organizationSlug="acme" domain={null} onCheck={vi.fn()} />);
 
-    expect(screen.getByText("You’ll get one on your first deploy.")).toBeTruthy();
+    expect(screen.getByText("You’ll get one when you generate your first domain.")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
 
@@ -42,7 +42,7 @@ describe("ClusterDomainSection", () => {
     const { rerender } = render(<ClusterDomainSection organizationSlug="acme" domain={blocked} onCheck={onCheck} />);
 
     expect(screen.getByText("Needs attention")).toBeTruthy();
-    expect(screen.getByText("Traffic can’t reach 203.0.113.1. Make sure port 80 is open.")).toBeTruthy();
+    expect(screen.getByText("Traffic can’t reach 203.0.113.1. Open port 80 in the Server’s firewall (for example ufw allow 80/tcp).")).toBeTruthy();
     const button = () => screen.getByText("Check again").closest("button") as HTMLButtonElement;
     await act(async () => { fireEvent.click(button()); });
     expect(onCheck).toHaveBeenCalledOnce();

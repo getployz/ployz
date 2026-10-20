@@ -11,21 +11,18 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{
-    ContainerId, DeploymentLogId, Drain, Machine, MachineId, MachineName, ManagementAddress,
-    MembershipEvidence, QualifiedService,
-};
+use ployz_core::{ContainerId, DeploymentLogId, Drain, MachineId, QualifiedService};
 use tokio::{task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{
         AdminClient, Error as CorrosionError, IngressRouteAck, IngressRouteRow, MachineView,
-        ReplicatedObservations, ReplicatedStore, ServingPointers, Subscription,
-        membership_states_by_address,
+        ReplicatedStore, ServingPointers, Subscription,
     },
     docker::ContainerRuntime,
     machine::LocalMachine,
+    route_acks::{Ackers, Membership, sample_ackers},
 };
 
 const FORCE_AFTER: Duration = Duration::from_secs(300);
@@ -34,7 +31,6 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const DEBOUNCE: Duration = Duration::from_millis(200);
 const DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
-const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) trait RetireHost: Clone + Send + Sync + 'static {
@@ -100,60 +96,6 @@ impl RetireHost for DaemonHost {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Ackers {
-    Known(BTreeMap<MachineId, MachineName>),
-    Incomplete {
-        named: BTreeMap<MachineId, MachineName>,
-        unnamed: Vec<MachineId>,
-    },
-    Unread,
-}
-
-impl Ackers {
-    fn unacked(&self, acked: impl Fn(&MachineId) -> bool) -> Vec<String> {
-        let unacked_names = |machines: &BTreeMap<MachineId, MachineName>| {
-            machines
-                .iter()
-                .filter(|(machine, _)| !acked(machine))
-                .map(|(_, name)| name.to_string())
-                .collect::<Vec<_>>()
-        };
-        match self {
-            Self::Known(machines) => unacked_names(machines),
-            Self::Incomplete { named, unnamed } => {
-                let mut unacked = unacked_names(named);
-                unacked.extend(
-                    unnamed
-                        .iter()
-                        .filter(|machine| !acked(machine))
-                        .map(|machine| machine.as_str().to_owned()),
-                );
-                unacked
-            }
-            Self::Unread => vec!["unknown, the Machine list was never read".to_owned()],
-        }
-    }
-
-    fn lists(&self, machine: &MachineId) -> bool {
-        match self {
-            Self::Known(named) => named.contains_key(machine),
-            Self::Incomplete { named, unnamed } => {
-                named.contains_key(machine) || unnamed.contains(machine)
-            }
-            Self::Unread => false,
-        }
-    }
-}
-
-/// One round's membership: the Machines that must ack, and the Machines the
-/// sample reported Down, whose ingress routes no longer count.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Membership {
-    pub(crate) ackers: Ackers,
-    pub(crate) down: BTreeSet<MachineId>,
-}
-
 impl Membership {
     /// Machines outside the ackers, not reported Down, that may still route
     /// the Candidate. Each holds it like an unacked Machine.
@@ -172,60 +114,6 @@ impl Membership {
             .map(|((machine, _), _)| machine.as_str().to_owned())
             .collect()
     }
-}
-
-/// Machines whose ingress must ack: every one not reported Down, or every one
-/// when membership cannot be sampled.
-pub(crate) async fn sample_ackers(
-    machines: ReplicatedObservations<Machine, MachineId>,
-    local: &MachineId,
-    admin: &AdminClient,
-) -> Membership {
-    let states =
-        match tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states()).await {
-            Ok(Ok(states)) => Some(membership_states_by_address(states)),
-            _ => {
-                tracing::warn!("membership sample failed; every Machine must ack");
-                None
-            }
-        };
-    required_ackers(machines, local, states.as_ref())
-}
-
-fn required_ackers(
-    machines: ReplicatedObservations<Machine, MachineId>,
-    local: &MachineId,
-    states: Option<&BTreeMap<ManagementAddress, MembershipEvidence>>,
-) -> Membership {
-    let (down, up): (Vec<Machine>, Vec<Machine>) = machines
-        .observations
-        .into_iter()
-        .partition(|machine| &machine.id != local && reported_down(machine, states));
-    let named = up
-        .into_iter()
-        .map(|machine| (machine.id, machine.name))
-        .collect();
-    let ackers = if machines.incomplete_ids.is_empty() {
-        Ackers::Known(named)
-    } else {
-        Ackers::Incomplete {
-            named,
-            unnamed: machines.incomplete_ids,
-        }
-    };
-    Membership {
-        ackers,
-        down: down.into_iter().map(|machine| machine.id).collect(),
-    }
-}
-
-fn reported_down(
-    machine: &Machine,
-    states: Option<&BTreeMap<ManagementAddress, MembershipEvidence>>,
-) -> bool {
-    states.is_some_and(|states| {
-        states.get(&machine.management_address()) == Some(&MembershipEvidence::Down)
-    })
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -662,14 +550,15 @@ mod tests {
 
     use ployz_core::{
         AdvertisedEndpoint, ContainerId, DeploymentLogId, Hold, Machine, MachineId, MachineName,
-        MachineRuntime, MembershipEvidence, QualifiedService, ServingPointer, WireGuardPublicKey,
+        MachineRuntime, MembershipEvidence, QualifiedService, RunRotation, ServingPointer,
+        WireGuardPublicKey,
     };
     use tokio::{task::JoinSet, time::Instant};
     use tokio_util::sync::CancellationToken;
 
     use super::{
         Ackers, Candidate, FORCE_AFTER, Membership, Outcome, PENDING_TICK, RetireHost, Retirer,
-        Verdict, remove_drained, required_ackers, round, run,
+        Verdict, remove_drained, round, run,
     };
     use crate::corrosion::{
         Error as CorrosionError, IngressRouteAck, IngressRouteChange, IngressRouteRow,
@@ -677,6 +566,7 @@ mod tests {
         fake_cluster::FakeCluster,
         store_tests::{corrosion_db, identity_store},
     };
+    use crate::route_acks::required_ackers;
 
     type Acks = BTreeMap<(MachineId, QualifiedService), IngressRouteRow>;
 
@@ -1811,6 +1701,7 @@ mod tests {
                         )],
                     },
                     wireguard_mtu: None,
+                    pinned: Default::default(),
                 })
                 .unwrap();
             let owner = crate::machine::RecordOwner::spawn(machine_store).unwrap();
@@ -1837,12 +1728,14 @@ mod tests {
                 let new: ployz_core::NewContainer = serde_json::from_value(serde_json::json!({
                     "slot": {"namespace": "app", "kind": "service_container", "creation_key": key},
                     "resolved_spec": spec_with_sources(vec![]),
+                    "gen": 1,
                     "answer": "started",
                 }))
                 .unwrap();
                 local_machine
                     .ensure_container(ployz_core::ContainerWant::Running {
                         container: ployz_core::RunTarget::New(new),
+                        rotation: RunRotation::Pending,
                     })
                     .await
                     .unwrap();

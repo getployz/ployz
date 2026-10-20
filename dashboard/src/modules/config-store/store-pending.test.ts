@@ -59,6 +59,13 @@ it("names a pending domain by the literal it sends, and none when the Store name
     .toEqual([{ mark: "domain", environment, service: "web", name: null }]);
 });
 
+it("names a pending Unicode domain in punycode, as the Store names it", () => {
+  expect(marksOf({ command: "add_domain", environment, service: "web", hostname: "пример.рф", port: null }))
+    .toEqual([{ mark: "domain", environment, service: "web", name: "xn--e1afmkfd.xn--p1ai" }]);
+  expect(marksOf({ command: "add_domain", environment, service: "web", hostname: "BÜCHER.example.com", port: null }))
+    .toEqual([{ mark: "domain", environment, service: "web", name: "xn--bcher-kva.example.com" }]);
+});
+
 it("marks an On merge write by its row and a PR plan write by the fields it sets", () => {
   expect(marksOf({ command: "set_merge_value", environment, row: "w:env.A" }))
     .toEqual([{ mark: "merge_value", environment, row: "w:env.A" }]);

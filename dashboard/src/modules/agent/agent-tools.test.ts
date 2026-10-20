@@ -37,6 +37,7 @@ describe("agent tools", () => {
       "volume_mirror_remove",
       "volume_move",
       "volume_release",
+      "volume_restore",
     ]);
     expect(AGENT_TOOLS.filter((tool) => tool.readOnly && tool.destructive)).toEqual([]);
   });

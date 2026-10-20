@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
+import { getAuthSessionEffect } from "#/auth/auth.server";
 import { type CommandName, runCommand } from "#/modules/commands/commands.server";
 import type { Caller } from "#/modules/identity/actor";
 import { dashboardCaller } from "#/modules/identity/caller.server";
@@ -70,13 +71,18 @@ export const revokeInviteServerFn = createServerFn({ method: "POST" })
 export const leaveOrganizationServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Slug })))
-  .handler(({ context, data }) => runActor(context, ran(getRequest().headers, data.organizationSlug, "org_leave", { organization: data.organizationSlug })));
+  .handler(({ context, data }) => runActor(context, dashboardCaller(getRequest().headers, data.organizationSlug).pipe(
+    Effect.flatMap((caller) => ranAs(caller, "org_leave", { organization: caller.organization.id })),
+  )));
 
 /** Anyone holding the link may see where it leads, signed in or not: the token is the secret. */
 export const readInviteServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware])
   .validator(strictValidator(Schema.Struct({ token: Schema.String })))
-  .handler(({ data }) => runActor({ signal: getRequest().signal }, readInvite(data.token)));
+  .handler(({ data }) => {
+    const { headers, signal } = getRequest();
+    return runActor({ signal }, getAuthSessionEffect(headers).pipe(Effect.flatMap((session) => readInvite(data.token, session?.user.id ?? null))));
+  });
 
 export const acceptInviteServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])

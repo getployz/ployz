@@ -46,8 +46,10 @@ mod sdk_update_machine;
 mod sdk_upgrade_machine;
 mod sdk_volumes;
 mod sdk_watch;
+mod server_endpoint_cli;
 mod support;
 mod unix_session;
+mod unknown_service_cli;
 use support::*;
 
 #[tokio::test]
@@ -507,8 +509,9 @@ async fn a_refused_tail_names_the_capability_and_the_server() {
     service.tail_failure = Some(Status::unimplemented(""));
     let (address, server) = serve_discovery(service).await;
 
+    // Retained history printed first, so the refused tail makes the read partial.
     let output = run_ployz(address, &["logs", "app/api", "--follow"]).await;
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
         stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
@@ -869,6 +872,8 @@ fn listing_container(
     let service_id = ployz_core::ServiceId::parse(service_hex.to_string().repeat(32)).unwrap();
     let service_name = ployz_core::ServiceName::parse(name).unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ployz_core::ContainerId::parse(container_hex.to_string().repeat(64)).unwrap(),
         display_name: format!("{name}-{container_hex}"),
         created_at_unix_nanos: 1,
@@ -936,6 +941,52 @@ async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
         vec![machine_id('b')]
     );
     assert_eq!(result.omissions, vec![machine_id('e'), machine_id('c')]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn observing_containers_past_tonic_s_default_4_mib_succeeds() {
+    let service = DiscoveryService::new(test_description());
+    let container =
+        ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+            container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+            display_name: "api-c".into(),
+            created_at_unix_nanos: 1,
+            machine_id: machine_id('a'),
+            namespace: ployz_core::Namespace::parse("app").unwrap(),
+            kind: ContainerKind::ServiceContainer,
+            runtime: ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            effective_healthcheck: None,
+            resolved_spec: serde_json::from_value(json!({
+                "service_id": ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+                "name": "api",
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": {
+                    "image": "alpine:3.23.3", "pull_policy": "missing",
+                    "config_mounts": [{ "config_name": "bulk/a", "target": "/etc/bulk/a" }]
+                },
+                "configs": [{ "name": "bulk/a", "content": vec![b'x'; 2 * 1024 * 1024] }]
+            }))
+            .unwrap(),
+            address: None,
+            labels: BTreeMap::new(),
+            rotation: None,
+            r#gen: None,
+        })
+        .unwrap();
+    service.listed_containers.lock().unwrap().push(container);
+    let (mut client, server, _) = connected_client(service).await;
+
+    let result = client
+        .live_services(ployz_core::EnvironmentValues::Redacted)
+        .await
+        .unwrap()
+        .containers;
+
+    assert_eq!(result.failures, []);
+    assert_eq!(result.successes.len(), 1);
     server.abort();
 }
 

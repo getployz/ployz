@@ -69,6 +69,11 @@ fn tracked(operations: Vec<OperationRow>) -> Vec<String> {
     preview.depths = [(ServiceName::parse("web").unwrap(), 0)].into();
     lines(&Direct::new(&preview, "Deploying shop".into()).frame())
 }
+/// `web` left the target, so the plan gives it no depth.
+fn tracked_removal(operations: Vec<OperationRow>) -> Vec<String> {
+    let preview = DeployPreview::new(operations, Vec::new(), Namespace::parse("shop").unwrap());
+    lines(&Direct::new(&preview, "Deploying shop".into()).frame())
+}
 fn denied() -> ExecutionError {
     ExecutionError::Machine {
         action: MachineAction::CreateContainer,
@@ -215,6 +220,7 @@ fn row_state(state: &str) -> RowState {
             cause: Vec::new(),
             step: None,
             log: None,
+            unanswered: false,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),
@@ -495,29 +501,47 @@ fn removal_only_work_reads_removing_then_removed() {
         ]
     };
     assert_eq!(
-        tracked(removal(OperationStatus::Pending, OperationStatus::Pending)),
-        ["depth 0", "  · web  waiting to remove 0/2"]
+        tracked_removal(removal(OperationStatus::Pending, OperationStatus::Pending)),
+        ["  · web  waiting to remove 0/2"]
     );
     assert_eq!(
-        tracked(removal(
+        tracked_removal(removal(
             running(OperationPhase::StoppingContainer),
             OperationStatus::Pending
         )),
-        ["depth 0", "  ⠋ web  stopping 0/2  0.0s"]
+        ["  ⠋ web  stopping 0/2  0.0s"]
     );
     assert_eq!(
-        tracked(removal(
+        tracked_removal(removal(
             OperationStatus::Completed,
             running(OperationPhase::RemovingContainer)
         )),
-        ["depth 0", "  ◐ web  removing 1/2  0.0s"]
+        ["  ◐ web  removing 1/2  0.0s"]
     );
     assert_eq!(
-        tracked(removal(
+        tracked_removal(removal(
             OperationStatus::Completed,
             OperationStatus::Completed
         )),
-        ["depth 0", "  ✔ web  removed 2/2"]
+        ["  ✔ web  removed 2/2"]
+    );
+}
+
+#[test]
+fn a_kept_service_that_only_clears_an_old_copy_reads_as_an_update() {
+    let machine = MachineId::random();
+    let clearing = |status| tracked(vec![planned(0, remove(machine), status)]);
+    assert_eq!(
+        clearing(OperationStatus::Pending),
+        ["depth 0", "  · web  waiting"]
+    );
+    assert_eq!(
+        clearing(running(OperationPhase::RemovingContainer)),
+        ["depth 0", "  ⠋ web  removing old  0.0s"]
+    );
+    assert_eq!(
+        clearing(OperationStatus::Completed),
+        ["depth 0", "  ✔ web  switched"]
     );
 }
 
@@ -569,6 +593,8 @@ fn moving_off_an_old_hook() -> DeployPreview {
         .unwrap();
     let observed = |hex: char, kind| {
         ContainerObservation::try_from(ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: old(hex),
             display_name: format!("web-{hex}"),
             created_at_unix_nanos: 0,
@@ -825,11 +851,9 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
 }
 
 fn shown(text: &str) -> ployz_store::tools::LogText {
-    let mut secrets = ployz_store::tools::SecretSet::from_store([], []);
-    secrets.add_machine_env(Some(&std::collections::BTreeMap::new()));
-    ployz_store::tools::LogExcerpt::scrub(
+    ployz_store::tools::LogText::Shown(ployz_store::tools::LogExcerpt::scrub(
         [text.to_owned()],
-        &secrets,
+        &ployz_store::tools::SealedValues::none(),
         ployz_store::tools::LineCap::default(),
-    )
+    ))
 }

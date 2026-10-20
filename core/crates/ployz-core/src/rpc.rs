@@ -25,7 +25,8 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
     MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
-    QualifiedService, ResolvedServiceSpec, ServingPointer, StorageChoice, WireGuardPublicKey,
+    PinnedAddresses, QualifiedService, ResolvedServiceSpec, SelectedEndpoint, ServingPointer,
+    StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -213,6 +214,8 @@ pub struct EnrollRequest {
     pub role: EnrollAs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "PinnedAddresses::is_empty")]
+    pub pinned: PinnedAddresses,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -382,6 +385,23 @@ pub struct PushTargetSet {
     pub url: Option<url::Url>,
 }
 
+/// An operator's endpoint for reaching `peer` from the Machine that takes the request.
+///
+/// It sets only that Machine's own Selected Endpoint; `peer`'s record is unchanged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectEndpointRequest {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
+}
+
+/// The Machine that took a [`SelectEndpointRequest`] now dials `endpoint` for `peer`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EndpointSelected {
+    pub peer: MachineId,
+    pub endpoint: SelectedEndpoint,
+}
+
 /// The place one Container creation lands on a Machine. The same slot names the
 /// same Container across resends; a different spec in it is an occupied slot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -416,6 +436,7 @@ pub struct EnsureContainerRequest {
 pub enum ContainerWant {
     Running {
         container: RunTarget,
+        rotation: RunRotation,
     },
     Stopped {
         container: ContainerLocator,
@@ -428,6 +449,37 @@ pub enum ContainerWant {
         drain: crate::Drain,
         #[serde(default)]
         anonymous_volumes: AnonymousVolumes,
+    },
+    /// Take the copy out of routing for good. The Container keeps running.
+    Out {
+        container: ContainerLocator,
+        /// Allow the Service to lose its last routed copy. Without it, an In copy
+        /// goes Out only while another In copy is acked by every live proxy.
+        allow_empty: bool,
+        /// The rotation the caller read; `None` checks nothing.
+        expect: Option<crate::CopyRotation>,
+    },
+    /// Take the copy out of routing for `run`, which alone may route it again. The
+    /// Container keeps running until a `Stopped` want stops it.
+    Held {
+        container: ContainerLocator,
+        run: crate::DeploymentLogId,
+        /// The rotation the caller read; `None` checks nothing.
+        expect: Option<crate::CopyRotation>,
+    },
+}
+
+/// The rotation a `Running` want asks for.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RunRotation {
+    /// Write no rotation: a new copy stays Pending, an existing copy keeps its own.
+    Pending,
+    /// Route the copy once it is healthy. `run` is the run that holds it, when it is Held.
+    In {
+        run: Option<crate::DeploymentLogId>,
+        /// The rotation the caller read; `None` checks nothing.
+        expect: Option<crate::CopyRotation>,
     },
 }
 
@@ -467,6 +519,8 @@ pub enum RunTarget {
 pub struct NewContainer {
     pub slot: SlotKey,
     pub resolved_spec: ResolvedServiceSpec,
+    /// Orders this copy among its Service's copies; stamped as the `ployz.gen` label.
+    pub r#gen: crate::Gen,
     /// Correlation metadata, never part of the Service configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<crate::DeploymentLogId>,
@@ -714,8 +768,38 @@ pub struct PullImageRequest {
 }
 
 /// Successful `PullImage` and `PullImageFromMachine` payload.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ImagePulled {}
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImagePulled {
+    /// The ports the image's config exposes, as Docker reports them. A Machine that
+    /// doesn't report them sends none, which claims nothing about the image.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exposed_ports: Vec<ExposedPort>,
+}
+
+/// One port an image's config exposes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+pub struct ExposedPort {
+    pub port: std::num::NonZeroU16,
+    pub protocol: crate::TransportProtocol,
+}
+
+impl ExposedPort {
+    /// Read one of Docker's exposed-port keys, such as `80/tcp`. Answers `None` for a
+    /// protocol Ployz doesn't route (sctp) and for anything it can't read.
+    #[must_use]
+    pub fn from_docker(key: &str) -> Option<Self> {
+        let (port, protocol) = key.split_once('/').unwrap_or((key, "tcp"));
+        let protocol = match protocol {
+            "tcp" => crate::TransportProtocol::Tcp,
+            "udp" => crate::TransportProtocol::Udp,
+            _ => return None,
+        };
+        Some(Self {
+            port: port.parse().ok()?,
+            protocol,
+        })
+    }
+}
 
 /// Remove the superseded build images of each repository from this Machine's store.
 /// Repositories are Docker's short names, so a registry prefix stays. Never forced:
@@ -1123,7 +1207,12 @@ impl ContainerRefusal {
             ContainerRefusalReason::InvalidIngress => RpcErrorCode::InvalidArgument,
             ContainerRefusalReason::NotEligible
             | ContainerRefusalReason::SlotOccupied
-            | ContainerRefusalReason::VolumesNotPrepared => RpcErrorCode::Conflict,
+            | ContainerRefusalReason::VolumesNotPrepared
+            | ContainerRefusalReason::LastIn
+            | ContainerRefusalReason::OlderThanIn
+            | ContainerRefusalReason::HeldByOtherRun
+            | ContainerRefusalReason::RotationMismatch
+            | ContainerRefusalReason::InRotation => RpcErrorCode::Conflict,
             ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
                 RpcErrorCode::Internal
             }
@@ -1149,6 +1238,15 @@ pub enum ContainerRefusalReason {
     ImagePullFailed,
     VolumesNotPrepared,
     NotFound,
+    /// No other In copy of the Service is acked by every live proxy.
+    LastIn,
+    /// A newer copy of the Service is already In.
+    OlderThanIn,
+    HeldByOtherRun,
+    /// The copy's rotation is not the one the want expected, or no move leads from it.
+    RotationMismatch,
+    /// The copy is routed, or held by a run that may route it again.
+    InRotation,
     #[serde(other)]
     Unrecognized,
 }
@@ -1207,14 +1305,29 @@ pub enum ServingPointerPublication {
     },
 }
 
-/// Read one Service's Serving Pointer from the target Machine's replicated store.
+/// Read which copies of one Service each live proxy routes, from the target
+/// Machine's replicated store.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ReadServingPointerRequest {
+pub struct ReadRoutesRequest {
     pub service: QualifiedService,
+    /// Any participating Machine answers, and `pointer` may lag. Without it only the
+    /// Serving Pointer publisher answers; others refuse with [`NotPointerPublisher`].
+    #[serde(default)]
+    pub routes_only: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ServingPointerRead {
+pub struct RoutesRead {
+    /// Each Machine not reported Down and the copies its proxy acks. `None` when its
+    /// row for the Service has not arrived or does not decode: unknown, not empty.
+    #[serde(default)]
+    pub routes: BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>,
+    /// The Machine list replicated in full, so `routes` names every live Machine.
+    #[serde(default)]
+    pub complete: bool,
+    /// Machines the membership sample reported Down; their routes no longer count.
+    #[serde(default)]
+    pub down: BTreeSet<MachineId>,
     pub pointer: Option<ServingPointer>,
     /// Machines whose ingress_routes row routes `pointer`'s deploy and every
     /// Container it names, and which deploy that is. Empty without a pointer.
@@ -1350,6 +1463,7 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     PushTargetSet(PushTargetSet) => "push_target_set";
+    EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
@@ -1367,7 +1481,7 @@ define_responses! {
     BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     ServingPointerPublication(ServingPointerPublication) => "serving_pointer_publication";
-    ServingPointerRead(ServingPointerRead) => "serving_pointer_read";
+    RoutesRead(RoutesRead) => "routes_read";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     Left(Left) => "left";
@@ -1543,12 +1657,51 @@ impl RpcError {
         }
     }
 
+    /// An error the caller made because its target Machine didn't answer: the target
+    /// sent nothing, so it may answer later. Read back by [`Self::target_unanswered`].
+    #[must_use]
+    pub fn unanswered_target(code: RpcErrorCode, message: String) -> Self {
+        Self {
+            code,
+            message,
+            details: serde_json::json!({ "reason": TARGET_UNANSWERED_REASON }),
+            cause: Vec::new(),
+        }
+    }
+
+    /// Whether the target Machine didn't answer, rather than answering with this error.
+    #[must_use]
+    pub fn target_unanswered(&self) -> bool {
+        self.details.get("reason").and_then(Value::as_str) == Some(TARGET_UNANSWERED_REASON)
+    }
+
     /// The capability this error says its target Machine lacks, if it is a refusal.
     #[must_use]
     pub fn refusal(&self) -> Option<CapabilityRefusal> {
         CapabilityRefusal::new(&self.code, self.details.clone())
     }
+
+    /// `self` from a pull of `image`, naming the image when the answer is not found.
+    /// A registry answers not found for a missing tag and a private repository alike.
+    #[must_use]
+    pub fn pulling(mut self, image: &str) -> Self {
+        if self.code == RpcErrorCode::NotFound && self.details.is_null() {
+            self.details = serde_json::json!({ MISSING_IMAGE: image });
+        }
+        self
+    }
+
+    /// The image a not-found pull named through [`Self::pulling`].
+    #[must_use]
+    pub fn missing_image(&self) -> Option<&str> {
+        if self.code != RpcErrorCode::NotFound {
+            return None;
+        }
+        self.details.get(MISSING_IMAGE)?.as_str()
+    }
 }
+
+const MISSING_IMAGE: &str = "missing_image";
 
 /// A Machine refused a route because its Ployz lacks the route's capability.
 #[derive(Clone, Debug, PartialEq)]
@@ -1593,6 +1746,8 @@ impl fmt::Display for CapabilityRefusal {
 /// Metadata an entry Machine's router puts on a status it made because the target
 /// Machine did not answer the forwarded call. A status the target sent never has it.
 pub const TARGET_UNANSWERED_KEY: &str = "ployz-target-unanswered";
+
+const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
 
 /// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
 #[cfg(not(target_arch = "wasm32"))]
@@ -1815,6 +1970,7 @@ mod set_management_client_wire {
                 advertised_endpoints: machine().advertised_endpoints,
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
         let member = serde_json::to_value(EnrollRequest {
@@ -1826,6 +1982,7 @@ mod set_management_client_wire {
                 },
             },
             wireguard_mtu: Some(1380),
+            pinned: Default::default(),
         })
         .unwrap();
         assert_eq!(founder.pointer("/as/kind"), Some(&json!("founder")));

@@ -444,6 +444,7 @@ async fn accept_loop(
                 .add_service(
                     MachineRpcServer::new(service)
                         .send_compressed(CompressionEncoding::Gzip)
+                        .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
                         .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
                 )
                 .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(stream)))
@@ -460,10 +461,12 @@ enum Received {
 
 /// An EnsureContainer reads, in the ledger and in faults, as the state it wants, so a
 /// stop and a start stay apart.
-const ENSURE_WANTS: [&str; 3] = [
+const ENSURE_WANTS: [&str; 5] = [
     "ensure_container:running",
     "ensure_container:stopped",
     "ensure_container:gone",
+    "ensure_container:out",
+    "ensure_container:held",
 ];
 
 impl Received {
@@ -477,6 +480,8 @@ impl Received {
                     ContainerWant::Running { .. } => "ensure_container:running",
                     ContainerWant::Stopped { .. } => "ensure_container:stopped",
                     ContainerWant::Gone { .. } => "ensure_container:gone",
+                    ContainerWant::Out { .. } => "ensure_container:out",
+                    ContainerWant::Held { .. } => "ensure_container:held",
                 }
             }
             Self::Bare(command) => command,
@@ -795,6 +800,7 @@ impl Fleet {
                 let (container_id, state) = match request.want {
                     ContainerWant::Running {
                         container: RunTarget::Existing(ContainerLocator::Id(id)),
+                        ..
                     } => (id, RunState::Running),
                     ContainerWant::Stopped {
                         container: ContainerLocator::Id(id),
@@ -1068,6 +1074,8 @@ impl MachineState {
             labels.insert(DEPLOYMENT_LABEL.to_owned(), deployment.to_string());
         }
         ContainerObservation::try_from(ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: container.id,
             display_name: spec.name.clone(),
             created_at_unix_nanos: FIRST_LOG_NANOS,

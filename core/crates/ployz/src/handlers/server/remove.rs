@@ -4,7 +4,7 @@ use ployz_core::{
 };
 
 use super::super::runtime;
-use super::{ConnectionOptions, target};
+use super::{ConnectionOptions, Reached, target};
 use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
@@ -48,9 +48,22 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?.to_owned();
     let runtime = runtime()?;
+    let reached = runtime.block_on(async {
+        match removal {
+            Removal::Forget => super::connect_or_unanswered(matches, options.context()).await,
+            Removal::Reset => Ok(Reached::Client(
+                super::connect(matches, options.context()).await?,
+            )),
+        }
+    })?;
+    let mut client = match reached {
+        Reached::Client(client) => client,
+        Reached::Unanswered(credential) => {
+            return super::forget::forget_unanswered(&runtime, matches, &credential, &selector);
+        }
+    };
     // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-    let (mut client, machines, selected, current, hold, held) = runtime.block_on(async {
-        let mut client = super::connect(matches, options.context()).await?;
+    let (machines, selected, current, hold, held) = runtime.block_on(async {
         let machines = client.machines().await?;
         let observation =
             crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
@@ -69,7 +82,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             Removal::Forget => Some(client.held_copies(observation).await?),
             Removal::Reset => None,
         };
-        Ok::<_, Error>((client, machines, selected, current, hold, held))
+        Ok::<_, Error>((machines, selected, current, hold, held))
     })?;
     if let Some(HeldCopies::Answered(held)) = &held
         && !held.is_empty()
@@ -320,12 +333,18 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             "cloud_released": cloud_released,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
-        let mut config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
+        let config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
-            && let Some(context) = config.contexts.get_mut(&context_name)
+            && config.contexts.contains_key(&context_name)
         {
-            context.drop_machine(&selected.id);
-            config.save().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
+            config
+                .update(|latest| {
+                    if let Some(context) = latest.contexts.get_mut(&context_name) {
+                        context.drop_machine(&selected.id);
+                    }
+                    Ok::<_, Error>(())
+                })
+                .map_err(|error| error.context("Server removed; local context cleanup failed."))?;
         }
         if reset_failure.is_some() {
             return Err(Error::partial());
@@ -674,6 +693,8 @@ mod tests {
         let service_id = ServiceId::parse(service.to_string().repeat(32)).unwrap();
         let service_name = ServiceName::parse(name).unwrap();
         ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
             display_name: name.into(),
             created_at_unix_nanos: 0,

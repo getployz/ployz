@@ -3,19 +3,20 @@
 //! evidence, so the Deploy Intent with its unsealed secrets, the session and the raw
 //! SDK evidence never leave it: the caller gets only the Deployment's summary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
-    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, RpcError, RpcErrorCode,
-    ServiceName,
+    ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
+    MachineId, RpcError, RpcErrorCode, ServiceName,
 };
-use ployz_store::tools::SecretSet;
+use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, Failure, RowState, RowTracker, RunEvidence, RunnerId,
+    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, RowState, RowTracker, RunEvidence,
+    RunnerId,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -24,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
-use crate::connect::SystemConnector;
+use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
@@ -212,40 +213,43 @@ pub async fn observe_copies(
     observed
 }
 
-/// Each Service's environment and which of its keys hold a secret: what its failed
-/// Container's log is scrubbed of.
+/// Every claim pair is kept, under its name: a name sealed after the claim
+/// still names a value this Deploy shipped, and the names are read again at each tail.
+/// A Container's Machine reports the rest, so a failed tail is scrubbed of both.
 struct Scrub {
-    env: BTreeMap<ServiceName, BTreeMap<String, String>>,
-    secret: BTreeMap<ServiceName, std::collections::BTreeSet<String>>,
+    environment: EnvironmentId,
+    sealed_at_claim: BTreeSet<String>,
+    claim: BTreeSet<(String, String)>,
 }
 
 impl Scrub {
     fn new(claimed: &Claimed) -> Self {
         Self {
-            env: claimed
+            environment: claimed.deployment.environment_id.clone(),
+            sealed_at_claim: claimed.sealed_names.clone(),
+            claim: claimed
                 .intent
                 .target
                 .iter()
-                .map(|spec| (spec.name.clone(), spec.container.environment.clone()))
+                .flat_map(|spec| spec.container.environment.iter())
+                .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
-            secret: claimed.secret_env.clone(),
         }
     }
 
-    /// `service`'s secret values, and its plain ones, which its Machine's env may
-    /// repeat. A Service the claim did not lower has no secret context.
-    fn secrets(&self, service: &ServiceName) -> SecretSet {
-        let Some(env) = self.env.get(service) else {
-            return SecretSet::unknown();
-        };
-        let keys = self.secret.get(service);
-        let (secrets, plain): (Vec<_>, Vec<_>) = env
+    /// The values under `names` from the claim and from `env`, what the Container's
+    /// Machine reports: an image can supply a variable the claim never named.
+    fn values(&self, names: &BTreeSet<String>, env: BTreeMap<String, String>) -> SealedValues {
+        self.claim
             .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .partition(|(key, _)| keys.is_some_and(|keys| keys.contains(key)));
-        SecretSet::from_store(secrets, plain)
+            .filter(|(key, _)| names.contains(key))
+            .cloned()
+            .chain(env.into_iter().filter(|(key, _)| names.contains(key)))
+            .collect()
     }
 }
+
+const SEALED_REREADS: usize = 2;
 
 struct Run {
     store: Arc<ConfigStore>,
@@ -305,10 +309,12 @@ impl Run {
             })
             .await;
         match outcome {
-            Ok((outcome, progress)) => {
+            Ok((outcome, progress, mut warnings)) => {
                 if self.lost_to_another_runner().await {
                     return self.interrupted(outcome, progress).await;
                 }
+                // The last chance: the store takes warnings only while the Deployment runs.
+                self.record_warnings(&mut warnings).await;
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
                     self.renewing(remove_volumes(session, deletes), || ()).await
@@ -460,19 +466,28 @@ impl Run {
             String::new()
         };
         let mut flushed = tokio::time::Instant::now();
-        while let Some(event) = running.next().await {
-            log.push_str(&log_line(&event));
-            if flushed.elapsed() >= LOG_FLUSH && !log.is_empty() {
-                // ponytail: a failed flush keeps the output for the next one.
-                if self
-                    .report(service, BuildStatus::Building, None, log.clone())
-                    .await
-                    .is_ok()
-                {
-                    log.clear();
+        loop {
+            let next = if log.is_empty() {
+                running.next().await
+            } else {
+                tokio::select! {
+                    next = running.next() => next,
+                    () = tokio::time::sleep_until(flushed + LOG_FLUSH) => {
+                        // ponytail: a failed flush keeps the output for the next one.
+                        if self
+                            .report(service, BuildStatus::Building, None, log.clone())
+                            .await
+                            .is_ok()
+                        {
+                            log.clear();
+                        }
+                        flushed = tokio::time::Instant::now();
+                        continue;
+                    }
                 }
-                flushed = tokio::time::Instant::now();
-            }
+            };
+            let Some(event) = next else { break };
+            log.push_str(&log_line(&event));
         }
         let (status, message, ended) = match running.finished().await {
             Ok(BuildOutcome::Built { receipt, reused }) => {
@@ -559,23 +574,34 @@ impl Run {
         (
             DeployOutcome<ExecutionError>,
             Vec<ployz_store::ServerProgress>,
+            Vec<DeployWarning>,
         ),
         RpcError,
     > {
         let mut confirmed = std::collections::BTreeSet::new();
         let mut tracker = RowTracker::default();
         let mut pending = BTreeMap::new();
+        let mut warnings = Vec::new();
         while let Some(event) = running.next().await {
-            let ployz_core::DeployEvent::Progress { rows, .. } = event else {
-                continue;
+            let rows = match event {
+                ployz_core::DeployEvent::Progress { rows, .. } => rows,
+                ployz_core::DeployEvent::Warning { warning } => {
+                    warnings.push(warning);
+                    self.record_warnings(&mut warnings).await;
+                    continue;
+                }
+                ployz_core::DeployEvent::Outcome { .. }
+                | ployz_core::DeployEvent::ImagesPruned { .. } => continue,
             };
+            self.record_warnings(&mut warnings).await;
             for mut row in tracker.changes(&rows) {
                 let container = tracker.container(&row);
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
                     (&mut row.state, container, session.client())
                 {
-                    let secrets = scrub.secrets(&row.service);
-                    *log = super::failed_tail(&client, row.machine, container, secrets).await;
+                    *log = self
+                        .failed_log(&client, scrub, row.machine, container)
+                        .await;
                 }
                 pending.insert((row.service.clone(), row.machine), row);
             }
@@ -612,7 +638,20 @@ impl Run {
             }
         }
         let outcome = running.finished().await?;
-        Ok((outcome, pending.into_values().collect()))
+        Ok((outcome, pending.into_values().collect(), warnings))
+    }
+
+    /// Record each held warning, keeping the ones the store refused for the next try.
+    /// The store keeps a warning once, so a retry after a lost reply changes nothing.
+    async fn record_warnings(&self, warnings: &mut Vec<DeployWarning>) {
+        let mut unrecorded = Vec::new();
+        for warning in warnings.drain(..) {
+            if let Err(error) = self.record(RunEvidence::Warned(warning.clone())).await {
+                tracing::warn!(%error, "couldn't record a Deploy warning; retrying later");
+                unrecorded.push(warning);
+            }
+        }
+        *warnings = unrecorded;
     }
 
     async fn connecting<T>(
@@ -696,6 +735,63 @@ impl Run {
 
     async fn not_executed(&self, failure: Failure) -> Result<DeploymentSummary, RpcError> {
         self.record(RunEvidence::NotExecuted(failure)).await
+    }
+
+    async fn failed_log(
+        &self,
+        client: &Client,
+        scrub: &Scrub,
+        machine: MachineId,
+        container: ContainerId,
+    ) -> LogText {
+        let Some(env) = super::container_env(client, machine, container).await else {
+            return LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            };
+        };
+        let Ok(mut names) = self.sealed_names(&scrub.environment).await else {
+            return LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            };
+        };
+        names.extend(scrub.sealed_at_claim.iter().cloned());
+        let Some(frames) = super::tail_frames(client, machine, container).await else {
+            return LogText::Withheld {
+                why: Withheld::Unanswered,
+            };
+        };
+        match self.settled_sealed_names(&scrub.environment, names).await {
+            Some(names) => super::tail_excerpt(frames, &scrub.values(&names, env)),
+            None => LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            },
+        }
+    }
+
+    /// `names` grown by every name Sealed since they were read, once a read adds none.
+    /// None when the set still grows after `SEALED_REREADS` reads, or the Store does not
+    /// answer: the tail was read under names that may be stale, so it is withheld.
+    async fn settled_sealed_names(
+        &self,
+        environment: &EnvironmentId,
+        mut names: BTreeSet<String>,
+    ) -> Option<BTreeSet<String>> {
+        for _ in 0..=SEALED_REREADS {
+            let fresh = self.sealed_names(environment).await.ok()?;
+            if fresh.is_subset(&names) {
+                return Some(names);
+            }
+            names.extend(fresh);
+        }
+        None
+    }
+
+    async fn sealed_names(
+        &self,
+        environment: &EnvironmentId,
+    ) -> Result<BTreeSet<String>, RpcError> {
+        let environment = environment.clone();
+        super::store_call(&self.store, move |store| store.sealed_names(&environment)).await
     }
 
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
@@ -908,6 +1004,9 @@ pub(super) fn log_line(event: &Value) -> String {
     let text = |pointer: &str| event.pointer(pointer).and_then(Value::as_str);
     if let Some(machine) = text("/Selected/machine/name") {
         return format!("Building on {machine}\n");
+    }
+    if text("/Build/Stage") == Some("Queued") {
+        return "Waiting for a build slot\n".to_owned();
     }
     if let Some(output) = text("/Build/StepOutput/text") {
         return output.to_owned();

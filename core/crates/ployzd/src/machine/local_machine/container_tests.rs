@@ -25,6 +25,7 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let owner = RecordOwner::spawn(store).unwrap();
@@ -145,6 +146,7 @@ async fn cancelled_create_finishes_before_reset_cleanup() {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
@@ -283,6 +285,7 @@ async fn joining_admits_direct_create() {
                     },
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
         })
         .await
@@ -329,6 +332,7 @@ async fn removal_warning_restarts_and_keeps_recovery_available_without_container
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let (replicated, server) = fake_cluster::store().await;
@@ -392,8 +396,8 @@ mod plan {
         AnonymousVolumes, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
         ContainerNow, ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
         ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
-        LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
-        SlotKey, StopOptions,
+        LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunRotation,
+        RunTarget, SlotKey, StopOptions,
     };
     use serde_json::json;
 
@@ -432,6 +436,8 @@ mod plan {
     ) -> ContainerNow {
         ContainerNow::Present(
             ContainerObservation::try_from(ContainerObservationParts {
+                rotation: None,
+                r#gen: None,
                 container_id: id('a'),
                 display_name: "api-a".into(),
                 created_at_unix_nanos: 0,
@@ -475,9 +481,11 @@ mod plan {
     fn run_hook() -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::New(NewContainer {
+                r#gen: ployz_core::Gen::FIRST,
                 slot: hook_slot(),
                 ..new_container("img")
             }),
+            rotation: RunRotation::Pending,
         }
     }
 
@@ -489,6 +497,7 @@ mod plan {
 
     fn new_container(image: &str) -> NewContainer {
         NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
             slot: slot(),
             resolved_spec: spec(image),
             deployment_id: None,
@@ -501,12 +510,14 @@ mod plan {
     fn run_new(image: &str) -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::New(new_container(image)),
+            rotation: RunRotation::Pending,
         }
     }
 
     fn run_existing() -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::Existing(ContainerLocator::Id(id('a'))),
+            rotation: RunRotation::Pending,
         }
     }
 
@@ -586,6 +597,7 @@ mod plan {
                 run_hook(),
                 hook(ContainerRuntimeObservation::Created),
                 ContainerStep::CreateAndStart(NewContainer {
+                    r#gen: ployz_core::Gen::FIRST,
                     slot: hook_slot(),
                     ..new_container("img")
                 }),
@@ -680,6 +692,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
                 )],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let owner = RecordOwner::spawn(store).unwrap();
@@ -694,6 +707,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     let new: NewContainer = serde_json::from_value(json!({
         "slot": {"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
         "resolved_spec": spec_with_sources(vec![]),
+        "gen": 1,
     }))
     .unwrap();
     let starts = || {
@@ -705,7 +719,10 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
             .count()
     };
 
-    assert_eq!(local.create_and_start(new.clone()).await.unwrap(), None);
+    assert_eq!(
+        local.create_and_start(new.clone(), None).await.unwrap(),
+        None
+    );
     assert_eq!(starts(), 1);
     // The first request's hook ran and exited; a second request that saw the slot empty
     // reaches the create and adopts it.
@@ -719,7 +736,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     {
         container["State"] = json!({"Status":"exited", "ExitCode":0});
     }
-    assert_eq!(local.create_and_start(new).await.unwrap(), None);
+    assert_eq!(local.create_and_start(new, None).await.unwrap(), None);
     assert_eq!(starts(), 1, "the adopted hook is not run again");
     std::fs::remove_dir_all(data_dir).unwrap();
 }
@@ -730,7 +747,7 @@ mod settled {
     use ployz_core::{
         ConfiguredHealthcheck, ContainerNow, ContainerRuntimeObservation, ContainerWant,
         EnsuredContainer, HealthObservation, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
-        MachineName, NewContainer, RunTarget,
+        MachineName, NewContainer, RunRotation, RunTarget,
     };
     use serde_json::{Value, json};
 
@@ -758,6 +775,7 @@ mod settled {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         let owner = RecordOwner::spawn(store).unwrap();
@@ -780,6 +798,7 @@ mod settled {
         serde_json::from_value(json!({
             "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
             "resolved_spec": spec_with_sources(vec![]),
+            "gen": 1,
             "answer": answer,
         }))
         .unwrap()
@@ -788,6 +807,7 @@ mod settled {
     fn run(new: NewContainer) -> ContainerWant {
         ContainerWant::Running {
             container: RunTarget::New(new),
+            rotation: RunRotation::Pending,
         }
     }
 

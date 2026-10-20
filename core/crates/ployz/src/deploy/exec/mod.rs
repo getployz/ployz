@@ -13,13 +13,14 @@ use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
-    DependencyHealthFailure, DeployEvent, DeploymentLogId, DockerVolumeId, Drain, ExecutionError,
-    FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, Hold, HookFailure,
-    InspectContainerRequest, ListContainersRequest, MachineAction, MachineId, MachineTarget,
-    MembershipObservation, Namespace, NewContainer, OperationPhase, PublishServingPointerRequest,
-    PullPolicy, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, Retry, RpcError,
-    RpcErrorCode, RunTarget, ServiceOutcome, ServingPointer, ServingPointerPublication,
-    ServingPointerRead, SlotKey, StopOptions, op,
+    DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain,
+    ExecutionError, ExposedPort, FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure,
+    HealthVerdict, Hold, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
+    MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
+    OperationPhase, PortPublication, PublishServingPointerRequest, PullPolicy, QualifiedService,
+    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode,
+    RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, ServingPointer,
+    ServingPointerPublication, SlotKey, StopOptions, TransportProtocol, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -164,16 +165,13 @@ pub(super) trait MachineOperations {
         spec: &ResolvedServiceSpec,
     ) -> Result<bool, RpcError>;
     /// Make the image `spec` runs present on `machine_id`, pulled as its policy
-    /// asks, before any Container changes.
+    /// asks, before any Container changes, and answer what the Machine reports of it.
     async fn ensure_image(
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-    ) -> Result<(), RpcError>;
-    async fn read_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError>;
+    ) -> Result<ImagePulled, RpcError>;
+    async fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     async fn publish_pointer(
         &self,
         request: PublishServingPointerRequest,
@@ -185,7 +183,7 @@ impl MachineOperations for Client {
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-    ) -> Result<(), RpcError> {
+    ) -> Result<ImagePulled, RpcError> {
         crate::image::pull_cluster_image(
             self,
             machine_id,
@@ -196,10 +194,7 @@ impl MachineOperations for Client {
         .await
     }
 
-    async fn read_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError> {
+    async fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         self.clone().serving_pointer_read(service).await
     }
 
@@ -274,6 +269,7 @@ impl MachineOperations for Client {
         let timeout = match &mut want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
+                ..
             } => {
                 if let Some(key) = self
                     .retained_global_key(machine_id, &new.slot, &new.resolved_spec)
@@ -287,7 +283,9 @@ impl MachineOperations for Client {
                 }
                 None
             }
-            ContainerWant::Running { .. } => Some(TARGET_RPC_TIMEOUT),
+            ContainerWant::Running { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => Some(TARGET_RPC_TIMEOUT),
             ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds, 1),
             ContainerWant::Gone { .. } => None,
         };
@@ -458,8 +456,8 @@ restart_policy! {
     wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
     wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
     wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
-    wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<(), RpcError>;
-    wait fn read_pointer(&self, service: &QualifiedService) -> Result<ServingPointerRead, RpcError>;
+    wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<ImagePulled, RpcError>;
+    wait fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     once("a compare-and-set: a resend after a lost reply reads its own write as Superseded")
     fn publish_pointer(&self, request: PublishServingPointerRequest) -> Result<ServingPointerPublication, RpcError>;
 }
@@ -472,8 +470,18 @@ where
     Fut: Future<Output = Result<T, RpcError>>,
 {
     let deadline = Instant::now() + RESTART_WAIT;
+    // A Machine that answered on an earlier attempt was not silent throughout: its
+    // answer stands in for a later silence, as `call_retried` keeps it.
+    let mut answer: Option<RpcError> = None;
     loop {
-        match op().await {
+        let outcome = op().await.map_err(|error| {
+            if error.target_unanswered() {
+                return answer.clone().unwrap_or(error);
+            }
+            answer = Some(error.clone());
+            error
+        });
+        match outcome {
             Ok(value) => return Ok(value),
             Err(error)
                 if error.code.retry() != Retry::Never
@@ -572,8 +580,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         .collect();
     let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
 
-    if let Err((index, error)) = pull_images(&client, operations).await {
-        return untouched(&progress, &schedule, operations, index, error);
+    match pull_images(&client, operations).await {
+        Ok(warnings) => warnings
+            .into_iter()
+            .for_each(|warning| progress.warn(warning)),
+        Err((index, error)) => return untouched(&progress, &schedule, operations, index, error),
     }
 
     let rows = Rows::new(plan, run);
@@ -847,7 +858,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                 }
                             }
                             Err(error) => {
-                                let error = machine_error(MachineAction::ReadServingPointer, error);
+                                let error = machine_error(MachineAction::ReadRoutes, error);
                                 for (task, _) in blocked.iter().filter(|(task, blocker)| {
                                     blocker == service && failed.insert(*task)
                                 }) {
@@ -981,7 +992,7 @@ async fn await_routed_pin<C: MachineOperations>(
     let read = client
         .read_pointer(service)
         .await
-        .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+        .map_err(|error| machine_error(MachineAction::ReadRoutes, error))?;
     let pointer = match read.pointer {
         Some(pointer) if read.all_routed => return Ok(Pin::Admitted(pointer)),
         current => match live_pin(client, run, service, current).await? {
@@ -994,7 +1005,7 @@ async fn await_routed_pin<C: MachineOperations>(
         let read = client
             .read_pointer(service)
             .await
-            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+            .map_err(|error| machine_error(MachineAction::ReadRoutes, error))?;
         if read.pointer.as_ref() != Some(&pointer) {
             return Ok(Pin::Superseded);
         }
@@ -1076,10 +1087,12 @@ enum Done {
     ),
 }
 
+/// Pull every image the plan runs, then warn about each Service whose image exposes
+/// TCP ports none of its domains send to.
 async fn pull_images<C: MachineOperations>(
     client: &C,
     operations: &[DeployOperation],
-) -> Result<(), (usize, ExecutionError)> {
+) -> Result<Vec<DeployWarning>, (usize, ExecutionError)> {
     // One pull per image on each Machine, under the strongest policy any of its
     // Services asks for: what `Always` pulls also satisfies `Missing` and `Never`.
     let mut pulls: BTreeMap<(MachineId, &str), (usize, &ResolvedServiceSpec)> = BTreeMap::new();
@@ -1105,11 +1118,87 @@ async fn pull_images<C: MachineOperations>(
             }),
     )
     .await;
-    results
+    let mut exposed = BTreeMap::new();
+    let mut failure: Option<(usize, ExecutionError)> = None;
+    for (key, result) in pulls.keys().zip(results) {
+        match result {
+            Ok(pulled) => {
+                exposed.insert(*key, pulled.exposed_ports);
+            }
+            Err(error) => {
+                if failure.as_ref().is_none_or(|(first, _)| error.0 < *first) {
+                    failure = Some(error);
+                }
+            }
+        }
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(port_mismatches(operations, &exposed)),
+    }
+}
+
+/// One warning per Service that some Machine pulled an image for whose TCP ports
+/// its domains send to none of. `exposed` joins the ports of those Machines only.
+/// A Machine that reports no ports claims nothing.
+fn port_mismatches(
+    operations: &[DeployOperation],
+    exposed: &BTreeMap<(MachineId, &str), Vec<ExposedPort>>,
+) -> Vec<DeployWarning> {
+    struct Mismatch<'a> {
+        service_id: ServiceId,
+        image: &'a str,
+        machines: BTreeSet<MachineId>,
+        exposed: BTreeSet<u16>,
+        routed: BTreeSet<u16>,
+    }
+    let mut services: BTreeMap<&ServiceName, Mismatch<'_>> = BTreeMap::new();
+    for operation in operations {
+        let Some(spec) = operation.spec() else {
+            continue;
+        };
+        let image = spec.container.image.as_str();
+        let machine_id = operation.machine_id();
+        let tcp = exposed
+            .get(&(machine_id, image))
+            .into_iter()
+            .flatten()
+            .filter(|port| port.protocol == TransportProtocol::Tcp)
+            .map(|port| port.port.get())
+            .collect::<BTreeSet<_>>();
+        let routed = spec
+            .ports
+            .iter()
+            .filter_map(|port| match port {
+                PortPublication::Ingress { container_port, .. } => Some(container_port.get()),
+                PortPublication::Host { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if tcp.is_empty() || routed.is_empty() || !tcp.is_disjoint(&routed) {
+            continue;
+        }
+        let mismatch = services.entry(&spec.name).or_insert_with(|| Mismatch {
+            service_id: spec.service_id,
+            image,
+            machines: BTreeSet::new(),
+            exposed: BTreeSet::new(),
+            routed: BTreeSet::new(),
+        });
+        mismatch.machines.insert(machine_id);
+        mismatch.exposed.extend(tcp);
+        mismatch.routed.extend(routed);
+    }
+    services
         .into_iter()
-        .filter_map(Result::err)
-        .min_by_key(|(index, _)| *index)
-        .map_or(Ok(()), Err)
+        .map(|(service, mismatch)| DeployWarning::ImagePortMismatch {
+            service: service.clone(),
+            service_id: mismatch.service_id,
+            image: mismatch.image.to_owned(),
+            machines: mismatch.machines.into_iter().collect(),
+            exposed: mismatch.exposed.into_iter().collect(),
+            routed: mismatch.routed.into_iter().collect(),
+        })
+        .collect()
 }
 
 fn strength(policy: PullPolicy) -> u8 {
@@ -1258,7 +1347,7 @@ impl<'a> Rows<'a> {
         let read = client
             .read_pointer(&service)
             .await
-            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+            .map_err(|error| machine_error(MachineAction::ReadRoutes, error))?;
         match Protection::of(read.pointer, copy) {
             Protection::Unnamed | Protection::Retiring(_) => Ok(()),
             Protection::Pointed(row) => Err(pointed(copy, &row)),
@@ -1335,7 +1424,7 @@ impl<'a> Rows<'a> {
         let mut current = client
             .read_pointer(&service)
             .await
-            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?
+            .map_err(|error| machine_error(MachineAction::ReadRoutes, error))?
             .pointer;
         for _ in 0..=AMEND_RETRIES {
             let Some(row) =
@@ -1940,6 +2029,7 @@ async fn run_new<C: MachineOperations>(
     progress.set_running(index, OperationPhase::CreatingContainer);
     let want = ContainerWant::Running {
         container: RunTarget::New(NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
             slot: slot.clone(),
             resolved_spec: spec.clone(),
             deployment_id: deploy.cloned(),
@@ -1947,6 +2037,7 @@ async fn run_new<C: MachineOperations>(
             image_prepared: true,
             answer,
         }),
+        rotation: RunRotation::Pending,
     };
     let ensured = client.ensure_container(machine_id, want);
     let ensured = match answer {
@@ -2160,6 +2251,7 @@ async fn restore_old_container<C: MachineOperations>(
             &operation.machine_id,
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Id(operation.old_container_id)),
+                rotation: RunRotation::Pending,
             },
         )
         .await

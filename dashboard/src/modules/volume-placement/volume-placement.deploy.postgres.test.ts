@@ -59,7 +59,7 @@ describe("deploying a Volume placement", () => {
       })),
     }),
   ));
-  const placement = async () => (await run(listPlacements(organizationId)))[0];
+  const placement = async (id = volumeId) => (await run(listPlacements(organizationId))).find((row) => row.volumeId === id);
   // A restore request still writing to the Store holds this lock until its write commits or fails.
   const whileStoreWriting = async <A>(body: () => Promise<A>) => {
     const stager = await harness.pool.connect();
@@ -441,7 +441,7 @@ describe("deploying a Volume placement", () => {
     await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: { primary: web("web-1"), mirrors: [web("web-2")], deletes: [] } }));
     await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
     expect(await run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))
-      .toEqual({ kind: "failed", message: "VolumeBusy: data is starting on web-2; it finishes there" });
+      .toEqual({ kind: "failed", message: "data is starting on web-2; it finishes there" });
     expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
     expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2")).toMatchObject({ staged: { mirrors: [web("web-2")] }, unreached: true, deploymentId: null });
     expect((await runRows()).map((row) => row.id)).toEqual([committed]);
@@ -465,7 +465,7 @@ describe("deploying a Volume placement", () => {
     await stageRestore();
     await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
     expect(await run(advancePlacement(organizationId, "dep-1", null, byVolume, answered)))
-      .toEqual({ kind: "failed", message: "VolumeBusy: data is starting on web-2; it finishes there" });
+      .toEqual({ kind: "failed", message: "data is starting on web-2; it finishes there" });
     expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2")).toMatchObject({ staged: { seed: { sourceVolumeId: volumeId } }, deploymentId: null });
     expect(await failedRestores()).toBe(0);
     expect((await runRows()).map((row) => row.kind)).toEqual(["move"]);
@@ -598,7 +598,7 @@ describe("deploying a Volume placement", () => {
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
 
     expect(await whileStoreWriting(() => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
-    expect(await placement()).toMatchObject({ volumeId: "vol3", staged: { seed }, deploymentId: null });
+    expect(await placement("vol3")).toMatchObject({ staged: { seed }, deploymentId: null });
   });
 
   it("refuses to seed a restored Volume whose storage no longer matches its source", async () => {

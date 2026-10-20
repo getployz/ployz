@@ -2,6 +2,8 @@ import { useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { DeploymentView } from "@ployz/sdk";
 import { ArrowLeftIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon, TriangleAlertIcon } from "lucide-react";
+import { toast } from "sonner";
+import { DeletionDialog } from "#/components/deletion-dialog";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { Badge } from "#/components/ui/badge";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -14,12 +16,14 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, nodeApplied, outcomeReason, showCancelling,
-  type DeploymentAction,
+  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentLabel, deploymentLight, deploymentStatusLabel, freshRollback, nodeApplied,
+  outcomeReason, rollbackConfirm, showCancelling, warnedService, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreCancelling } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { StoreRefused } from "#/modules/config-store/store.contract";
+import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import { useCopiesWait, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { formatDuration } from "#/utils/relative-time";
 import { makeRunGraph, selectRunNode, type RunGraph, type RunNode } from "./deployments/run-graph";
@@ -68,7 +72,8 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
   const warnings = deployment.warnings ?? [];
   const ingressWarnings = warnings.filter((warning) => "ingress" in warning);
   const uncheckedIngress = warnings.filter((warning) => "cause" in warning);
-  const variableWarnings = warnings.filter((warning) => !("ingress" in warning) && !("cause" in warning));
+  const deployWarnings = warnings.filter((warning) => "warning" in warning);
+  const variableWarnings = warnings.filter((warning) => !("ingress" in warning) && !("cause" in warning) && !("warning" in warning));
   const services = deployment.nodes.filter((node) => node.type === "service");
   // A selected Volume or Config falls back to the Service that failed, so the fix stays one click away.
   const service = selected?.type === "build" ? services.find((node) => node.name === selected.name)
@@ -89,9 +94,9 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
         </Link>
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-2 [&_svg]:size-4">
-            <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />
+            <DeploymentStatusIcon status={deploymentLight(deployment)} />
             <span className="truncate font-medium">
-              {deployment.message ? `#${deployment.number} · ${deployment.message}` : `Deployment #${deployment.number}`}
+              {deployment.message ? `${deploymentLabel(deployment)} · ${deployment.message}` : `Deployment ${deploymentLabel(deployment)}`}
             </span>
           </span>
           <p className="truncate text-xs text-muted-foreground">
@@ -135,11 +140,16 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
       ) : null}
       {storage ? <p role="status" className="text-sm">{storage}</p> : null}
 
-      {/* What it shipped despite: a secret left out, or a Config file reference left empty. */}
+      {/* What it shipped despite: a secret or broken reference left out, or a Config file reference left empty. */}
       {variableWarnings.length ? (
         <ul aria-label="Warnings" className="flex flex-wrap gap-1.5">
           {variableWarnings.map((warning) => (
-            <li key={deploymentWarningText(warning)}><Badge variant="warning"><LockIcon />{deploymentWarningText(warning)}</Badge></li>
+            <li key={deploymentWarningText(warning)}>
+              <Badge variant="warning">
+                {"broken" in warning && warning.broken ? <TriangleAlertIcon /> : <LockIcon />}
+                {deploymentWarningText(warning)}
+              </Badge>
+            </li>
           ))}
         </ul>
       ) : null}
@@ -155,6 +165,19 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
           <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}.
         </p>
       ))}
+      {deployWarnings.map((warning) => {
+        const node = warnedService(deployment, warning);
+        const text = deploymentWarningText(warning, node?.name);
+        return (
+          <p key={text} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
+            <TriangleAlertIcon className="size-4" />{text}. Set the domain port or PORT.
+            {node ? (
+              <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: node.id }} search={{}}
+                className="underline underline-offset-4">Service settings</Link>
+            ) : null}
+          </p>
+        );
+      })}
     </div>
   );
 }
@@ -169,6 +192,9 @@ export function RedeployAction({ copiesWait, disabled, onRedeploy }: { copiesWai
   );
 }
 
+/** The Volumes a redeploy accepts losing, at the version the Store asked about (none before it asked). */
+type Acceptance = { accept: readonly string[]; version: string | null };
+
 /**
  * The action a Deployment's status allows, one at a time so the header fits a phone: a queued one's Cancel waits in ⋮.
  * Whoever admitted it, CLI or dashboard: they share one queue per Environment.
@@ -180,28 +206,60 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
   const navigate = useNavigate();
   const writer = useStoreWriter(params.organizationSlug);
   const [cancelOpen, setCancelOpen] = useState(false);
-  const [retrying, setRetrying] = useState(false);
-  const { primary, cancelInMenu } = deploymentActions(deployment.status, noServers);
+  const [rollbackOpen, setRollbackOpen] = useState(false);
+  const [redeploying, setRedeploying] = useState(false);
+  // What it rolls back as the Store last said, once that changed after the page loaded.
+  const [fresh, setFresh] = useState<readonly number[] | null>(null);
+  const [loss, setLoss] = useState<VolumeLossCheck | null>(null);
+  const lossOf = useVolumeLossCheck(params.organizationSlug);
+  const { primary, cancelInMenu } = deploymentActions(deployment, noServers);
+  const waiting = deployment.status === "waiting_for_ci";
+  const rollsBack = fresh ?? deployment.rolls_back;
+  const rollback = rollbackConfirm({ number: deployment.number, rolls_back: [...rollsBack] });
   const copiesWait = useCopiesWait(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).environmentId);
 
-  async function retry() {
+  /**
+   * This modal is the person's consent to roll back exactly what it named, so no Approval asks again; the Store refuses
+   * when that changed, and the modal asks again. Deleting data a newer Deployment brought back asks by name. Resolves
+   * with the Volume loss to ask about, if any.
+   */
+  async function redeploy(acceptance: Acceptance = { accept: [], version: null }): Promise<VolumeLossCheck | null> {
     const id = crypto.randomUUID();
-    setRetrying(true);
+    setRedeploying(true);
     try {
       await writer.commit({
-        command: "admit", admit: "retry", id, deployment: deployment.id }).isPersisted.promise;
+        command: "admit", admit: "retry", id, deployment: deployment.id, rolls_back: [...rollsBack],
+        version: acceptance.version, accept_volume_loss: [...acceptance.accept],
+      }, ["confirmation_required"]).isPersisted.promise;
       void navigate(deploymentDestination(params, id, { job: search.job, origin: search.origin }));
-    } catch {
-      // The writer toasted the Store's reason.
+      return null;
+    } catch (error) {
+      if (!(error instanceof StoreRefused)) return null;
+      const check = lossOf(error);
+      if (check) return check;
+      const now = freshRollback(error);
+      if (now) {
+        setFresh(now);
+        if (now.length > 0) setRollbackOpen(true);
+        else toast("It rolls nothing back now. Redeploy again.");
+      }
+      return null;
     } finally {
-      setRetrying(false);
+      setRedeploying(false);
     }
+  }
+
+  async function confirmed() {
+    setLoss(await redeploy());
   }
 
   // Deploy now starts a queued one while nothing else runs.
   const buttons = {
     add_server: <Button size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers" params={params} />}>Add a server</Button>,
-    retry: <RedeployAction copiesWait={copiesWait} disabled={retrying} onRedeploy={() => void retry()} />,
+    redeploy: (
+      <RedeployAction copiesWait={copiesWait} disabled={redeploying}
+        onRedeploy={() => (rollback ? setRollbackOpen(true) : void confirmed())} />
+    ),
     start: (
       <Button size="sm" variant="outline" onClick={() => writer.commit({ command: "start", deployment: deployment.id })}>Deploy now</Button>
     ),
@@ -221,23 +279,54 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
           </DropdownMenuContent>
         </DropdownMenu>
       ) : null}
+      {rollback ? (
+        <AlertDialog open={rollbackOpen} onOpenChange={setRollbackOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{rollback.title}</AlertDialogTitle>
+              <AlertDialogDescription>{rollback.body}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <Button onClick={() => {
+                setRollbackOpen(false);
+                void confirmed();
+              }}>Roll back</Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : null}
+      <DeletionDialog
+        open={loss !== null}
+        onOpenChange={(open) => { if (!open) setLoss(null); }}
+        title="Deletes data"
+        place={`${deployment.environment.project}/${deployment.environment.name}`}
+        confirmLabel={rollback ? "Roll back" : "Redeploy"}
+        items={loss?.items}
+        callbacks={{
+          load: () => Promise.resolve(loss ?? { items: [], evidence: { accept: [], version: "" }, losesWrites: false }),
+          // Servers holding more by now: the Store asks again, and so does the dialog.
+          confirm: async (evidence) => (await redeploy(evidence)) ?? undefined,
+        }}
+      />
       <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel deployment?</AlertDialogTitle>
+            <AlertDialogTitle>{waiting ? "Cancel this push?" : "Cancel deployment?"}</AlertDialogTitle>
             <AlertDialogDescription>
-              {storage ? "The step under way finishes first. The rest waits for your next deploy."
+              {waiting ? "It won't deploy."
+                : storage ? "The step under way finishes first. The rest waits for your next deploy."
                 : deployment.status === "queued"
                 ? "It leaves the queue and never runs."
                 : "It stops at its next step. What it already changed stays until the next Deploy."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep deploying</AlertDialogCancel>
+            <AlertDialogCancel>{waiting ? "Keep waiting" : "Keep deploying"}</AlertDialogCancel>
             <Button variant="destructive" onClick={() => {
               setCancelOpen(false);
               onCancel();
-            }}>Cancel deployment</Button>
+            }}>{waiting ? "Cancel push" : "Cancel deployment"}</Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

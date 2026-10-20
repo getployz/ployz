@@ -2,7 +2,7 @@
 import type { JsonValue } from "@ployz/sdk";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HealthcheckField } from "./HealthcheckField";
+import { HealthcheckField, HealthcheckSettings } from "./HealthcheckField";
 
 const saved = { isPersisted: { promise: Promise.resolve() } };
 
@@ -74,5 +74,47 @@ describe("HealthcheckField", () => {
 
     expect(set).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "HTTP path" })).toBeTruthy();
+  });
+
+  it("goes back to the buttons when the field is left blank right after adding", () => {
+    const { set } = field(null);
+    fireEvent.click(screen.getByRole("button", { name: "HTTP path" }));
+    fireEvent.blur(screen.getByLabelText("Healthcheck path"));
+
+    expect(set).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "HTTP path" })).toBeTruthy();
+  });
+});
+
+describe("HealthcheckSettings", () => {
+  afterEach(cleanup);
+
+  it("puts focus in the field a kind switch empties, and leaving it blank keeps the stored check", () => {
+    const set = vi.fn((_: JsonValue | null) => saved);
+    render(<HealthcheckSettings value={{ path: "/up", timeoutSeconds: 30 }} change={undefined} set={set} />);
+    fireEvent.click(screen.getByRole("button", { name: "Command" }));
+
+    const command = screen.getByLabelText("Healthcheck command");
+    expect(document.activeElement).toBe(command);
+    fireEvent.blur(command);
+
+    expect(set).not.toHaveBeenCalled();
+    expect((screen.getByLabelText("Healthcheck path") as HTMLInputElement).value).toBe("/up");
+  });
+
+  it("discards a check typed but not yet saved when it is removed, and saves nothing", () => {
+    const set = vi.fn((_: JsonValue | null) => saved);
+    render(<HealthcheckSettings value={null} change={undefined} set={set} />);
+    fireEvent.click(screen.getByRole("button", { name: "Healthcheck" }));
+    const input = screen.getByLabelText("Healthcheck path");
+    fireEvent.change(input, { target: { value: "/health" } });
+
+    const remove = screen.getByRole("button", { name: "Remove healthcheck" });
+    // A browser moves focus off the field on mouse down, unless the press prevents it.
+    if (fireEvent.mouseDown(remove)) fireEvent.blur(input);
+    fireEvent.click(remove);
+
+    expect(set).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Healthcheck path")).toBeNull();
   });
 });

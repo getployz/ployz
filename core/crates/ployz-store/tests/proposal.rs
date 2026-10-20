@@ -334,7 +334,7 @@ impl Db {
                 &self.who,
                 &ployz_store::Discard {
                     environment: at(environment),
-                    target: ployz_store::DiscardTarget::Head,
+                    target: Some(ployz_store::DiscardTarget::Head),
                     path: path.map(|path| SettingPath::parse(path).unwrap()),
                     version: None,
                 },
@@ -787,7 +787,7 @@ fn an_edit_and_back_is_local_and_a_no_op_write_is_not() {
 }
 
 #[test]
-fn remove_is_refused_while_the_draft_uses_a_service_it_introduced() {
+fn remove_takes_out_a_service_it_introduced_and_leaves_the_draft_reference_broken() {
     let db = Db::new();
     db.service("dev", 11, "cache");
     let a = proposal(
@@ -799,14 +799,20 @@ fn remove_is_refused_while_the_draft_uses_a_service_it_introduced() {
         "production",
         &[("api.env.CACHE", "${{ cache.PLOYZ_PRIVATE_DOMAIN }}")],
     );
-    let (code, message) = db.remove("production", &a).unwrap_err();
-    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
-    assert!(message.contains("cache"), "{message}");
-    assert_eq!(db.services("production"), ["api", "cache"]);
-    // Without the reference, Remove takes cache back out.
-    db.discard("production", Some("api.env.CACHE"));
+    // A reference never blocks: Remove takes cache back out, and the reference is broken.
     assert_eq!(db.remove("production", &a), Ok(true));
     assert_eq!(db.services("production"), ["api"]);
+    let broken = db
+        .store
+        .read(
+            &db.who,
+            &ployz_store::DiffQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .broken;
+    assert_eq!(broken.len(), 1, "{broken:?}");
 }
 
 #[test]

@@ -10,10 +10,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::LineCap;
-use super::act::{Run, latest, operate, operations, resolve, servers};
+use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Health, LogsAnswer, OperationsAnswer,
-    ServersAnswer,
 };
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
@@ -26,7 +25,7 @@ use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
 use crate::{
     DeploymentsQuery, EnvironmentName, NamespaceQuery, NamespaceView, NumberedDeploymentQuery,
-    ProjectName, ServiceQuery, ServicesQuery, SourceKind,
+    ProjectName, ServicesQuery, SourceKind,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
@@ -167,7 +166,7 @@ impl Tool for ServiceState {
         let numbers = page
             .deployments
             .iter()
-            .map(|deployment| (&deployment.id, deployment.number))
+            .filter_map(|deployment| Some((&deployment.id, deployment.number?)))
             .collect::<BTreeMap<_, _>>();
         let deploying = page
             .deployments
@@ -262,18 +261,12 @@ impl Tool for ServiceLogs {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let mut asks = vec![
-            store(&NamespaceQuery {
-                environment: scope.clone(),
-            })?,
-            store(&ServiceQuery {
-                environment: scope.clone(),
-                service: self.service.clone(),
-            })?,
-        ];
+        let mut asks = vec![store(&NamespaceQuery {
+            environment: scope.clone(),
+        })?];
         let numbered = self.deployment.map(|number| NumberedDeploymentQuery {
             environment: scope,
-            number,
+            number: Some(number),
         });
         if let Some(query) = &numbered {
             asks.push(store(query)?);
@@ -283,17 +276,13 @@ impl Tool for ServiceLogs {
         }
         let mut answers = cx.read(asks)?.into_iter();
         let namespace = cx.view::<NamespaceQuery>(answers.next())?;
-        // Unread variables leave nothing plain, so every env value is scrubbed.
-        let plain = cx
-            .view::<ServiceQuery>(answers.next())
-            .map_or_else(|_| BTreeMap::new(), |view| plain_env(&view.values));
         let deployment = match numbered {
             Some(_) => Some(cx.view::<NumberedDeploymentQuery>(answers.next())?),
             None => None,
         };
         let only = match &self.server {
             Some(name) => {
-                let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+                let answer = roster(cx, answers.next())?;
                 Some(resolve(&answer, name, "server", false)?.reference())
             }
             None => None,
@@ -307,7 +296,6 @@ impl Tool for ServiceLogs {
                 |name| Ok(name.clone()),
             )?;
         let query = LogsQuery {
-            environment: namespace.environment.id.clone(),
             namespace: namespace.namespace.clone(),
             service: carried,
             deployment: deployment.map(|view| view.deployment.id),
@@ -316,7 +304,6 @@ impl Tool for ServiceLogs {
             since: self
                 .since_minutes
                 .map(|minutes| Duration::from_secs(u64::from(minutes) * 60)),
-            plain,
         };
         let mut answers = cx
             .read(vec![Ask::Cloud(CloudQuery::Logs(query))])?
@@ -329,21 +316,6 @@ impl Tool for ServiceLogs {
             "notes": logs.notes,
         }))
     }
-}
-
-/// The variables a Service's Settings `values` show as plain text. A secret shows no value
-/// and a template shows its `${{ … }}`, so neither ever matches a Container's env.
-#[must_use]
-pub fn plain_env(values: &serde_json::Map<String, Value>) -> BTreeMap<String, String> {
-    let Some(Value::Object(env)) = values.get("env") else {
-        return BTreeMap::new();
-    };
-    env.iter()
-        .filter_map(|(name, shown)| {
-            let value = shown.get("value").unwrap_or(shown);
-            Some((name.clone(), value.as_str()?.to_owned()))
-        })
-        .collect()
 }
 
 /// Restart, start or stop `service`'s containers, on one server or all.
@@ -369,7 +341,7 @@ fn service_act(
     deployed(&namespace, &service)?;
     let only = match &server {
         Some(name) => {
-            let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+            let answer = roster(cx, answers.next())?;
             Some(resolve(&answer, name, "server", true)?.reference())
         }
         None => None,

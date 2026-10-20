@@ -1,15 +1,15 @@
-import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, XIcon } from "lucide-react";
+import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
-import { Kbd } from "#/components/ui/kbd";
 import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, redeployLine } from "#/modules/approvals/approvals";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 
@@ -17,11 +17,10 @@ import { type ChangeLine, reviewedChanges } from "./approval-review";
  * One destructive Save, Deploy or Server operation waiting on a human, drawn from its Cloud row and reread while it waits, so a
  * reload, another tab or the CLI's own answer all show the same card. `onSettled` runs once the row stops waiting.
  */
-export function ApprovalCard({ organizationSlug, id, seed, autoFocus, onSettled }: {
+export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
   organizationSlug: string;
   id: string;
   seed?: ApprovalView;
-  autoFocus?: boolean;
   onSettled?: () => void;
 }) {
   const { data: approval } = useQuery({ ...approvalOptions(organizationSlug, id), initialData: seed });
@@ -32,20 +31,21 @@ export function ApprovalCard({ organizationSlug, id, seed, autoFocus, onSettled 
 
   if (approval === undefined) return null;
   switch (approval.status) {
-    case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} autoFocus={autoFocus} />;
+    case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} />;
     case "approved": return <TraceLine>Approved. {approval.command === "publish" ? "Saves without deploying." : `${approvalSubject(approval.command, approval.review).verb} goes ahead.`}</TraceLine>;
     case "denied": return <TraceLine>Denied{approval.reason ? `: ${approval.reason}` : "."}</TraceLine>;
     case "superseded": return <TraceLine>The plan changed since this was asked. Ask again to review the new one.</TraceLine>;
   }
 }
 
-function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSlug: string; approval: ApprovalView; autoFocus?: boolean }) {
+function PendingCard({ organizationSlug, approval }: { organizationSlug: string; approval: ApprovalView }) {
   const queryClient = useQueryClient();
   const [reason, setReason] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
+  const redeploy = redeployLine(approval.command, approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const { asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
@@ -62,29 +62,20 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
   };
   const approve = () => decide({ approve: { digest: approval.digest } });
   const deny = () => decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (waits) return;
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      void (reason === null ? approve() : deny());
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      void deny();
-    }
-  };
 
   return (
-    <Card state="destructive" size="sm" tabIndex={0} autoFocus={autoFocus} onKeyDown={onKeyDown}
-      aria-label={`${subject.verb} ${place} needs approval`}
-      className="outline-none focus-visible:ring-2">
+    <Card state="destructive" size="sm" aria-label={`${subject.verb} ${place} needs approval`}>
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <CardTitle>{subject.verb} {place}</CardTitle>
-          {approval.asker && !approval.yours && <CardDescription className="text-xs">Asked by {approval.asker}</CardDescription>}
+          <CardDescription>
+            {approval.asker && !approval.yours && <>Asked by {approval.asker} · </>}<RelativeTime date={new Date(approval.created_at)} />
+          </CardDescription>
         </div>
         <Badge variant="destructive">{approvalBadge(approval.command, approval.review)}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
+        {redeploy !== null && <p className="text-xs">{redeploy}</p>}
         {effects.length > 0 && (
           <ul aria-label="Destroys" className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
             {effects.map((effect) => {
@@ -120,10 +111,10 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
         <CardFooter><p className="text-xs text-muted-foreground">Waiting on an owner or admin.</p></CardFooter>
       ) : <CardFooter className="gap-1.5">
         <Button size="sm" variant="destructive" disabled={sending} onClick={() => void approve()}>
-          Approve{reason === null && <Kbd>⌘↵</Kbd>}
+          Approve
         </Button>
         <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
-          Deny <Kbd>{reason === null ? "esc" : "⌘↵"}</Kbd>
+          Deny
         </Button>
         {reason === null && (
           <Button size="sm" variant="ghost" className="ml-auto text-muted-foreground" onClick={() => setReason("")}>

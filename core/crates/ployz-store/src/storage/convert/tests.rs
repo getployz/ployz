@@ -345,7 +345,11 @@ fn the_conditional_syncs_go_leaving_each_merge_as_merged() {
     let url = legacy(&dir, "store", &fixture);
     Storage::open(&url).unwrap();
     let tables = all_tables(&url);
-    for gone in ["config_conditional_sync", "config_held_secret"] {
+    for gone in [
+        "config_conditional_sync",
+        "config_held_secret",
+        "config_waiting_deploy",
+    ] {
         assert!(
             !tables.iter().any(|table| table == gone),
             "{gone} is still there"
@@ -354,12 +358,6 @@ fn the_conditional_syncs_go_leaving_each_merge_as_merged() {
     let (storage, _) = Storage::open(&url).unwrap();
     storage
         .read(|tx| {
-            let waiting = columns(tx, "config_waiting_deploy")?;
-            assert!(!waiting.iter().any(|column| column == "syncs"));
-            assert_eq!(
-                tx.query("SELECT COUNT(*) FROM config_waiting_deploy", &[])?[0].int(0)?,
-                2
-            );
             let proposal = columns(tx, "config_proposal")?;
             assert!(!proposal.iter().any(|column| column == "offered"));
             assert_eq!(

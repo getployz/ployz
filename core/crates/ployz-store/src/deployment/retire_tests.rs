@@ -158,6 +158,10 @@ fn retire_api(store: &ConfigStore, who: &Actor, services: &[&str]) -> Deployment
                 (&environment, &saved),
                 (&services, &retire),
                 (None, &BTreeMap::new()),
+                super::Admission::New {
+                    id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
+                    push: None,
+                },
                 &Trusted::default(),
             )
         })
@@ -342,6 +346,9 @@ fn a_snapshot_missing_a_machine_keeps_the_service_in_applied_state() {
             &Admit::Retry(Retry {
                 id: deployment(3),
                 deployment: admitted.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();

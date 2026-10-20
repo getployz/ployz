@@ -13,6 +13,7 @@ fn global_slot(key: &str) -> SlotKey {
 
 fn new_container(key: &str, resolved_spec: ployz_core::ResolvedServiceSpec) -> NewContainer {
     NewContainer {
+        r#gen: ployz_core::Gen::FIRST,
         slot: global_slot(key),
         resolved_spec,
         deployment_id: None,
@@ -123,6 +124,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                 assert!(placement);
                                 let ContainerWant::Running {
                                     container: RunTarget::New(new),
+                                    ..
                                 } = ensure.want
                                 else {
                                     panic!("catch-up runs a new Container: {:?}", ensure.want);
@@ -232,9 +234,9 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 )],
                             })
                         }
-                        RpcRequestBody::ReadServingPointer(_) => {
+                        RpcRequestBody::ReadRoutes(_) => {
                             recorded.lock().unwrap().push("read pointer");
-                            RpcResponse::from(ployz_core::ServingPointerRead::default())
+                            RpcResponse::from(ployz_core::RoutesRead::default())
                         }
                         RpcRequestBody::Inspect(inspect) => {
                             recorded.lock().unwrap().push(if inspect.include_storage {
@@ -265,6 +267,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
                                 container: RunTarget::New(new),
+                                ..
                             } => {
                                 recorded.lock().unwrap().push("run new");
                                 assert_eq!(new, expected);
@@ -285,6 +288,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                             }
                             ContainerWant::Running {
                                 container: RunTarget::Existing(ContainerLocator::Id(id)),
+                                ..
                             } => {
                                 recorded.lock().unwrap().push("run existing");
                                 assert_eq!(id, container_id('a'));
@@ -471,6 +475,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
                                 container: RunTarget::Existing(ContainerLocator::Id(id)),
+                                ..
                             } => {
                                 assert!(eligible);
                                 let mut current = current.lock().unwrap();
@@ -497,8 +502,8 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             }
                             other => panic!("unexpected want: {other:?}"),
                         },
-                        RpcRequestBody::ReadServingPointer(_) => {
-                            RpcResponse::from(ployz_core::ServingPointerRead::default())
+                        RpcRequestBody::ReadRoutes(_) => {
+                            RpcResponse::from(ployz_core::RoutesRead::default())
                         }
                         other => {
                             panic!("unexpected RPC (existing slot needs no endpoint): {other:?}")
@@ -526,7 +531,7 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerWant, DeploymentLogId, LocalMachinePhase,
         MachineDetails, MachineList, MachineObservation, MembershipObservation, OpaquePayload,
-        RpcRequestBody, ServingPointer, ServingPointerRead,
+        RoutesRead, RpcRequestBody, ServingPointer,
     };
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
@@ -582,12 +587,10 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
                         RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                             containers: current.lock().unwrap().clone(),
                         }),
-                        RpcRequestBody::ReadServingPointer(_) => {
-                            RpcResponse::from(ServingPointerRead {
-                                pointer: Some(pointer),
-                                ..Default::default()
-                            })
-                        }
+                        RpcRequestBody::ReadRoutes(_) => RpcResponse::from(RoutesRead {
+                            pointer: Some(pointer),
+                            ..Default::default()
+                        }),
                         RpcRequestBody::Inspect(_) => {
                             recorded.lock().unwrap().push("inspect");
                             RpcResponse::from(MachineDetails {

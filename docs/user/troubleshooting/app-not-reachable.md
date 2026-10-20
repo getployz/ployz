@@ -124,7 +124,8 @@ certificate**, a DNS status, or **Certificate failed; retrying at …**. Fix any
 
 ## Port 80 is closed
 
-You'll see **Port 80 is closed on 203.0.113.10**. Your servers use port 80 to get certificates,
+You'll see **Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for
+example ufw allow 80/tcp)**. Your servers use port 80 to get certificates,
 so Ployz leaves that server out of your organization's domain until it's open. When your other
 servers still take the traffic, your domains stay live and only **Domain** in
 **Organization → General** shows **Port 80 closed on 203.0.113.10.** An offline server is left
@@ -132,8 +133,8 @@ out without a warning here: it shows **Offline** on the Servers page instead.
 
 Open TCP port 80 and TCP and UDP port 443 to the internet on every server that takes web
 traffic, in your hosting provider's firewall (like a Hetzner Cloud Firewall or an AWS security
-group) as well as the server's own. Then click **Check again** under **Domain** in
-**Organization → General**.
+group) as well as the server's own (with UFW, `ufw allow 80/tcp`). Then click **Check again**
+under **Domain** in **Organization → General**.
 
 ## Something else answers on port 80
 
@@ -183,6 +184,9 @@ ployz server set web-1 --accepts-ingress=true
 # Tell Ployz web-1's public address
 ployz server set web-1 --public-ip 203.0.113.10
 ```
+
+A public IP you set this way stays until you set it again: Ployz no longer looks it up when the
+server restarts.
 
 A server that takes web traffic but whose ingress is missing or stopped needs a deploy, not
 these settings. See [Ingress isn't running](#ingress-isnt-running).

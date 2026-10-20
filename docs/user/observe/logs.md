@@ -41,6 +41,16 @@ as `namespace/name`, either explicitly or through project or deployment scope.
 The command still needs a server observation and access to each selected server's
 log store. Servers that do not answer are named, and partial results exit with code 3.
 
+A name the environment doesn't have now, and that no retained line matches, fails with
+`No Service named nosvc in Environment production` and lists the services you can name. This holds
+whether Ployz reads your servers or Ployz Cloud reads them for a token without server access. It
+exits with code 1, or with code 3 when lines for another name you gave already printed. When a
+server doesn't answer, Ployz says so instead, since the missing lines may be on that server.
+`--follow` needs a service the environment has now, deployed or not yet deployed, so it refuses any
+other name before reading.
+`ployz logs --follow --machine X` with no service named follows every service that runs on X and
+skips the rest.
+
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.
 
@@ -64,6 +74,11 @@ no service arguments, and `--follow` still use live container discovery.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`) sets it. A line
   without one counts as **Info**, stderr included.
+- **The dashboard never shows a Sealed value.** It replaces each one with `[secret NAME]`, and a
+  variable you seal while you watch is scrubbed from the next lines on. Lines it couldn't check,
+  say because your servers couldn't read the service's variables, show as
+  **Hidden: couldn’t check these lines for Sealed values.** When a server fails, the banner says
+  **Container logs are unavailable.** instead of quoting the server's error.
 - **Detected gaps appear in the log**, saying the lines weren't captured or couldn't be read.
   Missing output can have no gap record, such as when a container ran entirely while log
   collection was down.
@@ -74,4 +89,9 @@ no service arguments, and `--follow` still use live container discovery.
   servers have lines, they still show, with a note naming the server to upgrade. Upgrade it from
   its page, then refresh the logs page.
 - **When your servers are offline**, the page says **Your servers are offline** and keeps the
-  last lines they sent.
+  last lines they sent. If the servers still answer but the log stream drops, it says
+  **Couldn’t load logs** and retries.
+- **Lines name where they came from** when that varies in view: the service, the server, and the
+  container's short id when a deploy replaced a container on the same server, so the old copy's
+  shutdown reads apart from the new one's start.
+- **Leaving a log closes its stream.** Coming back reopens it and shows the latest lines.

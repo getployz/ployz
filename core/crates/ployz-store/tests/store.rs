@@ -132,6 +132,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             "web.replicas",
             "web.restartPolicy",
             "web.startCommand",
+            "web.updateOrder",
         ]
     );
     let view = get(&store, &who, Some("web"));
@@ -151,6 +152,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             { "path": "web.restartPolicy", "value": "unless-stopped", "default": "unless-stopped", "apply": "staged" },
             { "path": "web.startCommand", "value": null, "default": null, "apply": "staged" },
             { "path": "web.template", "value": null, "default": null, "apply": "immediate" },
+            { "path": "web.updateOrder", "value": null, "default": null, "apply": "staged" },
         ])
     );
     assert_eq!(
@@ -178,7 +180,7 @@ fn the_whole_environment_shows_only_what_is_set_unless_all() {
         ..EnvironmentQuery::default()
     };
     let all = store.read(&who, &query).unwrap();
-    assert_eq!(all.settings.len(), 12);
+    assert_eq!(all.settings.len(), 13);
     assert_eq!(get(&store, &who, Some("web.cpuLimit")).settings.len(), 1);
 }
 
@@ -266,6 +268,8 @@ fn a_memory_limit_takes_a_size_with_a_unit_and_refuses_bytes() {
         json!("2TiB"),
         json!(2000),
         json!(0),
+        json!(0.001),
+        json!("5MiB"),
     ] {
         let error = store
             .write(
@@ -277,6 +281,17 @@ fn a_memory_limit_takes_a_size_with_a_unit_and_refuses_bytes() {
         assert!(!error.message.contains("looks like bytes"), "{refused}");
     }
     assert_eq!(value(&store, &who, "web.memLimit"), json!(1.073_741_824));
+    let floor = store
+        .write(&who, &edit(None, vec![set("web.memLimit", json!(0.001))]))
+        .unwrap_err();
+    assert_eq!(
+        floor.message,
+        "memLimit: expected at least 0.01 GB (10 MB): Docker refuses less than 6 MiB"
+    );
+    store
+        .write(&who, &edit(None, vec![set("web.memLimit", json!("10MB"))]))
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.memLimit"), json!(0.01));
 }
 
 #[test]
@@ -546,6 +561,7 @@ fn wrong_paths_and_values_name_the_fix() {
             "restartPolicy",
             "startCommand",
             "template",
+            "updateOrder",
             "repository",
             "branch",
             "rootDir",
@@ -692,7 +708,10 @@ fn environments_are_created_in_a_named_project_and_addressed_by_name() {
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(
         error.details,
-        json!({ "next": "ployz env new preview --project shop" })
+        json!({
+            "next": "ployz env ls --project shop",
+            "valid_children": ["production", "staging"],
+        })
     );
 }
 

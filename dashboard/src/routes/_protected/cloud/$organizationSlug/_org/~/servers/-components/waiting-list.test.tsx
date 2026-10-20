@@ -278,6 +278,8 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
+// React Query tells its observers on a setTimeout(0), which act does not wait for.
+const notified = () => new Promise((done) => setTimeout(done, 0));
 const flowClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 function flow(servers: readonly WaitingServerView[], hasFirst: boolean) {
   const client = flowClient();
@@ -307,11 +309,11 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const waitingFetch = client.refetchQueries({ queryKey: waitingKey });
   const statusFetch = client.refetchQueries({ queryKey: statusKey });
   const returned: WaitingServerView = { ...first, arrivalAt: "2026-10-17T10:01:00Z", returned: { state: "failed", stage: "storage", message: "Disk missing" } };
-  const endWaiting = () => act(async () => { waiting.resolve([second, returned]); await waitingFetch; });
-  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], hasFirst: true, joining: 0 }); await statusFetch; });
+  const endWaiting = () => act(async () => { waiting.resolve([second, returned]); await waitingFetch; await notified(); });
+  const endStatus = () => act(async () => { status.resolve({ attempts: [{ ...attempt, state: "failed", endedAt: returned.arrivalAt }], hasFirst: true, joining: 0 }); await statusFetch; await notified(); });
   if (order === "waiting-first") {
     await endWaiting();
-    await vi.waitFor(() => expect(rowNames()).toEqual(["second", "first"]));
+    expect(rowNames()).toEqual(["second", "first"]);
     const before = within(box()).getAllByRole("row");
     await endStatus();
     expect(within(box()).getAllByRole("row")).toEqual(before);
@@ -437,4 +439,24 @@ it("names the first arrival on first run and enrolls it from the heading", async
   expect(screen.queryByRole("heading", { name: "Waiting to join" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
   await vi.waitFor(() => expect(screen.getByRole("region", { name: "Enrollment preview" })).toBeTruthy());
+});
+
+it("enrolls the server its detail sheet shows", async () => {
+  const preview = previewStub();
+  const one = host("one");
+  vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...one, report, probe: null } as never);
+  flow([one, host("two")], true);
+  fireEvent.click(screen.getByRole("button", { name: "one" }));
+  const sheet = await screen.findByRole("dialog");
+  fireEvent.click(await within(sheet).findByRole("button", { name: "Enroll" }));
+  await vi.waitFor(() => expect(preview.mock.calls.at(-1)?.[0]?.data.ids).toEqual([one.id]));
+});
+
+it("says nothing joins on its own until the first server is enrolled by hand", () => {
+  const hint = "No cluster yet. Enroll one server to start it.";
+  const client = new QueryClient();
+  const { rerender } = render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={[host("one"), host("two")]} now={NOW} hasFirst={false} /></QueryClientProvider>);
+  expect(screen.getByText(hint)).toBeTruthy();
+  rerender(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={[host("one"), host("two")]} now={NOW} hasFirst /></QueryClientProvider>);
+  expect(screen.queryByText(hint)).toBeNull();
 });

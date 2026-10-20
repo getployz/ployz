@@ -301,7 +301,9 @@ impl Daemon {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let running_builds = builds.running_builds();
         builds.follow(local.watch());
+        let (endpoint_chooser, endpoint_choices) = tokio::sync::mpsc::channel(8);
         let machine_api = MachineApi::builder(local.clone())
+            .with_endpoint_chooser(endpoint_chooser)
             .with_volume_plugin(plugin.clone())
             .with_build_grants(Arc::clone(&grants))
             .with_builds(builds)
@@ -326,6 +328,9 @@ impl Daemon {
             running_builds,
             shutdown.clone(),
         );
+        let rediscovery = crate::machine::LocalMachine::new(local.clone());
+        let rediscovery_shutdown = shutdown.clone();
+        tokio::spawn(async move { rediscovery.rediscover_addresses(rediscovery_shutdown).await });
         let management_endpoint =
             management::bind(local_record.management_secret(), &config.management)
                 .await
@@ -361,9 +366,15 @@ impl Daemon {
             let network_runner = async {
                 if let Some(network) = &mut network {
                     network
-                        .run(machine_view.clone(), local.clone(), shutdown.clone())
+                        .run(
+                            machine_view.clone(),
+                            local.clone(),
+                            endpoint_choices,
+                            shutdown.clone(),
+                        )
                         .await
                 } else {
+                    drop(endpoint_choices);
                     shutdown.cancelled().await;
                     Ok(())
                 }
@@ -415,13 +426,11 @@ impl Daemon {
                             local_id,
                             shutdown.clone(),
                         )
-                        .await
+                        .await;
                     }
-                    None => {
-                        shutdown.cancelled().await;
-                        Ok(())
-                    }
+                    None => shutdown.cancelled().await,
                 }
+                Ok(())
             };
             let retire = async {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
@@ -1350,6 +1359,7 @@ mod tests {
                         )],
                     },
                     wireguard_mtu: None,
+                    pinned: Default::default(),
                 })
             })
             .await

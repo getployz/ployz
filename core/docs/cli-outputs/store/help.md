@@ -23,7 +23,7 @@ Commands:
   deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
-  history     Show immutable saved versions
+  history     Show saved versions to undo or roll back to
   discard     Undo staged Service, Volume, Config or Setting changes
   docs        Search the Ployz docs, or print a page
   domain      Manage public domains
@@ -104,7 +104,7 @@ Commands:
   deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
-  history     Show immutable saved versions
+  history     Show saved versions to undo or roll back to
   discard     Undo staged Service, Volume, Config or Setting changes
   docs        Search the Ployz docs, or print a page
   domain      Manage public domains
@@ -167,7 +167,7 @@ Commands:
   deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
-  history     Show immutable saved versions
+  history     Show saved versions to undo or roll back to
   discard     Undo staged Service, Volume, Config or Setting changes
   docs        Search the Ployz docs, or print a page
   domain      Manage public domains
@@ -308,7 +308,7 @@ Commands:
   default     Make an Environment the Project's Default Environment
   setup       Set the Setup Commands a new Branch of an Environment runs when it names none
   rm          Remove an Environment: from the Servers first, then from Ployz
-  branch      Make a Branch: copies of the nodes picked, the rest used live
+  branch      Make a Branch: copies of the nodes picked; what they use stays the Parent's
   sync        Stage one Environment's changes in another of the Project
   copy        Make a Live Node the Branch's own copy; a Volume it mounts comes empty
   keep        Keep the Branch after syncing into its Parent and when idle
@@ -406,7 +406,7 @@ Options:
           The Project's name, typed to confirm its removal
 
       --accept-volume-loss <name>
-          Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this
+          Accept permanent deletion: repeat once per exact volume name in the full deletion list
 
       --json
           Print the result as one JSON object on stdout

@@ -6,6 +6,7 @@ use std::{
     net::IpAddr,
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
 use ployz_core::{
@@ -17,10 +18,11 @@ use ployz_core::{
     synthesize_membership,
 };
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError, local_runtime,
-    store::Installation,
+    store::{Installation, Rediscovered},
 };
 
 use crate::{
@@ -29,6 +31,9 @@ use crate::{
     host_capacity,
     network::{NetworkError, discover_network},
 };
+
+const REDISCOVERY_RETRY_MIN: Duration = Duration::from_millis(250);
+const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 
 /// Live Observation and membership operations for this Machine.
 #[derive(Clone)]
@@ -295,29 +300,19 @@ impl LocalMachine {
         .await
     }
 
-    /// Machines whose ingress must route a Serving Pointer before a Deploy relies on
-    /// it, or `None` while the Machine list is partly replicated.
+    /// The Machines whose proxies must ack a route change, and those reported Down.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] without a Cluster store, and
     /// [`Error::Cluster`] when the Machine list cannot be read.
-    pub(crate) async fn ingress_machines(&self) -> Result<Option<BTreeSet<MachineId>>, Error> {
+    pub(crate) async fn route_membership(&self) -> Result<crate::route_acks::Membership, Error> {
         let cluster = self
             .cluster
             .as_ref()
             .ok_or(Error::ClusterStoreUnavailable)?;
         let machines = cluster.replicated.machines().await?;
-        let membership =
-            crate::retire::sample_ackers(machines, &self.record().id(), &cluster.admin).await;
-        Ok(match membership.ackers {
-            crate::retire::Ackers::Known(machines) if !machines.is_empty() => {
-                Some(machines.into_keys().collect())
-            }
-            crate::retire::Ackers::Known(_)
-            | crate::retire::Ackers::Incomplete { .. }
-            | crate::retire::Ackers::Unread => None,
-        })
+        Ok(crate::route_acks::sample_ackers(machines, &self.record().id(), &cluster.admin).await)
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {
@@ -451,6 +446,70 @@ impl LocalMachine {
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,
         })
+    }
+
+    /// Refresh this participating Machine's unpinned public IP and Advertised
+    /// Endpoints from discovery, waiting out busy installation admission until
+    /// `shutdown`. A failure keeps the stored row.
+    pub async fn rediscover_addresses(&self, shutdown: CancellationToken) {
+        match self.try_rediscover_addresses(&shutdown).await {
+            Ok(Rediscovered::Unchanged) => {}
+            Ok(Rediscovered::Updated(machine)) => tracing::info!(
+                public_ip = ?machine.public_ip,
+                advertised_endpoints = ?machine.advertised_endpoints,
+                "rediscovered this Machine's addresses"
+            ),
+            Ok(Rediscovered::PublicIpLookupFailed) => tracing::warn!(
+                "public IP lookup failed; keeping the stored public IP and Advertised Endpoints"
+            ),
+            Err(error) => tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "could not rediscover this Machine's addresses; keeping the stored ones"
+            ),
+        }
+    }
+
+    async fn try_rediscover_addresses(
+        &self,
+        shutdown: &CancellationToken,
+    ) -> Result<Rediscovered, Error> {
+        let record = self.record();
+        let pinned = record.pinned_addresses();
+        let (LocalMachinePhase::Participating, Some(machine)) = (record.phase(), record.machine())
+        else {
+            return Ok(Rediscovered::Unchanged);
+        };
+        if pinned.public_ip && pinned.advertised_endpoints {
+            return Ok(Rediscovered::Unchanged);
+        }
+        let public_ip = match (pinned.public_ip, machine.public_ip) {
+            (false, _) => PublicIpDiscovery::Auto,
+            (true, Some(address)) => PublicIpDiscovery::Override(address),
+            (true, None) => PublicIpDiscovery::Disabled,
+        };
+        let discovered = discover_network(public_ip).await?;
+        let mut retry = REDISCOVERY_RETRY_MIN;
+        loop {
+            let local = self.clone();
+            let discovered = discovered.clone();
+            match self
+                .finish_mutation(async move {
+                    Ok(local
+                        .owner
+                        .mutate(move |store| store.rediscover(discovered))
+                        .await??)
+                })
+                .await
+            {
+                Err(Error::Admission(crate::mutation::Error::Busy)) => {}
+                outcome => return outcome,
+            }
+            tokio::select! {
+                () = shutdown.cancelled() => return Ok(Rediscovered::Unchanged),
+                () = tokio::time::sleep(retry) => {}
+            }
+            retry = (retry * 2).min(REDISCOVERY_RETRY_MAX);
+        }
     }
 
     /// Enroll this Machine as a founder or member and request restart. A resend
@@ -995,6 +1054,66 @@ mod tests {
             .unwrap();
 
         assert_eq!(details.upgrade, None);
+    }
+
+    #[tokio::test]
+    async fn rediscovery_waits_for_installation_admission_then_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let public_ip: std::net::IpAddr = "198.51.100.7".parse().unwrap();
+        let stale = AdvertisedEndpoint("192.0.2.250:51820".parse().unwrap());
+        let mut store = crate::machine::LocalMachineStore::open(dir.path()).unwrap();
+        store
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("edge").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: Some(public_ip),
+                    advertised_endpoints: vec![stale],
+                },
+                wireguard_mtu: None,
+                pinned: ployz_core::PinnedAddresses {
+                    public_ip: true,
+                    advertised_endpoints: false,
+                },
+            })
+            .unwrap();
+        let owner = crate::machine::RecordOwner::spawn(store).unwrap();
+        let local = super::LocalMachine::new(owner.clone());
+        let upgrade = owner.mutation_gate().try_installation().unwrap();
+        let shutdown = tokio_util::sync::CancellationToken::new();
+
+        let rediscovery = tokio::spawn({
+            let shutdown = shutdown.clone();
+            async move { local.rediscover_addresses(shutdown).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let held = owner
+            .record()
+            .machine()
+            .unwrap()
+            .advertised_endpoints
+            .clone();
+        drop(upgrade);
+        tokio::time::timeout(std::time::Duration::from_secs(10), rediscovery)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(held, vec![stale]);
+        let endpoints = owner
+            .record()
+            .machine()
+            .unwrap()
+            .advertised_endpoints
+            .clone();
+        assert!(
+            endpoints.contains(&AdvertisedEndpoint(std::net::SocketAddr::new(
+                public_ip, 51820
+            ))),
+            "{endpoints:?}"
+        );
+        assert!(!endpoints.contains(&stale), "{endpoints:?}");
     }
 
     #[test]

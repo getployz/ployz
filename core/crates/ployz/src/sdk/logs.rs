@@ -7,7 +7,7 @@ use ployz_core::{
     TailLogsRequest, log_level, op,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -16,9 +16,9 @@ use ts_rs::TS;
 use super::{Session, invalid_argument};
 use crate::connect::{Client, ConnectError};
 use ployz_core::InspectContainerRequest;
-use ployz_store::tools::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
+use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 
-const ROW_DEADLINE: Duration = Duration::from_secs(10);
+pub(super) const ROW_DEADLINE: Duration = Duration::from_secs(10);
 
 /// One running Container's Docker output on one Machine.
 #[derive(Clone, Debug, Deserialize)]
@@ -81,6 +81,11 @@ pub enum LogHistoryRecord {
         timestamp_nanos: String,
         exit_code: Option<i64>,
         oom_killed: bool,
+    },
+    /// A line the scrubbed reader could not check for Sealed values, without its text.
+    Hidden {
+        container_id: ContainerId,
+        timestamp_nanos: String,
     },
     End {
         next: Option<String>,
@@ -197,6 +202,11 @@ impl LogHistoryStream {
     /// Returns the store's error row, malformed frames, transport failures,
     /// and a timeout when the store sends no frame for ten seconds.
     pub async fn next(&self) -> Result<Option<LogHistoryRecord>, RpcError> {
+        Ok(self.row().await?.map(history_record))
+    }
+
+    /// The next row as the store sent it, skipping heartbeats. `None` after `end`.
+    pub(super) async fn row(&self) -> Result<Option<HistoryRow>, RpcError> {
         let mut stream = self.stream.lock().await;
         loop {
             let payload = tokio::select! {
@@ -213,14 +223,18 @@ impl LogHistoryStream {
             let Some(payload) = payload else {
                 return Ok(None);
             };
-            if let Some(record) = history_record(&payload)? {
-                return Ok(Some(record));
+            if let Some(row) = history_row(&payload)? {
+                return Ok(Some(row));
             }
         }
     }
 
     pub fn cancel(&self) {
         self.cancel.cancel();
+    }
+
+    pub(super) fn cancelled(&self) -> &CancellationToken {
+        &self.cancel
     }
 }
 
@@ -240,10 +254,28 @@ fn nanos(value: Option<&str>, field: &str) -> Result<Option<i64>, RpcError> {
         .transpose()
 }
 
-fn history_record(payload: &OpaquePayload) -> Result<Option<LogHistoryRecord>, RpcError> {
-    let row = HistoryRow::decode(payload)
-        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
-    Ok(Some(match row {
+fn history_row(payload: &OpaquePayload) -> Result<Option<HistoryRow>, RpcError> {
+    match HistoryRow::decode(payload)
+        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?
+    {
+        HistoryRow::Heartbeat => Ok(None),
+        HistoryRow::Error(message) => Err(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message,
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }),
+        row @ (HistoryRow::Container(_)
+        | HistoryRow::Line { .. }
+        | HistoryRow::Gap { .. }
+        | HistoryRow::Exit { .. }
+        | HistoryRow::End { .. }) => Ok(Some(row)),
+    }
+}
+
+/// `row` as a page row. Heartbeats and errors never get here: [`history_row`] took them.
+pub(super) fn history_record(row: HistoryRow) -> LogHistoryRecord {
+    match row {
         HistoryRow::Container(container) => LogHistoryRecord::Container(container),
         HistoryRow::Line {
             container_id,
@@ -280,22 +312,21 @@ fn history_record(payload: &OpaquePayload) -> Result<Option<LogHistoryRecord>, R
             oom_killed,
         },
         HistoryRow::End { next } => LogHistoryRecord::End { next },
-        HistoryRow::Heartbeat => return Ok(None),
-        HistoryRow::Error(message) => {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message,
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
+        HistoryRow::Heartbeat | HistoryRow::Error(_) => {
+            unreachable!("history_row takes heartbeats and errors")
         }
-    }))
+    }
 }
 impl ContainerLogStream {
     /// Read the next output record, skipping transport heartbeats.
     /// # Errors
     /// Returns malformed-frame and Machine transport failures.
     pub async fn next(&self) -> Result<Option<ContainerLogRecord>, RpcError> {
+        Ok(self.entry().await?.map(decode_record))
+    }
+
+    /// The next frame as the Machine sent it, skipping heartbeats.
+    pub(super) async fn entry(&self) -> Result<Option<LogEntry>, RpcError> {
         let mut stream = self.stream.lock().await;
         loop {
             let payload = tokio::select! {
@@ -305,8 +336,10 @@ impl ContainerLogStream {
             let Some(payload) = payload else {
                 return Ok(None);
             };
-            if let Some(record) = decode_record(&payload)? {
-                return Ok(Some(record));
+            let entry = LogEntry::decode(&payload)
+                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+            if !matches!(entry.body, LogBody::Heartbeat) {
+                return Ok(Some(entry));
             }
         }
     }
@@ -321,9 +354,8 @@ impl Drop for ContainerLogStream {
     }
 }
 
-fn decode_record(payload: &OpaquePayload) -> Result<Option<ContainerLogRecord>, RpcError> {
-    let entry = LogEntry::decode(payload)
-        .map_err(|error| crate::ui::rpc_error(ployz_core::RpcErrorCode::InvalidArgument, &error))?;
+/// `entry` as a raw record. Heartbeats never get here: [`ContainerLogStream::entry`] took them.
+fn decode_record(entry: LogEntry) -> ContainerLogRecord {
     let (channel, message) = match entry.body {
         LogBody::Stdout(bytes) => (
             LogChannel::Stdout,
@@ -334,17 +366,17 @@ fn decode_record(payload: &OpaquePayload) -> Result<Option<ContainerLogRecord>, 
             String::from_utf8_lossy(&bytes).into_owned(),
         ),
         LogBody::Error(message) => (LogChannel::Error, message),
-        LogBody::Heartbeat => return Ok(None),
+        LogBody::Heartbeat => unreachable!("the reader skips heartbeats"),
     };
-    Ok(Some(ContainerLogRecord {
+    ContainerLogRecord {
         source: entry.metadata,
         timestamp_nanos: entry.timestamp_unix_nanos.to_string(),
         channel,
         message,
-    }))
+    }
 }
 
-/// How long reading a failed Container's tail may take, its env included.
+/// How long reading a failed Container's tail may take.
 const TAIL_READ: Duration = Duration::from_secs(5);
 /// The lines read from the Log Store: more than are kept, so a secret spanning lines is
 /// whole when it is redacted, before the cut.
@@ -353,17 +385,30 @@ const TAIL_FETCH: u16 = 200;
 const TAIL_KEEP: u16 = 10;
 
 /// The last lines of failed Container `container` on `machine`, scrubbed of
-/// `secrets` and of the env its Machine reports. The env is read here and never
-/// leaves. Without it the lines are withheld; unread, they are unanswered.
+/// `sealed`. Unread, they are unanswered.
 pub(crate) async fn failed_tail(
     client: &Client,
     machine: MachineId,
     container: ContainerId,
-    mut secrets: SecretSet,
+    sealed: &SealedValues,
 ) -> LogText {
+    match tail_frames(client, machine, container).await {
+        Some(frames) => tail_excerpt(frames, sealed),
+        None => LogText::Withheld {
+            why: Withheld::Unanswered,
+        },
+    }
+}
+
+/// The raw last lines of failed Container `container` on `machine`, for
+/// [`tail_excerpt`] once what to scrub them of is known. None when unread in time.
+pub(crate) async fn tail_frames(
+    client: &Client,
+    machine: MachineId,
+    container: ContainerId,
+) -> Option<Vec<String>> {
     let target = MachineTarget::from(&machine);
     let read = async {
-        secrets.add_machine_env(container_env(client, &target, container).await.as_ref());
         let selector = LogHistoryRequest {
             container_id: Some(container),
             ..LogHistoryRequest::default()
@@ -371,39 +416,47 @@ pub(crate) async fn failed_tail(
         let newest = newest_lines(client, &target, selector, TAIL_FETCH).await?;
         Ok::<_, RpcError>(frames(newest.into_iter().map(|(_, text)| text)))
     };
-    match tokio::time::timeout(TAIL_READ, read).await {
-        Ok(Ok(frames)) => LogExcerpt::scrub(
-            frames,
-            &secrets,
-            LineCap::new(TAIL_KEEP).unwrap_or_default(),
-        ),
-        Ok(Err(_)) | Err(_) => LogText::Withheld {
-            why: Withheld::Unanswered,
-        },
-    }
+    tokio::time::timeout(TAIL_READ, read).await.ok()?.ok()
+}
+
+pub(crate) fn tail_excerpt(frames: Vec<String>, sealed: &SealedValues) -> LogText {
+    LogText::Shown(LogExcerpt::scrub(
+        frames,
+        sealed,
+        LineCap::new(TAIL_KEEP).unwrap_or_default(),
+    ))
 }
 
 /// How long reading one Machine's lines for an agent may take, env included.
 const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
 
 /// The newest `cap` lines `selector` picks from `machine`'s Log Store, across every
-/// Container that wrote them, scrubbed of each one's env as the Machine reports it. Env
-/// values stay readable only where `plain` holds the same value under the same name. A
-/// Container whose env cannot be read, as after a redeploy removed it, has its lines left
-/// out; they are withheld only when no Container's env can be read. None when `selector`
-/// picks no lines there. The error says why the Machine did not answer in time.
+/// Container that wrote them, scrubbed of each Container's values for the `sealed` names
+/// as its Machine reports them, or of every env value when `sealed` is None. The env is
+/// read here and never leaves, and not at all when `sealed` names nothing. A Container
+/// whose env cannot be read, as after a redeploy removed it, has its lines left out; they
+/// are withheld only when no Container's env can be read. None when `selector` picks no
+/// lines there. The error says why the Machine did not answer in time.
 pub(crate) async fn service_tail(
     client: &Client,
     machine: MachineId,
     selector: LogHistoryRequest,
     cap: LineCap,
-    plain: &BTreeMap<String, String>,
+    sealed: Option<&BTreeSet<String>>,
 ) -> Result<Option<LogText>, RpcError> {
     let target = MachineTarget::from(&machine);
     let read = async {
         let newest = newest_lines(client, &target, selector, LineCap::MAX).await?;
         if newest.is_empty() {
             return Ok(None);
+        }
+        if sealed.is_some_and(BTreeSet::is_empty) {
+            let frames = frames(newest.into_iter().map(|(_, text)| text));
+            return Ok(Some(LogText::Shown(LogExcerpt::scrub(
+                frames,
+                &SealedValues::none(),
+                cap,
+            ))));
         }
         let mut containers: Vec<ContainerId> = Vec::new();
         for (container, _) in &newest {
@@ -414,16 +467,23 @@ pub(crate) async fn service_tail(
         let envs = join_all(
             containers
                 .iter()
-                .map(|container| container_env(client, &target, *container)),
+                .map(|container| container_env(client, machine, *container)),
         )
         .await;
-        let mut secrets = SecretSet::from_store([], plain.clone());
+        let mut values = SealedValues::none();
         let mut readable = Vec::new();
-        for (container, env) in containers.iter().zip(&envs) {
-            if env.is_some() {
-                secrets.add_machine_env(env.as_ref());
-                readable.push(*container);
-            }
+        for (container, env) in containers.iter().zip(envs) {
+            let Some(env) = env else { continue };
+            values.extend(
+                env.into_iter()
+                    .filter(|(name, _)| sealed.is_none_or(|sealed| sealed.contains(name))),
+            );
+            readable.push(*container);
+        }
+        if readable.is_empty() {
+            return Ok(Some(LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            }));
         }
         let frames = frames(
             newest
@@ -431,7 +491,9 @@ pub(crate) async fn service_tail(
                 .filter(|(container, _)| readable.contains(container))
                 .map(|(_, text)| text),
         );
-        Ok(Some(LogExcerpt::scrub(frames, &secrets, cap)))
+        Ok(Some(LogText::Shown(LogExcerpt::scrub(
+            frames, &values, cap,
+        ))))
     };
     in_time("its Log Store", read).await
 }
@@ -478,7 +540,8 @@ pub(crate) async fn process_tail(
                 LogBody::Heartbeat => {}
             }
         }
-        Ok((!frames.is_empty()).then(|| LogExcerpt::scrub(frames, &SecretSet::no_env(), cap)))
+        Ok((!frames.is_empty())
+            .then(|| LogText::Shown(LogExcerpt::scrub(frames, &SealedValues::none(), cap))))
     };
     in_time(&format!("its {process} log"), read).await
 }
@@ -507,9 +570,9 @@ fn unavailable(message: String) -> RpcError {
     }
 }
 
-async fn container_env(
+pub(crate) async fn container_env(
     client: &Client,
-    target: &MachineTarget,
+    machine: MachineId,
     container: ContainerId,
 ) -> Option<BTreeMap<String, String>> {
     client
@@ -517,7 +580,7 @@ async fn container_env(
             InspectContainerRequest {
                 container_id: container,
             },
-            target,
+            &MachineTarget::from(&machine),
             Some(TAIL_READ),
         )
         .await
@@ -734,15 +797,9 @@ mod tests {
         };
         let cap = LineCap::new(50).unwrap();
         let client = session.client().unwrap();
-        let tail = service_tail(
-            &client,
-            MachineId::random(),
-            selector,
-            cap,
-            &BTreeMap::new(),
-        )
-        .await
-        .unwrap();
+        let tail = service_tail(&client, MachineId::random(), selector, cap, None)
+            .await
+            .unwrap();
         assert!(tail.is_none(), "{tail:?}");
         server.abort();
     }
@@ -789,7 +846,7 @@ mod tests {
     #[test]
     fn malformed_log_frame_is_an_error_not_empty_output() {
         let payload = OpaquePayload { json: vec![0xff] };
-        assert!(decode_record(&payload).is_err());
-        assert!(history_record(&payload).is_err());
+        assert!(LogEntry::decode(&payload).is_err());
+        assert!(history_row(&payload).is_err());
     }
 }

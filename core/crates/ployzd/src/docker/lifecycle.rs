@@ -12,7 +12,7 @@ use bollard::{
 };
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, Machine, MachineId,
+    ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
     MachineStorageObservation, Namespace, ResolvedServiceSpec, ServicePlacementEligibility,
     ServicePlacementIneligibleReason, ServicePlacementUnknownReason, SlotKey,
 };
@@ -43,6 +43,7 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     /// Optional identity of this currently existing creation.
     pub(crate) creation_key: Option<&'spec str>,
     pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
+    pub(crate) r#gen: Gen,
     /// How creation obtains the image.
     pub(crate) image: ImagePull<'spec>,
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
@@ -73,6 +74,7 @@ impl ContainerRuntime {
             ContainerRequest {
                 creation_key: None,
                 deployment_id: None,
+                r#gen: Gen::FIRST,
                 image: ImagePull::Policy(None),
                 kind,
                 namespace,
@@ -102,6 +104,7 @@ impl ContainerRuntime {
         let ContainerRequest {
             creation_key,
             deployment_id,
+            r#gen,
             image,
             kind,
             namespace,
@@ -145,6 +148,7 @@ impl ContainerRuntime {
             spec,
             creation_key,
             deployment_id,
+            r#gen,
             image,
         )
         .await
@@ -163,6 +167,7 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
         creation_key: Option<&str>,
         deployment_id: Option<&ployz_core::DeploymentLogId>,
+        r#gen: Gen,
         image: ImagePull<'_>,
     ) -> Result<ContainerCreated, Error> {
         let reserved_name =
@@ -192,6 +197,9 @@ impl ContainerRuntime {
                 .get_or_insert_default()
                 .insert(CREATION_KEY.into(), key.into());
         }
+        body.labels
+            .get_or_insert_default()
+            .insert(super::LABEL_GEN.into(), r#gen.to_string());
         if let ImagePull::Policy(registry_auth) = image {
             prepare_image(
                 &self.docker.client,
@@ -552,6 +560,17 @@ impl ContainerRuntime {
         force: bool,
     ) -> Result<(), Error> {
         let mut config_operation = self.specs.config_operation().await;
+        self.remove_locked(&mut config_operation, container_id, remove_volumes, force)
+            .await
+    }
+
+    pub(super) async fn remove_locked(
+        &self,
+        config_operation: &mut super::spec_store::ConfigOperation<'_>,
+        container_id: &ContainerId,
+        remove_volumes: bool,
+        force: bool,
+    ) -> Result<(), Error> {
         match self.ensure_managed(container_id).await {
             Ok(_) => {}
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {

@@ -269,17 +269,18 @@ pub(crate) const DEPLOYMENT_CANCEL: Verb = Verb::cloud(
 )
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_LS: Verb =
-    Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls);
-pub(crate) const DEPLOYMENT_RETRY: Verb = Verb::cloud(
-    "deployment retry",
-    Never,
-    deploy::retry_command,
-    deploy::retry,
+    Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls).docs("cli/overview.md");
+pub(crate) const DEPLOYMENT_REDEPLOY: Verb = Verb::cloud(
+    "deployment redeploy",
+    Depends,
+    deploy::redeploy_command,
+    deploy::redeploy,
 )
 .docs("deploy/deployments.md")
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_SHOW: Verb =
-    Verb::cloud("deployment show", Never, deploy::show_command, deploy::show);
+    Verb::cloud("deployment show", Never, deploy::show_command, deploy::show)
+        .docs("troubleshooting/deployments.md");
 pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
     "deployment start",
     Never,
@@ -359,7 +360,8 @@ pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
     Always,
     env::shutdown_command,
     env::pr::shutdown,
-);
+)
+.docs("account/organizations.md");
 pub(crate) const ENV_SYNC: Verb =
     Verb::cloud("env sync", Depends, env::sync_command, env::branch::sync)
         .stdin(&[("--value", Stdin::Only)])
@@ -441,6 +443,9 @@ pub(crate) const ORG_LS: Verb = Verb::cloud(
     account::org_list_command,
     account::org_list,
 );
+pub(crate) const ORG_NEW: Verb =
+    Verb::cloud("org new", Never, account::org_new_command, account::org_new)
+        .docs("account/organizations.md");
 pub(crate) const ORG_RM: Verb = Verb::cloud(
     "org rm",
     Always,
@@ -635,7 +640,8 @@ pub(crate) const SERVICE_RM: Verb = Verb::cloud(
     Never,
     service::authored::remove_command,
     service::authored::remove,
-);
+)
+.docs("services/services.md");
 pub(crate) const SERVICE_START: Verb = Verb::cloud(
     "service start",
     Never,
@@ -786,7 +792,7 @@ pub(crate) const VERBS: &[Verb] = &[
     DEPLOY,
     DEPLOYMENT_CANCEL,
     DEPLOYMENT_LS,
-    DEPLOYMENT_RETRY,
+    DEPLOYMENT_REDEPLOY,
     DEPLOYMENT_SHOW,
     DEPLOYMENT_START,
     DIFF,
@@ -833,6 +839,7 @@ pub(crate) const VERBS: &[Verb] = &[
     ORG_BUILD_ORDER,
     ORG_LEAVE,
     ORG_LS,
+    ORG_NEW,
     ORG_RM,
     ORG_USE,
     PROJECT_LS,

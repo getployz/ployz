@@ -33,6 +33,7 @@ mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
+mod sealed;
 mod store_call;
 mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
@@ -54,11 +55,16 @@ pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,
 };
-pub(crate) use logs::{failed_tail, process_tail, service_tail};
+pub(crate) use logs::{
+    container_env, failed_tail, process_tail, service_tail, tail_excerpt, tail_frames,
+};
 pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
     expected_fingerprints,
+};
+pub use sealed::{
+    LiveLogRecord, LogLine, PendingNames, ScrubbedHistoryStream, ScrubbedLogStream, SealedNames,
 };
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
@@ -1293,21 +1299,29 @@ pub(crate) fn preparation_error(
     let message = crate::ui::rpc_error(RpcErrorCode::Internal, &error).message;
     match error {
         PreparationError::Selection(error) => {
-            let rejections = if let ConnectError::Remote(error) = &error {
-                error
-                    .details
-                    .get("rejections")
-                    .cloned()
-                    .unwrap_or(Value::Null)
+            let details = if let ConnectError::Remote(error) = &error {
+                &error.details
             } else {
-                Value::Null
+                &Value::Null
             };
+            let rejections = details.get("rejections").cloned().unwrap_or(Value::Null);
+            let reasons = details
+                .get("reasons")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
             RpcError {
                 code: RpcErrorCode::Unavailable,
                 message: "No eligible Build Machine was selected; no build was started.".into(),
                 details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
                     "message":"No eligible Build Machine was selected; no build was started.", "rejections":rejections}}),
-                cause: Vec::new(),
+                cause: if reasons.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![reasons.join("; ")]
+                },
             }
         }
         PreparationError::Connect(_) => RpcError {

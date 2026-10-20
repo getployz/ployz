@@ -28,6 +28,12 @@ use crate::storage::Tx;
 /// resolve; a longer file is refused as `invalid_argument`.
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
 
+/// The most bytes of text one Service mounts across all its Configs, counted as
+/// for [`MAX_FILE_BYTES`]; a put or mount past it is refused as `invalid_argument`.
+/// A Container spec carries every mounted byte as a JSON number, up to four wire
+/// bytes each, and daemons through 0.3.0-beta.6 refuse a request over 4 MiB.
+pub const MAX_MOUNTED_BYTES: usize = 768 * 1024;
+
 /// Create a Config, optionally mounted into Services.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -213,8 +219,19 @@ pub(crate) fn put_file(
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &put.environment)?;
     let names = environment.names();
-    let content = parts(&put.file, &put.content, &names)?;
+    let old = environment
+        .config(&put.config)?
+        .files
+        .get(&put.file)
+        .map_or(&[][..], |file| file.content.as_slice());
+    let (labels, removed) = (environment.shown_names(), environment.removed_names());
+    let shown = crate::variables::Shown {
+        labels: &labels,
+        removed: &removed,
+    };
+    let content = parts(&put.file, &put.content, &names, shown, old)?;
     let config = environment.config_mut(&put.config)?;
+    let id = config.resource_id.clone();
     let old = config.files.get(&put.file);
     let file = SavedConfigFile {
         content,
@@ -238,10 +255,17 @@ pub(crate) fn put_file(
             ));
         }
         let configs = &environment.working.configs;
-        for node in &environment.working.services {
+        let mounting = environment.working.services.iter().filter(|node| {
+            node.config_attachments
+                .iter()
+                .any(|mount| mount.config_resource_id == id)
+        });
+        for node in mounting {
             let service =
                 ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
-            if let Some(error) = collision(&service, node, configs) {
+            if let Some(error) = collision(&service, node, configs)
+                .or_else(|| oversized(&service, node, configs, &names))
+            {
                 return Err(error);
             }
         }
@@ -402,6 +426,7 @@ pub(crate) fn attach(
             )
         })?;
     let id = environment.config(config)?.resource_id.clone();
+    let names = environment.names();
     let volumes = environment.working.volumes.clone();
     let configs = environment.working.configs.clone();
     let node = environment.service_mut(service)?;
@@ -441,10 +466,60 @@ pub(crate) fn attach(
     node.config_attachments
         .retain(|mount| mount.config_resource_id != id);
     node.config_attachments.push(mount);
-    if let Some(error) = collision(service, node, &configs) {
+    if let Some(error) =
+        collision(service, node, &configs).or_else(|| oversized(service, node, &configs, &names))
+    {
         return Err(error);
     }
     Ok(true)
+}
+
+fn oversized(
+    service: &ServiceName,
+    node: &SavedServiceIntent,
+    configs: &[SavedConfigIntent],
+    names: &BTreeMap<String, String>,
+) -> Option<RpcError> {
+    let mounted: Vec<&SavedConfigIntent> = node
+        .config_attachments
+        .iter()
+        .filter_map(|mount| {
+            configs
+                .iter()
+                .find(|config| config.resource_id == mount.config_resource_id)
+        })
+        .collect();
+    let bytes: usize = mounted
+        .iter()
+        .flat_map(|config| config.files.values())
+        .map(|file| render_variable_parts(&file.content, names).len())
+        .sum();
+    let names: Vec<&ConfigName> = mounted.iter().map(|config| &config.name).collect();
+    mounts_too_much(service, &names, bytes)
+}
+
+/// The refusal for `service` mounting `bytes` of Config text from Configs `names`,
+/// when that is past [`MAX_MOUNTED_BYTES`].
+pub(crate) fn mounts_too_much(
+    service: &ServiceName,
+    names: &[&ConfigName],
+    bytes: usize,
+) -> Option<RpcError> {
+    if bytes <= MAX_MOUNTED_BYTES {
+        return None;
+    }
+    Some(error::invalid(
+        format!(
+            "{service} would mount {} KB of Config text from {}; a Service mounts at most 768 KB across its Configs",
+            bytes.div_ceil(1024),
+            names
+                .iter()
+                .map(|name| format!("Config {name}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        json!({ "service": service, "configs": names, "bytes": bytes, "max_bytes": MAX_MOUNTED_BYTES }),
+    ))
 }
 
 fn collision(
@@ -509,6 +584,8 @@ fn parts(
     file: &ConfigFileName,
     text: &str,
     names: &BTreeMap<String, String>,
+    shown: crate::variables::Shown<'_>,
+    old: &[ValuePart],
 ) -> Result<Vec<ValuePart>, RpcError> {
     if text.len() > MAX_FILE_BYTES {
         return Err(error::invalid(
@@ -525,12 +602,7 @@ fn parts(
             json!({ "file": file }),
         ));
     }
-    let template = parse_variable_template(text, |name| {
-        names
-            .iter()
-            .find(|(_, slug)| slug.as_str() == name)
-            .map(|(lineage, _)| lineage.clone())
-    });
+    let template = parse_variable_template(text, crate::variables::lineage_of(shown, old));
     if template.unterminated {
         return Err(error::invalid(
             format!(

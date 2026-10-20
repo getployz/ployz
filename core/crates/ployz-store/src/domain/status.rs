@@ -60,6 +60,8 @@ enum Deployed {
     No,
 }
 
+const PORT_80_HINT: &str = "Open port 80 in the Server's firewall (for example ufw allow 80/tcp)";
+
 type Status = (DomainStatus, Option<String>, Option<DomainAction>);
 
 fn setting_up(reason: impl Into<String>) -> Status {
@@ -107,7 +109,10 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         }
         Some(ClusterDomainStatus::Port80 { addresses }) => {
             return attention(
-                format!("Port 80 is closed on {}", addresses.join(", ")),
+                format!(
+                    "Port 80 is closed on {}. {PORT_80_HINT}",
+                    addresses.join(", ")
+                ),
                 None,
             );
         }
@@ -192,7 +197,9 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         Some(CertificateFailureKind::ReachesElsewhere) => {
             attention("DNS points to another server", dns())
         }
-        Some(CertificateFailureKind::Unreachable) => attention("Port 80 is closed", None),
+        Some(CertificateFailureKind::Unreachable) => {
+            attention(format!("Port 80 is closed. {PORT_80_HINT}"), None)
+        }
         Some(CertificateFailureKind::RedirectsToHttps) => attention(
             "Your proxy redirects to HTTPS: exempt /.well-known/acme-challenge/* from it",
             None,
@@ -414,6 +421,18 @@ mod tests {
             status(&domain, Deployed::Yes, &authority).0,
             DomainStatus::SettingUp
         );
+        let unreachable = evidence(Some(("failure", Some("unreachable"))));
+        assert_eq!(
+            status(&domain, Deployed::Yes, &unreachable),
+            (
+                DomainStatus::NeedsAttention,
+                Some(
+                    "Port 80 is closed. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)"
+                        .into()
+                ),
+                None
+            )
+        );
         let mut offline = ready.clone();
         offline.cluster_domain = offline.cluster_domain.map(|cluster| ClusterDomain {
             status: ClusterDomainStatus::NoServers,
@@ -432,7 +451,7 @@ mod tests {
                 ClusterDomainStatus::Port80 {
                     addresses: vec!["203.0.113.7".into()],
                 },
-                "Port 80 is closed on 203.0.113.7",
+                "Port 80 is closed on 203.0.113.7. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
             ),
             (
                 ClusterDomainStatus::Port80Taken {

@@ -1,9 +1,9 @@
 import "@tanstack/react-start/server-only";
-import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, Subject, VolumeRun } from "@ployz/sdk";
+import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { findService, owners } from "#/modules/config-store/store-lookup.server";
+import { findService, owners, sealedNames } from "#/modules/config-store/store-lookup.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
@@ -54,6 +54,12 @@ const session = (organizationId: string) =>
     Effect.map((opened) => opened.status === "connected" ? opened.connected : null),
   );
 
+/** Cloud's own answer for an Organization with no Servers: it needs none of them to know. */
+const noServers = (): ServersAnswer => {
+  const now = Math.floor(Date.now() / 1000);
+  return { servers: [], seen: { seen_by: null, observed_at: now, read_at: now, age_seconds: 0, from: "cloud_cache", unanswered: [] } };
+};
+
 /** Why Cloud reached no Server: the Organization has none yet, or its Servers aren't answering. */
 const notConnected = Effect.fn("CallCloud.notConnected")(function* (organizationId: string) {
   return (yield* countOrganizationMachines(organizationId)) === 0
@@ -61,12 +67,11 @@ const notConnected = Effect.fn("CallCloud.notConnected")(function* (organization
     : unreachable();
 });
 
-/** Ask the runtime, describing only the Services in `readable` Namespaces, or every Service when null. */
-const runtimeAsk = (organizationId: string, query: CloudQuery, readable: ReadonlyArray<string> | null) =>
+const runtimeAsk = (organizationId: string, query: CloudQuery, readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) =>
   Effect.gen(function* () {
     const connected = yield* session(organizationId);
     if (connected === null) return yield* notConnected(organizationId);
-    return yield* connected.agentAsk(query, readable).pipe(
+    return yield* connected.agentAsk(query, readable, sealed).pipe(
       Effect.map(answer),
       Effect.catch((error) => Effect.succeed(refusal(rpcErrorCode(error) ?? "unavailable", sdkFailureMessage(error)))),
     );
@@ -124,17 +129,44 @@ const copies = Effect.fn("CallCloud.copies")(function* (caller: Caller, namespac
  * so a token held to Environments reads only theirs. Such a token may not make a read of no Namespace that is
  * `organizationWide`; any other read of no Namespace describes only the Services in its Environments.
  */
-const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (caller: Caller, query: CloudQuery, permission: Permission, namespace: string | null, organizationWide = false) {
+const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (
+  caller: Caller, query: CloudQuery, permission: Permission, namespace: string | null,
+  { organizationWide = false, sealed = null }: { readonly organizationWide?: boolean; readonly sealed?: ReadonlyArray<string> | null } = {},
+) {
   const lacking = unpermitted(caller, permission);
   if (lacking !== null) return lacking;
-  if (callerEnvironments(caller) === undefined) return yield* runtimeAsk(caller.organization.id, query, null);
+  if (callerEnvironments(caller) === undefined) return yield* runtimeAsk(caller.organization.id, query, null, sealed);
   const owned = yield* owners(caller.organization.id);
   if (namespace !== null || organizationWide) {
     const refused = unheld(caller, permission, owned.find((row) => row.namespace === namespace)?.environment ?? null);
     if (refused !== null) return refused;
   }
   const readable = owned.filter((row) => unheld(caller, permission, row.environment) === null).map((row) => row.namespace);
-  return yield* runtimeAsk(caller.organization.id, query, readable);
+  return yield* runtimeAsk(caller.organization.id, query, readable, sealed);
+});
+
+const SEALED_REREADS = 2;
+
+/**
+ * Read container logs scrubbed under the names the Store holds Sealed. A Deploy may seal a new variable and start its
+ * Container while the runtime is being read, so the names are read again afterwards; a name the read didn't scrub under
+ * reruns the read with it, up to `SEALED_REREADS` times, and a set that never settles withholds the logs. Only growth
+ * matters: a name that left the set left nothing unscrubbed.
+ */
+const logsRead = Effect.fn("CallCloud.logsRead")(function* (caller: Caller, query: Extract<CloudQuery, { query: "logs" }>) {
+  const organizationId = caller.organization.id;
+  let sealed = yield* sealedNames(organizationId, query.namespace);
+  for (let rerun = 0; ; rerun++) {
+    const used = sealed;
+    const heard = yield* runtimeRead(caller, query, "logs:read", query.namespace, { sealed: used });
+    if (used === null || !heard.ok) return heard;
+    const fresh = yield* sealedNames(organizationId, query.namespace);
+    if (fresh !== null && fresh.every((name) => used.includes(name))) return heard;
+    if (rerun === SEALED_REREADS) {
+      return refusal("unavailable", "Sealed variables kept changing while the logs were read. Ask again.");
+    }
+    sealed = fresh === null ? null : [...new Set([...used, ...fresh])].sort((a, b) => a.localeCompare(b));
+  }
 });
 
 const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQuery) {
@@ -157,8 +189,13 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
       const { query: _, ...file } = query;
       return yield* Effect.flatMap(GithubRepositories, (github) => github.file(caller, file)).pipe(Effect.map(answer));
     }
-    case "servers":
+    case "servers": {
+      // An Organization with no Servers yet lists none, as any empty list does; the agent's tool says how to add one.
+      const lacking = unpermitted(caller, "servers:read");
+      if (lacking !== null) return lacking;
+      if ((yield* countOrganizationMachines(organizationId)) === 0) return answer<ServersAnswer>(noServers());
       return yield* runtimeRead(caller, query, "servers:read", null);
+    }
     case "containers":
       return yield* runtimeRead(caller, query, "servers:read", query.namespace);
     case "metrics":
@@ -173,14 +210,14 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
       if (caller.support !== null && !caller.support.logs) {
         return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
       }
-      return yield* runtimeRead(caller, query, "logs:read", query.namespace);
+      return yield* logsRead(caller, query);
     case "server_logs":
       // The support logs switch promises only Container output, so it never opens a Server's own logs.
       if (caller.support !== null) {
         return refusal("forbidden", "Ployz support can't read an Organization's Server logs.");
       }
       // A Server's own processes log for every Environment it runs, so a token held to some may not read them.
-      return yield* runtimeRead(caller, query, "logs:read", null, true);
+      return yield* runtimeRead(caller, query, "logs:read", null, { organizationWide: true });
   }
 });
 

@@ -79,7 +79,7 @@ Empty lists vary:
 
 Dominant: one past-tense sentence naming the object and its scope. Of 297 sentence-like success lines, 157 end with a period and 140 do not.
 
-- Staged. `Staged web.replicas in shop/production (revision 10).` 38 lines take this shape ([store/settings.md](store/settings.md)). Multi-object forms print `Staged: db, web, volumes.pgdata` on a second line (6 times, [store/env.md](store/env.md)).
+- Staged. `Staged web.replicas in shop/production.` 38 lines take this shape ([store/settings.md](store/settings.md)). Multi-object forms print `Staged: db, web, volumes.pgdata` on a second line (6 times, [store/env.md](store/env.md)).
 - Made or removed. `Created Project shop with Environment production.` ([store/project.md](store/project.md)), `Revoked token a261eda1-8592-433b-b55f-21aaad1f75cf.` ([cloud/token.md](cloud/token.md)).
 - No period. `Updated Server gamma (0523a6681d894d128f69ea28b7ed62d5)` ([cluster/server.md](cluster/server.md)), `Switched context to 'default'` (single quotes, [cluster/server.md](cluster/server.md)).
 - Two phrasings for the same removal. project rm: `Took an Environment off the Servers (Deployment #4).` env rm: `Removed shop/hotfix from the Servers (Deployment #3).` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md), [cloud-cluster/env.md](cloud-cluster/env.md)).
@@ -173,7 +173,6 @@ Not-found wording varies for the same idea:
 
 Raw upstream errors pass through:
 
-- `Cloud answered HTTP 409: {"_tag":"PublicError","code":"CONFLICT",…}` ([cloud/deploy.md](cloud/deploy.md))
 - `Cloud answered HTTP 405: <!doctype html>…` as `invalid_argument` ([cloud/errors.md](cloud/errors.md))
 - `could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)` ([cloud/errors.md](cloud/errors.md))
 - `Machine RPC failed: Docker operation failed: Docker responded with status code 409: container … is not running` ([cloud-cluster/errors.md](cloud-cluster/errors.md))
@@ -195,7 +194,7 @@ Dominant: a trailing `next: <command>` line.
 | inline `Next:` | 1 | `No repositories yet. Next: ployz github connect` | [cloud/github.md](cloud/github.md) |
 | inline `Create one:` | 1 | `No Projects yet. Create one: ployz project new NAME` | [store/project.md](store/project.md) |
 
-- `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --expect-version 21:0:0.0 --project shop`.
+- `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --project shop`.
 - Human output drops many hints the JSON carries. 48 of 120 JSON success objects have a top-level `next`. Only 25 of 250 human successes print `next:`. service add, set, domain add and env branch carry `next` in JSON only ([store/service.md](store/service.md)).
 - `valid:` can be very long. The never-sync error lists about 40 rows; the unknown Setting error lists 24 names ([store/settings.md](store/settings.md)).
 
@@ -263,7 +262,7 @@ Exit 2 is applied by hand in about ten handlers through `.with_exit(USAGE_EXIT)`
 - Commands are mostly alphabetical, but `link`, `github`, `token` and `project` are out of place.
 - Every subcommand repeats the globals. `--connect <connect>` has no description. `--ployz-config` shows the env path.
 - Placeholders mix casing: `<name>`, `<context>`, `<SECONDS>`, `<PROJECT>`, `<VERSION>`, `<FILE>`.
-- project rm help leaves `<name>` blank and says `--yes cannot bypass this` on a command that has no `--yes`.
+- project rm help leaves `<name>` blank.
 - Top-level help ends with a `Settings catalog: …` line. `--version` prints `0.2.3`.
 
 ## Likely bugs

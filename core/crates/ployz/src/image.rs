@@ -1,10 +1,10 @@
 use std::future::Future;
 
 use ployz_core::{
-    EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason, Machine,
-    MachineFailure, MachineId, MachineImages, MachineSuccess, MachineTarget, PULL_IMAGE_CAPABILITY,
-    PartialResult, PeerImagePull, PullImageFromMachineRequest, PullImageRequest, PullPolicy,
-    RegistryAuth, RpcError, op, resolve_machine_selectors,
+    EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason,
+    ImagePulled, Machine, MachineFailure, MachineId, MachineImages, MachineSuccess, MachineTarget,
+    PULL_IMAGE_CAPABILITY, PartialResult, PeerImagePull, PullImageFromMachineRequest,
+    PullImageRequest, PullPolicy, RegistryAuth, RpcError, op, resolve_machine_selectors,
 };
 use thiserror::Error;
 
@@ -212,7 +212,8 @@ pub(crate) async fn ensure_cluster_image(
 /// Make `image` present on `dest` as `policy` asks before a Deploy changes any
 /// Container. A peer that holds the image serves it as [`ensure_cluster_image`]
 /// does; `dest` then pulls from its registry as `policy` asks and confirms it holds
-/// the image, so `Never` fails here for an absent image.
+/// the image, so `Never` fails here for an absent image. Answers what `dest` reports
+/// of the image, such as the ports it exposes.
 ///
 /// # Errors
 ///
@@ -224,7 +225,7 @@ pub(crate) async fn pull_cluster_image(
     image: &str,
     policy: PullPolicy,
     registry_auth: Option<RegistryAuth>,
-) -> Result<(), RpcError> {
+) -> Result<ImagePulled, RpcError> {
     ensure_cluster_image(client, dest, image, policy).await?;
     client
         .clone()
@@ -237,15 +238,15 @@ pub(crate) async fn pull_cluster_image(
             Some(&MachineTarget::from(dest)),
         )
         .await
-        .map(|_| ())
-        .or_else(|error| pulls_on_create(answered_by(dest, error)))
+        .or_else(|error| pulls_on_create(answered_by(dest, error).pulling(image)))
 }
 
 /// A daemon older than [`PULL_IMAGE_CAPABILITY`] pulls when it creates the Container,
-/// with the same policy and credentials, so its refusal is not a failure.
-fn pulls_on_create(error: RpcError) -> Result<(), RpcError> {
+/// with the same policy and credentials, so its refusal is not a failure. It reports
+/// no exposed ports.
+fn pulls_on_create(error: RpcError) -> Result<ImagePulled, RpcError> {
     match error.refusal() {
-        Some(refusal) if refusal.capability == PULL_IMAGE_CAPABILITY => Ok(()),
+        Some(refusal) if refusal.capability == PULL_IMAGE_CAPABILITY => Ok(ImagePulled::default()),
         _ => Err(error),
     }
 }
@@ -459,7 +460,7 @@ mod tests {
             cause: Vec::new(),
         };
         assert!(pulls_on_create(refusal(PULL_IMAGE_CAPABILITY)).is_ok());
-        assert!(pulls_on_create(refusal("ployz.serving.read.v1")).is_err());
+        assert!(pulls_on_create(refusal("ployz.serving.routes.v1")).is_err());
         let failed = RpcError {
             code: RpcErrorCode::Unavailable,
             message: "registry unreachable".into(),

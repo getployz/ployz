@@ -2,19 +2,20 @@ import { describe, expect, it } from "vitest";
 import type { DiffView, DomainRow, EnvironmentView, ProjectListing, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { scalarSetting, serviceSetting, settingChange, settingError } from "./catalog";
-import { deployedVcpuLimit, domainChanged, newProjectName, newServiceName, serviceChangeCount, serviceChanges, serviceSettingRows } from "./store-services";
+import { deployedVcpuLimit, domainChanged, newProjectName, newServiceName, serviceChangeCount, serviceChanges, serviceSettingRows, uniqueName } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
   ({ id: `${name}-id`, row: `${name}:node` as RowId, name, private_dns: privateDns, source: "image", change: null, template: null });
 
 describe("newServiceName", () => {
-  it("names a Service from its image or repository, with a random suffix past names and Private DNS already taken", () => {
+  it("names a Service from its image or repository, numbered past names and Private DNS already taken", () => {
     expect(newServiceName({ type: "image", image: "ghcr.io/acme/API_Server:1.4" }, [])).toBe("api-server");
     expect(newServiceName({ type: "git", repository: "acme/Shop.Web", branch: null }, [])).toBe("shop-web");
     // `frontend` was `web` once: its Private DNS keeps the name taken.
-    expect(newServiceName({ type: "image", image: "web" }, [listed("frontend", "web")])).toMatch(/^web-[a-z0-9]{4}$/u);
+    expect(newServiceName({ type: "image", image: "web" }, [listed("frontend", "web")])).toBe("web-2");
+    expect(newServiceName({ type: "image", image: "web" }, [listed("web"), listed("web-2")])).toBe("web-3");
     expect(newServiceName({ type: "image", image: `${"a".repeat(70)}:1` }, [listed("a".repeat(63))]))
-      .toMatch(new RegExp(`^${"a".repeat(58)}-[a-z0-9]{4}$`, "u"));
+      .toBe(`${"a".repeat(61)}-2`);
     expect(newServiceName({ type: "empty" }, [])).toMatch(/^[a-z]+-[a-z]+$/u);
   });
 });
@@ -22,11 +23,32 @@ describe("newServiceName", () => {
 const project = (name: string): ProjectListing => ({ id: `${name}-id`, name, default_environment: "production", environments: ["production"] });
 
 describe("newProjectName", () => {
-  it("names a Project after its first Service's repository or image, with a random suffix past Project names taken", () => {
+  it("names a Project after its first Service's repository or image, numbered past Project names taken", () => {
     expect(newProjectName({ type: "git", repository: "getployz/Shop.Web", branch: "main" }, [project("api")])).toBe("shop-web");
     expect(newProjectName({ type: "image", image: "ghcr.io/acme/web:1.2" }, [])).toBe("web");
-    expect(newProjectName({ type: "git", repository: "getployz/api", branch: null }, [project("api")]))
-      .toMatch(/^api-[a-z0-9]{4}$/u);
+    expect(newProjectName({ type: "git", repository: "getployz/api", branch: null }, [project("api")])).toBe("api-2");
+    expect(newProjectName({ type: "image", image: "nginx" }, [project("nginx"), project("nginx-2")])).toBe("nginx-3");
+  });
+});
+
+describe("uniqueName", () => {
+  it("keeps a tail whole and trims the stem so the number fits in 63 characters", () => {
+    const stem = "d".repeat(63);
+    const first = uniqueName(stem, [], { tail: "-1413" });
+    expect(first).toBe(`${"d".repeat(58)}-1413`);
+    expect(uniqueName(stem, [first], { tail: "-1413" })).toBe(`${"d".repeat(56)}-1413-2`);
+  });
+
+  it("keeps one stem character when the tail fills the rest of the label", () => {
+    const tail = `-${"x".repeat(61)}`;
+    expect(uniqueName("d".repeat(63), [], { tail })).toBe(`d${tail}`);
+  });
+
+  it("throws on a tail that leaves no stem or ends in a hyphen", () => {
+    expect(() => uniqueName("web", [], { tail: `-${"x".repeat(62)}` })).toThrow(/no room for a stem/u);
+    const tail = `-${"x".repeat(61)}`;
+    expect(() => uniqueName("web", [`w${tail}`], { tail })).toThrow(/no room for a stem/u);
+    expect(() => uniqueName("web", [], { tail: "-1413-" })).toThrow(/ends in "-"/u);
   });
 });
 
@@ -58,7 +80,8 @@ describe("catalog fields", () => {
     // Memory takes GB or a size with a unit; its field edits GB.
     const memory = scalarSetting("memLimit");
     expect(settingError(memory, "1.5")).toBeNull();
-    expect(settingError(memory, "2000")).toBe("Enter a number above 0, up to 1024.");
+    expect(settingError(memory, "2000")).toBe("Enter a number from 0.01 to 1024.");
+    expect(settingError(memory, "0.001")).toBe("Enter a number from 0.01 to 1024.");
     expect(settingChange("web.memLimit", memory, "1.5")).toEqual({ op: "set", path: "web.memLimit", value: 1.5 });
   });
 });

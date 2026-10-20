@@ -28,8 +28,12 @@ pub(crate) enum Error {
     Http(#[source] reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("enroll HTTP {status}: {body}")]
+    #[error("{}", crate::cloud_login::answered("enroll", *.status, .body))]
     Status { status: u16, body: String },
+    #[error(
+        "Cloud no longer takes this enrollment token: it is unknown, used or expired, or this Organization's Servers were forgotten; make a new one with ployz server add --command"
+    )]
+    TokenRefused,
     #[error(
         "waited {} minutes for another Server to found this Organization; if it was deleted, run ployz server forget or use Forget Servers in the dashboard",
         FOUNDER_WAIT.as_secs() / 60
@@ -57,6 +61,7 @@ impl Error {
             }
             Self::Json(_)
             | Self::Status { .. }
+            | Self::TokenRefused
             | Self::RetrySameCommand { .. }
             | Self::FounderWait => false,
         }
@@ -451,7 +456,8 @@ async fn post_callback(
         &mut (),
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
         crate::setup_retry::WAIT,
-        Error::is_transport,
+        // Cloud answers 503 until it can reach the Machine; both stages are safe to repeat.
+        |error: &Error| error.is_transport() || matches!(error, Error::Status { status: 503, .. }),
         async |_| {
             post_json(&http, url, token, &body)
                 .await
@@ -537,6 +543,9 @@ async fn post_json(
         .map_err(classify_http)?;
     let status = sent.status();
     let bytes = sent.bytes().await.map_err(classify_http)?;
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Error::TokenRefused);
+    }
     if !status.is_success() {
         return Err(Error::Status {
             status: status.as_u16(),
@@ -639,6 +648,26 @@ mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
+
+    #[test]
+    fn an_enroll_error_prints_cloud_s_sentence_or_its_status_alone() {
+        let page = Error::Status {
+            status: 502,
+            body: "<html><body>Bad gateway</body></html>".to_owned(),
+        };
+        assert_eq!(page.to_string(), "enroll HTTP 502");
+        let json = Error::Status {
+            status: 409,
+            body: r#"{"error":"taken"}"#.to_owned(),
+        };
+        assert_eq!(json.to_string(), "taken");
+        let public = Error::Status {
+            status: 422,
+            body: r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Bad host."}"#
+                .to_owned(),
+        };
+        assert_eq!(public.to_string(), "Bad host.");
+    }
 
     #[test]
     fn cloud_enroll_storage_wire_accepts_zfs_with_and_without_a_device() {
@@ -993,6 +1022,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_token_cloud_no_longer_takes_says_so_and_how_to_get_another() {
+        let (listener, origin) = listen().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let body = br#"{"error":"Authentication is required."}"#;
+            tokio::io::AsyncWriteExt::write_all(
+                &mut stream,
+                &http_response(401, "Unauthorized", body),
+            )
+            .await
+            .unwrap();
+        });
+        let error = enroll(&enroll_url(&origin), &token(), &identity(), &|_| {})
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert!(matches!(error, Error::TokenRefused), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .ends_with("make a new one with ployz server add --command"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
     async fn queued_answers_report_the_queued_stage_and_keep_polling() {
         let (listener, origin) = listen().await;
         let server = tokio::spawn(async move {
@@ -1148,6 +1204,43 @@ mod tests {
             })
             .await
             .expect("held request must retry before the stage deadline");
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_publication_and_completion_retry_while_cloud_is_unavailable() {
+        for publishing in [true, false] {
+            let (listener, url) = listen().await;
+            let server = tokio::spawn(async move {
+                for (status, reason) in [(503, "Service Unavailable"), (200, "OK")] {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    read_http(&mut stream).await;
+                    tokio::io::AsyncWriteExt::write_all(
+                        &mut stream,
+                        &http_response(status, reason, b"{}"),
+                    )
+                    .await
+                    .unwrap();
+                }
+            });
+            let credential = PairingCredential::parse("pairing-secret").unwrap();
+            let result = if publishing {
+                publish(
+                    &url,
+                    &token(),
+                    MachineId::random(),
+                    &credential,
+                    &ManagementCapability::new(
+                        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+                        [2; 32],
+                    ),
+                )
+                .await
+            } else {
+                callback(&url, &token(), MachineId::random(), &credential).await
+            };
+            result.unwrap();
+            server.await.unwrap();
         }
     }
 

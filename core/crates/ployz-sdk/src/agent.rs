@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz_core::{ContainerId, MachineId, Namespace, ServiceName};
@@ -83,7 +85,10 @@ fn turn(step: &tools::Step, state: &tools::State) -> Result<serde_json::Value> {
 impl Client {
     /// Answer a `CloudQuery` from this session's Servers. Servers that do not answer
     /// are named in `seen.unanswered`. `readable` names the only Namespaces whose
-    /// Services the answer may describe; null or absent admits every Namespace.
+    /// Services the answer may describe; null or absent admits every Namespace. `sealed`
+    /// names the variables whose values a logs answer is scrubbed of, as the Store's
+    /// `sealed_names` query reports them for the Service's Environment; null scrubs
+    /// every env value.
     ///
     /// # Errors
     /// Returns `invalid_argument` for a malformed query or Namespace, `unsupported`
@@ -95,6 +100,7 @@ impl Client {
         &self,
         #[napi(ts_arg_type = "CloudQuery")] query: serde_json::Value,
         #[napi(ts_arg_type = "readonly string[] | null")] readable: Option<Vec<String>>,
+        #[napi(ts_arg_type = "readonly string[] | null")] sealed: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
         let query: CloudQuery = from_js(query).map_err(invalid_argument)?;
         let readable = match readable {
@@ -107,7 +113,8 @@ impl Client {
                     .map_err(invalid_argument)?,
             ),
         };
-        ployz::sdk::agent::ask(&self.inner, query, &readable)
+        let sealed = sealed.map(|names| names.into_iter().collect::<BTreeSet<String>>());
+        ployz::sdk::agent::ask(&self.inner, query, &readable, sealed.as_ref())
             .await
             .map_err(rpc_to_napi)
     }

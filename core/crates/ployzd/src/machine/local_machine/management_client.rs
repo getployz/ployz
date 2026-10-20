@@ -111,6 +111,7 @@ mod tests {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .await
             .unwrap();

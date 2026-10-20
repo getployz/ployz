@@ -25,7 +25,7 @@
       "read_only": true
     },
     {
-      "description": "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, how many changes are Staged, and the latest Deployment. Never asks a human to approve.",
+      "description": "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, the Staged count, broken references, and the latest Deployment. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -208,7 +208,7 @@
       "read_only": false
     },
     {
-      "description": "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal. Never asks a human to approve.",
+      "description": "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. A secret's value never passes through here; generate_secret makes a random one. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -223,6 +223,14 @@
             "description": "Writes only if the place is still at this revision.",
             "minimum": 0,
             "type": "integer"
+          },
+          "generate_secret": {
+            "description": "Variables to give a new random sealed secret, as env.KEY. No one sees its value.",
+            "items": {
+              "pattern": "^env\\.[A-Z_][A-Z0-9_]{0,127}$",
+              "type": "string"
+            },
+            "type": "array"
           },
           "project": {
             "description": "Project name.",
@@ -259,7 +267,7 @@
             "properties": {
               "autoDeploy": {
                 "default": true,
-                "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+                "description": "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once.",
                 "examples": [
                   false
                 ],
@@ -527,7 +535,7 @@
                 "anyOf": [
                   {
                     "maximum": 1024.0,
-                    "minimum": 0,
+                    "minimum": 0.01,
                     "type": "number"
                   },
                   {
@@ -687,6 +695,19 @@
                 "title": "Template",
                 "type": "object"
               },
+              "updateOrder": {
+                "description": "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without.",
+                "enum": [
+                  "start-first",
+                  "stop-first",
+                  "rolling"
+                ],
+                "examples": [
+                  "rolling"
+                ],
+                "title": "Update order",
+                "type": "string"
+              },
               "waitForCi": {
                 "description": "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",
                 "examples": [
@@ -746,6 +767,7 @@
                     "rootDir",
                     "startCommand",
                     "template",
+                    "updateOrder",
                     "waitForCi",
                     "watchPaths"
                   ],
@@ -825,7 +847,7 @@
       "read_only": false
     },
     {
-      "description": "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve. Never asks a human to approve.",
+      "description": "Remove a Service, staged until a deploy a human approves. `broken`: references deploys skip. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -1358,7 +1380,7 @@
       "read_only": false
     },
     {
-      "description": "What the next deploy applies, in plain lines, with the version deploy takes and what a human must approve. Never asks a human to approve.",
+      "description": "What the next deploy applies, in plain lines: the version deploy takes, what a human must approve, and broken references. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",
       "input_schema": {
@@ -1384,14 +1406,14 @@
       "read_only": true
     },
     {
-      "description": "Return every Staged change, or one Service's, Volume's or Config's, to what is deployed. Never asks a human to approve.",
+      "description": "Return all Staged changes, or one Service, Volume or Config, to deployed. A named one differing only from saved returns to saved. Never asks a human to approve.",
       "destructive": true,
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
           "config": {
-            "description": "Only this Config's Staged changes.",
+            "description": "Only this Config.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1411,12 +1433,12 @@
             "type": "string"
           },
           "service": {
-            "description": "Only this Service's Staged changes. Omit service, volume and config to discard everything Staged.",
+            "description": "Only this Service. Omit service, volume and config for everything.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "volume": {
-            "description": "Only this Volume's Staged changes.",
+            "description": "Only this Volume.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }
@@ -1607,29 +1629,38 @@
       "read_only": true
     },
     {
-      "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve. May stop to ask a human to approve.",
+      "description": "Ship an ended Deployment's commit and settings again; an older one rolls back newer ones. A human approves every redeploy. May stop to ask a human to approve.",
       "destructive": true,
       "gate": "store",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "accept_volume_loss": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "deployment": {
             "description": "The Deployment's number. Omit for the latest.",
             "minimum": 1,
             "type": "integer"
           },
           "environment": {
-            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "description": "Environment name, e.g. staging.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "project": {
-            "description": "Project name. Omit for the one you are in.",
+            "description": "Project name.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "request_key": {
             "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          },
+          "version": {
             "type": "string"
           }
         },
@@ -2559,7 +2590,7 @@
     },
     {
       "description": "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down until the next deploy. May stop to ask a human to approve.",
-      "destructive": false,
+      "destructive": true,
       "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,

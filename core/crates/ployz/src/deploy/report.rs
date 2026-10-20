@@ -10,10 +10,9 @@ use crate::{
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
     Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
-    ReplacementCompensation, RequestedServiceSpec, RestartAttempt, RpcError, RpcErrorCode,
-    ServiceName, StopAttempt,
+    ReplacementCompensation, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
-use ployz_store::tools::SecretSet;
+use ployz_store::tools::SealedValues;
 use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
@@ -99,7 +98,8 @@ pub(crate) fn service_row<'a>(
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
-    let removal = !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
+    let removal =
+        depth.is_none() && !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
     let served = !removal
         && replicas.iter().any(|replica| {
             replica.starts
@@ -295,6 +295,13 @@ impl Direct {
         self.operations = operations.to_vec();
     }
 
+    /// Show `warning` with the deploy's other notices, once.
+    pub(super) fn notice(&mut self, warning: ployz_core::DeployWarning) {
+        if !self.notices.contains(&warning) {
+            self.notices.push(warning);
+        }
+    }
+
     pub(super) fn frame(&self) -> Frame {
         let services: BTreeSet<_> = self.rows.keys().map(|(service, _)| service).collect();
         let mut rows: Vec<_> = services
@@ -348,13 +355,9 @@ impl Direct {
         }
     }
 
-    /// Each failed row's scrubbed Container tail. Every value of `requested`'s
-    /// environment counts as a secret: a direct apply has no Store to say otherwise.
-    pub(super) async fn tails(
-        &self,
-        client: &Client,
-        requested: &RequestedServiceSpec,
-    ) -> Vec<LogTail> {
+    /// Each failed row's Container tail with secret-shaped text redacted. A direct apply
+    /// has no Store, so it has no Sealed values to scrub.
+    pub(super) async fn tails(&self, client: &Client) -> Vec<LogTail> {
         let mut tails = Vec::new();
         for (row, _) in self
             .rows
@@ -363,14 +366,10 @@ impl Direct {
         {
             let log = match self.tracker.container(row) {
                 None => None,
-                Some(container) => {
-                    let secrets = if row.service == requested.name {
-                        SecretSet::from_store(requested.container.environment.clone(), [])
-                    } else {
-                        SecretSet::unknown()
-                    };
-                    Some(crate::sdk::failed_tail(client, row.machine, container, secrets).await)
-                }
+                Some(container) => Some(
+                    crate::sdk::failed_tail(client, row.machine, container, &SealedValues::none())
+                        .await,
+                ),
             };
             tails.push(LogTail {
                 service: QualifiedService::new(self.namespace.clone(), row.service.clone()),

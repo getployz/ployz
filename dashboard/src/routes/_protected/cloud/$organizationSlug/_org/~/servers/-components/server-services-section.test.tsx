@@ -31,12 +31,13 @@ const view = (latest: LatestDrain | null, requested: string | null = null) => dr
   serverNames: new Map([[web1.id, web1.name], [web2.id, web2.name]]),
   requested,
 });
-const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boolean; unavailable?: string | null; staged?: number }) => {
+const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boolean; lastToRunServices?: boolean; unavailable?: string | null; staged?: number }) => {
   const onDrain = vi.fn();
   const onAcceptsServices = vi.fn();
   render(
     <ServerServicesRows
       acceptsServices={input.acceptsServices ?? true}
+      lastToRunServices={input.lastToRunServices ?? false}
       onAcceptsServices={onAcceptsServices}
       view={input.view}
       left={input.left ?? []}
@@ -81,6 +82,15 @@ describe("Services section", () => {
   it("explains a Server that takes no new Services", () => {
     rows({ view: view(null), acceptsServices: false });
     expect(screen.getByText("Nothing new starts here. What runs here stays until you drain.")).toBeTruthy();
+  });
+
+  it("warns that Deploys fail once the last Server running Services is off", () => {
+    rows({ view: view(null), acceptsServices: false, lastToRunServices: true });
+    expect(screen.getByText("No other server runs services. Deploys fail until one does.").className).toContain("text-warning");
+    expect(screen.queryByText(/Nothing new starts here/)).toBeNull();
+    cleanup();
+    rows({ view: view(null), acceptsServices: true, lastToRunServices: true });
+    expect(screen.queryByText(/No other server runs services/)).toBeNull();
   });
 
   it("spins and holds the switch while a Drain is under way", () => {

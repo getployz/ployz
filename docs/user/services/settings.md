@@ -91,6 +91,8 @@ switches to an image loses its root directory and build settings, so they are ba
 defaults if it later builds a repository again. Like every change, the switch waits for your
 next deploy, and Discard undoes it.
 
+A service has one source at a time, so one `set` takes `image` or `repository`, not both.
+
 Each setting belongs to one kind of source. An image service refuses the repository settings:
 `branch`, `rootDir`, the build settings and the deploy-on-push settings. A repository service
 refuses the registry credential. Ployz checks every setting you set against the source the
@@ -102,6 +104,8 @@ ployz set web.branch=dev web.repository=acme/web            # works on an image 
 ployz set web.image=nginx:1.27 web.buildMethod=dockerfile   # refused: an image is not built
 ployz set web.image=nginx:1.27 web.repository=acme/web      # refused: one source at a time
 ```
+
+One edit changes each setting at most once, so an edit that sets and unsets `web.image` is refused.
 
 The source never blocks an unset. A setting the service's source does not have is already
 at its default, so unsetting it changes nothing. A repository service still refuses an unset
@@ -150,10 +154,12 @@ headroom. See [Scaling and multiple servers](scaling.md#run-more-replicas).
 
 ### Memory limit
 
-Empty by default, which means no limit. Set it in GB, up to 1024. From the CLI you can also give
+Empty by default, which means no limit. Set it in GB, from 0.01 (10 MB, since Docker refuses
+less than 6 MiB) up to 1024. From the CLI you can also give
 a unit: `ployz set web.memLimit=512MiB` or `ployz set web.memLimit=1GiB` (MB, GB, TB, MiB, GiB
 and TiB). A plain number is always GB, so `1073741824` is refused rather than read as bytes;
-write `1GiB`. A replica that goes over it is
+write `1GiB`. Changes and `ployz diff` show it in the unit it was likely given, such as
+`192 MiB`. A replica that goes over it is
 killed, and its [Restart policy](#restart-policy) decides whether it comes back. See
 [Scaling and multiple servers](scaling.md#run-more-replicas).
 
@@ -221,6 +227,13 @@ seconds after the new one starts, ready or not. Off also ignores a `HEALTHCHECK`
 - **Command.** Enter a command like `pg_isready -h 127.0.0.1`. It runs in a shell inside the
   container and passes when it exits 0. The databases Ployz creates come with one.
 
+In the CLI, `ployz set web.healthcheck=/up` sets a path. A command, or a timeout, takes an object:
+
+```sh
+ployz set web --patch '{"healthcheck":{"command":"pg_isready -h 127.0.0.1","timeoutSeconds":60}}'
+ployz set web --patch '{"healthcheck":{"path":"/up","timeoutSeconds":60}}'
+```
+
 Services whose variables reference this one wait until it passes. Click **×** to turn it off. See
 [Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
 
@@ -245,6 +258,15 @@ to leave it down. **Always** restarts it whenever it stops. See
 
 Shown with **On failure**. 10 by default, from 0 to 100; after that many restarts, the replica
 stays stopped.
+
+### Update order
+
+How a deploy replaces this service's replicas. **Automatic** by default: **Stop first** for a
+service with a volume, **Start first** for the rest. Choose **Start first** for no downtime,
+**Stop first** when two copies must never run at once, or **Rolling** to replace one server at a
+time, so a failure leaves the later servers on the old version. A service with a volume takes
+**Start first** only when the volume allows shared writes. See
+[Choose how a deploy replaces replicas](../deploy/deployments.md#choose-how-a-deploy-replaces-replicas).
 
 ## Storage
 

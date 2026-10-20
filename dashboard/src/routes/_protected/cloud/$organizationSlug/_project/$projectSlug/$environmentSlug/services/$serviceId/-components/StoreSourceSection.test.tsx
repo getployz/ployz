@@ -17,8 +17,8 @@ it("shows the picked image as the dialog closes, and the stored one again when t
   vi.spyOn(github, "useGithubWebOrigin").mockReturnValue("https://github.com");
   vi.spyOn(gitFields, "useRepositoryRef").mockReturnValue(undefined);
   vi.spyOn(gitFields, "useSourceLock").mockReturnValue(undefined);
-  vi.spyOn(selectors, "ImageSelectorDialog").mockImplementation(({ open, onSelectImage }) =>
-    open ? <button type="button" onClick={() => onSelectImage("redis:7.2-alpine")}>Continue</button> : null);
+  vi.spyOn(selectors, "ImageSelectorDialog").mockImplementation(({ open, initialImage, onSelectImage }) =>
+    open ? <button type="button" data-initial={initialImage} onClick={() => onSelectImage("redis:7.2-alpine")}>Continue</button> : null);
   let fail = (_error: Error) => {};
   const write = new Promise<void>((_resolve, reject) => { fail = reject; });
   const state = asTestDouble<StoreService>()({
@@ -35,6 +35,7 @@ it("shows the picked image as the dialog closes, and the stored one again when t
 
   render(<StoreSourceSection state={state} />);
   fireEvent.click(screen.getByRole("button", { name: "Change container image" }));
+  expect(screen.getByRole("button", { name: "Continue" }).getAttribute("data-initial")).toBe("redis:7-alpine");
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
   expect(state.set).toHaveBeenCalledWith("image", "redis:7.2-alpine");
@@ -107,4 +108,20 @@ it("offers only an image to an empty Service in a Protected Environment", () => 
 
   expect(screen.getByRole("button", { name: /GitHub repository/ }).hasAttribute("disabled")).toBe(true);
   expect(screen.getByRole("button", { name: /Container image/ }).hasAttribute("disabled")).toBe(false);
+});
+
+it("says once, under Auto-deploy, that pushes from a public repository need the GitHub App", () => {
+  vi.spyOn(github, "useGithubWebOrigin").mockReturnValue("https://github.com");
+  vi.spyOn(gitFields, "useRepositoryRef").mockReturnValue(undefined);
+  vi.spyOn(gitFields, "useSourceLock").mockReturnValue(undefined);
+  const note = "Pushes reach Ployz only once the GitHub App is installed on ada/web.";
+  const policy = (value: boolean) => asTestDouble<SettingRow>()({ value, default: value, apply: "immediate", note });
+  const state = gitService("git");
+  state.rows.set("autoDeploy", policy(true));
+  state.rows.set("waitForCi", policy(true));
+
+  render(<StoreSourceSection state={state} />);
+
+  expect(screen.getAllByText(note)).toHaveLength(1);
+  expect(screen.getByText(/Hold an auto-deploy/)).toBeTruthy();
 });

@@ -33,9 +33,15 @@ pub(crate) enum LoginError {
         #[source]
         error: reqwest::Error,
     },
+    #[error("Cloud at {cloud} stopped answering after it got this change, so it may have applied.")]
+    Unanswered {
+        cloud: String,
+        #[source]
+        error: reqwest::Error,
+    },
     #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
-    #[error("Cloud answered HTTP {status}: {body}")]
+    #[error("{}", answered("Cloud answered", *.status, .body))]
     Status { status: u16, body: String },
     #[error("Cloud sent an unexpected reply: {0}")]
     Reply(String),
@@ -46,6 +52,11 @@ pub(crate) enum LoginError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error(
+        "The sign-in stored at {} is unreadable, so it cannot name the Cloud for PLOYZ_TOKEN. Set PLOYZ_CLOUD_URL, or forget the sign-in and sign in again.",
+        .0.display()
+    )]
+    TokenCloudUnreadable(PathBuf),
     #[error("signed in to {signed_in}, not {requested}; run ployz logout first")]
     OtherCloud {
         signed_in: String,
@@ -62,7 +73,7 @@ pub(crate) enum LoginError {
     #[error("sign-in is waiting for approval at {url}")]
     AwaitingApproval { url: String },
     #[error(
-        "Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"
+        "Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"
     )]
     TokenRefused,
     #[error("this sign-in's Organization {0} is no longer one of yours")]
@@ -181,6 +192,14 @@ impl CredentialStore {
         }
     }
 
+    /// [`Self::load`], reading an unreadable sign-in as none, so a new one replaces it.
+    fn replaceable(&self) -> Result<Option<Stored>, LoginError> {
+        match self.load() {
+            Err(LoginError::Corrupt { .. }) => Ok(None),
+            stored => stored,
+        }
+    }
+
     fn save(&self, stored: &Stored) -> Result<(), LoginError> {
         let dir = self.path.parent().unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).map_err(|source| self.failed(source))?;
@@ -277,7 +296,7 @@ pub(crate) enum Start {
 pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
     let cloud = crate::cloud_enroll::cloud_origin(cloud);
     let http = http()?;
-    match store.load()? {
+    match store.replaceable()? {
         Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {
             return Err(LoginError::OtherCloud {
                 signed_in: signed_in.cloud,
@@ -343,17 +362,20 @@ pub(crate) struct SignedOut {
     pub(crate) cloud: String,
     pub(crate) device: Option<String>,
     pub(crate) servers: crate::cloud_account::ServerClears,
+    /// Why Cloud could not end the sign-in, which this device only forgot.
+    pub(crate) unrevoked: Option<LoginError>,
 }
 
 /// End this device's sign-in: Cloud first (which also clears its key on each Server), then
-/// the stored credential. A sign-in Cloud already ended is only forgotten.
+/// the stored credential. A sign-in Cloud already ended, or that Cloud cannot be reached
+/// to end, is only forgotten.
 ///
-/// Returns `None` when nothing was signed in.
+/// Returns `None` when nothing readable was signed in.
 ///
 /// # Errors
 ///
-/// Returns a Cloud failure, keeping the stored sign-in so logout can be retried,
-/// or a store failure.
+/// Returns a failure Cloud answered with, keeping the stored sign-in so logout can be
+/// retried, or a store failure.
 pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>, LoginError> {
     #[derive(Deserialize)]
     struct Reply {
@@ -364,31 +386,43 @@ pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>,
     struct Device {
         id: String,
     }
-    let signed_out = match store.load()? {
-        None => return Ok(None),
+    let signed_out = match store.replaceable()? {
+        None => {
+            store.clear()?;
+            return Ok(None);
+        }
         Some(Stored::Pending(pending)) => SignedOut {
             cloud: pending.cloud,
             device: None,
             servers: Default::default(),
+            unrevoked: None,
         },
         Some(Stored::SignedIn(signed_in)) => {
             let url = format!("{}/api/cli/logout", signed_in.cloud);
-            let response = http()?
+            let sent = http()?
                 .post(url)
                 .bearer_auth(&signed_in.token.0)
                 .send()
-                .await
-                .map_err(|error| unreachable(&signed_in.cloud, error))?;
-            let (device, servers) = if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-                (None, Default::default())
-            } else {
-                let reply: Reply = decode(ensure_success(response).await?)?;
-                (Some(reply.signed_out.id), reply.servers)
+                .await;
+            let (device, servers, unrevoked) = match sent {
+                Err(error) => (
+                    None,
+                    Default::default(),
+                    Some(unreachable(&signed_in.cloud, error)),
+                ),
+                Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                    (None, Default::default(), None)
+                }
+                Ok(response) => {
+                    let reply: Reply = decode(ensure_success(response).await?)?;
+                    (Some(reply.signed_out.id), reply.servers, None)
+                }
             };
             SignedOut {
                 cloud: signed_in.cloud,
                 device,
                 servers,
+                unrevoked,
             }
         }
     };
@@ -587,12 +621,54 @@ async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginErr
     }
 }
 
+/// Cloud's own sentence for a failed call, else its status and any readable body.
+pub(crate) fn answered(prefix: &str, status: u16, body: &str) -> String {
+    cloud_message(body.as_bytes())
+        .unwrap_or_else(|| format!("{prefix} HTTP {status}{}", readable(body)))
+}
+
+/// The sentence a Cloud refusal carries: a route's `PublicError`, or the `{error}` a
+/// public endpoint sends.
+pub(crate) fn cloud_message(body: &[u8]) -> Option<String> {
+    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let text = |field: &str| body.get(field).and_then(serde_json::Value::as_str);
+    let message = match text("_tag") {
+        Some("PublicError") => text("code").and(text("message")),
+        _ => text("error"),
+    };
+    message.map(str::to_owned)
+}
+
+/// `body` as the tail of a status line: a short text or JSON answer is worth
+/// printing, a proxy's HTML error page is not.
+fn readable(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() || body.starts_with('<') {
+        String::new()
+    } else {
+        format!(": {body}")
+    }
+}
+
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: Vec<u8>) -> Result<T, LoginError> {
     serde_json::from_slice(&body).map_err(|error| LoginError::Reply(error.to_string()))
 }
 
 pub(crate) fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
     LoginError::Unreachable {
+        cloud: cloud.to_owned(),
+        error: error.without_url(),
+    }
+}
+
+/// Why a write to `cloud` failed in flight: one that was never built or never
+/// connected is unreachable, and one that left this device may have applied though
+/// its answer never came.
+pub(crate) fn lost(cloud: &str, error: reqwest::Error) -> LoginError {
+    if error.is_connect() || error.is_builder() {
+        return unreachable(cloud, error);
+    }
+    LoginError::Unanswered {
         cloud: cloud.to_owned(),
         error: error.without_url(),
     }
@@ -811,6 +887,57 @@ pub(crate) mod tests {
             Err(LoginError::SignedOut)
         ));
         assert!(logout(&store).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn logout_forgets_a_sign_in_whose_cloud_cannot_be_reached() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        let gone = "http://127.0.0.1:1";
+        std::fs::write(
+            &store.path,
+            serde_json::json!({
+                "state": "signed_in",
+                "cloud": gone,
+                "token": "session-token",
+                "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+                "organization": { "id": "o1", "slug": "acme" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let out = logout(&store).await.unwrap().unwrap();
+        assert_eq!(out.cloud, gone);
+        assert!(out.device.is_none());
+        assert!(
+            matches!(out.unrevoked, Some(LoginError::Unreachable { .. })),
+            "{:?}",
+            out.unrevoked
+        );
+        assert!(matches!(
+            signed_in(&store).await,
+            Err(LoginError::SignedOut)
+        ));
+        assert!(matches!(
+            start(&store, &cloud).await,
+            Ok(Start::Pending { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn logout_and_login_replace_an_unreadable_sign_in() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        std::fs::write(&store.path, "{not json").unwrap();
+        assert!(logout(&store).await.unwrap().is_none());
+        assert!(!store.path.exists());
+
+        std::fs::write(&store.path, "{not json").unwrap();
+        let Start::Pending { pending, .. } = start(&store, &cloud).await.unwrap() else {
+            panic!("a fresh login waits for approval");
+        };
+        wait(&store, pending).await.unwrap();
+        assert_eq!(signed_in(&store).await.unwrap().organization.slug, "acme");
     }
 
     #[tokio::test]

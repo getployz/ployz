@@ -59,7 +59,9 @@ blocking it:
 ployz server show web-3
 ```
 
-`ployz server show` shows a server in your cluster the same way, so one command covers both. It
+`ployz server show` shows a server in your cluster the same way, so one command covers both: its
+OS, versions, addresses, storage, CPU, memory and disk, and how long a round trip to each other
+server takes. Add `--json` for everything it knows, such as the features its daemon supports. It
 also takes a waiting server's id, or the start of one at least 8 characters long, such as the
 start the list prints. If two waiting servers share a name or the start you typed, it lists their
 ids instead.
@@ -199,7 +201,9 @@ Every server runs builds, runs services and takes web traffic. To turn one off, 
 back on: that starts the server's web server, which the switch below and `ployz server set` do.
 
 Under **Services** on a server's page, turn off **Run services here** and nothing new starts on
-the server. What already runs there stays until you drain it. Your next deploy also moves it.
+the server. What already runs there stays until you drain it, or until your next deploy moves it
+to your other servers. If no other server runs services, deploys fail until you turn the switch
+back on or add a server.
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
@@ -476,6 +480,10 @@ even if it still shows as up, type `dead` instead:
 ployz server forget web-2 --confirm dead
 ```
 
+When it is your only server, Ployz Cloud forgets it as it [forgets servers you
+deleted](#forget-servers-you-deleted). When none of several servers answers, forget them all that
+way.
+
 Ployz refuses to forget a server that answers and holds a copy of any volume. Remove it with
 `ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.
 
@@ -518,10 +526,11 @@ CLI stops waiting after 30 minutes and says so; the removal keeps running in Plo
 
 If you deleted all your servers at your provider, forget them:
 
-1. Go to **Organization** and, under **Danger**, click **Forget Servers**. When the **Servers**
-   page can't reach your servers, **Forget them and start over.** opens the same dialog.
+1. Go to **Organization** and, under **Danger**, click **Forget servers**. When the **Servers**
+   page can't reach your servers, **Forget them and start over.** opens the same dialog. Only an
+   owner or admin can forget servers. For anyone else the button is disabled.
 2. Ployz lists the servers and their volumes. Type your organization's slug and click **Forget
-   Servers**.
+   servers**.
 
 Ployz refuses while any server answers. Your projects, settings and deployment history stay, but
 volume data on the forgotten servers can't be recovered. When you add a server again, Ployz deploys

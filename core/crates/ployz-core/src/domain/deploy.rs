@@ -13,8 +13,8 @@ use super::{
     ResolvedServiceSpec,
 };
 use crate::{
-    ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, Namespace,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName,
+    ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceId, ServiceName,
 };
 use thiserror::Error;
 
@@ -100,6 +100,11 @@ pub struct DeployIntent {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<DockerVolumeName, String>>", optional)]
     pub volume_names: BTreeMap<DockerVolumeName, String>,
+    /// The Cluster Domain generated domains live under. Ployz Cloud publishes DNS for
+    /// every hostname one label under it, so messages never ask for a record there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cluster_domain: Option<IngressHost>,
 }
 
 /// Registry credentials for pulling one private image. Debug never prints them.
@@ -137,6 +142,7 @@ impl DeployIntent {
             dependencies: BTreeMap::new(),
             registry_auth: BTreeMap::new(),
             volume_names: BTreeMap::new(),
+            cluster_domain: None,
         }
     }
 
@@ -201,6 +207,13 @@ impl DeployIntent {
     #[must_use]
     pub fn with_volume_names(mut self, names: BTreeMap<DockerVolumeName, String>) -> Self {
         self.volume_names = names;
+        self
+    }
+
+    /// The Cluster Domain this Deploy's generated domains live under.
+    #[must_use]
+    pub fn with_cluster_domain(mut self, cluster_domain: Option<IngressHost>) -> Self {
+        self.cluster_domain = cluster_domain;
         self
     }
 
@@ -732,6 +745,18 @@ pub enum DeployWarning {
         dependent: QualifiedService,
         dependency: QualifiedService,
     },
+    /// On each of `machines`, the pulled image exposes TCP ports and none of them is
+    /// a port the Service's domains send traffic to. Each Machine is judged on what
+    /// it pulled; `exposed` joins the mismatching Machines' reports. The lists are
+    /// sorted without repeats. `service_id` outlives a rename of `service`.
+    ImagePortMismatch {
+        service: ServiceName,
+        service_id: ServiceId,
+        image: String,
+        machines: Vec<MachineId>,
+        exposed: Vec<u16>,
+        routed: Vec<u16>,
+    },
 }
 
 impl DeployWarning {
@@ -750,7 +775,8 @@ impl DeployWarning {
             | Self::StorageObservationUnknown { .. }
             | Self::IngressHostname { .. }
             | Self::ObserverRelativeHostnameConflict
-            | Self::SkippedDependencyHealth { .. } => None,
+            | Self::SkippedDependencyHealth { .. }
+            | Self::ImagePortMismatch { .. } => None,
         }
     }
 }
@@ -783,8 +809,28 @@ impl Display for DeployWarning {
                 f,
                 "--skip-health treats dependency {dependent} -> {dependency} as service_started"
             ),
+            Self::ImagePortMismatch {
+                service,
+                image,
+                exposed,
+                routed,
+                ..
+            } => write!(
+                f,
+                "{service}'s image {image} exposes {}; its domains send to {}. Set the domain port or PORT.",
+                join_ports(exposed),
+                join_ports(routed),
+            ),
         }
     }
+}
+
+fn join_ports(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Machine RPC invoked while executing one Deploy Operation.
@@ -801,7 +847,7 @@ pub enum MachineAction {
     /// Make a Service image present before any Container changes.
     PullImage,
     ListContainers,
-    ReadServingPointer,
+    ReadRoutes,
     PublishServingPointer,
 }
 
@@ -817,7 +863,7 @@ impl Display for MachineAction {
             Self::RemoveVolume => "remove Volume",
             Self::PullImage => "pull image",
             Self::ListContainers => "list Containers",
-            Self::ReadServingPointer => "read Serving Pointer",
+            Self::ReadRoutes => "read routes",
             Self::PublishServingPointer => "publish Serving Pointer",
         })
     }
@@ -980,6 +1026,8 @@ pub enum DeployEvent {
     },
     /// Image Cleanup after the Outcome; only when the caller left cleanup automatic.
     ImagesPruned { report: super::ImageCleanupReport },
+    /// Something the Deploy found while executing that it does not stop for.
+    Warning { warning: DeployWarning },
 }
 
 /// One planned operation plus its current execution status.

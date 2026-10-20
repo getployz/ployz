@@ -8,21 +8,22 @@ use ployz_core::{
     CertificateMaterialChange, CertificateMaterialPublished, CodecError, ContainerHostname,
     ContainerId, ContainerKind, ContainerLabels, ContainerRuntimeObservation, ContractDescription,
     DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace, DockerVolumeName,
-    ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FORGET_MACHINE_CAPABILITY,
-    FanoutFailure, FanoutOutcome, FanoutResponse, ForgetRequest, Forgotten, FramingError,
-    HealthObservation, ImageDigest, ImageIngestDestination, ImageIngestOpened, ImageIngestReason,
-    ImagePulled, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost,
-    InspectBuildGrantRequest, InspectRequest, LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY,
-    LeaveRequest, Left, LeftPhase, ListImagesRequest, MANAGED_LABEL, MachineFailure,
-    MachineGateway, MachineId, MachineImages, MachineName, MachineRelease, MachineSubnet,
-    MachineSuccess, MachineUpdate, MachineUpgradeAttempt, MachineUpgradeAttemptId,
-    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ManagementAddress, NAMESPACE_LABEL,
-    NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    PartialResult, PortPublication, PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate,
-    PublishCertificateMaterialRequest, PullImageFromMachineRequest, RequestMachineUpgradeRequest,
-    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceId, ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource,
-    encode_grpc_frame, grpc_frames, op,
+    ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExposedPort, ExtraHost,
+    FORGET_MACHINE_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, ForgetRequest,
+    Forgotten, FramingError, HealthObservation, ImageDigest, ImageIngestDestination,
+    ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
+    ImageSummary, ImagesRemoved, IngressHost, InspectBuildGrantRequest, InspectRequest,
+    LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY, LeaveRequest, Left, LeftPhase,
+    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
+    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate,
+    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
+    MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
+    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
+    PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
+    PullImageFromMachineRequest, RequestMachineUpgradeRequest, ResolvedServiceSpec, ResponseKind,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, RunRotation, ServiceId,
+    ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames,
+    op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -951,8 +952,8 @@ fn peer_image_pull_contract_names_the_source_management_destination() {
         "ployz.image.pull-from-machine.v1"
     );
 
-    let pulled = ImagePulled {};
-    let response = RpcResponse::from(pulled);
+    let pulled = ImagePulled::default();
+    let response = RpcResponse::from(pulled.clone());
     assert_eq!(
         response
             .encode()
@@ -964,6 +965,55 @@ fn peer_image_pull_contract_names_the_source_management_destination() {
         pulled
     );
     assert_eq!(source.port, ployz_core::UNREGISTRY_PORT);
+}
+
+#[test]
+fn image_pulled_reports_exposed_ports_and_old_replies_claim_none() {
+    let old: ImagePulled = serde_json::from_str("{}").unwrap();
+    assert_eq!(old, ImagePulled::default());
+    assert_eq!(serde_json::to_value(&old).unwrap(), serde_json::json!({}));
+
+    let pulled = ImagePulled {
+        exposed_ports: vec![
+            ExposedPort::from_docker("80/tcp").unwrap(),
+            ExposedPort::from_docker("53/udp").unwrap(),
+        ],
+    };
+    assert_eq!(
+        serde_json::to_value(&pulled).unwrap(),
+        serde_json::json!({"exposed_ports": [
+            {"port": 80, "protocol": "tcp"},
+            {"port": 53, "protocol": "udp"},
+        ]})
+    );
+    let response = RpcResponse::from(pulled.clone());
+    assert_eq!(
+        response
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::PullImage>()
+            .unwrap(),
+        pulled
+    );
+}
+
+#[test]
+fn exposed_port_reads_docker_keys() {
+    let tcp = ExposedPort::from_docker("80/tcp").unwrap();
+    assert_eq!(
+        (tcp.port.get(), tcp.protocol),
+        (80, ployz_core::TransportProtocol::Tcp)
+    );
+    let udp = ExposedPort::from_docker("53/udp").unwrap();
+    assert_eq!(
+        (udp.port.get(), udp.protocol),
+        (53, ployz_core::TransportProtocol::Udp)
+    );
+    assert_eq!(ExposedPort::from_docker("80/sctp"), None);
+    assert_eq!(ExposedPort::from_docker("junk"), None);
+    assert_eq!(ExposedPort::from_docker("0/tcp"), None);
 }
 
 #[test]
@@ -1578,6 +1628,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     let running = EnsureContainerRequest {
         want: ContainerWant::Running {
             container: RunTarget::New(NewContainer {
+                r#gen: ployz_core::Gen::FIRST,
                 slot: slot.clone(),
                 resolved_spec: spec.clone(),
                 deployment_id: None,
@@ -1585,22 +1636,24 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 image_prepared: false,
                 answer: AnswerWhen::Started,
             }),
+            rotation: RunRotation::Pending,
         },
     };
     assert_eq!(
         serde_json::to_value(&running).unwrap(),
         json!({ "want": { "state": "running", "container": { "new": {
-            "slot": slot_json, "resolved_spec": spec
-        } } } })
+            "slot": slot_json, "resolved_spec": spec, "gen": 1
+        } }, "rotation": "pending" } })
     );
     let settled: EnsureContainerRequest = serde_json::from_value(json!({
         "want": { "state": "running", "container": { "new": {
-            "slot": slot_json, "resolved_spec": spec, "answer": "settled"
-        } } }
+            "slot": slot_json, "resolved_spec": spec, "gen": 1, "answer": "settled"
+        } }, "rotation": "pending" }
     }))
     .unwrap();
     let ContainerWant::Running {
         container: RunTarget::New(settled),
+        ..
     } = settled.want
     else {
         panic!("a new running want decodes as one");
@@ -1608,7 +1661,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     assert_eq!(settled.answer, AnswerWhen::Settled);
     assert_eq!(
         serde_json::to_value(&settled).unwrap(),
-        json!({ "slot": slot_json, "resolved_spec": spec, "answer": "settled" })
+        json!({ "slot": slot_json, "resolved_spec": spec, "gen": 1, "answer": "settled" })
     );
     let request = op::EnsureContainer::into_request(running);
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);

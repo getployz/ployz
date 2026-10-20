@@ -49,7 +49,7 @@ pub(crate) fn compiled() -> Command {
     .arg(
         switch("json", None)
             .global(true)
-            .help("Print the result as one JSON object on stdout"),
+            .help("Print the result as one JSON object on stdout; streams print one per line"),
     )
     .arg(
         value("color", None)
@@ -197,11 +197,14 @@ pub(crate) fn approval() -> Arg {
     )
 }
 
+pub(crate) const VOLUME_ACCEPTANCE: &str =
+    "Accept permanent deletion: repeat once per exact volume name in the full deletion list";
+
 pub(crate) fn volume_acceptance() -> Arg {
     repeated("accept-volume-loss")
         .num_args(1)
         .value_name("name")
-        .help("Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this")
+        .help(VOLUME_ACCEPTANCE)
 }
 
 pub(crate) fn completion(command: Command) -> Command {

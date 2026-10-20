@@ -9,7 +9,7 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
     ContainerWant, CreationKey, DeploymentLogId, EnvironmentValues, InspectRequest,
     ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
-    QualifiedService, ResolvedServiceSpec, RpcError, RunTarget, ServiceObservation,
+    QualifiedService, ResolvedServiceSpec, RpcError, RunRotation, RunTarget, ServiceObservation,
     ServicePlacementEligibility, ServingPointer, SlotKey, op, service_containers,
 };
 
@@ -187,7 +187,10 @@ async fn ensure_retried(
     client
         .call::<op::EnsureContainer>(
             ployz_core::EnsureContainerRequest {
-                want: ContainerWant::Running { container },
+                want: ContainerWant::Running {
+                    container,
+                    rotation: RunRotation::Pending,
+                },
             },
             Some(target),
         )
@@ -380,6 +383,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         }
         let identity = slot.identity().clone();
         let mut new = NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
             slot: SlotKey {
                 namespace: identity.namespace.clone(),
                 kind: ContainerKind::ServiceContainer,

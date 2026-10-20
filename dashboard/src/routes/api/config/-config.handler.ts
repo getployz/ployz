@@ -10,7 +10,11 @@ import { receiveUpload } from "#/modules/config-store/upload.server";
 import { callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { lacks } from "#/modules/organization/access.server";
+import { readCappedBody } from "#/server/capped-body";
 import { NotFound, Validation } from "#/server/public-error";
+
+/** Room for one whole Config file (256 KiB), however JSON escapes it. */
+const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
 /**
  * `POST /api/config/read` and `/api/config/write`: the Config Store's two public operations, as the calling
@@ -36,8 +40,12 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
       ? Response.json({ uploaded: decodeURIComponent(upload) }, { headers: { "cache-control": "no-store" } })
       : refusal(refused);
   }
-  const input: unknown = yield* Effect.tryPromise({
-    try: () => request.json(),
+  const body = yield* Effect.tryPromise(() => readCappedBody(request, MAX_REQUEST_BYTES)).pipe(Effect.orElseSucceed(() => new Uint8Array(0)));
+  if (body === null) {
+    return refusal({ code: "invalid_argument", message: "The request is over 4 MiB.", details: { max_bytes: MAX_REQUEST_BYTES } });
+  }
+  const input: unknown = yield* Effect.try({
+    try: () => JSON.parse(new TextDecoder().decode(body)),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
   const query = operation === "read" ? Option.getOrUndefined(Schema.decodeUnknownOption(StoreQuery)(input)) : undefined;
@@ -55,8 +63,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     ? yield* trustedApproval(caller.organization.id, named)
     : { ok: true, approval: "not_required" } as const;
   if (!trusted.ok) return refusal(trusted.refusal);
-  // `ployz mcp` unprotecting an Environment waits for a human, as the sidebar does; a person at the CLI decided already.
-  const unprotect = call.operation === "write" && caller.via === "agent"
+  // Unprotecting an Environment from `ployz` or `ployz mcp` waits for a human, as the sidebar does.
+  const unprotect = call.operation === "write"
     ? yield* unprotectAsked(caller.organization.id, call.command).pipe(
       Effect.catchTag("StoreRefused", (error) => Effect.succeed({ refused: error.refusal })),
     )

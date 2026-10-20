@@ -1,6 +1,7 @@
 import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
+import { Uuid } from "#/lib/schema";
 
 export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -13,6 +14,9 @@ const OrganizationSlug = Schema.String.check(
   Schema.isNonEmpty(),
 );
 
+/** The CLI names its Organization by ID, the dashboard by the slug in its URL. */
+const OrganizationId = Uuid;
+
 export const MintMachineEnrollmentInput = Schema.Struct({
   organizationSlug: OrganizationSlug,
 });
@@ -20,8 +24,15 @@ export const MintMachineEnrollmentInput = Schema.Struct({
 export type MintMachineEnrollmentInput =
   typeof MintMachineEnrollmentInput.Type;
 
+export const CliMintMachineEnrollmentInput = Schema.Struct({
+  organizationId: OrganizationId,
+});
+
+export type CliMintMachineEnrollmentInput =
+  typeof CliMintMachineEnrollmentInput.Type;
+
 export const ReadMachineEnrollmentInput = Schema.Struct({
-  organizationSlug: OrganizationSlug,
+  organizationId: OrganizationId,
   id: Schema.String.check(Schema.isUUID()),
 });
 
@@ -35,6 +46,14 @@ export const ResetPendingEnrollmentInput = Schema.Struct({
 
 export type ResetPendingEnrollmentInput =
   typeof ResetPendingEnrollmentInput.Type;
+
+export const CliResetPendingEnrollmentInput = Schema.Struct({
+  organizationId: OrganizationId,
+  confirmedFounderStoppedOrErased: Schema.Literal(true),
+});
+
+export type CliResetPendingEnrollmentInput =
+  typeof CliResetPendingEnrollmentInput.Type;
 
 const MachineIdType = Schema.declare<MachineId>(
   (value): value is MachineId => typeof value === "string",
@@ -326,18 +345,16 @@ const DEFAULT_CLOUD_URL_HOST = "ployz.dev";
 const INSTALLER_URL = "https://ployz.sh/";
 
 /**
- * One line that installs a daemon and enrolls it. Ployz's hosted Cloud installs the
- * stable release, which every Cloud from 0.2.0 on speaks; any other Cloud pins
- * `version`, the release its own SDK speaks, since stable may be newer than it.
+ * One line that installs a daemon and enrolls it. It pins `version`, the release this
+ * Cloud's SDK speaks, since the stable channel may be older or newer than that.
  */
 export function buildMachineJoinCommand(input: {
   origin: string;
   version: string;
 }) {
   const hosted = new URL(input.origin).hostname === DEFAULT_CLOUD_URL_HOST;
-  const install = hosted ? "sh" : `sh -s -- ${input.version}`;
   const cloudUrlFlag = hosted ? "" : ` --cloud-url '${input.origin}'`;
-  return `curl -fsSL ${INSTALLER_URL} | ${install} && sudo ployz server add${cloudUrlFlag}`;
+  return `curl -fsSL ${INSTALLER_URL} | sh -s -- ${input.version} && sudo ployz server add${cloudUrlFlag}`;
 }
 
 export function mintedEnrollment(input: {

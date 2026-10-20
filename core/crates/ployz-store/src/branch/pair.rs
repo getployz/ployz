@@ -352,6 +352,10 @@ impl Checked<'_> {
             };
             arrive(tx, who, &into.summary.id, &arrived)?;
         }
+        let read = crate::rules::removed_lineages(&applied.next, &into.live);
+        let source_removed = scope::removed_of(tx, &of.source)?;
+        into.removed
+            .append(&source_removed, |lineage| read.contains(lineage));
         let staged = land(tx, who, into, (&of.from, &carried), applied.next, picks)?;
         share(tx, (&into.summary.id, &of.other), &applied.base)?;
         Ok(staged)

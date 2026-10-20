@@ -10,31 +10,33 @@ use serde_json::{Value, json};
 
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
-use super::release::place;
+use super::release::{place, version_for_loss};
 use super::step::{Gate, RequestKey};
 use crate::catalog::NODE_NAME;
 use crate::{
     Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, DeploymentsView, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start,
+    DeploymentsQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary, NodeOutcome,
+    NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start, VolumeName,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 
-/// The Deployment `number` names, or the latest when it names none.
+/// The Deployment `number` names, or the latest numbered one when it names none,
+/// with the query that reads it again by its number.
 fn find(
     cx: &mut Cx<'_>,
     environment: EnvironmentRef,
     number: Option<u64>,
-) -> Result<NumberedDeploymentQuery, Stop> {
-    let number = match number {
-        Some(number) => number,
-        None => latest(cx.one(&newest(&environment))?)?,
-    };
-    Ok(NumberedDeploymentQuery {
-        environment,
+) -> Result<(NumberedDeploymentQuery, DeploymentView), Stop> {
+    let view = cx.one(&NumberedDeploymentQuery {
+        environment: environment.clone(),
         number,
-    })
+    })?;
+    let query = NumberedDeploymentQuery {
+        environment,
+        number: number.or(view.deployment.number),
+    };
+    Ok((query, view))
 }
 
 fn newest(environment: &EnvironmentRef) -> DeploymentsQuery {
@@ -43,17 +45,6 @@ fn newest(environment: &EnvironmentRef) -> DeploymentsQuery {
         limit: Some(1),
         cursor: None,
     }
-}
-
-fn latest(page: DeploymentsView) -> Result<u64, Stop> {
-    page.deployments
-        .first()
-        .map(|latest| latest.number)
-        .ok_or_else(|| {
-            Refusal::not_found("This Environment has no Deployment yet")
-                .with_next(Call::new("deploy", json!({})))
-                .into()
-        })
 }
 
 /// Why the Deployment ended as it did, when its runner said.
@@ -257,8 +248,7 @@ impl Tool for DeploymentShow {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let query = find(cx, scope, self.deployment)?;
-        let mut view = cx.one(&query)?;
+        let (query, mut view) = find(cx, scope, self.deployment)?;
         let mut attempt = 0;
         while view.deployment.in_flight {
             let Some(answers) = cx.poll(self.wait_seconds, attempt, vec![store(&query)?])? else {
@@ -275,7 +265,13 @@ impl Tool for DeploymentShow {
             object.insert("progress".into(), progress(&view));
             object.insert(
                 "next".into(),
-                json!([follow(cx.call(), view.deployment.number)]),
+                json!(
+                    view.deployment
+                        .number
+                        .map(|number| follow(cx.call(), number))
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                ),
             );
         } else if let Some(calls) = diagnose(&view, cx.call()) {
             object.insert("next".into(), json!(calls));
@@ -313,8 +309,7 @@ impl Tool for DeploymentCancel {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let query = find(cx, scope, self.deployment)?;
-        let view = cx.one(&query)?;
+        let (_, view) = find(cx, scope, self.deployment)?;
         if !view.deployment.in_flight {
             return Err(Refusal::conflict("That Deployment already ended").into());
         }
@@ -339,11 +334,16 @@ pub(crate) struct DeploymentRetry {
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
     request_key: Option<RequestKey>,
-    /// Project name. Omit for the one you are in.
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    #[schemars(with = "Vec<String>")]
+    accept_volume_loss: Vec<VolumeName>,
+    /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     project: Option<ProjectName>,
-    /// Environment name, e.g. staging. Omit for the one you are in.
+    /// Environment name, e.g. staging.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     environment: Option<EnvironmentName>,
@@ -351,7 +351,7 @@ pub(crate) struct DeploymentRetry {
 
 impl Tool for DeploymentRetry {
     const NAME: &'static str = "deployment_retry";
-    const DESCRIPTION: &'static str = "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve.";
+    const DESCRIPTION: &'static str = "Ship an ended Deployment's commit and settings again; an older one rolls back newer ones. A human approves every redeploy.";
     const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
 
@@ -360,10 +360,11 @@ impl Tool for DeploymentRetry {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        version_for_loss(&self.accept_volume_loss, self.version.as_ref())?;
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let id: DeploymentId = cx.mint(self.request_key)?;
         let number = match self.deployment {
-            Some(number) => number,
+            Some(number) => Some(number),
             // A replay must not resolve the latest again: by now that is the retry itself.
             None => {
                 let asks = vec![
@@ -385,9 +386,9 @@ impl Tool for DeploymentRetry {
                     .filter(|recorded| recorded.id == id)
                     .filter(|recorded| recorded.environment_id == page.environment.id);
                 if let Some(recorded) = recorded {
-                    return Ok(retried(cx, &page.environment, &recorded, None));
+                    return Ok(retried(cx, &page.environment, &recorded, None, &[]));
                 }
-                latest(page)?
+                None
             }
         };
         let query = NumberedDeploymentQuery {
@@ -395,13 +396,30 @@ impl Tool for DeploymentRetry {
             number,
         };
         let source = cx.one(&query)?;
+        // A human approves the exact set it rolls back, so the agent confirms none.
         let retry = Admit::Retry(Retry {
             id,
             deployment: source.deployment.id.clone(),
+            rolls_back: None,
+            version: self.version,
+            accept_volume_loss: self.accept_volume_loss,
         });
         let summary = cx.write(&retry)?;
-        let retries = Some(source.deployment.number);
-        Ok(retried(cx, &source.environment, &summary, retries))
+        let retries = source.deployment.number;
+        // On a replay the source's newer runs include this redeploy and any after it.
+        let rolls_back: Vec<u64> = source
+            .rolls_back
+            .iter()
+            .copied()
+            .filter(|number| summary.number.is_some_and(|retried| *number < retried))
+            .collect();
+        Ok(retried(
+            cx,
+            &source.environment,
+            &summary,
+            retries,
+            &rolls_back,
+        ))
     }
 }
 
@@ -410,14 +428,16 @@ fn retried(
     environment: &EnvironmentSummary,
     retried: &DeploymentSummary,
     retries: Option<u64>,
+    rolls_back: &[u64],
 ) -> Value {
     json!({
         "at": at(environment),
         "deployment": retried.number,
         "retries": retries,
+        "rolls_back": rolls_back,
         "status": retried.status,
         "saved_revision": retried.saved.0,
-        "next": follow(cx.call(), retried.number),
+        "next": retried.number.map(|number| follow(cx.call(), number)),
     })
 }
 
@@ -449,8 +469,7 @@ impl Tool for DeploymentStart {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let query = find(cx, scope, self.deployment)?;
-        let queued = cx.one(&query)?;
+        let (_, queued) = find(cx, scope, self.deployment)?;
         let started = cx.write(&Start {
             deployment: queued.deployment.id.clone(),
         })?;
@@ -458,7 +477,7 @@ impl Tool for DeploymentStart {
             "at": at(&queued.environment),
             "deployment": started.number,
             "status": started.status,
-            "next": follow(cx.call(), started.number),
+            "next": started.number.map(|number| follow(cx.call(), number)),
         }))
     }
 }

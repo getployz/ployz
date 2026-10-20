@@ -709,6 +709,7 @@ async fn fake_docker_service(
                 )],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let store = RecordOwner::spawn(store).unwrap();
@@ -1516,17 +1517,19 @@ mod set_volume_copy {
         let plugin = cutting_plugin();
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        running_holder(&service, &fake).await;
+        let holder = running_holder(&service, &fake).await;
+        let seen = fake.requests.lock().unwrap().len();
 
-        let (cut, during) = tokio::join!(set_copy(&service, at_gen(draining_cut(400), 1)), async {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                set_copy(&service, floor(1)),
-            )
-            .await
-            .expect("the floor want waited on the draining cut")
-        });
+        let (cut, during) =
+            tokio::join!(set_copy(&service, at_gen(draining_cut(3000), 1)), async {
+                drain_started(&fake, &holder, seen).await;
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(2000),
+                    set_copy(&service, floor(1)),
+                )
+                .await
+                .expect("the floor want waited on the draining cut")
+            });
         assert_eq!(
             serde_json::to_value(reply(&during)).unwrap(),
             json!({"copy": writer_root(0, None)["Ok"]})
@@ -2185,7 +2188,7 @@ mod ensure_container {
     }
 
     fn run_new(key: &str, spec: Value) -> Value {
-        json!({"want":{"state":"running", "container":{"new":{"slot":slot(key), "resolved_spec":spec}}}})
+        json!({"want":{"state":"running", "rotation":"pending", "container":{"new":{"slot":slot(key), "resolved_spec":spec, "gen":1}}}})
     }
 
     async fn ensure(service: &MachineService, request: Value) -> EnsuredContainer {
@@ -2339,7 +2342,7 @@ mod ensure_container {
 
         let reply = ensure(
             &service,
-            json!({"want":{"state":"running", "container":{"existing":{"id":id}}}}),
+            json!({"want":{"state":"running", "rotation":"pending", "container":{"existing":{"id":id}}}}),
         )
         .await;
         assert!(matches!(
@@ -2382,6 +2385,28 @@ mod ensure_container {
             held.iter()
                 .all(|(method, path)| *method == Method::GET || path.ends_with("/stop"))
         );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// The floor of one admission turn: a Stopped want on an exited Container takes the
+    /// exclusive turn through `finish_mutation` for a Docker stop that changes nothing.
+    #[tokio::test]
+    #[ignore = "perf probe: prints the p95 of 200 admitted stops"]
+    async fn admission_turn_floor() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-turn-floor").await;
+        let id = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
+            .container_id;
+        set_state(&fake, &id, json!({"Status":"exited", "ExitCode":0}));
+        let stopped = json!({"want":{"state":"stopped", "container":{"id":id}, "drain":0}});
+        let mut took = Vec::with_capacity(200);
+        for _ in 0..200 {
+            let started = std::time::Instant::now();
+            present(&ensure(&service, stopped.clone()).await);
+            took.push(started.elapsed());
+        }
+        took.sort_unstable();
+        let p95 = *took.get(took.len() * 95 / 100 - 1).unwrap();
+        println!("admission_turn_floor p95 {:.3} ms", p95.as_secs_f64() * 1e3);
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -2436,9 +2461,9 @@ mod ensure_container {
     #[tokio::test]
     async fn a_resent_hook_want_after_the_hook_exited_runs_it_once_and_returns_its_exit() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-hook").await;
-        let hook = json!({"want":{"state":"running", "container":{"new":{
+        let hook = json!({"want":{"state":"running", "rotation":"pending", "container":{"new":{
             "slot":{"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
-            "resolved_spec":spec("example.test/api:1")}}}});
+            "resolved_spec":spec("example.test/api:1"), "gen":1}}}});
         let id = present(&ensure(&service, hook.clone()).await).container_id;
         // The hook ran and exited, and the reply was lost.
         set_state(&fake, &id, json!({"Status":"exited", "ExitCode":3}));
@@ -2573,6 +2598,48 @@ mod ensure_container {
     }
 
     #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture edits")]
+    async fn a_request_past_tonic_s_default_4_mib_still_creates_the_container() {
+        use std::os::unix::fs::MetadataExt;
+        let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-ensure-large").await;
+        let owner = std::fs::metadata(&data_dir).unwrap();
+        let mut spec = spec("example.test/api:1");
+        spec["configs"] = json!([{"name":"bulk/a", "content":vec![b'x'; 2 * 1024 * 1024]}]);
+        spec["container"]["config_mounts"] = json!([{
+            "config_name":"bulk/a", "target":"/etc/bulk/a", "uid":owner.uid(), "gid":owner.gid()
+        }]);
+        let request =
+            op::EnsureContainer::into_request(serde_json::from_value(run_new("k1", spec)).unwrap())
+                .encode()
+                .unwrap();
+        assert!(request.json.len() > 4 * 1024 * 1024);
+        let api = crate::machine_api::MachineApi::from_local(service);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)),
+        );
+        let mut client = MachineRpcClient::connect(format!("http://{address}"))
+            .await
+            .unwrap()
+            .max_decoding_message_size(ployz_core::RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
+
+        let reply = client
+            .ensure_container(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::EnsureContainer>()
+            .unwrap();
+
+        present(&reply);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn exec_refuses_a_container_this_machine_does_not_manage() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-exec").await;
         let stray = ContainerId::parse("b".repeat(64)).unwrap();
@@ -2636,8 +2703,8 @@ mod serving_pointer {
     use futures_util::{SinkExt, StreamExt};
     use ployz_core::{
         ContainerId, DeploymentLogId, Machine, NotPointerPublisher, OpaquePayload,
-        PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest, Rpc, RpcError,
-        ServingPointer, ServingPointerPublication, ServingPointerRead,
+        PublishServingPointerRequest, QualifiedService, ReadRoutesRequest, RoutesRead, Rpc,
+        RpcError, ServingPointer, ServingPointerPublication,
     };
     use serde_json::{Value, json};
     use tokio::net::UnixListener;
@@ -2714,6 +2781,7 @@ mod serving_pointer {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         local
@@ -2782,12 +2850,22 @@ mod serving_pointer {
         )
     }
 
-    async fn read(service: &MachineService) -> Result<ServingPointerRead, RpcError> {
-        let request =
-            op::ReadServingPointer::into_request(ReadServingPointerRequest { service: api() });
-        answer::<op::ReadServingPointer>(
+    async fn read(service: &MachineService) -> Result<RoutesRead, RpcError> {
+        read_at(service, true).await
+    }
+
+    async fn read_pointer(service: &MachineService) -> Result<RoutesRead, RpcError> {
+        read_at(service, false).await
+    }
+
+    async fn read_at(service: &MachineService, routes_only: bool) -> Result<RoutesRead, RpcError> {
+        let request = op::ReadRoutes::into_request(ReadRoutesRequest {
+            service: api(),
+            routes_only,
+        });
+        answer::<op::ReadRoutes>(
             service
-                .read_serving_pointer(Request::new(request.encode().unwrap()))
+                .read_routes(Request::new(request.encode().unwrap()))
                 .await
                 .unwrap(),
         )
@@ -2833,14 +2911,36 @@ mod serving_pointer {
         let refusal = NotPointerPublisher { publisher: one.id };
         assert_eq!(outcomes[0], Ok(ServingPointerPublication::Published));
         let refused = outcomes[1].as_ref().unwrap_err();
+        assert_eq!(NotPointerPublisher::from_error(refused), Some(refusal));
         assert_eq!(
-            NotPointerPublisher::from_error(refused),
-            Some(refusal.clone())
+            read(&sees_one_up).await.unwrap().pointer,
+            None,
+            "a Machine that may not publish still reads routes"
         );
-        let read_refused = read(&sees_one_up).await.unwrap_err();
+        first.abort();
+        second.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A Machine that may not publish may hold a stale pointer, so a pointer read there
+    /// names the publisher instead of answering.
+    #[tokio::test]
+    async fn a_pointer_read_off_the_publisher_names_the_publisher() {
+        let dir = std::env::temp_dir().join(format!("ployzd-pointer-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = machine_one();
+        let (publisher, first) = machine(&dir, &[], Vec::new()).await;
+        let (lagging, second) = machine(&dir, std::slice::from_ref(&one), vec![alive(&one)]).await;
+        publish(&publisher, None, pointer("d1", "a")).await.unwrap();
+
         assert_eq!(
-            NotPointerPublisher::from_error(&read_refused),
-            Some(refusal)
+            read_pointer(&publisher).await.unwrap().pointer,
+            Some(pointer("d1", "a"))
+        );
+        let refused = read_pointer(&lagging).await.unwrap_err();
+        assert_eq!(
+            NotPointerPublisher::from_error(&refused),
+            Some(NotPointerPublisher { publisher: one.id })
         );
         first.abort();
         second.abort();
@@ -3014,4 +3114,87 @@ mod serving_pointer {
         task.abort();
         std::fs::remove_dir_all(dir).ok();
     }
+}
+
+async fn select_endpoint(
+    service: &MachineService,
+    peer: MachineId,
+) -> Result<ployz_core::EndpointSelected, ployz_core::RpcError> {
+    let response = service
+        .select_endpoint(Request::new(
+            op::SelectEndpoint::into_request(ployz_core::SelectEndpointRequest {
+                peer,
+                endpoint: ployz_core::SelectedEndpoint("198.51.100.7:51820".parse().unwrap()),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    if let RpcResponseBody::EndpointSelected(selected) = response.body {
+        return Ok(selected);
+    }
+    let RpcResponseBody::Error(error) = response.body else {
+        panic!("unexpected response {:?}", response.body);
+    };
+    Err(error)
+}
+
+#[tokio::test]
+async fn an_operator_endpoint_reaches_this_machines_wireguard_and_never_names_itself() {
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-select-endpoint-{}", MachineId::random()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let own_id = store.record().id();
+    let without_mesh = MachineService::with_cluster(store.clone(), None);
+    assert_eq!(
+        select_endpoint(&without_mesh, MachineId::random())
+            .await
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Unavailable
+    );
+
+    let (chooser, mut choices) = tokio::sync::mpsc::channel(1);
+    let mut service = MachineService::with_cluster(store, None);
+    service.endpoint_chooser = Some(chooser);
+    let known = MachineId::random();
+    let plane = tokio::spawn(async move {
+        let mut taken = Vec::new();
+        while let Some(choice) = choices.recv().await {
+            let crate::network::EndpointChoice {
+                peer,
+                endpoint,
+                applied,
+            } = choice;
+            let outcome = if peer == known {
+                taken.push((peer, endpoint));
+                Ok(())
+            } else {
+                Err(crate::network::ChoiceRefused::UnknownPeer(peer))
+            };
+            applied.send(outcome).unwrap();
+        }
+        taken
+    });
+
+    assert_eq!(
+        select_endpoint(&service, own_id).await.unwrap_err().code,
+        RpcErrorCode::InvalidArgument
+    );
+    let selected = select_endpoint(&service, known).await.unwrap();
+    assert_eq!(selected.peer, known);
+    assert_eq!(
+        select_endpoint(&service, MachineId::random())
+            .await
+            .unwrap_err()
+            .code,
+        RpcErrorCode::NotFound
+    );
+    drop(service);
+    assert_eq!(plane.await.unwrap(), [(known, selected.endpoint)]);
+    std::fs::remove_dir_all(data_dir).ok();
 }

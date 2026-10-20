@@ -11,8 +11,8 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain ls --json
@@ -31,7 +31,7 @@ stdout:
       "hostname": "acme.com",
       "kind": "custom",
       "port": null,
-      "reason": "Port 80 is closed on 203.0.113.10",
+      "reason": "Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
       "service": "web",
       "status": "needs_attention"
     },
@@ -41,7 +41,7 @@ stdout:
       "kind": "generated",
       "port": 80,
       "prefix": "web",
-      "reason": "Port 80 is closed on 203.0.113.10",
+      "reason": "Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
       "service": "web",
       "status": "needs_attention"
     }
@@ -64,7 +64,7 @@ $ ployz domain check web.ada.ployz.test
 
 stdout:
 ```
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain check --json the generated domain
@@ -83,7 +83,7 @@ stdout:
     "kind": "generated",
     "port": 80,
     "prefix": "web",
-    "reason": "Port 80 is closed on 203.0.113.10",
+    "reason": "Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
     "service": "web",
     "status": "needs_attention"
   },
@@ -105,7 +105,7 @@ $ ployz domain check acme.com
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain check --json a custom domain
@@ -123,7 +123,7 @@ stdout:
     "hostname": "acme.com",
     "kind": "custom",
     "port": null,
-    "reason": "Port 80 is closed on 203.0.113.10",
+    "reason": "Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
     "service": "web",
     "status": "needs_attention"
   },
@@ -147,7 +147,7 @@ $ ployz domain set web shopweb
 
 stdout:
 ```
-Staged generated domain shopweb.ada.ployz.test on web in shop/production (revision 39).
+Staged generated domain shopweb.ada.ployz.test on web in shop/production.
 ```
 
 ### domain ls with a staged change
@@ -159,7 +159,7 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 shopweb.ada.ployz.test	web → 80	Setting up · Live after your next deploy
 ```
 
@@ -174,7 +174,7 @@ stdout:
 ```
 web (update)
   web.managedHostnames: [{"prefix":"web","targetPort":80}] -> [{"prefix":"shopweb","targetPort":80}]
-next: ployz deploy --expect-version 39:27:0.54
+next: ployz deploy
 ```
 
 ### deploy
@@ -208,8 +208,8 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-shopweb.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+shopweb.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain set --json back
@@ -275,7 +275,7 @@ $ ployz domain add api
 
 stdout:
 ```
-Staged domain api.ada.ployz.test on api in shop/production (revision 41).
+Staged domain api.ada.ployz.test on api in shop/production.
 ```
 
 ### deploy
@@ -309,9 +309,9 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
-api.ada.ployz.test	api → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+api.ada.ployz.test	api → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain rm
@@ -323,7 +323,7 @@ $ ployz domain rm api.ada.ployz.test
 
 stdout:
 ```
-Staged removal of domain api.ada.ployz.test on api in shop/production (revision 42).
+Staged removal of domain api.ada.ployz.test on api in shop/production.
 ```
 
 ### deploy
@@ -417,7 +417,7 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production (revision 44).
+Discarded every staged change in shop/production.
 ```
 
 ## Remove a custom domain, then discard
@@ -431,7 +431,7 @@ $ ployz domain rm acme.com
 
 stdout:
 ```
-Staged removal of domain acme.com on web in shop/production (revision 45).
+Staged removal of domain acme.com on web in shop/production.
 ```
 
 ### domain ls with a staged removal
@@ -443,7 +443,7 @@ $ ployz domain ls
 
 stdout:
 ```
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### discard
@@ -455,7 +455,7 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production (revision 46).
+Discarded every staged change in shop/production.
 ```
 
 ### domain add a custom domain that exists
@@ -467,6 +467,6 @@ $ ployz domain add web acme.com
 
 stdout:
 ```
-Staged domain acme.com on web in shop/production (revision 46).
+Staged domain acme.com on web in shop/production.
 ```
 

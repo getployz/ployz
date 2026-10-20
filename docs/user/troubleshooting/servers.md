@@ -162,9 +162,10 @@ the kernel is newer than ZFS supports. Either:
 
 ## The command was rejected
 
-You'll see `enroll HTTP 401`.
+You'll see `Cloud no longer takes this enrollment token`.
 
-The enrollment token expired or was mistyped. It works for 24 hours. Run
+The enrollment token expired or was mistyped, or the organization's servers were forgotten,
+which voids every token made before. A token works for 24 hours. Run
 `ployz server add --command` on your machine for a new one and run its line again.
 
 ## The server's name is invalid
@@ -348,6 +349,52 @@ cluster until it reboots or you remove it.
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
    services come back.
+
+## A server's address changed
+
+Ployz reads a server's public IP and network addresses again each time Ployz starts on it. When a
+server comes back from a stop with a new address, the other servers learn it, and it shows in
+`ployz server ls`. If the public IP lookup fails, the server keeps its old address and logs a
+warning; restart Ployz on it with `sudo systemctl restart ployz` to try again.
+
+An address you chose yourself never changes on its own. That means `--public-ip` or `--wg-endpoint`
+given to `ployz server init`, `ployz server add` or `ployz server set`. To change it, run
+`ployz server set` again.
+
+If every server's address changed at once, the servers can't reach each other to share the new
+addresses, and each one shows the others as unreachable. [Tell them where one of them
+is](#servers-lost-each-other-after-their-ips-changed).
+
+## Servers lost each other after their IPs changed
+
+Every server got a new public IP address at once, for example after a provider moved or restarted
+them. Each server shows itself running and the others as not answering, in `ployz server ls` and in
+Ployz Cloud, because each one still dials the others at their old addresses.
+
+Tell the servers where one of them is now. Run this once, with that server's name and its new
+public IP address:
+
+```sh
+ployz server set web-2 --wg-endpoint 203.0.113.20
+```
+
+Every other server the command reaches starts dialing `web-2` at that address right away; WireGuard
+uses port 51820 unless you name another, as in `203.0.113.20:51821`. Once one of them reaches
+`web-2`, `web-2` answers from its own new address and the two find each other, usually within
+seconds. The command says which servers took the address, then saves it on `web-2`:
+
+```text
+web-1 now dials web-2 at 203.0.113.20:51820.
+Updated Server web-2.
+```
+
+If `web-2` still can't be reached, the second line reads `! web-2 unreachable; its record is
+unchanged.` and the command still succeeds. Run it again once both servers show up in `ployz server
+ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
+server that still shows as not answering.
+
+Run it from your machine with Ployz Cloud or a context that reaches the other servers, or on one of
+the other servers itself. Run on `web-2`, it only saves the address on `web-2`.
 
 ## Services can't resolve each other's names
 

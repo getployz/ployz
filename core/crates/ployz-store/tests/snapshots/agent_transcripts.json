@@ -239,7 +239,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -248,7 +251,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -257,7 +263,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -266,7 +275,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -275,7 +287,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -284,7 +299,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -298,6 +316,9 @@
             "refusal": {
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
+              "valid": [
+                "production"
+              ],
               "retry": {
                 "tool": "environment_show",
                 "input": {
@@ -305,13 +326,14 @@
                 }
               },
               "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "open_dashboard",
-                  "page": "environments"
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {
+                    "project": "shop"
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -428,7 +450,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -437,7 +462,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -446,7 +474,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -455,7 +486,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -464,7 +498,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           },
@@ -473,7 +510,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -487,6 +527,9 @@
             "refusal": {
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
+              "valid": [
+                "production"
+              ],
               "retry": {
                 "tool": "environment_show",
                 "input": {
@@ -494,13 +537,14 @@
                 }
               },
               "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "open_dashboard",
-                  "page": "environments"
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {
+                    "project": "shop"
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -1003,7 +1047,8 @@
                     "whoami.privateDns",
                     "whoami.replicas",
                     "whoami.restartPolicy",
-                    "whoami.startCommand"
+                    "whoami.startCommand",
+                    "whoami.updateOrder"
                   ],
                   "written": "service"
                 }
@@ -1100,7 +1145,8 @@
                     "whoami.privateDns",
                     "whoami.replicas",
                     "whoami.restartPolicy",
-                    "whoami.startCommand"
+                    "whoami.startCommand",
+                    "whoami.updateOrder"
                   ],
                   "written": "service"
                 }
@@ -3315,7 +3361,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -3329,6 +3378,9 @@
             "refusal": {
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
+              "valid": [
+                "production"
+              ],
               "retry": {
                 "tool": "review",
                 "input": {
@@ -3336,13 +3388,14 @@
                 }
               },
               "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "open_dashboard",
-                  "page": "environments"
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {
+                    "project": "shop"
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -3385,7 +3438,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -3399,6 +3455,9 @@
             "refusal": {
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
+              "valid": [
+                "production"
+              ],
               "retry": {
                 "tool": "review",
                 "input": {
@@ -3406,13 +3465,14 @@
                 }
               },
               "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "open_dashboard",
-                  "page": "environments"
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {
+                    "project": "shop"
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -3452,7 +3512,6 @@
                     "project": "shop",
                     "environment": null
                   },
-                  "target": "head",
                   "path": "web",
                   "version": null
                 }
@@ -3527,7 +3586,6 @@
                     "project": "shop",
                     "environment": null
                   },
-                  "target": "head",
                   "path": "web",
                   "version": null
                 }
@@ -3970,7 +4028,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -3984,6 +4045,9 @@
             "refusal": {
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
+              "valid": [
+                "production"
+              ],
               "retry": {
                 "tool": "deployment_list",
                 "input": {
@@ -3992,13 +4056,14 @@
                 }
               },
               "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "open_dashboard",
-                  "page": "environments"
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {
+                    "project": "shop"
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -4044,7 +4109,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -4058,6 +4126,9 @@
             "refusal": {
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
+              "valid": [
+                "production"
+              ],
               "retry": {
                 "tool": "deployment_list",
                 "input": {
@@ -4066,13 +4137,14 @@
                 }
               },
               "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "open_dashboard",
-                  "page": "environments"
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {
+                    "project": "shop"
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -5089,7 +5161,10 @@
               "code": "not_found",
               "message": "No Environment named staging in Project shop",
               "details": {
-                "next": "ployz env new staging --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -5420,7 +5495,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_show",
                 "input": {
@@ -5523,7 +5598,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_logs",
                 "input": {
@@ -5643,7 +5718,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_metrics",
                 "input": {
@@ -5770,6 +5845,7 @@
           },
           {
             "value": {
+              "authored": [],
               "environment": {
                 "id": "00000000-0000-4000-8000-000000000002",
                 "name": "production",
@@ -5790,6 +5866,8 @@
                 "project": "shop",
                 "revision": 1
               },
+              "in_flight": [],
+              "latest": null,
               "next_cursor": null,
               "view": "deployments"
             }
@@ -5906,17 +5984,6 @@
             {
               "at": "store",
               "ask": {
-                "query": "service",
-                "environment": {
-                  "project": "shop",
-                  "environment": null
-                },
-                "service": "web"
-              }
-            },
-            {
-              "at": "store",
-              "ask": {
                 "query": "numbered_deployment",
                 "environment": {
                   "project": "shop",
@@ -5930,6 +5997,7 @@
         "answers": [
           {
             "value": {
+              "authored": [],
               "environment": {
                 "id": "00000000-0000-4000-8000-000000000002",
                 "name": "production",
@@ -5939,15 +6007,6 @@
               "namespace": "shop-production",
               "services": {},
               "view": "namespace"
-            }
-          },
-          {
-            "error": {
-              "code": "not_found",
-              "message": "No Service named web in Environment production",
-              "details": {
-                "valid_children": []
-              }
             }
           },
           {
@@ -6098,6 +6157,7 @@
         "answers": [
           {
             "value": {
+              "authored": [],
               "environment": {
                 "id": "00000000-0000-4000-8000-000000000002",
                 "name": "production",
@@ -6118,6 +6178,8 @@
                 "project": "shop",
                 "revision": 1
               },
+              "in_flight": [],
+              "latest": null,
               "next_cursor": null,
               "view": "deployments"
             }
@@ -6263,6 +6325,7 @@
           },
           {
             "value": {
+              "authored": [],
               "environment": {
                 "id": "00000000-0000-4000-8000-000000000002",
                 "name": "production",
@@ -6379,6 +6442,7 @@
         "answers": [
           {
             "value": {
+              "authored": [],
               "environment": {
                 "id": "00000000-0000-4000-8000-000000000002",
                 "name": "production",
@@ -6506,6 +6570,7 @@
         "answers": [
           {
             "value": {
+              "authored": [],
               "environment": {
                 "id": "00000000-0000-4000-8000-000000000002",
                 "name": "production",
@@ -6633,6 +6698,7 @@
         "answers": [
           {
             "value": {
+              "authored": [],
               "environment": {
                 "id": "00000000-0000-4000-8000-000000000002",
                 "name": "production",
@@ -6771,7 +6837,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_set",
                 "input": {
@@ -6876,7 +6942,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_drain",
                 "input": {
@@ -6980,7 +7046,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_upgrade",
                 "input": {
@@ -7212,6 +7278,7 @@
           },
           {
             "value": {
+              "authored": [],
               "environment": {
                 "id": "00000000-0000-4000-8000-000000000002",
                 "name": "production",
@@ -7839,7 +7906,10 @@
               "code": "not_found",
               "message": "No Environment named preview in Project shop",
               "details": {
-                "next": "ployz env new preview --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -7853,6 +7923,9 @@
             "refusal": {
               "code": "not_found",
               "message": "No Environment named preview in Project shop",
+              "valid": [
+                "production"
+              ],
               "retry": {
                 "tool": "environment_remove",
                 "input": {
@@ -7861,13 +7934,14 @@
                 }
               },
               "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "open_dashboard",
-                  "page": "environments"
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {
+                    "project": "shop"
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -7910,7 +7984,10 @@
               "code": "not_found",
               "message": "No Environment named preview in Project shop",
               "details": {
-                "next": "ployz env new preview --project shop"
+                "next": "ployz env ls --project shop",
+                "valid_children": [
+                  "production"
+                ]
               }
             }
           }
@@ -7924,6 +8001,9 @@
             "refusal": {
               "code": "not_found",
               "message": "No Environment named preview in Project shop",
+              "valid": [
+                "production"
+              ],
               "retry": {
                 "tool": "environment_remove",
                 "input": {
@@ -7932,13 +8012,14 @@
                 }
               },
               "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "open_dashboard",
-                  "page": "environments"
+              "next": [
+                {
+                  "tool": "environment_show",
+                  "input": {
+                    "project": "shop"
+                  }
                 }
-              }
+              ]
             }
           }
         }
@@ -8117,7 +8198,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_remove",
                 "input": {
@@ -8218,7 +8299,7 @@
             "ok": false,
             "refusal": {
               "code": "unavailable",
-              "message": "no Ployz Cloud in this transcript",
+              "message": "Can't check that name. no Ployz Cloud in this transcript",
               "retry": {
                 "tool": "server_forget",
                 "input": {

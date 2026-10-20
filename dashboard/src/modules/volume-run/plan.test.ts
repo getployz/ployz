@@ -90,7 +90,7 @@ describe("plan_from_copies_table", () => {
   it.each<[string, PlanInput, Member[], string]>([
     ["mirror onto an empty Server", mirror("b"), [member("a", "writer"), member("b", "empty")], "mirror a->b"],
     ["mirror onto its mirror", mirror("b"), [member("a", "writer"), member("b", "mirror")], "mirror a->b"],
-    ["mirror onto the writer", mirror("a"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
+    ["mirror onto the writer", mirror("a"), [member("a", "writer"), member("b", "empty")], "refuse already_on"],
     ["mirror onto a Server not in the cluster", mirror("z"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
     ["mirror with a mirror elsewhere", mirror("c"), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
     ["mirror with a Server unanswered", mirror("b"), [member("a", "writer"), member("b", "empty"), member("c", "unanswered")], "refuse unanswered"],
@@ -139,8 +139,8 @@ describe("plan_from_copies_table", () => {
     ["move again once the target slot holds the source's newest starts", move("b"), [member("a", "mirror"), member("b", "mirror")], "move a->b at start"],
     ["move again once the target writes at the source's newest leaves the run to find the cut source", move("b"), [member("a", "final"), member("b", "writer")], "landed on b behind a"],
     ["move to the writer beside mirrors at its newest names them all, not only a final snapshot", move("b"), [member("a", "mirror"), member("b", "writer"), member("c", "final")], "landed on b behind a,c"],
-    ["move onto the writer with its mirror behind", move("a"), [member("a", "writer"), member("b", "behind")], "refuse invalid"],
-    ["move onto the writer alone", move("a"), [member("a", "writer")], "refuse invalid"],
+    ["move onto the writer with its mirror behind", move("a"), [member("a", "writer"), member("b", "behind")], "refuse already_on"],
+    ["move onto the writer alone", move("a"), [member("a", "writer")], "refuse already_on"],
     ["move onto a root mid-cut", move("a"), [member("a", "cut"), member("b", "mirror")], "refuse volume_switching"],
     ["move with a mirror elsewhere", move("c"), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
     ["move a cut toward another Server", move("c"), [member("a", "cut"), member("b", "mirror"), member("c", "empty")], "refuse second_mirror"],
@@ -160,13 +160,13 @@ describe("plan_from_copies_table", () => {
     ["restore the only mirror", restore("b"), [member("a", "empty"), member("b", "mirror")], "restore b 11"],
     ["restore a slot mid-pull loses what it has not pulled", restore("b"), [member("b", "pulling")], "restore b 10"],
     ["restore a read-only root loses nothing", restore("a"), [member("a", "cut"), member("b", "empty")], "restore a"],
-    ["restore the writable writer", restore("a"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
+    ["restore the writable writer", restore("a"), [member("a", "writer"), member("b", "empty")], "refuse already_on"],
     ["restore while another Server holds the writer", restore("b"), [member("a", "writer"), member("b", "mirror")], "refuse another_copy"],
     ["restore while another Server holds a cut root", restore("b"), [member("a", "cut"), member("b", "mirror")], "refuse another_copy"],
     ["restore from a Server with no copy", restore("b"), [member("a", "empty"), member("b", "empty")], "refuse no_copy"],
     ["restore from a Server not in the cluster", restore("z"), [member("b", "mirror")], "refuse invalid"],
     ["restore with a Server unanswered", restore("b"), [member("a", "unanswered"), member("b", "mirror")], "refuse unanswered"],
-    ["a returning root does not block Restore's refusal", restore("b"), [member("a", "writer", { epoch: 3 }), member("b", "writer", { epoch: 8 })], "refuse invalid"],
+    ["a returning root does not block Restore's refusal", restore("b"), [member("a", "writer", { epoch: 3 }), member("b", "writer", { epoch: 8 })], "refuse already_on"],
 
     ["seed on the writer beside its mirror", seed, [member("a", "writer"), member("b", "mirror")], "seed on a"],
     ["seed with no writer", seed, [member("b", "mirror")], "refuse no_writer"],
@@ -191,6 +191,34 @@ describe("plan_from_copies_table", () => {
     expect(planFromCopies(remove("fsn-2"), [member("fsn-2", "mirror")])).toEqual({
       ok: false,
       refusal: { code: "confirm_required", message: "data-fsn-2 is data's only copy; volume mirror rm data-fsn-2 --confirm data" },
+    });
+  });
+
+  it.each([["move", move("fsn-3")], ["mirror", mirror("fsn-3")]])("names the copy on a third Server and its removal when a %s finds one", (_, input) => {
+    expect(planFromCopies(input, [member("fsn-1", "writer"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume mirror rm data-fsn-2" },
+    });
+  });
+
+  it("names release, not the removal mirror rm refuses, when a move from a stopped cut finds a copy on a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [member("fsn-1", "cut"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume release data" },
+    });
+  });
+
+  it("names the move onto the copy when a cut with no snapshot finds it on a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [bare("fsn-1", 9), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume move data --to fsn-2" },
+    });
+  });
+
+  it("names no next step when a cut with no snapshot has copies on the target and a third Server", () => {
+    expect(planFromCopies(move("fsn-3"), [bare("fsn-1", 9), member("fsn-2", "mirror"), member("fsn-3", "mirror")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2" },
     });
   });
 

@@ -256,7 +256,7 @@ impl ContainerRuntime {
         shutdown: &CancellationToken,
         filters: HashMap<&str, Vec<&str>>,
         sync: F,
-        on_stopping_marks: bool,
+        on_local_marks: bool,
     ) -> Result<(), Error>
     where
         F: AsyncFn(&Self, &ObservationSink) -> Result<(), Error>,
@@ -274,6 +274,7 @@ impl ContainerRuntime {
         // between capturing `since` and completing the initial snapshot.
         let mut events = Box::pin(self.docker.client.events(Some(options)));
         let mut stopping = self.stopping.subscribe();
+        let mut rotations = self.specs.subscribe_rotations();
         sync(self, sink).await?;
 
         let mut rescans = tokio::time::interval(sink.rescan_interval);
@@ -290,8 +291,9 @@ impl ContainerRuntime {
                     None => return Err(Error::EventStreamClosed),
                 },
                 _ = rescans.tick() => sync(self, sink).await?,
-                // A stopping mark changes no Docker state, so no event announces it.
-                Ok(()) = stopping.changed(), if on_stopping_marks => sync(self, sink).await?,
+                // Stopping marks and rotation writes change no Docker state, so no event announces them.
+                Ok(()) = stopping.changed(), if on_local_marks => sync(self, sink).await?,
+                Ok(()) = rotations.changed(), if on_local_marks => sync(self, sink).await?,
                 () = async {
                     match scan_at {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -768,6 +770,8 @@ mod tests {
             .insert("TOKEN".into(), "service-secret".into());
         let observation =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                rotation: None,
+                r#gen: None,
                 container_id: ContainerId::parse("a".repeat(64)).unwrap(),
                 display_name: "ingress-test".into(),
                 created_at_unix_nanos: 1,
@@ -987,5 +991,78 @@ mod tests {
 
         observe_copies(&machine_id, &mut volumes, &copies);
         assert_eq!(volumes.len(), 3, "a listed slot is not added twice");
+    }
+
+    #[tokio::test]
+    async fn rotation_write_wakes_sync() {
+        use std::time::Duration;
+
+        use ployz_core::{AdvertisedEndpoint, CopyRotation, MachineId, MachineName};
+        use tokio_util::sync::CancellationToken;
+
+        use crate::corrosion::store_tests::{corrosion_db, identity_store};
+        use crate::docker::test_support::runtime_with_running_container;
+        use crate::machine::{LocalMachineStore, RecordOwner};
+
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-rotation-{}", MachineId::random()));
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        store
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            })
+            .unwrap();
+        let owner = RecordOwner::spawn(store).unwrap();
+        let (replicated, corrosion) = identity_store(corrosion_db()).await;
+        let (runtime, _fake, id) = runtime_with_running_container().await;
+        let runtime = runtime
+            .replicating(replicated.clone(), owner, crate::storage::Plugin::default())
+            .with_rescan_interval(Duration::from_secs(3600));
+        let shutdown = CancellationToken::new();
+        let publisher = tokio::spawn({
+            let (runtime, shutdown) = (runtime.clone(), shutdown.clone());
+            async move { runtime.publish_observations(shutdown).await }
+        });
+        let published = || async {
+            replicated
+                .container(&id)
+                .await
+                .unwrap()
+                .map(|observation| observation.rotation().clone())
+        };
+        let wait_for = |rotation: CopyRotation| async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while published().await.as_ref() != Some(&rotation) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{rotation:?} was never published"));
+        };
+
+        wait_for(CopyRotation::Pending).await;
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&CopyRotation::In)
+            .await
+            .unwrap();
+        wait_for(CopyRotation::In).await;
+
+        shutdown.cancel();
+        publisher.await.unwrap().unwrap();
+        corrosion.abort();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }

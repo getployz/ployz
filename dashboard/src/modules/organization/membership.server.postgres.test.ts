@@ -240,7 +240,7 @@ describe("claimOrganization", () => {
       const people = (yield* drizzle.insert(user).values([{ email: "eve@example.test", name: "Eve" }, { email: "finn@example.test", name: "Finn" }])
         .returning({ id: user.id })).map((row) => row.id);
       yield* drizzle.insert(member).values({ userId: people[1] ?? "", organizationId: agent.organization.id, role: "member" });
-      yield* Effect.all(people.map((userId) => Effect.exit(claimOrganization({ userId }, secret))), { concurrency: "unbounded" });
+      yield* Effect.all(people.map((userId) => Effect.exit(claimOrganization({ userId, credential: { kind: "session", id: crypto.randomUUID() } }, secret))), { concurrency: "unbounded" });
       const owners = yield* drizzle.select({ userId: member.userId }).from(member)
         .where(and(eq(member.organizationId, agent.organization.id), eq(member.role, "owner")));
       expect(owners).toHaveLength(1);

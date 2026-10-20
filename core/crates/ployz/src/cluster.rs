@@ -16,8 +16,8 @@ use ployz_core::{
     MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
     Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
-    RpcResponseBody, RunTarget, StopOptions, StorageCapacity, UnconfirmedDataLoss, VolumeInventory,
-    VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
+    RpcResponseBody, RunRotation, RunTarget, StopOptions, StorageCapacity, UnconfirmedDataLoss,
+    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -133,6 +133,21 @@ impl Client {
         tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
             .await
             .map_err(|_| ConnectError::EntryNotReady)?
+    }
+
+    /// The id of the Machine this client enters by.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport or remote error when the entry does not describe itself.
+    pub(crate) async fn entry_id(&self) -> Result<MachineId, ConnectError> {
+        let payload = op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
+        apply_timeout(
+            Some(CONNECT_CONFIRM_TIMEOUT),
+            self.call_once::<op::DescribeContract>(payload, None),
+        )
+        .await
+        .map(|description| description.machine_id)
     }
 
     /// Issue one unary RPC. The response type is derived from the RPC, so a request
@@ -381,7 +396,7 @@ impl Client {
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         apply_timeout(timeout, async {
-            let mut grpc = tonic::client::Grpc::new(self.channel.clone());
+            let mut grpc = self.grpc();
             grpc.ready().await?;
             Ok(grpc
                 .unary(
@@ -398,8 +413,16 @@ impl Client {
         .map_err(rpc_error)
     }
 
+    /// Specs carry Config bytes as JSON number arrays, so a 1 MB Config alone nears
+    /// tonic's 4 MiB default, and stored log lines reach 8 MiB.
+    fn grpc(&self) -> tonic::client::Grpc<Channel> {
+        tonic::client::Grpc::new(self.channel.clone())
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
+    }
+
     fn machine_rpc(&self) -> MachineRpcClient<Channel> {
         MachineRpcClient::new(self.channel.clone())
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
     }
 
     pub(crate) async fn build_stream(
@@ -444,15 +467,12 @@ impl Client {
             .into_inner())
     }
 
-    /// A stored line can be 8 MiB, past tonic's 4 MiB default.
     pub(crate) async fn log_history_stream(
         &self,
         target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self
-            .machine_rpc()
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
+        let mut rpc = self.machine_rpc();
         Ok(rpc
             .log_history(target_request(request, Some(target)))
             .await
@@ -468,8 +488,7 @@ impl Client {
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self
             .machine_rpc()
-            .accept_compressed(CompressionEncoding::Gzip)
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
+            .accept_compressed(CompressionEncoding::Gzip);
         Ok(rpc
             .runtime_watch(tonic::Request::new(request))
             .await?
@@ -481,7 +500,7 @@ impl Client {
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
+        let mut grpc = self.grpc();
         grpc.ready().await?;
         let response = grpc
             .unary(
@@ -609,9 +628,14 @@ impl Client {
             .await
             .map_err(RpcError::from)?;
         let inspector = self.clone();
+        // Seeking nothing asks only who answers: storage holds nothing sought.
+        let storage: &[MachineObservation] = match sought.is_empty() {
+            true => &[],
+            false => &machines.machines,
+        };
         let (listed, inspected) = tokio::join!(
             self.list_volumes(&machines.machines),
-            inspector.inspect_storage(&machines.machines)
+            inspector.inspect_storage(storage)
         );
         let mut unanswered: BTreeSet<MachineId> = listed
             .failures
@@ -1138,12 +1162,10 @@ pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcErr
         .chain(error.cause)
         .collect::<Vec<_>>()
         .join(": ");
-    RpcError {
-        code: error.code,
-        message: format!("Machine {machine_id} did not answer: {transport}"),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unanswered_target(
+        error.code,
+        format!("Machine {machine_id} did not answer: {transport}"),
+    )
 }
 
 fn status_error(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
@@ -1788,6 +1810,7 @@ async fn change_container_rpc(
         ContainerAction::Start => (
             ContainerWant::Running {
                 container: RunTarget::Existing(container),
+                rotation: RunRotation::Pending,
             },
             Some(TARGET_RPC_TIMEOUT),
         ),

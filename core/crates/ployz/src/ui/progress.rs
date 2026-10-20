@@ -532,7 +532,15 @@ fn drive(
 }
 
 fn terminal_size() -> (usize, usize) {
-    crossterm::terminal::size().map_or((80, 24), |(w, h)| (usize::from(w), usize::from(h)))
+    window(crossterm::terminal::size())
+}
+
+/// A pseudo-terminal nobody sized reports 0x0, which is no size at all.
+fn window(size: io::Result<(u16, u16)>) -> (usize, usize) {
+    match size {
+        Ok((w, h)) if w > 0 && h > 0 => (usize::from(w), usize::from(h)),
+        Ok(_) | Err(_) => (80, 24),
+    }
 }
 
 fn label(subject: &Subject, frame: &Frame) -> String {
@@ -706,6 +714,22 @@ pub(crate) fn live_lines(
     height: usize,
     color: bool,
 ) -> Vec<String> {
+    let notes = notices(frame);
+    // Notices give way to the rows on a terminal too short for both.
+    if notes.is_empty() || height < notes.len() + 3 {
+        return row_lines(frame, tick, width, height, color);
+    }
+    let mut lines = row_lines(frame, tick, width, height - notes.len(), color);
+    let width = width.saturating_sub(1 + usize::from(terminal::ECHO_ROOM));
+    lines.extend(
+        notes
+            .iter()
+            .map(|notice| paint(&clip(&format!("! {notice}"), width), Tone::Change, color)),
+    );
+    lines
+}
+
+fn row_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bool) -> Vec<String> {
     let width = width.saturating_sub(1 + usize::from(terminal::ECHO_ROOM));
     let height = height.saturating_sub(1).max(1);
     let mut rows: Vec<_> = frame.rows.iter().collect();
@@ -882,7 +906,8 @@ fn notices(frame: &Frame) -> Vec<String> {
                     | DeployWarning::StorageObservationUnknown { .. }
                     | DeployWarning::IngressHostname { .. }
                     | DeployWarning::ObserverRelativeHostnameConflict
-                    | DeployWarning::SkippedDependencyHealth { .. } => None,
+                    | DeployWarning::SkippedDependencyHealth { .. }
+                    | DeployWarning::ImagePortMismatch { .. } => None,
                 })
                 .collect::<BTreeSet<_>>();
             Some(format!(
@@ -891,6 +916,27 @@ fn notices(frame: &Frame) -> Vec<String> {
             ))
         })
         .collect()
+}
+
+/// The footer word a settled row counts under.
+fn outcome(row: &Row) -> Option<&'static str> {
+    match row.state {
+        State::Completed => Some(
+            if matches!(&row.subject, Subject::Service(graph) if graph.work == Work::Remove) {
+                "removed"
+            } else {
+                "deployed"
+            },
+        ),
+        State::ObservedRunning => Some("running"),
+        State::Unchanged => Some("unchanged"),
+        State::Failed => Some("failed"),
+        State::Warned => Some("warning"),
+        State::NotAttempted => Some("not attempted"),
+        State::Unknown => Some("unknown"),
+        State::Excluded => Some("excluded"),
+        State::Pending | State::Running(_) => None,
+    }
 }
 
 fn finish(
@@ -903,7 +949,7 @@ fn finish(
     color: bool,
 ) -> io::Result<()> {
     if matches!(disposition, Disposition::UpToDate) {
-        return writeln!(writer, "Everything is up to date.");
+        return Ok(());
     }
     if interactive {
         writeln!(writer, "{}", frame.title)?;
@@ -936,17 +982,22 @@ fn finish(
             if gaps == 1 { "gap" } else { "gaps" }
         ));
     }
-    for (state, word) in [
-        (State::Completed, "updated"),
-        (State::ObservedRunning, "running"),
-        (State::Unchanged, "unchanged"),
-        (State::Failed, "failed"),
-        (State::Warned, "warning"),
-        (State::NotAttempted, "not attempted"),
-        (State::Unknown, "unknown"),
-        (State::Excluded, "excluded"),
+    for word in [
+        "deployed",
+        "removed",
+        "running",
+        "unchanged",
+        "failed",
+        "warning",
+        "not attempted",
+        "unknown",
+        "excluded",
     ] {
-        let count = frame.rows.iter().filter(|row| row.state == state).count();
+        let count = frame
+            .rows
+            .iter()
+            .filter(|row| outcome(row) == Some(word))
+            .count();
         if count > 0 {
             counts.push(format!("{count} {word}"));
         }

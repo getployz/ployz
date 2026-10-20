@@ -46,6 +46,16 @@ the dashboard's **Deploy** needs a staged change:
 ployz deploy
 ```
 
+**Auto-deploy** and **Wait for CI** keep their values on such a service, so they work as soon as
+the app is installed. Until then, the dashboard shows a line under **Auto-deploy**, and `ployz get`
+and `ployz set` print the same note:
+
+```text
+$ ployz set web.waitForCi=true
+Applied web.waitForCi in shop/production.
+Pushes reach Ployz only once the GitHub App is installed on owner/repo.
+```
+
 ## Choose the Git branch
 
 1. Open the service and go to **Settings → Source**.
@@ -85,9 +95,16 @@ behind, and services the push doesn't touch keep running as they are.
 Turn on **Wait for CI** under **Settings → Source** to hold a push's deploy until its GitHub
 checks pass, from GitHub Actions or any other app that reports checks. It applies at once.
 
-- If a check fails, the commit doesn't deploy. Re-run it on GitHub and the commit deploys once it
-  passes, or push a fix.
-- A newer push replaces a commit that's still waiting.
+A held push shows in **Runs** and in `ployz deployment ls` as a deployment that reads **Waiting
+for CI**, named by its commit rather than a number. It deploys as that same deployment once
+every check passes, and takes the next deployment number then, so deployments stay numbered in
+the order they ran, whichever branch passed CI first. Cancel it there to drop the push. Nothing
+was frozen for it, so it can't be redeployed: push again instead.
+
+- If a check fails, the deployment reads **CI failed** and the commit doesn't deploy. Re-run the
+  check on GitHub and the commit deploys once it passes, or push a fix.
+- A newer push replaces a commit that's still waiting, and so does a deploy you start yourself.
+  A replaced commit leaves the list; one you cancelled stays, so you can see you dropped it.
 - If no checks run for a commit, it waits until your next push. CI that reports commit statuses
   instead of checks counts as no checks.
 

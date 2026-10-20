@@ -229,6 +229,11 @@ pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure>
     Ok(())
 }
 
+/// Note that a human stream printed part of the result, so a later failure is partial.
+pub(crate) fn printed() {
+    EMITTED.set(true);
+}
+
 /// Whether the command already produced its result, so a later failure is partial.
 pub(crate) fn emitted() -> bool {
     EMITTED.get()

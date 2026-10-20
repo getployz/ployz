@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
+import { type Gate, gateOperation } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -12,7 +13,6 @@ import {
   createOrganizationToken,
   knownEnvironment,
   listCredentials,
-  requireSignedIn,
   revokeCredential,
 } from "#/modules/identity/organization-token.server";
 import {
@@ -22,7 +22,7 @@ import {
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
+import { checkForgetServers, forgetServers, forgetServersAsked } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import {
@@ -47,6 +47,9 @@ import { ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, Up
 import { OPERATIONS } from "#/modules/operations/operations";
 import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
+import { CreateOrganization } from "#/modules/organization/organization-state";
+import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
+import { slugifySegment } from "#/utils/slug";
 import { NotFound, Validation } from "#/server/public-error";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
@@ -72,6 +75,11 @@ const presetOf = (input: typeof NewToken.Type): Effect.Effect<TokenPreset, Valid
     ? Effect.succeed({ preset })
     : Effect.fail(new Validation({ message: "Only a Deploy token takes an Environment.", userFacing: true }));
 };
+
+/** The slug defaults to the name; both then decode as the dashboard's New organization form does. */
+const NewOrganization = Schema.Struct({ name: Schema.String, slug: Schema.optional(Schema.String) });
+const BAD_ORGANIZATION = "An Organization needs a name of 1 to 64 characters, and a slug of 1 to 64 letters, digits or hyphens.";
+const NAME_WITHOUT_SLUG = "This name has no letters or digits to make a slug from. Pass --slug.";
 
 const NewFleetToken = Schema.Struct({
   name: Schema.optional(FleetTokenName),
@@ -129,10 +137,15 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
 // The CLI reads a bare 404 as an unsupported route, so a missing Volume or run answers as a refusal.
 const missingRefusal = (message: string) => refusal({ code: "not_found", message, details: null });
 const noSuchServer = () => missingRefusal("No such Server.");
+/** A token can't make or revoke tokens or Fleet Tokens (see `requireSignedIn`): refused before its request is read, so no field of it is blamed. */
+const personOnly = (message: string) => refusal({ code: "forbidden", message, details: { next: "ployz login" } });
 
 const forgetter = (caller: Caller) => ({ userId: caller.userId, credential: caller.credential, organizationId: caller.organization.id });
 
 const approvalHeader = (request: Request) => request.headers.get("x-ployz-approval");
+
+/** Asks a human before the operation runs, unless the request carries the approval they gave. */
+const gated = (caller: Caller, request: Request): Gate => (asked) => gateOperation(caller, approvalHeader(request), asked);
 
 const accepted = (id: string) => Response.json({ id }, { status: 202 });
 
@@ -161,7 +174,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
   );
 
 /**
- * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
+ * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
  * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
@@ -172,8 +185,26 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
   switch (route) {
     case "GET organizations":
       return { organizations: yield* callerOrganizations(caller) };
+    case "POST organizations": {
+      if (caller.credential.kind !== "session") {
+        return refusal({
+          code: "invalid_argument",
+          message: "Only a signed-in person can make an Organization; this credential acts only in its own. No changes made.",
+          details: { next: "ployz login" },
+        });
+      }
+      const body = yield* decodeBody(NewOrganization, request, BAD_ORGANIZATION);
+      const input = yield* Schema.decodeUnknownEffect(CreateOrganization)({ name: body.name, slug: body.slug ?? body.name }).pipe(
+        Effect.catchIf(Schema.isSchemaError, () => Effect.succeed(null)),
+      );
+      if (input === null) {
+        const unsluggable = body.slug === undefined && body.name.trim() !== "" && slugifySegment(body.name) === "";
+        return refusal({ code: "invalid_argument", message: unsluggable ? NAME_WITHOUT_SLUG : BAD_ORGANIZATION, details: null });
+      }
+      return { organization: yield* createOrganizationForSession(caller.userId, caller.credential.id, input) };
+    }
     case "DELETE organizations/:id": {
-      const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""));
+      const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""), { gate: gated(caller, request) });
       return removal.ok ? removal.value : refusal(removal.refusal);
     }
     case "GET tokens":
@@ -182,8 +213,14 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         revoking: yield* pendingServerRevocations(caller.organization.id),
       };
     case "POST tokens": {
+      if (caller.credential.kind !== "session") {
+        return yield* requireClaimed(caller.organization.id, "mint_token").pipe(
+          Effect.as(personOnly("Only a signed-in person can make tokens. No changes made.")),
+          Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
+        );
+      }
       const input = yield* decodeBody(NewToken, request,
-        "A token needs a name of 1 to 64 characters, an expiry of 1 to 365 days, and a kind of cli or agent.");
+        "A token needs a name of 1 to 64 characters, expires_in_days of 1 to 365, and a kind of cli or agent.");
       const preset = yield* knownEnvironment(caller, yield* presetOf(input));
       return yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind, preset }).pipe(
         Effect.map((token) => ({ token })),
@@ -191,6 +228,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       );
     }
     case "DELETE tokens/:id": {
+      if (caller.credential.kind !== "session") {
+        return personOnly("Only a signed-in person can revoke tokens; revoke it under Organization → Tokens. No changes made.");
+      }
       if (!Schema.is(Uuid)(id)) return yield* new NotFound({ message: "No such token or signed-in device." });
       const removed = yield* revokeCredential(caller, id).pipe(
         Effect.catchTag("NotFound", (missing) => pendingRevocation(caller, id, missing)),
@@ -212,7 +252,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       };
     }
     case "POST fleet-tokens": {
-      yield* requireSignedIn(caller);
+      if (caller.credential.kind !== "session") {
+        return personOnly("Only a signed-in person can make Fleet Tokens. No changes made.");
+      }
       const input = yield* decodeBody(NewFleetToken, request,
         "A Fleet Token takes an expiry of 1d, 7d or 30d, and an optional name of lowercase letters, digits and hyphens.");
       const created = yield* createFleetToken(caller, {
@@ -224,7 +266,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { fleet_token: { id: created.id, name: created.name, token: created.token, expires_at: created.expiresAt } };
     }
     case "DELETE fleet-tokens/:id": {
-      yield* requireSignedIn(caller);
+      if (caller.credential.kind !== "session") {
+        return personOnly("Only a signed-in person can revoke Fleet Tokens; revoke it under Servers → Tokens. No changes made.");
+      }
       const ref = decodeURIComponent(id ?? "");
       const target = Schema.is(Uuid)(ref) ? { id: ref } : { name: ref };
       const revoked = yield* revokeFleetToken(caller, { organizationSlug: caller.organization.slug, ...target });
@@ -368,7 +412,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
           details: { next: `ployz org use ${input.organization}` },
         });
       }
-      const forgotten = yield* forgetServers(forgetter(caller));
+      const forgotten = yield* forgetServers(forgetter(caller), (checked) => gated(caller, request)(forgetServersAsked(caller.organization, checked)));
       return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : refusal(forgotten.refusal);
     }
     case "POST server-access": {

@@ -5,6 +5,8 @@
 
 pub(crate) mod query;
 
+use std::collections::BTreeMap;
+
 use ployz_core::config::{
     SavedServiceIntent, ServiceImageCredentials, ServiceSource, ServiceTemplate,
     parse_service_config,
@@ -72,6 +74,10 @@ pub struct ServiceStaged {
     /// What waits for a Deploy: every Setting of a new Service, or the Service itself
     /// for a rename or removal. Empty when nothing changed.
     pub staged: Vec<SettingPath>,
+    /// The references to a removed Service that its removal left broken.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<crate::BrokenReference>>", optional)]
+    pub broken: Vec<crate::BrokenReference>,
 }
 
 /// A Service as results name it.
@@ -166,6 +172,7 @@ pub(crate) fn insert_service(
         service: summary(&node)?,
         environment: environment.summary,
         staged,
+        broken: Vec::new(),
     })
 }
 
@@ -192,6 +199,7 @@ pub(crate) fn rename_service(
         staged: staged(changed, &service.name),
         service,
         environment: environment.summary,
+        broken: Vec::new(),
     })
 }
 
@@ -201,16 +209,27 @@ pub(crate) fn remove_service(
     remove: &RemoveService,
 ) -> Result<ServiceStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &remove.environment)?;
-    let service = summary(environment.service(&remove.service)?)?;
+    let node = environment.service(&remove.service)?;
+    let service = summary(node)?;
+    let names = BTreeMap::from([(node.lineage_id.clone(), node.slug.clone())]);
     environment
         .working
         .services
         .retain(|node| node.id != service.id.as_str());
     scope::save_working(tx, &mut environment)?;
+    let removed = crate::Missing::Service {
+        from: Some(service.name.clone()),
+    };
+    let live_keys = crate::branch::live_keys(tx, &environment.summary.id, &environment.working)?;
+    let broken = crate::rules::broken(&environment.working, &live_keys, &names)
+        .into_iter()
+        .filter(|reference| reference.missing == removed)
+        .collect();
     Ok(ServiceStaged {
         staged: staged(true, &service.name),
         service,
         environment: environment.summary,
+        broken,
     })
 }
 
