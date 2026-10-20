@@ -15,7 +15,7 @@ import type {
   WantedCopy,
 } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, notInArray, or, type SQL, sql } from "drizzle-orm";
-import { Data, Effect, Option, Schema } from "effect";
+import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import type { OperationVerb } from "#/modules/approvals/approvals";
@@ -28,7 +28,7 @@ import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modu
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
-import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import { OPERATION_OBSERVE_DEADLINE_MS, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
@@ -467,7 +467,27 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   if (pending !== null && input.kind !== "delete_mirror" && refusedWhileOwed(input, pending)) {
     return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
   }
-  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
+  return yield* planOnCluster(organizationId, volume, input, pending);
+});
+
+class PlanOutOfTime extends Data.TaggedError("PlanOutOfTime") {}
+
+/** `read` within the time left before `deadline`, failing as PlanOutOfTime once it passes. */
+const before = (deadline: number) => <A, E, R>(read: Effect.Effect<A, E, R>) => Effect.flatMap(Clock.currentTimeMillis, (now) =>
+  read.pipe(Effect.timeoutOrElse({ duration: Math.max(0, deadline - now), orElse: () => Effect.fail(new PlanOutOfTime()) })));
+
+/**
+ * The rest of a plan, read off the copies the Cluster reports. Its reads share one deadline, so a plan that reads twice
+ * still answers inside the CLI's request, and one that runs out of time says the Servers aren't answering.
+ */
+export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
+  organizationId: string,
+  volume: ResolvedVolume,
+  input: PlanRequest,
+  pending: Owed | null,
+) {
+  const deadline = (yield* Clock.currentTimeMillis) + OPERATION_OBSERVE_DEADLINE_MS;
+  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option, before(deadline));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
@@ -485,7 +505,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   const verb = VERBS[input.kind];
   const { phase } = planned;
   if (phase.kind === "landed") {
-    const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.option);
+    const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.option, before(deadline));
     if (Option.isNone(source)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
     if (source.value === null) {
       return { ok: false, refusal: storeRefusal(alreadyOn(volume.volumeName, phase.target.machine.name)) } satisfies VolumeRunPlan;
@@ -493,7 +513,11 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const from = phase.kind === "release" ? phase.from : null;
   const source = from?.kind === "slots"
-    ? yield* keptOn(organizationId, volume.dockerVolume, from.slots.map((member) => member.machine)).pipe(Effect.map((kept) => kept?.machine.id ?? null), Effect.option)
+    ? yield* keptOn(organizationId, volume.dockerVolume, from.slots.map((member) => member.machine)).pipe(
+      Effect.map((kept) => kept?.machine.id ?? null),
+      Effect.option,
+      before(deadline),
+    )
     : Option.some(null);
   const release = releasePlan(from, source);
   const effects = phaseEffects(volume, phase, release.forgets);
@@ -507,7 +531,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
   const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
   return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
-});
+}, Effect.catchTag("PlanOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies VolumeRunPlan)));
 
 const owedTarget = Effect.fn("VolumeRun.owedTarget")(function* (pending: Owed, members: readonly Member[]) {
   return members.find((member) => member.machine.id === pending.current)?.machine
