@@ -19,23 +19,32 @@ export function allowsHost(host: string, env: NodeJS.ProcessEnv = process.env) {
   return name === "localhost" || name.endsWith(".localhost") || (env["PLOYZ_EVAL_LIVE"] === "1" && LIVE_EVAL_HOSTS.has(name));
 }
 
-const decodeOptions = Schema.decodeUnknownOption(Schema.Struct({ host: Schema.optional(Schema.String), path: Schema.optional(Schema.String) }));
+const OptionalString = Schema.optional(Schema.NullishOr(Schema.String));
+const decodeOptions = Schema.decodeUnknownOption(Schema.Struct({ host: OptionalString, path: OptionalString }));
 const isString = Schema.is(Schema.String);
+const isPortOrPath = Schema.is(Schema.Union([Schema.Number, Schema.String]));
 
-/** The host of a TCP connect, or null for a Unix socket. Node's own callers pass their normalized arguments as one array. */
+/**
+ * The host of a TCP connect, null for a Unix socket, or undefined when the arguments can't be read. Node's own callers pass
+ * their normalized arguments as one array, and http passes `path: null`.
+ */
 function tcpHost(args: ReadonlyArray<unknown>) {
   const [first, second] = Array.isArray(args[0]) ? args[0] : args;
-  if (isString(first) && Number.isNaN(Number(first))) return null;
+  if (isPortOrPath(first)) {
+    if (Number.isNaN(Number(first))) return null;
+    return isString(second) && second ? second : "localhost";
+  }
   return Option.match(decodeOptions(first), {
-    onNone: () => (isString(second) && second ? second : "localhost"),
+    onNone: () => undefined,
     onSome: (options) => (options.path ? null : options.host || "localhost"),
   });
 }
 
-function egressError(host: string) {
-  const name = normalizeHost(host);
+function egressError(host: string | undefined) {
+  const name = host === undefined ? "" : normalizeHost(host);
   const what = name === HOSTED_DNS || name.endsWith(`.${HOSTED_DNS}`) ? "the real Hosted DNS" : "the network";
-  return Object.assign(new Error(`Tests must not reach ${what}: ${host}. Only loopback is allowed.`), { code: "ERR_TEST_EGRESS" });
+  const target = host ?? "unreadable connect arguments";
+  return Object.assign(new Error(`Tests must not reach ${what}: ${target}. Only loopback is allowed.`), { code: "ERR_TEST_EGRESS" });
 }
 
 const GUARDED = Symbol.for("ployz.test.egressGuard");
@@ -51,7 +60,7 @@ export function installEgressGuard() {
   const connect = net.Socket.prototype.connect as Connect;
   net.Socket.prototype.connect = function (this: net.Socket, ...args: Array<unknown>) {
     const host = tcpHost(args);
-    if (host === null || allowsHost(host)) return connect.apply(this, args);
+    if (host === null || (host !== undefined && allowsHost(host))) return connect.apply(this, args);
     const error = egressError(host);
     process.nextTick(() => this.destroy(error));
     return this;
