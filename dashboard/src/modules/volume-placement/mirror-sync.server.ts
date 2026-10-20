@@ -39,6 +39,7 @@ export type MirrorSync =
   | { readonly kind: "cutting"; readonly server: string }
   | { readonly kind: "demoting"; readonly run: string }
   | { readonly kind: "refused"; readonly message: string }
+  | { readonly kind: "unknown"; readonly server: string }
   | { readonly kind: "synced"; readonly mirrors: readonly MirrorStep[] };
 
 export type PullFailure = { readonly mirror: string; readonly target: string; readonly failure: string };
@@ -55,8 +56,8 @@ type Slot = Extract<VolumeCopy, { kind: "slot" }>;
 type SlotMember = AnsweredMember & { readonly view: { readonly copy: Slot } };
 
 /**
- * A mirror's answer, or why it couldn't be asked: that mirror skips the round and the others still get theirs. A pull
- * whose reply never came back is `unanswered`: the mirror may have taken it.
+ * A Server's answer, or why it couldn't be asked: a mirror skips the round and the others still get theirs. A request
+ * whose reply never came back is `unanswered`: the Server may have taken it.
  */
 type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached" | "unanswered"; readonly copy: null; readonly message: string };
 
@@ -94,6 +95,8 @@ function outcomeLines(name: string, sync: MirrorSync): string[] {
       return [`${name} has two primaries; run ${sync.run} makes the older one read-only`];
     case "refused":
       return [`skipped ${name}: ${sync.message}`];
+    case "unknown":
+      return [mayHaveReached(name, sync.server)];
     case "synced":
       return sync.mirrors.map((step) => {
         switch (step.kind) {
@@ -234,14 +237,13 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
   const named = (member: Member) => copyName(volume.name, member.machine.name);
   const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) => ask(asker, machine, expect, want).pipe(
     Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ReplyLost({ server: machine.name }))),
+    Effect.catchIf(
+      (error) => error instanceof SwitchAttemptError,
+      (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.unanswered ? "unanswered" : "unreached", copy: null, message: error.message }),
+    ),
   );
   const pull = (member: SlotMember, copy: Slot, target: string) =>
-    setCopy(member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }).pipe(
-      Effect.catchIf(
-        (error) => error instanceof SwitchAttemptError,
-        (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.unanswered ? "unanswered" : "unreached", copy: null, message: error.message }),
-      ),
-    );
+    setCopy(member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS });
 
   // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
   const busy: MirrorStep[] = [];
@@ -263,7 +265,9 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
   if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
 
   const snapshot = yield* setCopy(writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
-  if (!snapshot.ok) return yield* answer(reported, { kind: "refused", message: snapshot.message });
+  if (!snapshot.ok) {
+    return yield* answer(reported, snapshot.reason === "unanswered" ? { kind: "unknown", server: writer.machine.name } : { kind: "refused", message: snapshot.message });
+  }
   const target: Snapshot | null = snapshot.copy?.newest ?? null;
   if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
 

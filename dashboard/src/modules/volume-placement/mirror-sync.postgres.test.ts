@@ -178,6 +178,15 @@ describe("the mirror sync", () => {
     expect((await harness.pool.query(`select machine_id from volume_mirror_status where failure is not null`)).rows).toEqual([]);
   });
 
+  it("answers with the round's pull failures when the writer refuses its snapshot", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    const refused: CopyAsk = () => Effect.fail(new SwitchAttemptError(null, "set_volume_copy on web-1: internal: disk full"));
+    expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), refused))).lines).toEqual([
+      "db-web-2 could not receive w-1-4: no space",
+      "skipped db: set_volume_copy on web-1: internal: disk full",
+    ]);
+  });
+
   it("takes no snapshot when a pull in flight can't be resent, and still resends the others", async () => {
     await harness.pool.query(`update volume_placement set mirrors = '["${web("web-2")}", "${web("web-3")}"]'`);
     members = [member("web-1", "writer"), member("web-2", "pulling"), member("web-3", "pulling")];

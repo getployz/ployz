@@ -55,7 +55,7 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   }
   const { sync, lines } = answer.success;
   const refused = sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "refused");
-  const unknown = sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "unknown");
+  const unknown = sync.kind === "unknown" || (sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "unknown"));
   if (!refused && !unknown && (sync.kind === "synced" || sync.kind === "demoting")) return { ok: true, lines } as const;
   if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers) } as const;
   if (!refused && unknown) return { ok: false, refusal: { code: "unanswered", message: lines.join("; "), details: null } satisfies StoreRefusal } as const;

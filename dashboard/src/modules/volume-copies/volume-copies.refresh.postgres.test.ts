@@ -251,6 +251,19 @@ describe("Refresh now", () => {
     expect((await harness.pool.query(`select failure from volume_mirror_status where failure is not null`)).rows).toEqual([]);
   });
 
+  it("answers with the round's pull failures when the writer's snapshot times out", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    const cluster = await pairedCluster(() => Promise.reject(TIMED_OUT));
+    expect(await run(refreshOn(cluster))).toEqual({
+      ok: false,
+      refusal: {
+        code: "unanswered",
+        message: "data-web-2 could not receive w-1-4: no space; web-1 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to",
+        details: null,
+      },
+    });
+  });
+
   it("reads what the syncs saw of each mirror", async () => {
     expect(await run(mirrorStatuses(organizationId, volumeId))).toEqual([]);
     members = [member("web-1", "writer"), member("web-2", "failed")];
