@@ -176,26 +176,26 @@ pub(super) enum Reach {
     Ask(Credential),
 }
 
-/// Reach the Cluster for a read Cloud can also answer, the way [`connect`] does, except
-/// that a credential Cloud refuses Server access, such as a Read only or Deploy token,
-/// comes back to ask Cloud instead.
-pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result<Reach, Error> {
+/// Reach the Cluster for a read Cloud can also answer, the way [`connect_or_none`] does,
+/// except that a credential Cloud refuses Server access, such as a Read only or Deploy
+/// token, comes back to ask Cloud instead.
+pub(super) async fn reach(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<Reach>, Error> {
     if matches.get_one::<String>("connect").is_none() && context.is_none() {
         let store = CredentialStore::beside(&super::config_path(matches)?);
         if let Ok(credential) = cloud_account::from_env(&store).await {
             return match cloud_account::server_access(&credential).await {
-                Ok(access) => dial(matches, access)
-                    .await?
-                    .map(Reach::Dial)
-                    .ok_or_else(no_servers),
+                Ok(access) => Ok(dial(matches, access).await?.map(Reach::Dial)),
                 Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
-                    Ok(Reach::Ask(credential))
+                    Ok(Some(Reach::Ask(credential)))
                 }
                 Err(error) => Err(error.into()),
             };
         }
     }
-    connect(matches, context).await.map(Reach::Dial)
+    Ok(connect_or_none(matches, context).await?.map(Reach::Dial))
 }
 
 /// What a forget reaches.
@@ -343,7 +343,7 @@ async fn dial_connections(
 
 const NO_SERVERS: &str = "this Organization has no Servers";
 
-fn no_servers() -> Error {
+pub(super) fn no_servers() -> Error {
     Error::conflict(NO_SERVERS).hint(Hint::Next("ployz server add".into()))
 }
 

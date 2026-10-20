@@ -155,6 +155,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     projects: same,
     due: same,
     consented: same,
+    uploads: same,
     pr_plans: same,
   };
 }

@@ -16,6 +16,7 @@ async fn ployz(store: Option<&std::path::Path>, address: &str, args: &[&str]) ->
     command
         .current_dir(home.path())
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
         .env_remove("PLOYZ_STORE")
         .env_remove("PLOYZ_TOKEN")
@@ -346,6 +347,7 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
         command
             .current_dir(root.path())
             .env("HOME", root.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env("PLOYZ_CONFIG", root.path().join("default.yaml"))
             .env("PLOYZ_STORE", format!("sqlite:{}", db.display()))
             .env_remove("PLOYZ_TOKEN")
