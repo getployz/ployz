@@ -489,7 +489,7 @@ Cloud's Organization-scoped `pflt_` secret a signed-in member makes so many host
 _Avoid_: Cloud Enroll Token, Enrollment token, join token, bootstrap token, API key
 
 **Waiting Server**:
-A host that has a Fleet Token and checks in with Cloud over HTTP pull until an operator approves, rejects, or the token ends. It holds no Cluster state and runs no daemon besides preparation; the check-in loop ends at enroll, reject, revoke, or expiry. A reject doesn't stop a host once Cloud has heard it report joining or publishing for its open Server Enrollment; it finishes joining. A reject that lands after the daemon commits but before that report reaches Cloud still cancels it.
+A host that has a Fleet Token and checks in with Cloud over HTTP pull until an operator approves, rejects, or the token ends. It holds no Cluster state and runs no daemon besides preparation; the check-in loop ends at enroll, reject, revoke, or expiry. A reject doesn't stop a host once Cloud has heard it report joining or publishing, without a failure, for its open Server Enrollment; it finishes joining. A reject that lands after the daemon commits but before that report reaches Cloud still cancels it.
 _Avoid_: pending Machine, unenrolled Machine, Cluster member
 
 **Check-in Key**:

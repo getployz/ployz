@@ -36,21 +36,23 @@ In short. The user mints a Fleet Token with a two-word name and an expiry. Each 
 
 ## Problem
 
-Today one Server enrolls per pasted command. The first `/api/enroll` to insert `organization_pairing` wins the Founding Claim (`claimOrLoadEnrollment`, `dashboard/src/modules/machines/enrollment.server.ts`). The token lives 24 hours (`enrollmentExpiry`). A fleet hits four problems.
+This section is the pre-feature baseline. Main has since changed several of these points.
+
+Before this work, one Server enrolls per pasted command. The first `/api/enroll` to insert `organization_pairing` wins the Founding Claim (`claimOrLoadEnrollment`, `dashboard/src/modules/machines/enrollment.server.ts`). The token lives 24 hours (`enrollmentExpiry`). A fleet hits four problems.
 
 - 200 user_data scripts race for the Founding Claim.
 - Nobody sees host facts before ZFS is attempted.
 - Every refusal (`verify_docker`, `prepare_storage`) fires mid-install, after mutations have run.
 - Every joiner reaches the founder's daemon at the same moment through `session.register` inside the `/api/enroll` handler.
 
-There is no stop between "the box exists" and "the box is in a Cluster". Users can't pick the founder. They can't fix a 20 GB disk and retry without a new token.
+There was no stop between "the box exists" and "the box is in a Cluster". Users couldn't pick the founder. They couldn't fix a 20 GiB disk and retry without a new token.
 
-Constraints traced in code before this work. They are the pre-feature baseline, and main has since changed several of them.
+Constraints traced in code before this work:
 
 - **Stable promise.** `ployz server add` with today's token keeps working. `/api/enroll` and `EnrollWire` (`core/crates/ployz/src/cloud_enroll.rs`) can only gain optional fields. `EnrollWire` already ignores unknown fields, except inside `pairing`.
 - **Single claimant.** `machine_enrollment_token` (`dashboard/src/modules/machines/tables.ts`) already has single-claimant semantics through `claimedMachineId` and `claimedPublicKey`. A per-attempt token is a row in that table, not a new credential kind.
 - **Identity.** The daemon generates `MachineId`, the WireGuard key and the Management Secret on the first `machine.json` load. A waiting host has no daemon, so it has no `MachineId`. The waiting identity must be separate.
-- **Refusals.** Host refusals live in `ployzd/src/installer/{host,storage}.rs` as `pub(super)` checks interleaved with mutations. `SetupReport::read_host` is the only pure report. The code has no 30 GB check, no cgroup v2 detection, no empty-disk listing and no port probe.
+- **Refusals.** Host refusals live in `ployzd/src/installer/{host,storage}.rs` as `pub(super)` checks interleaved with mutations. `SetupReport::read_host` is the only pure report. The code has no 30 GiB check, no cgroup v2 detection, no empty-disk listing and no port probe.
 - **Crate boundary.** `ployz` and `ployzd` don't depend on each other. The CLI downloads `ployzd` and spawns it as a one-shot installer (`ployz/src/provisioning.rs`). That installer process is where host probing lives without a daemon.
 - **Install script.** `core/install.sh` installs only the CLI binary. It takes no token and installs no Docker. `.github/workflows/ployz-sh.yml` publishes it to `ployz.sh`.
 - **Inngest rows.** Rows that own pending or running Inngest state go through `attemptLifecycle` (`dashboard/src/modules/inngest/attempt-lifecycle.ts`), as `serverDrainAttempt` does.
@@ -92,25 +94,25 @@ resource "hcloud_server" "web" {
 
 The hint under the script says "Installs Docker and Ployz. Nothing joins until you say so." With Enroll on arrival on, it says "Installs Docker and Ployz. Up to N servers join your existing cluster when ready." Below it, "Shown once. Expires in 24h." The dialog then listens for servers and shows them as they arrive.
 
-Each host shows under Waiting within seconds of its install line finishing. Its status cell reads "Installing Docker", then "Ready". Where the host builds its own ZFS module, "Building ZFS" shows under "Ready" until the build finishes. The user can select rows and click Enroll at any point. A row that isn't ready yet reads "Queued" until its preparation finishes, then starts. Every host prepares and installs in parallel. The first server joins, then the rest join 8 at a time.
+Each host shows under Waiting within seconds of its install line finishing. Its status cell reads "Installing Docker", then "Ready". Where the host builds its own ZFS module, "Building ZFS" shows under "Ready" until the build finishes. The user can select rows and click Enroll at any point. An enrolled row that isn't ready yet reads "Queued" in Enrolling until its preparation finishes, then starts. Every host prepares and installs in parallel. The first server joins, then the rest join 8 at a time.
 
 A blocked host doesn't fail cloud-init. `checkin --install` exits 0 once the loop runs, before Docker is installed, and Cloud shows why the host can't join yet.
 
 ### Operator CLI
 
 ```sh
-ployz server token create                         # Created amber-falcon · expires in 24h
+ployz server token create                         # Created amber-falcon, the token, the install line, "Shown once. Expires in 24h."
 ployz server token create --name asg --auto --max 50 --expires 7d
-ployz server token ls                             # NAME  JOINS  SERVERS  EXPIRES
-ployz server token revoke amber-falcon            # 182 waiting servers removed. Servers already in stay.
+ployz server token ls                             # NAME  AUTO  LAST USED  EXPIRES  STATE
+ployz server token revoke amber-falcon            # Revoked amber-falcon. 182 waiting servers removed.
 
-ployz server ls --waiting                         # NAME  CPU  MEMORY  DISK  STATUS
-ployz server show hz-fsn1-001                     # machine, disks, storage, network, from IP · provider · token
-ployz server reject 'ip-10-0-9-*'                 # confirms; "They won't come back."
+ployz server ls --waiting                         # ID  NAME  PROVIDER  IP  STATUS  AGE
+ployz server show hz-fsn1-001                     # status, machine, disks, docker, storage, from IP · provider · token, blockers
+ployz server reject 'ip-10-0-9-*'                 # confirms; "3 rejected. They won't come back under the same Fleet Token."
 
-ployz server enroll hz-fsn1-001                   # empty Organization: "Your first server. Everything else joins it."
-ployz server enroll 'hz-fsn1-*' --name 'web-{n}'  # lists the ones that can't join yet, confirms, shows progress
-ployz server enroll --all                         # breaks down by provider, flags Unknown, confirms
+ployz server enroll hz-fsn1-001                   # empty Organization: the plan lists it with ROLE "Founder"
+ployz server enroll 'hz-fsn1-*' --name 'web-{n}'  # plan table with skipped rows and their reasons, confirms, then one line per stage change
+ployz server enroll --all                         # adds a count per provider, Unknown included, then confirms
 ployz server enroll --status
 ```
 
@@ -123,11 +125,11 @@ A glob or `--all` prints the matched rows with their source IPs before it acts. 
 ### On the host
 
 ```sh
-ployz status                      # Installing Docker / Building ZFS / Waiting for approval / Queued / In line · 8 servers ahead / Live as web-1 in Acme
-journalctl -fu ployz-checkin      # Approved as web-1 by ada@acme.dev … Removed the token. Done here.
+ployz status                      # this server: Installing Docker / Building ZFS / Waiting for approval / No cluster yet / Blocked / Queued to join / Joining / Publishing / Joined
+journalctl -fu ployz-checkin      # the check-in loop's log, ending "Enrolled. The check-in loop stops."
 ```
 
-`journalctl -u ployz-prepare` shows the preparation log. A blocked host prints the fix, for example "Disk is 20 GB. Ployz needs 30 GB." and "Grow the disk and it clears on its own." A failed Docker install is a blocker with its own fix line. A failed ZFS build is not a blocker. The host can still join with Docker volumes, and the row says ZFS isn't available. A failed attempt logs the failure and goes back to waiting. A rejected host logs "Rejected by Acme" and stops. An expired token logs "Token expired. Run the install again with a new token." and stops.
+The strings here are main's (`headline` in `core/crates/ployz/src/checkin/mod.rs`, `enroll::title`, `StopReason::title` and `STOP_MESSAGES` in `checkin.server.ts`). `journalctl -u ployz-prepare` shows the preparation log. A blocked host reads "Blocked" in `ployz status`, with one `blocked` row per blocker in the host's words, for example "Disk is 20 GiB. Ployz needs 30 GiB." A failed Docker install is a blocker too, and `ployz server ls --waiting` reads "Docker install failed". A failed ZFS build is not a blocker. The host can still join with Docker volumes, and the row says ZFS isn't available. A failed attempt logs "Enroll failed at joining: <message>. Waiting for Cloud." (with its own stage) and goes back to waiting. A rejected host logs "Rejected. This server was rejected in Ployz Cloud." and stops. An expired token logs "Token expired. The Fleet Token expired." and stops.
 
 ### One server stays easy
 
@@ -212,7 +214,7 @@ export const serverEnrollment = pgTable("server_enrollment", {
 //   serverEnrollmentId: uuid | null
 ```
 
-A token has two knobs and no rules. `expiresAt` bounds when it works. `autoEnrollMax` bounds how many servers it can enroll on its own. It carries no provider, source-IP or hardware rule. Hardware fit, such as the 30 GB disk floor, is a property of the host and is checked by `assess` at enroll time for every path.
+A token has two knobs and no rules. `expiresAt` bounds when it works. `autoEnrollMax` bounds how many servers it can enroll on its own. It carries no provider, source-IP or hardware rule. Hardware fit, such as the 30 GiB disk floor, is a property of the host and is checked by `assess` at enroll time for every path.
 
 The token's used count is derived. It counts the token's open `serverEnrollment` rows plus its `fleetTokenJoin` rows. Ending an attempt `joined` writes one `fleetTokenJoin` row, which outlives the waiting row and the Server, so a join counts for the token's lifetime. A failed or cancelled attempt frees its count. The Tokens page shows "N waiting · M joined" for a reviewed token, and "N waiting · joined/max joined" with an "Auto up to max" chip for an auto token.
 
@@ -272,7 +274,7 @@ The Servers page shows a Waiting section and an Enrolling section. Both hold sti
 - **Preparation reuses the cells.** Progress shows in the status cell's two lines, the bold line on top and the last-seen time below. A failed Docker install shows the way a blocker does, as "Docker install failed" with its fix below. A failed ZFS build shows the way a warning does, as "ZFS build failed" in the second line of a selectable row, and the detail sheet's volumes line reads Docker only. No column or row is added, and the two-line cell doesn't change height when the text changes.
 - **Queued in place.** An enrolled row whose host isn't ready reads "Queued" in the Enrolling stage cell. It moves on to Installing in the same row when preparation finishes.
 
-Copy is two words where it can be. "First one, then 8 at a time." "N rejected. They won't come back." "Expired or revoked tokens stop new servers. Ones already in stay."
+Copy is two words where it can be. "First one, then 8 at a time." "Rejected N servers." "Expired or revoked tokens stop new servers. Ones already in stay."
 
 ### Placement
 
@@ -467,7 +469,7 @@ The installer gains `--storage zfs:<device>`.
 1. Load the `fleetToken` by hash. Verify the signature against `checkinKey` and check timestamp skew of 5 minutes or less. If the token has ended, run step 2 in a transaction of its own first. Apply per-token and per-source-IP rate limits.
 2. If the token is revoked or past `expiresAt`, look for an open attempt on this key. With one, keep going so the attempt can finish. Without one, delete the row and answer `stop{token_revoked | token_expired}`. Admission repeats this check after it locks the token.
 3. Upsert on `(organizationId, checkinKey)`. A key tombstoned under this same token gets `stop{rejected}`, unless `joinCommitted` spares its open attempt (see `rejectWaitingServers` below), which keeps going. A key tombstoned under another token clears `rejectedAt` and takes the new `fleetTokenId`, so a new token brings a rejected host back. A key new to this token over the per-token cap of 1000 waiting rows gets 429.
-4. If `attempt` reports `joining` or `publishing` for the open attempt, write `reportedAttemptId` and `reportedStage` on the host's waiting row, in the transaction that already holds that row's lock. The stage moves only forward for the same attempt id, because reports reach Cloud out of order. Then, after commit, emit `server/enrollment.reported` whenever the reported stage differs from the attempt's recorded `stage`, or carries a failure. The run applies it with `recordStage`, which also moves a committed stage only forward. Equal stages mean the run has recorded it, so a lost send is retried by the next check-in.
+4. If `attempt` reports `joining` or `publishing` for the open attempt and carries no failure, write `reportedAttemptId` and `reportedStage` on the host's waiting row, in the transaction that already holds that row's lock. A report with a failure never writes the row, so it never counts as committed. The stage moves only forward for the same attempt id, because reports reach Cloud out of order. Separately, after commit, emit `server/enrollment.reported` whenever the report for the open attempt carries a failure or its stage differs from the attempt's recorded `stage`. A ZFS build failure from `prep` counts as a failure report for a `zfs` attempt not yet past storage. A report with a failure is answered `wait`. The run applies it with `recordStage`, which also moves a committed stage only forward. Equal stages mean the run has recorded it, so a lost send is retried by the next check-in.
 5. Read the open `serverEnrollment`.
    - If it is `running`, answer `enroll` with the decrypted token.
    - If it is `instructed`, answer `enroll` only when the host is ready for the attempt's storage. That means `prep.docker` is `ready`, and `prep.zfs` is `ready` when the storage is `zfs`. Otherwise answer `wait{10}`, and the row reads "Queued".
@@ -496,13 +498,13 @@ type EnrollInput = {
 };
 ```
 
-It resolves storage per row, applies names, and skips rows with blockers or ineligible storage, giving the reason. A row still preparing isn't skipped. A row whose ZFS build is still running resolves `zfs` as eligible, and if the build later fails the attempt ends `failed` with "ZFS build failed" and the host goes back to Waiting. It picks the founder only when the Organization has no Cloud Pairing. That is the explicit pick, or else the only selected row. With more than one row and no pick it refuses. It also returns the spread, the count of distinct providers and /16 networks, which the sheet shows as "N networks, M providers. Make sure they're all yours." when it passes one provider or three networks.
+It resolves storage per row, applies names, and skips rows with blockers or ineligible storage, giving the reason. A row still preparing isn't skipped. A row whose ZFS build is still running resolves `zfs` as eligible, and if the build later fails the attempt ends `failed` with "ZFS build failed" and the host goes back to Waiting. It picks the founder only when the Organization has no Cloud Pairing. That is the explicit pick, or else the only selected row. With more than one row and no pick it refuses. It also returns the spread, the count of distinct providers and /16 networks, which the sheet shows as "N networks, M providers" with "Make sure they’re all yours." when it passes one provider or three networks.
 
 `startServerEnrollment` inserts `serverEnrollment` rows plus per-attempt `machine_enrollment_token` rows, then sends one `server/enrollment.requested` event per row.
 
 `revokeFleetToken` sets `revokedAt` and deletes the token's waiting rows that have no open attempt, in one transaction. It returns the count for "N waiting removed". Open attempts finish. An expired token's waiting row is deleted the same way, but only when that host next checks in with it.
 
-`rejectWaitingServers` locks the waiting rows in id order, sets `rejectedAt`, then locks their open attempts and cancels each one that `joinCommitted(attempt, row)` doesn't spare (`server-enrollment.ts`). It spares an attempt whose own `stage` is `joining` or `publishing`, or whose waiting row reports `joining` or `publishing` for that attempt id. A report for an older attempt doesn't count. Check-in writes the report under the same row lock, so Reject never reads a report older than the host's last check-in. A spared attempt keeps going, and its host's check-ins go on until it finishes, as step 3 says.
+`rejectWaitingServers` locks the waiting rows in id order, sets `rejectedAt`, then locks their open attempts and cancels each one that `joinCommitted(attempt, row)` doesn't spare (`server-enrollment.ts`). It spares an attempt whose own `stage` is `joining` or `publishing`, or whose waiting row holds a failure-free `joining` or `publishing` report for that attempt id. A report for an older attempt doesn't count. Check-in writes the report under the same row lock, so Reject never reads a report older than the host's last check-in. A spared attempt keeps going, and its host's check-ins go on until it finishes, as step 3 says.
 
 One window stays open. A reject after the daemon commits the join but before the check-in that reports it reaches Cloud still cancels. The host ignores `stop{rejected}` once it is past joining, so that join then fails at publish. Closing the window needs the commit itself to go through Cloud.
 
@@ -749,7 +751,7 @@ Rejected from B. A persisted `state` column. A derives the state, which avoids a
 
 1. **`zfs:<device>` and frozen formats.** Does `ployzd` record the pool's backing anywhere frozen (`machine.json`, replicated rows)? If it does, device pools need an audit first. `machine_pool::one_usable` accepts any single imported pool, which suggests not.
 2. **`JOIN_SLOTS = 8`.** This is a guess. Measure founder CPU and Corrosion sync per batch on the first 20+ host lab run before fixing it.
-3. **A re-imaged host.** It gets a new check-in key, so a rejected host that is wiped and reinstalled with the same live token comes back as a new row. "They won't come back" holds per install, not per machine.
+3. **A re-imaged host.** It gets a new check-in key, so a rejected host that is wiped and reinstalled with the same live token comes back as a new row. "They won't come back under the same Fleet Token" holds per install, not per machine.
 4. **DKMS reuse at enroll (UNVERIFIED).** See Host preparation. If the package install recompiles the module, enroll falls back to `dkms install` on the prebuilt module. C7 owns the Boat lane that decides it.
 5. **Preparation cost on small hosts.** A ZFS build uses CPU and disk while the host waits. A host that will never run ZFS still pays it until enroll. If this bites, the Enroll sheet or the token can later say "No ZFS" and skip the build.
 6. **`ployz status` on a host.** It already prints scope status for a signed-in user. On a waiting host there is no sign-in, so the This server block must print first and the scope lines must degrade quietly.

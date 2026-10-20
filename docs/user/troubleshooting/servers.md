@@ -80,7 +80,7 @@ only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) fo
 - `Host root has ... bytes available; ZFS validation needs ...`
 
   Free disk space, or give the server a bigger disk. Ployz keeps a quarter of the disk, at least
-  10 GB, free for the system, so use a main disk of 30 GB or more.
+  10 GB, free for the system, so use a main disk of 30 GiB or more.
 
 ## The install stops while checking Docker
 

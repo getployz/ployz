@@ -14,7 +14,7 @@ your other servers on a private network.
   runs apps, but its builds fail.
 - **Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 on a VM or bare metal** for managed volumes.
   Anything else works [without them](#start-without-zfs).
-- **A main disk of 30 GB or more.** Ployz keeps a quarter of the disk, at least 10 GB, free for
+- **A main disk of 30 GiB or more.** Ployz keeps a quarter of the disk, at least 10 GB, free for
   the system. On EC2, raise the root volume from its 8 GB default when you launch the instance.
 - **Root**, or a user that can run `sudo`.
 - **Outbound internet access**, and a **public IP address** on at least one server so visitors
@@ -91,7 +91,7 @@ Each row shows the server's name and operating system, the IP address Ployz Clou
 from and its provider, its CPU, memory and main disk size, and its status. **Installing Docker** means it is
 still getting ready, and **Ready** means Docker is in place. **Building ZFS** under **Ready** means
 its ZFS build is still running, and an enrollment with ZFS volumes waits for it. **Blocked** rows say what
-is wrong with the server, in the server's own words, such as `Disk is 20 GB. Ployz needs 30 GB.`
+is wrong with the server, in the server's own words, such as `Disk is 20 GiB. Ployz needs 30 GiB.`
 A server already in another cluster is blocked until you run `ployz server rm` for it there, and
 **Offline** means it stopped checking in. You can't select a blocked server. Once more than ten
 servers wait, filter the list by readiness, provider and token, or search by name or IP address.
