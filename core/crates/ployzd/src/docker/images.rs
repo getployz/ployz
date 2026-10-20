@@ -12,8 +12,8 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, RemoveImageOptions},
 };
 use ployz_core::{
-    DiskSpace, ExposedPort, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved,
-    PullPolicy, RegistryAuth,
+    DiskFull, DiskSpace, ExposedPort, ImageRemoval, ImageRemovalOutcome, ImageSummary,
+    ImagesRemoved, PullPolicy, RegistryAuth,
 };
 
 use super::{ContainerRuntime, Error};
@@ -27,6 +27,18 @@ const KEEP_UNDER_PRESSURE: usize = 1;
 const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// Below this free share of the Docker root, keep only [`KEEP_UNDER_PRESSURE`].
 const PRESSURE_FREE_PERCENT: u64 = 20;
+/// Below this free under the Docker root, a failed layer write is a full disk.
+const DISK_FULL_FREE_BYTES: u64 = 1_000_000_000;
+/// ENOSPC, as Docker words it.
+const OUT_OF_SPACE: &str = "no space left on device";
+/// The steps in which containerd writes a pulled layer to disk.
+const LAYER_WRITES: [&str; 3] = [
+    "failed to extract layer",
+    "failed to register layer",
+    "failed commit on ref",
+];
+/// How long a failed pull waits on `docker info` before reporting the failure as is.
+const DISK_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl ContainerRuntime {
     /// Make `image` present as `policy` asks, confirm Docker holds it, and answer
@@ -42,9 +54,9 @@ impl ContainerRuntime {
         auth: Option<&RegistryAuth>,
     ) -> Result<Vec<ExposedPort>, Error> {
         let docker = &self.docker.client;
-        crate::docker_image::prepare_image(docker, image, policy, auth)
-            .await
-            .map_err(Error::ImagePull)?;
+        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, auth).await {
+            return Err(self.pull_failure(error).await);
+        }
         let inspect = docker
             .inspect_image(image)
             .await
@@ -55,6 +67,23 @@ impl ContainerRuntime {
                 .and_then(|config| config.exposed_ports)
                 .unwrap_or_default(),
         ))
+    }
+
+    /// `error` from a pull, as a full disk when the Docker root has almost no free
+    /// space left: containerd then fails mid-extract with whatever call ran out.
+    /// A `docker info` that fails or stalls past [`DISK_READ_BOUND`] leaves `error`
+    /// as it is.
+    pub(super) async fn pull_failure(&self, error: DockerError) -> Error {
+        let free = tokio::time::timeout(DISK_READ_BOUND, self.docker.client.info())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|info| info.docker_root_dir)
+            .and_then(|root| {
+                let (_, free_bytes) = crate::host_capacity::filesystem_space(&root).ok()?;
+                Some((root, free_bytes))
+            });
+        pull_failure(error, free)
     }
 
     /// Unix seconds this Machine last tagged the image, when Docker recorded it.
@@ -167,6 +196,34 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         .filter(|(tagged, _)| pressure || tagged.is_some_and(|at| now - at > IDLE_SECONDS))
         .map(|(_, tag)| tag.clone())
         .collect()
+}
+
+/// A pull is the full disk, with Docker's error as its cause, when Docker says the
+/// device is out of space, or when containerd failed writing a layer with `free`
+/// under [`DISK_FULL_FREE_BYTES`]: it then fails with whatever call ran out. Any
+/// other failure, a registry's answer among them, stays itself. A not-found answer
+/// stays itself whatever its text says, so the CLI names the missing image.
+fn pull_failure(error: DockerError, free: Option<(String, u64)>) -> Error {
+    if crate::docker_image::is_not_found(&error) {
+        return Error::ImagePull(error);
+    }
+    let message = error.to_string();
+    let out_of_space = message.contains(OUT_OF_SPACE);
+    let layer_write = LAYER_WRITES.iter().any(|write| message.contains(write));
+    match free {
+        Some((docker_root, free_bytes))
+            if out_of_space || (layer_write && free_bytes < DISK_FULL_FREE_BYTES) =>
+        {
+            Error::DiskFull {
+                full: DiskFull {
+                    docker_root,
+                    free_bytes,
+                },
+                source: error,
+            }
+        }
+        _ => Error::ImagePull(error),
+    }
 }
 
 /// The routable ports among Docker's exposed-port keys, in order and without repeats.
@@ -300,6 +357,196 @@ mod tests {
         assert!(under_pressure(space(19)));
         assert!(!under_pressure(space(20)));
         assert!(!under_pressure(None));
+    }
+
+    /// The deploy output for a pull that containerd failed mid-extract, as the
+    /// Server reports `free_bytes` under its Docker root.
+    fn failed_pull(free_bytes: u64) -> ployz_store::Failure {
+        let lchown = DockerError::DockerStreamError {
+            error: "failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory".into(),
+        };
+        let error = pull_failure(lchown, Some(("/var/lib/docker".into(), free_bytes)));
+        ployz_store::Failure::of(
+            &ployz_core::ExecutionError::Machine {
+                action: ployz_core::MachineAction::PullImage,
+                error: ployz_core::RpcError::from(&error),
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn a_pull_on_a_full_disk_names_the_disk_and_keeps_dockers_error() {
+        let failure = failed_pull(48_000_000);
+        assert_eq!(
+            failure.reason,
+            "The Server's disk is full: 48 MB free under /var/lib/docker"
+        );
+        assert_eq!(
+            failure.cause,
+            [
+                "Docker stream error: failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pull_with_free_space_keeps_dockers_error() {
+        let failure = failed_pull(50_000_000_000);
+        assert_eq!(failure.reason, "pull image failed");
+        assert_eq!(
+            failure.cause.last().map(String::as_str),
+            Some(
+                "Docker stream error: failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory"
+            )
+        );
+    }
+
+    #[test]
+    fn a_missing_image_stays_missing_and_out_of_space_stays_a_full_disk() {
+        let both = format!("{MANIFEST_UNKNOWN}: no space left on device");
+        assert_eq!(
+            reason(
+                DockerError::DockerResponseServerError {
+                    status_code: 404,
+                    message: both,
+                },
+                0
+            ),
+            "Image ghcr.io/acme/missing:1 not found, or its registry needs credentials"
+        );
+        assert_eq!(
+            reason(
+                DockerError::DockerResponseServerError {
+                    status_code: 500,
+                    message: "write /var/lib/docker/tmp/GetImageBlob1: no space left on device"
+                        .into(),
+                },
+                48_000_000
+            ),
+            "The Server's disk is full: 48 MB free under /var/lib/docker"
+        );
+    }
+
+    /// The reason a deploy shows for `error`, carried as the CLI carries a failed pull.
+    fn reason(error: DockerError, free_bytes: u64) -> String {
+        let error = pull_failure(error, Some(("/var/lib/docker".into(), free_bytes)));
+        ployz_store::Failure::of(
+            &ployz_core::ExecutionError::Machine {
+                action: ployz_core::MachineAction::PullImage,
+                error: ployz_core::RpcError::from(&error)
+                    .pulling("ghcr.io/acme/missing:1", PullPolicy::Always),
+            },
+            &[],
+        )
+        .reason
+    }
+
+    fn streamed(error: &str) -> DockerError {
+        DockerError::DockerStreamError {
+            error: error.into(),
+        }
+    }
+
+    #[test]
+    fn a_streamed_registry_error_stays_itself_on_a_full_disk() {
+        assert_eq!(
+            reason(streamed(MANIFEST_UNKNOWN), 48_000_000),
+            "pull image failed"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_failure_stays_itself_on_a_full_disk() {
+        assert_eq!(
+            reason(streamed("unexpected EOF"), 48_000_000),
+            "pull image failed"
+        );
+    }
+
+    #[test]
+    fn docker_saying_the_disk_is_out_of_space_names_the_disk() {
+        let out_of_space = "write /var/lib/docker/tmp/GetImageBlob1: no space left on device";
+        let full = "The Server's disk is full: 48 MB free under /var/lib/docker";
+        assert_eq!(reason(streamed(out_of_space), 48_000_000), full);
+        assert_eq!(
+            reason(
+                DockerError::DockerResponseServerError {
+                    status_code: 500,
+                    message: out_of_space.into(),
+                },
+                48_000_000
+            ),
+            full
+        );
+    }
+
+    #[test]
+    fn a_failed_layer_commit_on_a_full_disk_names_the_disk() {
+        assert_eq!(
+            reason(
+                streamed(
+                    "failed commit on ref \"layer-sha256:fd04\": commit failed: rename /var/lib/containerd/ingest/fd04/data: no such file or directory"
+                ),
+                74_000_000
+            ),
+            "The Server's disk is full: 74 MB free under /var/lib/docker"
+        );
+    }
+
+    /// A Docker that refuses the pull with a registry error in the pull's stream, as
+    /// it does for a missing manifest, and never answers `docker info`.
+    async fn runtime_whose_info_never_answers() -> ContainerRuntime {
+        use axum::{
+            Router,
+            http::{Method, StatusCode, Uri},
+        };
+
+        let app = Router::new().fallback(|method: Method, uri: Uri| async move {
+            if method == Method::POST && uri.path().ends_with("/images/create") {
+                (StatusCode::OK, format!("{{\"status\":\"Pulling from acme/missing\"}}\n{{\"errorDetail\":{{\"message\":\"{MANIFEST_UNKNOWN}\"}},\"error\":\"{MANIFEST_UNKNOWN}\"}}\n"))
+            } else {
+                std::future::pending().await
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, app).into_future());
+        // Bollard's default request timeout, as `LocalDocker::connect` uses.
+        let docker = bollard::Docker::connect_with_http(
+            &format!("http://{address}"),
+            120,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .unwrap();
+        let specs = super::super::MachineSpecStore::open(std::env::temp_dir().join(format!(
+            "ployzd-pull-failure-{}.db",
+            ployz_core::MachineId::random()
+        )))
+        .await
+        .unwrap();
+        ContainerRuntime::new(super::super::LocalDocker::from_client(docker), specs)
+    }
+
+    const MANIFEST_UNKNOWN: &str =
+        "manifest for ghcr.io/acme/missing:1 not found: manifest unknown: manifest unknown";
+
+    #[tokio::test]
+    async fn a_pull_failure_does_not_wait_on_a_stalled_docker_info() {
+        let runtime = runtime_whose_info_never_answers().await;
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            runtime.pull_image("ghcr.io/acme/missing:1", PullPolicy::Always, None),
+        )
+        .await
+        .expect("the pull failure returns without waiting on docker info")
+        .unwrap_err();
+        assert!(started.elapsed() < DISK_READ_BOUND + std::time::Duration::from_secs(2));
+        assert!(
+            matches!(&error, Error::ImagePull(DockerError::DockerStreamError { error }) if error == MANIFEST_UNKNOWN),
+            "{error:?}"
+        );
     }
 
     #[test]

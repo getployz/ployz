@@ -4,15 +4,15 @@ use super::{BoxProxyStream, ConnectError, connect_stream};
 use crate::context::ConnectionError;
 use iroh::{
     Endpoint as IrohEndpoint, EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey,
-    endpoint::{VarInt, presets},
+    endpoint::{TransportErrorCode, VarInt, presets},
     tls::CaTlsConfig,
 };
 use ployz_core::{
-    DEFAULT_RELAY_URL, DescribeContractRequest, MANAGEMENT_ALPN, MachineRpcClient,
-    ManagementCapability, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_OPEN, op,
+    DEFAULT_RELAY_URL, DescribeContractRequest, MANAGEMENT_ALPN, MANAGEMENT_PROOF_LABEL,
+    MachineRpcClient, ManagementCapability, ManagementProof, TUNNEL_ALPN, TUNNEL_FAILED,
+    TUNNEL_OPEN, op,
 };
 use std::{
-    collections::HashMap,
     io,
     pin::Pin,
     sync::{Arc, OnceLock, Weak},
@@ -30,19 +30,31 @@ const TUNNEL_CLOSE_GRACE: Duration = Duration::from_secs(2);
 
 /// The relay the management transport dials through. Production uses the compiled
 /// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
+///
+/// A relay also owns the endpoint dialed through it, under a key minted for this process
+/// alone, so no other process holding the same capability can take its relay traffic.
+/// Every default relay in a process shares one endpoint; each [`ManagementRelay::custom`]
+/// relay has its own, as a separate process would.
 #[derive(Clone, Debug)]
 pub struct ManagementRelay {
     pub(super) url: RelayUrl,
     pub(super) tls: CaTlsConfig,
+    endpoints: Arc<Endpoints>,
+    relay_only: bool,
 }
+
+type Endpoints = tokio::sync::Mutex<Weak<ManagementEndpoint>>;
 
 impl Default for ManagementRelay {
     fn default() -> Self {
+        static ENDPOINTS: OnceLock<Arc<Endpoints>> = OnceLock::new();
         Self {
             url: DEFAULT_RELAY_URL
                 .parse()
                 .expect("the compiled relay URL is valid"),
             tls: CaTlsConfig::default(),
+            endpoints: Arc::clone(ENDPOINTS.get_or_init(Arc::default)),
+            relay_only: false,
         }
     }
 }
@@ -53,13 +65,32 @@ impl ManagementRelay {
     /// (that constructor needs iroh's `test-utils` feature, so it stays in test crates).
     #[must_use]
     pub fn custom(url: RelayUrl, tls: CaTlsConfig) -> Self {
-        Self { url, tls }
+        Self {
+            url,
+            tls,
+            endpoints: Arc::default(),
+            relay_only: false,
+        }
+    }
+
+    /// Test hook: carry every packet through the relay, as a client behind NAT does,
+    /// instead of finding a direct path to a Machine on the same host.
+    #[must_use]
+    pub fn relay_only(mut self) -> Self {
+        self.relay_only = true;
+        self
     }
 }
 
 struct ManagementEndpoint {
     endpoint: IrohEndpoint,
     runtime: tokio::runtime::Handle,
+}
+
+impl std::fmt::Debug for ManagementEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ManagementEndpoint")
+    }
 }
 
 impl Drop for ManagementEndpoint {
@@ -69,26 +100,22 @@ impl Drop for ManagementEndpoint {
     }
 }
 
-type EndpointKey = ([u8; 32], RelayUrl);
-
 async fn management_endpoint(
-    secret: &[u8; 32],
     relay: &ManagementRelay,
 ) -> Result<Arc<ManagementEndpoint>, ConnectError> {
-    static ENDPOINTS: OnceLock<tokio::sync::Mutex<HashMap<EndpointKey, Weak<ManagementEndpoint>>>> =
-        OnceLock::new();
-    // ponytail: serialize endpoint binds to prevent duplicate relay identities;
-    // use per-key locks if concurrent first-dial throughput becomes a bottleneck.
-    let mut endpoints = ENDPOINTS.get_or_init(Default::default).lock().await;
-    endpoints.retain(|_, endpoint| endpoint.strong_count() > 0);
-    let key = (*secret, relay.url.clone());
-    if let Some(endpoint) = endpoints.get(&key).and_then(Weak::upgrade) {
+    // Binds serialize so concurrent first dials share one endpoint.
+    let mut slot = relay.endpoints.lock().await;
+    if let Some(endpoint) = slot.upgrade() {
         return Ok(endpoint);
     }
-    let endpoint = IrohEndpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::from_bytes(secret))
+    let mut builder = IrohEndpoint::builder(presets::Minimal)
+        .secret_key(SecretKey::generate())
         .relay_mode(RelayMode::custom([relay.url.clone()]))
-        .ca_tls_config(relay.tls.clone())
+        .ca_tls_config(relay.tls.clone());
+    if relay.relay_only {
+        builder = builder.clear_ip_transports();
+    }
+    let endpoint = builder
         .bind()
         .await
         .map_err(|error| ConnectError::Attempt(format!("management bind: {error}").into()))?;
@@ -96,8 +123,60 @@ async fn management_endpoint(
         endpoint,
         runtime: tokio::runtime::Handle::current(),
     });
-    endpoints.insert(key, Arc::downgrade(&endpoint));
+    *slot = Arc::downgrade(&endpoint);
     Ok(endpoint)
+}
+
+/// TLS `no_application_protocol`: the Machine offers none of this release's ALPNs, which
+/// only a daemon from before the management proof does.
+const NO_APPLICATION_PROTOCOL: u8 = 120;
+
+fn dial_error(stage: &str, error: &iroh::endpoint::ConnectError) -> ConnectError {
+    let older = std::iter::successors(Some(error as &dyn std::error::Error), |error| {
+        error.source()
+    })
+    .any(|error| {
+        matches!(
+            error.downcast_ref(),
+            Some(iroh::endpoint::ConnectionError::ConnectionClosed(close))
+                if close.error_code == TransportErrorCode::crypto(NO_APPLICATION_PROTOCOL)
+        )
+    });
+    if older {
+        return ConnectError::OlderMachine;
+    }
+    ConnectError::Attempt(format!("{stage}: {error}").into())
+}
+
+/// This process's proof that it holds `capability`'s client key on `connection`. It signs
+/// keying material only this connection exports, so it cannot be replayed on another.
+///
+/// # Errors
+///
+/// Returns an error when the connection cannot export keying material.
+pub fn management_proof(
+    connection: &iroh::endpoint::Connection,
+    capability: &ManagementCapability,
+) -> io::Result<ManagementProof> {
+    let mut exporter = [0; ManagementProof::EXPORTER_LEN];
+    connection
+        .export_keying_material(&mut exporter, MANAGEMENT_PROOF_LABEL, &[])
+        .map_err(|error| io::Error::other(format!("management proof: {error:?}")))?;
+    let key = SecretKey::from_bytes(capability.client_secret());
+    Ok(ManagementProof {
+        client: *key.public().as_bytes(),
+        signature: key.sign(&ManagementProof::message(&exporter)).to_bytes(),
+    })
+}
+
+/// Write [`management_proof`] as the first bytes of the connection's first stream.
+async fn prove(
+    connection: &iroh::endpoint::Connection,
+    send: &mut iroh::endpoint::SendStream,
+    capability: &ManagementCapability,
+) -> io::Result<()> {
+    let proof = management_proof(connection, capability)?;
+    tokio::io::AsyncWriteExt::write_all(send, &proof.to_bytes()).await
 }
 
 /// Dial the Machine's Management Identity by key with only the relay as a hint, open the
@@ -109,22 +188,25 @@ pub(super) async fn connect_management(
 ) -> Result<Channel, ConnectError> {
     let machine = PublicKey::from_bytes(capability.machine().as_bytes())
         .map_err(|_| ConnectionError::ManagementCapability)?;
-    let endpoint = management_endpoint(capability.client_secret(), relay).await?;
+    let endpoint = management_endpoint(relay).await?;
     let address = EndpointAddr::new(machine).with_relay_url(relay.url.clone());
     let connection = endpoint
         .endpoint
         .connect(address, MANAGEMENT_ALPN)
         .await
-        .map_err(|error| ConnectError::Attempt(format!("management dial: {error}").into()))?;
+        .map_err(|error| dial_error("management dial", &error))?;
     let session = Arc::new(ManagementConnection {
         connection,
         _endpoint: endpoint,
     });
     let probe = async {
-        let (send, receive) =
+        let (mut send, receive) =
             session.connection.open_bi().await.map_err(|error| {
                 ConnectError::Attempt(format!("management stream: {error}").into())
             })?;
+        prove(&session.connection, &mut send, capability)
+            .await
+            .map_err(|error| ConnectError::Attempt(format!("management stream: {error}").into()))?;
         let stream = ManagementIo {
             io: tokio::io::join(receive, send),
             _session: Arc::clone(&session),
@@ -169,7 +251,7 @@ pub(super) async fn dial_tunnel(
         .map_err(|_| ConnectError::Attempt(format!("tunnel target too long: {address}").into()))?;
     let machine = PublicKey::from_bytes(capability.machine().as_bytes())
         .map_err(|_| ConnectionError::ManagementCapability)?;
-    let endpoint = management_endpoint(capability.client_secret(), relay).await?;
+    let endpoint = management_endpoint(relay).await?;
     let connection = endpoint
         .endpoint
         .connect(
@@ -177,13 +259,14 @@ pub(super) async fn dial_tunnel(
             TUNNEL_ALPN,
         )
         .await
-        .map_err(|error| ConnectError::Attempt(format!("tunnel dial: {error}").into()))?;
+        .map_err(|error| dial_error("tunnel dial", &error))?;
     let session = Arc::new(ManagementConnection {
         connection,
         _endpoint: endpoint,
     });
     let open = async {
         let (mut send, mut receive) = session.connection.open_bi().await?;
+        prove(&session.connection, &mut send, capability).await?;
         send.write_u8(header).await?;
         send.write_all(address.as_bytes()).await?;
         match receive.read_u8().await? {

@@ -30,7 +30,7 @@ function RouteComponent() {
   const { queryClient, session } = Route.useRouteContext();
   const { organizationId, access } = Route.useLoaderData();
   const organizationName = useOrganizationName(params.organizationSlug);
-  useOrganizationChanges(params.organizationSlug);
+  useOrganizationChanges(params.organizationSlug, organizationId);
   useEffect(() => {
     // A support visit isn't the customer's usage.
     if (access === "member") setPostHogOrganization(organizationId, { name: organizationName, slug: params.organizationSlug });

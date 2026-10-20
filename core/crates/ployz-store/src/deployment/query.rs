@@ -204,7 +204,7 @@ pub(crate) fn plan(
     let frozen = deployment::freeze(
         &environment.summary.id,
         &target,
-        &review.head.applied,
+        &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::of(&query.services, &removed),
         namespace.clone(),
         None,
