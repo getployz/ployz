@@ -14,8 +14,9 @@ use ployz_core::{
     ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
     FanoutSelector, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
     MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, QualifiedService,
-    ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, TailLogsRequest,
-    op, resolve_container_selector, resolve_machine_selectors, select_service,
+    ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceSelector,
+    StreamProtocolError, TailLogsRequest, op, resolve_container_selector,
+    resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -175,6 +176,8 @@ pub enum OperatorError {
         #[source]
         source: Box<OperatorError>,
     },
+    #[error("{service}'s container stopped; exec ended.")]
+    ExecContainerStopped { service: ServiceName },
     #[error("Could not start the command in {container}.")]
     StartExec {
         container: String,
@@ -407,6 +410,23 @@ pub fn select_proxy_container(
 pub struct ExecSession {
     pub input: mpsc::Sender<OpaquePayload>,
     pub output: Streaming<OpaquePayload>,
+    pub target: ExecTarget,
+}
+
+/// The container an exec session runs in.
+#[derive(Clone, Debug)]
+pub struct ExecTarget {
+    pub service_id: ServiceId,
+    pub service: ServiceName,
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+}
+
+/// An exec's container stopped running while the exec ran.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContainerStopped {
+    /// Another container of the Service runs now, so exec can attach again.
+    pub another_runs: bool,
 }
 
 pub struct LogInput {
@@ -460,7 +480,57 @@ pub async fn open_exec(
     Ok(ExecSession {
         input: sender,
         output,
+        target: ExecTarget {
+            service_id: service.service_id,
+            service: service.identity.name.clone(),
+            machine_id,
+            container_id: container.container_id,
+        },
     })
+}
+
+/// Observe whether `target`'s container stopped running, and whether another
+/// container of its Service runs. `None` while it still runs, and when its Machine
+/// did not answer, since absence from a partial view proves nothing.
+///
+/// # Errors
+/// Returns the connect error when the Machines cannot be listed.
+pub async fn exec_container_stopped(
+    client: &mut Client,
+    target: &ExecTarget,
+) -> Result<Option<ContainerStopped>, OperatorError> {
+    let machines = client.machines().await?;
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    if !live
+        .containers
+        .successes
+        .iter()
+        .any(|answer| answer.machine_id == target.machine_id)
+    {
+        return Ok(None);
+    }
+    let mut another_runs = false;
+    for container in live
+        .services()
+        .iter()
+        .filter(|service| service.service_id == target.service_id)
+        .flat_map(|service| &service.containers)
+        .map(ServiceContainer::as_observation)
+        .filter(|container| {
+            matches!(
+                container.runtime,
+                ployz_core::ContainerRuntimeObservation::Running { .. }
+            )
+        })
+    {
+        if container.container_id == target.container_id {
+            return Ok(None);
+        }
+        another_runs = true;
+    }
+    Ok(Some(ContainerStopped { another_runs }))
 }
 
 /// The label ployzd puts on each container a Deployment creates: its Deploy log ID.

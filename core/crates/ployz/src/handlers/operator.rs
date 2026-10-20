@@ -13,7 +13,8 @@ use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame,
     FanoutSelector, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
-    LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector, log_level, select_service,
+    LogOrigin, LogsOptions, Namespace, OpaquePayload, RpcErrorCode, ServiceSelector, log_level,
+    select_service,
 };
 use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
@@ -25,7 +26,7 @@ use crate::{
     context::Transport,
     operator::{
         ExecMode, OperatorError, PreparedHistory, ProxyPorts, ServiceArg, asked_machines,
-        exec_options,
+        exec_container_stopped, exec_options,
         history::{HistoryEvent, HistoryRecord, HistoryWindow, read_history},
         history_selectors, merge_logs, observe_service_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
@@ -200,12 +201,14 @@ pub(super) fn current(
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let service = ServiceSelector::parse(
-        leaf.get_one::<String>("service")
-            .cloned()
-            .ok_or_else(|| Error::usage("Service selector is required"))?,
+    let typed = leaf
+        .get_one::<String>("service")
+        .cloned()
+        .ok_or_else(|| Error::usage("Service selector is required"))?;
+    let service = current(
+        ServiceSelector::parse(typed.clone())?,
+        scope(root)?.as_ref(),
     )?;
-    let service = current(service, scope(root)?.as_ref())?;
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
@@ -237,44 +240,60 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 (!detach && stdin_is_readable()).then(|| spawn_stdin(session.input.clone()));
             let resize_task = tty.then(|| spawn_resize(session.input.clone()));
             drop(session.input);
-            let mut exit = None;
-            while let Some(payload) = session.output.next().await {
-                match ExecResponseFrame::decode(&payload?)? {
-                    ExecResponseFrame::ExecId(_) => {
-                        if detach {
-                            exit = Some(0);
-                        }
-                    }
-                    ExecResponseFrame::Stdout(bytes) => {
-                        write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
-                    }
-                    ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
-                    ExecResponseFrame::Exit(code) => {
-                        exit = Some(code);
-                        break;
-                    }
-                    ExecResponseFrame::Error(error) => return Err(error.into()),
-                }
-            }
+            let ended = forward_exec(&mut session.output, detach).await;
             if let Some(task) = resize_task {
                 task.abort();
             }
-            let exit = exit.ok_or_else(|| {
-                Error::coded(
-                    RpcErrorCode::Unavailable,
-                    if detach {
-                        "Exec stream ended before command start was confirmed"
-                    } else {
-                        "Exec stream ended without an exit status"
-                    },
-                )
-            })?;
-            if !detach && exit != 0 {
-                return Err(Error::exit(u8::try_from(exit).unwrap_or(1)));
+            if detach {
+                return ended.map(drop);
             }
-            Ok(())
+            if !matches!(ended, Ok(0))
+                && let Ok(Some(stopped)) = exec_container_stopped(client, &session.target).await
+            {
+                let hint = if stopped.another_runs {
+                    Hint::Retry(format!("ployz exec {typed}"))
+                } else {
+                    Hint::Inspect("ployz ps".into())
+                };
+                return Err(Error::from(OperatorError::ExecContainerStopped {
+                    service: session.target.service,
+                })
+                .hint(hint));
+            }
+            match ended? {
+                0 => Ok(()),
+                exit => Err(Error::exit(u8::try_from(exit).unwrap_or(1))),
+            }
         })
     })
+}
+
+/// Print an exec's output until it ends, and return its exit code; 0 once a
+/// detached command is confirmed started.
+async fn forward_exec(
+    output: &mut tonic::Streaming<OpaquePayload>,
+    detach: bool,
+) -> Result<i32, Error> {
+    while let Some(payload) = output.next().await {
+        match ExecResponseFrame::decode(&payload?)? {
+            ExecResponseFrame::ExecId(_) if detach => return Ok(0),
+            ExecResponseFrame::ExecId(_) => {}
+            ExecResponseFrame::Stdout(bytes) => {
+                write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
+            }
+            ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
+            ExecResponseFrame::Exit(code) => return Ok(code),
+            ExecResponseFrame::Error(error) => return Err(error.into()),
+        }
+    }
+    Err(Error::coded(
+        RpcErrorCode::Unavailable,
+        if detach {
+            "Exec stream ended before command start was confirmed"
+        } else {
+            "Exec stream ended without an exit status"
+        },
+    ))
 }
 
 /// Stream Service logs; every Service of the Environment when none is named.

@@ -180,6 +180,9 @@ pub(super) struct DiscoveryService {
         Arc<Mutex<BTreeMap<MachineId, Vec<VolumeObservationFailure>>>>,
     pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     pub(super) exec_frames: Option<Vec<ployz_core::ExecResponseFrame>>,
+    /// The containers this Machine lists once an exec starts, as when a Deploy
+    /// replaces the exec's container while it runs.
+    pub(super) listed_after_exec: Option<Vec<ployz_core::ContainerObservation>>,
     pub(super) inspect_container_result: Option<ployz_core::ContainerDetails>,
     pub(super) create_container_error: Option<RpcError>,
     pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -254,6 +257,7 @@ impl DiscoveryService {
             volume_observation_failures: Arc::new(Mutex::new(BTreeMap::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             exec_frames: None,
+            listed_after_exec: None,
             inspect_container_result: None,
             create_container_error: None,
             create_container_blocked: None,
@@ -973,6 +977,9 @@ impl FakeMachine for DiscoveryService {
             .message()
             .await?
             .ok_or_else(|| Status::invalid_argument("missing exec config"))?;
+        if let Some(listed) = &self.listed_after_exec {
+            self.listed_containers.lock().unwrap().clone_from(listed);
+        }
         Ok(Response::new(Box::pin(tokio_stream::iter(
             frames
                 .iter()

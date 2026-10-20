@@ -116,6 +116,79 @@ async fn cli_exec_requires_exit_status_or_detached_start_confirmation() {
     }
 }
 
+#[tokio::test]
+async fn cli_exec_says_when_its_container_stopped_under_it() {
+    use ployz_core::ExecResponseFrame::{ExecId, Exit, Stdout};
+    use std::time::Duration;
+    let running = || ContainerRuntimeObservation::Running {
+        health: HealthObservation::Healthy,
+    };
+    let web = |container_hex, runtime| {
+        listing_container(
+            container_hex,
+            'a',
+            "web",
+            ContainerKind::ServiceContainer,
+            runtime,
+        )
+    };
+    for (after, exit, said) in [
+        (
+            vec![web('b', running())],
+            1,
+            Some(("web's container stopped; exec ended.", "ployz exec app/web")),
+        ),
+        (
+            vec![web('a', ContainerRuntimeObservation::Exited { code: 137 })],
+            1,
+            Some(("web's container stopped; exec ended.", "ployz ps")),
+        ),
+        (vec![web('a', running())], 137, None),
+    ] {
+        let mut service = DiscoveryService::new(test_description());
+        service.exec_frames = Some(vec![
+            ExecId("started".into()),
+            Stdout(b"tick\n".to_vec()),
+            Exit(137),
+        ]);
+        service.listed_after_exec = Some(after);
+        service
+            .listed_containers
+            .lock()
+            .unwrap()
+            .push(web('a', running()));
+        let (address, server) = serve_discovery(service).await;
+        let config = tempfile::NamedTempFile::new().unwrap();
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.kill_on_drop(true);
+        command.args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "--ployz-config",
+            config.path().to_str().unwrap(),
+            "exec",
+            "-T",
+            "app/web",
+            "true",
+        ]);
+        let result = tokio::time::timeout(Duration::from_secs(10), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.code(), Some(exit), "{stderr}");
+        assert_eq!(String::from_utf8_lossy(&result.stdout), "tick\n");
+        match said {
+            Some((sentence, hint)) => {
+                assert!(stderr.contains(sentence), "{stderr}");
+                assert!(stderr.contains(hint), "{stderr}");
+            }
+            None => assert!(!stderr.contains("exec ended"), "{stderr}"),
+        }
+    }
+}
+
 struct FakeConnector {
     outcomes: Mutex<VecDeque<bool>>,
     attempts: Mutex<Vec<String>>,

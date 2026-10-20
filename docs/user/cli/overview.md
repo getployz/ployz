@@ -327,7 +327,10 @@ Scripts can tell failures apart by exit code:
 | 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, or some work couldn't be done, such as a `ployz server drain` that leaves a service where it is because no other server can take it. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
 
-`ployz exec` exits with your command's own exit code.
+`ployz exec` exits with your command's own exit code. When the container stops under it,
+because a deploy replaced it or the service was stopped, it exits 1 with
+`web's container stopped; exec ended.` A `retry:` line follows when another container of the
+service runs, and running it again attaches there.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
 `service add` and other changes exit 1 with `Cloud ... stopped answering after it got this
