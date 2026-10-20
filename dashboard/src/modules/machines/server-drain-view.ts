@@ -1,4 +1,4 @@
-import type { DrainReport, MachineRef, MoveFailure, ServiceDrain, StayReason } from "@ployz/sdk";
+import type { DrainReport, MachineRef, MoveFailure, OldCopyEnd, ServiceDrain, StayReason, Unconfirmed } from "@ployz/sdk";
 import type { DrainEndCode, LatestDrains } from "#/modules/machines/server-drain";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 
@@ -112,8 +112,8 @@ export function drainSummary(report: DrainReport, serverName: string): string {
   }
   const parts = [
     count("moved") > 0 ? `${count("moved")} moved` : null,
-    count("retired") > 0 ? `${count("retired")} stopped` : null,
-    count("stays") > 0 ? `${count("stays")} stayed` : null,
+    count("retired", "old_copies") > 0 ? `${count("retired", "old_copies")} stopped` : null,
+    count("stays", "held") > 0 ? `${count("stays", "held")} stayed` : null,
     count("failed", "not_retired") > 0 ? `${count("failed", "not_retired")} failed` : null,
     count("interrupted") > 0 ? `${count("interrupted")} interrupted` : null,
     count("not_attempted") > 0 ? `${count("not_attempted")} not attempted` : null,
@@ -142,7 +142,7 @@ export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
   };
   switch (entry.result) {
     case "moved":
-      return { ...base, tone: "moved", label: `Moved to ${destinations(entry.moves)}` };
+      return { ...base, tone: "moved", label: `Moved to ${destinations(entry.moves)}`, reason: oldCopiesWords(entry.moves.map((move) => move.old)) };
     case "nothing_to_move":
       return { ...base, tone: "neutral", label: "Nothing to move" };
     case "failed":
@@ -152,6 +152,10 @@ export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
       const pinned = (reason.kind === "volume" || reason.kind === "bind_mount") && reason.server.id === drained;
       return { ...base, tone: "stayed", label: "Stayed", reason: stayWords(reason, drained), pinned };
     }
+    case "held":
+      return { ...base, tone: "stayed", label: "Stayed", reason: "You stopped it. Start or remove it first." };
+    case "old_copies":
+      return { ...base, tone: "stopped", label: "Stopped here", reason: oldCopiesWords(entry.ends) ?? "Removed what an earlier move left here" };
     case "retired":
       return { ...base, tone: "stopped", label: "Stopped here", reason: "Runs on every server", global: true };
     case "not_retired":
@@ -166,6 +170,30 @@ export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
       return { ...base, tone: "neutral", label: "Not attempted", reason: "The drain stopped first" };
     default:
       return { ...base, tone: "neutral", label: "Unknown outcome" };
+  }
+}
+
+/** What an old container still running here means; null once every one stopped. */
+function oldCopiesWords(ends: ReadonlyArray<OldCopyEnd>): string | null {
+  const serving = ends.find((end) => end.kind === "in");
+  if (serving?.kind === "in") {
+    return `Its old container here still serves too: ${unconfirmedWords(serving.unconfirmed)}. The next drain cleans it up.`;
+  }
+  const running = ends.find((end) => end.kind === "running");
+  if (running?.kind === "running") {
+    return `Its old container here is still running: ${unconfirmedWords(running.unconfirmed)}. The next drain cleans it up.`;
+  }
+  return null;
+}
+
+function unconfirmedWords(unconfirmed: Unconfirmed): string {
+  switch (unconfirmed.kind) {
+    case "proxies":
+      return `${unconfirmed.servers.map((server) => server.name).join(" and ")} didn't confirm the switch`;
+    case "cancelled":
+      return "the drain stopped before the switch was confirmed";
+    default:
+      return "the switch couldn't be confirmed";
   }
 }
 
@@ -185,6 +213,8 @@ export function stayWords(reason: StayReason, drained: string): string {
       return "Runs on every server";
     case "no_destination":
       return "No other server can run it";
+    case "last_in":
+      return "It's the last copy serving. Deploy it to another server first.";
     default:
       return "It stays here";
   }
@@ -204,12 +234,6 @@ export function failureWords(failure: MoveFailure, drained: string): string {
       return `Couldn't copy its image to ${failure.to.name}. ${stillOn(failure.from)}`;
     case "not_serving":
       return `Its new container on ${failure.to.name} didn't become healthy${failure.replacement_removed ? "" : ", and may still be there"}. ${stillOn(failure.from)}`;
-    case "old_not_removed": {
-      const here = failure.from.id === drained ? "here" : `on ${failure.from.name}`;
-      return failure.old_stopped
-        ? `It now runs on ${failure.to.name}. Its container ${here} stopped but couldn't be removed.`
-        : `It now runs on ${failure.to.name} too, but its container ${here} couldn't be stopped.`;
-    }
     case "cancelled":
       return `The drain stopped mid-move. ${stillOn(failure.from)}${failure.replacement_removed ? "" : ` Its new container on ${failure.to.name} may still be there.`}`;
     case "refused": {
