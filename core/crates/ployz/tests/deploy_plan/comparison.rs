@@ -19,6 +19,23 @@ fn spec_comparison_distinguishes_mutable_resources_from_recreation() {
         SpecChange::NeedsUpdate
     );
 
+    let mut shm_changed = requested.clone();
+    shm_changed.container.resources.shared_memory_bytes =
+        Some(ployz_core::ByteQuantity::try_from(64 * 1024 * 1024).unwrap());
+    assert_eq!(
+        compare_specs(&current, &shm_changed),
+        SpecChange::NeedsRecreate
+    );
+
+    let limited = container('c', '1', &resources_changed, &current_service_id)
+        .into_parts()
+        .resolved_spec;
+    assert_eq!(
+        compare_specs(&limited, &requested),
+        SpecChange::NeedsRecreate,
+        "clearing a limit needs a new Container"
+    );
+
     let mut image_changed = requested.clone();
     image_changed.container.image = "ghcr.io/getployz/api:2".into();
     assert_eq!(
