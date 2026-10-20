@@ -8,6 +8,7 @@ import { gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence } from "#/
 import type { Actor } from "#/modules/identity/actor";
 import { account, member, user } from "#/modules/identity/tables";
 import { guardProtected } from "#/modules/config-store/protected.server";
+import { resolvePreferredBuilders } from "#/modules/config-store/preferred-builder.server";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
@@ -295,13 +296,17 @@ export type StoreSource =
 export const callStore = <C extends StoreCall>(
   organizationId: string,
   userId: string | null,
-  call: C,
+  asked: C,
   source: StoreSource = { source: "dashboard" },
   gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions" | "environments"> = { approval: "not_required" },
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {
+    // Every surface's edit passes here, so a Server named as a Preferred Builder reaches the Store as its Machine ID.
+    const call: StoreCall = asked.operation === "write"
+      ? { operation: "write", command: yield* resolvePreferredBuilders(organizationId, asked.command) }
+      : asked;
     if (call.operation === "write") yield* guardProtected(gate.permissions, call.command, read);
     const trusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate };
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };

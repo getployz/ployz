@@ -328,27 +328,14 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    let naming: Vec<&str> = assignments
+    let naming = assignments
         .iter()
-        .filter(|(path, value)| names_a_server(path, value))
-        .map(|(_, value)| *value)
-        .collect();
-    let servers = if naming.is_empty() {
-        None
-    } else {
-        match super::server::servers(matches) {
-            Ok(servers) => Some(servers),
-            // Without Server access a Machine ID still goes, as the Store takes it.
-            Err(_)
-                if naming
-                    .iter()
-                    .all(|value| MachineId::parse(value.trim()).is_ok()) =>
-            {
-                None
-            }
-            Err(error) => return Err(error),
-        }
-    };
+        .any(|(path, value)| names_a_server(path, value));
+    // Without Server access the values go as typed: Cloud resolves a name from the
+    // Servers it keeps, for every role.
+    let servers = naming
+        .then(|| super::server::servers(matches).ok())
+        .flatten();
     let changes = assignments
         .into_iter()
         .map(|(path, value)| {
@@ -362,7 +349,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// `value` as `set` sends it for `path`: a Server named as a Preferred Builder becomes
-/// its Machine ID, which is all the Store takes, as only the Servers know their names.
+/// its Machine ID, which is all the Store takes, by the names the Servers report.
 /// It resolves as the `server` commands do: an exact Machine ID first, then a name. An
 /// ID no Server lists, or any value without `servers`, goes as given: a preference needs
 /// no live Server.
