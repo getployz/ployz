@@ -90,7 +90,7 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
     stub(root / 'bin/id', '#!/bin/sh\necho 0\n')
     stub(root / 'bin/uname', '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n')
     stub(root / 'bin/systemctl', '#!/bin/sh\n')
-    env = {key: value for key, value in os.environ.items() if key != 'PLOYZ_ENROLL_TOKEN'}
+    env = {key: value for key, value in os.environ.items() if key not in ('PLOYZ_ENROLL_TOKEN', 'PLOYZ_FLEET_TOKEN')}
     env.update(PATH=f'{root}/bin:{env["PATH"]}', PLOYZ_TEST_ROOT=tmp, PLOYZ_VERSION='1.2.3',
                INSTALL_BIN_DIR=str(root / 'install'), FAKE_RELEASE=str(root / 'release'),
                PLOYZ_GITHUB_URL='https://example.invalid', PROBE_ENV=str(root / 'env'),

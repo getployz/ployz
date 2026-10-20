@@ -233,6 +233,13 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   [ -n "$where" ] && break; sleep 0.5
 done
 case "$where" in */cloud/$org*) ;; *) echo "up.sh: session check failed: /cloud -> '$where' (see $run/vite.log)" >&2; exit 1 ;; esac
+# A page opened before vite commits its first dependency bundle can stay unhydrated until a reload. vite drops a
+# stale cache before it answers, so from here the metadata appears only once this config's bundle is committed.
+deadline=$((SECONDS + 300))
+until [ -f node_modules/.vite/deps/_metadata.json ]; do
+  [ "$SECONDS" -lt "$deadline" ] || { echo "up.sh: vite has not finished bundling dependencies after 5 minutes (see $run/vite.log)" >&2; exit 1; }
+  sleep 0.5
+done
 if [ -f "$run/idle.pid" ]; then kill -TERM -- "-$(cat "$run/idle.pid")" 2>/dev/null || true; rm -f "$run/idle.pid"; fi
 if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
   setsid nohup "$dash/scripts/verify/idle.sh" "$port" > "$run/idle.log" 2>&1 < /dev/null &
