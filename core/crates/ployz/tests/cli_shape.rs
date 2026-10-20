@@ -2548,7 +2548,7 @@ fn server_token_create_prints_the_secret_once_with_its_install_line() {
         "Created blue-heron\n",
         "Anyone with this token can add servers. Keep it secret.",
         &format!(
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' PLOYZ_FLEET_TOKEN=pflt_secret sh -s -- {}\n",
+            "curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_secret sudo --preserve-env=PLOYZ_FLEET_TOKEN PLOYZ_CLOUD_URL='{cloud}' sh -s -- {}\n",
             env!("CARGO_PKG_VERSION")
         ),
         "Shown once. Expires in 7d.",
@@ -2585,14 +2585,16 @@ fn server_token_create_json_carries_the_secret_and_install_line() {
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(json.pointer("/fleet_token/token").unwrap(), "pflt_secret");
     assert_eq!(json.pointer("/fleet_token/name").unwrap(), "amber-falcon");
+    let install = json
+        .pointer("/install")
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
     assert!(
-        json.pointer("/install")
-            .and_then(serde_json::Value::as_str)
-            .unwrap()
-            .ends_with(&format!(
-                "PLOYZ_FLEET_TOKEN=pflt_secret sh -s -- {}",
-                env!("CARGO_PKG_VERSION")
-            )),
+        install.contains("| PLOYZ_FLEET_TOKEN=pflt_secret sudo --preserve-env=PLOYZ_FLEET_TOKEN "),
+        "{json}"
+    );
+    assert!(
+        install.ends_with(&format!(" sh -s -- {}", env!("CARGO_PKG_VERSION"))),
         "{json}"
     );
 }

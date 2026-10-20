@@ -232,7 +232,8 @@ fn lasts(expires: &str) -> &str {
     }
 }
 
-/// The line a host runs to install this release of Ployz and ask to join with `token`.
+/// The line a host runs to install this release of Ployz and ask to join with `token`. The
+/// token reaches the installer through the environment: after `sudo` it would be in `ps`.
 fn install_line(cloud: &str, token: &str) -> String {
     let cloud_env = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
@@ -241,7 +242,7 @@ fn install_line(cloud: &str, token: &str) -> String {
     };
     let version = env!("CARGO_PKG_VERSION");
     format!(
-        "curl -fsSL {INSTALLER_URL} | sudo {cloud_env}PLOYZ_FLEET_TOKEN={token} sh -s -- {version}"
+        "curl -fsSL {INSTALLER_URL} | PLOYZ_FLEET_TOKEN={token} sudo --preserve-env=PLOYZ_FLEET_TOKEN {cloud_env}sh -s -- {version}"
     )
 }
 
@@ -255,15 +256,28 @@ mod tests {
         assert_eq!(
             install_line("https://ployz.dev", "pflt_abc"),
             format!(
-                "curl -fsSL https://ployz.sh | sudo PLOYZ_FLEET_TOKEN=pflt_abc sh -s -- {version}"
+                "curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_abc sudo --preserve-env=PLOYZ_FLEET_TOKEN sh -s -- {version}"
             )
         );
         assert_eq!(
             install_line("http://localhost:3000", "pflt_abc"),
             format!(
-                "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' PLOYZ_FLEET_TOKEN=pflt_abc sh -s -- {version}"
+                "curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_abc sudo --preserve-env=PLOYZ_FLEET_TOKEN PLOYZ_CLOUD_URL='http://localhost:3000' sh -s -- {version}"
             )
         );
+    }
+
+    #[test]
+    fn install_line_keeps_the_token_out_of_sudo_argv() {
+        for cloud in ["https://ployz.dev", "http://localhost:3000"] {
+            let line = install_line(cloud, "pflt_abc");
+            let (before_sudo, after_sudo) = line.split_once(" sudo ").unwrap();
+            assert!(
+                before_sudo.ends_with(" PLOYZ_FLEET_TOKEN=pflt_abc"),
+                "{line}"
+            );
+            assert!(!after_sudo.contains("pflt_abc"), "{line}");
+        }
     }
 
     #[test]

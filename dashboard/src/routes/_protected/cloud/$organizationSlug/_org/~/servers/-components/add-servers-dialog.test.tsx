@@ -84,7 +84,7 @@ it("reads a one-day token's lifetime in hours", async () => {
 
 it("shows a Shell line that installs the Cloud's own release", async () => {
   mintWith();
-  expect(await screen.findByText(`curl -fsSL https://ployz.sh | sudo PLOYZ_FLEET_TOKEN=${TOKEN} sh -s -- 1.2.3`)).toBeTruthy();
+  expect(await screen.findByText(`curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=${TOKEN} sudo --preserve-env=PLOYZ_FLEET_TOKEN sh -s -- 1.2.3`)).toBeTruthy();
 });
 
 it("describes the token it submitted, not the form as it reads after", async () => {

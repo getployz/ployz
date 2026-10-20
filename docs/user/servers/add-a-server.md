@@ -121,13 +121,14 @@ It prints the token once, and an install line with the token in it, for the rele
 `ployz` CLI you ran. Run that line on each host:
 
 ```sh
-curl -fsSL https://ployz.sh | sudo PLOYZ_FLEET_TOKEN=pflt_… sh -s -- VERSION
+curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_… sudo --preserve-env=PLOYZ_FLEET_TOKEN sh -s -- VERSION
 ```
 
 Keep the version it names. Without one, the script installs the stable release, which may not
-match your Ployz Cloud. The token in the line lands in the host's shell history. To keep it out,
-leave out `PLOYZ_FLEET_TOKEN=…`, add `--enroll` after the version, and paste the token at the
-prompt.
+match your Ployz Cloud. The token comes before `sudo`, so it reaches the script through the
+environment and stays out of the process list. It still lands in the host's shell history. To keep
+it out, leave out `PLOYZ_FLEET_TOKEN=…`, add `--enroll` after the version, and paste the token at
+the prompt.
 
 - **Hosts wait for you.** A host that runs the line checks in under **Waiting** until you enroll it from **Servers**.
 - **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
