@@ -336,7 +336,7 @@ pub(crate) fn held_services(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<St
 /// (Unix seconds), oldest first: those whose dispatch may have been lost.
 pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, RpcError> {
     tx.query(
-        "SELECT organization_id, environment_id, id, admitted FROM config_deployment \
+        "SELECT organization_id, environment_id, id, admitted, number FROM config_deployment \
          WHERE status = 'queued' AND runner IS NULL AND admitted < ?1 ORDER BY admitted, id",
         &[before.into()],
     )?
@@ -347,6 +347,7 @@ pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, 
             environment: row.parse(1, "identity")?,
             deployment: row.parse(2, "identity")?,
             admitted_at: row.int(3)?,
+            number: row.number(4, "Deployment number")?,
         })
     })
     .collect()
@@ -360,10 +361,23 @@ pub(crate) fn view(
 ) -> Result<DeploymentView, RpcError> {
     let stored = owned(tx, who, id)?;
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
-    let mut rows = super::rows::of_nodes(tx, &stored)?;
-    let nodes = stored
-        .nodes
-        .iter()
+    let mut saved = None;
+    let mut rows = super::rows::of_nodes(tx, &stored, &mut saved)?;
+    let mut targets: Vec<&TargetNode> = stored.nodes.iter().collect();
+    targets.sort_by(|a, b| a.listed().cmp(&b.listed()));
+    // Only nodes sharing a kind and name need Saved State to order, which is rare.
+    if targets
+        .windows(2)
+        .any(|pair| matches!(pair, [a, b] if a.listed() == b.listed()))
+    {
+        let saved = match saved.take() {
+            Some(saved) => saved,
+            None => saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?,
+        };
+        targets.sort_by(|a, b| a.order(&saved).cmp(&b.order(&saved)));
+    }
+    let nodes: Vec<NodeOutcome> = targets
+        .into_iter()
         .map(|node| NodeOutcome {
             node: node.shown(),
             rows: rows.remove(node.id()).unwrap_or_default(),
@@ -534,7 +548,7 @@ pub(crate) fn all_in_flight(
 /// The Servers Deployment `id` failed on, by name, sorted.
 pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String>, RpcError> {
     let stored = load(tx, id)?;
-    let mut servers: Vec<String> = super::rows::of_nodes(tx, &stored)?
+    let mut servers: Vec<String> = super::rows::of_nodes(tx, &stored, &mut None)?
         .into_values()
         .flatten()
         .filter(|row| {
@@ -582,7 +596,7 @@ pub(crate) fn unanswered_on(
     id: &DeploymentId,
 ) -> Result<BTreeSet<ployz_core::MachineId>, RpcError> {
     let stored = load(tx, id)?;
-    Ok(super::rows::of_nodes(tx, &stored)?
+    Ok(super::rows::of_nodes(tx, &stored, &mut None)?
         .into_values()
         .flatten()
         .filter(|row| {

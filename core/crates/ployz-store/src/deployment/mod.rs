@@ -29,11 +29,11 @@ pub use rows::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, LowerDeploymentConfig, LowerDeploymentConfigFile,
-    LowerDeploymentInput, LowerDeploymentSnapshot, LowerDeploymentVolume, RuntimeOutcomeProjection,
-    SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
-    ServiceConfig, ServiceImageCredentials, ServiceSource, ValuePartOwner,
-    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, LowerDeploymentConfig,
+    LowerDeploymentConfigFile, LowerDeploymentInput, LowerDeploymentSnapshot,
+    LowerDeploymentVolume, RuntimeOutcomeProjection, SavedConfigIntent, SavedEnvironmentIntent,
+    SavedServiceIntent, SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
+    ValuePartOwner, canonicalize_environment_intent, compile_environment_intent, lower_deployment,
     parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
@@ -320,6 +320,8 @@ pub struct Unclaimed {
     pub organization: OrganizationId,
     pub environment: EnvironmentId,
     pub deployment: DeploymentId,
+    /// Its place in its Environment's queue: a newer Deployment has a higher number.
+    pub number: u64,
     /// When it was admitted, in Unix seconds.
     #[ts(type = "number")]
     pub admitted_at: i64,
@@ -649,6 +651,36 @@ impl TargetNode {
             Self::Volume { id, .. } => id.as_str(),
             Self::Config { id, .. } => id.as_str(),
         }
+    }
+
+    /// Where views list it: Services, then Volumes, then Configs, each by name, as the
+    /// review does.
+    pub(crate) fn listed(&self) -> (EnvironmentNodeType, &str) {
+        match self {
+            Self::Service { name, .. } => (EnvironmentNodeType::Service, name.as_str()),
+            Self::Volume { name, .. } => (EnvironmentNodeType::Volume, name.as_str()),
+            Self::Config { name, .. } => (EnvironmentNodeType::Config, name.as_str()),
+        }
+    }
+
+    /// [`Self::listed`], then a node the Deployment takes away, being gone from `saved`,
+    /// before one that took its name; the id only settles what nothing else tells apart.
+    pub(crate) fn order(
+        &self,
+        saved: &SavedEnvironmentIntent,
+    ) -> (EnvironmentNodeType, &str, bool, &str) {
+        let id = self.id();
+        let stays = match self {
+            Self::Service { .. } => {
+                !self.retires() && saved.services.iter().any(|service| service.id == id)
+            }
+            Self::Volume { deletes, .. } => {
+                deletes.is_none() && saved.volumes.iter().any(|volume| volume.resource_id == id)
+            }
+            Self::Config { .. } => saved.configs.iter().any(|config| config.resource_id == id),
+        };
+        let (kind, name) = self.listed();
+        (kind, name, stays, id)
     }
 
     /// The node as views name it.
@@ -1109,11 +1141,19 @@ fn running(stored: &Stored) -> Result<(), RpcError> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread loaded a Saved revision, for tests that bound it.
+    pub(crate) static SAVED_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn saved_at(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
+    #[cfg(test)]
+    SAVED_READS.set(SAVED_READS.get() + 1);
     if revision == NOTHING {
         return scope::load_by_id(tx, environment)
             .map(|loaded| crate::scope::empty(&loaded.working.environment_slug));

@@ -1,6 +1,6 @@
 //! Present the Store's recorded Deployment evidence without new Cluster reads.
 
-use crate::deploy::{Replica, service_row, starts};
+use crate::deploy::{Replica, service_row, starts, updates};
 use crate::failure::Failure;
 use crate::ui::{
     Hint,
@@ -48,6 +48,10 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                     .preview
                     .as_ref()
                     .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
+                updates: view
+                    .preview
+                    .as_ref()
+                    .is_some_and(|preview| updates(&preview.operations, runtime, row.machine_id)),
                 timing: match (row.started_at, row.finished_at) {
                     (Some(start), Some(end)) => Timing::Finished(Duration::from_secs(
                         u64::try_from(end.saturating_sub(start)).unwrap_or(0),
@@ -673,6 +677,38 @@ mod tests {
             failure.json().pointer("/details/progress/logs/0/service"),
             Some(&json!("shop-production/private-web"))
         );
+    }
+
+    #[test]
+    fn a_failed_limits_update_keeps_dockers_words_and_says_to_deploy_again() {
+        let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
+        let reason = "web: Server edge could not confirm the new limits";
+        let cause = ["Docker operation failed", docker];
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed", "summary": {}, "reason": reason, "cause": cause,
+            }))
+            .unwrap(),
+        );
+        view.nodes = vec![serde_json::from_value(json!({
+            "type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "failed", "rows": [
+                {"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": &reason[5..], "cause": cause, "log": null, "started_at": 1, "finished_at": 2}
+            ]
+        }))
+        .unwrap()];
+        let failure = failure(&view, command);
+        assert_eq!(
+            crate::ui::plain(&failure),
+            format!(
+                "error: {reason}.\n  cause: {docker}\nretry: ployz deploy --project shop --env production\n"
+            )
+        );
+        assert_eq!(
+            hints(&failure),
+            ["retry: ployz deploy --project shop --env production"]
+        );
+        assert_eq!(failure.json().get("cause"), Some(&json!(cause)));
     }
 
     #[test]

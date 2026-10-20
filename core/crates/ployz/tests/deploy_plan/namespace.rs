@@ -193,6 +193,7 @@ fn other_namespace_resources_are_left_alone() {
         | DeployOperation::RunContainer { .. }
         | DeployOperation::StopContainer { .. }
         | DeployOperation::ReplaceContainer(_)
+        | DeployOperation::UpdateContainer(_)
         | DeployOperation::StopHook { .. }
         | DeployOperation::PrepareVolumes { .. }
         | DeployOperation::RunHook { .. }) => panic!("unexpected operation: {other:?}"),

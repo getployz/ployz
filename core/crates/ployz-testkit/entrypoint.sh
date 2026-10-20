@@ -54,6 +54,12 @@ fi
 ) &
 (
   while :; do
+    ployzd "$@" observe || true
+    sleep 1
+  done
+) &
+(
+  while :; do
     ployzd "$@" dns &
     echo "$!" >/run/ployz-dns.pid
     wait "$!" || true

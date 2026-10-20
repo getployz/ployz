@@ -69,7 +69,7 @@ stdout:
 organization = local
 signed in as = local
 environment = shop/production
-staged = 11 changes
+staged = 13 changes
 ```
 
 stderr:
@@ -90,7 +90,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
+    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -112,7 +112,7 @@ stdout:
     }
   },
   "staged": {
-    "changes": 11,
+    "changes": 13,
     "saved": false,
     "version": "21:0:0.0"
   }
@@ -181,7 +181,7 @@ organization = local
 signed in as = local
 environment = shop/production
 linked from = /tmp/ployz-cli-outputs-store/work
-staged = 10 changes
+staged = 11 changes
 ```
 
 stderr:
@@ -202,7 +202,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
+    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
     "name": "production",
     "project": "shop",
     "revision": 34
@@ -227,7 +227,7 @@ stdout:
     }
   },
   "staged": {
-    "changes": 10,
+    "changes": 11,
     "saved": false,
     "version": "34:3:0.0"
   }
@@ -298,7 +298,7 @@ organization = local
 signed in as = local
 environment = shop/fix-web
 linked from = /tmp/ployz-cli-outputs-store/work
-staged = 6 changes
+staged = 7 changes
 ```
 
 stderr:
@@ -621,7 +621,7 @@ organization = local
 signed in as = local
 environment = shop/production
 linked from = /tmp/ployz-cli-outputs-store/work
-staged = 10 changes
+staged = 11 changes
 ```
 
 stderr:

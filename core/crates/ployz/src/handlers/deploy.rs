@@ -1361,6 +1361,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
             let words = match result {
                 ployz_core::ServiceResult::New => "serves its new copies",
                 ployz_core::ServiceResult::Old => "not switched to its new copies",
+                ployz_core::ServiceResult::Updated => "serves its copies with their new limits",
                 ployz_core::ServiceResult::NotStarted => "not started",
                 ployz_core::ServiceResult::Unconfirmed => {
                     "may serve its new copies: the switch was not confirmed"
@@ -1421,6 +1422,7 @@ mod tests {
         let services: Vec<ployz_core::ServiceOutcome> = serde_json::from_value(serde_json::json!([
             {"service": "web", "result": "new"},
             {"service": "api", "result": "old"},
+            {"service": "cache", "result": "updated"},
             {"service": "db", "result": "not_started"},
             {"service": "worker", "result": "unconfirmed"},
         ]))
@@ -1430,6 +1432,7 @@ mod tests {
             [
                 "  web: serves its new copies",
                 "  api: not switched to its new copies",
+                "  cache: serves its copies with their new limits",
                 "  db: not started",
                 "  worker: may serve its new copies: the switch was not confirmed",
             ]

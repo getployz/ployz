@@ -362,6 +362,15 @@ it("marks a node the Working State has back since the Saved version as coming ba
   expect(merged?.comesBack).toBe(true);
 });
 
+it("lists a draft-only node by kind and name among the runtime changes, as the CLI does", () => {
+  const web = asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {});
+  const volume = asTestDouble<DiffView["changes"][number]>()(diff.changes[1] ?? {});
+  const api = { ...web, id: "s2", name: "api", comparison: "saved" as const, settings: [] };
+  const old = { ...web, id: "s0", lifecycle: "delete" as const, comparison: "saved" as const, settings: [] };
+  const groups = reviewGroups({ ...diff, changes: [{ ...web, lifecycle: "create" }, volume], draft_changes: [api, old] }, services);
+  expect(groups.map((group) => [group.nodeName, group.lifecycle])).toEqual([["api", "update"], ["web", "delete"], ["web", "create"], ["pg-data", "create"]]);
+});
+
 it("lets a whole runtime lifecycle dominate draft children and counts its node marker", () => {
   const runtime = { ...asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {}), lifecycle: "delete" as const };
   const [group] = reviewGroups({ ...diff, changes: [runtime], draft_changes: [{ ...runtime, lifecycle: "update", comparison: "saved", settings: [

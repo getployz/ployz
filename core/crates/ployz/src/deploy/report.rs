@@ -62,6 +62,8 @@ pub(crate) struct Replica<'a> {
     pub machine: MachineId,
     pub state: &'a RowState,
     pub starts: bool,
+    /// The copy keeps serving under its own id and takes new limits in place.
+    pub updates: bool,
     pub timing: Timing,
 }
 
@@ -74,6 +76,18 @@ pub(crate) fn starts(
         row.machine_id == machine
             && row.service_name() == Some(service)
             && starts_container(&row.operation)
+    })
+}
+
+pub(crate) fn updates(
+    operations: &[OperationRow],
+    service: &ServiceName,
+    machine: MachineId,
+) -> bool {
+    operations.iter().any(|row| {
+        row.machine_id == machine
+            && row.service_name() == Some(service)
+            && matches!(row.operation, DeployOperation::UpdateContainer(_))
     })
 }
 
@@ -125,25 +139,35 @@ pub(crate) fn service_row<'a>(
         .filter(|replica| removal || replica.starts)
         .collect();
     // A failure cancels the switch, so a copy waiting on it will never serve.
-    let ready = counted
+    // A copy under an in-place update serves throughout, and is ready once done.
+    let is_ready = |replica: &Replica<'_>| match replica.state {
+        RowState::Running {
+            phase: RowPhase::UpdatingContainer,
+            ..
+        } => false,
+        RowState::Completed | RowState::Running { serving: true, .. } => true,
+        RowState::Running {
+            phase: RowPhase::WaitingForSwitch,
+            ..
+        } => failed == 0,
+        RowState::Running { .. }
+        | RowState::Pending
+        | RowState::Failed { .. }
+        | RowState::NotAttempted
+        | RowState::Unknown => false,
+    };
+    let ready = counted.iter().filter(|replica| is_ready(replica)).count();
+    let in_place = counted.iter().filter(|replica| replica.updates).count();
+    let in_place_ready = counted
         .iter()
-        .filter(|replica| match replica.state {
-            RowState::Completed | RowState::Running { serving: true, .. } => true,
-            RowState::Running {
-                phase: RowPhase::WaitingForSwitch,
-                ..
-            } => failed == 0,
-            RowState::Running { .. }
-            | RowState::Pending
-            | RowState::Failed { .. }
-            | RowState::NotAttempted
-            | RowState::Unknown => false,
-        })
+        .filter(|replica| replica.updates && is_ready(replica))
         .count();
     let switching = failed == 0 && ready == counted.len();
     let work = |replica: &Replica<'_>| match replica.state {
         RowState::Running { phase, serving } => Some((
-            if *serving || (served && !replica.starts) {
+            if *phase == RowPhase::UpdatingContainer {
+                Step::Start
+            } else if *serving || (served && !replica.starts) {
                 Step::Retire
             } else if stops_or_removes(*phase) {
                 Step::Clear
@@ -172,6 +196,10 @@ pub(crate) fn service_row<'a>(
         .iter()
         .filter(|replica| match replica.state {
             RowState::Pending => served && !replica.starts,
+            RowState::Running {
+                phase: RowPhase::UpdatingContainer,
+                ..
+            } => false,
             RowState::Running { serving, .. } => *serving || (served && !replica.starts),
             RowState::Completed
             | RowState::Failed { .. }
@@ -246,6 +274,8 @@ pub(crate) fn service_row<'a>(
             depth,
             ready,
             total: counted.len(),
+            in_place,
+            in_place_ready,
             draining,
             work: if removal {
                 Work::Remove
@@ -335,6 +365,7 @@ impl Direct {
                             machine: row.machine,
                             state: &row.state,
                             starts: starts(&self.operations, service, row.machine),
+                            updates: updates(&self.operations, service, row.machine),
                             timing: timing.clone(),
                         }),
                 )
@@ -401,7 +432,11 @@ impl Direct {
     }
 }
 
-pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTail>) -> Failure {
+pub(super) fn failure(
+    outcome: &DeployOutcome<ExecutionError>,
+    operations: &[OperationRow],
+    tails: Vec<LogTail>,
+) -> Failure {
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return Failure::coded(
             RpcErrorCode::Internal,
@@ -416,7 +451,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
             operation, error, ..
         } => (Some(&operation.spec.name), operation.machine_id, error),
     };
-    let ployz_store::Failure { reason, cause } = ployz_store::Failure::of(error, &[]);
+    let ployz_store::Failure { reason, cause } = ployz_store::Failure::of(error, operations);
     let message = crate::ui::sentence(match service {
         Some(service) => format!("{service}: {reason}"),
         None => reason,
@@ -496,6 +531,7 @@ fn visible_name(
             spec.name.to_string()
         }
         DeployOperation::ReplaceContainer(replacement) => replacement.spec.name.to_string(),
+        DeployOperation::UpdateContainer(update) => update.spec.name.to_string(),
         DeployOperation::RemoveVolume { id } => id.name.to_string(),
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }

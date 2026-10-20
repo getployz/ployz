@@ -35,7 +35,7 @@ next: ployz project new NAME
 organization  local
 signed in as  local
 environment   shop/production
-staged        11 changes
+staged        13 changes
 next: ployz diff --project shop
 
 === status --json (staged changes) :: $ ployz --json status
@@ -43,7 +43,7 @@ next: ployz diff --project shop
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -65,7 +65,7 @@ next: ployz diff --project shop
     }
   },
   "staged": {
-    "changes": 11,
+    "changes": 13,
     "saved": false,
     "version": "21:0:0.0"
   }
@@ -82,7 +82,7 @@ organization  local
 signed in as  local
 environment   shop/production
 linked from   /tmp/ployz-cli-outputs-store/work
-staged        10 changes
+staged        11 changes
 next: ployz diff
 
 === status --json (linked) :: $ ployz --json status
@@ -90,7 +90,7 @@ next: ployz diff
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "c30e5c01-12b4-4a10-85d6-1fbf469f25b6",
     "name": "production",
     "project": "shop",
     "revision": 34
@@ -115,7 +115,7 @@ next: ployz diff
     }
   },
   "staged": {
-    "changes": 10,
+    "changes": 11,
     "saved": false,
     "version": "34:3:0.0"
   }
@@ -133,7 +133,7 @@ organization  local
 signed in as  local
 environment   shop/fix-web
 linked from   /tmp/ployz-cli-outputs-store/work
-staged        6 changes
+staged        7 changes
 next: ployz diff --env fix-web
 
 === ctx (no contexts) :: $ ployz ctx
@@ -234,6 +234,6 @@ organization  local
 signed in as  local
 environment   shop/production
 linked from   /tmp/ployz-cli-outputs-store/work
-staged        10 changes
+staged        11 changes
 next: ployz diff
 

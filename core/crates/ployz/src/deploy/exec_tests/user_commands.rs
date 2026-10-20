@@ -67,6 +67,17 @@ impl MachineOperations for Recording {
         self.fake.remove_volume(id).await
     }
 
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerLimitsUpdated, RpcError> {
+        self.fake
+            .update_container_limits(machine_id, container_id, spec)
+            .await
+    }
+
     async fn runs_global(
         &self,
         machine_id: &MachineId,

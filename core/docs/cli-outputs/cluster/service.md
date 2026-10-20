@@ -21,16 +21,25 @@ $ ployz service inspect web
 
 stdout:
 ```
-Service web (a085f2f9-e4df-439e-9d34-99e5b3ee7405)
-Private DNS: web
-Source: image
-env={"GREETING":"hello"}
-image="alpine:3.23.3"
-maxRetries=10
-privateDns="web"
-replicas=2
-restartPolicy="unless-stopped"
-startCommand="sh -c 'echo started; while true; do echo tick; sleep 2; done'"
+service = web
+private dns = web
+source = image
+cpuLimit = - (default)
+healthcheck = - (default)
+image = "alpine:3.23.3" (default -)
+maxRetries = 10 (default)
+memLimit = - (default)
+preDeployCommand = - (default)
+privateDns = "web" (default)
+registryCredential = - (default)
+replicas = 2 (default 1)
+restartPolicy = "unless-stopped" (default)
+startCommand = "sh -c 'echo started; while true; do echo tick; sleep 2; done'" (default -)
+template = - (default)
+updateOrder = - (default)
+env.GREETING = "hello"
+env.GREETING.exported = false (default)
+domains = -
 ```
 
 ### service inspect --json
@@ -45,17 +54,111 @@ stdout:
 {
   "change": null,
   "changes": [],
+  "domains": [],
   "environment": {
-    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "id": "96430fcc-088f-45be-9cbe-5e67e7e2f507",
     "name": "production",
     "project": "shop",
     "revision": 10
   },
-  "id": "a085f2f9-e4df-439e-9d34-99e5b3ee7405",
-  "lineage": "a085f2f9-e4df-439e-9d34-99e5b3ee7405",
+  "id": "608e4644-cd97-46d2-bb82-416f75554478",
+  "lineage": "608e4644-cd97-46d2-bb82-416f75554478",
   "name": "web",
   "private_dns": "web",
-  "row": "a085f2f9-e4df-439e-9d34-99e5b3ee7405:node",
+  "row": "608e4644-cd97-46d2-bb82-416f75554478:node",
+  "settings": [
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.cpuLimit",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.healthcheck",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.image",
+      "value": "alpine:3.23.3"
+    },
+    {
+      "apply": "staged",
+      "default": 10,
+      "path": "web.maxRetries",
+      "value": 10
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.memLimit",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.preDeployCommand",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": "web",
+      "path": "web.privateDns",
+      "value": "web"
+    },
+    {
+      "apply": "immediate",
+      "default": null,
+      "path": "web.registryCredential",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": 1,
+      "path": "web.replicas",
+      "value": 2
+    },
+    {
+      "apply": "staged",
+      "default": "unless-stopped",
+      "path": "web.restartPolicy",
+      "value": "unless-stopped"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.startCommand",
+      "value": "sh -c 'echo started; while true; do echo tick; sleep 2; done'"
+    },
+    {
+      "apply": "immediate",
+      "default": null,
+      "path": "web.template",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.updateOrder",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.GREETING",
+      "row": "608e4644-cd97-46d2-bb82-416f75554478:variables.GREETING",
+      "value": "hello"
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.GREETING.exported",
+      "value": false
+    }
+  ],
   "source": "image",
   "template": null,
   "values": {
@@ -81,12 +184,7 @@ $ ployz service stop api
 
 stdout:
 ```
-stop	shop-production/api	3ba1dcbd6b854ea699b76f6ef296576d	01479b917a80712965fb38a499c12d1ad0320cd1f48a628d7bccbdbcd8b0d39f
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+Stopped shop-production/api on beta.
 ```
 
 ### service start
@@ -98,12 +196,7 @@ $ ployz service start api
 
 stdout:
 ```
-start	shop-production/api	3ba1dcbd6b854ea699b76f6ef296576d	01479b917a80712965fb38a499c12d1ad0320cd1f48a628d7bccbdbcd8b0d39f
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+Started shop-production/api on beta.
 ```
 
 ### service restart
@@ -115,15 +208,8 @@ $ ployz service restart web
 
 stdout:
 ```
-stop	shop-production/web	0523a6681d894d128f69ea28b7ed62d5	24674546193d6f0d79b6a3a6617d8157f0a6cab24ea21a995302b4e2986251bb
-start	shop-production/web	0523a6681d894d128f69ea28b7ed62d5	24674546193d6f0d79b6a3a6617d8157f0a6cab24ea21a995302b4e2986251bb
-stop	shop-production/web	d7bb999f0d454dbcacc63d085021de34	e7023f44bd985200f7822f44a7f596008fa76e14e01a94449b790961f9bc3ac9
-start	shop-production/web	d7bb999f0d454dbcacc63d085021de34	e7023f44bd985200f7822f44a7f596008fa76e14e01a94449b790961f9bc3ac9
-```
-
-stderr:
-```
-WARNING: Live Observation is observer-relative and not globally complete
+Restarted shop-production/web on alpha.
+Restarted shop-production/web on gamma.
 ```
 
 ### service restart --json
@@ -139,15 +225,9 @@ stdout:
   "container_failures": [],
   "containers": [
     {
-      "action": "stop",
-      "container_id": "01479b917a80712965fb38a499c12d1ad0320cd1f48a628d7bccbdbcd8b0d39f",
-      "machine_id": "3ba1dcbd6b854ea699b76f6ef296576d",
-      "service": "shop-production/api"
-    },
-    {
-      "action": "start",
-      "container_id": "01479b917a80712965fb38a499c12d1ad0320cd1f48a628d7bccbdbcd8b0d39f",
-      "machine_id": "3ba1dcbd6b854ea699b76f6ef296576d",
+      "action": "restart",
+      "container_id": "b6ac931643a597b358fc657833d6e1d6f181f6d5daeee5e6da5ed777c1e2ed3c",
+      "machine_id": "7f00d39ce93641bd8c5fdd7d91395aa7",
       "service": "shop-production/api"
     }
   ],
@@ -158,9 +238,7 @@ stdout:
 
 stderr:
 ```
-WARNING: Live Observation is observer-relative and not globally complete
-stop	shop-production/api	3ba1dcbd6b854ea699b76f6ef296576d	01479b917a80712965fb38a499c12d1ad0320cd1f48a628d7bccbdbcd8b0d39f
-start	shop-production/api	3ba1dcbd6b854ea699b76f6ef296576d	01479b917a80712965fb38a499c12d1ad0320cd1f48a628d7bccbdbcd8b0d39f
+Restarted shop-production/api on beta.
 ```
 
 ### service stop unknown
@@ -172,8 +250,8 @@ $ ployz service stop nope
 
 stderr:
 ```
-WARNING: Live Observation is observer-relative and not globally complete
-No running Service "nope"; ployz ps lists what's running
+error: No Service named nope in Environment production
+valid: api, web
 ```
 
 ### service port-forward (killed after 4s)
@@ -184,11 +262,12 @@ $ ployz service port-forward web 0:80
 
 stdout:
 ```
-127.0.0.1:36547 -> 10.210.2.3:80 (shop-production/web/24674546193d6f0d79b6a3a6617d8157f0a6cab24ea21a995302b4e2986251bb); Ctrl-C stops
+Forwarding 127.0.0.1:37333 to shop-production/web (ployz-create-14f3ee91f0cdcf386f41ca376f50035a34f5bd11090b6c5bebea4ed84260647d) port 80.
 ```
 
 stderr:
 ```
+Ctrl-C stops it.
 # exit 124
 ```
 
@@ -196,7 +275,7 @@ stderr:
 
 stdout:
 ```
-{"container":"24674546193d6f0d79b6a3a6617d8157f0a6cab24ea21a995302b4e2986251bb","local":"127.0.0.1:37867","remote":"10.210.2.3:80","service":"shop-production/web"}
+{"container":"0de25c6f017ea7ebd6e2e707692194812cd00af850617f2469de5fe502f0efcd","local":"127.0.0.1:38473","remote":"10.210.0.3:80","service":"shop-production/web"}
 ```
 
 stderr:

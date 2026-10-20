@@ -110,8 +110,8 @@ next: ployz login
 === deploy without a cluster :: $ timeout 30 ployz deploy --project shop
 Deploying #2 of shop/production
 · Volume pgdata  not attempted
-  ⊘ web  not started
   ⊘ db  not started
+  ⊘ web  not started
 ───────────────
 3 not attempted
 error: No Server is enrolled in this Organization.
