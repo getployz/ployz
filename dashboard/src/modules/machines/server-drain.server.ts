@@ -357,17 +357,19 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
     planDigest: serverDrainAttempt.planDigest,
     requestedAt: serverDrainAttempt.requestedAt,
   }).from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId));
-  const expired = row === undefined || (yield* Clock.currentTimeMillis) > row.requestedAt.getTime() + DRAIN_PENDING_LIMIT_MS;
+  const deadline = row === undefined ? 0 : row.requestedAt.getTime() + DRAIN_PENDING_LIMIT_MS;
+  const expired = Effect.map(Clock.currentTimeMillis, (now) => now > deadline);
   const notStarted = Effect.gen(function* () {
     yield* drizzle.update(serverDrainAttempt).set(ended("not_started")).where(and(owned, eq(serverDrainAttempt.state, "pending")));
     return yield* stateOf(request.attemptId);
   });
-  if (waited && expired) return yield* notStarted;
+  if (waited && (yield* expired)) return yield* notStarted;
   const reached = yield* reachCluster(request.organizationId).pipe(
     Effect.map(Option.some),
     Effect.catchIf((error) => error instanceof ServerDrainUnreachable, () => Effect.succeedNone),
   );
-  if (Option.isNone(reached)) return expired ? yield* notStarted : current;
+  // Reading a silent Cluster takes time, so the deadline may pass during the read.
+  if (Option.isNone(reached)) return (yield* expired) ? yield* notStarted : current;
   const { session, frame } = reached.value;
   const { covered, moves } = yield* stillCovered(request, frame, row?.planDigest ?? null);
   if (!covered) {
