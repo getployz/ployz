@@ -546,17 +546,50 @@ fn dkms_build(
     let registered = dkms_registered(&version);
     let recorded = job.state.zfs_build.as_ref() == Some(&build);
     // A package may have shipped the same version since this Machine recorded it.
-    let packaged = package_ships_build_source(package_manager, &build);
+    let packaged = match package_ownership(package_manager, &build) {
+        Ownership::Packaged => true,
+        Ownership::Unpackaged => false,
+        // A registration this Machine didn't make is only built, whoever owns it.
+        Ownership::Unknown(_) if registered && !recorded => false,
+        Ownership::Unknown(cause) => {
+            return Err(refuse(
+                "build ZFS with DKMS",
+                format!(
+                    "couldn't tell whether a package owns {}, so preparation left it as it is: {cause}",
+                    source_dir.display()
+                ),
+            ));
+        }
+    };
     if packaged || (registered && !recorded) {
         if recorded {
             job.state.zfs_build = None;
             job.save()?;
         }
-        run_host(
+        let built = run_host(
             "build ZFS with DKMS",
             "dkms",
             ["build", "-m", "zfs", "-v", &version, "-k", kernel],
-        )?;
+        );
+        if packaged
+            && !registered
+            && let Err(error) = built
+        {
+            let fix = if package_manager == "dnf" {
+                "dnf reinstall zfs-dkms"
+            } else {
+                "dpkg-reconfigure zfs-dkms"
+            };
+            return Err(refuse(
+                "build ZFS with DKMS",
+                format!(
+                    "the zfs-dkms package owns {}, but DKMS has no registration for it and couldn't build it. Run `{fix}` to register it again: {}",
+                    source_dir.display(),
+                    ployz_core::error_chain::inline(&error)
+                ),
+            ));
+        }
+        built?;
         return Ok(());
     }
     job.set_build(build)?;
@@ -695,20 +728,50 @@ fn rpm_installed(package: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-fn package_ships_build_source(package_manager: &str, build: &ZfsBuild) -> bool {
-    let owns_path = |command: &str, flag: &str, path: &Path| {
-        Command::new(command)
-            .arg(flag)
-            .arg(path)
-            .output()
-            .is_ok_and(|output| output.status.success())
-    };
+/// Whether a package ships a build's source, by the package manager's own answer.
+enum Ownership {
+    Packaged,
+    Unpackaged,
+    /// The query failed, so neither answer is safe to act on.
+    Unknown(String),
+}
+
+fn package_ownership(package_manager: &str, build: &ZfsBuild) -> Ownership {
     match build {
-        ZfsBuild::Ubuntu { .. } => deb_installed("zfsutils-linux"),
+        ZfsBuild::Ubuntu { .. } if deb_installed("zfsutils-linux") => Ownership::Packaged,
+        ZfsBuild::Ubuntu { .. } => Ownership::Unpackaged,
+        // rpm exits 1 for any failed query; only these say the database has no owner for the path.
         ZfsBuild::Dkms { source_dir, .. } if package_manager == "dnf" => {
-            owns_path("rpm", "-qf", source_dir)
+            path_ownership("rpm", "-qf", source_dir, |text| {
+                text.contains("is not owned by any package")
+                    || text.contains("No such file or directory")
+            })
         }
-        ZfsBuild::Dkms { source_dir, .. } => owns_path("dpkg", "-S", source_dir),
+        // dpkg exits 1 only when no package matches; errors exit 2.
+        ZfsBuild::Dkms { source_dir, .. } => path_ownership("dpkg", "-S", source_dir, |_| true),
+    }
+}
+
+fn path_ownership(
+    command: &str,
+    flag: &str,
+    path: &Path,
+    unowned: impl Fn(&str) -> bool,
+) -> Ownership {
+    let query = format!("{command} {flag} {}", path.display());
+    let output = match Command::new(command).arg(flag).arg(path).output() {
+        Ok(output) => output,
+        Err(error) => return Ownership::Unknown(format!("`{query}` couldn't run: {error}")),
+    };
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    match output.status.code() {
+        Some(0) => Ownership::Packaged,
+        Some(1) if unowned(&text) => Ownership::Unpackaged,
+        _ => Ownership::Unknown(format!("`{query}` {}: {}", output.status, text.trim())),
     }
 }
 
@@ -738,9 +801,18 @@ fn installed_by_dkms(build: &ZfsBuild) -> bool {
 }
 
 fn remove_unowned_build(package_manager: &str, build: Option<ZfsBuild>) -> Option<ZfsBuild> {
-    let build = build.filter(|build| {
-        !package_ships_build_source(package_manager, build) && !installed_by_dkms(build)
-    })?;
+    let build = build?;
+    match package_ownership(package_manager, &build) {
+        Ownership::Packaged => return None,
+        Ownership::Unknown(cause) => {
+            eprintln!(
+                "Keeping the ZFS build preparation made, since its owner is unknown: {cause}"
+            );
+            return Some(build);
+        }
+        Ownership::Unpackaged if installed_by_dkms(&build) => return None,
+        Ownership::Unpackaged => {}
+    }
     if let ZfsBuild::Dkms {
         module,
         version,
@@ -811,14 +883,23 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         .as_ref()
         .and_then(ZfsRoute::for_os)
         .map_or("apt-get", ZfsRoute::package_manager);
-    if job
+    match job
         .state
         .zfs_build
         .as_ref()
-        .is_some_and(|build| package_ships_build_source(package_manager, build))
+        .map(|build| package_ownership(package_manager, build))
     {
-        println!("ZFS is installed from packages, so there is no build to discard");
-        return Ok(());
+        Some(Ownership::Packaged) => {
+            println!("ZFS is installed from packages, so there is no build to discard");
+            return Ok(());
+        }
+        Some(Ownership::Unknown(cause)) => {
+            return Err(refuse(
+                "discard the ZFS build",
+                format!("couldn't tell whether a package owns it, so it stays: {cause}"),
+            ));
+        }
+        Some(Ownership::Unpackaged) | None => {}
     }
     if let Some(ZfsBuild::Dkms {
         module,

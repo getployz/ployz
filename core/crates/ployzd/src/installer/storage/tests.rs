@@ -397,7 +397,7 @@ struct DebianCase {
     failed_step: Option<&'static str>,
 }
 
-const DEBIAN_CASES: [DebianCase; 4] = [
+const DEBIAN_CASES: [DebianCase; 5] = [
     DebianCase {
         name: "debian-12",
         version: "12",
@@ -433,6 +433,16 @@ const DEBIAN_CASES: [DebianCase; 4] = [
         kernel: "6.12.43+deb13-cloud-amd64",
         flavour: "cloud-amd64",
         failed_step: Some("the ZFS module check"),
+    },
+    // zfs-dkms is already installed, so apt-get builds nothing for the running kernel.
+    DebianCase {
+        name: "packaged-unbuilt",
+        version: "12",
+        codename: "bookworm",
+        keyring: "debian-archive-keyring.gpg",
+        kernel: "6.1.0-28-amd64",
+        flavour: "amd64",
+        failed_step: None,
     },
 ];
 
@@ -484,8 +494,17 @@ fn zfs_debian_contract() {
 case "$*" in
   *zfs-dkms*)
     if [ "$PLOYZ_ZFS_DEBIAN_CONTRACT" = build-failed ]; then echo "dkms build failed" >&2; exit 100; fi
-    if [ "$PLOYZ_ZFS_DEBIAN_CONTRACT" != no-module ]; then : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module"; fi ;;
+    case "$PLOYZ_ZFS_DEBIAN_CONTRACT" in no-module|packaged-unbuilt) ;; *) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;; esac ;;
 esac"#,
+        );
+        write_script(
+            &commands.join("dpkg-query"),
+            r#"[ "$PLOYZ_ZFS_DEBIAN_CONTRACT" = packaged-unbuilt ] && [ "$*" = '-W -f=${Status} ${source:Upstream-Version} zfs-dkms' ] && printf 'install ok installed 2.1.11'"#,
+        );
+        write_script(
+            &commands.join("dkms"),
+            r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dkms.log"
+[ "$1" = install ] && : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module""#,
         );
         write_zfs_probes(&commands);
         run_contract_child_with_environment(
@@ -529,6 +548,16 @@ esac"#,
         ]);
         let zfs = installs(&["zfs-dkms", "zfsutils-linux"]);
         assert!(headers < zfs, "{name}: headers after zfs-dkms\n{apt}");
+        let dkms = read_log(root, "dkms.log");
+        if name == "packaged-unbuilt" {
+            assert_eq!(
+                dkms,
+                format!("install -m zfs -v 2.1.11 -k {}\n", case.kernel),
+                "{name}"
+            );
+        } else {
+            assert_eq!(dkms, "", "{name}");
+        }
         assert!(
             read_log(root, "modinfo.log")
                 .lines()

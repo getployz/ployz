@@ -545,8 +545,31 @@ fn prepare_debian_zfs(
             None,
         )
         .map_err(failed(step))?;
+        // apt-get does nothing when zfs-dkms is already installed, which leaves a kernel booted
+        // since without the module. The package's own build is installed, never claimed.
+        if !zfs_installed(kernel)
+            && let Some(version) = zfs_dkms_package_version()
+        {
+            run_step(
+                "installing the zfs-dkms build",
+                Command::new("dkms").args(["install", "-m", "zfs", "-v", &version, "-k", kernel]),
+            )?;
+        }
         Ok(())
     })
+}
+
+/// The DKMS version of the installed `zfs-dkms`, which is the package's upstream version.
+fn zfs_dkms_package_version() -> Option<String> {
+    let output = Command::new("dpkg-query")
+        .args(["-W", "-f=${Status} ${source:Upstream-Version}", "zfs-dkms"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    String::from_utf8_lossy(&output.stdout)
+        .strip_prefix("install ok installed ")
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned)
 }
 
 pub(super) fn debian_contrib_source(apt_dir: &Path) -> PathBuf {
