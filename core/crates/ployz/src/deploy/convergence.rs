@@ -395,24 +395,43 @@ fn is_service_container(container: &ContainerObservation, service: &QualifiedSer
         && super::is_active_runtime(&container.runtime)
 }
 
-/// Why this Service's Containers can't move off `machine`, if they can't. It refuses
-/// anything a move could lose.
+/// Why this Service's Containers can't move off `machine`, if they can't.
 fn stays(spec: &ResolvedServiceSpec, machine: &MachineRef) -> Option<StayReason> {
+    pin(spec).map(|pin| match pin {
+        Pin::Global => StayReason::Global,
+        Pin::BindMount => StayReason::BindMount {
+            server: machine.clone(),
+        },
+        Pin::Volume => StayReason::Volume {
+            server: machine.clone(),
+        },
+    })
+}
+
+/// Whether a Drain could move this Service's Containers, storage and mode permitting.
+pub(crate) fn can_move(spec: &ResolvedServiceSpec) -> bool {
+    pin(spec).is_none()
+}
+
+/// What holds a Service's Containers on their Server. It refuses anything a move could lose.
+enum Pin {
+    Global,
+    BindMount,
+    Volume,
+}
+
+fn pin(spec: &ResolvedServiceSpec) -> Option<Pin> {
     if spec.mode == ServiceMode::Global {
-        return Some(StayReason::Global);
+        return Some(Pin::Global);
     }
     spec.volume_graph()
         .mounted_volumes()
         .find_map(|volume| match volume.source.kind() {
             RawVolumeSource::Tmpfs { .. } => None,
-            RawVolumeSource::Bind { .. } => Some(StayReason::BindMount {
-                server: machine.clone(),
-            }),
+            RawVolumeSource::Bind { .. } => Some(Pin::BindMount),
             RawVolumeSource::External { .. }
             | RawVolumeSource::Ordinary { .. }
-            | RawVolumeSource::Provisioned { .. } => Some(StayReason::Volume {
-                server: machine.clone(),
-            }),
+            | RawVolumeSource::Provisioned { .. } => Some(Pin::Volume),
         })
 }
 
