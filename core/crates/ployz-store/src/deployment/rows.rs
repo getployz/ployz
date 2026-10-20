@@ -1261,7 +1261,7 @@ mod tests {
         );
         assert_eq!(
             reason(ContainerRuntimeObservation::Exited { code: 1 }),
-            "The Container exited"
+            "The Container exited with code 1"
         );
         assert_eq!(
             reason(ContainerRuntimeObservation::Dead),
@@ -1276,9 +1276,10 @@ mod tests {
                 .cause
                 .is_empty()
         );
-        assert_eq!(
-            failure(ContainerRuntimeObservation::Exited { code: 1 }).cause,
-            ["exited with code 1"]
+        assert!(
+            failure(ContainerRuntimeObservation::Exited { code: 1 })
+                .cause
+                .is_empty()
         );
     }
 }
