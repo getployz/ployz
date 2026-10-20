@@ -748,6 +748,20 @@ class Pool(unittest.TestCase):
         self.assertEqual(boat.read(boat.fingerprints("bake-a")), {"containers": []})
         self.assertEqual([path.exists() for path in kept], [True, True, True])
 
+    def test_every_clone_disables_ufw_because_boat_restores_it(self):
+        provider = self.provider("machine-1")
+        boat.write(provider.registry, dict(run="run1", sandboxes={}))
+        provider.run["corrosion"] = "corrosion"
+        provider.launch = lambda node: provider.mark(node["name"], id="bx_a", state="running") or "bx_a"
+        info = dict(sandbox=dict(ip="2001:db8:0:1::1", sshEndpoint="203.0.113.1:22"))
+        provider.boat = lambda *args, **kwargs: subprocess.CompletedProcess([], 0, json.dumps(info).encode(), b"")
+        scripts = []
+        provider.exec = lambda node, argv, **kwargs: scripts.append(argv[2])
+        provider.wait_agent = lambda *args, **kwargs: None
+        provider.fingerprint = lambda node: {"containers": []}
+        provider.start(dict(name="machine-1"))
+        self.assertIn("ufw disable", scripts[0])
+
     def test_the_ledger_keeps_what_one_lock_saves_and_is_no_run_record(self):
         with boat.pool() as entries:
             entries.append(parked("bx_a", 1, at=5))

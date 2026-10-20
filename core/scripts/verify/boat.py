@@ -48,7 +48,6 @@ BAKE_NAME = re.compile(re.escape(BAKED) + "[0-9a-f]{10}")
 # Bakes this host made; another host or person may share the account and the name prefix.
 BAKES = REGISTRY / "bakes.ledger"
 BAKE = """
-ufw disable >/dev/null
 printf '%s\\n' "$@" | xargs -P8 -n1 docker pull -q >/dev/null
 caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
 caddy_version=${caddy_version%% *}
@@ -802,6 +801,8 @@ class Provider:
 main=$(systemctl show -p MainPID --value ssh.service)
 for pid in $(pgrep -f {LISTENER}); do [ "$pid" = "$main" ] || kill "$pid"; done
 if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
+# Boat turns UFW back on in every clone, so the bake cannot keep it off.
+ufw disable >/dev/null
 {bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
         if POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not fingerprints(self.run["image"]).exists():
             # The first fresh clone of a bake records what reset must return every later sandbox to.
