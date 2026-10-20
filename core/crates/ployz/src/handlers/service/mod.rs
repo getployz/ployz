@@ -448,7 +448,8 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
     })
 }
 
-/// Run each action on each batch in turn. A run `cancellation` cut short is partial.
+/// Run each action on each batch in turn. A run `cancellation` cut short ends as
+/// cancelled.
 async fn run_batches<'a, B, F, Fut>(
     batches: &'a [B],
     actions: &[ContainerAction],
@@ -463,16 +464,18 @@ where
         containers: Vec::new(),
         container_failures: Vec::new(),
         partial: false,
+        interrupted: false,
     };
-    for services in batches {
+    'batches: for services in batches {
         for &action in actions {
             if cancellation.is_cancelled() {
                 outcome.partial = true;
-                return Ok(outcome);
+                break 'batches;
             }
             outcome = outcome.then(step(services, action).await?);
         }
     }
+    outcome.interrupted = cancellation.is_cancelled();
     Ok(outcome)
 }
 
@@ -482,6 +485,8 @@ struct ServiceActionOutcome {
     /// One entry per Container the action failed on.
     container_failures: Vec<ContainerFailure>,
     partial: bool,
+    /// Ctrl-C ended the command.
+    interrupted: bool,
 }
 
 #[derive(Serialize)]
@@ -524,7 +529,9 @@ impl ServiceActionOutcome {
     }
 
     fn finish(&self) -> Result<(), Error> {
-        if self.partial {
+        if self.interrupted {
+            Err(Error::partial().interrupted())
+        } else if self.partial {
             Err(Error::partial())
         } else {
             Ok(())
@@ -632,6 +639,7 @@ async fn apply_service_action(
         containers: rows,
         container_failures,
         partial,
+        interrupted: false,
     })
 }
 
