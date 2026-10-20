@@ -292,10 +292,20 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 store::word(&lifecycle),
                 whole.map_or_else(String::new, |row| sync_notes(view, row, created))
             ));
-            // A node it creates lands as its introduction, so `diff` shows only its source.
+            // A node it creates lands as its introduction, so `diff` shows only its source;
+            // a row in it still names what it warns of.
             if let (true, Some(whole)) = (created, whole) {
                 for line in created_lines(whole) {
                     crate::ui::stream(format_args!("    {line}"));
+                }
+                for row in rows.iter().filter(|row| row.at.name().is_some()) {
+                    let notes = sync_notes(view, row, true);
+                    if !notes.is_empty() {
+                        crate::ui::stream(format_args!(
+                            "    {}{notes}",
+                            crate::ui::escaped(&row.at.to_string())
+                        ));
+                    }
                 }
                 continue;
             }
