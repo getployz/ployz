@@ -118,9 +118,10 @@ pub(crate) fn superseded(
 }
 
 /// Waits at most [`BOOT_PASS_WAIT`] for a peer's store versions, catch-up to them,
-/// and this Machine's first ingress publish, then decides once.
-pub(crate) async fn run<H: BootHost>(host: H, mut first_published: watch::Receiver<bool>) {
-    let caught_up = async {
+/// and a route publish from this Machine's ingress that read the store after
+/// catch-up, then decides once.
+pub(crate) async fn run<H: BootHost>(host: H, mut route_publishes: watch::Receiver<u64>) {
+    let ready = async {
         let target = loop {
             if let Some(target) = host.peer_targets().await {
                 break target;
@@ -129,23 +130,21 @@ pub(crate) async fn run<H: BootHost>(host: H, mut first_published: watch::Receiv
         };
         host.catch_up(&target).await?;
         tracing::info!("boot pass caught up to the peer's store versions");
-        Ok::<_, CorrosionError>(())
-    };
-    let published = async {
-        // A dropped sender never publishes, so only the bound ends the wait.
-        if first_published
-            .wait_for(|published| *published)
+        // The publish in flight may have read the store before catch-up, so the one
+        // after it is the first that surely read it after.
+        let after = *route_publishes.borrow_and_update() + 2;
+        if route_publishes
+            .wait_for(|publishes| *publishes >= after)
             .await
             .is_err()
         {
             std::future::pending::<()>().await;
         }
-        tracing::info!("boot pass saw this Machine's first route publish");
-        Ok(())
+        tracing::info!("boot pass saw this Machine's routes published after catch-up");
+        Ok::<_, CorrosionError>(())
     };
-    let ready = async { tokio::try_join!(caught_up, published) };
     match tokio::time::timeout(BOOT_PASS_WAIT, ready).await {
-        Ok(Ok(((), ()))) => {}
+        Ok(Ok(())) => {}
         Ok(Err(error)) => {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "boot pass skipped, catch-up failed");
             return;

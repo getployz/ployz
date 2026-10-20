@@ -339,7 +339,7 @@ impl Daemon {
         let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
-        let (first_publish, first_published) = tokio::sync::watch::channel(false);
+        let (route_publishes, published_routes) = tokio::sync::watch::channel(0);
         let retire_id = local_id;
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
@@ -413,7 +413,7 @@ impl Daemon {
                             admin,
                             ingress_data_dir,
                             ingress_runtime_dir,
-                            first_publish,
+                            route_publishes,
                             shutdown.clone(),
                         )
                         .await
@@ -502,7 +502,7 @@ impl Daemon {
                 };
                 tokio::select! {
                     () = shutdown.cancelled() => {}
-                    () = crate::boot_pass::run(host, first_published) => {}
+                    () = crate::boot_pass::run(host, published_routes) => {}
                 }
                 Ok(())
             };

@@ -61,7 +61,7 @@ pub(crate) async fn run(
     admin: AdminClient,
     data_dir: PathBuf,
     runtime_dir: PathBuf,
-    first_publish: watch::Sender<bool>,
+    route_publishes: watch::Sender<u64>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let local = machine.id;
@@ -75,7 +75,7 @@ pub(crate) async fn run(
         },
         caddy::config_path(&data_dir),
         runtime_dir.join("caddy/admin.sock"),
-        first_publish,
+        route_publishes,
         shutdown,
     )
     .await
@@ -384,7 +384,7 @@ pub(crate) async fn watch_caddy<A: CaddyAdmin, Connect, ConnectFuture, LoadDown,
     replicated: ReplicatedStore,
     mut load_down: LoadDown,
     config_file: PathBuf,
-    first_publish: watch::Sender<bool>,
+    route_publishes: watch::Sender<u64>,
     shutdown: CancellationToken,
     mut connect: Connect,
 ) -> io::Result<()>
@@ -466,13 +466,12 @@ where
                         }
                         last_input = Some(input);
                     }
-                    // A row already in Corrosion may predate a power-off, so only this
-                    // process's own write counts as published.
+                    // Counts this process's own writes, since a row already in Corrosion may
+                    // predate a power-off.
                     if publish_route_acks(&replicated, &machine.id, &mut acked, route_acks(&routes))
                         .await
                     {
-                        first_publish
-                            .send_if_modified(|published| !std::mem::replace(published, true));
+                        route_publishes.send_modify(|publishes| *publishes += 1);
                     }
                     routed = routes;
                 }
