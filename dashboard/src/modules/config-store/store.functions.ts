@@ -24,5 +24,5 @@ export const writeStoreServerFn = createServerFn({ method: "POST" })
     const result = yield* writeStoreAsMember(context.actor, data.organizationSlug, data.command, data.shows);
     if (result.ok || !isProtectedAsk(result.refusal)) return result;
     const caller = yield* dashboardCaller(getRequest().headers, data.organizationSlug);
-    return { ...result, refusal: yield* requestApproval(caller, data.command, result.refusal) };
+    return { ...result, refusal: yield* requestApproval(caller, data.command, result.refusal, null) };
   })));

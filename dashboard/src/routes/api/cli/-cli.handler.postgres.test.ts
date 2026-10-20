@@ -1526,7 +1526,7 @@ it.live(
         const resetAfterUse = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
         assert.deepStrictEqual(refusedWith(resetAfterUse), [403, covers]);
         const elsewhere = yield* cli("POST", `servers/${"e".repeat(32)}/forget`, { ...alice, approval: approvalId }, {});
-        assert.strictEqual(elsewhere.json.error?.code, "not_found");
+        assert.deepStrictEqual(refusedWith(elsewhere), [403, covers]);
         const ended = new Date();
         yield* drizzle.update(machineRemoveAttempt).set({
           state: "failed", inngestRunId: "run-1", startedAt: ended, terminalAt: ended, failureCode: "unreachable", failureMessage: "gone",

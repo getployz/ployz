@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
 import { approvalAsks, approvalCommand, asksApproval } from "#/modules/approvals/approvals";
-import { gateOperation, hasApprover, requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
+import { gateOperation, hasApprover, redeemApproval, requestApproval } from "#/modules/approvals/approvals.server";
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -55,12 +55,12 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  // An approval the write names must be this Organization's, even where nobody is asked. A retry from `ployz` asks
-  // only into a Protected Environment, so it carries the approval it was given there.
+  // An approval the write names must be this Caller's, for this command, even where nobody is asked. A retry from
+  // `ployz` asks only into a Protected Environment, so it carries the approval it was given there.
   const named = request.headers.get("x-ployz-approval");
   const asks = call.operation === "write" && (asksApproval(caller.via, call.command) || (named !== null && approvalCommand(call.command) === "retry"));
   const trusted = asks
-    ? yield* trustedApproval(caller.organization.id, named)
+    ? yield* redeemApproval(caller, named, { command: approvalCommand(call.command) })
     : { ok: true, approval: "not_required" } as const;
   if (!trusted.ok) return refusal(trusted.refusal);
   // Unprotecting an Environment from `ployz` or `ployz mcp` waits for a human, as the sidebar does.
@@ -82,7 +82,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   const result = yield* callStore(caller.organization.id, caller.userId, sent, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });
   if (call.operation === "write" && result.refusal.code === "approval_required") {
-    return refusal(yield* requestApproval(caller, call.command, result.refusal));
+    return refusal(yield* requestApproval(caller, call.command, result.refusal, named));
   }
   return refusal(result.refusal);
 });

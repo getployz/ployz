@@ -6,7 +6,7 @@ import { AGENT, agentResume, agentStart, CATALOG, finish, GATED, untilWrite } fr
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
-import { gateOperation, onceFor, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
+import { gateOperation, onceFor, redeemApproval, requestApproval, reviewedDiff } from "#/modules/approvals/approvals.server";
 import type { Ran } from "#/modules/commands/command.server";
 import { findCommand, inputSchema, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
@@ -156,7 +156,7 @@ type Gated =
   | { result: StoreResult<ConfigWritten>; nothingDestroyed: boolean };
 
 const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
-  const trusted = yield* trustedApproval(caller.organization.id, approvalId);
+  const trusted = yield* redeemApproval(caller, approvalId, { command: approvalCommand(asked) });
   if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "save" : approvalCommand(asked) === "retry" ? "retry" : "deploy", trusted.refusal) } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
@@ -168,7 +168,7 @@ const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, ask
   if (stored.ok || stored.refusal.code !== "approval_required") {
     return { result, nothingDestroyed: result.ok && trusted.approval === "required" } satisfies Gated;
   }
-  const request: StoreRefusal = yield* requestApproval(caller, command, stored.refusal);
+  const request: StoreRefusal = yield* requestApproval(caller, command, stored.refusal, approvalId);
   return asking(request) ?? { denied: caller.support === null ? request : refusalForSupport(request, caller.support) } satisfies Gated;
 });
 

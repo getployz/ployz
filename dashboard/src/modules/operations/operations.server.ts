@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { askAgain, gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { askAgain, gateOperation, operationDigest, type OperationAsked, redeemApproval } from "#/modules/approvals/approvals.server";
 import { callerEnvironments, type Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -148,6 +148,9 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
 const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
   holding(caller, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
+    // A removal its approval already started answers only the one who could start it.
+    const redeemed = yield* redeemApproval(caller, call.approvalId, { command: noReset ? "forget" : "remove", subject: `server:${machineId}` });
+    if (!redeemed.ok) return refused(redeemed.refusal);
     const consumed = Schema.is(Uuid)(call.approvalId)
       ? yield* machineRemoveAttemptConsuming(caller.organization.id, call.approvalId, machineId, noReset)
       : null;

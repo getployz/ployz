@@ -161,6 +161,13 @@ How you answer depends on where the command runs:
 A retry of a command you denied is still denied, even once it would destroy nothing. A retry of
 one still waiting for your answer still waits, unless it no longer destroys anything.
 
+An approval works only for the person who asked for it, from the same login or token they asked
+from, and only for the command and the target they asked about. Anyone else who sends it is
+refused with `forbidden`, and nothing changes. So is the same person from another login or
+token, or a different command or target. The refusal says which. Run the command again without
+`--approval` to ask for an approval of your own. When two people, or one person from two logins,
+ask for the same thing, each gets an approval of their own to answer.
+
 You can answer from a terminal too. `ployz org approval ls` lists the approvals waiting,
 `ployz org approval show ID` shows what one would remove, and `ployz org approval approve ID` or
 `ployz org approval deny ID --reason "keep the volume"` answers it. Approving asks you to type the

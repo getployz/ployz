@@ -586,6 +586,7 @@ describe("callCloud", () => {
       const asked = yield* callCloud(caller, { act: stop("1", { machine: MACHINE, name: OTHER_MACHINE }) }).pipe(Effect.provide(services));
       const { approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
       const byName = operationDigest({
+        subject: `service:${ENVIRONMENT}/web`,
         verb: "stop",
         preview: { environment: ENVIRONMENT, service: "web", only: OTHER_MACHINE },
         effects: [{ kind: "stops_service", name: "web", node: `${ENVIRONMENT}/web`, path: "services.web" }],

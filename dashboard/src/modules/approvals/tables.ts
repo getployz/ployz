@@ -6,7 +6,10 @@ import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus } from "#/modules/approvals/approvals";
 
-/** One destructive CLI write or Server operation a human must approve, by the digest of exactly what it destroys. */
+/**
+ * One destructive CLI write or Server operation a human must approve, by the digest of exactly what it destroys. Only
+ * its asker, through the credential that asked, runs it.
+ */
 export const operationApprovals = pgTable(
   "operation_approvals",
   {
@@ -35,7 +38,7 @@ export const operationApprovals = pgTable(
   },
   (table) => [
     uniqueIndex("operation_approvals_one_pending_idx")
-      .on(table.organizationId, table.digest)
+      .on(table.organizationId, table.digest, table.command, table.credentialKind, table.credentialId)
       .where(sql`${table.status} = 'pending'`),
     index("operation_approvals_subject_idx").on(table.organizationId, table.subject, table.status),
     check("operation_approvals_status_check", sql`${table.status} in (${sqlStringLiterals(APPROVAL_STATUSES)})`),

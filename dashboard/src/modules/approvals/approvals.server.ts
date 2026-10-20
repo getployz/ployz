@@ -175,29 +175,59 @@ const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => E
   return (yield* readRow(row.organizationId, row.id)) ?? row;
 });
 
-/** Protection is part of what was approved, so an approval doesn't survive the Environment being protected or unprotected. */
-export function operationDigest({ verb, preview, effects, protected: guarded }: Pick<OperationAsked, "verb" | "preview" | "effects" | "protected">) {
-  const reviewed: JsonValue = guarded === undefined ? { preview, effects } : { preview, effects, protected: guarded };
+/**
+ * An operation's approval binds its verb and what it acts on, so it covers no other command or target. Protection is
+ * part of what was approved, so an approval doesn't survive the Environment being protected or unprotected.
+ */
+export function operationDigest({ subject, verb, preview, effects, protected: guarded }: Pick<OperationAsked, "subject" | "verb" | "preview" | "effects" | "protected">) {
+  const reviewed: JsonValue = guarded === undefined ? { subject, preview, effects } : { subject, preview, effects, protected: guarded };
   return `${verb}:${createHash("sha256").update(canonicalJson(reviewed)).digest("hex")}`;
 }
 
-/** "the request to deploy production": a denial names what was asked, never the approval's ID. */
-const denied = (row: ApprovalRow) => {
+/** "the request to deploy production": a refusal names what was asked, never the approval's ID. */
+const theRequest = (row: ApprovalRow) => {
   const { verb, name } = approvalSubject(row.command, row.review);
   return `the request to ${verb.toLowerCase()} ${name}`;
 };
 
 type Trusted = { ok: true; approval: Exclude<Approval, "not_required"> } | { ok: false; refusal: StoreRefusal };
 
-export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
-  organizationId: string,
+/**
+ * What a request carrying an approval runs: its command, as the approval records it, and what it acts on where Cloud
+ * names that. A Store write leaves its target to the Store, whose digest binds the Environment or Project.
+ */
+export type Redeeming = { readonly command: string; readonly subject?: string };
+
+const AGAIN = "Run the command again without it to ask for";
+
+/**
+ * Why `caller` can't run what `row` approved, or null: an approval runs only for the person who asked, through the
+ * session or token they asked from, and only for the command and target they asked about.
+ */
+const notTheirs = (caller: Pick<Caller, "userId" | "credential">, row: ApprovalRow, asked: Redeeming): string | null => {
+  if (row.requestedByUserId !== caller.userId) return `Someone else asked for this approval, so only they can use it. ${AGAIN} your own.`;
+  if (row.credentialKind !== caller.credential.kind || row.credentialId !== caller.credential.id) {
+    return `This approval was asked for from another session or token. ${AGAIN} one from here.`;
+  }
+  if (row.command !== asked.command || (asked.subject !== undefined && row.subject !== asked.subject)) {
+    return `This approval covers only ${theRequest(row)}. ${AGAIN} one.`;
+  }
+  return null;
+};
+
+/** The approval `approvalId` as `caller` may run it for `asked`: every request that carries an approval redeems it here. */
+export const redeemApproval = Effect.fn("Approvals.redeem")(function* (
+  caller: Pick<Caller, "userId" | "organization" | "credential">,
   approvalId: string | null,
+  asked: Redeeming,
 ): Effect.fn.Return<Trusted, never, Database> {
   if (approvalId === null) return { ok: true, approval: "required" };
-  const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
+  const row = yield* readRow(caller.organization.id, approvalId).pipe(Effect.orDie);
   if (row === undefined) {
     return { ok: false, refusal: { code: "not_found", message: "No such approval.", details: { approval_id: approvalId } } };
   }
+  const refused = notTheirs(caller, row, asked);
+  if (refused !== null) return { ok: false, refusal: { code: "forbidden", message: refused, details: { approval_id: approvalId } } };
   switch (row.status) {
     case "approved":
       return { ok: true, approval: { approved: row.digest } };
@@ -206,7 +236,7 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
         ok: false,
         refusal: {
           code: "approval_denied",
-          message: `A human denied ${denied(row)}${row.reason === null ? "." : `: ${row.reason}`}`,
+          message: `A human denied ${theRequest(row)}${row.reason === null ? "." : `: ${row.reason}`}`,
           details: { approval: approvalView(row) },
         },
       };
@@ -245,12 +275,18 @@ const requester = (caller: Caller) => ({
 });
 
 /**
- * A person who asks again for what is pending takes the request over, so their own prompt can approve it: they could
- * run it from `ployz` anyway. Their review comes with it, so a dashboard ask keeps what to run and one from `ployz`
- * runs nothing on approval. An agent asking again takes nothing, so no other agent's credential inherits the request.
+ * An approval is one credential's ask for one command, so asking again through the same credential answers the same
+ * row, and anyone else's ask is a row of its own. A person asking again brings their review, so a dashboard ask keeps
+ * what to run and one from `ployz` runs nothing on approval; an agent asking again through a person's credential takes
+ * nothing.
  */
+const pending = {
+  target: [operationApprovals.organizationId, operationApprovals.digest, operationApprovals.command, operationApprovals.credentialKind, operationApprovals.credentialId],
+  targetWhere: sql`${operationApprovals.status} = 'pending'`,
+};
+
 const askedAgain = (caller: Caller, review: ApprovalReview) =>
-  caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), ...requester(caller), review };
+  caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), via: caller.via, review };
 
 /** A protected ask names its Environment; one from the dashboard also keeps what to run once approved. */
 const storeReview = (
@@ -265,23 +301,38 @@ const storeReview = (
 };
 
 /**
+ * The refusal for a write that carried approval `carried` into another target than the one it approves, which the
+ * Store names as it asks again; null when it carried none, or one for this target whose plan moved.
+ */
+const carriedElsewhere = (caller: Caller, carried: string | null, command: ConfigCommand, subject: string) =>
+  redeemApproval(caller, carried, { command: approvalCommand(command), subject }).pipe(
+    Effect.map((redeemed) => redeemed.ok ? null : redeemed.refusal),
+  );
+
+/**
  * Record the Store's `approval_required` as one pending approval per digest and answer the refusal with its ID added
  * as `details.approval_id`. Asking again while it is pending answers the same row. Recording sweeps the Environment's
  * approvals for plans the Store moved past, this one too when it arrives late. A refusal marked `protected` asks a
- * protector; a dashboard ask keeps `command` to run as the asker once approved.
+ * protector; a dashboard ask keeps `command` to run as the asker once approved. A write that carried an approval for
+ * another target is refused instead.
  */
 export const requestApproval = Effect.fn("Approvals.request")(function* (
   caller: Caller,
   command: ConfigCommand,
   refused: StoreRefusal,
+  carried: string | null,
 ) {
-  if (command.command === "remove" && command.environment == null) return yield* requestProjectRemoval(caller, command.project, refused);
+  if (command.command === "remove" && command.environment == null) {
+    return (yield* carriedElsewhere(caller, carried, command, `project:${command.project}`)) ?? (yield* requestProjectRemoval(caller, command.project, refused));
+  }
   const decoded = Schema.decodeUnknownOption(RefusedReview)(refused.details);
   if (Option.isNone(decoded)) {
     yield* Effect.logWarning("An approval_required refusal named no review; nothing was recorded.");
     return refused;
   }
   const { approval: digest, effects, diff, redeploy } = decoded.value;
+  const elsewhere = yield* carriedElsewhere(caller, carried, command, diff.environment.id);
+  if (elsewhere !== null) return elsewhere;
   const guarded = decoded.value.protected === true;
   const organizationId = caller.organization.id;
   // A redeploy's card says what it rolls back, which its digest binds.
@@ -295,11 +346,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
       command: approvalCommand(command),
       review,
       digest,
-    }).onConflictDoUpdate({
-      target: [operationApprovals.organizationId, operationApprovals.digest],
-      targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: askedAgain(caller, review),
-    }).returning({ id: operationApprovals.id });
+    }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, review) }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleEnvironment(organizationId, diff.environment));
   const asked = { effects, approval: digest, diff, approval_id: recorded.id };
@@ -345,11 +392,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
       command: asked.verb,
       review,
       digest,
-    }).onConflictDoUpdate({
-      target: [operationApprovals.organizationId, operationApprovals.digest],
-      targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: askedAgain(caller, review),
-    }).returning({ id: operationApprovals.id });
+    }).onConflictDoUpdate({ ...pending, set: askedAgain(caller, review) }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), stale);
   return {
@@ -397,7 +440,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   // A person who confirmed it in the dashboard already approved it; only `ployz`, agents, and an ask into a Protected
   // Environment by someone who can't protect it wait on one.
   if (caller.via === "dashboard" && asked.protected === undefined) return { ok: true, approvalId: null };
-  const trusted = yield* trustedApproval(caller.organization.id, approvalId);
+  const trusted = yield* redeemApproval(caller, approvalId, { command: asked.verb, subject: asked.subject });
   if (!trusted.ok) return trusted;
   if (asked.effects.length === 0) return { ok: true, approvalId: null };
   if (asked.protected === undefined && !(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
