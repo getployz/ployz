@@ -167,7 +167,7 @@ a server was cut off. Click it to see each old replica that is still running and
 | --- | --- |
 | **Waiting** | Retrying the old replicas still running. The card updates without a reload. |
 | **Done** | Every old replica stopped |
-| **Left running on server-3** | After three tries over a few minutes, these old replicas still run. Your deployment still applied. |
+| **Left running on server-3** | After three tries over a few minutes, these old replicas still run. A server cut off during the deployment shows here too, since an old replica may still run on it. Your deployment still applied. |
 | **A newer Deployment took over** | You deployed again before cleanup finished. The newer deployment's own cleanup takes over. |
 | **Failed** | Cleanup itself hit an error, shown on the card |
 

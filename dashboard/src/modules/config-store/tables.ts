@@ -37,8 +37,11 @@ export const deploymentRun = pgTable("deployment_run", {
 export const DEPLOYMENT_CLEANUP_STATES = ["waiting", "done", "left_running", "cancelled", "failed"] as const;
 export type DeploymentCleanupState = (typeof DEPLOYMENT_CLEANUP_STATES)[number];
 
-/** An old copy a Deployment's cleanup could not retire. `machine` is the Machine's name. */
-export type CleanupLeft = { machine: string; service: string; reason: string };
+/**
+ * An old copy a Deployment's cleanup could not retire. `machine` is the Machine's name. `service` is null for a Machine
+ * the Deploy could not reach, whose copies it never saw.
+ */
+export type CleanupLeft = { machine: string; service: string | null; reason: string };
 
 /**
  * How a Cloud Deploy's cleanup of the old copies it replaced went, for the Run page. A display record only: the Store

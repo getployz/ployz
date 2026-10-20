@@ -263,8 +263,9 @@ pub struct RetireLeft {
     /// The Machine's name as the Deploy reported it, or its ID when the Deploy
     /// did not know the name.
     pub machine: String,
-    /// The Service as the Deployment names it.
-    pub service: ServiceName,
+    /// The Service as the Deployment names it, or none for a Machine the Deploy
+    /// could not reach, whose copies it never saw.
+    pub service: Option<ServiceName>,
     /// Users read it.
     pub reason: String,
 }
@@ -273,7 +274,8 @@ pub struct RetireLeft {
 /// running, on one of `connections`: each copy its Deploy reported left running,
 /// of a Service it deployed or removed. A failed or unattempted Service keeps its
 /// old copy, which may be the one serving. A copy already gone counts as retired,
-/// so a retry observes again and only retires what is still there.
+/// so a retry observes again and only retires what is still there. A Machine the
+/// Deploy could not reach is reported left, since a copy it never saw may run there.
 ///
 /// # Errors
 /// Returns `not_found` for a Deployment of another Organization, the connection's
@@ -291,17 +293,59 @@ pub async fn retire_old(
     .await?;
     let copies = left_copies(&view);
     if copies.is_empty() {
-        return Ok(RetireOutcome::default());
+        return Ok(with_cut_off(&view, Vec::new()));
     }
     let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
-    let retired = async {
+    let retired: Result<_, RpcError> = async {
         let mut client = session.client()?;
         let machines = client.machines().await.map_err(crate::connect::rpc_error)?;
         Ok(retire_copies(&client, &machines, copies).await)
     }
     .await;
     session.close().await;
-    retired
+    Ok(with_cut_off(&view, retired?))
+}
+
+/// `left` and, once each, every Machine the Deploy could not reach and reported no
+/// copy on: a copy the plan never saw may still run there. A Machine with a
+/// reported copy was planned on, so its copies are that report's. Nothing there is
+/// retired, since only a copy a Deploy reported is.
+fn with_cut_off(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutcome {
+    let reported: BTreeSet<&str> = view
+        .deployment
+        .warnings
+        .iter()
+        .filter_map(|warning| {
+            let DeploymentWarning::Deploy {
+                warning: DeployWarning::LeftRunning { machine, .. },
+            } = warning
+            else {
+                return None;
+            };
+            Some(machine.as_str())
+        })
+        .collect();
+    for warning in &view.deployment.warnings {
+        let DeploymentWarning::Deploy {
+            warning: DeployWarning::MixedAfterReturn { machine },
+        } = warning
+        else {
+            continue;
+        };
+        if reported.contains(machine.as_str()) || left.iter().any(|entry| entry.machine == *machine)
+        {
+            continue;
+        }
+        left.push(RetireLeft {
+            machine: machine.clone(),
+            service: None,
+            reason: format!(
+                "{machine} was cut off during the Deploy, so a copy there may still run. \
+                 Deploy again once it is back."
+            ),
+        });
+    }
+    RetireOutcome { left }
 }
 
 /// A copy a Deploy reported left running, of a Service it deployed or removed.
@@ -366,7 +410,7 @@ async fn retire_copies<C: MachineOperations>(
     client: &C,
     machines: &[MachineObservation],
     copies: Vec<LeftCopy>,
-) -> RetireOutcome {
+) -> Vec<RetireLeft> {
     let names: BTreeMap<MachineId, String> = machines
         .iter()
         .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
@@ -393,18 +437,17 @@ async fn retire_copies<C: MachineOperations>(
         reasons
     }))
     .await;
-    let left = copies
+    copies
         .iter()
         .zip(retired)
         .flat_map(|(copy, reasons)| {
             reasons.into_iter().map(|reason| RetireLeft {
                 machine: copy.machine.clone(),
-                service: copy.service.clone(),
+                service: Some(copy.service.clone()),
                 reason,
             })
         })
-        .collect();
-    RetireOutcome { left }
+        .collect()
 }
 
 /// Why `copy` still runs on `machine_id`, or none once it is gone.

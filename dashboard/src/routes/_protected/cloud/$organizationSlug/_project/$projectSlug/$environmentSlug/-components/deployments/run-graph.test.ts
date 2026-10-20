@@ -213,6 +213,8 @@ describe("run graph", () => {
     expect(cleanupLabel({ state: "left_running", left: [left("machine-3")], message: null })).toBe("Left running on machine-3");
     expect(cleanupLabel({ state: "left_running", left: [left("machine-3"), { ...left("machine-1"), service: "api" }, left("machine-1")], message: null }))
       .toBe("Left running on machine-3, machine-1");
+    expect(cleanupLabel({ state: "left_running", left: [{ ...left("machine-3"), service: null }], message: null }))
+      .toBe("Left running on machine-3");
     expect(cleanupLabel({ state: "cancelled", left: [], message: null })).toBe("A newer Deployment took over");
     expect(cleanupLabel({ state: "failed", left: [], message: "boom" })).toBe("Failed");
   });

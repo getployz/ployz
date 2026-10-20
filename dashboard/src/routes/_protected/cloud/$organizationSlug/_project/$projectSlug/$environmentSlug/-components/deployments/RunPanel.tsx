@@ -135,8 +135,12 @@ function CleanupDetail({ cleanup }: { cleanup: DeploymentCleanupView }) {
           {cleanup.left.map((left) => (
             <li key={`${left.service}@${left.machine}`} className="flex flex-col gap-1 px-4 py-2 text-sm">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate">{left.service}</span>
-                <span className="text-muted-foreground">on {left.machine}</span>
+                {left.service === null ? <span className="truncate">{left.machine}</span> : (
+                  <>
+                    <span className="truncate">{left.service}</span>
+                    <span className="text-muted-foreground">on {left.machine}</span>
+                  </>
+                )}
               </div>
               <p className="break-words text-muted-foreground">{left.reason}</p>
             </li>

@@ -942,7 +942,10 @@ async fn retire(
         client,
         wants: std::sync::Mutex::default(),
     };
-    let outcome = retire_copies(&recording, &machines, left_copies(view)).await;
+    let outcome = with_cut_off(
+        view,
+        retire_copies(&recording, &machines, left_copies(view)).await,
+    );
     server.abort();
     Retired {
         outcome,
@@ -992,10 +995,72 @@ async fn a_left_copy_whose_machine_does_not_answer_stays_left_naming_it() {
         retired.outcome.left,
         [RetireLeft {
             machine: "one".into(),
-            service: ServiceName::parse("web").unwrap(),
+            service: Some(ServiceName::parse("web").unwrap()),
             reason: "one did not answer".into(),
         }]
     );
+}
+
+/// Adds the warning a Deploy records for `machine` once it could not reach it.
+fn cut_off(view: &mut DeploymentView, machine: &str) {
+    view.deployment.warnings.push(DeploymentWarning::Deploy {
+        warning: DeployWarning::MixedAfterReturn {
+            machine: machine.into(),
+        },
+    });
+}
+
+// Catches a cleanup that reads done while a Machine the Deploy could not reach may
+// still run an old copy the plan never saw, also when its only Service failed.
+#[tokio::test]
+async fn a_machine_the_deploy_could_not_reach_stays_left_once_without_a_service() {
+    let (run, actor) = run();
+    for services in [&[][..], &[("web", NodeStatus::Failed, 'c')]] {
+        let mut view = left_running(&run, &actor, services);
+        cut_off(&mut view, "machine-3");
+        cut_off(&mut view, "machine-3");
+        let retired = retire(&view, holding_c()).await;
+        assert_eq!(
+            retired.outcome.left,
+            [RetireLeft {
+                machine: "machine-3".into(),
+                service: None,
+                reason: "machine-3 was cut off during the Deploy, so a copy there may still run. \
+                         Deploy again once it is back."
+                    .into(),
+            }],
+            "{services:?}"
+        );
+        assert!(retired.wants.is_empty(), "{:?}", retired.wants);
+        assert!(retired.removed.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_cut_off_machine_with_a_copy_left_running_is_named_once() {
+    let (run, actor) = run();
+    let mut view = left_running(&run, &actor, &[("web", NodeStatus::Deployed, 'c')]);
+    cut_off(&mut view, "one");
+    let retired = retire(&view, holding_c().fail_inspects("unreachable")).await;
+    assert_eq!(
+        retired.outcome.left,
+        [RetireLeft {
+            machine: "one".into(),
+            service: Some(ServiceName::parse("web").unwrap()),
+            reason: "one did not answer".into(),
+        }]
+    );
+}
+
+// Catches a Machine named cut off after its reported copy was retired: the plan saw
+// that Machine's copies, so nothing unseen can run there.
+#[tokio::test]
+async fn a_machine_whose_reported_copy_retired_is_not_named_cut_off() {
+    let (run, actor) = run();
+    let mut view = left_running(&run, &actor, &[("web", NodeStatus::Deployed, 'c')]);
+    cut_off(&mut view, "one");
+    let retired = retire(&view, holding_c()).await;
+    assert_eq!(retired.outcome, RetireOutcome::default());
 }
 
 // Catches a retire that takes out the old copy of a Service whose replacement failed:
