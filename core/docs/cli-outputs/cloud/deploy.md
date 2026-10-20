@@ -546,7 +546,7 @@ $ ployz ps
 
 stderr:
 ```
-no Server of this Organization is reachable now: 0123456789abcdef0123456789abcdef
+Server 0123456789abcdef0123456789abcdef isn't answering. If it just joined or restarted, try again in a moment.
 ```
 
 ### ps --json
@@ -558,7 +558,7 @@ $ ployz ps --json
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":{"unreachable":["0123456789abcdef0123456789abcdef"]},"message":"no Server of this Organization is reachable now: 0123456789abcdef0123456789abcdef"}}
+{"error":{"code":"unavailable","details":{"unreachable":["0123456789abcdef0123456789abcdef"]},"message":"Server 0123456789abcdef0123456789abcdef isn't answering. If it just joined or restarted, try again in a moment."}}
 ```
 
 ### logs
@@ -570,7 +570,7 @@ $ ployz logs
 
 stderr:
 ```
-no Server of this Organization is reachable now: 0123456789abcdef0123456789abcdef
+Server 0123456789abcdef0123456789abcdef isn't answering. If it just joined or restarted, try again in a moment.
 ```
 
 ### logs web --json
@@ -582,7 +582,7 @@ $ ployz logs web --json
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":{"unreachable":["0123456789abcdef0123456789abcdef"]},"message":"no Server of this Organization is reachable now: 0123456789abcdef0123456789abcdef"}}
+{"error":{"code":"unavailable","details":{"unreachable":["0123456789abcdef0123456789abcdef"]},"message":"Server 0123456789abcdef0123456789abcdef isn't answering. If it just joined or restarted, try again in a moment."}}
 ```
 
 ### logs --deployment 1 --build
@@ -693,7 +693,7 @@ $ ployz cloud reset -y
 
 stderr:
 ```
-Cloud answered HTTP 409: {"_tag":"PublicError","code":"CONFLICT","message":"The request conflicts with the current state."}
+The request conflicts with the current state.
 ```
 
 ### cloud reset -y --json
@@ -705,6 +705,6 @@ $ ployz cloud reset -y --json
 
 stdout:
 ```
-{"error":{"code":"conflict","details":null,"message":"Cloud answered HTTP 409: {\"_tag\":\"PublicError\",\"code\":\"CONFLICT\",\"message\":\"The request conflicts with the current state.\"}"}}
+{"error":{"code":"conflict","details":null,"message":"The request conflicts with the current state."}}
 ```
 

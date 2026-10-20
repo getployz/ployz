@@ -69,6 +69,11 @@ fn tracked(operations: Vec<OperationRow>) -> Vec<String> {
     preview.depths = [(ServiceName::parse("web").unwrap(), 0)].into();
     lines(&Direct::new(&preview, "Deploying shop".into()).frame())
 }
+/// `web` left the target, so the plan gives it no depth.
+fn tracked_removal(operations: Vec<OperationRow>) -> Vec<String> {
+    let preview = DeployPreview::new(operations, Vec::new(), Namespace::parse("shop").unwrap());
+    lines(&Direct::new(&preview, "Deploying shop".into()).frame())
+}
 fn denied() -> ExecutionError {
     ExecutionError::Machine {
         action: MachineAction::CreateContainer,
@@ -496,29 +501,47 @@ fn removal_only_work_reads_removing_then_removed() {
         ]
     };
     assert_eq!(
-        tracked(removal(OperationStatus::Pending, OperationStatus::Pending)),
-        ["depth 0", "  · web  waiting to remove 0/2"]
+        tracked_removal(removal(OperationStatus::Pending, OperationStatus::Pending)),
+        ["  · web  waiting to remove 0/2"]
     );
     assert_eq!(
-        tracked(removal(
+        tracked_removal(removal(
             running(OperationPhase::StoppingContainer),
             OperationStatus::Pending
         )),
-        ["depth 0", "  ⠋ web  stopping 0/2  0.0s"]
+        ["  ⠋ web  stopping 0/2  0.0s"]
     );
     assert_eq!(
-        tracked(removal(
+        tracked_removal(removal(
             OperationStatus::Completed,
             running(OperationPhase::RemovingContainer)
         )),
-        ["depth 0", "  ◐ web  removing 1/2  0.0s"]
+        ["  ◐ web  removing 1/2  0.0s"]
     );
     assert_eq!(
-        tracked(removal(
+        tracked_removal(removal(
             OperationStatus::Completed,
             OperationStatus::Completed
         )),
-        ["depth 0", "  ✔ web  removed 2/2"]
+        ["  ✔ web  removed 2/2"]
+    );
+}
+
+#[test]
+fn a_kept_service_that_only_clears_an_old_copy_reads_as_an_update() {
+    let machine = MachineId::random();
+    let clearing = |status| tracked(vec![planned(0, remove(machine), status)]);
+    assert_eq!(
+        clearing(OperationStatus::Pending),
+        ["depth 0", "  · web  waiting"]
+    );
+    assert_eq!(
+        clearing(running(OperationPhase::RemovingContainer)),
+        ["depth 0", "  ⠋ web  removing old  0.0s"]
+    );
+    assert_eq!(
+        clearing(OperationStatus::Completed),
+        ["depth 0", "  ✔ web  switched"]
     );
 }
 
@@ -737,6 +760,7 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
     };
     let tail = LogTail {
         service: QualifiedService::parse("ployz-system/ingress").unwrap(),
+        name: QualifiedService::system_ingress().name,
         machine,
         server: "edge".into(),
         log: Some(shown("could not load configuration")),
@@ -778,6 +802,35 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
 }
 
 #[test]
+fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
+    let docker = "Docker responded with status code 404: nginx:doesnotexist: not found";
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: operation(0, MachineId::random(), OperationStatus::Pending).operation,
+            error: ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error: RpcError {
+                    code: RpcErrorCode::NotFound,
+                    message: "image pull failed".into(),
+                    details: serde_json::Value::Null,
+                    cause: vec![docker.into()],
+                }
+                .pulling("nginx:doesnotexist", ployz_core::PullPolicy::Missing),
+            },
+        },
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    assert_eq!(
+        crate::ui::plain(&failure(&outcome, Vec::new())),
+        format!(
+            "error: web: Image nginx:doesnotexist not found, or its registry needs credentials.\n  cause: {docker}\n"
+        )
+    );
+}
+
+#[test]
 fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     let machine = MachineId::random();
     let replacement = ployz_core::ReplacementOperation {
@@ -801,6 +854,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     };
     let tail = LogTail {
         service: QualifiedService::parse("shop/web").unwrap(),
+        name: ServiceName::parse("web").unwrap(),
         machine,
         server: "edge".into(),
         log: None,

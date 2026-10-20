@@ -82,6 +82,7 @@ const COMMAND_READ_FILES = {
 const NETWORK = /\bfetch\(|new EventSource\(/;
 /** Raw network access outside data files and server code. */
 const NETWORK_FILES = {
+  "lib/server-fn-fetch.ts": "the transport under every server function call from the browser",
   "modules/github/github-observation.api.ts": "server-only GitHub API client",
   "modules/inngest/client.ts": "server-only Inngest REST lookup of one run's status for the volume run sweep",
 };
@@ -149,7 +150,7 @@ function walk(dir: string): string[] {
 
 const sources = walk(SRC)
   .map((path) => relative(SRC, path))
-  .filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) && path !== "routeTree.gen.ts")
+  .filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) && !path.startsWith("test/") && path !== "routeTree.gen.ts")
   .map((path) => ({ path, text: readFileSync(join(SRC, path), "utf8") }));
 
 function filesMatching(pattern: RegExp) {

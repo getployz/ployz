@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, gt, gte, or, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { and, asc, eq, inArray, isNull, gt, gte, max, or, sql } from "drizzle-orm";
+import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
 import { insertEnrollmentToken, readJoinStatus } from "#/modules/machines/enrollment.server";
 import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPairing, shareOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
+import { organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import {
@@ -17,7 +18,9 @@ import {
   type EnrollStorage,
   isReadyFor,
 } from "#/modules/machines/waiting/server-enrollment";
+import { serversOffline } from "#/modules/machines/waiting/servers-offline";
 import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -212,6 +215,11 @@ const enrollmentAuthority = Effect.fn("ServerEnrollment.authority")(function* (
   return { pairing, founded, hasFirst: paired || founding !== undefined };
 });
 
+/** Whether the Organization has a first server, founded or founding. */
+export const hasFirstServer = Effect.fn("ServerEnrollment.hasFirst")(function* (organizationId: string) {
+  return (yield* enrollmentAuthority(organizationId, "preview")).hasFirst;
+});
+
 const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   organizationId: string,
   input: EnrollInput,
@@ -243,7 +251,24 @@ export const previewServerEnrollment = Effect.fn("ServerEnrollment.preview")(fun
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const { rows, skipped, spread } = yield* planEnrollment(organization.id, input, "preview");
-  return { rows, skipped, spread };
+  return { rows, skipped, spread, serversOffline: serversOffline(yield* serverContacts(organization.id), yield* Clock.currentTimeMillis) };
+});
+
+/** Each Server of the Organization with its last signed push on any stream. */
+const serverContacts = Effect.fn("ServerEnrollment.contacts")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  return yield* drizzle.select({
+    enrolledAt: organizationMachine.createdAt,
+    pushTarget: organizationMachine.pushTarget,
+    lastPushAt: max(observeIngestCursor.updatedAt),
+  })
+    .from(organizationMachine)
+    .leftJoin(observeIngestCursor, and(
+      eq(observeIngestCursor.organizationId, organizationMachine.organizationId),
+      eq(observeIngestCursor.machineId, organizationMachine.machineId),
+    ))
+    .where(eq(organizationMachine.organizationId, organizationId))
+    .groupBy(organizationMachine.organizationId, organizationMachine.machineId);
 });
 
 export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(function* (

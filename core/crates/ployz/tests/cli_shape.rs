@@ -368,9 +368,17 @@ fn run_human(args: &[&str]) -> (Option<i32>, String) {
 }
 
 fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let output = human_output(args, env);
+    (
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn human_output(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+    ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
@@ -383,11 +391,7 @@ fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) 
         .env_remove("CLICOLOR_FORCE")
         .envs(env.iter().copied())
         .output()
-        .unwrap();
-    (
-        output.status.code(),
-        String::from_utf8(output.stderr).unwrap(),
-    )
+        .unwrap()
 }
 
 #[test]
@@ -454,6 +458,91 @@ fn color_never_emits_no_escapes() {
         assert!(stderr.contains("--bogus"), "{args:?}: {stderr}");
         assert!(!stderr.contains('\x1b'), "{args:?}: {stderr:?}");
     }
+}
+
+#[test]
+fn asking_ps_for_a_container_column_says_where_the_ids_are() {
+    for args in [
+        &["ps", "--container"][..],
+        &["ps", "--wide"],
+        &["ps", "--sort", "service", "--wide"],
+        &["ps", "-o", "wide"],
+        &["ps", "--format={{.ID}}"],
+        &["ps", "-q"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(
+                "with server access, 'ployz ps --json' lists each container's container_id"
+            ),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("--connect"), "{args:?}: {stderr}");
+    }
+
+    let (code, json, stderr) = run_json(&["ps", "--json", "--container"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "invalid_argument");
+    assert!(message(&json).contains("ployz ps --json"), "{json}");
+
+    let (_, stderr) = run_human(&["ps", "--bogus"]);
+    assert!(!stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
+fn a_column_flag_given_as_the_sort_value_keeps_claps_error() {
+    for (args, says) in [
+        (
+            &["ps", "--sort", "--wide"][..],
+            "unexpected argument '--wide'",
+        ),
+        (&["ps", "--sort", "-w"], "unexpected argument '-w'"),
+        (&["ps", "--sort=--wide"], "invalid value '--wide'"),
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains(says), "{args:?}: {stderr}");
+        assert!(!stderr.contains("container_id"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn a_column_flag_after_the_option_terminator_keeps_claps_error() {
+    for args in [
+        &["ps", "--", "--wide"][..],
+        &["ps", "--sort", "service", "--", "--wide"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("unexpected argument '--wide'"),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("container_id"), "{args:?}: {stderr}");
+    }
+
+    let (code, stderr) = run_human(&["ps", "--wide", "--", "--wide"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
+fn a_column_flag_on_another_command_keeps_its_error_when_a_global_took_ps_as_its_value() {
+    let (code, stderr) = run_human(&["--connect", "ps", "server", "ls", "--wide"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("Usage: ployz server ls"), "{stderr}");
+    assert!(!stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
+fn color_always_keeps_a_piped_record_colored_and_auto_leaves_it_plain() {
+    let stdout = |args: &[&str]| String::from_utf8(human_output(args, &[]).stdout).unwrap();
+    assert_eq!(
+        stdout(&["status", "--color", "always"]),
+        "\x1b[2msigned in as\x1b[0m = no one\n"
+    );
+    assert_eq!(stdout(&["status"]), "signed in as = no one\n");
 }
 
 #[test]
@@ -620,6 +709,10 @@ struct WaitingCloud {
     rows: Vec<serde_json::Value>,
     list: &'static str,
     unreachable: Vec<String>,
+    /// The Servers Server Access says refused Cloud, with what each said.
+    refused: Vec<serde_json::Value>,
+    /// The names Server Access gives the Servers, by id.
+    names: serde_json::Value,
     /// The connections Server Access hands back, held before any Server was probed.
     connections: Vec<serde_json::Value>,
     rejects: Vec<(&'static str, Option<usize>)>,
@@ -652,6 +745,8 @@ impl WaitingCloud {
             rows,
             list: "200 OK",
             unreachable: Vec::new(),
+            refused: Vec::new(),
+            names: serde_json::json!({}),
             connections: Vec::new(),
             rejects: Vec::new(),
             refusal: None,
@@ -673,6 +768,8 @@ fn waiting_cloud(
         rows,
         list,
         unreachable,
+        refused,
+        names,
         connections,
         rejects,
         refusal,
@@ -729,7 +826,12 @@ fn waiting_cloud(
                 }
                 "POST /api/cli/server-access" => (
                     "200 OK",
-                    serde_json::json!({ "connections": connections, "unreachable": unreachable }),
+                    serde_json::json!({
+                        "connections": connections,
+                        "unreachable": unreachable,
+                        "refused": refused,
+                        "names": names,
+                    }),
                 ),
                 "GET /api/cli/enrollments" => {
                     if enrollment_reads > 0 {
@@ -1222,6 +1324,116 @@ fn server_show_falls_back_to_the_waiting_list_when_no_server_answers() {
         "unavailable",
         "{json}"
     );
+}
+
+#[test]
+fn a_server_that_is_not_answering_yet_is_named_with_when_to_try_again() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let joining = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            unreachable: vec![joining.clone()],
+            names: serde_json::json!({ joining.clone(): "box-node-7" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "ls", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/message").unwrap(),
+        "Server box-node-7 isn't answering. If it just joined or restarted, try again in a moment.",
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/details/unreachable").unwrap(),
+        &serde_json::json!([joining]),
+        "{json}"
+    );
+}
+
+#[test]
+fn removing_a_server_that_does_not_answer_points_to_forget() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gone = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            unreachable: vec![gone.clone()],
+            names: serde_json::json!({ gone: "web-1" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    let next = json
+        .pointer("/error/details/next")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(
+        next.ends_with(" server forget web-1 --confirm dead"),
+        "{json}"
+    );
+}
+
+#[test]
+fn removing_a_server_that_refused_cloud_says_why_and_not_to_forget_it() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let refusing = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            refused: vec![serde_json::json!({
+                "machine_id": refusing,
+                "message": "Machine is not participating",
+            })],
+            names: serde_json::json!({ refusing.clone(): "web-1" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/message").unwrap(),
+        "Server web-1 couldn't give this command access: Machine is not participating",
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/details/refused/0/machine_id").unwrap(),
+        &serde_json::json!(refusing),
+        "{json}"
+    );
+    assert_eq!(json.pointer("/error/details/next"), None, "{json}");
+}
+
+#[test]
+fn removing_a_server_when_cloud_does_not_answer_says_to_retry_not_forget() {
+    let token = [
+        ("PLOYZ_TOKEN", "ployz_secret"),
+        ("PLOYZ_CLOUD_URL", "http://127.0.0.1:9"),
+    ];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unavailable",
+        "{json}"
+    );
+    assert_eq!(json.pointer("/error/details/next"), None, "{json}");
+    let retry = json
+        .pointer("/error/details/retry")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(retry.starts_with("ployz server rm web-1 --json"), "{json}");
 }
 
 #[test]
@@ -1975,14 +2187,55 @@ fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
 fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
     use std::os::unix::process::ExitStatusExt;
 
-    let (reader, writer) = std::io::pipe().unwrap();
-    drop(reader);
-    let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["schema"])
-        .stdout(Stdio::from(writer))
-        .spawn()
-        .unwrap();
-    assert_eq!(child.wait().unwrap().signal(), Some(13));
+    for args in [&["schema"][..], &["--version"], &["--help"]] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .stdout(Stdio::from(writer))
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.signal(), Some(13), "{args:?}");
+        assert!(output.stderr.is_empty(), "{args:?} {output:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_stdout_fails_the_command_in_both_modes() {
+    // A result, clap's help and version, and the help a bare command or group prints.
+    for args in [
+        &["--version"][..],
+        &["--json", "--version"],
+        &["-V"],
+        &["--help"],
+        &["--json", "--help"],
+        &["-h"],
+        &["help", "server"],
+        &["server", "ls", "--help"],
+        &["--json", "server", "ls", "--help"],
+        &[],
+        &["server"],
+    ] {
+        let full = std::fs::File::options()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .stdout(Stdio::from(full))
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?} {output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(
+            stderr,
+            "error: Could not write the result to stdout.\n  cause: No space left on device (os error 28)\n",
+            "{args:?}"
+        );
+    }
 }
 
 #[test]
@@ -2453,6 +2706,45 @@ fn run_token_cloud(cloud: &str, args: &[&str]) -> (Option<i32>, String, String) 
         String::from_utf8(output.stdout).unwrap(),
         String::from_utf8(output.stderr).unwrap(),
     )
+}
+
+/// `ployz login` alone changes nothing while `PLOYZ_TOKEN` is set: the token still wins,
+/// so the refusal would repeat.
+#[test]
+fn a_token_refused_a_token_command_hears_cloud_s_sentence_and_a_next_step_past_the_token() {
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can make tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _sent) = token_cloud(403, refused);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["token", "new", "x"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert_eq!(
+        stderr,
+        "error: Only a signed-in person can make tokens. No changes made.\nnext: unset PLOYZ_TOKEN && ployz login\n"
+    );
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can revoke tokens; revoke it under Organization → Tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _sent) = token_cloud(403, refused);
+    let (code, stdout, stderr) = run_token_cloud(&cloud, &["token", "rm", "t1", "--json"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        json.pointer("/error/details/next"),
+        Some(&serde_json::json!("unset PLOYZ_TOKEN && ployz login"))
+    );
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can make Fleet Tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _sent) = token_cloud(403, refused);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["server", "token", "create"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.ends_with("\nnext: unset PLOYZ_TOKEN && ployz login\n"),
+        "{stderr}"
+    );
+    let older = r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}"#;
+    let (cloud, _sent) = token_cloud(422, older);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["token", "rm", "t1"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        stderr,
+        "error: Only a signed-in person can make or revoke tokens; run `ployz login`.\n"
+    );
 }
 
 fn sent_body(request: &str) -> serde_json::Value {

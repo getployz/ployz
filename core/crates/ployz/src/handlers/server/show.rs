@@ -1,7 +1,8 @@
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, MachineObservation, MachineStorageObservation, MachineTarget,
-    MembershipObservation, RpcErrorCode, op,
+    InspectRequest, Machine, MachineDetails, MachineObservation, MachineStorageObservation,
+    MachineTarget, MachineUpgradeAttempt, MachineUpgradeOutcome, MembershipObservation,
+    RpcErrorCode, TelemetryObservation, op,
 };
 use serde_json::{Value, json};
 
@@ -11,7 +12,7 @@ use crate::{
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
     context::ContextError,
     handlers::{Error, leaf_matches, runtime},
-    ui::{self, Cell, Gaps, Table, Tone},
+    ui::{self, Cell, Fields, Gaps, Table, Tone, printable},
 };
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -146,8 +147,7 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     };
     let report = error.report();
     let missing = report.code == RpcErrorCode::NotFound;
-    let unreachable =
-        report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some();
+    let unreachable = super::servers_unanswered(&report);
     // An inherited PLOYZ_CONNECT or PLOYZ_CONTEXT that reached no daemon was never asked.
     let unasked = unconnected && waiting::inherits_a_connection(leaf);
     if !(missing || unreachable || unasked) || waiting::points_elsewhere(leaf) {
@@ -244,7 +244,150 @@ async fn inspect(
             fields.insert("machine".into(), super::machine_json(machine));
         }
     }
-    crate::ui::show(&json!({ "server": server, "upgrade": details.upgrade }))
+    crate::ui::fields(
+        &json!({ "server": server, "upgrade": details.upgrade }),
+        &record(&details),
+    )
+}
+
+/// The human `server show`: who the Server is, what it runs, how full it is, and
+/// how far its peers are; `--json` keeps everything, capabilities included.
+fn record(details: &MachineDetails) -> Fields {
+    let name = details.machine.as_ref().map_or_else(
+        || details.id.to_string(),
+        |machine| machine.name.to_string(),
+    );
+    let mut lines = vec![
+        ("server", name),
+        ("id", details.id.to_string()),
+        ("phase", details.phase.as_str().to_owned()),
+    ];
+    if let Some(machine) = &details.machine {
+        let runtime = &machine.runtime;
+        lines.extend([
+            (
+                "os",
+                format!("{} {}", runtime.os_pretty_name, runtime.architecture),
+            ),
+            ("kernel", runtime.kernel_version.clone()),
+            ("hostname", runtime.hostname.clone()),
+            ("daemon", runtime.daemon_version.clone()),
+            ("docker", runtime.docker_version.clone()),
+            (
+                "public ip",
+                machine
+                    .public_ip
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default(),
+            ),
+            ("subnet", machine.subnet.to_string()),
+            ("accepts", accepts(machine)),
+            (
+                "labels",
+                joined(
+                    machine
+                        .labels
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}")),
+                ),
+            ),
+        ]);
+    }
+    lines.push((
+        "endpoints",
+        joined(
+            details
+                .advertised_endpoints
+                .iter()
+                .map(|endpoint| endpoint.0),
+        ),
+    ));
+    lines.push(("storage", format_storage(details.storage)));
+    if let Some(TelemetryObservation::Full { host, .. }) = &details.telemetry {
+        let (memory, disk) = (host.memory(), host.docker_root());
+        lines.extend([
+            (
+                "cpu",
+                format!(
+                    "{} CPUs, load {}.{:02}",
+                    host.cpu_count,
+                    host.load_average_milli / 1000,
+                    host.load_average_milli % 1000 / 10
+                ),
+            ),
+            (
+                "memory",
+                format!(
+                    "{} available of {}",
+                    size(memory.available()),
+                    size(memory.total())
+                ),
+            ),
+            (
+                "docker disk",
+                format!("{} free of {}", size(disk.available()), size(disk.total())),
+            ),
+            ("containers", host.managed_containers.to_string()),
+        ]);
+    }
+    lines.extend(details.rtts.iter().map(|rtt| {
+        let peer = rtt
+            .machine
+            .as_ref()
+            .map_or_else(|| rtt.address.to_string(), |peer| peer.name.to_string());
+        let tenths = rtt.statistics.median_ns / 100_000;
+        ("peer", format!("{peer} {}.{} ms", tenths / 10, tenths % 10))
+    }));
+    lines.push(("management", joined(&details.management_clients)));
+    if let Some(attempt) = &details.upgrade {
+        lines.push(("upgrade", upgrade(attempt)));
+    }
+    let mut record = Fields::new();
+    for (label, value) in lines {
+        record.push(label, printable(&value));
+    }
+    record
+}
+
+fn accepts(machine: &Machine) -> String {
+    let accepted = [
+        (machine.accepts_services, "services"),
+        (machine.accepts_builds, "builds"),
+        (machine.accepts_ingress, "ingress"),
+    ]
+    .into_iter()
+    .filter_map(|(accepts, work)| accepts.then_some(work));
+    let accepted = joined(accepted);
+    if accepted.is_empty() {
+        "nothing".into()
+    } else {
+        accepted
+    }
+}
+
+fn upgrade(attempt: &MachineUpgradeAttempt) -> String {
+    let target = &attempt.target;
+    match &attempt.outcome {
+        MachineUpgradeOutcome::Accepted => format!("to {target} accepted"),
+        MachineUpgradeOutcome::Running { stage } => {
+            format!("to {target} running: {}", stage.as_str())
+        }
+        MachineUpgradeOutcome::Succeeded { version } => format!("to {version} succeeded"),
+        MachineUpgradeOutcome::Failed { stage, error } => {
+            format!("to {target} failed at {}: {error}", stage.as_str())
+        }
+        MachineUpgradeOutcome::Interrupted { stage } => {
+            format!("to {target} interrupted at {}", stage.as_str())
+        }
+    }
+}
+
+fn joined(items: impl IntoIterator<Item = impl std::fmt::Display>) -> String {
+    items
+        .into_iter()
+        .map(|item| item.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// One `server ls` row: the observation, its Machine as every `server` command prints
@@ -284,6 +427,96 @@ mod tests {
                 free_bytes: 429_496_730,
             })),
             "Managed volumes available (4.3 GB, 3.9 GB used, 429 MB free)"
+        );
+    }
+
+    #[test]
+    fn a_shown_server_is_a_record_not_json() {
+        let key = json!(ployz_core::WireGuardPublicKey([7; 32]));
+        let details: MachineDetails = serde_json::from_value(json!({
+            "id": "8d996790baf04c20b81cdbf8c7897016",
+            "phase": "participating",
+            "machine": {
+                "id": "8d996790baf04c20b81cdbf8c7897016",
+                "name": "machine-1",
+                "subnet": "10.210.0.0/24",
+                "public_key": key,
+                "public_ip": "5.39.66.176",
+                "labels": { "zone": "a" },
+                "accepts_builds": false,
+                "accepts_ingress": true,
+                "accepts_services": true,
+                "runtime": {
+                    "daemon_version": "0.3.0-beta.6",
+                    "docker_version": "29.7.0",
+                    "hostname": "box-1",
+                    "architecture": "x86_64",
+                    "os_pretty_name": "Ubuntu 24.04.4 LTS",
+                    "kernel_version": "6.8.0-117-generic"
+                }
+            },
+            "public_key": key,
+            "advertised_endpoints": ["192.168.122.53:51820", "5.39.66.176:51820"],
+            "rtts": [{
+                "peer_id": "3f334967-fab6-43ff-8e11-39b7ecbcc9e5",
+                "address": "[fdcc::1]:7570",
+                "machine": { "id": "8bd99128eeb24bfeb80ae7489cd46211", "name": "machine-3" },
+                "statistics": { "median_ns": 1_250_000, "population_stddev_ns": 300_000 }
+            }],
+            "management_clients": ["cli-5ec2b97c41404ba093fc78cf6489", "cloud"],
+            "storage": { "state": "ready" },
+            "telemetry": {
+                "scope": "full",
+                "host": {
+                    "observed_at_unix_seconds": 1_792_333_856,
+                    "managed_containers": 2,
+                    "cpu_count": 2,
+                    "load_average_milli": 20,
+                    "memory_total_bytes": 4_106_260_480_u64,
+                    "memory_available_bytes": 2_894_979_072_u64,
+                    "docker_root_total_bytes": 73_635_184_640_u64,
+                    "docker_root_free_bytes": 47_283_404_800_u64
+                },
+                "bridge": {
+                    "bridge_usable_endpoints": 253,
+                    "bridge_attached_endpoints": 2,
+                    "bridge_free_endpoints": 251
+                }
+            },
+            "upgrade": {
+                "attempt_id": "7b4f0d2c9a8e4f6b8c1d2e3f4a5b6c7d",
+                "target": "0.3.0-beta.7",
+                "outcome": "failed",
+                "stage": "activating",
+                "error": "systemd refused the unit"
+            }
+        }))
+        .unwrap();
+        let mut out = anstream::StripStream::new(Vec::new());
+        record(&details).write(&mut out, false).unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "server = machine-1\n\
+             id = 8d996790baf04c20b81cdbf8c7897016\n\
+             phase = participating\n\
+             os = Ubuntu 24.04.4 LTS x86_64\n\
+             kernel = 6.8.0-117-generic\n\
+             hostname = box-1\n\
+             daemon = 0.3.0-beta.6\n\
+             docker = 29.7.0\n\
+             public ip = 5.39.66.176\n\
+             subnet = 10.210.0.0/24\n\
+             accepts = services, ingress\n\
+             labels = zone=a\n\
+             endpoints = 192.168.122.53:51820, 5.39.66.176:51820\n\
+             storage = Managed volumes available\n\
+             cpu = 2 CPUs, load 0.02\n\
+             memory = 2.9 GB available of 4.1 GB\n\
+             docker disk = 47.3 GB free of 73.6 GB\n\
+             containers = 2\n\
+             peer = machine-3 1.2 ms\n\
+             management = cli-5ec2b97c41404ba093fc78cf6489, cloud\n\
+             upgrade = to 0.3.0-beta.7 failed at activating: systemd refused the unit\n"
         );
     }
 

@@ -106,6 +106,7 @@ fn volume(store: &ConfigStore, who: &Actor, n: u8, name: &str) {
             who,
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 shared_writes: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(uuid(n)).unwrap(),
@@ -256,7 +257,42 @@ fn run(store: &ConfigStore, id: &DeploymentId, services: &[&str], removed: Vec<V
     succeed(store, id, services, removed);
 }
 
+/// Run Deployment `id` for `services` to `applied` on Server `a…`, which its rows
+/// name `name`.
+fn run_named(store: &ConfigStore, id: &DeploymentId, services: &[&str], name: &str) {
+    prepare(store, id, services);
+    let rows: Vec<ployz_core::OperationRow> = serde_json::from_value(json!(
+        services
+            .iter()
+            .enumerate()
+            .map(|(index, service)| json!({
+                "index": index, "machine_id": "a".repeat(32), "machine_name": name,
+                "service_name": service, "operation": operation(index),
+                "status": {"type": "completed"}
+            }))
+            .collect::<Vec<_>>()
+    ))
+    .unwrap();
+    executed(
+        store,
+        id,
+        (
+            json!({
+                "type": "success",
+                "completed": (0..services.len()).map(operation).collect::<Vec<_>>()
+            }),
+            ployz_store::RowTracker::default().changes(&rows),
+        ),
+        Vec::new(),
+    );
+}
+
 fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, services: &[&str]) {
+    admit_deploy(store, who, environment, n);
+    run(store, &id(n), services, Vec::new());
+}
+
+fn admit_deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
     store
         .write(
             who,
@@ -271,7 +307,6 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, services: 
             }),
         )
         .unwrap();
-    run(store, &id(n), services, Vec::new());
 }
 
 fn volumes(given: &[(&str, &[&str])]) -> BTreeMap<EnvironmentName, Vec<VolumeName>> {
@@ -1193,6 +1228,55 @@ fn a_removal_that_failed_on_a_silent_server_goes_again_once_it_answers() {
 }
 
 #[test]
+fn a_removal_waits_on_each_server_that_did_not_answer_cloud_by_its_name() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    branch(&store, &who, "fix");
+    admit_deploy(&store, &who, "fix", 2);
+    run_named(&store, &id(2), &["web"], "web-1");
+    // `fix` has no Volume. `a…` ran it as `web-1`; `b…` never ran anything here.
+    let silent = Trusted {
+        servers: Some(2),
+        unanswered: Some(vec![server('a'), server('b')]),
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &silent).unwrap();
+    let Removal::Removing { waiting_on, .. } = removing else {
+        panic!("removed");
+    };
+    let why = "It didn't answer, so shop/fix can't come off it yet";
+    assert_eq!(
+        serde_json::to_value(&waiting_on).unwrap(),
+        json!([
+            {
+                "server": "web-1", "server_id": server('a'), "why": why,
+                "fix": { "server_remove": { "server": server('a') } },
+            },
+            {
+                "server": server('b'), "server_id": server('b'), "why": why,
+                "fix": { "server_remove": { "server": server('b') } },
+            },
+        ])
+    );
+}
+
+#[test]
+fn a_removal_from_a_store_without_server_ids_still_reads() {
+    let older = json!({
+        "removal": "removing", "id": uuid(9), "left": [],
+        "waiting_on": [{
+            "server": server('a'), "why": "It didn't answer whether it holds data",
+            "fix": { "server_remove": { "server": server('a') } },
+        }],
+    });
+    let Removal::Removing { waiting_on, .. } = serde_json::from_value(older).unwrap() else {
+        panic!("removed");
+    };
+    assert_eq!(waiting_on[0].server, server('a').to_string());
+    assert_eq!(waiting_on[0].server_id, None);
+}
+
+#[test]
 fn a_removal_that_failed_on_a_server_silent_since_admission_goes_again_once_it_answers() {
     let (store, who) = branched();
     let all_answer = Trusted {
@@ -1475,6 +1559,22 @@ fn remove_refuses_a_destructive_target_without_its_version() {
         },
     ));
     assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
+    assert!(
+        unversioned
+            .message
+            .ends_with("Pass the version to go ahead"),
+        "{unversioned:?}"
+    );
+    assert!(
+        stale.message.starts_with(
+            "This changed since that version, so nothing was removed. Removing this will"
+        ),
+        "{stale:?}"
+    );
+    assert!(
+        stale.message.ends_with("Pass the new version to go ahead"),
+        "{stale:?}"
+    );
     // Accepting the data isn't confirming it.
     let unconfirmed =
         refusal(store.write_trusted(&who, &accepting_data(None), &observing(observed())));

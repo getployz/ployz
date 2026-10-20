@@ -583,6 +583,12 @@ pub fn resolve_connections(
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(ConnectError::Config(error)),
     }
+    if let Some(name) = context_override {
+        return Err(ConnectError::Context(ContextError::ContextNotFound {
+            name: name.to_owned(),
+            path: config_path.to_owned(),
+        }));
+    }
     // A socket this user can't even see is not one it can use: fall through
     // to Cloud, whose sign-in hint is the useful one.
     let socket_available = match local_socket.try_exists() {
@@ -823,8 +829,15 @@ impl ConnectError {
 
     /// A daemon sent this status itself, so the target was not silent.
     pub(crate) fn target_replied(&self) -> bool {
+        matches!(self, Self::Rpc(_)) && !self.unreplied()
+    }
+
+    /// The call went out and no status came back: the client's connection dropped, its
+    /// deadline elapsed, or the entry's router heard nothing from the target. Whether the
+    /// target acted on it is unknown.
+    pub(crate) fn unreplied(&self) -> bool {
         matches!(self, Self::Rpc(error)
-            if !error.unanswered && !error.budget_expired && !error.routed_unanswered)
+            if error.unanswered || error.budget_expired || error.routed_unanswered)
     }
 }
 

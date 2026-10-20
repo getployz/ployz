@@ -30,6 +30,7 @@ import { ServiceVariablesRawEditorAlerts } from "#/routes/_protected/cloud/$orga
 import { ServiceVariablesRawEditorFooter } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorFooter";
 import { ServiceVariablesRawEditorTabs } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTabs";
 import type { RawEditorMode } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTypes";
+import { toErrorMessage } from "#/lib/error-message";
 
 const EMPTY_REFERENCE_TARGETS: ReferenceTarget[] = [];
 
@@ -216,7 +217,7 @@ export function ServiceVariablesRawEditor({
 
     const typed = { mode: editor.mode, envText: editor.envText, jsonText: editor.jsonText };
     onApply(diff).isPersisted.promise.catch((error) => {
-      refusedRef.current = { ...typed, submitError: error instanceof Error ? error.message : "The variables couldn’t be saved." };
+      refusedRef.current = { ...typed, submitError: toErrorMessage(error, "The variables couldn’t be saved.") };
       onOpenChange(true);
     });
     onOpenChange(false);

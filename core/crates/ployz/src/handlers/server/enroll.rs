@@ -30,8 +30,8 @@ pub(crate) use waiting::{command as waiting_command, enroll as enroll_waiting};
 
 pub(crate) fn command(command: Command) -> Command {
     super::provisioning_flags(
-        base(command, "Add a Server to your Organization's Cluster")
-            .long_about("Add a Server to your Organization's Cluster through Cloud; the first Server founds it. With DESTINATION, installs Ployz over SSH; without one, adds the Server this runs on. Signed in, it asks Cloud for an enrollment token; signed out, it asks for one at a hidden prompt, or reads --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN. --command prints one line to paste on the Server and the token beside it, then waits until it joins; with --json it returns both at once, and --wait ENROLLMENT waits."),
+        base(command, "Add a Server to your Organization")
+            .long_about("Add a Server to your Organization through Cloud.\n\nWith DESTINATION, installs Ployz over SSH; without one, adds the Server this runs on.\n\nSigned in, it asks Cloud for an enrollment token. Signed out, it asks for one at a hidden prompt, or reads --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN.\n\n--command prints one line to paste on the Server and the token beside it, then waits until it joins. With --json it returns both at once; --wait ENROLLMENT waits."),
     )
     .arg(positional("destination", false))
     .arg(
@@ -261,7 +261,6 @@ async fn paste(
         "Run this on the Server, and paste the token when it asks (expires {}):\n\n  {line}\n\n  {}\n",
         minted.expires_at, minted.token
     ));
-    crate::ui::note("Waiting for the Server to join...");
     wait_joined(acting, &minted.id).await
 }
 
@@ -295,25 +294,35 @@ enum Enrollment {
 }
 
 async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
+    crate::ui::note("Waiting for the Server to join...");
     loop {
-        match acting
+        let read = acting
             .post("servers/enrollment", json!({ "id": enrollment }))
-            .await?
-        {
-            Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
-            Enrollment::Expired => {
+            .await;
+        match read {
+            Err(LoginError::Status { status: 404, .. }) => {
                 return Err(Error::coded(
-                    RpcErrorCode::Conflict,
-                    "the enrollment expired before a Server joined",
+                    RpcErrorCode::NotFound,
+                    "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token",
                 )
                 .hint(Hint::Retry("ployz server add --command".into())));
             }
-            Enrollment::Joined { machine_id } => {
-                crate::ui::stream("The Server joined.");
-                return crate::ui::emit(
-                    &json!({ "server": { "id": machine_id }, "status": "joined" }),
-                );
-            }
+            read => match read? {
+                Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
+                Enrollment::Expired => {
+                    return Err(Error::coded(
+                        RpcErrorCode::Conflict,
+                        "the enrollment expired before a Server joined",
+                    )
+                    .hint(Hint::Retry("ployz server add --command".into())));
+                }
+                Enrollment::Joined { machine_id } => {
+                    crate::ui::stream("The Server joined.");
+                    return crate::ui::emit(
+                        &json!({ "server": { "id": machine_id }, "status": "joined" }),
+                    );
+                }
+            },
         }
     }
 }
@@ -343,6 +352,36 @@ pub(in crate::handlers) fn requested_storage(matches: &ArgMatches) -> StoragePre
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_enrollment_voided_by_forgetting_the_servers_ends_the_wait() {
+        let cloud = crate::cloud_login::tests::fake_cloud(|route, _| match route {
+            "POST /api/cli/servers/enrollment" => (
+                404,
+                json!({ "_tag": "PublicError", "code": "NOT_FOUND", "message": "The requested resource was not found." }),
+            ),
+            _ => (500, json!({})),
+        });
+        let acting = Acting {
+            credential: Credential::Token {
+                cloud,
+                token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
+            },
+            organization: Organization {
+                id: "o1".to_owned(),
+                slug: "acme".to_owned(),
+            },
+        };
+        let error = wait_joined(&acting, "e1").await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token"
+        );
+        assert_eq!(
+            error.hints(),
+            [Hint::Retry("ployz server add --command".into())]
+        );
+    }
 
     #[test]
     fn pasted_command_pins_this_release_and_names_a_non_default_cloud() {

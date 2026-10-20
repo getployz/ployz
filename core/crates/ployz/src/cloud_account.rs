@@ -5,7 +5,7 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
@@ -87,6 +87,12 @@ pub(crate) fn named_cloud(
     let cloud = cloud.filter(|cloud| !cloud.trim().is_empty());
     let named = match cloud {
         Some(cloud) if token => Some(cloud),
+        None if token => match store.cloud() {
+            Err(LoginError::Corrupt { path, .. }) => {
+                return Err(LoginError::TokenCloudUnreadable(path));
+            }
+            stored => stored?,
+        },
         cloud => store.cloud()?.or(cloud),
     };
     Ok(named.map(|cloud| cloud_origin(&cloud)))
@@ -114,17 +120,44 @@ pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, Logi
 ///
 /// Returns a Cloud failure.
 pub(crate) async fn acting_in(credential: &Credential) -> Result<Organization, LoginError> {
+    Ok(acting_as(credential).await?.organization)
+}
+
+/// Who `credential` acts as.
+pub(crate) struct Acting {
+    pub(crate) organization: Organization,
+    /// Cloud hears it as an agent: an agent token, which can't answer for a person.
+    pub(crate) agent: bool,
+}
+
+/// [`acting_in`], and whether Cloud hears `credential` as an agent. A device is
+/// never one; a token's kind is Cloud's to say.
+///
+/// # Errors
+///
+/// Returns a Cloud failure.
+pub(crate) async fn acting_as(credential: &Credential) -> Result<Acting, LoginError> {
     match credential {
-        Credential::Device(signed_in) => Ok(signed_in.organization.clone()),
-        Credential::Token { .. } => organizations(credential)
-            .await?
-            .into_iter()
-            .find(|entry| entry.current)
-            .map(|entry| Organization {
-                id: entry.id,
-                slug: entry.slug,
+        Credential::Device(signed_in) => Ok(Acting {
+            organization: signed_in.organization.clone(),
+            agent: false,
+        }),
+        Credential::Token { .. } => {
+            let listed = listed(credential).await?;
+            let organization = listed
+                .organizations
+                .into_iter()
+                .find(|entry| entry.current)
+                .map(|entry| Organization {
+                    id: entry.id,
+                    slug: entry.slug,
+                })
+                .ok_or(LoginError::TokenRefused)?;
+            Ok(Acting {
+                organization,
+                agent: listed.via.as_deref() == Some(TokenKind::Agent.as_str()),
             })
-            .ok_or(LoginError::TokenRefused),
+        }
     }
 }
 
@@ -222,8 +255,35 @@ pub(crate) struct ServerClears {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ServerAccess {
     pub(crate) connections: Vec<crate::context::Connection>,
-    /// Servers Cloud couldn't provision a holder on now.
+    /// Servers that didn't answer Cloud's provisioning of a holder now.
     pub(crate) unreachable: Vec<MachineId>,
+    /// Servers Cloud couldn't provision a holder on for another reason, such as their own refusal.
+    #[serde(default)]
+    pub(crate) refused: Vec<RefusedServer>,
+    /// The names enrollment gave the Organization's Servers, where Cloud holds one.
+    #[serde(default, deserialize_with = "text_names")]
+    pub(crate) names: BTreeMap<MachineId, String>,
+}
+
+/// A Server that gave Cloud no holder for a reason other than silence, with that reason.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RefusedServer {
+    pub(crate) machine_id: MachineId,
+    pub(crate) message: String,
+}
+
+/// Names are display only: an entry that is not a Machine ID and a string is dropped, so
+/// that Server shows by its id and the reply's connections still dial.
+fn text_names<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<MachineId, String>, D::Error> {
+    let serde_json::Value::Object(names) = serde_json::Value::deserialize(deserializer)? else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(names
+        .into_iter()
+        .filter_map(|(id, name)| Some((MachineId::parse(id).ok()?, name.as_str()?.to_owned())))
+        .collect())
 }
 
 /// A token just made: the one reply that carries its secret.
@@ -254,12 +314,20 @@ pub(crate) struct Removed {
 pub(crate) async fn organizations(
     credential: &Credential,
 ) -> Result<Vec<OrganizationEntry>, LoginError> {
-    #[derive(Deserialize)]
-    struct Reply {
-        organizations: Vec<OrganizationEntry>,
-    }
-    let reply: Reply = call(credential, Method::GET, "organizations", None).await?;
-    Ok(reply.organizations)
+    Ok(listed(credential).await?.organizations)
+}
+
+/// `GET organizations`: the Organizations, and how Cloud hears the caller
+/// (`cli` or `agent`; a Cloud that predates it says nothing).
+#[derive(Deserialize)]
+struct Listed {
+    organizations: Vec<OrganizationEntry>,
+    #[serde(default)]
+    via: Option<String>,
+}
+
+async fn listed(credential: &Credential) -> Result<Listed, LoginError> {
+    call(credential, Method::GET, "organizations", None).await
 }
 
 /// The Organization to switch to: a slug the user typed, or one Cloud listed, sent by ID.
@@ -1096,15 +1164,56 @@ pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
         .cloned()
 }
 
-/// Cloud's refusal of a call, as it sent it.
+/// Cloud's refusal of a call, with a next step that works under `PLOYZ_TOKEN`.
 pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     #[derive(Deserialize)]
     struct Refusal {
-        error: RpcError,
+        error: Refused,
     }
-    serde_json::from_slice::<Refusal>(body)
-        .ok()
-        .map(|refusal| refusal.error)
+    /// A Cloud command's refusal also names the input field, what fits there and
+    /// whether it wrote. They ride in `details`, where a write's `writes` already does.
+    #[derive(Deserialize)]
+    struct Refused {
+        #[serde(flatten)]
+        error: RpcError,
+        field: Option<serde_json::Value>,
+        expected: Option<serde_json::Value>,
+        writes: Option<serde_json::Value>,
+    }
+    let Refused {
+        mut error,
+        field,
+        expected,
+        writes,
+    } = serde_json::from_slice::<Refusal>(body).ok()?.error;
+    let told = [("field", field), ("expected", expected), ("writes", writes)]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value)));
+    for (key, value) in told {
+        if !error.details.is_object() {
+            error.details = serde_json::json!({});
+        }
+        if let serde_json::Value::Object(details) = &mut error.details {
+            details.insert(key, value);
+        }
+    }
+    Some(past_token(error))
+}
+
+/// `ployz login` while `PLOYZ_TOKEN` is set: the token still wins over the sign-in.
+pub(crate) const SIGN_IN_PAST_TOKEN: &str = "unset PLOYZ_TOKEN && ployz login";
+
+/// Cloud can't know a token caller is a shell with `PLOYZ_TOKEN` set, so its
+/// `ployz login` step becomes one that works while the token is.
+fn past_token(mut refused: RpcError) -> RpcError {
+    let token = std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+    if token
+        && let Some(next) = refused.details.get_mut("next")
+        && next == "ployz login"
+    {
+        *next = SIGN_IN_PAST_TOKEN.into();
+    }
+    refused
 }
 
 /// A Cloud route's `PublicError`, as the refusal it stands for.
@@ -1196,6 +1305,36 @@ mod tests {
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
 
+    #[test]
+    fn a_name_that_is_not_text_costs_only_that_name() {
+        let (held, odd, gone) = ("a".repeat(32), "b".repeat(32), "c".repeat(32));
+        let access: ServerAccess = serde_json::from_value(serde_json::json!({
+            "connections": [{ "machine_id": held, "unix": "/run/ployz.sock" }],
+            "unreachable": [odd, gone],
+            "names": { held.clone(): "web-1", odd: null, gone: 7, "not-an-id": "web-9" },
+        }))
+        .unwrap();
+
+        assert_eq!(access.connections.len(), 1);
+        assert_eq!(access.unreachable.len(), 2);
+        assert_eq!(
+            access.names,
+            BTreeMap::from([(MachineId::parse(held).unwrap(), "web-1".to_owned())])
+        );
+    }
+
+    #[test]
+    fn names_that_are_not_an_object_leave_every_server_by_id() {
+        let access: ServerAccess = serde_json::from_value(serde_json::json!({
+            "connections": [],
+            "unreachable": [],
+            "names": null,
+        }))
+        .unwrap();
+
+        assert!(access.names.is_empty());
+    }
+
     /// A device signed in to `cloud` as Organization `acme`.
     fn signed_in_store(cloud: &str) -> (tempfile::TempDir, CredentialStore) {
         let dir = tempfile::tempdir().unwrap();
@@ -1236,6 +1375,26 @@ mod tests {
             Some("http://other.test"),
             "signed out, the Cloud URL still names where commands are read"
         );
+    }
+
+    #[tokio::test]
+    async fn ployz_token_never_guesses_a_cloud_past_an_unreadable_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::beside(&dir.path().join("config.yaml"));
+        std::fs::write(dir.path().join("cloud.json"), "{not json").unwrap();
+        let token = || Some("ployz_secret".to_owned());
+        let refused = credential(&store, token(), None).await.err();
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|error| error.to_string().contains("PLOYZ_CLOUD_URL")),
+            "{refused:?}"
+        );
+        let chosen = credential(&store, token(), Some("http://cloud.test".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(chosen.cloud(), "http://cloud.test");
+        assert!(named_cloud(&store, false, None).is_err());
     }
 
     #[tokio::test]

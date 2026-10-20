@@ -17,7 +17,7 @@ use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
     Error,
     data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
-    leaf_matches, store,
+    leaf_matches, store, typed_with,
 };
 use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
@@ -39,6 +39,27 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Reset)
 }
 
+/// A reset needs its Server to answer. Servers that didn't answer may be gone, and one that
+/// is gone is forgotten instead; a Cloud that couldn't hand out the connections is retried.
+/// A Server's own refusal says what is wrong with it.
+fn unanswered_reset(error: Error, matches: &ArgMatches, selector: &str) -> Error {
+    let report = error.report();
+    if report.details.get("refused").is_some() {
+        return error;
+    }
+    if super::servers_unanswered(&report) {
+        let forget = super::super::rerun(
+            matches,
+            &["server", "forget", selector, "--confirm", "dead"],
+        );
+        return error.hint(Hint::Next(forget));
+    }
+    if report.code == RpcErrorCode::Unavailable {
+        return error.hint(Hint::Retry(typed_with(&[])));
+    }
+    error
+}
+
 pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Forget)
 }
@@ -51,9 +72,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let reached = runtime.block_on(async {
         match removal {
             Removal::Forget => super::connect_or_unanswered(matches, options.context()).await,
-            Removal::Reset => Ok(Reached::Client(
-                super::connect(matches, options.context()).await?,
-            )),
+            Removal::Reset => super::connect(matches, options.context())
+                .await
+                .map(Reached::Client)
+                .map_err(|error| unanswered_reset(error, matches, &selector)),
         }
     })?;
     let mut client = match reached {
@@ -333,12 +355,18 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             "cloud_released": cloud_released,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
-        let mut config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
+        let config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
-            && let Some(context) = config.contexts.get_mut(&context_name)
+            && config.contexts.contains_key(&context_name)
         {
-            context.drop_machine(&selected.id);
-            config.save().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
+            config
+                .update(|latest| {
+                    if let Some(context) = latest.contexts.get_mut(&context_name) {
+                        context.drop_machine(&selected.id);
+                    }
+                    Ok::<_, Error>(())
+                })
+                .map_err(|error| error.context("Server removed; local context cleanup failed."))?;
         }
         if reset_failure.is_some() {
             return Err(Error::partial());

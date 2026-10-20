@@ -20,6 +20,7 @@ import { NonRetriableError } from "inngest";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import type { OperationVerb } from "#/modules/approvals/approvals";
 import { readStore } from "#/modules/config-store/config-store.server";
+import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
@@ -27,7 +28,14 @@ import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modu
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import {
+  ClusterOutOfTime,
+  clusterRead,
+  OrganizationRuntime,
+  PLAN_CLUSTER_BUDGET_MS,
+  RUNTIME_FRAME_TIMEOUT_MS,
+  withClusterBudget,
+} from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
@@ -139,9 +147,12 @@ const KIND_WORDS = {
 } satisfies Record<VolumeRunKind, string>;
 
 // A Machine may already be destroying the copy, and no floor retracts that, so a release cannot promise to stop it.
-const busyWith = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) =>
-  `${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ${lane.kind === "delete_mirror" ? "it finishes on its own" : `ployz volume release ${lane.volumeName} stops it`}`;
-export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "kind" | "volumeName">) => `VolumeBusy: ${busyWith(lane)}`;
+export const volumeBusyMessage = (lane: Pick<VolumeRunRow, "id" | "kind" | "volumeName">) => {
+  const follow = `ployz volume runs ${lane.volumeName} ${lane.id} follows it`;
+  if (lane.kind === "delete_mirror") return `${lane.volumeName} is busy with a mirror removal, which finishes on its own; ${follow}`;
+  if (lane.kind === "release") return `${lane.volumeName} is busy with a release; ${follow}`;
+  return `${lane.volumeName} is busy with a ${KIND_WORDS[lane.kind]}; ${follow}, and ployz volume release ${lane.volumeName} stops it`;
+};
 
 export const finishesThere = (volumeName: string, server: string) => `${volumeName} is starting on ${server}; it finishes there`;
 
@@ -179,16 +190,35 @@ const activeLane = Effect.fn("VolumeRun.activeLane")(function* (volumeId: string
 
 const deploying = (lane: Pick<VolumeRunRow, "kind" | "heldBy">) => lane.kind === "deploy" || lane.heldBy !== null;
 
+/**
+ * The Volume's name now, read by the ids its Docker volume name carries, so a rename after the request resolved still
+ * shows: a run keeps the name it started under. A Volume no longer configured keeps that name, and so does one whose
+ * Project was renamed or Environment removed between the two reads.
+ */
+const currentVolumeName = Effect.fn("VolumeRun.currentVolumeName")(function* (run: Pick<VolumeRunRow, "organizationId" | "dockerVolume" | "volumeName">) {
+  const parsed = parseDockerVolumeName(run.dockerVolume);
+  if (parsed === null) return run.volumeName;
+  const { namespaces } = yield* readStore(run.organizationId, { query: "namespaces" });
+  const owned = namespaces.find((entry) => entry.namespace === parsed.namespace);
+  if (owned === undefined) return run.volumeName;
+  const named = yield* readStore(run.organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } }).pipe(
+    Effect.map(({ volumes }) => volumes.find((volume) => volume.id === parsed.volumeId)?.name),
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(undefined)),
+  );
+  return named ?? run.volumeName;
+});
+
+/** Names the Volume as it is called at the refusal, so the hints run as printed. */
 const laneRefusal = Effect.fn("VolumeRun.laneRefusal")(function* (lane: VolumeRunRow, kind: VolumeRunKind) {
   const run = volumeRunView(lane);
-  if (deploying(lane)) return { code: "conflict", message: `${lane.volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
-  const refuse = (message: string, details: JsonValue = { run }) =>
-    ({ code: "conflict", message: kind === "release" ? message : `VolumeBusy: ${message}`, details }) satisfies StoreRefusal;
+  const volumeName = yield* currentVolumeName(lane);
+  if (deploying(lane)) return { code: "conflict", message: `${volumeName} is deploying; the Deploy ends its run`, details: { run } } satisfies StoreRefusal;
+  const refuse = (message: string, details: JsonValue = { run }) => ({ code: "conflict", message, details }) satisfies StoreRefusal;
   const input = laneInputOf(lane);
-  if (input.kind === "seed") return refuse(`${lane.volumeName} is being copied into ${input.args.into.name}; it finishes on its own`);
-  if (!pastReturn(lane)) return refuse(busyWith(lane));
+  if (input.kind === "seed") return refuse(`${volumeName} is being copied into ${input.args.into.name}; it finishes on its own`);
+  if (!pastReturn(lane)) return refuse(volumeBusyMessage({ id: lane.id, kind: lane.kind, volumeName }));
   const target = yield* laneTarget(lane);
-  const finishes = finishesThere(lane.volumeName, target ?? "its new Server");
+  const finishes = finishesThere(volumeName, target ?? "its new Server");
   // A restore's target is the copy it restores from, not a move's destination.
   if (kind === "release" && target !== null && lane.kind !== "restore") return refuse(finishes, { run, move_to: target });
   return refuse(finishes);
@@ -247,15 +277,18 @@ const refusedWhileOwed = (input: VolumeLaneInput, pending: Owed) => {
   return input.args.machine === undefined || input.args.machine === pending.current;
 };
 
-const owedRefusal = (pending: Owed, target: string | null): StoreRefusal => ({
-  code: "conflict",
-  message: `${pending.volumeName} finishes on ${target ?? "its new Server"}; ployz volume release ${pending.volumeName} finishes it now`,
-  details: { run: volumeRunView(pending) },
+const owedRefusal = Effect.fn("VolumeRun.owedRefusal")(function* (pending: Owed, target: string | null) {
+  const volumeName = yield* currentVolumeName(pending);
+  return {
+    code: "conflict",
+    message: `${volumeName} finishes on ${target ?? "its new Server"}; ployz volume release ${volumeName} finishes it now`,
+    details: { run: volumeRunView(pending) },
+  } satisfies StoreRefusal;
 });
 
 const namedOwedRefusal = Effect.fn("VolumeRun.namedOwedRefusal")(function* (pending: Owed) {
   const { name } = yield* machineNamed(pending.organizationId, pending.current);
-  return owedRefusal(pending, name ?? (yield* laneTarget(pending)));
+  return yield* owedRefusal(pending, name ?? (yield* laneTarget(pending)));
 });
 
 type DeleteMirrorArgs = VolumeRunArgs["delete_mirror"];
@@ -339,6 +372,7 @@ const refusalCode = {
   unanswered: "unavailable",
   confirm_required: "confirmation_required",
   invalid: "invalid_argument",
+  already_on: "conflict",
   no_writer: "conflict",
   two_writers: "conflict",
   volume_switching: "conflict",
@@ -348,6 +382,12 @@ const refusalCode = {
   another_copy: "conflict",
   server_lacks: "unsupported",
 } satisfies Record<RefusalCode, string>;
+
+/** A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry. */
+const storeRefusal = ({ code, message, next }: Refusal): StoreRefusal => {
+  if (code === "already_on") return { code: refusalCode[code], message, details: { settled: true } };
+  return { code: refusalCode[code], message, details: next === undefined ? null : { next } };
+};
 
 const deletesCopy = (volume: ResolvedVolume, member: AnsweredMember): DestructiveEffect => ({
   kind: "deletes_volume",
@@ -434,7 +474,26 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   if (pending !== null && input.kind !== "delete_mirror" && refusedWhileOwed(input, pending)) {
     return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
   }
-  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
+  return yield* planOnCluster(organizationId, volume, input, pending);
+});
+
+/** A read's failure as none, except the plan running out of Cluster time, which refuses the whole plan. */
+const answered = <A, E, R>(read: Effect.Effect<A, E, R>) => read.pipe(
+  Effect.map(Option.some),
+  Effect.catch((error) => error instanceof ClusterOutOfTime ? Effect.fail(error) : Effect.succeedNone),
+);
+
+/**
+ * The rest of a plan, read off the copies the Cluster reports. Its Cluster reads share one budget, so a plan that opens
+ * two sessions still answers inside the CLI's request, and one that runs out of time says the Servers aren't answering.
+ */
+export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
+  organizationId: string,
+  volume: ResolvedVolume,
+  input: PlanRequest,
+  pending: Owed | null,
+) {
+  const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
@@ -447,22 +506,22 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
   if (!planned.ok) {
-    const { code, message, next } = planned.refusal;
-    return { ok: false, refusal: { code: refusalCode[code], message, details: next === undefined ? null : { next } } } satisfies VolumeRunPlan;
+    return { ok: false, refusal: storeRefusal(planned.refusal) } satisfies VolumeRunPlan;
   }
   const verb = VERBS[input.kind];
   const { phase } = planned;
   if (phase.kind === "landed") {
-    const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.option);
+    const source = yield* answered(keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)));
     if (Option.isNone(source)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
     if (source.value === null) {
-      const { code, message } = alreadyOn(volume.volumeName, phase.target.machine.name);
-      return { ok: false, refusal: { code: refusalCode[code], message, details: null } } satisfies VolumeRunPlan;
+      return { ok: false, refusal: storeRefusal(alreadyOn(volume.volumeName, phase.target.machine.name)) } satisfies VolumeRunPlan;
     }
   }
   const from = phase.kind === "release" ? phase.from : null;
   const source = from?.kind === "slots"
-    ? yield* keptOn(organizationId, volume.dockerVolume, from.slots.map((member) => member.machine)).pipe(Effect.map((kept) => kept?.machine.id ?? null), Effect.option)
+    ? yield* answered(keptOn(organizationId, volume.dockerVolume, from.slots.map((member) => member.machine)).pipe(
+      Effect.map((kept) => kept?.machine.id ?? null),
+    ))
     : Option.some(null);
   const release = releasePlan(from, source);
   const effects = phaseEffects(volume, phase, release.forgets);
@@ -476,7 +535,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
   const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
   return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
-});
+}, Effect.catchTag("ClusterOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies VolumeRunPlan)), withClusterBudget(PLAN_CLUSTER_BUDGET_MS));
 
 const owedTarget = Effect.fn("VolumeRun.owedTarget")(function* (pending: Owed, members: readonly Member[]) {
   return members.find((member) => member.machine.id === pending.current)?.machine
@@ -625,7 +684,7 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
   }
   if (input.kind !== "release") {
     if (!refusedWhileOwed(input, pending)) return inserted;
-    return yield* new LaneRefused({ refusal: owedRefusal(pending, yield* laneTarget(pending)), busy: volumeRunView(pending), owed: pending });
+    return yield* new LaneRefused({ refusal: yield* owedRefusal(pending, yield* laneTarget(pending)), busy: volumeRunView(pending), owed: pending });
   }
   if (plan !== undefined && (plan.forward?.after !== pending.id || plan.forward.to !== pending.current)) {
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(pending) });
@@ -683,7 +742,7 @@ export const holdDeployLane = Effect.fn("VolumeRun.holdDeployLane")(function* (c
 /** The Machines the Cluster names now; none when it does not answer. */
 export const namedMachines = Effect.fn("VolumeRun.namedMachines")(function* (organizationId: string) {
   const frame = yield* openSession(organizationId).pipe(
-    Effect.flatMap((session) => session.watchFirstFrame(5_000)),
+    Effect.flatMap((session) => session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead)),
     Effect.option,
   );
   return Option.match(frame, {
@@ -1026,7 +1085,7 @@ export const DRAIN_MS = 3_000;
 
 const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (organizationId: string, dockerVolume: string) {
   const session = yield* openSession(organizationId);
-  const frame = yield* session.watchFirstFrame(5_000);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   return frame.containers.filter((container) =>
     container.kind === "service_container"
     && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
@@ -1201,7 +1260,7 @@ const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; 
  */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
   const session = yield* openSession(organizationId);
-  const frame = yield* session.watchFirstFrame(5_000);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
   const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
@@ -1213,6 +1272,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     );
     const floorless = run !== undefined && serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.volumeFloor) === false;
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
+      clusterRead,
       Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
         ? lacks(requirements.volumeFloor.capability)
         : Effect.succeed<Member>({

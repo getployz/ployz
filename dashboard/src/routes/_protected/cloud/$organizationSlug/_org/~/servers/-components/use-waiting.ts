@@ -11,6 +11,9 @@ import { waitingServerDetailQueryOptions, fleetTokenKeys, serverEnrollmentsQuery
 
 export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null };
 
+export const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
+export const ENROLL_REFUSED = "Only an owner or admin can enroll or reject servers.";
+
 /** Mints a fleet token. The secret lives only in the result, so it shows once. */
 export function useMintFleetToken(organizationSlug: string) {
   const queryClient = useQueryClient();

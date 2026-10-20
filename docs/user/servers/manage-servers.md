@@ -59,7 +59,9 @@ blocking it:
 ployz server show web-3
 ```
 
-`ployz server show` shows a server in your cluster the same way, so one command covers both. It
+`ployz server show` shows a server in your cluster the same way, so one command covers both: its
+OS, versions, addresses, storage, CPU, memory and disk, and how long a round trip to each other
+server takes. Add `--json` for everything it knows, such as the features its daemon supports. It
 also takes a waiting server's id, or the start of one at least 8 characters long, such as the
 start the list prints. If two waiting servers share a name or the start you typed, it lists their
 ids instead.
@@ -240,8 +242,14 @@ From the CLI, `ployz server drain web-2` does the same and prints the report. If
 failed, it exits non-zero. When you're signed in, Ployz Cloud runs the drain, as it does for the
 button. Unlike the button, it waits for approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
-The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud. Add
-`--context` to drain from your computer instead.
+The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud.
+
+Servers you run without Ployz Cloud belong to a context on your computer. Signed out, the same
+command drains from your computer through your current context. To use another context, name it:
+
+```sh
+ployz server drain web-2 --context my-cluster
+```
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
 reads **Your domains point at 203.0.113.10**: the server's address. Turn it off and a dialog lists the
@@ -272,7 +280,7 @@ upgrading reads **Upgrading**.
 ### Turn on automatic upgrades
 
 Automatic upgrades are off until you turn them on. Click the **Upgrade settings** icon at the top
-of the **Servers** page and turn on **Upgrade automatically**. Any member can change it. Ployz
+of the **Servers** page and turn on **Upgrade automatically**. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it. Ployz
 starts upgrading right away, then checks every hour. Turn the switch off to go back to upgrading by
 hand.
 
@@ -291,14 +299,15 @@ whether it went back to the release it ran before. Members who set **Failed auto
 ### Upgrade one server
 
 To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**.
-Any member can upgrade servers while they're online and not building. One upgrade runs at a time
+Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can upgrade servers, and only while they're online and not building. For a
+member, **Upgrade** and **Try again** are disabled and say so. One upgrade runs at a time
 per organization, so **Upgrade** and **Try again** wait while one is running.
 
 ### Choose Stable or Beta releases
 
 Click the **Upgrade settings** icon at the top of the **Servers** page and set **Releases** to
-**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
-member can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
+**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Only an
+owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
 and each server's page then show the newest release on that channel.
 
 Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as
@@ -329,14 +338,22 @@ ployz server upgrade stable web-1 web-2
 ```
 
 When you're signed in, Ployz Cloud runs the upgrade, so it follows your organization's channel.
-Naming the other channel fails with `channel_mismatch`. To pick an exact version like `0.2.0`,
-add `--context` and upgrade from your computer instead. Ployz Cloud never moves a server to an
-older release than it runs, so a downgrade also needs `--context`.
+Naming the other channel fails with `channel_mismatch`. Ployz Cloud upgrades only to the newest
+release on that channel and never moves a server to an older release than it runs. To get
+prereleases, [choose Beta](#choose-stable-or-beta-releases).
+
+Servers you run without Ployz Cloud upgrade from your computer, through your current context or
+the one `--context` names. There you can name an exact version like `0.2.0`, even one older
+than the server runs:
+
+```sh
+ployz server upgrade 0.2.0 web-1 --context my-cluster
+```
 
 Ployz releases are signed, starting with the first release after 0.3.0-beta.2. A server checks
 the signature before it installs a release, and refuses one that isn't signed by Ployz or that
 claims a different version. Releases up to 0.3.0-beta.2 are unsigned, so a server can't install
-them, even by exact version with `--context`.
+them, even by exact version.
 
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep
 running and private DNS keeps answering (with the exceptions in
@@ -453,11 +470,11 @@ and `ployz server forget` wait for an approval (see
 before they take the server out. One approval removes the server once, and approving a forget
 doesn't approve a removal that resets the server.
 
-Unlike `drain`, `upgrade` and `clean`, removing or forgetting a server Ployz Cloud manages always goes through
-Ployz Cloud, even with `--context` or `--connect`: Cloud keeps a record of each server it manages,
-and removing one behind its back would leave that record behind.
+Removing or forgetting a server Ployz Cloud manages always goes through Ployz Cloud, even with
+`--context` or `--connect`: Cloud keeps a record of each server it manages, and removing one behind
+its back would leave that record behind.
 Ctrl-C stops following the removal but doesn't stop it: it keeps running in Ployz Cloud, and the
-server stays in your context, since the removal can still fail.
+server stays listed, since the removal can still fail.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
@@ -477,6 +494,11 @@ even if it still shows as up, type `dead` instead:
 ```sh
 ployz server forget web-2 --confirm dead
 ```
+
+`ployz server rm` on a server that doesn't answer stops before it changes anything and prints that
+command as its next step. When Ployz Cloud itself doesn't answer, it says to run `ployz server rm`
+again instead. A server that answers but refuses isn't gone: `ployz server rm` prints its reason and
+doesn't offer to forget it.
 
 When it is your only server, Ployz Cloud forgets it as it [forgets servers you
 deleted](#forget-servers-you-deleted). When none of several servers answers, forget them all that
@@ -517,17 +539,21 @@ When you're signed in, Ployz Cloud does the removal. You still type the name to 
 confirmation names each volume as the approval does: by the services that used it and its server. Cloud
 refuses anything an environment owns, including one an environment took over while the removal
 waited, and it asks before it stops services or deletes volume data (see [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)). The
-CLI stops waiting after 30 minutes and says so; the removal keeps running in Ployz Cloud. Add
-`--context` to clean up from your computer instead.
+CLI stops waiting after 30 minutes and says so; the removal keeps running in Ployz Cloud.
+
+`ployz server clean` works only when you're signed in, without `--context` or `--connect`, because
+only Ployz Cloud knows which environments still exist.
 
 ## Forget servers you deleted
 
 If you deleted all your servers at your provider, forget them:
 
-1. Go to **Organization** and, under **Danger**, click **Forget Servers**. When the **Servers**
-   page can't reach your servers, **Forget them and start over.** opens the same dialog.
+1. Go to **Organization** and, under **Danger**, click **Forget servers**. When the **Servers**
+   page can't reach your servers, **Forget them and start over.** opens the same dialog. Only an
+   owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can forget
+   servers. For a member the button is disabled.
 2. Ployz lists the servers and their volumes. Type your organization's slug and click **Forget
-   Servers**.
+   servers**.
 
 Ployz refuses while any server answers. Your projects, settings and deployment history stay, but
 volume data on the forgotten servers can't be recovered. When you add a server again, Ployz deploys

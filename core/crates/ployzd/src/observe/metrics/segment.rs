@@ -18,6 +18,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{self, BufRead, BufReader, Write},
+    ops::ControlFlow,
     os::unix::fs::{FileExt, OpenOptionsExt},
     path::Path,
 };
@@ -211,9 +212,44 @@ pub fn scan<R: DeserializeOwned + Stamped>(
     prefilter: &Prefilter,
     mut visit: impl FnMut(R),
 ) -> io::Result<()> {
+    scan_until(dir, range, prefilter, |row| {
+        visit(row);
+        ControlFlow::Continue(())
+    })
+    .map(drop)
+}
+
+/// Whether a row in `range` that `prefilter` keeps satisfies `found`,
+/// reading no further than the first that does.
+///
+/// # Errors
+///
+/// As [`scan`].
+pub fn find<R: DeserializeOwned + Stamped>(
+    dir: &Path,
+    range: MetricRange,
+    prefilter: &Prefilter,
+    mut found: impl FnMut(&R) -> bool,
+) -> io::Result<bool> {
+    scan_until(dir, range, prefilter, |row| {
+        if found(&row) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+}
+
+/// Whether `visit` broke off the scan.
+fn scan_until<R: DeserializeOwned + Stamped>(
+    dir: &Path,
+    range: MetricRange,
+    prefilter: &Prefilter,
+    mut visit: impl FnMut(R) -> ControlFlow<()>,
+) -> io::Result<bool> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     };
     let mut segments: Vec<SegmentName> = entries
@@ -224,8 +260,8 @@ pub fn scan<R: DeserializeOwned + Stamped>(
     segments.sort();
     for name in segments {
         let path = dir.join(name.to_string());
-        let skipped = match read_segment(&path, range, prefilter, &mut visit) {
-            Ok(skipped) => skipped,
+        let (skipped, stopped) = match read_segment(&path, range, prefilter, &mut visit) {
+            Ok(read) => read,
             Err(error) => {
                 tracing::warn!(segment = %path.display(), %error, "skipping a metric segment");
                 continue;
@@ -234,8 +270,11 @@ pub fn scan<R: DeserializeOwned + Stamped>(
         if skipped > 0 {
             tracing::debug!(segment = %path.display(), skipped, "skipped unreadable metric rows");
         }
+        if stopped {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Where the oldest raw segment starts, in Unix nanoseconds, or `None` when
@@ -268,12 +307,13 @@ fn overlaps(name: SegmentName, range: MetricRange) -> bool {
 
 /// Visits the rows of one segment in `range` and returns how many lines did
 /// not parse, a torn last line included.
+/// The unreadable rows read, and whether `visit` broke off.
 fn read_segment<R: DeserializeOwned + Stamped>(
     path: &Path,
     range: MetricRange,
     prefilter: &Prefilter,
-    visit: &mut impl FnMut(R),
-) -> io::Result<usize> {
+    visit: &mut impl FnMut(R) -> ControlFlow<()>,
+) -> io::Result<(usize, bool)> {
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(OFlag::O_NOFOLLOW.bits())
@@ -284,16 +324,20 @@ fn read_segment<R: DeserializeOwned + Stamped>(
     loop {
         line.clear();
         if reader.read_until(b'\n', &mut line)? == 0 {
-            return Ok(skipped);
+            return Ok((skipped, false));
         }
         let Some(complete) = line.strip_suffix(b"\n") else {
-            return Ok(skipped + 1);
+            return Ok((skipped + 1, false));
         };
         if !prefilter.keeps(complete) {
             continue;
         }
         match serde_json::from_slice::<R>(complete) {
-            Ok(row) if (range.since_nanos..range.until_nanos).contains(&row.ts()) => visit(row),
+            Ok(row) if (range.since_nanos..range.until_nanos).contains(&row.ts()) => {
+                if visit(row).is_break() {
+                    return Ok((skipped, true));
+                }
+            }
             Ok(_) => {}
             Err(_) => skipped += 1,
         }

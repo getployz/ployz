@@ -138,9 +138,9 @@ function StoreProjectCard({ organizationSlug, project, environment }: { organiza
   const [listed, namespace] = useStoreViews(organizationSlug,
     [servicesQuery({ project, environment }), namespaceQuery({ project, environment })] as const);
   const services = listed.ok ? listed.value.services : [];
-  const { runtimeServices, runtimeStatus } = useRuntimeServices(organizationSlug);
+  const { runtimeServices, runtimeStatus, offline } = useRuntimeServices(organizationSlug);
   // Runtime evidence names a Service by its Namespace and Private DNS.
-  return <ProjectCard name={project} runtimeServices={runtimeServices} runtimeStatus={namespace.ok ? runtimeStatus : "unavailable"} environment={{
+  return <ProjectCard name={project} runtimeServices={runtimeServices} runtimeStatus={namespace.ok ? runtimeStatus : "unavailable"} offline={offline} environment={{
     name: environment, namespace: namespace.ok ? namespace.value.namespace : "",
     services: services.map((service) => ({ id: service.id, name: service.name, slug: service.private_dns, config: { source: { type: service.source } } })),
   }} />;

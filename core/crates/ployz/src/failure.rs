@@ -90,7 +90,8 @@ impl Failure {
         self
     }
 
-    /// End the process with the remote command's exit code. Only `ployz exec` uses it.
+    /// End the process with `code`, whatever it printed already said: the remote
+    /// command's exit code, a cancelled prompt, or clap's help.
     #[must_use]
     pub fn exit(code: u8) -> Self {
         Self {
@@ -671,6 +672,7 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         | cloud_enroll::Error::RetrySameCommand { .. }
         | cloud_enroll::Error::FounderWait => RpcErrorCode::Unavailable,
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
+        cloud_enroll::Error::TokenRefused => RpcErrorCode::Unauthenticated,
         cloud_enroll::Error::Status { status, .. } => http_status_code(*status),
     }
 }
@@ -918,17 +920,26 @@ impl From<DeployError> for Failure {
 
 impl From<LoginError> for Failure {
     /// Sign-in failures name the command that fixes them. A refusal Cloud sent in the
-    /// RPC error vocabulary, such as `claim_required`, keeps its code, details and next step.
+    /// RPC error vocabulary, such as `claim_required`, keeps its code, details and next step;
+    /// a route's `PublicError` keeps its sentence.
     fn from(error: LoginError) -> Self {
         if let LoginError::Status { body, .. } = &error
             && let Some(refused) = crate::cloud_account::refusal(body.as_bytes())
+                .or_else(|| crate::cloud_account::public_error(body.as_bytes()))
         {
             return Self::command(refused);
+        }
+        if let LoginError::Store { path, source } = &error
+            && source.kind() == io::ErrorKind::PermissionDenied
+        {
+            let next = format!("chmod 600 {}", shell_words::quote(&path.to_string_lossy()));
+            return Self::command(error).hint(Hint::Next(next));
         }
         let next = match &error {
             // Cloud binds every call to the acting Organization, `org ls` included: a
             // sign-in left outside it can only start over.
             LoginError::Corrupt { .. }
+            | LoginError::TokenCloudUnreadable(_)
             | LoginError::OtherCloud { .. }
             | LoginError::NotMember(_) => Some("ployz logout"),
             LoginError::SignedOut
@@ -936,7 +947,7 @@ impl From<LoginError> for Failure {
             | LoginError::Denied
             | LoginError::Ended => Some("ployz login"),
             LoginError::AwaitingApproval { .. } => Some("ployz login --wait"),
-            LoginError::TokenRefused => Some("ployz token new"),
+            LoginError::TokenRefused => Some(crate::cloud_account::SIGN_IN_PAST_TOKEN),
             LoginError::UnknownOrganization(_) => Some("ployz org ls"),
             LoginError::UnknownCredential(_) => Some("ployz token ls"),
             LoginError::Unreachable { .. }
@@ -957,9 +968,10 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
         LoginError::TokenBound => RpcErrorCode::InvalidArgument,
         LoginError::Status { status, .. } => http_status_code(*status),
-        LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
-            RpcErrorCode::Internal
-        }
+        LoginError::Reply(_)
+        | LoginError::Store { .. }
+        | LoginError::Corrupt { .. }
+        | LoginError::TokenCloudUnreadable(_) => RpcErrorCode::Internal,
         LoginError::OtherCloud { .. } => RpcErrorCode::Conflict,
         LoginError::SignedOut
         | LoginError::Expired
@@ -1353,5 +1365,33 @@ mod tests {
         assert_eq!(report.details.get("action").unwrap(), "mint_token");
         assert_eq!(report.details.get("next").unwrap(), next);
         assert_eq!(failure.hints(), [Hint::Next(next.into())]);
+    }
+
+    #[test]
+    fn a_sign_in_this_user_cannot_read_names_the_chmod_that_fixes_it() {
+        let failure = Failure::from(LoginError::Store {
+            path: "/home/dev/.config/ployz/cloud.json".into(),
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        });
+        assert_eq!(
+            failure.hints(),
+            [Hint::Next(
+                "chmod 600 /home/dev/.config/ployz/cloud.json".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_cloud_public_error_reads_as_its_sentence_not_its_json() {
+        let failure = Failure::from(LoginError::Status {
+            status: 422,
+            body: r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}"#.into(),
+        });
+        let report = failure.report();
+        assert_eq!(report.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            report.message,
+            "Only a signed-in person can make or revoke tokens; run `ployz login`."
+        );
     }
 }

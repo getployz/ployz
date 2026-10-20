@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, EnvironmentRef } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
-import type { StoreResult } from "#/modules/config-store/store.contract";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { branchQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { removeTarget, type RemovalConsent } from "#/modules/config-store/store-workspace";
-import type { EnvironmentRouteParams } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
 
-/** Once the Branch is gone (the Store deletes a closed one), the page opens the Parent it had. */
-export function useLeaveWhenClosed(params: EnvironmentRouteParams, branch: StoreResult<BranchView>) {
+/**
+ * Once the Branch is gone (the Store deletes a closed one), any page on it opens the Parent it had. It sits on the
+ * Environment's layout: a page or drawer on the Branch fails or suspends once its views are gone.
+ */
+export function LeaveWhenClosed() {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const branch = useStoreView(params.organizationSlug, branchQuery(store));
   const navigate = useNavigate();
   const parent = useRef<string | null>(null);
   const gone = !branch.ok && branch.refusal.code === "not_found";
@@ -24,6 +30,7 @@ export function useLeaveWhenClosed(params: EnvironmentRouteParams, branch: Store
     toast.success(`${params.environmentSlug} closed`);
     void navigate(getDashboardDestination({ ...params, kind: "environment", environmentSlug: parent.current }, "architecture"));
   }, [gone]);
+  return null;
 }
 
 /** The Volumes a shutdown accepts losing, at the version the Store asked about (none before it asked). */

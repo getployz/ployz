@@ -26,7 +26,7 @@ pub(super) fn get_command(command: Command) -> Command {
     scoped(command.about("Show Settings: every Service, one Service, or one Setting"))
         .arg(
             positional("path", false)
-                .help("SERVICE, SERVICE.SETTING or SERVICE.env.KEY")
+                .help("SERVICE, SERVICE.SETTING, SERVICE.env.KEY, or setup.SERVICE for a Branch's Setup Command")
                 .add(super::catalog::setting_paths()),
         )
         .arg(switch("all", None).help("Include Settings at their default across the Environment"))
@@ -38,7 +38,7 @@ pub(super) fn set_command(command: Command) -> Command {
             positional("assignment", true)
                 .action(ArgAction::Append)
                 .value_name("PATH=VALUE")
-                .help("For example web.replicas=3 or web.env.LOG_LEVEL=info; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret")
+                .help("For example web.replicas=3, web.env.LOG_LEVEL=info, or setup.web='pnpm db:seed' for a Branch's Setup Command; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret")
                 .add(super::catalog::setting_paths()),
         )
         .arg(
@@ -75,7 +75,7 @@ pub(super) fn unset_command(command: Command) -> Command {
         .arg(
             positional("path", true)
                 .action(ArgAction::Append)
-                .help("SERVICE.SETTING, or SERVICE.env.KEY to delete a variable")
+                .help("SERVICE.SETTING, SERVICE.env.KEY to delete a variable, or setup.SERVICE to remove a Branch's Setup Command")
                 .add(super::catalog::setting_paths()),
         )
         .arg(expect())

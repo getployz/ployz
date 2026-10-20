@@ -12,7 +12,7 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
    project you already have, click **Create** on that project's canvas instead.) The first time,
    click **Connect GitHub**, pick the account or organization, choose the repositories Ployz may
    use, and install the Ployz GitHub App. GitHub sends you back to **Settings → GitHub**, which
-   lists the account.
+   lists the account. It says "Repositories appear in a moment" until Ployz has listed them.
 2. Search for the repository, or paste its URL, and pick it.
 3. Before you deploy, set what your app needs to start:
    - To make it public, open **Settings → Networking** and click

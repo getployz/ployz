@@ -7,16 +7,18 @@
 
 use ployz_core::config::{ReviewLifecycleKind, VolumeKind};
 use ployz_core::{
-    DeployOutcome, DeployPreview, DockerVolumeId, DockerVolumeName, MachineId, RpcError,
-    RpcErrorCode, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
+    DeployOutcome, DeployPreview, DockerVolumeId, DockerVolumeName, MachineId,
+    ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode, ServiceName, VolumeRemoval,
+    VolumeRemovalOutcome,
 };
 use ployz_store::{
-    Actor, Admit, Approval, ApprovalDigest, Change, ConfigStore, CreateProject, CreateService,
-    CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard,
-    Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId,
-    ProjectId, ProjectName, Publish, Published, RemovalsQuery, RemoveVolume, RenameVolume, Retry,
-    RunEvidence, RunnerId, ServiceLineageId, SetVolumeSharedWrites, SetVolumeStorage, SettingPath,
-    Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    Actor, Admit, Approval, ApprovalDigest, Batch, BatchCommand, Change, ConfigStore,
+    CreateProject, CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentStatus,
+    DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount,
+    NodeStatus, OrganizationId, ProjectId, ProjectName, Publish, Published, RemovalsQuery,
+    RemoveVolume, RenameVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
+    SetVolumeSharedWrites, SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing,
+    VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -63,6 +65,7 @@ fn shop() -> (ConfigStore, Actor) {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(VOLUME).unwrap(),
                 environment: EnvironmentRef::default(),
@@ -325,6 +328,7 @@ fn a_volume_created_with_its_storage_locked_refuses_other_storage_before_any_dep
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: true,
+                restored_from: None,
                 storage: managed,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -358,6 +362,37 @@ fn a_volume_created_with_its_storage_locked_refuses_other_storage_before_any_dep
     }
     assert_eq!(named("restored").volume.storage, managed);
     assert!(!named("data").storage_locked);
+}
+
+#[test]
+fn a_volume_restores_only_from_a_volume_in_its_environment() {
+    let (store, who) = shop();
+    let restore = |volume: &str| {
+        store.write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: true,
+                restored_from: Some(ployz_core::config::RestoredFrom {
+                    volume: volume.to_owned(),
+                    at: 1_790_000_000,
+                }),
+                storage: VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("restored").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+    };
+    let elsewhere = restore("00000000-0000-4000-8000-0000000000ff").unwrap_err();
+    assert_eq!(elsewhere.code, RpcErrorCode::NotFound, "{elsewhere:?}");
+    assert!(
+        listed(&store, &who)
+            .iter()
+            .all(|listing| listing.volume.name.as_str() != "restored")
+    );
+    restore(VOLUME).unwrap();
 }
 
 #[test]
@@ -429,6 +464,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
         &CreateVolume {
             shared_writes: false,
             storage_locked: false,
+            restored_from: None,
             storage: ployz_core::config::VolumeKind::Docker {},
             id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
             environment: EnvironmentRef::default(),
@@ -1198,6 +1234,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
             &who,
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 shared_writes: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(LOGS).unwrap(),
@@ -1342,6 +1379,7 @@ fn a_new_unmounted_volume_is_not_deployed_by_a_deploy_that_succeeded() {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -1579,6 +1617,7 @@ fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
     let both = |shared_writes| CreateVolume {
         shared_writes,
         storage_locked: false,
+        restored_from: None,
         storage: VolumeKind::Docker {},
         id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
         environment: EnvironmentRef::default(),
@@ -1594,12 +1633,105 @@ fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "uploads is already mounted by web; allow shared writes first: ployz volume set uploads --shared-writes"
+        "uploads would be mounted by web, api; add it with shared writes on"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume add uploads --mount web:/uploads --mount api:/uploads --docker --shared-writes --env production --project shop"
     );
     assert!(store.write(&who, &both(true)).unwrap().volume.shared_writes);
 
     set_shared_writes(&store, &who, true).unwrap();
     edit(&store, &who, mount()).unwrap();
+}
+
+#[test]
+fn a_new_volume_on_a_second_replica_is_refused_with_an_add_that_works() {
+    let (store, who) = shop();
+    add_api(&store, &who);
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("api.replicas"),
+            value: json!(2),
+        },
+    )
+    .unwrap();
+    let add = |shared_writes| CreateVolume {
+        shared_writes,
+        storage_locked: true,
+        restored_from: None,
+        storage: VolumeKind::Provisioned {
+            maximum_bytes: ProvisionedVolumeMaximumBytes::parse_gb("1.5GB").unwrap(),
+        },
+        id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
+        environment: EnvironmentRef::default(),
+        name: VolumeName::parse("uploads").unwrap(),
+        mounts: vec![Mount {
+            service: ServiceName::parse("api").unwrap(),
+            path: "/my $uploads".into(),
+        }],
+    };
+    let refused = store.write(&who, &add(false)).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "uploads would be attached to api; set replicas to 1, or add it with shared writes on"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume add uploads --mount 'api:/my $uploads' --size 1.5GB --shared-writes --env production --project shop"
+    );
+    let words = shell_words::split(refused.details["next"].as_str().unwrap()).unwrap();
+    assert!(words.contains(&"api:/my $uploads".to_owned()), "{words:?}");
+    assert!(store.write(&who, &add(true)).unwrap().volume.shared_writes);
+}
+
+#[test]
+fn a_new_volume_refused_in_a_batch_that_creates_its_service_has_no_next() {
+    let (store, who) = shop();
+    let batch = Batch {
+        environment: EnvironmentRef::default(),
+        commands: vec![
+            BatchCommand::CreateService(CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("caddy:2".into()),
+                template: None,
+            }),
+            BatchCommand::Edit(Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: path("api.replicas"),
+                    value: json!(2),
+                }],
+            }),
+            BatchCommand::CreateVolume(CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                restored_from: None,
+                storage: VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("uploads").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("api").unwrap(),
+                    path: "/uploads".into(),
+                }],
+            }),
+        ],
+        expect: None,
+    };
+    let refused = store.write(&who, &batch).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "uploads would be attached to api; set replicas to 1, or add it with shared writes on"
+    );
+    assert!(refused.details.get("next").is_none(), "{}", refused.details);
 }
 
 #[test]
@@ -1671,4 +1803,30 @@ fn discarding_one_setting_cannot_bring_back_a_second_writer() {
     // Returning wholly to what was saved is never refused.
     store.write(&who, &discard(None)).unwrap();
     assert!(listed(&store, &who)[0].volume.shared_writes);
+}
+
+#[test]
+fn shared_writes_applies_at_once_and_is_no_diff_row() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    set_shared_writes(&store, &who, true).unwrap();
+    let view = diff(&store, &who);
+    assert!(view.changes.is_empty(), "{:?}", view.changes);
+    assert!(view.draft_changes.is_empty(), "{:?}", view.draft_changes);
+    assert_eq!((view.total_count, view.draft_count), (0, 0));
+
+    // Discarding the whole Volume returns it to the deployed value.
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: Some(SettingPath::parse("volumes.data").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(!listed(&store, &who)[0].volume.shared_writes);
 }

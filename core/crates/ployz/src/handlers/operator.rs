@@ -4,6 +4,7 @@ use std::{
 };
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 
 use chrono::{DateTime, Local, SecondsFormat, Utc};
 use clap::{Arg, ArgAction, Command};
@@ -83,6 +84,82 @@ pub(super) fn ps_command(command: Command) -> Command {
     )
 }
 
+/// Flags other tools take for a container ID column. `ps` shows one only where two rows
+/// would read the same, so an ask for it names where every ID is instead.
+const CONTAINER_COLUMN_ASKS: [&str; 11] = [
+    "--container",
+    "--containers",
+    "--wide",
+    "-w",
+    "--output",
+    "-o",
+    "--format",
+    "--columns",
+    "--no-trunc",
+    "--quiet",
+    "-q",
+];
+
+/// `error` for `ployz ps` asked for a CONTAINER column, rewritten to say where the IDs are.
+/// clap's partial parse of `args` names the command that rejected the flag, and keeps
+/// clap's error when the flag stood where an option's value was due (`--sort --wide`).
+pub(super) fn container_column_asked(error: clap::Error, args: &[OsString]) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if error.kind() != ErrorKind::UnknownArgument {
+        return error;
+    }
+    let Some(ContextValue::String(invalid)) = error.get(ContextKind::InvalidArg) else {
+        return error;
+    };
+    let flag = invalid.split('=').next().unwrap_or_default();
+    if !CONTAINER_COLUMN_ASKS.contains(&flag) {
+        return error;
+    }
+    let argv = |words: &mut dyn Iterator<Item = &OsString>| {
+        std::iter::once(OsString::from("ployz"))
+            .chain(words.cloned())
+            .collect::<Vec<_>>()
+    };
+    let Ok(parsed) = crate::cli::compiled()
+        .ignore_errors(true)
+        .try_get_matches_from(argv(&mut args.iter()))
+    else {
+        return error;
+    };
+    let Some(("ps", ps)) = parsed.subcommand() else {
+        return error;
+    };
+    // After `--` the flag is a positional word. Nothing before `ps` takes a hyphen value,
+    // so the first bare `--` is ps's own: keep clap's error unless clap still rejects the
+    // flag in the words before it.
+    if args.iter().any(|arg| arg == "--") {
+        let before = crate::cli::compiled()
+            .try_get_matches_from(argv(&mut args.iter().take_while(|arg| *arg != "--")));
+        let rejected_before = before.err().is_some_and(|before| {
+            before.kind() == ErrorKind::UnknownArgument
+                && before.get(ContextKind::InvalidArg) == error.get(ContextKind::InvalidArg)
+        });
+        if !rejected_before {
+            return error;
+        }
+    }
+    let value_missing = ps.ids().any(|id| {
+        ps.value_source(id.as_str()) == Some(ValueSource::CommandLine)
+            && ps
+                .get_raw(id.as_str())
+                .is_some_and(|values| values.len() == 0)
+    });
+    if value_missing {
+        return error;
+    }
+    clap::Error::raw(
+        ErrorKind::UnknownArgument,
+        format!(
+            "ployz ps has no '{flag}': it shows a CONTAINER column only where two rows would read the same\n\n  tip: with server access, 'ployz ps --json' lists each container's container_id, which 'ployz exec --container' takes\n"
+        ),
+    )
+}
+
 /// The Namespace the addressed Project and Environment run in, so a bare Service name
 /// means that Environment's Service. `None` keeps the whole Cluster in view: nothing
 /// was asked for, and no Config Store is reachable, it has no Project yet, or
@@ -139,6 +216,17 @@ impl From<ployz_store::NamespaceView> for Scoped {
 }
 
 impl Scoped {
+    /// The name a Service has now, for the runtime name its Containers carry.
+    pub(super) fn service_name<'a>(
+        &'a self,
+        runtime: &'a ployz_core::ServiceName,
+    ) -> &'a ployz_core::ServiceName {
+        self.services
+            .iter()
+            .find_map(|(name, other)| (other == runtime).then_some(name))
+            .unwrap_or(runtime)
+    }
+
     /// The bare Service Name in `selector` this Environment has neither deployed nor
     /// authored. A removed Service is one, and may still have retained logs.
     pub(super) fn unknown(&self, selector: &ServiceSelector) -> Option<ployz_core::ServiceName> {
@@ -417,8 +505,10 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 {
                     Ok(inputs) => {
                         let entries = merge_logs(inputs, cancellation);
-                        print_logs(entries, utc, &deployments, |entry| printed.covers(entry))
-                            .await?;
+                        print_logs(entries, utc, &deployments, &mut gaps, |entry| {
+                            printed.covers(entry)
+                        })
+                        .await?;
                     }
                     // Nothing runs to follow; the history above is the whole log.
                     Err(
@@ -573,6 +663,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
                 merge_logs(inputs, cancellation),
                 utc,
                 &HashMap::new(),
+                &mut gaps,
                 |_| false,
             )
             .await?;
@@ -621,11 +712,7 @@ async fn run_port_forward(
         ))
     })?;
     let remote = SocketAddr::new(IpAddr::V4(address.0), ports.remote);
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        ports.local,
-    ))
-    .await?;
+    let listener = listen(ports.local).await?;
     let local = listener.local_addr()?;
     if crate::ui::json() {
         crate::ui::emit_line(&serde_json::json!({
@@ -667,6 +754,19 @@ async fn run_port_forward(
             }
         }
     }
+}
+
+async fn listen(port: u16) -> Result<tokio::net::TcpListener, Error> {
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    tokio::net::TcpListener::bind(address)
+        .await
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AddrInUse {
+                Error::conflict(format!("{address} is in use; pick another local port"))
+            } else {
+                error.into()
+            }
+        })
 }
 
 fn parse_fanout_selectors(values: Vec<String>) -> Result<Vec<FanoutSelector>, Error> {
@@ -878,13 +978,24 @@ impl Printed {
 }
 
 async fn print_logs(
-    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, String>>,
+    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, crate::operator::LogFault>>,
     utc: bool,
     deployments: &HashMap<ContainerId, String>,
+    gaps: &mut crate::ui::Gaps,
     printed: impl Fn(&LogEntry) -> bool,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
-        let entry = entry.map_err(Error::unavailable)?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(crate::operator::LogFault::Error(error)) => return Err(Error::unavailable(error)),
+            Err(crate::operator::LogFault::Stalled(machine_id)) => {
+                gaps.stopped(machine_id);
+                if crate::ui::json() {
+                    crate::ui::emit_line(&*gaps)?;
+                }
+                continue;
+            }
+        };
         if printed(&entry) {
             continue;
         }
@@ -1136,6 +1247,20 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn a_local_port_in_use_is_named_in_the_refusal() {
+        let taken = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let refused = listen(port).await.unwrap_err().report();
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            refused.message,
+            format!("127.0.0.1:{port} is in use; pick another local port")
+        );
+    }
+
+    #[tokio::test]
     async fn redirected_regular_file_stdin_is_framed() {
         let input = include_bytes!("../../Cargo.toml");
         let file = std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
@@ -1327,6 +1452,31 @@ mod scope_tests {
         assert_eq!(gaps.failures.len(), 1);
         let partial = gaps.outcome().unwrap_err();
         assert_eq!(partial.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_followed_server_that_stops_answering_is_named_and_makes_the_follow_partial() {
+        let machine = ployz_core::MachineId::parse("1".repeat(32)).unwrap();
+        let name = ployz_core::MachineName::parse("web-1").unwrap();
+        let mut gaps = crate::ui::Gaps::default().named([(machine, &name)]);
+        let silent = crate::operator::LogInput {
+            identity: format!("dtest-production/web/ployz-create-{}", "06d0".repeat(16)),
+            machine,
+            stream: Box::pin(futures_util::stream::pending()),
+        };
+        let entries = merge_logs(vec![silent], tokio_util::sync::CancellationToken::new());
+        print_logs(entries, true, &HashMap::new(), &mut gaps, |_| false)
+            .await
+            .unwrap();
+        assert_eq!(gaps.omitted, [machine]);
+        assert_eq!(
+            gaps.stopped_answering(&machine),
+            "web-1 stopped answering; its lines are missing from here on."
+        );
+        assert_eq!(
+            gaps.outcome().unwrap_err().printed_exit(),
+            Some(crate::ui::PARTIAL_EXIT)
+        );
     }
 
     #[test]

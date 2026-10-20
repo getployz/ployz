@@ -346,6 +346,46 @@ fn only_a_spent_budget_or_the_router_reports_the_target_unanswered() {
     }
 }
 
+#[test]
+fn only_a_call_that_got_no_status_back_is_unreplied() {
+    let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
+    for (error, unreplied) in [
+        (
+            ConnectError::Rpc(TransportError::budget_expired(
+                "target Machine RPC timed out",
+            )),
+            true,
+        ),
+        (
+            ConnectError::from(ployz_core::rpc::target_unanswered_status(&io::Error::new(
+                io::ErrorKind::TimedOut,
+                "operation timed out",
+            ))),
+            true,
+        ),
+        (
+            ConnectError::from(tonic::Status::from_error(Box::new(dropped))),
+            true,
+        ),
+        // A daemon sent these, so it refused before acting.
+        (
+            ConnectError::from(tonic::Status::unavailable("Cluster is not available")),
+            false,
+        ),
+        (
+            ConnectError::Remote(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Cluster store is not available".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            }),
+            false,
+        ),
+    ] {
+        assert_eq!(error.unreplied(), unreplied, "{error}");
+    }
+}
+
 #[tokio::test]
 async fn cancelling_ssh_establishment_returns_without_waiting_for_ssh() {
     let root = std::env::temp_dir().join(format!("ployz-ssh-cancel-{}", std::process::id()));
@@ -774,4 +814,23 @@ fn only_a_target_reply_outlasts_a_later_silence() {
     assert!(!keep_target_reply(&mut reply, dropped()).target_unanswered());
     let error = keep_target_reply(&mut reply, silent());
     assert!(error.target_replied(), "{error}");
+}
+
+#[test]
+fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    let socket = dir.path().join("ployzd.sock");
+    fs::write(&socket, "").unwrap();
+    let error = resolve_connections(&config, None, Some("foo"), &socket).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ConnectError::Context(ContextError::ContextNotFound { name, path })
+                if name == "foo" && path == &config
+        ),
+        "{error:?}"
+    );
+    let selected = resolve_connections(&config, None, None, &socket).unwrap();
+    assert_eq!(selected.source, ConnectionSource::LocalSocket);
 }

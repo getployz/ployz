@@ -11,12 +11,12 @@ $ ployz --help
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
+  build       Build one Git Service and push it to a Server that granted the build
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
@@ -92,12 +92,12 @@ $ ployz -h
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
+  build       Build one Git Service and push it to a Server that granted the build
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
@@ -155,12 +155,12 @@ $ ployz
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
+  build       Build one Git Service and push it to a Server that granted the build
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
@@ -308,7 +308,7 @@ Commands:
   default     Make an Environment the Project's Default Environment
   setup       Set the Setup Commands a new Branch of an Environment runs when it names none
   rm          Remove an Environment: from the Servers first, then from Ployz
-  branch      Make a Branch: copies of the nodes picked, the rest used live
+  branch      Make a Branch: copies of the nodes picked; what they use stays the Parent's
   sync        Stage one Environment's changes in another of the Project
   copy        Make a Live Node the Branch's own copy; a Volume it mounts comes empty
   keep        Keep the Branch after syncing into its Parent and when idle
@@ -406,7 +406,7 @@ Options:
           The Project's name, typed to confirm its removal
 
       --accept-volume-loss <name>
-          Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this
+          Accept permanent deletion: repeat once per exact volume name in the full deletion list
 
       --json
           Print the result as one JSON object on stdout
