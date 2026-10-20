@@ -1867,10 +1867,12 @@ async fn change_container_rpc(
 fn admitted(started: UserStarted) -> Result<(), RpcError> {
     match started {
         UserStarted::In | UserStarted::Running => Ok(()),
-        UserStarted::NotIn(_) => Err(RpcError {
+        UserStarted::NotIn(health) => Err(RpcError {
             code: RpcErrorCode::Unavailable,
             message: "The Container started but did not pass its healthcheck, so proxies do not route to it.".into(),
-            details: Value::Null,
+            details: health
+                .and_then(ployz_core::HealthVerdict::into_failure)
+                .map_or(Value::Null, |failure| json!(failure)),
             cause: Vec::new(),
         }),
     }
