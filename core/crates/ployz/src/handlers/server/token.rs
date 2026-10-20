@@ -241,7 +241,7 @@ fn install_line(cloud: &str, token: &str) -> String {
     };
     let version = env!("CARGO_PKG_VERSION");
     format!(
-        "curl -fsSL {INSTALLER_URL} | sudo {cloud_env}PLOYZ_ENROLL_TOKEN={token} sh -s -- {version}"
+        "curl -fsSL {INSTALLER_URL} | sudo {cloud_env}PLOYZ_FLEET_TOKEN={token} sh -s -- {version}"
     )
 }
 
@@ -255,13 +255,13 @@ mod tests {
         assert_eq!(
             install_line("https://ployz.dev", "pflt_abc"),
             format!(
-                "curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_abc sh -s -- {version}"
+                "curl -fsSL https://ployz.sh | sudo PLOYZ_FLEET_TOKEN=pflt_abc sh -s -- {version}"
             )
         );
         assert_eq!(
             install_line("http://localhost:3000", "pflt_abc"),
             format!(
-                "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' PLOYZ_ENROLL_TOKEN=pflt_abc sh -s -- {version}"
+                "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' PLOYZ_FLEET_TOKEN=pflt_abc sh -s -- {version}"
             )
         );
     }

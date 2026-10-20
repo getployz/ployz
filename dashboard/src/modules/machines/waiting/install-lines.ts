@@ -9,12 +9,12 @@ export type InstallTarget = { readonly cloudOrigin: string; readonly ployzVersio
 /** Every line pins the release this Cloud's SDK speaks, since the stable channel may be older or newer. */
 export function installLines({ cloudOrigin, ployzVersion, token }: InstallTarget): InstallLines {
   const cloud = cloudOrigin === DEFAULT_CLOUD_ORIGIN ? "" : `PLOYZ_CLOUD_URL='${cloudOrigin}' `;
-  const run = (secret: string) => `curl -fsSL https://ployz.sh | ${cloud}PLOYZ_ENROLL_TOKEN=${secret} sh -s -- ${ployzVersion}`;
+  const run = (secret: string) => `curl -fsSL https://ployz.sh | ${cloud}PLOYZ_FLEET_TOKEN=${secret} sh -s -- ${ployzVersion}`;
   return {
-    shell: `curl -fsSL https://ployz.sh | sudo ${cloud}PLOYZ_ENROLL_TOKEN=${token} sh -s -- ${ployzVersion}`,
+    shell: `curl -fsSL https://ployz.sh | sudo ${cloud}PLOYZ_FLEET_TOKEN=${token} sh -s -- ${ployzVersion}`,
     cloudInit: `#cloud-config\nruncmd:\n  - ${run(token)}`,
     terraform: [
-      `variable "ployz_enroll_token" {`,
+      `variable "ployz_fleet_token" {`,
       `  type      = string`,
       `  sensitive = true`,
       `  default   = "${token}"`,
@@ -28,7 +28,7 @@ export function installLines({ cloudOrigin, ployzVersion, token }: InstallTarget
       `  user_data   = <<-EOT`,
       `    #cloud-config`,
       `    runcmd:`,
-      `      - ${run("${var.ployz_enroll_token}")}`,
+      `      - ${run("${var.ployz_fleet_token}")}`,
       `  EOT`,
       `}`,
     ].join("\n"),

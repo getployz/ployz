@@ -283,7 +283,7 @@ function firstRun() {
       <h2>Add your first server</h2>
       <p>Run this on any Linux server with root. It shows up below in a few seconds.</p>
       <div class="tabs"><button class="tab on">Shell</button><button class="tab">cloud-init</button><button class="tab">Terraform</button></div>
-      <div class="cmd"><code class="mono">curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=<span class="tok">${TOKEN}</span> sh</code>
+      <div class="cmd"><code class="mono">curl -fsSL https://ployz.sh | sudo PLOYZ_FLEET_TOKEN=<span class="tok">${TOKEN}</span> sh</code>
         <button class="btn sm" data-toast="Copied">Copy</button></div>
       <div class="meta"><span>Token <b class="mono" style="font-weight:500;color:var(--foreground)">default</b> · reusable · never expires</span><a href="#" data-toast="Token settings">Change</a></div>
       <div class="listen"><span class="dot pulse"></span>Listening for servers…</div>

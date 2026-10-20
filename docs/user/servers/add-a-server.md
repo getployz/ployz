@@ -215,12 +215,12 @@ it and still exit cleanly, with the service set up and checking in:
   `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- --enroll`. It does what
   `--storage none` does for `ployz server add`.
 - **From user data.** cloud-init runs user data as root with no terminal to prompt at, so pass the
-  token in `PLOYZ_ENROLL_TOKEN` instead:
+  token in `PLOYZ_FLEET_TOKEN` instead:
 
   ```yaml
   #cloud-config
   runcmd:
-    - curl -fsSL https://ployz.sh | PLOYZ_ENROLL_TOKEN=pflt_… sh
+    - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_… sh
   ```
 
   Any process on the server, containers included, can read user data from the provider's
@@ -259,8 +259,10 @@ An error after Cloud has answered the token, such as systemd failing to start th
 a partial install. The new token is already in `/etc/ployz/fleet-token`, and the service files
 and preparation may be set up. Fix the cause and run the install again.
 
-Without `--enroll`, the script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. For
-any other value it says so and only installs the CLI, as it does without a token. If the host
+Without `--enroll`, the script checks in only when `PLOYZ_FLEET_TOKEN` is set, and ends with
+`That isn't a Fleet Token` when it holds anything else. It leaves `PLOYZ_ENROLL_TOKEN` to
+`ployz server add`, and refuses a Fleet Token in it, which older install lines put there; use
+`PLOYZ_FLEET_TOKEN` instead. If the host
 waits longer than you expect, see
 [A server waits for approval](../troubleshooting/servers.md#a-server-waits-for-approval-and-never-shows-up).
 
