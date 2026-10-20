@@ -291,5 +291,6 @@ you mean it.
 
 If Ployz can't check your servers for that data, the deploy refuses and deletes nothing. It names
 the server it couldn't reach, or the server that answered with an error, and shows that error on the
-`cause:` line. With `--json`, the error's `cause` lists it. Try again once that server is back or
+`cause:` line. When you passed `--connect` and Ployz doesn't know which server that is, it names the
+address you gave instead. With `--json`, the error's `cause` lists it. Try again once that server is back or
 the error is fixed.
