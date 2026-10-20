@@ -24,7 +24,7 @@ import {
 import { removalDeployment, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
-import { useLeaveWhenClosed, useStoreBranchClose } from "./branch-close";
+import { useStoreBranchClose } from "./branch-close";
 import { SyncDialog } from "./SyncDialog";
 
 /**
@@ -35,7 +35,6 @@ export function SyncButton() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const [branch, listing] = useStoreViews(params.organizationSlug, [branchQuery(store), environmentsQuery(params.projectSlug)] as const);
-  useLeaveWhenClosed(params, branch);
   const environments = requireView(listing).environments;
   if (!branch.ok) return <RootSync params={params} store={store} environments={environments} />;
   return <BranchSync params={params} store={store} branch={branch.value} environments={environments} />;

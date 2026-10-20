@@ -187,8 +187,9 @@ function SetupCommandForm({ submitLabel, services, initial, onSubmit, onCancel }
 }
 
 /** A Project's name: one DNS label, as the Store checks it; renaming it changes its URLs. */
-function ProjectNameRow({ project, onRename }: { project: string; onRename: (name: string) => void }) {
+export function ProjectNameRow({ project, onRename }: { project: string; onRename: (name: string) => Promise<void> }) {
   const [draft, setDraft] = useState(project);
+  const [saving, setSaving] = useState(false);
   const name = draft.trim();
   const error = name === project ? null : dnsLabelError(name);
   return (
@@ -198,8 +199,13 @@ function ProjectNameRow({ project, onRename }: { project: string; onRename: (nam
       commit="confirm"
       control={(
         <ConfirmableInput id="project-name" aria-label="Name" commit="check" value={draft} onValueChange={setDraft} error={error}
-          isDirty={draft !== project} onCancel={() => setDraft(project)}
-          onConfirm={() => { if (name !== project && !error) onRename(name); }} />
+          disabled={saving} status={saving ? { phase: "saving" } : undefined}
+          isDirty={!saving && draft !== project} onCancel={() => setDraft(project)}
+          onConfirm={() => {
+            if (name === project || error) return;
+            setSaving(true);
+            void onRename(name).finally(() => setSaving(false));
+          }} />
       )}
     />
   );
@@ -219,7 +225,7 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
       <SettingsSection id="project" title="Project">
         <ProjectNameRow project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
-          void writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
+          return writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
             navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
         }} />
         <SettingsRow

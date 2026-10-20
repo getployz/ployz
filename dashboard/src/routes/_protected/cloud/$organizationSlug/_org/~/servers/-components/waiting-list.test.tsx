@@ -330,7 +330,9 @@ it.each(["failed", "cancelled"] as const)("keeps the live status primary after a
   const row: WaitingServerView = { ...host("returned", { status: "offline" }), returned: { state, stage: "storage", message: "Disk missing" } };
   const { rerender } = renderList([row]);
   expect(statusOf("returned")).toMatch(/^Offline/);
-  expect(statusOf("returned")).toContain(state === "cancelled" ? "Cancelled" : "Failed at Setting up ZFS");
+  expect(statusOf("returned")).toContain(`Last enroll ${state}`);
+  expect(statusOf("returned")).not.toContain("Setting up ZFS");
+  expect(statusOf("returned")).not.toContain("Disk missing");
   rerender([{ ...row, status: "blocked", report: { ...row.report, blockers: [{ code: "docker_stopped", message: "Start Docker" }] } }]);
   expect(statusOf("returned")).toMatch(/^Docker stoppedStart Docker/);
   rerender([{ ...row, status: "waiting" }]);
@@ -479,6 +481,16 @@ it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject fro
   const sheet = await screen.findByRole("dialog");
   expectGate(await within(sheet).findByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
   expectGate(within(sheet).getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
+});
+
+it.each([["failed", "Failed at Setting up ZFS"], ["cancelled", "Cancelled"]] as const)("shows a %s attempt's stage and message in the detail sheet", async (state, reason) => {
+  const one: WaitingServerView = { ...host("one"), returned: { state, stage: "storage", message: "Disk missing" } };
+  vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...one, report, probe: null } as never);
+  renderList([one]);
+  fireEvent.click(screen.getByRole("button", { name: "one" }));
+  const last = await within(await screen.findByRole("dialog")).findByRole("region", { name: "Last enroll" });
+  expect(last.textContent).toContain(reason);
+  expect(last.textContent).toContain("Disk missing");
 });
 
 it("says nothing joins on its own until the first server is enrolled by hand", () => {

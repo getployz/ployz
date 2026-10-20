@@ -135,7 +135,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
               <SettingsRow
                 key={environment.id}
                 label={<><Spinner />Deleting {environment.name}…</>}
-                hint="Ployz takes it off your servers at its next hourly sweep. If that hasn't started, delete it again."
+                hint="Ployz starts taking it off your servers shortly, or at its next hourly sweep if it can't start yet. If it hasn't started by then, delete it again."
                 commit="none"
               />,
             ];

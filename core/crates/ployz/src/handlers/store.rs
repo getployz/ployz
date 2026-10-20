@@ -386,9 +386,13 @@ impl<'m> Store<'m> {
     }
 
     /// This command again with its [`Self::args`] and `extra`, in the same Project
-    /// and Environment.
+    /// and Environment, with the same Ployz config.
     pub(crate) fn again(&self, extra: &[&str]) -> String {
-        let mut words: Vec<&str> = self.words.iter().map(String::as_str).collect();
+        let mut words: Vec<&str> = super::config_flag(self.matches)
+            .into_iter()
+            .flatten()
+            .collect();
+        words.extend(self.words.iter().map(String::as_str));
         words.extend(extra);
         next(self.matches, &words)
     }
@@ -1111,6 +1115,49 @@ mod tests {
         assert_eq!(
             error.message,
             "This Deploy permanently deletes the data of data"
+        );
+    }
+
+    #[test]
+    fn the_same_command_again_keeps_a_typed_ployz_config() {
+        let config = "/home/me/my ployz/config.yaml";
+        let again = |typed: &[&str]| {
+            let root = crate::cli::command().try_get_matches_from(typed).unwrap();
+            let key = SealingKey::new(&[7; 32]).unwrap();
+            Store {
+                backend: Backend::Local(
+                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+                ),
+                matches: leaf_matches(&root),
+                words: vec!["env".to_owned(), "rm".to_owned(), "staging".to_owned()],
+            }
+            .again(&["--confirm", "shop/staging"])
+        };
+        let typed = again(&[
+            "ployz",
+            "--ployz-config",
+            config,
+            "env",
+            "rm",
+            "staging",
+            "--confirm",
+            "shop/staging",
+        ]);
+        assert_eq!(
+            typed,
+            "ployz --ployz-config '/home/me/my ployz/config.yaml' env rm staging --confirm shop/staging"
+        );
+        let root = crate::cli::command()
+            .try_get_matches_from(shell_words::split(&typed).unwrap())
+            .unwrap();
+        let leaf = leaf_matches(&root);
+        assert_eq!(leaf.get_one::<String>("ployz-config").unwrap(), config);
+        assert_eq!(leaf.get_one::<String>("confirm").unwrap(), "shop/staging");
+        // A default or `PLOYZ_CONFIG` holds for the next command on its own.
+        assert_eq!(
+            again(&["ployz", "env", "rm", "staging", "--confirm", "shop/staging"]),
+            "ployz env rm staging --confirm shop/staging"
         );
     }
 

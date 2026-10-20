@@ -2,7 +2,9 @@ import type { ReactNode } from "react";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Button } from "#/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "#/components/ui/sheet";
-import type { WaitingServerDetail } from "#/modules/machines/waiting/waiting-servers.server";
+import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
+import type { WaitingReturn, WaitingServerDetail } from "#/modules/machines/waiting/waiting-servers.server";
+import { STAGES } from "./enrolling-list";
 import { ENROLL_REFUSED } from "./use-waiting";
 import { blockerLabel, bytes, lastSeen, portText, providerOf, sizeText, statusCell, volumesText } from "./waiting-row";
 
@@ -70,11 +72,23 @@ function Detail({ server, now, may, onEnroll, onReject }: {
         </dl>
       </div>
       <SheetFooter>
+        {server.returned === null ? null : <LastEnroll returned={server.returned} />}
         {onEnroll === null ? null : <Button variant="ink" disabled={may !== true} title={refusal} onClick={onEnroll}>Enroll</Button>}
         <Button variant="destructive" disabled={may !== true} title={refusal} onClick={() => onReject(server.id)}>Reject</Button>
         <p className="text-xs text-muted-foreground">It stops checking in. Asking again with the same token gets it turned away.</p>
       </SheetFooter>
     </>
+  );
+}
+
+function LastEnroll({ returned }: { returned: WaitingReturn }) {
+  const stage = ENROLLMENT_STAGES.find((stage) => stage === returned.stage);
+  const reason = returned.state === "cancelled" ? "Cancelled" : stage === undefined ? "Failed" : `Failed at ${STAGES[stage]}`;
+  return (
+    <section aria-label="Last enroll" className="rounded-md border px-3 py-2">
+      <p className="font-medium">{reason}</p>
+      {returned.message ? <p className="text-muted-foreground">{returned.message}</p> : null}
+    </section>
   );
 }
 
