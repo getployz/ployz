@@ -5169,6 +5169,46 @@ fn history_lists_when_who_and_what_and_names_the_draft_an_action_overwrites() {
 }
 
 #[test]
+fn history_names_a_config_and_its_mount_by_name() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let put = |content: &str| {
+        std::fs::write(file.path(), content).unwrap();
+        let from = file.path().to_str().unwrap();
+        ok(&store, &["config", "put", "app", "app.yml", "--from", from]);
+    };
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["config", "add", "app"]);
+    put("a: 1");
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["config", "mount", "web", "app", "/etc/app"]);
+    put("a: 2");
+    ok(&store, &["deploy", "--skip-deploy"]);
+
+    let listed = human(&["history"]);
+    let newest = listed.lines().nth(1).unwrap_or_default();
+    assert!(newest.contains("web.configs.app"), "{listed}");
+    assert!(newest.contains("configs.app.files.app.yml"), "{listed}");
+    assert!(!listed.contains("configs.@"), "{listed}");
+
+    let preview = human(&["history", "undo", "3", "--preview"]);
+    assert!(preview.contains("  web.configs.app: "), "{preview}");
+    assert!(
+        preview.contains("  configs.app.files.app.yml: "),
+        "{preview}"
+    );
+    assert!(!preview.contains("configs.@"), "{preview}");
+}
+
+#[test]
 fn a_bare_discard_names_every_change_it_drops() {
     let store = &Target::Local(tempfile::tempdir().unwrap());
     ok(store, &["project", "new", "shop"]);
