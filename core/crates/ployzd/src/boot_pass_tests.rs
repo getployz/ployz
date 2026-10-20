@@ -232,8 +232,17 @@ impl BootHost for FakeHost {
     }
 }
 
-fn published() -> watch::Receiver<bool> {
-    watch::channel(true).1
+/// Ingress publishes again on its own every few seconds, so the pass never waits
+/// on a fake that has stopped publishing.
+fn published() -> watch::Receiver<u64> {
+    let (publishes, published) = watch::channel(0);
+    tokio::spawn(async move {
+        while !publishes.is_closed() {
+            publishes.send_modify(|publishes| *publishes += 1);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+    published
 }
 
 async fn pass(local: &Machine, observed: Observed) -> Vec<ContainerWant> {
@@ -335,8 +344,8 @@ async fn waits_for_peer_targets_and_own_ack() {
         store: Some(store),
         ..FakeHost::new(&cluster.local, cluster.acked_everywhere())
     };
-    let (first_publish, first_published) = watch::channel(false);
-    let running = tokio::spawn(run(host.clone(), first_published));
+    let (publishes, published) = watch::channel(0);
+    let running = tokio::spawn(run(host.clone(), published));
 
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(host.wants().is_empty(), "no peer has answered yet");
@@ -348,10 +357,16 @@ async fn waits_for_peer_targets_and_own_ack() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(
         host.wants().is_empty(),
-        "this Machine's ingress has not published"
+        "this Machine's ingress has not published since catch-up"
+    );
+    publishes.send_modify(|publishes| *publishes += 1);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        host.wants().is_empty(),
+        "the first publish since catch-up may have read the store before it"
     );
     assert!(!running.is_finished());
-    first_publish.send_replace(true);
+    publishes.send_modify(|publishes| *publishes += 1);
     tokio::time::timeout(Duration::from_secs(5), running)
         .await
         .unwrap()
@@ -379,7 +394,7 @@ async fn no_reachable_peer_does_nothing() {
 async fn times_out_once_and_does_nothing() {
     let cluster = Cluster::new();
     let host = FakeHost::new(&cluster.local, cluster.acked_everywhere());
-    let (_first_publish, never_published) = watch::channel(false);
+    let (_publishes, never_published) = watch::channel(0);
     let started = Instant::now();
 
     run(host.clone(), never_published).await;

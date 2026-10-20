@@ -151,8 +151,8 @@ impl ContainerRuntime {
         self
     }
 
-    /// Turns `true` once the first container observation has published since this
-    /// process started, and stays `true` across watch retries.
+    /// Turns `true` once this process has published its container observations
+    /// while participating, and stays `true` across watch retries.
     pub(crate) fn first_synced(&self) -> tokio::sync::watch::Receiver<bool> {
         self.first_synced.subscribe()
     }
@@ -262,7 +262,7 @@ impl ContainerRuntime {
         shutdown: &CancellationToken,
         filters: HashMap<&str, Vec<&str>>,
         sync: F,
-        containers: bool,
+        on_local_marks: bool,
     ) -> Result<(), Error>
     where
         F: AsyncFn(&Self, &ObservationSink) -> Result<(), Error>,
@@ -282,10 +282,6 @@ impl ContainerRuntime {
         let mut stopping = self.stopping.subscribe();
         let mut rotations = self.specs.subscribe_rotations();
         sync(self, sink).await?;
-        if containers {
-            self.first_synced
-                .send_if_modified(|synced| !std::mem::replace(synced, true));
-        }
 
         let mut rescans = tokio::time::interval(sink.rescan_interval);
         rescans.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -302,8 +298,8 @@ impl ContainerRuntime {
                 },
                 _ = rescans.tick() => sync(self, sink).await?,
                 // Stopping marks and rotation writes change no Docker state, so no event announces them.
-                Ok(()) = stopping.changed(), if containers => sync(self, sink).await?,
-                Ok(()) = rotations.changed(), if containers => sync(self, sink).await?,
+                Ok(()) = stopping.changed(), if on_local_marks => sync(self, sink).await?,
+                Ok(()) = rotations.changed(), if on_local_marks => sync(self, sink).await?,
                 () = async {
                     match scan_at {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -349,6 +345,8 @@ impl ContainerRuntime {
         publication
             .apply_container_rows(&machine_id, &changes.deletions, &changes.upserts)
             .await?;
+        self.first_synced
+            .send_if_modified(|synced| !std::mem::replace(synced, true));
         // The one Service Container the daemon starts unasked, and only while this Machine
         // participates and accepts ingress. It starts an existing container; it never
         // creates, replaces, moves or removes one.
