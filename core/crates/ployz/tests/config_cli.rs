@@ -2334,7 +2334,10 @@ fn discarding_a_save_never_deployed_says_how_to_bring_it_back() {
         let back = "web is in saved #1 but was never deployed, so discarding removes it. Bring it back: ployz discard web";
 
         let first = discard();
-        assert!(first.contains("Discarded every staged change"), "{first}");
+        assert!(
+            first.contains("Discarded 1 staged change in shop/production: web."),
+            "{first}"
+        );
         assert!(first.contains(back), "{first}");
         let diff = ok(store, &["diff"]);
         assert_eq!(diff["draft_changes"][0]["name"], json!("web"), "{diff}");
@@ -2403,6 +2406,11 @@ fn an_agent_reviews_saves_and_discards() {
             .unwrap()
             .as_str()
             .unwrap();
+        assert_eq!(
+            stale.pointer("/details/diff"),
+            Some(&json!({ "version": fresh })),
+            "a stale review hands back only the fresh version, not every staged value"
+        );
         assert_eq!(
             stale.pointer("/details/next"),
             Some(&json!(format!(
@@ -4409,6 +4417,72 @@ fn history_says_nothing_staged_when_the_next_deploy_already_matches() {
         human(&["history", "undo", "3"]),
         "Nothing to undo in #3. Nothing staged.\n"
     );
+}
+
+#[test]
+fn history_lists_when_who_and_what_and_names_the_draft_an_action_overwrites() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["set", "web.env.SOAK=saved"]);
+    ok(&store, &["deploy", "--skip-deploy", "--message", "soak it"]);
+    let listed = human(&["history"]);
+    let newest = listed.lines().nth(1).unwrap_or_default();
+    assert!(newest.starts_with("#2"), "{listed}");
+    assert!(newest.contains("web.env.SOAK"), "{listed}");
+    assert!(newest.contains("soak it"), "{listed}");
+    assert!(newest.contains("s ago"), "{listed}");
+    assert!(
+        listed
+            .lines()
+            .nth(2)
+            .unwrap_or_default()
+            .contains("first version"),
+        "{listed}"
+    );
+
+    ok(&store, &["set", "web.env.SOAK=draft"]);
+    let refused = error(&store, &["history", "undo", "2"]);
+    assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("draft changes to web.env.SOAK"),
+        "{refused}"
+    );
+    assert_eq!(
+        refused["details"]["next"],
+        json!("ployz history undo 2 --accept-overwrite"),
+        "{refused}"
+    );
+    ok(&store, &["history", "undo", "2", "--accept-overwrite"]);
+}
+
+#[test]
+fn a_bare_discard_names_every_change_it_drops() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    applied(store, "production");
+    ok(store, &["set", "web.env.MINE=1"]);
+    ok(store, &["service", "add", "api", "--image", "api:1"]);
+    let discarded = ok(store, &["discard"]);
+    let mut dropped: Vec<&str> = discarded["dropped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap())
+        .collect();
+    dropped.sort_unstable();
+    assert_eq!(dropped, ["api", "web.env.MINE"], "{discarded}");
 }
 
 #[test]

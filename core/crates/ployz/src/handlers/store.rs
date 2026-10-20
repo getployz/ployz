@@ -21,7 +21,16 @@ use crate::ui::Hint;
 impl From<StoreCallError> for Error {
     fn from(error: StoreCallError) -> Self {
         match error {
-            StoreCallError::Refused(error) => error.into(),
+            StoreCallError::Refused(mut error) => {
+                // A stale review hands back the whole fresh one; a retry needs only its version.
+                if error.code == RpcErrorCode::Conflict
+                    && let Some(diff) = error.details.get_mut("diff")
+                    && let Some(version) = diff.get("version").cloned()
+                {
+                    *diff = serde_json::json!({ "version": version });
+                }
+                error.into()
+            }
             StoreCallError::Cloud(error) => error.into(),
             StoreCallError::Stopped(failure) => failure,
         }
