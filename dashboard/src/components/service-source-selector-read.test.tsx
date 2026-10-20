@@ -154,3 +154,26 @@ it("offers a public URL without a GitHub installation", async () => {
     cleanup(); await getDbClient(queryClient).cleanup(); queryClient.clear();
   }
 });
+
+it("links an existing GitHub installation from the picker without installing the app again", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("scrollTo", () => {});
+  Element.prototype.scrollIntoView ??= () => {};
+  const open = vi.fn(() => ({ closed: false }) as Window);
+  vi.stubGlobal("open", open);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const scope = { queryClient, organizationSlug: "fresh-org", sessionId: "fresh-session" };
+  getGithubReposCollection(scope);
+  queryClient.setQueryData(githubReposQueryKey(scope), []);
+  queryClient.setQueryData(githubKeys.access("fresh-org"), { hasInstallations: false });
+  queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com" });
+  const routeTree = selectorRoutes(scope, () => <Command><CommandList><GitRepoSelector organizationSlug="fresh-org" query="" onSelectRepo={() => {}} /></CommandList></Command>);
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/"] }) });
+  try {
+    render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Use existing" }));
+    expect(open).toHaveBeenCalledExactlyOnceWith("/api/github/connect?organization=fresh-org&existing=1", "_blank", "width=1020,height=680");
+  } finally {
+    cleanup(); await getDbClient(queryClient).cleanup(); queryClient.clear();
+  }
+});

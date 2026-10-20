@@ -209,7 +209,8 @@ Deleting an organization removes it with its settings and tokens, and disconnect
 from it. It can't be undone. Only an owner can delete it. For anyone else **Delete organization**
 is disabled.
 
-1. Delete every project in it. **Delete organization** stays disabled until you do.
+1. [Delete every project](../environments/environments.md#delete-a-project) in it. **Delete
+   organization** stays disabled until you do.
 2. **Cancel Pro first.** Deleting the organization doesn't cancel it: go to
    **Organization → Billing → Manage billing**.
 3. Go to **Organization → General** and click **Delete organization**.
@@ -222,6 +223,10 @@ If a server is offline, the organization stays, disabled, until that server is b
 
 The dashboard then opens another of your organizations. With none left, it offers **Create an
 organization**.
+
+Once it's gone, its slug is free, and a new organization can take it. Old links and emails that
+name the slug open the new organization only for its members, and for Ployz support if it allows
+support access. Once its **Domain** has served your services, no organization gets it again.
 
 From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,

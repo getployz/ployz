@@ -1,6 +1,8 @@
 //! Published entries as clap subcommands, so `ployz --help`, completion, and parsing
 //! treat them like compiled ones.
 
+use std::collections::BTreeSet;
+
 use clap::builder::PossibleValuesParser;
 use clap::{Arg, ArgAction, Command};
 
@@ -9,10 +11,44 @@ use super::{ArgKind, Published, PublishedArg, PublishedCommand};
 /// Graft every published entry under its path, creating groups on the way. A path
 /// that meets a compiled leaf, at its end or on the way, is dropped.
 pub(crate) fn attach(root: Command, published: &Published) -> Command {
-    published
+    let groups = published
         .commands
         .iter()
-        .fold(root, |root, command| graft(root, &command.path, command))
+        .flat_map(|command| {
+            let groups = command
+                .path
+                .split_last()
+                .map_or(&[][..], |(_, groups)| groups);
+            groups.iter().scan(Vec::new(), |path, name| {
+                path.push(name.clone());
+                Some(path.clone())
+            })
+        })
+        .filter(|path| find(&root, path).is_none())
+        .collect::<BTreeSet<_>>();
+    let root = published
+        .commands
+        .iter()
+        .fold(root, |root, command| graft(root, &command.path, command));
+    groups.iter().fold(root, |root, path| described(root, path))
+}
+
+fn find<'a>(root: &'a Command, path: &[String]) -> Option<&'a Command> {
+    path.iter()
+        .try_fold(root, |command, name| command.find_subcommand(name))
+}
+
+/// A group only Cloud published has no description of its own: it lists its commands.
+fn described(parent: Command, path: &[String]) -> Command {
+    let [name, rest @ ..] = path else {
+        let commands = parent
+            .get_subcommands()
+            .map(|command| command.get_name().to_owned())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return parent.about(format!("Commands: {commands}"));
+    };
+    parent.mut_subcommand(name.clone(), |group| described(group, rest))
 }
 
 fn graft(parent: Command, path: &[String], command: &PublishedCommand) -> Command {
@@ -62,8 +98,14 @@ fn arg(arg: &PublishedArg) -> Arg {
     if arg.positional {
         clap = clap.value_name(arg.name.to_uppercase());
     } else {
+        // Cloud's `environment` input is `--env`, as on every compiled command.
+        let long = if arg.name == "environment" {
+            "env"
+        } else {
+            arg.name.as_str()
+        };
         clap = clap
-            .long(arg.name.clone())
+            .long(long.to_owned())
             .value_name(arg.name.to_uppercase());
     }
     if let Some(help) = &arg.help {
@@ -131,6 +173,42 @@ mod tests {
                 );
                 let positional = command.args.iter().any(|a| a.name == name && a.positional);
                 assert_eq!(arg.is_positional(), positional, "{} {name}", command.path());
+            }
+        }
+    }
+
+    #[test]
+    fn a_published_environment_is_the_env_flag() {
+        let root = attach(crate::cli::compiled(), &published());
+        let matches = root
+            .try_get_matches_from(["ployz", "uptime", "show", "web", "--env", "staging"])
+            .unwrap();
+        let (_, uptime) = matches.subcommand().unwrap();
+        let (_, show) = uptime.subcommand().unwrap();
+        assert_eq!(
+            show.get_one::<String>("environment").map(String::as_str),
+            Some("staging")
+        );
+    }
+
+    #[test]
+    fn a_published_group_lists_its_commands() {
+        let published = published();
+        let root = attach(crate::cli::compiled(), &published);
+        for command in &published.commands {
+            let Some((_, groups)) = command.path.split_last() else {
+                continue;
+            };
+            let mut group = &root;
+            for name in groups {
+                group = group.find_subcommand(name).unwrap();
+                assert!(group.get_about().is_some(), "{}", command.path());
+            }
+            if let Some(about) = group.get_about().map(ToString::to_string)
+                && about.starts_with("Commands: ")
+            {
+                let leaf = command.path.last().unwrap();
+                assert!(about.contains(leaf.as_str()), "{about} lists {leaf}");
             }
         }
     }

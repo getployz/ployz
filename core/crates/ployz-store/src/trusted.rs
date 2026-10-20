@@ -249,7 +249,8 @@ fn listed(names: &BTreeSet<EnvironmentName>) -> String {
 
 /// Why nothing deploys in an Organization without Servers, worded as Cloud's
 /// refusal of a runtime read without them.
-pub(crate) const NO_SERVERS: &str = "This Organization has no servers yet, so nothing deployed. Add one from a terminal, then deploy again.";
+pub(crate) const NO_SERVERS: &str =
+    "This Organization has no servers yet, so nothing deployed. Add one, then deploy again.";
 
 /// What the Servers answered when asked which of `sought` they hold. It is relative
 /// to the observer: a Server that did not answer is named, never assumed empty.

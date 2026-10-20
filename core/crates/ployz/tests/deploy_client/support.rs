@@ -56,6 +56,8 @@ pub(super) struct DeployService {
     inspect_error: Option<RpcError>,
     exec_exit: Option<i32>,
     runtime: ContainerRuntimeObservation,
+    /// Docker OOM-killed a process of each Container, as its inspect reports.
+    oom_killed: bool,
     /// When a Starting Container turns healthy and starts serving.
     healthy_at: Option<tokio::time::Instant>,
     effective_healthcheck: Option<HealthcheckSpec>,
@@ -125,6 +127,7 @@ impl DeployService {
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
             },
+            oom_killed: false,
             healthy_at: None,
             effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
@@ -239,6 +242,7 @@ impl DeployService {
             return HealthVerdict::Failed {
                 observation,
                 last_check: None,
+                oom_killed: self.oom_killed,
             };
         };
         if *health == HealthObservation::Starting {
@@ -253,12 +257,20 @@ impl DeployService {
             HealthVerdict::Failed {
                 observation,
                 last_check: None,
+                oom_killed: self.oom_killed,
             }
         }
     }
 
     pub(super) fn crash_containers(mut self) -> Self {
         self.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+        self
+    }
+
+    /// Containers exit 137 with Docker's inspect saying it OOM-killed them.
+    pub(super) fn oom_kill_containers(mut self) -> Self {
+        self.runtime = ContainerRuntimeObservation::Exited { code: 137 };
+        self.oom_killed = true;
         self
     }
 

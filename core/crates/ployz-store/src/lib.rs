@@ -97,7 +97,7 @@ pub use removal::{
     Waiting, docker_volume,
 };
 pub use review::history::{HistoryAction, SavedRevision};
-pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};
+pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange};
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;

@@ -21,6 +21,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { githubBranchesQueryOptions, githubKeys, githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
 import { getGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
+import { githubConnectHref } from "#/modules/github/github-connect";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
 import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
@@ -187,9 +188,6 @@ function SelectorCommandDialog({
   );
 }
 
-const githubConnectHref = (organizationSlug: string) =>
-  `/api/github/connect?${new URLSearchParams({ organization: organizationSlug }).toString()}`;
-
 /** Cross-origin reads throw while the popup is on GitHub; before the first redirect it is about:blank. */
 function returnedToPloyz(popup: Window) {
   try {
@@ -202,8 +200,8 @@ function returnedToPloyz(popup: Window) {
 
 let onReturnFromGithub: (() => void) | undefined;
 
-function openGithub(queryClient: QueryClient, organizationSlug: string) {
-  const href = githubConnectHref(organizationSlug);
+function openGithub(queryClient: QueryClient, organizationSlug: string, existing = false) {
+  const href = githubConnectHref(organizationSlug, existing);
   const popup = window.open(href, "_blank", "width=1020,height=680");
   if (!popup) {
     window.location.assign(href);
@@ -244,6 +242,7 @@ function GitRepoSelectorConnect({ organizationSlug }: { organizationSlug: string
         </EmptyHeader>
         <EmptyContent>
           <Button onClick={() => openGithub(queryClient, organizationSlug)}>Connect GitHub</Button>
+          <Button variant="ghost" onClick={() => openGithub(queryClient, organizationSlug, true)}>Use existing</Button>
         </EmptyContent>
       </Empty>
     );

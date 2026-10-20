@@ -78,7 +78,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     for row in &rows {
         let saved = saved_at(tx, id, row.number(1, "revision")?)?;
         let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
-        let target = InFlight {
+        let mut target = InFlight {
             cluster_domain: row.parse_optional(3, "Cluster Domain")?,
             services: nodes
                 .iter()
@@ -107,7 +107,35 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                 })
                 .cloned()
                 .collect(),
+            configs: nodes
+                .iter()
+                .filter_map(|node| match node {
+                    TargetNode::Config { .. } => saved
+                        .configs
+                        .iter()
+                        .find(|config| config.resource_id == node.id()),
+                    TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
+                })
+                .cloned()
+                .collect(),
+            removes: BTreeSet::new(),
         };
+        target.removes = nodes
+            .iter()
+            .map(TargetNode::id)
+            .filter(|id| {
+                !target.services.iter().any(|service| service.id == *id)
+                    && !target
+                        .volumes
+                        .iter()
+                        .any(|volume| volume.resource_id == *id)
+                    && !target
+                        .configs
+                        .iter()
+                        .any(|config| config.resource_id == *id)
+            })
+            .map(str::to_owned)
+            .collect();
         if head.in_flight.is_empty() {
             head.token = format!("{}.{ended}", row.int(0)?);
             let intent = &mut head.intent;
@@ -120,18 +148,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
             intent
                 .configs
                 .retain(|config| nodes.iter().all(|node| node.id() != config.resource_id));
-            intent.configs.extend(
-                nodes
-                    .iter()
-                    .filter_map(|node| match node {
-                        TargetNode::Config { .. } => saved
-                            .configs
-                            .iter()
-                            .find(|config| config.resource_id == node.id()),
-                        TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
-                    })
-                    .cloned(),
-            );
+            intent.configs.extend(target.configs.iter().cloned());
             intent.services.extend(target.services.iter().cloned());
             intent.volumes.extend(target.volumes.iter().cloned());
         }
@@ -523,6 +540,29 @@ pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String
     servers.sort();
     servers.dedup();
     Ok(servers)
+}
+
+/// The name each of `machines` last ran a Deployment row under in `who`'s
+/// Organization. One no row named is left out.
+pub(crate) fn server_names(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    machines: impl IntoIterator<Item = ployz_core::MachineId>,
+) -> Result<BTreeMap<ployz_core::MachineId, String>, RpcError> {
+    let mut names = BTreeMap::new();
+    for machine in machines.into_iter().collect::<BTreeSet<_>>() {
+        let id = machine.to_string();
+        let named = tx.query(
+            "SELECT server FROM config_deployment_row \
+             WHERE organization_id = ?1 AND machine = ?2 AND server <> machine \
+             ORDER BY COALESCE(finished, started, 0) DESC LIMIT 1",
+            &[who.organization.as_str().into(), id.as_str().into()],
+        )?;
+        if let Some(row) = named.first() {
+            names.insert(machine, row.text(0)?.to_owned());
+        }
+    }
+    Ok(names)
 }
 
 /// The Machines Deployment `id` failed on because they didn't answer.

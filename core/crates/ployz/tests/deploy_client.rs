@@ -318,6 +318,39 @@ async fn a_missing_image_fails_the_deploy_naming_the_image() {
 }
 
 #[tokio::test]
+async fn an_image_absent_under_pull_policy_never_says_nothing_was_pulled() {
+    let one = machine('a', "one");
+    let service = DeployService::new(one.clone())
+        .missing_image()
+        .fail_pulls_on(one.machine.id);
+    let (mut client, server) = connected(service).await;
+    let mut web = spec("web");
+    web.container.pull_policy = ployz_core::PullPolicy::Never;
+
+    let outcome = client
+        .run(
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), web, skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = outcome
+    else {
+        panic!("expected a failed Deploy: {outcome:?}");
+    };
+    assert_eq!(
+        ployz_store::Failure::of(&error, &[]).reason,
+        "Image nginx is not on this Server, and the pull policy is Never"
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn volume_ensure_failure_is_reported_on_the_container_operation() {
     let machine = machine('a', "one");
     let (mut client, server) =
@@ -1186,6 +1219,7 @@ async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
             NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
         ),
         used_bytes: 0,
+        slot_role: None,
     };
     let name = |suffix: &str| DockerVolumeName::parse(format!("shop-production_{suffix}")).unwrap();
     copies.lock().unwrap().extend([
@@ -1320,6 +1354,145 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
             ])
             .collect::<Vec<_>>())]
     );
+}
+
+/// A replacement Docker OOM-killed fails the Deployment as out of memory, naming
+/// the memLimit it ran under; the health check stays the cause.
+#[tokio::test]
+async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
+    use ployz_store::{
+        Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, Edit, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
+        ProjectName, RowState, RunnerId, SealingKey, ServiceLineageId, SettingPath, Trusted,
+    };
+    use std::sync::Arc;
+
+    for oom in [true, false] {
+        let store = Arc::new(
+            ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap(),
+        );
+        let who = Actor::system(OrganizationId::parse("org").unwrap());
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(
+                        "00000000-0000-4000-8000-000000000002",
+                    )
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_core::ServiceName::parse("web").unwrap(),
+                    image: Some("nginx".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Set {
+                        path: SettingPath::parse("web.memLimit").unwrap(),
+                        value: serde_json::json!("16MiB"),
+                    }],
+                },
+            )
+            .unwrap();
+        let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id.clone(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+        let machine = machine('a', "one");
+        let service = DeployService::new(machine.clone());
+        let service = if oom {
+            service.oom_kill_containers()
+        } else {
+            service.crash_containers()
+        };
+        let (address, server) = listening(service).await;
+
+        let summary = ployz::sdk::run_deployment(
+            Arc::clone(&store),
+            id.clone(),
+            RunnerId::parse("cloud-run-1").unwrap(),
+            vec![ployz::context::Connection::tcp(address)],
+            Ok(Default::default()),
+        )
+        .await
+        .unwrap();
+        server.abort();
+
+        assert_eq!(summary.status, DeploymentStatus::Failed);
+        let view = store
+            .read(&who, &ployz_store::DeploymentQuery { id })
+            .unwrap();
+        let Some(Outcome::Executed {
+            reason: Some(reason),
+            cause,
+            ..
+        }) = &view.deployment.outcome
+        else {
+            panic!(
+                "expected an executed failure, got {:?}",
+                view.deployment.outcome
+            );
+        };
+        let rows = view
+            .nodes
+            .iter()
+            .flat_map(|node| &node.rows)
+            .filter_map(|row| {
+                if let RowState::Failed { out_of_memory, .. } = &row.state {
+                    Some(*out_of_memory)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if oom {
+            assert_eq!(
+                reason,
+                "web: The Container ran out of memory under its 16 MiB memLimit"
+            );
+            assert_eq!(
+                rows,
+                [Some(ployz_core::OutOfMemory {
+                    memory_bytes: Some(ployz_core::ByteQuantity::try_from(16 << 20).unwrap()),
+                })]
+            );
+        } else {
+            assert_eq!(reason, "web: The Container exited");
+            assert_eq!(rows, [None]);
+        }
+        assert!(
+            cause.iter().any(|cause| cause.contains("exited with code")),
+            "{cause:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1474,6 +1647,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
                 environment: EnvironmentRef::default(),

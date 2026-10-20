@@ -388,12 +388,20 @@ impl Client {
         target: &MachineTarget,
         timeout: Option<Duration>,
     ) -> Result<T::Response, RpcError> {
-        let payload = T::into_request(request)
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(timeout, self.call_once::<T>(payload, Some(target)))
+        self.invoke_answered::<T>(request, target, timeout)
             .await
             .map_err(rpc_error)
+    }
+
+    /// [`Self::invoke`], keeping whether the failure came back from a daemon or no reply came.
+    pub(crate) async fn invoke_answered<T: Rpc>(
+        &self,
+        request: T::Request,
+        target: &MachineTarget,
+        timeout: Option<Duration>,
+    ) -> Result<T::Response, ConnectError> {
+        let payload = T::into_request(request).encode()?;
+        apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
     }
 
     /// One unary RPC from an already-shaped request body. No retry, as [`Self::invoke`].
@@ -1637,20 +1645,21 @@ async fn data_loss_on_machine(
             ..failure.error
         })?;
     Ok(ObservedDataLoss {
-        data_loss: volumes
-            .value
-            .volumes
-            .into_iter()
-            .map(|volume| DataLoss::DockerVolume { id: volume.id })
-            .chain(
-                volumes
-                    .value
-                    .failures
-                    .into_iter()
-                    .map(|failure| DataLoss::DockerVolume { id: failure.id }),
-            )
-            .collect(),
+        data_loss: volumes_lost(volumes.value),
     })
+}
+
+/// The Docker Volumes a reset loses: every one listed or failing to list, but the
+/// builder's cache, which is no one's data.
+fn volumes_lost(inventory: VolumeInventory) -> Vec<DataLoss> {
+    inventory
+        .volumes
+        .into_iter()
+        .map(|volume| volume.id)
+        .chain(inventory.failures.into_iter().map(|failure| failure.id))
+        .filter(|id| !ployz_build::is_builder_cache(id.name.as_str()))
+        .map(|id| DataLoss::DockerVolume { id })
+        .collect()
 }
 
 fn server_did_not_respond(name: &MachineName) -> RpcError {

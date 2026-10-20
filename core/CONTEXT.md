@@ -453,7 +453,7 @@ The one copy of a Provisioned Volume that Containers mount read-write: the datas
 _Avoid_: primary, master, active replica, source of truth
 
 **Mirror**:
-A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared.
+A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared. The Machine records each slot's role: a pull makes it a Mirror, and a cut or a departure that parks the Writer's root in it makes it an **Old copy**, which nothing refreshes.
 _Avoid_: replica, standby, backup, secondary
 
 **Lease**:
@@ -617,6 +617,10 @@ _Avoid_: per-user permission, read-only grant, Pairing Credential, management en
 **Management Client**:
 One named holder slot on a Machine, such as `cloud` or a signed-in device's `cli-<device>`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections and leaves a Cleared tombstone of its public keys. A redial with a tombstoned key is refused with `CLIENT_CLEARED`, confirming the removal; any other refused key gets `CLIENT_REFUSED`. The Machine knows holders, never the people or Organizations behind them.
 _Avoid_: Cloud Pairing, user, session, per-user permission
+
+**Management Proof**:
+A Management Client's signature, by its client key, over keying material only one management connection exports, sent first on that connection. The Machine admits the client key it proves, never the connection's transport key, so each process dials under a key of its own and processes holding one Management Capability never share a relay identity. It cannot be replayed on another connection.
+_Avoid_: session token, login, transport key as identity
 
 **Management Identity**:
 The Machine's iroh public key, identifying its management plane to Cloud and the remote CLI. It is not a mesh peer, a Machine ID, or the WireGuard key.

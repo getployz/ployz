@@ -8,23 +8,12 @@ import type { FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token"
 import { createFleetTokenServerFn } from "#/modules/machines/waiting/fleet-token.functions";
 import { cancelServerEnrollmentServerFn, openProbeSelectionServerFn, rejectWaitingServersServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { waitingServerDetailQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
-import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { can } from "#/modules/organization/permissions";
+import { useYouMay } from "#/modules/organization/members.queries";
 
 export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null };
 
-const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
-
-/**
- * Whether you may mint a fleet token, and why not once your role says so. Closed until your role loads, and whenever
- * the latest read of it failed, even with an older role cached, since Cloud refuses the mint without servers:add.
- */
-export function useCanAddServers(organizationSlug: string) {
-  const members = useQuery(organizationMembersQueryOptions(organizationSlug));
-  const role = members.status === "success" ? members.data.members.find((row) => row.you)?.role : undefined;
-  const allowed = role !== undefined && can(role, "servers:add");
-  return { allowed, refusal: role === undefined || allowed ? undefined : ADD_SERVERS_REFUSED };
-}
+export const ADD_SERVERS_REFUSED = "Only an owner or admin can add servers.";
+export const ENROLL_REFUSED = "Only an owner or admin can enroll or reject servers.";
 
 /** Mints a fleet token. The secret lives only in the result, so it shows once. */
 export function useMintFleetToken(organizationSlug: string) {
@@ -70,11 +59,13 @@ export const PROBE_RETRY_MS = PROBE_WINDOW_MS + 1_000;
 /**
  * Probes a selection once it stops changing. Cloud won't reopen over a host whose window is still running,
  * so a selection it turns away is asked again once that window has closed, if it is still the selection.
+ * Cloud opens probes only for a role that may add servers, so nothing is asked until your role says so.
  */
 export function useSettledProbe(organizationSlug: string, ids: readonly string[]) {
   const selection = [...ids].sort().join(",");
+  const may = useYouMay(organizationSlug, "servers:add");
   useEffect(() => {
-    if (selection === "") return;
+    if (selection === "" || may !== true) return;
     let current = true;
     let timer = setTimeout(async function ask(retry = true) {
       const opened = await openProbeSelectionServerFn({ data: { organizationSlug, ids: selection.split(",") } }).catch(() => null);
@@ -84,7 +75,7 @@ export function useSettledProbe(organizationSlug: string, ids: readonly string[]
       current = false;
       clearTimeout(timer);
     };
-  }, [organizationSlug, selection]);
+  }, [organizationSlug, selection, may]);
 }
 
 export function useEnrollmentStatus(organizationSlug: string) {

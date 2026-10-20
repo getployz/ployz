@@ -8,12 +8,12 @@
 use ployz_core::config::{ReviewComparisonRole, ReviewLifecycleKind};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AddDomain, Admit, Approval, ApprovalDigest, Asks, Change, ConfigStore, CreateProject,
-    CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DestructiveEffect,
-    DestructiveKind, DiffQuery, DiffView, Discard, Discarded, Edit, EnvironmentId,
-    EnvironmentQuery, EnvironmentRef, Hostname, Mount, OrganizationId, Permission, ProjectId,
-    ProjectName, Publish, Published, RemoveDomain, RemoveService, RemoveVolume, Revision,
-    ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
+    Actor, AddDomain, Admit, Approval, ApprovalDigest, Asks, Change, Command, ConfigStore,
+    CreateProject, CreateService, CreateVolume, DataEffect, Deploy, DeploymentId,
+    DestructiveEffect, DestructiveKind, DiffQuery, DiffView, Discard, Discarded, Edit,
+    EnvironmentId, EnvironmentQuery, EnvironmentRef, Hostname, Mount, OrganizationId, Permission,
+    ProjectId, ProjectName, Publish, Published, RemoveDomain, RemoveService, RemoveVolume,
+    Revision, ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -397,6 +397,7 @@ fn discard_keeps_mounts_it_does_not_name() {
                 // Three replicas of web write it below.
                 shared_writes: true,
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),
@@ -566,6 +567,19 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
     assert_eq!(revision.saved_by, who.principal);
     assert!(revision.saved_at.is_some());
     assert_eq!(revision.predecessor, None);
+    let mut created: Vec<_> = revision
+        .changes
+        .iter()
+        .map(|change| (change.name.as_str(), change.lifecycle))
+        .collect();
+    created.sort_by_key(|(name, _)| *name);
+    assert_eq!(
+        created,
+        [
+            ("api", ReviewLifecycleKind::Create),
+            ("web", ReviewLifecycleKind::Create)
+        ]
+    );
     assert!(!save("A duplicate must not replace the message").created);
     assert_eq!(
         store
@@ -1050,9 +1064,10 @@ fn discard_review_restores_mixed_runtime_and_inverse_rows_once() {
 }
 
 #[test]
-fn discard_review_whole_runtime_node_dominates_draft_children() {
+fn discard_review_returns_to_saved_and_keeps_an_undeployed_save_listed() {
     let (store, who) = shop();
     publish(&store, &who, None).unwrap();
+    let saved = working(&store, &who);
     set(&store, &who, "web.replicas", json!(3));
     let before = diff(&store, &who);
     assert_eq!(before.review_changes().len(), 2);
@@ -1073,9 +1088,10 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
             },
         )
         .unwrap();
-    assert!(working(&store, &who).is_empty());
-    assert_eq!(diff(&store, &who).total_count, 0);
-    assert!(diff(&store, &who).draft_count > 0);
+    assert_eq!(working(&store, &who), saved);
+    let after = diff(&store, &who);
+    assert_eq!(after.draft_count, 0);
+    assert_eq!(after.total_count, 2);
     assert_eq!(
         store
             .read(&who, &ployz_store::HistoryQuery::default())
@@ -1083,6 +1099,24 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
             .revisions,
         history.revisions
     );
+}
+
+#[test]
+fn discard_review_names_the_settings_an_undeployed_save_loses() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(3));
+    let discarded = store
+        .write(
+            &who,
+            &Discard {
+                target: Some(ployz_store::DiscardTarget::Review),
+                version: Some(diff(&store, &who).version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(discarded.dropped, ["web.replicas"]);
 }
 
 fn unset(store: &ConfigStore, who: &Actor, path: &str) {
@@ -1315,6 +1349,7 @@ fn history_undo_of_a_volume_that_replaced_a_mount_puts_the_old_mount_back() {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -1344,6 +1379,7 @@ fn history_undo_of_a_mount_move_takes_back_what_took_its_old_path() {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -2116,6 +2152,7 @@ fn create_volume(store: &ConfigStore, who: &Actor, n: u8) {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(format!("00000000-0000-4000-8000-0000000000{n:02}")).unwrap(),
                 environment: EnvironmentRef::default(),
@@ -2693,6 +2730,7 @@ fn history_undo_volume_mount_named_name_and_shared_writes() {
                 storage: ployz_core::config::VolumeKind::Docker {},
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 mounts: vec![Mount {
                     service: ServiceName::parse("web").unwrap(),
                     path: "/old".into(),
@@ -3860,6 +3898,7 @@ fn mount_data(store: &ConfigStore, who: &Actor) {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -3895,6 +3934,7 @@ fn removing_a_deployed_service_is_destructive_and_a_new_one_is_not() {
             name: "web".into(),
             node: WEB.into(),
             path: "web".into(),
+            lost_after: None,
         }]
     );
 }
@@ -3949,6 +3989,60 @@ fn detaching_a_volume_from_a_deployed_service_is_destructive_and_keeps_its_data(
             "web.mounts.data".to_owned()
         )]
     );
+}
+
+const DATA: &str = "00000000-0000-4000-8000-000000000005";
+
+/// Deploy `data` on `web`, then stage what Cloud's restore writes: one Batch that
+/// moves `web` onto `data-1142`, restored from `data`'s point at `at`. Returns the
+/// refused Publish and the review it refused.
+fn restore_data_at(at: u64) -> (RpcError, DiffView) {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    apply_all(&store, &who, &Trusted::default());
+    let restore = Command::decode(json!({
+        "command": "batch",
+        "commands": [
+            {"command": "edit", "changes": [{"op": "unset", "path": "web.mounts.data"}]},
+            {
+                "command": "create_volume",
+                "id": "00000000-0000-4000-8000-000000000006",
+                "name": "data-1142",
+                "storage": {"kind": "docker"},
+                "mounts": [{"service": "web", "path": "/data"}],
+                "restored_from": {"volume": DATA, "at": at},
+            },
+        ],
+    }))
+    .unwrap();
+    store.write(&who, &restore).unwrap();
+    let refused = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    (refused, diff(&store, &who))
+}
+
+#[test]
+fn a_restore_says_which_changes_its_detach_loses() {
+    let (refused, review) = restore_data_at(1_790_000_000);
+    assert_eq!(refused.code.as_str(), "approval_required", "{refused:?}");
+    assert_eq!(
+        refused.details["effects"],
+        json!([{
+            "kind": "detaches_volume",
+            "name": "data",
+            "node": WEB,
+            "path": "web.mounts.data",
+            "lost_after": {"at": 1_790_000_000_u64, "restored": "data-1142"},
+        }])
+    );
+    assert_eq!(json!(review.effects), refused.details["effects"]);
+}
+
+#[test]
+fn an_approval_binds_the_restore_point_it_loses_after() {
+    let (earlier, earlier_review) = restore_data_at(1_790_000_000);
+    let (later, later_review) = restore_data_at(1_790_000_600);
+    assert_eq!(earlier_review.version, later_review.version);
+    assert_ne!(earlier.details["approval"], later.details["approval"]);
 }
 
 #[test]
@@ -4254,6 +4348,7 @@ fn volume_at(store: &ConfigStore, who: &Actor, path: &str) {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -4455,5 +4550,50 @@ fn history_hides_the_plain_text_a_lapsed_deployment_protected() {
             );
             discard_to_saved(&store, &who);
         }
+    }
+}
+
+fn discard_review(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &Discard {
+                target: Some(ployz_store::DiscardTarget::Review),
+                version: Some(diff(store, who).version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn discard_review_abandons_a_staged_roll_back() {
+    for running in [1, 2, 3] {
+        let (store, who) = shop();
+        publish(&store, &who, None).unwrap();
+        for replicas in [2, 3] {
+            if running == replicas - 1 {
+                backend::deploy(&store, &who, "production", 1);
+            }
+            set(&store, &who, "web.replicas", json!(replicas));
+            publish(&store, &who, None).unwrap();
+        }
+        if running == 3 {
+            backend::deploy(&store, &who, "production", 1);
+        }
+        assert!(stage_history(&store, &who, 1, ployz_store::HistoryAction::Restore).changed);
+        discard_review(&store, &who);
+        let after = diff(&store, &who);
+        assert_eq!(
+            value(&store, &who, "web.replicas"),
+            Some(json!(3)),
+            "running #{running}"
+        );
+        assert_eq!(after.draft_count, 0, "running #{running}");
+        assert_eq!(
+            after.total_count,
+            usize::from(running != 3),
+            "running #{running}: only the Save that is not running stays listed"
+        );
     }
 }

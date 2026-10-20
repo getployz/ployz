@@ -359,6 +359,7 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ),
     ("set", CliNext::Fix(FixRow::Open(DashboardPage::Variables))),
     ("project new", CliNext::Tool("project_create", Some("name"))),
+    ("project ls", CliNext::Tool("environment_show", None)),
     (
         "env new",
         CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
@@ -386,6 +387,10 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ("deployment ls", CliNext::Tool("deployment_list", None)),
     ("diff", CliNext::Tool("review", None)),
     ("domain add", CliNext::Tool("domain_add", Some("service"))),
+    (
+        "service rename",
+        CliNext::Tool("service_rename", Some("service")),
+    ),
     ("volume inspect", CliNext::Tool("environment_show", None)),
     ("volume set", CliNext::VolumeSharedWrites),
     // volume_add takes no shared writes.

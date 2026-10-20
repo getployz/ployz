@@ -1,8 +1,10 @@
 //! The one way to stdout. SIGPIPE stays ignored, Rust's default, because hyper
 //! `writev`s to the daemon socket and a hang-up there must be an error, not a
 //! silent death. Only a reader gone from stdout ends the process by SIGPIPE.
+//! Any other write error is kept, and the command fails with it at exit.
 
 use std::{
+    cell::RefCell,
     io::{self, IsTerminal, Write},
     pin::Pin,
     task::{Context, Poll},
@@ -11,8 +13,14 @@ use std::{
 use tokio::io::AsyncWrite;
 use tokio_util::sync::CancellationToken;
 
+thread_local! {
+    /// The first stdout write error other than a gone reader. Results are
+    /// printed on the handler's thread, as `exit` runs.
+    static BROKEN: RefCell<Option<io::Error>> = const { RefCell::new(None) };
+}
+
 /// A stdout writer that dies of SIGPIPE when the reader is gone.
-pub(crate) struct Stdout<W>(W);
+pub(crate) struct Stdout<W>(pub(super) W);
 
 /// stdout through `anstream`, which strips color `--color` turns off.
 #[expect(clippy::disallowed_methods, reason = "this is the stdout accessor")]
@@ -44,8 +52,26 @@ impl<W: Write> Write for Stdout<W> {
 fn unless_reader_gone<T>(result: io::Result<T>) -> io::Result<T> {
     match result {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => die_of_sigpipe(),
+        Err(error) if error.kind() != io::ErrorKind::Interrupted => {
+            BROKEN.with_borrow_mut(|broken| {
+                broken.get_or_insert_with(|| copy(&error));
+            });
+            Err(error)
+        }
         result => result,
     }
+}
+
+fn copy(error: &io::Error) -> io::Error {
+    error.raw_os_error().map_or_else(
+        || io::Error::new(error.kind(), error.to_string()),
+        io::Error::from_raw_os_error,
+    )
+}
+
+/// The first stdout write error, once; a result that never reached its reader.
+pub(super) fn take_broken() -> Option<io::Error> {
+    BROKEN.take()
 }
 
 fn die_of_sigpipe() -> ! {

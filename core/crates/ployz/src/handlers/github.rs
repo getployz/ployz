@@ -208,6 +208,7 @@ pub(super) fn tree(root: &ArgMatches) -> Result<(), Error> {
         glob: matches.get_one::<String>("match").cloned(),
     };
     let tree: GithubTreeView = read_repository(root, "tree", &query)?;
+    refuse_missing_path(&query, &tree)?;
     crate::ui::finish(&tree, || {
         if tree.paths.is_empty() {
             crate::ui::note(format_args!(
@@ -225,6 +226,24 @@ pub(super) fn tree(root: &ArgMatches) -> Result<(), Error> {
         }
     })?;
     Ok(())
+}
+
+/// A `--path` with nothing under it names nothing, as `github cat` says of a file.
+fn refuse_missing_path(query: &GithubTreeQuery, tree: &GithubTreeView) -> Result<(), Error> {
+    let path = query
+        .path
+        .as_deref()
+        .map(|path| path.trim_matches('/'))
+        .filter(|path| !path.is_empty());
+    match path {
+        Some(path) if query.glob.is_none() && tree.paths.is_empty() && !tree.truncated => {
+            Err(Error::not_found(format!(
+                "No path {path} at {} in {}.",
+                tree.git_ref, tree.repository
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 
 pub(super) fn cat(root: &ArgMatches) -> Result<(), Error> {
@@ -366,4 +385,34 @@ fn found<T>(reply: Result<T, LoginError>) -> Result<Option<T>, LoginError> {
 
 fn not_found(message: &'static str) -> Error {
     Error::not_found(message).hint(Hint::Next("ployz github ls".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tree_path_with_nothing_under_it_is_not_found() {
+        let repository = RepositoryName::parse("octocat/Hello-World").unwrap();
+        let query = |path: Option<&str>, glob: Option<&str>| GithubTreeQuery {
+            repository: repository.clone(),
+            path: path.map(str::to_owned),
+            git_ref: None,
+            glob: glob.map(str::to_owned),
+        };
+        let empty = GithubTreeView {
+            repository: repository.clone(),
+            git_ref: "master".to_owned(),
+            paths: Vec::new(),
+            truncated: false,
+        };
+        let refused = refuse_missing_path(&query(Some("nodir/"), None), &empty).unwrap_err();
+        assert_eq!(refused.report().code, RpcErrorCode::NotFound);
+        assert_eq!(
+            refused.to_string(),
+            "No path nodir at master in octocat/Hello-World."
+        );
+        refuse_missing_path(&query(None, None), &empty).unwrap();
+        refuse_missing_path(&query(Some("src"), Some("*.rs")), &empty).unwrap();
+    }
 }

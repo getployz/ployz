@@ -98,6 +98,7 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
         bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 42,
         role: None,
+        slot_role: None,
     };
     let containers = PartialResult {
         successes: vec![MachineSuccess {
@@ -365,6 +366,21 @@ fn unavailable(message: &str) -> RpcError {
         details: Value::Null,
         cause: Vec::new(),
     }
+}
+
+#[test]
+fn a_reset_does_not_report_the_builder_cache_as_lost() {
+    let cache = format!("buildx_buildkit_{}0_state", ployz_build::builder_name());
+    let lost = volumes_lost(VolumeInventory {
+        volumes: vec![docker_volume('a', &cache), docker_volume('a', "app_data")],
+        failures: Vec::new(),
+    });
+    assert_eq!(
+        lost,
+        [DataLoss::DockerVolume {
+            id: docker_volume('a', "app_data").id
+        }]
+    );
 }
 
 #[test]

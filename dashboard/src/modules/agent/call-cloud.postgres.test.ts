@@ -12,6 +12,7 @@ import { presetGrant } from "#/modules/identity/token-grant";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import { serviceAct } from "#/modules/service-act/tables";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
@@ -46,6 +47,18 @@ describe("callCloud", () => {
         ok: true,
         value: { operations: [expect.objectContaining({ attempt: DRAIN, run: `drain ${MACHINE}`, state: "accepted" })] },
       });
+    }));
+
+  it.live("names a Server run by the name its act resolved when the runtime has no frame", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+
+      const [run] = yield* operationsOn(ORGANIZATION, { kind: "server", machine: MACHINE }, DRAIN, 1, "machine-1").pipe(Effect.provide(services));
+
+      expect(run).toEqual(expect.objectContaining({ attempt: DRAIN, run: "drain machine-1" }));
     }));
 
   const LOGS: CloudQuery = {
@@ -275,7 +288,7 @@ describe("callCloud", () => {
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const noServers = {
         ok: false,
-        refusal: { code: "unavailable", message: NO_SERVERS_MESSAGE, details: { fix: { fix: "connect_servers" } } },
+        refusal: { code: "conflict", message: NO_SERVERS_MESSAGE, details: { fix: { fix: "connect_servers" } } },
       };
       for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
         expect(yield* callCloud(member, { ask: { query: "servers", only: null } }).pipe(runtime(opened, []), Effect.provide(services))).toEqual({

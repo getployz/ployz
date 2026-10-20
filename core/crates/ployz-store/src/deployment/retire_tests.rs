@@ -78,6 +78,7 @@ fn retiring_api() -> (ConfigStore, Actor) {
                 }],
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
             },
         )
         .unwrap();
@@ -408,11 +409,12 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
                 super::freeze(
                     &environment.summary.id,
                     &saved.intent,
-                    &saved.intent,
+                    &super::Landing::applied(&saved.intent),
                     Scope::Narrow {
                         services: &[],
                         retire: &[retire],
                         losses: &[],
+                        every_saved: false,
                     },
                     ployz_core::Namespace::parse("shop-production").unwrap(),
                     None,

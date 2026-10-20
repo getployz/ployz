@@ -748,7 +748,7 @@ mod set_volume_copy {
 
     fn slot(newest: Option<Value>) -> Value {
         json!({"Ok": {"kind":"slot", "slot":"1", "readonly":true,
-            "newest":newest, "resume_token":null, "pull":null}})
+            "newest":newest, "resume_token":null, "pull":null, "role":"old_copy"}})
     }
 
     fn snapshot(name: &str, guid: u64) -> Value {

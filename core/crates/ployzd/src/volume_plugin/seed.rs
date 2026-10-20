@@ -132,8 +132,7 @@ impl VolumeStorage {
         pool: &ployzd::machine_pool::MachinePool,
         into: &super::DockerVolumeName,
     ) -> Result<VolumeCopyView, RpcError> {
-        let datasets = self.datasets(pool).await.map_err(internal)?;
-        let copy = self.copy(&datasets, pool, into).await.map_err(internal)?;
+        let copy = self.current_copy(pool, into).await.map_err(internal)?;
         Ok(VolumeCopyView { copy })
     }
 

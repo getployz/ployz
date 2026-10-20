@@ -1,6 +1,5 @@
 import { type ConfigCommand, type ConfigCommitted, type ConfigStore, type MachineId, RpcError } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -19,6 +18,7 @@ import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
 
 type StoreWrites = AppConfig | GithubApi | InngestClient | OrganizationRuntime | SecretEncryption;
 
@@ -47,7 +47,7 @@ describe("volume placement", () => {
   const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore | StoreWrites>) => harness.runEffect(operation.pipe(
     Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))))),
     Effect.provideService(GithubApi, fakeGithubApi().service),
-    Effect.provideService(InngestClient, new Inngest({ id: "volume-placement-test" })),
+    Effect.provideService(InngestClient, sendsNowhere()),
     Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("no Cluster") }),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
@@ -158,7 +158,7 @@ describe("volume placement", () => {
 
   it("deletes only an old copy at once, never the writer or a mirror", async () => {
     await stage("web-1", ["web-2", "web-4"]);
-    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror"), member("web-4", "mirror")];
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old"), member("web-4", "mirror")];
     const deleting = (server: string) => run(deleteOldCopy(organizationId, null, { volumeId, environment, server }, () => Effect.succeed(members)));
     for (const server of ["web-1", "web-2", "web-4"]) {
       expect(await deleting(server)).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
@@ -297,7 +297,7 @@ describe("volume placement", () => {
     });
 
     it("refuses an acceptance of a loss the Volume no longer has, and stamps nothing", async () => {
-      const old = () => Effect.succeed([...members, member("web-3", "mirror")]);
+      const old = () => Effect.succeed([...members, member("web-3", "old")]);
       await stage("web-1");
       const shown = await admission(admit([]), old);
       if (shown.ok) throw new Error("expected a refusal");

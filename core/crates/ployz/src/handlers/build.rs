@@ -286,14 +286,14 @@ async fn docker(args: &[&str]) -> Result<(), Error> {
 
 pub(super) fn command(command: clap::Command) -> clap::Command {
     command
-        .about("Build one Git Service and push it into a Machine with a Build Grant")
-        .long_about("Build one Git Service and push it into a Machine with a Build Grant.\n\nChecks out --commit and refuses to build unless the build inputs match --fingerprint. When the GitHub Actions cache runtime (ACTIONS_RUNTIME_TOKEN and its cache URLs) is in the environment, Buildx uses the GitHub Actions cache.")
+        .about("Build one Git Service and push it to a Server that granted the build")
+        .long_about("Build one Git Service and push it to the Server whose Build Grant allows it.\n\nChecks out --commit and refuses to build unless the build inputs match --fingerprint. When the GitHub Actions cache runtime (ACTIONS_RUNTIME_TOKEN and its cache URLs) is in the environment, Buildx uses the GitHub Actions cache.")
         .arg(
             value("grant", None)
                 .env(env::BUILD_GRANT)
                 .hide_env_values(true)
                 .required(true)
-                .help("Build Grant naming the receiving Machine; prefer the environment variable"),
+                .help("Build Grant naming the receiving Server; prefer the environment variable"),
         )
         .arg(
             value("deployment", None)

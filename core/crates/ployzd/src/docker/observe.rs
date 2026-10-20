@@ -410,8 +410,13 @@ fn observe_copies(
     copies: &std::collections::BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>,
 ) {
     for volume in volumes.iter_mut() {
-        if let DockerVolumeStorageObservation::Provisioned { role, .. } = &mut volume.storage {
-            *role = copies.get(&volume.id.name).map(|copy| copy.role);
+        if let DockerVolumeStorageObservation::Provisioned {
+            role, slot_role, ..
+        } = &mut volume.storage
+        {
+            let copy = copies.get(&volume.id.name);
+            *role = copy.map(|copy| copy.role);
+            *slot_role = copy.and_then(|copy| copy.slot_role);
         }
     }
     for (name, copy) in copies {
@@ -436,6 +441,7 @@ fn observe_copies(
                 bound_bytes,
                 used_bytes: copy.used_bytes,
                 role: Some(CopyRole::Slot),
+                slot_role: copy.slot_role,
             },
         });
     }
@@ -917,6 +923,7 @@ mod tests {
                 bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
                 used_bytes: 512,
                 role: None,
+                slot_role: None,
             },
         };
         let mut existing = LocalVolumeSnapshot::default();
@@ -949,6 +956,7 @@ mod tests {
                 bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
                 used_bytes: 512,
                 role,
+                slot_role: None,
             },
         };
         let plain = DockerVolume {
@@ -968,6 +976,7 @@ mod tests {
                 std::num::NonZeroU64::new(1024).unwrap(),
             ),
             used_bytes,
+            slot_role: None,
         };
         let copies = BTreeMap::from([
             (name("data"), copy(CopyRole::Switching, 512)),
@@ -983,6 +992,7 @@ mod tests {
             bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
             used_bytes: 300,
             role: Some(CopyRole::Slot),
+            slot_role: None,
         };
         assert_eq!(
             volumes,

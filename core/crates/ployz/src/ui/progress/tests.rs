@@ -660,6 +660,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         step: None,
         log: None,
         unanswered: false,
+        out_of_memory: None,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -694,6 +695,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         step: None,
         log: None,
         unanswered: false,
+        out_of_memory: None,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {
@@ -801,4 +803,22 @@ fn a_notice_raised_mid_deploy_shows_under_the_live_rows_and_in_plain_output() {
         ],
     );
     assert_eq!(text.matches(line).count(), 1, "{text}");
+}
+
+#[test]
+fn heartbeat_pairs_each_waiting_row_with_its_state() {
+    let mut initial = frame(State::Pending);
+    let mut api = initial.rows.first().unwrap().clone();
+    api.subject = Subject::ServiceOnServer {
+        service: QualifiedService::parse("shop/api").unwrap(),
+        machine: MachineId::random(),
+        server: "beta".into(),
+    };
+    api.state = State::Running(RowPhase::WaitingForHealth);
+    initial.rows.push(api);
+    let text = plain(initial, vec![(30_001, Message::Abandon)]);
+    assert!(
+        text.contains("still waiting: web on alpha (pending), api on beta (waiting for health)\n"),
+        "{text}"
+    );
 }

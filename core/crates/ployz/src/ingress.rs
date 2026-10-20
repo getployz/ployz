@@ -284,14 +284,18 @@ async fn started(
 }
 
 fn failure(outcome: &Outcome) -> Option<IngressFailure> {
-    let DeployOutcome::Failed { failed, .. } = outcome else {
-        return None;
-    };
-    Some(classify(match failed {
-        FailedOperation::Operation { error, .. } | FailedOperation::Replacement { error, .. } => {
-            error.to_string()
-        }
-    }))
+    match outcome {
+        DeployOutcome::Failed { failed, .. } => Some(classify(match failed {
+            FailedOperation::Operation { error, .. }
+            | FailedOperation::Replacement { error, .. } => error.to_string(),
+        })),
+        DeployOutcome::Superseded { .. } => Some(IngressFailure::Failed {
+            cause: "another Server's repair published the Ingress Proxy first, \
+                    so this one was rolled back"
+                .into(),
+        }),
+        DeployOutcome::Success { .. } | DeployOutcome::Interrupted { .. } => None,
+    }
 }
 
 fn classify(cause: String) -> IngressFailure {
@@ -454,6 +458,23 @@ mod tests {
             panic!("an exited start is a failed repair");
         };
         assert!(cause.contains("exited with code 1"), "{cause}");
+    }
+
+    /// A create that lost the Serving Pointer race had its Ingress Proxy removed again,
+    /// so that Server is still without ingress and the repair must say so.
+    #[test]
+    fn a_superseded_create_is_a_failed_repair() {
+        let superseded = DeployOutcome::Superseded {
+            completed: Vec::new(),
+            service: QualifiedService::system_ingress(),
+            unexecuted: Vec::new(),
+            services: Vec::new(),
+        };
+        assert!(
+            matches!(failure(&superseded), Some(IngressFailure::Failed { .. })),
+            "{:?}",
+            failure(&superseded)
+        );
     }
 
     #[tokio::test]

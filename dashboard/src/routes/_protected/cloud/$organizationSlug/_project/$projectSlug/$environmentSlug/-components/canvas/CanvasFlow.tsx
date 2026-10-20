@@ -248,7 +248,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
   const groups = mergeRestoreGroups(storeGroups, placements.groups);
   const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath, group.discardTarget);
-  const hasSomethingToSave = (diff.draft_count ?? (diff.holds_staged ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
+  const draftCount = diff.draft_count ?? (diff.holds_staged ? 0 : diff.total_count);
+  const hasSomethingToSave = draftCount > 0 || diff.included.length > 0;
   const writer = useStoreWriter(params.organizationSlug);
   const [including, setIncluding] = useState<string | null>(null);
   const busy = useStoreBusy(params.organizationSlug, ref);
@@ -259,6 +260,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
       <BottomBar
         groups={groups}
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
+        stagedChanges={placements.groups.reduce((count, group) => count + group.changeCount, draftCount)}
+        notRunning={draftCount === 0 && diff.total_count > 0 ? diff.saved : null}
         notSet={store.services.reduce((count, service) => count + service.notSet.length, 0)}
         canSave={hasSomethingToSave}
         onDeploy={actions.deploy}

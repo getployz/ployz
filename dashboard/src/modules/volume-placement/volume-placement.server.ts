@@ -161,6 +161,7 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     {
       command: "create_volume", id, environment: input.environment, name,
       storage: listed.storage, storage_locked: true, shared_writes: listed.shared_writes, mounts: listed.mounts,
+      restored_from: { volume: input.volumeId, at: input.at },
     },
   ];
   const seed: Seed = {

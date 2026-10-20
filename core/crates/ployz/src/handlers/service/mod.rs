@@ -19,7 +19,7 @@ use crate::{
 };
 use ployz_core::EnvironmentValues;
 
-use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_reader};
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_lister};
 
 /// List observed Service and hook Containers.
 ///
@@ -34,8 +34,9 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .ok_or_else(|| Error::usage("sort order is required"))?;
     let scoped = super::operator::scope(root)?;
     let namespace = scoped.as_ref().map(|scoped| scoped.namespace.clone());
+    let labels = scoped.clone();
     let order = sort.clone();
-    let credential = with_reader(root, |client| {
+    let credential = with_lister(root, no_processes, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
             let live = client
@@ -63,7 +64,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             let observations = process_rows(&containers, &retiring);
             let gaps = Gaps::of(&live.containers)
                 .named(names.iter().map(|(machine_id, name)| (*machine_id, *name)));
-            let table = process_table(&containers, namespace.is_some(), &names, &retiring);
+            let table = process_table(&containers, labels.as_ref(), &names, &retiring);
             crate::ui::finish_fanout("containers", &observations, &gaps, || {
                 crate::ui::rows(&table);
             })
@@ -72,6 +73,19 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     credential.map_or(Ok(()), |credential| {
         super::cloud_read::processes(&credential, scoped, &order)
     })
+}
+
+/// What `ps` lists for an Organization with no Servers yet.
+fn no_processes() -> Result<(), Error> {
+    let table = process_table(&[], None, &HashMap::new(), &HashSet::new());
+    crate::ui::finish_fanout(
+        "containers",
+        &Vec::<Process>::new(),
+        &Gaps::default(),
+        || {
+            crate::ui::rows(&table);
+        },
+    )
 }
 
 async fn retiring<C: PointerClient + Clone, E>(
@@ -186,7 +200,7 @@ fn collapse_draining<'a>(
 
 fn process_table(
     containers: &[ContainerRef<'_>],
-    scoped: bool,
+    scoped: Option<&super::operator::Scoped>,
     names: &HashMap<MachineId, &MachineName>,
     retiring: &HashSet<ContainerId>,
 ) -> Table {
@@ -197,11 +211,10 @@ fn process_table(
             let container = entry.container();
             let observation = container.as_observation();
             // Scoped to one Environment, its Namespace on every row says nothing.
-            let service = if scoped {
-                observation.service_name().to_string()
-            } else {
-                observation.identity().to_string()
-            };
+            let service = scoped.map_or_else(
+                || observation.identity().to_string(),
+                |scoped| scoped.service_name(observation.service_name()).to_string(),
+            );
             [
                 service,
                 process_kind(container).to_owned(),
@@ -232,14 +245,9 @@ fn process_table(
             ),
             Row::Container(container) => {
                 let observation = container.as_observation();
-                let id = if seen.get(row).is_some_and(|count| *count > 1) {
-                    Cell::from(crate::ui::short_id(observation.container_id.as_str()))
-                } else {
-                    Cell::from("")
-                };
                 (
                     Cell::status(process_state(&observation.runtime), state_tone(container)),
-                    id,
+                    Cell::from(crate::ui::short_id(observation.container_id.as_str())),
                 )
             }
         };

@@ -743,7 +743,7 @@ fn a_deploy_with_no_servers_says_nothing_deployed_and_leaves_the_change_staged()
     assert_eq!(refused.fix(), Some(Fix::ConnectServers));
     assert_eq!(
         refused.message,
-        "This Organization has no servers yet, so nothing deployed. Add one from a terminal, then deploy again."
+        "This Organization has no servers yet, so nothing deployed. Add one, then deploy again."
     );
     let review = call(&store, "review", json!({}), "review-1").ok();
     assert_eq!(review.get("saved"), Some(&Value::Null), "nothing was saved");
@@ -810,6 +810,29 @@ fn config_write_sets_permissions_and_a_later_write_keeps_them() {
     .refused();
     assert_eq!(refusal.code, RpcErrorCode::InvalidArgument);
     assert_eq!(refusal.field.as_deref(), Some("mode"));
+}
+
+#[test]
+fn review_names_a_config_by_its_name() {
+    let store = shop();
+    call(
+        &store,
+        "config_write",
+        json!({ "config": "site", "files": { "index.html": "hi" } }),
+        "write-1",
+    )
+    .ok();
+    let review = call(&store, "review", json!({}), "review-1").ok();
+    let lines = review["lines"].as_array().unwrap();
+    assert_eq!(lines[0], "create config site", "{review}");
+    assert!(
+        lines[1]
+            .as_str()
+            .unwrap()
+            .starts_with("  set configs.site.files.index.html = "),
+        "{review}"
+    );
+    assert!(!review.to_string().contains("configs.@"), "{review}");
 }
 
 #[test]
@@ -1119,6 +1142,7 @@ fn with_volume() -> ConfigStore {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("pgdata").unwrap(),
@@ -1394,7 +1418,7 @@ fn a_name_checked_in_an_organization_with_no_servers_says_there_are_none() {
     let empty = "This Organization has no servers yet. Add one from a terminal; staging still works without one.";
     let mut cloud = |cloud: Cloud| match cloud {
         Cloud::Ask(CloudQuery::Servers { .. }) => Err(serde_json::from_value::<RpcError>(json!({
-            "code": "unavailable",
+            "code": "conflict",
             "message": empty,
             "details": { "fix": { "fix": "connect_servers" } },
         }))
@@ -1413,7 +1437,7 @@ fn a_name_checked_in_an_organization_with_no_servers_says_there_are_none() {
     )
     .refused();
 
-    assert_eq!(named.code.as_str(), "unavailable");
+    assert_eq!(named.code.as_str(), "conflict");
     assert_eq!(named.message, empty);
 }
 
@@ -1479,6 +1503,122 @@ fn server_set_sends_only_the_values_it_was_given() {
         panic!("set acts once, with the given values: {acted:?}");
     };
     assert_eq!(server.name.as_str(), "db-1");
+}
+
+#[test]
+fn volume_show_with_no_volumes_lists_none_without_asking_cloud() {
+    let store = shop();
+    let mut cloud =
+        |_: Cloud| -> Result<Value, RpcError> { panic!("no Volume, no copy to ask about") };
+    let shown = drive(
+        &store,
+        in_org(),
+        "volume_show",
+        json!({}),
+        "show-1",
+        &mut cloud,
+    )
+    .ok();
+    assert_eq!(shown["volumes"], json!([]));
+}
+
+#[test]
+fn volume_add_echoes_a_size_in_the_unit_it_was_given() {
+    let store = shop();
+    for (name, given, shown) in [
+        ("data", "1GiB", "1 GiB"),
+        ("logs", "10GB", "10 GB"),
+        ("bulk", "2TiB", "2 TiB"),
+    ] {
+        let added = call(
+            &store,
+            "volume_add",
+            json!({ "name": name, "size": given }),
+            name,
+        )
+        .ok();
+        assert_eq!(added["volume"]["size"], shown, "{given}");
+    }
+}
+
+#[test]
+fn an_unknown_key_another_tool_takes_is_named() {
+    let store = shop();
+    let mut cloud = |_: Cloud| -> Result<Value, RpcError> { panic!("refused before Cloud") };
+    let refusal = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1", "accepts_services": true, "wait_seconds": 60 }),
+        "set-1",
+        &mut cloud,
+    )
+    .refused();
+    assert_eq!(refusal.field.as_deref(), Some("wait_seconds"));
+    assert!(
+        refusal
+            .message
+            .contains("unknown field wait_seconds, expected"),
+        "{}",
+        refusal.message
+    );
+    let own = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1", "accepts_services": true, "MARKER_9f3c": 1 }),
+        "set-2",
+        &mut cloud,
+    )
+    .refused();
+    assert_eq!(own.field.as_deref(), Some(""));
+    assert!(!own.message.contains("MARKER_9f3c"), "{}", own.message);
+}
+
+#[test]
+fn a_map_key_the_caller_chose_is_never_the_refused_field() {
+    let store = shop();
+    let long = "k".repeat(4096);
+    for (tool, input) in [
+        (
+            "config_write",
+            json!({ "config": "app", "files": { "鍵🔒": 1 } }),
+        ),
+        (
+            "config_write",
+            json!({ "config": "app", "files": { long.clone(): 1 } }),
+        ),
+        (
+            "config_write",
+            json!({ "config": "app", "files": { "../鍵🔒": "a" } }),
+        ),
+        (
+            "service_update",
+            json!({ "service": "web", "rename_env": { "鍵🔒": 1 } }),
+        ),
+    ] {
+        let refusal = call(&store, tool, input, "map-1").refused();
+        let field = refusal.field.as_deref().unwrap_or_default();
+        assert!(["files", "rename_env"].contains(&field), "{field}");
+        for key in ["鍵🔒", long.as_str()] {
+            assert!(!refusal.message.contains(key), "{}", refusal.message);
+        }
+    }
+}
+
+#[test]
+fn service_add_says_which_of_image_and_repository_is_wrong() {
+    let store = shop();
+    for (input, message) in [
+        (json!({ "name": "api" }), "Give an image or a repository"),
+        (
+            json!({ "name": "api", "image": "traefik/whoami", "repository": "acme/api" }),
+            "Give an image or a repository, not both",
+        ),
+    ] {
+        let refusal = call(&store, "service_add", input, "add-1").refused();
+        assert_eq!(refusal.message, message);
+    }
 }
 
 #[test]
@@ -2056,6 +2196,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),
@@ -2073,6 +2214,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("cache").unwrap(),
@@ -3116,6 +3258,25 @@ fn an_unknown_environment_lists_the_real_ones_instead_of_creating_it() {
         refusal.next,
         vec![Call::new("environment_show", json!({ "project": "shop" }))]
     );
+}
+
+#[test]
+fn an_unknown_project_points_at_the_read_that_lists_the_real_ones() {
+    let store = shop();
+    let refusal = call(
+        &store,
+        "project_remove",
+        json!({ "project": "nope" }),
+        "call-1",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.writes, Writes::None);
+    assert_eq!(
+        refusal.retry,
+        Call::new("project_remove", json!({ "project": "nope" }))
+    );
+    assert_eq!(refusal.next, vec![Call::new("environment_show", json!({}))]);
 }
 
 #[test]

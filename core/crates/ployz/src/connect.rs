@@ -2,7 +2,7 @@ mod build_grant;
 mod management;
 
 pub use build_grant::{GrantRegistry, open_grant_registry};
-pub use management::ManagementRelay;
+pub use management::{ManagementRelay, management_proof};
 use management::{connect_management, dial_tunnel};
 
 use std::{
@@ -421,7 +421,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             ..
         } if matches!(
             *error,
-            ConnectError::ClientRefused | ConnectError::ClientCleared
+            ConnectError::ClientRefused | ConnectError::ClientCleared | ConnectError::OlderMachine
         ) =>
         {
             rpc_error(*error)
@@ -434,6 +434,12 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         },
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
+        error @ ConnectError::OlderMachine => RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: error.to_string(),
+            details: json!({ "management_protocol": "older" }),
+            cause: Vec::new(),
+        },
         error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClientRefused) => RpcError {
             code: RpcErrorCode::Unauthenticated,
             message: error.to_string(),
@@ -660,9 +666,9 @@ pub enum ConnectError {
         CONNECT_CONFIRM_TIMEOUT
     )]
     EntryNotReady,
-    #[error("Could not connect to the Machine.")]
+    #[error("Couldn't open a connection to the Server.")]
     Io(#[from] io::Error),
-    #[error("Could not connect to the Machine.")]
+    #[error("Couldn't open a connection to the Server.")]
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
@@ -670,6 +676,14 @@ pub enum ConnectError {
     ClientRefused,
     #[error("Machine confirmed this Management Client was cleared")]
     ClientCleared,
+    /// The Machine speaks the management protocol of Ployz 0.3.0-beta.6 or earlier, which
+    /// this release does not; only its own upgrade reaches it, over SSH.
+    #[error(
+        "This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay. \
+         Upgrade it over SSH: ployz server upgrade beta SERVER --connect ssh://USER@HOST. \
+         Docs: ployz docs servers/manage-servers.md"
+    )]
+    OlderMachine,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing,
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}{}", failure.hint())]
@@ -695,7 +709,7 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("All {attempts} connections from {selection} failed.")]
+    #[error("{}", all_failed(*attempts, selection, *reached))]
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
@@ -706,7 +720,7 @@ pub enum ConnectError {
         #[source]
         last: Option<Box<ConnectError>>,
     },
-    #[error("Machine RPC failed.")]
+    #[error("Ployz's call to your Server's daemon failed.")]
     Rpc(#[source] TransportError),
     #[error("Machine RPC payload failed.")]
     Codec(#[from] CodecError),
@@ -716,6 +730,20 @@ pub enum ConnectError {
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed.")]
     Value(#[from] ployz_core::ValueError),
+}
+
+/// Say a daemon answered when one did: a refusal is not an unreachable Server.
+fn all_failed(attempts: usize, selection: &ConnectionSource, reached: bool) -> String {
+    match (attempts, reached) {
+        (1, false) => "Ployz couldn't reach your Server's daemon.".into(),
+        (1, true) => "Your Server's daemon answered, but the connection was refused.".into(),
+        (_, false) => format!(
+            "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
+        ),
+        (_, true) => format!(
+            "A Server's daemon answered, but the {attempts} connections from {selection} all failed."
+        ),
+    }
 }
 
 impl From<tonic::Status> for ConnectError {
@@ -754,6 +782,7 @@ impl ConnectError {
             | Self::Remote(_)
             | Self::IdentityMismatch { .. }
             | Self::ClientRefused
+            | Self::OlderMachine
             | Self::ClientCleared
             | Self::MissingMachineDetails
             | Self::SshClientMissing
@@ -810,6 +839,7 @@ impl ConnectError {
             Self::IdentityMismatch { .. }
             | Self::MissingMachineDetails
             | Self::ClientRefused
+            | Self::OlderMachine
             | Self::ClientCleared
             | Self::Routing(_)
             | Self::Join(_)
@@ -829,8 +859,15 @@ impl ConnectError {
 
     /// A daemon sent this status itself, so the target was not silent.
     pub(crate) fn target_replied(&self) -> bool {
+        matches!(self, Self::Rpc(_)) && !self.unreplied()
+    }
+
+    /// The call went out and no status came back: the client's connection dropped, its
+    /// deadline elapsed, or the entry's router heard nothing from the target. Whether the
+    /// target acted on it is unknown.
+    pub(crate) fn unreplied(&self) -> bool {
         matches!(self, Self::Rpc(error)
-            if !error.unanswered && !error.budget_expired && !error.routed_unanswered)
+            if error.unanswered || error.budget_expired || error.routed_unanswered)
     }
 }
 

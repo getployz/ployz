@@ -42,6 +42,9 @@ pub(super) const PULL_PROPERTY: &str = "ployz:pull";
 /// a writer elsewhere, so while it is still the newest the departure may destroy the slot.
 /// Read only where set locally: a value inherited from a parent proves nothing.
 pub(super) const PULLED_PROPERTY: &str = "ployz:pulled";
+/// On a slot parent: what this Machine holds the slot for, `mirror` once a pull starts
+/// and `old_copy` once a cut or a departure parks a root in it. Unset reads as a Mirror.
+pub(super) const ROLE_PROPERTY: &str = "ployz:role";
 
 pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
     format!("{}/{MIRROR_ROOT}/{name}", pool.name())

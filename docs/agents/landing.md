@@ -48,7 +48,9 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
 
 ## Land
 
-- Open PRs ready, not draft.
+- Open PRs as drafts. CI skips drafts, so push freely while the work settles.
+- Run `gh pr ready <n>` once the branch is done. That starts CI, and every later push
+  runs it again. `gh pr ready <n> --undo` pauses CI while you rework.
 - Once review is clean, arm auto-merge: `gh pr merge <n> --auto --merge`. GitHub merges
   when the required "CI ready" check passes and the PR has no conflicts. The branch does
   not need to be up to date with main.
@@ -66,4 +68,5 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
 
 ### Main is red
 
-Revert the culprit first, then fix forward in a new PR.
+Revert the culprit first, then fix forward in a new PR. A newer main run cancels older ones, so when the
+commits before the red run show cancelled, the culprit may be among them: check those predecessors.

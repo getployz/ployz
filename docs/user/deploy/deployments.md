@@ -49,11 +49,20 @@ behind. Saving again with no changes creates no new version. The CLI calls this
 `ployz deploy --skip-deploy`, and accepts `--message`.
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
-Discarding a service or volume you never deployed deletes it. Discard does not save a version.
+**Discard all changes** returns everything to your latest saved version, including a staged
+rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
+version. When your latest saved version is not running, for example because its deploy failed,
+the bottom bar shows **#4 not running** with **Deploy** instead of a change count. Neither its **⋮**
+menu nor Details offers **Discard all** then, since nothing is left to discard.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
-In the CLI, `ployz discard` names each saved change it took out and the command that brings it
-back, such as `ployz discard web`. `ployz diff` lists those rows and `ployz status` counts them.
+In the CLI, `ployz discard` with no path drops every staged change in the environment, including
+changes someone else staged from the dashboard or an agent, and lists each one it dropped. Pass a
+path, such as `ployz discard web.env.KEY`, to drop only that change. It also names each saved change
+it took out and the command that brings it back, such as `ployz discard web`. `ployz diff` lists
+those rows and `ployz status` counts them. Plain `ployz discard` goes back to what is deployed,
+while `ployz discard --target review` matches the dashboard's **Discard all changes** and goes
+back to your latest saved version.
 
 The dashboard's **Deploy** needs a staged change. To ship the same commit and settings again,
 click **Redeploy** on the newest deployment. To move GitHub services to their branch's latest
@@ -67,7 +76,7 @@ ployz deploy
 
 Open **Deployments** in the sidebar, then **Versions**, to see this environment's saved versions.
 Each version is titled from what it changed unless it was saved with a message, and lists its
-changes one per row, folding past three. **Live** marks the version the latest fully applied
+changes one per row, folding past three. The first version lists what it created. **Live** marks the version the latest fully applied
 deployment shipped. **Failed** marks the newest version when its
 latest deployment failed; a later deployment of it clears it. A version saved but
 not deployed yet has no badge. The version's **⋮** menu:
@@ -103,9 +112,11 @@ A variable that was ever sealed can't come back as plain text. A version that on
 values has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
 An accepted deployment and its redeploys keep their original snapshot while you edit the draft.
 
-From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
-rollback without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
-after reviewing the named draft fields. Both list each variable that came back Not set, and
+From the CLI, `ployz history` lists versions with when and by whom each was saved, the settings
+it changed and its message; the live one says `(live)`. `ployz history restore 2 --preview`
+reviews a rollback without writing. `ployz history undo 2` stages an Undo. One that would overwrite
+draft changes refuses, names those fields and gives the same command with `--accept-overwrite`;
+run it only after reviewing them. Both list each variable that came back Not set, and
 `--json` carries them as `not_set`. The agent's `history` tool does the same by revision
 number; one that would overwrite draft changes refuses and names them first.
 
@@ -181,8 +192,9 @@ their recorded outcomes.
   runner stopped reporting.
 - An applied removal or shutdown can't be redeployed: there is nothing left to ship. One that
   failed, was cancelled or reads `unknown` can.
-- **A rollback lasts until your next push or deploy**, which ships your latest commit and saved
-  settings again. To keep it, revert the commit in Git and change the settings back.
+- **A rollback lasts until your next push or deploy**, which ships your saved settings again. A
+  deploy ships your latest commit too; a push, only to the services it builds. To keep the
+  rollback, revert the commit in Git and change the settings back.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
