@@ -623,11 +623,7 @@ async fn run_port_forward(
         ))
     })?;
     let remote = SocketAddr::new(IpAddr::V4(address.0), ports.remote);
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        ports.local,
-    ))
-    .await?;
+    let listener = listen(ports.local).await?;
     let local = listener.local_addr()?;
     if crate::ui::json() {
         crate::ui::emit_line(&serde_json::json!({
@@ -669,6 +665,19 @@ async fn run_port_forward(
             }
         }
     }
+}
+
+async fn listen(port: u16) -> Result<tokio::net::TcpListener, Error> {
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    tokio::net::TcpListener::bind(address)
+        .await
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AddrInUse {
+                Error::conflict(format!("{address} is in use; pick another local port"))
+            } else {
+                error.into()
+            }
+        })
 }
 
 fn parse_fanout_selectors(values: Vec<String>) -> Result<Vec<FanoutSelector>, Error> {
@@ -1136,6 +1145,20 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_local_port_in_use_is_named_in_the_refusal() {
+        let taken = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let refused = listen(port).await.unwrap_err().report();
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            refused.message,
+            format!("127.0.0.1:{port} is in use; pick another local port")
+        );
+    }
 
     #[tokio::test]
     async fn redirected_regular_file_stdin_is_framed() {

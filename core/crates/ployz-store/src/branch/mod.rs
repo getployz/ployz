@@ -389,7 +389,7 @@ pub struct BranchPlanView {
     pub from: EnvironmentSummary,
     /// The preset this plan is, if any.
     pub preset: Option<BranchPreset>,
-    /// The presets worth offering: "uses" only when it copies more than "only".
+    /// The presets worth offering: each only when it copies more than the one before it.
     pub presets: Vec<BranchPreset>,
     /// Each node, as the Branch would have it.
     pub nodes: Vec<PlannedNode>,

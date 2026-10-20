@@ -203,8 +203,11 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
         table.row([
             Cell::from("device"),
             Cell::from(&device.id),
-            Cell::from(""),
-            Cell::from(""),
+            Cell::from(format!(
+                "ployz login {}",
+                device.created_at.get(..10).unwrap_or(&device.created_at)
+            )),
+            Cell::from("Full as you"),
             Cell::from(device.expires_at.to_string()),
             current(device.current),
         ]);

@@ -17,8 +17,8 @@ it("shows the picked image as the dialog closes, and the stored one again when t
   vi.spyOn(github, "useGithubWebOrigin").mockReturnValue("https://github.com");
   vi.spyOn(gitFields, "useRepositoryRef").mockReturnValue(undefined);
   vi.spyOn(gitFields, "useSourceLock").mockReturnValue(undefined);
-  vi.spyOn(selectors, "ImageSelectorDialog").mockImplementation(({ open, onSelectImage }) =>
-    open ? <button type="button" onClick={() => onSelectImage("redis:7.2-alpine")}>Continue</button> : null);
+  vi.spyOn(selectors, "ImageSelectorDialog").mockImplementation(({ open, initialImage, onSelectImage }) =>
+    open ? <button type="button" data-initial={initialImage} onClick={() => onSelectImage("redis:7.2-alpine")}>Continue</button> : null);
   let fail = (_error: Error) => {};
   const write = new Promise<void>((_resolve, reject) => { fail = reject; });
   const state = asTestDouble<StoreService>()({
@@ -35,6 +35,7 @@ it("shows the picked image as the dialog closes, and the stored one again when t
 
   render(<StoreSourceSection state={state} />);
   fireEvent.click(screen.getByRole("button", { name: "Change container image" }));
+  expect(screen.getByRole("button", { name: "Continue" }).getAttribute("data-initial")).toBe("redis:7-alpine");
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
   expect(state.set).toHaveBeenCalledWith("image", "redis:7.2-alpine");

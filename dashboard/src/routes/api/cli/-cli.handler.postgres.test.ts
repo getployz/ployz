@@ -470,16 +470,32 @@ it.live(
         const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0] ?? assert.fail("no device");
         const asToken = { bearer: token.secret };
 
-        assert.strictEqual((yield* cli("POST", "tokens", asToken, { name: "child", expires_in_days: 365 })).status, 422);
+        // Refused for what it is, whatever it sent: a body it got wrong is never blamed instead.
+        const bodies: JsonObject[] = [{ name: "child", expires_in_days: 365 }, { name: "child", expiresInDays: 1, kind: "agent" }];
+        for (const body of bodies) {
+          const made = yield* cli("POST", "tokens", asToken, body);
+          assert.strictEqual(made.status, 403);
+          assert.deepStrictEqual(JSON.parse(made.text), {
+            error: { code: "forbidden", message: "Only a signed-in person can make tokens. No changes made.", details: { next: "ployz login" } },
+          });
+        }
         assert.lengthOf(yield* database.drizzle.select().from(organizationToken), 1);
-        assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, asToken)).status, 422);
-        assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, asToken)).status, 403);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 403);
         assert.strictEqual((yield* cli("GET", "tokens", asToken)).status, 200);
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 200);
 
         const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token ?? assert.fail("no fleet token");
-        assert.strictEqual((yield* cli("POST", "fleet-tokens", asToken, { expires_in: "30d" })).status, 422);
-        assert.strictEqual((yield* cli("DELETE", `fleet-tokens/${fleet.id}`, asToken)).status, 422);
+        for (const body of [{ expires_in: "30d" }, { expires_in: "2d" }]) {
+          const made = yield* cli("POST", "fleet-tokens", asToken, body);
+          assert.strictEqual(made.status, 403);
+          assert.deepStrictEqual(JSON.parse(made.text), {
+            error: { code: "forbidden", message: "Only a signed-in person can make Fleet Tokens. No changes made.", details: { next: "ployz login" } },
+          });
+        }
+        const revoked = yield* cli("DELETE", `fleet-tokens/${fleet.id}`, asToken);
+        assert.strictEqual(revoked.status, 403);
+        assert.deepStrictEqual(JSON.parse(revoked.text).error.details, { next: "ployz login" });
         assert.deepStrictEqual((yield* database.drizzle.select().from(fleetToken)).map((row) => [row.name, row.revokedAt]), [["rack-1", null]]);
         assert.strictEqual((yield* cli("GET", "fleet-tokens", asToken)).status, 200);
 
@@ -727,7 +743,7 @@ it.live(
         // Rerunning `token rm`, signed back in, retries once the Server is back.
         laterServer.online = true;
         const back = yield* signIn("alice");
-        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 403);
         const retried = (yield* cli("DELETE", `tokens/${device}`, back)).json;
         assert.deepStrictEqual(retried.removed, { id: device, kind: "device" });
         assert.deepStrictEqual(retried.servers, { confirmed: [later], unconfirmed: [] });
