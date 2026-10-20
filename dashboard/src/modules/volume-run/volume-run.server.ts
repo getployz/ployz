@@ -28,7 +28,7 @@ import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modu
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
@@ -714,7 +714,7 @@ export const holdDeployLane = Effect.fn("VolumeRun.holdDeployLane")(function* (c
 /** The Machines the Cluster names now; none when it does not answer. */
 export const namedMachines = Effect.fn("VolumeRun.namedMachines")(function* (organizationId: string) {
   const frame = yield* openSession(organizationId).pipe(
-    Effect.flatMap((session) => session.watchFirstFrame(5_000)),
+    Effect.flatMap((session) => session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS)),
     Effect.option,
   );
   return Option.match(frame, {
@@ -1057,7 +1057,7 @@ export const DRAIN_MS = 3_000;
 
 const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (organizationId: string, dockerVolume: string) {
   const session = yield* openSession(organizationId);
-  const frame = yield* session.watchFirstFrame(5_000);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
   return frame.containers.filter((container) =>
     container.kind === "service_container"
     && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
@@ -1232,7 +1232,7 @@ const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; 
  */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
   const session = yield* openSession(organizationId);
-  const frame = yield* session.watchFirstFrame(5_000);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
   const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
