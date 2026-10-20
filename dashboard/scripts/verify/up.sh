@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Seeded, signed-in Ployz Cloud for this checkout: its own Postgres container and `vite dev`, side by side with
 # other checkouts. Re-running in the same mode reseeds in place and keeps vite and Postgres running; --fresh, a new
-# mode, a new port, new dependencies, an edited up.sh or a dead Hosted DNS restart both. The cookie stays valid.
+# mode, a new port, new dependencies, an edited up.sh or a dead Hosted DNS restart both. Cookies keep their
+# values, but a page that asks for its session mid-reseed loses its cookie; set it again.
 # Usage: scripts/verify/up.sh [--fresh] [port]      BILLING=1 turns billing on. State: dashboard/.verify/run (down.sh removes it).
 # SERVERS=N [DAEMON=...] also enrolls N real Machines through it (core/scripts/verify-cluster);
 # DAEMON is space-separated [machine-N=]stable|beta|checkout|<version>, e.g. DAEMON="checkout machine-2=0.2.3";
