@@ -374,6 +374,8 @@ fn resolved(
     let Some(servers) = servers.filter(|_| names_a_server(path, value)) else {
         return Ok(value.to_owned());
     };
+    // The Store trims a Preferred Builder before it reads one.
+    let value = value.trim();
     match crate::cluster::visible_machine(&MachineTarget::parse(value)?, servers) {
         Ok(server) => Ok(server.machine.id.to_string()),
         Err(error) if error.code == RpcErrorCode::NotFound && MachineId::parse(value).is_ok() => {
