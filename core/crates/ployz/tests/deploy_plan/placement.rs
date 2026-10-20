@@ -1865,3 +1865,51 @@ fn a_matching_copy_another_run_left_pending_is_replaced_not_counted_as_serving()
         operations(&plan)
     );
 }
+
+#[test]
+fn a_new_spec_removes_the_copies_a_failed_run_of_another_spec_left_pending() {
+    for replicas in [1, 2] {
+        let requested = requested(ServiceMode::Replicated {
+            replicas: NonZeroU32::new(replicas).unwrap(),
+        });
+        let mut serving = requested.clone();
+        serving.container.image = "ghcr.io/getployz/api:old".into();
+        let mut failed = requested.clone();
+        failed.container.image = "ghcr.io/getployz/api:failed".into();
+        let service = service_id('a');
+        let copy = |hex, spec, rotation| {
+            let mut copy = container(hex, '1', spec, &service);
+            copy.try_update(|parts| parts.rotation = Some(rotation))
+                .unwrap();
+            copy
+        };
+        let mut containers = Vec::new();
+        for (serving_hex, failed_hex) in
+            [('b', 'c'), ('d', 'e')].into_iter().take(replicas as usize)
+        {
+            containers.push(copy(serving_hex, &serving, ployz_core::CopyRotation::In));
+            containers.push(copy(failed_hex, &failed, ployz_core::CopyRotation::Pending));
+        }
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: containers.clone(),
+            ..Default::default()
+        };
+
+        let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+
+        let operations = operations(&plan);
+        for existing in &containers {
+            let id = existing.container_id;
+            assert!(
+                operations.iter().any(|operation| matches!(
+                    operation,
+                    DeployOperation::ReplaceContainer(ReplacementOperation { old_container_id, .. })
+                        | DeployOperation::RemoveContainer { container_id: old_container_id, .. }
+                        if *old_container_id == id
+                )),
+                "replicas {replicas}: {id} stays: {operations:?}"
+            );
+        }
+    }
+}
