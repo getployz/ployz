@@ -1203,6 +1203,23 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_connections_say_a_daemon_answered_when_one_did() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Context("prod".into()),
+            attempts: 2,
+            retry: ployz_core::Retry::Never,
+            reached: true,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            failure.to_string(),
+            "A Server's daemon answered, but the 2 connections from context prod all failed."
+        );
+    }
+
+    #[test]
     fn connect_keeps_non_peeled_connect_error() {
         let failure = Failure::from(ConnectError::MissingMachineDetails);
         assert_eq!(

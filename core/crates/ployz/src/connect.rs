@@ -695,7 +695,7 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("{}", unreached_daemon(*attempts, selection))]
+    #[error("{}", all_failed(*attempts, selection, *reached))]
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
@@ -718,13 +718,17 @@ pub enum ConnectError {
     Value(#[from] ployz_core::ValueError),
 }
 
-fn unreached_daemon(attempts: usize, selection: &ConnectionSource) -> String {
-    if attempts == 1 {
-        "Ployz couldn't reach your Server's daemon.".into()
-    } else {
-        format!(
+/// Say a daemon answered when one did: a refusal is not an unreachable Server.
+fn all_failed(attempts: usize, selection: &ConnectionSource, reached: bool) -> String {
+    match (attempts, reached) {
+        (1, false) => "Ployz couldn't reach your Server's daemon.".into(),
+        (1, true) => "Your Server's daemon answered, but the connection was refused.".into(),
+        (_, false) => format!(
             "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
-        )
+        ),
+        (_, true) => format!(
+            "A Server's daemon answered, but the {attempts} connections from {selection} all failed."
+        ),
     }
 }
 

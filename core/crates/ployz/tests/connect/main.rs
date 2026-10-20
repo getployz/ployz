@@ -887,6 +887,29 @@ async fn an_unreachable_daemon_is_named_in_user_words() {
     );
 }
 
+#[tokio::test]
+async fn a_daemon_that_refuses_is_not_called_unreachable() {
+    let service = DiscoveryService::new(test_description());
+    service
+        .describe_outcomes
+        .lock()
+        .unwrap()
+        .push_back(DescribeOutcome::Status(Status::unauthenticated(
+            "not authorized",
+        )));
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["ps"]).await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stderr,
+        "error: Your Server's daemon answered, but the connection was refused.\n  cause: not authorized\n"
+    );
+
+    server.abort();
+}
+
 async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process::Output {
     tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .arg("--connect")
