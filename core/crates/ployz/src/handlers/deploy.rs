@@ -1502,4 +1502,27 @@ mod tests {
             Some("uploaded by nick, sha256 aaaaaaaaaaaa")
         );
     }
+
+    #[test]
+    fn a_running_deployment_reads_preparing_until_it_has_a_deploy_preview() {
+        let read = |status: &str, preparing: bool| {
+            let deployment: ployz_store::DeploymentSummary =
+                serde_json::from_value(serde_json::json!({
+                    "id": "00000000-0000-4000-8000-000000000101",
+                    "environment_id": "00000000-0000-4000-8000-000000000002",
+                    "number": 1, "status": status, "saved": 1, "services": [],
+                    "runner": "cloud-run", "upload": null, "preparing": preparing,
+                    "remove": false, "admitted_by": null, "admitted_at": 0, "started_at": 0,
+                    "ended_at": null, "message": null, "push": null, "ci": null,
+                    "in_flight": true, "outcome": null,
+                }))
+                .unwrap();
+            (status_word(&deployment), status_tone(&deployment))
+        };
+        assert_eq!(
+            read("running", true),
+            ("preparing".to_owned(), Tone::Change)
+        );
+        assert_eq!(read("running", false), ("running".to_owned(), Tone::Change));
+    }
 }
