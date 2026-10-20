@@ -38,7 +38,10 @@ const micros = (at: PgColumn) => sql<bigint>`(extract(epoch from ${at}) * 100000
 
 type Timed = { readonly at: bigint; readonly operation: Operation };
 
-/** Newest first. Runs requested at the same instant fall back to their attempt, which is unique and named in the answer. */
+/**
+ * Newest first. Runs requested at the same instant fall back to their attempt, which is unique and named in the answer.
+ * Each query orders the same way so its limit keeps what this keeps: a `uuid` sorts by byte, and the upgrade's `text` id needs `collate "C"`.
+ */
 const newestFirst = (a: Timed, b: Timed) => Number(b.at - a.at) || (a.operation.attempt < b.operation.attempt ? -1 : 1);
 
 const operation = (row: { attempt: string; run: string; state: keyof typeof RUN_STATES; requestedAt: Date; endedAt: Date | null; reason: string | null }): Operation => ({
@@ -100,7 +103,7 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
     eq(serverUpgradeAttempt.organizationId, organizationId),
     eq(serverUpgradeAttempt.machineId, machine),
     hex === null ? undefined : eq(serverUpgradeAttempt.attemptId, hex),
-  )).orderBy(desc(serverUpgradeAttempt.startedAt), asc(serverUpgradeAttempt.attemptId)).limit(limit);
+  )).orderBy(desc(serverUpgradeAttempt.startedAt), sql`${serverUpgradeAttempt.attemptId} collate "C"`).limit(limit);
   const now = Date.now();
   return [
     ...drains.map(({ row, at }) => ({ at, operation: operation({
