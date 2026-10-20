@@ -48,7 +48,6 @@ BAKE_NAME = re.compile(re.escape(BAKED) + "[0-9a-f]{10}")
 # Bakes this host made; another host or person may share the account and the name prefix.
 BAKES = REGISTRY / "bakes.ledger"
 BAKE = """
-ufw disable >/dev/null
 printf '%s\\n' "$@" | xargs -P8 -n1 docker pull -q >/dev/null
 caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
 caddy_version=${caddy_version%% *}
@@ -195,13 +194,17 @@ RESET = r"""
 stash=$1 key=$2
 tar -tf "$stash" """ + REPLACED + r""" >/dev/null || { echo "the bake's install keeps no runc" >&2; exit 1; }
 systemctl unmask docker.service docker.socket containerd.service >/dev/null
-units=$(systemctl list-units --all --plain --no-legend 'ployz*' | awk '{print $1}')
+# Docker asks the volume plugin about each `ployz` Volume it removes, so the plugin outlives the volume removal.
+units=$(systemctl list-units --all --plain --no-legend 'ployz*' | awk '$1 !~ /^ployz-volume-plugin\./ {print $1}')
 if [ -n "$units" ]; then systemctl stop $units; fi
 systemctl start docker
+plugin=$([ ! -e /etc/systemd/system/ployz-volume-plugin.socket ] || echo ployz-volume-plugin.socket)
+if [ -n "$plugin" ]; then systemctl start $plugin; fi
 others=$(docker ps -aq --filter label=ployz.verify.hold=1 | sort | comm -13 - <(docker ps -aq | sort))
 if [ -n "$others" ]; then docker rm -f $others >/dev/null; fi
 volumes=$(docker volume ls -q)
 if [ -n "$volumes" ]; then docker volume rm -f $volumes >/dev/null; fi
+if [ -n "$plugin" ]; then systemctl stop $plugin ployz-volume-plugin.service; fi
 networks=$(docker network ls --format '{{.Name}}' | grep -vxE 'bridge|host|none' || true)
 if [ -n "$networks" ]; then docker network rm $networks >/dev/null; fi
 """ + IMAGE_RESET + r"""
@@ -802,6 +805,8 @@ class Provider:
 main=$(systemctl show -p MainPID --value ssh.service)
 for pid in $(pgrep -f {LISTENER}); do [ "$pid" = "$main" ] || kill "$pid"; done
 if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
+# Boat turns UFW back on in every clone, so the bake cannot keep it off.
+ufw disable >/dev/null
 {bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
         if POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not fingerprints(self.run["image"]).exists():
             # The first fresh clone of a bake records what reset must return every later sandbox to.

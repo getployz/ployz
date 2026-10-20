@@ -17,7 +17,11 @@ import {
   createGithubPushReceivedEvent,
 } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
+import { readCappedBody } from "#/server/capped-body";
 import { AppConfig } from "#/server/config.server";
+
+/** GitHub caps webhook payloads at 25 MB, so anything larger is not GitHub and is refused before it is buffered. */
+const MAX_PAYLOAD_BYTES = 25 * 1024 * 1024;
 
 const workflowRunPayloadSchema = Schema.Struct({
   action: Schema.String,
@@ -40,10 +44,12 @@ function rejectDelivery(input: { deliveryId: string; eventKind: string; rejectio
 export const handleGithubWebhookRequest = Effect.fn(
   "Github.handleWebhookRequest",
 )(function* (request: Request) {
-  const body = yield* Effect.tryPromise({
-    try: () => request.text(),
+  const bytes = yield* Effect.tryPromise({
+    try: () => readCappedBody(request, MAX_PAYLOAD_BYTES),
     catch: (cause) => new GithubWebhookReadError({ cause }),
   });
+  if (bytes === null) return new Response("Payload too large", { status: 413 });
+  const body = new TextDecoder().decode(bytes);
   const signature = request.headers.get("x-hub-signature-256");
   const event = request.headers.get("x-github-event");
   const deliveryId = request.headers.get("x-github-delivery");

@@ -171,6 +171,7 @@ it.live(
         processedPageCount: 1,
         processedRepoCount: 1,
         deletedRepositoryCount: 0,
+        forgotten: false,
       });
       const repositories = yield* Effect.promise(() =>
         runEffect(
