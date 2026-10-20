@@ -81,7 +81,8 @@ running cluster. A new server takes no apps until you deploy.
 
 **Cancel** on a row ends that attempt and revokes its enrollment token. A failed or cancelled
 host returns to the bottom of Waiting. The live host status stays primary, with **Last enroll failed** or
-**Last enroll cancelled** below it. Open the host to see the stage and reason. Both
+**Last enroll cancelled** below it. Open the host to see the attempt: **Failed at** the stage it
+stopped in, or **Cancelled**, with the reason below. Both
 stay until you enroll the host again, however often it checks in. Fix the cause, then enroll the host again. Reloading restores the list and its order.
 
 **Reject** turns away an unrecognized host. The same installation cannot come back with the
