@@ -826,6 +826,16 @@ impl MachineOperations for Recording {
         MachineOperations::inspect_container(&self.client, machine_id, container_id).await
     }
 
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ployz_core::ResolvedServiceSpec,
+    ) -> Result<ployz_core::ContainerLimitsUpdated, RpcError> {
+        MachineOperations::update_container_limits(&self.client, machine_id, container_id, spec)
+            .await
+    }
+
     async fn remove_volume(&self, id: &ployz_core::DockerVolumeId) -> Result<(), RpcError> {
         MachineOperations::remove_volume(&self.client, id).await
     }
