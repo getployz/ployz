@@ -225,6 +225,13 @@ describe("plan_from_copies_table", () => {
     expect(outcome(remove("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "old")])).toBe("delete fsn-2 forget fsn-1");
   });
 
+  it("leaves a slot whose Server reports no role to that Server's own check", () => {
+    const { role: _, ...unreported } = COPIES.mirror;
+    const silent: Member = { ...member("fsn-2", "mirror"), view: { copy: unreported } };
+    const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
+    expect(outcome(input, [member("fsn-1", "writer"), silent])).toBe("delete fsn-2 forget fsn-1");
+  });
+
   it("keeps --if-old-copy in the only-copy refusal of a delete admitted for an old copy", () => {
     const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
     expect(planFromCopies(input, [member("fsn-2", "old")])).toEqual({

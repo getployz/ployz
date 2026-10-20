@@ -629,6 +629,7 @@ const cliVolumeRunBodies: ReadonlyArray<CliBody> = [
   { environment: { project: "shop", environment: "production" }, kind: "mirror", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "sync", full: true },
   { environment: { project: "shop", environment: "production" }, kind: "delete_mirror", slot: "web-2", confirm: "data" },
+  { environment: { project: "shop", environment: "production" }, kind: "delete_old_copy", slot: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "move", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "release" },
   { environment: { project: "shop", environment: "production" }, kind: "restore", from: "web-2" },

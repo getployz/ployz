@@ -1065,6 +1065,23 @@ mod tests {
     }
 
     #[test]
+    fn a_slot_whose_machine_reports_no_role_keeps_none_on_the_wire() {
+        let older = serde_json::json!({
+            "kind": "slot", "slot": "7", "readonly": true, "newest": null,
+        });
+        let copy: VolumeCopy = serde_json::from_value(older).unwrap();
+        assert_eq!(serde_json::to_value(&copy).unwrap().get("role"), None);
+        let reported: VolumeCopy = serde_json::from_value(serde_json::json!({
+            "kind": "slot", "slot": "7", "readonly": true, "newest": null, "role": "mirror",
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&reported).unwrap().get("role"),
+            Some(&serde_json::json!("mirror"))
+        );
+    }
+
+    #[test]
     fn a_mirror_expect_refuses_a_slot_created_again_at_the_same_snapshot() {
         let mut again = slot(Some(snapshot("f-1", 10)), None);
         if let VolumeCopy::Slot { slot, .. } = &mut again {

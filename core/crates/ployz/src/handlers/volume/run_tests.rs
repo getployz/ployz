@@ -263,7 +263,6 @@ async fn each_kind_posts_only_its_own_fields() {
                 ask: RunAsk::DeleteMirror {
                     slot: MachineName::parse("web-2").unwrap(),
                     confirm: Some("data".to_owned()),
-                    role: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
@@ -272,13 +271,12 @@ async fn each_kind_posts_only_its_own_fields() {
         (
             RunRequest {
                 environment: named(),
-                ask: RunAsk::DeleteMirror {
+                ask: RunAsk::DeleteOldCopy {
                     slot: MachineName::parse("web-1").unwrap(),
                     confirm: None,
-                    role: Some(IfOldCopy),
                 },
             },
-            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-1", "role": "old_copy" }),
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_old_copy", "slot": "web-1" }),
             json!({ "slot": "web-1" }),
         ),
         (
@@ -351,6 +349,62 @@ fn a_removal_s_retry_line_keeps_if_old_copy() {
         removal_words(&volume, &slot, false, None).join(" "),
         "volume mirror rm data-web-1"
     );
+}
+
+/// A Cloud from before `--if-old-copy`: it knows these kinds only, and drops fields it doesn't know.
+fn cloud_before_if_old_copy() -> String {
+    fake_cloud(|_, sent| {
+        let sent: Value = serde_json::from_str(sent).unwrap();
+        let kind = sent["kind"].as_str().unwrap_or_default().to_owned();
+        let known = [
+            "mirror",
+            "sync",
+            "delete_mirror",
+            "move",
+            "release",
+            "restore",
+            "resize",
+        ];
+        if known.contains(&kind.as_str()) {
+            return (200, json!({ "run": run("requested", &kind, json!({})) }));
+        }
+        (
+            422,
+            json!({ "_tag": "PublicError", "code": "VALIDATION_FAILED", "message": "A volume run takes its environment and what to run." }),
+        )
+    })
+}
+
+#[tokio::test]
+async fn an_old_copy_delete_fails_closed_on_a_cloud_from_before_if_old_copy() {
+    let cloud = cloud_before_if_old_copy();
+    let slot = MachineName::parse("web-1").unwrap();
+    let flagged = RunAsk::DeleteOldCopy {
+        slot: slot.clone(),
+        confirm: None,
+    };
+    let request = RunRequest {
+        environment: named(),
+        ask: flagged,
+    };
+    let error = start(&token(&cloud), &volume(), &request, None)
+        .await
+        .unwrap_err();
+    let refused = predates_if_old_copy(&request.ask, &error)
+        .expect("an older Cloud's refusal of --if-old-copy is named")
+        .report();
+    assert_eq!(refused.code, RpcErrorCode::Unsupported);
+    assert!(refused.message.contains("--if-old-copy"), "{}", refused.message);
+    assert!(refused.message.contains("nothing was deleted"), "{}", refused.message);
+
+    let bare = RunRequest {
+        environment: named(),
+        ask: RunAsk::DeleteMirror {
+            slot,
+            confirm: None,
+        },
+    };
+    assert!(start(&token(&cloud), &volume(), &bare, None).await.is_ok());
 }
 
 #[tokio::test]

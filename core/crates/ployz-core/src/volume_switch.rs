@@ -573,8 +573,13 @@ mod tests {
                     copy("nbg-3", CopyRole::Slot),
                 ]
             ),
-            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: keep the newest, remove each other one (ployz volume mirror rm data-fsn-2 --confirm data, ployz volume mirror rm data-hel-1 --confirm data, ployz volume mirror rm data-nbg-3 --confirm data), then run ployz volume restore data --from <server you kept>"
+            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: keep the newest, delete each other one from the Volume's page in Ployz Cloud, which shows whether it is a mirror or an old copy, then run ployz volume restore data --from <server you kept>"
         );
+        let several = no_writer_message(
+            "data",
+            &[copy("fsn-2", CopyRole::Slot), copy("hel-1", CopyRole::Slot)],
+        );
+        assert!(!several.contains("mirror rm"), "{several}");
         assert_eq!(
             no_writer_message("data", &[]),
             "Volume data has no writer and no Server holds a copy of it"
