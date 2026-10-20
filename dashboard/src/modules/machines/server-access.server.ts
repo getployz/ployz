@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { Connection } from "@ployz/sdk";
 import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Cause, Effect, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
@@ -9,7 +9,7 @@ import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
-import { Ployz } from "#/modules/runtime/ployz.server";
+import { type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -39,12 +39,23 @@ const setHolder = (connection: Connection, label: string) =>
     return yield* client.setManagementClient(label);
   })).pipe(Effect.timeout(SERVER_TIMEOUT_MS));
 
+/**
+ * Why a Server gave no holder, or null when it sent no reply: Cloud's timeout ran out, or the SDK says the dial failed
+ * or the call got no status back. Only those are unreachable; a Server that refused may well be running.
+ */
+function refusal(error: PloyzSdkError | Cause.TimeoutError) {
+  if (Cause.isTimeoutError(error)) return null;
+  if ("cause" in error && error.cause instanceof RpcError && error.cause.unanswered) return null;
+  return rpcErrorMessage(error) ?? sdkFailureMessage(error);
+}
+
 /** Only `ployz` credentials hold a Server slot; a remote agent reaches Servers through Cloud. */
 type ServerAccessCaller = Caller & { readonly credential: { readonly kind: "session" | "token" } };
 
 /**
  * The Caller's own capability on every Server of its Organization, provisioning a missing `cli-<id>` holder on
- * first use, including on Servers enrolled after login. A Server that can't be reached now is listed as unreachable.
+ * first use, including on Servers enrolled after login. A Server that doesn't answer now is listed as unreachable, and
+ * one that refused, with what it said.
  * Only an owner or admin gets one: a holder is full control of the Server.
  */
 export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (caller: ServerAccessCaller) {
@@ -58,7 +69,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     } satisfies StoreRefusal };
   }
   const loaded = yield* loadOrganizationConnections(caller.organization.id);
-  if (loaded.kind === "missing") return { ok: true as const, value: { connections: [], unreachable: [], names: {} } };
+  if (loaded.kind === "missing") return { ok: true as const, value: { connections: [], unreachable: [], refused: [], names: {} } };
   const database = yield* Database;
   const { drizzle } = database;
   const encryption = yield* SecretEncryption;
@@ -76,13 +87,16 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
     const stored = held.get(machineId);
-    if (stored != null) return { machine_id: machineId, management: yield* decryptPairingSecret(stored) };
-    const management = yield* setHolder(cloud, label).pipe(Effect.option);
-    if (management._tag === "None") return { machine_id: machineId, management: null };
+    if (stored != null) return { machine_id: machineId, management: yield* decryptPairingSecret(stored), refused: null };
+    const management = yield* setHolder(cloud, label).pipe(
+      Effect.map((capability) => ({ capability, refused: null })),
+      Effect.catch((error) => Effect.succeed({ capability: null, refused: refusal(error) })),
+    );
+    if (management.capability === null) return { machine_id: machineId, management: null, refused: management.refused };
     // ponytail: two first uses racing both Set; the later key wins and the earlier command may need a rerun.
     // Recorded, then checked, under the credential's lock: a revocation that finished meanwhile revokes it at once,
     // and the Clear below (or the next retry) takes it off the Server.
-    const encryptedCapability = encryption.encrypt(management.value);
+    const encryptedCapability = encryption.encrypt(management.capability);
     const revoked = yield* database.transaction(Effect.gen(function* () {
       const { drizzle: tx } = yield* Database;
       yield* lockCredential(caller.credential.id);
@@ -110,13 +124,14 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       yield* retireServerAccess(caller.credential.id);
       return yield* new Unauthorized();
     }
-    return { machine_id: machineId, management: management.value };
+    return { machine_id: machineId, management: management.capability, refused: null };
   }), { concurrency: "unbounded" });
   const [allocation] = yield* drizzle.select({ assignments: enrollmentAllocation.assignments }).from(enrollmentAllocation)
     .where(and(eq(enrollmentAllocation.organizationId, caller.organization.id), eq(enrollmentAllocation.clusterKey, loaded.generation)));
   return { ok: true as const, value: {
     connections: results.flatMap(({ machine_id, management }) => management === null ? [] : [{ machine_id, management }]),
-    unreachable: results.flatMap(({ machine_id, management }) => management === null ? [machine_id] : []),
+    unreachable: results.flatMap(({ machine_id, management, refused }) => management === null && refused === null ? [machine_id] : []),
+    refused: results.flatMap(({ machine_id, refused }) => refused === null ? [] : [{ machine_id, message: refused }]),
     // Cloud holds only the names enrollment gave, so a Server the CLI can't reach shows by name where it can.
     names: Object.fromEntries((allocation?.assignments ?? []).filter(isNamed).map(({ machine }) => [machine.id, machine.name])),
   } };

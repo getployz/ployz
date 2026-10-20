@@ -17,7 +17,7 @@ import { asTestDouble } from "#/lib/test-double";
 import type { JsonObject } from "#/db/tables";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
 import { enrollmentAllocation, machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
-import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
+import { makePloyzLayer, Ployz, RpcError } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
@@ -72,18 +72,29 @@ const github = fakeGithubApi({
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
 
-/** Fake Servers keyed by Machine ID: each holds its Management Client slots, and can go offline or hang. */
+/**
+ * Fake Servers keyed by Machine ID: each holds its Management Client slots, and can go offline or hang, refuse a Set
+ * as a daemon does, or drop the Set's reply. Failures are the SDK's own RpcError, marked unanswered as it marks them.
+ */
 function fakeServers() {
-  const servers = new Map<string, { online: boolean | "hangs"; slots: Map<string, string> }>();
+  const servers = new Map<string, { online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string> }>();
   let sets = 0;
   const layer = makePloyzLayer({
     connect: async (options) => {
       const [connection] = options.connections;
       const server = connection && "machine_id" in connection ? servers.get(connection.machine_id ?? "") : undefined;
       if (server?.online === "hangs") return new Promise<never>(() => undefined);
-      if (server === undefined || !server.online) throw new Error("Endpoint unavailable");
+      if (server === undefined || !server.online) {
+        throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null, unanswered: true });
+      }
       return asTestDouble<Client>()({
         setManagementClient: async (label: string) => {
+          if (server.online === "refuses") {
+            throw new RpcError({ code: "unavailable", message: "Cluster store is not available", details: null });
+          }
+          if (server.online === "drops") {
+            throw new RpcError({ code: "unavailable", message: "connection reset", details: null, unanswered: true });
+          }
           sets += 1;
           const capability = `ployz1:${connection?.machine_id}:${label}:${sets}`;
           server.slots.set(label, capability);
@@ -170,6 +181,7 @@ const Reply = Schema.Struct({
   removed: Schema.optionalKey(Schema.Union([Schema.Boolean, Named])),
   connections: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, management: Schema.String }))),
   unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
+  refused: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, message: Schema.String }))),
   names: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   servers: Schema.optionalKey(Schema.Union([
     Schema.Struct({ confirmed: Schema.Array(Schema.String), unconfirmed: Schema.Array(Schema.String) }),
@@ -674,13 +686,13 @@ it.live(
         const ci = { bearer: token.secret };
 
         // Login needed no Server: nothing is paired yet.
-        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json, { connections: [], unreachable: [], names: {} });
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json, { connections: [], unreachable: [], refused: [], names: {} });
         yield* enroll(alice.organization.id, first, true);
         fake.servers.set(first, { online: true, slots: new Map() });
 
         const access = (yield* cli("POST", "server-access", alice)).json;
         const deviceKey = access.connections?.[0]?.management ?? assert.fail("no capability");
-        assert.deepStrictEqual(access, { connections: [{ machine_id: first, management: deviceKey }], unreachable: [], names: {} });
+        assert.deepStrictEqual(access, { connections: [{ machine_id: first, management: deviceKey }], unreachable: [], refused: [], names: {} });
         assert.strictEqual(fake.servers.get(first)?.slots.get(serverAccessLabel(device)), deviceKey);
         // Held, not re-provisioned; stored only encrypted.
         assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.connections, access.connections);
@@ -794,6 +806,33 @@ it.live(
       }).pipe(Effect.provide(layer));
     }),
   90_000,
+);
+
+it.live(
+  "Server access lists a Server that refused its holder with what it said, and only one that sent no reply as unreachable",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const refusing = ids.machineId("00000000000000000000000000001260");
+        const dropping = ids.machineId("00000000000000000000000000001261");
+        const offline = ids.machineId("00000000000000000000000000001262");
+        yield* enroll(alice.organization.id, refusing, true);
+        fake.servers.set(refusing, { online: "refuses", slots: new Map() });
+        yield* enroll(alice.organization.id, dropping, false);
+        fake.servers.set(dropping, { online: "drops", slots: new Map() });
+        yield* enroll(alice.organization.id, offline, false);
+        fake.servers.set(offline, { online: false, slots: new Map() });
+
+        const access = (yield* cli("POST", "server-access", alice)).json;
+        assert.deepStrictEqual(access.connections, []);
+        assert.deepStrictEqual(access.refused, [{ machine_id: refusing, message: "Cluster store is not available" }]);
+        assert.deepStrictEqual([...(access.unreachable ?? [])].sort(), [dropping, offline]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
 );
 
 it.live(
