@@ -519,7 +519,7 @@ async fn a_refused_tail_names_the_capability_and_the_server() {
         stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
         "{stderr}"
     );
-    assert!(!stderr.contains("Machine RPC failed"), "{stderr}");
+    assert!(!stderr.contains("daemon failed"), "{stderr}");
     assert!(!stderr.contains("cause:"), "{stderr}");
 
     server.abort();
@@ -852,6 +852,39 @@ async fn history_read_cancels_a_blocked_request_and_propagates_output_errors() {
     .await;
     assert_eq!(result, Err("output closed"));
     server.abort();
+}
+
+#[tokio::test]
+async fn an_unreachable_daemon_is_named_in_user_words() {
+    let closed = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    let output = run_ployz(closed, &["ps"]).await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.starts_with("error: Ployz couldn't reach your Server's daemon.\n  cause: "),
+        "{stderr}"
+    );
+    for jargon in ["connections from", "explicit connection", "Machine"] {
+        assert!(!stderr.contains(jargon), "{jargon}: {stderr}");
+    }
+
+    let output = run_ployz(closed, &["--json", "ps"]).await;
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report.pointer("/error/code"),
+        Some(&json!("unavailable")),
+        "{report}"
+    );
+    assert_eq!(
+        report.pointer("/error/message"),
+        Some(&json!("Ployz couldn't reach your Server's daemon.")),
+        "{report}"
+    );
 }
 
 async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process::Output {

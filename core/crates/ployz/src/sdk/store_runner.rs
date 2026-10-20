@@ -344,9 +344,9 @@ impl Run {
                     stop.cancel()
                 })
                 .await
-                .map_err(|failure| failure.to_string())
+                .map_err(|failure| crate::ui::row(&failure))
             }
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(crate::ui::row(&error)),
         };
         let evidence: Vec<_> = match filled {
             Ok(check) => (!check.repairs.is_empty())

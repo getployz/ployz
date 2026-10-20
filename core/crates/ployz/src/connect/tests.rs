@@ -186,7 +186,7 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
     assert_eq!(error.to_string(), "invalid log time \"notatime\"");
     assert_eq!(
         crate::ui::chain_text(&ConnectError::Rpc(error)),
-        "Machine RPC failed: invalid log time \"notatime\""
+        "Ployz's call to your Server's daemon failed: invalid log time \"notatime\""
     );
 }
 

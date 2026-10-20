@@ -1192,9 +1192,9 @@ mod tests {
             )))),
         });
         let display = failure.to_string();
-        assert!(
-            display.contains("3 connections from context prod"),
-            "{display}"
+        assert_eq!(
+            display,
+            "Ployz couldn't reach a Server's daemon through any of the 3 connections from context prod."
         );
         assert!(
             !display.contains("Os {") && !display.contains("code: 111"),

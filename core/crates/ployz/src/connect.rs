@@ -660,9 +660,9 @@ pub enum ConnectError {
         CONNECT_CONFIRM_TIMEOUT
     )]
     EntryNotReady,
-    #[error("Could not connect to the Machine.")]
+    #[error("Couldn't open a connection to the Server.")]
     Io(#[from] io::Error),
-    #[error("Could not connect to the Machine.")]
+    #[error("Couldn't open a connection to the Server.")]
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
@@ -695,7 +695,7 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("All {attempts} connections from {selection} failed.")]
+    #[error("{}", unreached_daemon(*attempts, selection))]
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
@@ -706,7 +706,7 @@ pub enum ConnectError {
         #[source]
         last: Option<Box<ConnectError>>,
     },
-    #[error("Machine RPC failed.")]
+    #[error("Ployz's call to your Server's daemon failed.")]
     Rpc(#[source] TransportError),
     #[error("Machine RPC payload failed.")]
     Codec(#[from] CodecError),
@@ -716,6 +716,16 @@ pub enum ConnectError {
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed.")]
     Value(#[from] ployz_core::ValueError),
+}
+
+fn unreached_daemon(attempts: usize, selection: &ConnectionSource) -> String {
+    if attempts == 1 {
+        "Ployz couldn't reach your Server's daemon.".into()
+    } else {
+        format!(
+            "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
+        )
+    }
 }
 
 impl From<tonic::Status> for ConnectError {
