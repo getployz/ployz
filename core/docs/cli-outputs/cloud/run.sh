@@ -240,7 +240,12 @@ c deploy "deployment show unknown number" $P deployment show 99
 c deploy "deployment show unknown number --json" $P deployment show 99 --json
 c deploy "deployment show garbage id" $P deployment show not-an-id
 m deploy "deployment start 1 --detach" $P deployment start 1 --detach
-CAP_TIMEOUT=15 m deploy "deployment start 1 (follows; no Server)" $P deployment start 1
+# Cloud counts the seed's Server, which never answers, so a start waits in the
+# queue. Set its row aside to capture the refusal a Server-less Organization gets.
+sql "CREATE TABLE capture_server AS SELECT * FROM organization_machine WHERE organization_id = '$org';
+  DELETE FROM organization_machine WHERE organization_id = '$org'" >/dev/null
+m deploy "deployment start 1 (follows; no Server enrolled)" $P deployment start 1
+sql "INSERT INTO organization_machine SELECT * FROM capture_server; DROP TABLE capture_server" >/dev/null
 m deploy "deployment cancel 1" $P deployment cancel 1
 m deploy "deployment cancel 1 again --json" $P deployment cancel 1 --json
 CAP_TIMEOUT=15 m deploy "deployment redeploy 1 --detach" $P deployment redeploy 1 --detach

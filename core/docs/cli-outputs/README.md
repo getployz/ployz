@@ -33,7 +33,7 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 
 Each `.md` holds one block per command with its exit code, stdout and stderr. Each `.ansi` holds the same commands run under a terminal. Exit 124 means the capture's own timeout killed the command.
 
-Totals: 692 command blocks (store 240, cloud 165, cluster 105, cloud-cluster 182). Exits: 0 x380, 1 x243, 2 x37, 3 x16, 124 x8, 127 x1, 7 x1, none x6 (piped or typed TTY runs).
+Totals: 682 command blocks (store 244, cloud 155, cluster 103, cloud-cluster 180). Exits: 0 x387, 1 x177, 2 x91, 3 x9, 124 x13, 127 x1, 7 x1, none x3 (piped or typed TTY runs).
 
 ## The contract as the code states it
 
@@ -247,10 +247,10 @@ Dominant: one pretty-printed object on stdout (120 of 124 success outputs). The 
 
 | Exit | Count | Meaning seen |
 |---|---|---|
-| 0 | 380 | success |
-| 1 | 243 | any failure: not found, conflict, unauthenticated, missing `--confirm`, `does not support --json` |
-| 2 | 37 | clap errors, `--confirm` mismatch, `Expected a Deployment ID or number`, local `deploy --detach`, bare `ployz org` |
-| 3 | 16 | partial fan-out, failed Deployment, error after a result was printed |
+| 0 | 387 | success |
+| 1 | 177 | any failure: not found, conflict, unauthenticated, missing `--confirm`, `does not support --json` |
+| 2 | 91 | clap errors, `--confirm` mismatch, `Expected a Deployment ID or number`, local `deploy --detach`, bare `ployz org` |
+| 3 | 9 | partial fan-out, failed Deployment, error after a result was printed |
 | 7, 127 | 2 | `ployz exec` passing through the remote code ([cloud-cluster/runtime.md](cloud-cluster/runtime.md)) |
 
 Exit 2 is applied by hand in about ten handlers through `.with_exit(USAGE_EXIT)`, so similar usage mistakes split between 1 and 2. `ployz exec` can return 1, 2 or 3 from the remote command, which overlap ployz's own codes ([cluster/ps-logs-exec.md](cluster/ps-logs-exec.md)).
@@ -297,7 +297,7 @@ Each item was checked against the captures. Its status after the output PRs foll
 26. `env branch --live` reads `db can't be used live: the Branch copies it: nothing running can lend it`, with two colons. [store/env.md](store/env.md) **Fixed in P7.**
 27. `deploy --expect-version 1` is a clap parse error (exit 2); a stale but well-formed version exits 1. [cloud/deploy.md](cloud/deploy.md) **Fixed by an earlier output PR.**
 28. server add over SSH ends on `Waiting for … retrying for up to 299s` and exits 0 with no joined line. [cluster/server.md](cluster/server.md) **Fixed in P7.**
-29. `deployment start 1` with no Server follows forever after `queued:`; the capture had to kill it. [cloud/deploy.md](cloud/deploy.md) **Fixed: with no Server enrolled, start refuses at once like a Deploy, `next: ployz server add`. The capture's seed enrolls a Server that never answers and runs no worker, so its start still waits in the queue and says so after 30s.**
+29. `deployment start 1` with no Server follows forever after `queued:`; the capture had to kill it. [cloud/deploy.md](cloud/deploy.md) **Fixed: with no Server enrolled, start refuses at once like a Deploy, `This Organization has no servers yet, so nothing deployed.` and `next: ployz server add`. The seed enrolls a Server that never answers, so the capture sets its row aside for this one start.**
 30. Human `service add`, `set`, `domain add` and `env branch` omit the `next` their JSON carries. [store/service.md](store/service.md) **Fixed in P7.**
 31. The `Docker only` prompt prints its WARNING on the prompt's own line. [cluster/server.md](cluster/server.md) **Fixed by an earlier output PR.**
 32. Bare `ployz org` prints help on stderr with exit 2; bare `ployz` uses stdout and 0. [cloud/org.md](cloud/org.md) **Fixed in P7.**
