@@ -467,6 +467,9 @@ pub(super) fn execute(
     };
     if !detached {
         finish_progress(&mut followed, disposition);
+        for builder in progress::builders(&followed.view) {
+            ui::note(builder);
+        }
     }
     for warning in progress::value_warnings(&followed.view)
         .into_iter()
@@ -1336,11 +1339,18 @@ pub(super) fn say_view(view: &DeploymentView) {
             commit.as_str().get(..7).unwrap_or(commit.as_str())
         });
         let reason = build.message.as_deref().unwrap_or_default();
+        let on = build
+            .server
+            .as_deref()
+            .map_or_else(String::new, |server| format!(" on {server}"));
         crate::ui::stream(format_args!(
-            "  build {} from {commit}: {} {reason}",
+            "  build {} from {commit}: {}{on} {reason}",
             build.service,
             super::store::word(&build.status)
         ));
+        if let Some(why) = &build.github_skipped {
+            crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
+        }
     }
 }
 

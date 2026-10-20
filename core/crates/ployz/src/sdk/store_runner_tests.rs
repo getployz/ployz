@@ -290,9 +290,15 @@ async fn a_queued_build_says_so_in_its_log_while_it_waits() {
             github_skipped: false,
         },
     };
-    run.report(&target.service, BuildStatus::Building, None, String::new())
-        .await
-        .unwrap();
+    run.report(
+        &target.service,
+        BuildStatus::Building,
+        None,
+        String::new(),
+        None,
+    )
+    .await
+    .unwrap();
     let (release, released) = tokio::sync::oneshot::channel::<()>();
     let running =
         super::super::running::Running::spawn(CancellationToken::new(), |reporter| async move {
@@ -331,6 +337,66 @@ async fn a_queued_build_says_so_in_its_log_while_it_waits() {
         "the log said nothing while queued: {:?}",
         log()
     );
+}
+
+#[tokio::test]
+async fn a_build_reports_the_server_it_runs_on_by_name() {
+    let (run, actor) = uploaded();
+    let target = Target {
+        service: ServiceName::parse("app").unwrap(),
+        build: Build::Upload {
+            digest: UploadDigest::parse("d".repeat(64)).unwrap(),
+            source: None,
+            earlier: false,
+            github_skipped: false,
+        },
+    };
+    run.report(
+        &target.service,
+        BuildStatus::Building,
+        None,
+        String::new(),
+        None,
+    )
+    .await
+    .unwrap();
+    let running =
+        super::super::running::Running::spawn(CancellationToken::new(), |reporter| async move {
+            reporter.report(super::super::prepare::Progress::Selected(Box::new(
+                super::super::prepare::SelectedBuilder {
+                    machine: ployz_core::Machine {
+                        labels: Default::default(),
+                        accepts_builds: true,
+                        accepts_services: true,
+                        accepts_ingress: true,
+                        id: MachineId::parse("1".repeat(32)).unwrap(),
+                        name: ployz_core::MachineName::parse("machine-1").unwrap(),
+                        subnet: "10.210.1.0/24".parse().unwrap(),
+                        public_key: ployz_core::WireGuardPublicKey([1; 32]),
+                        public_ip: None,
+                        advertised_endpoints: Vec::new(),
+                        runtime: Default::default(),
+                        build_concurrency: None,
+                    },
+                    reason: super::super::prepare::BuilderReason::Spread,
+                    rejections: Vec::new(),
+                },
+            )));
+            Err(internal("the build failed"))
+        });
+    assert!(run.follow(&target, &running).await.unwrap().is_err());
+    let build = run
+        .store
+        .read(
+            &actor,
+            &ployz_store::BuildLogQuery {
+                deployment: run.deployment.clone(),
+                service: target.service.clone(),
+            },
+        )
+        .unwrap()
+        .build;
+    assert_eq!(build.server.as_deref(), Some("machine-1"));
 }
 
 fn scrub_target() -> Scrub {

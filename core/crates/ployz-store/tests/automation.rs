@@ -1115,6 +1115,7 @@ fn a_push_ships_every_saved_change_and_builds_only_what_it_selects() {
                 status: ployz_store::BuildStatus::Built,
                 message: None,
                 log: String::new(),
+                server: None,
             }),
         )
         .unwrap();
