@@ -221,7 +221,8 @@ async function connect(options) {
     const close = client.close.bind(client);
     // Keep listening until the close finishes, so an abort during it still reaches the session.
     client.close = async () => { try { return await close(); } finally { cleanup(); } };
-    if (stopped) { await client.close(); signal?.throwIfAborted(); throw new Error("session deadline exceeded"); }
+    // The abort or deadline is why connect failed, so a failed close here must not replace it.
+    if (stopped) { await client.close().catch(() => {}); signal?.throwIfAborted(); throw new Error("session deadline exceeded"); }
     return client;
   } catch (error) { cleanup(); throw error; }
 }
