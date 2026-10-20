@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareVersions,
+  metricsOnBeta,
   newMajorLine,
   releaseFromPointer,
   releaseLine,
@@ -242,5 +243,14 @@ describe("serverUpgradeLines", () => {
       current: { kind: "upgrading" },
       behind: { kind: "behind", canUpgrade: false },
     });
+  });
+});
+
+describe("metricsOnBeta", () => {
+  it("points a Server on Stable to Beta only when Stable has nothing newer and Beta does", () => {
+    expect(metricsOnBeta({ version: "0.2.4", channel: "stable", release: "0.2.4", beta: "0.3.0-beta.6" })).toBe(true);
+    expect(metricsOnBeta({ version: "0.2.3", channel: "stable", release: "0.2.4", beta: "0.3.0-beta.6" })).toBe(false);
+    expect(metricsOnBeta({ version: "0.2.4", channel: "stable", release: "0.2.4", beta: null })).toBe(false);
+    expect(metricsOnBeta({ version: "0.2.4", channel: "beta", release: "0.3.0-beta.6", beta: "0.3.0-beta.6" })).toBe(false);
   });
 });

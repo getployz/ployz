@@ -53,9 +53,11 @@ export const serverNames = (organizationId: string) =>
     Effect.orElseSucceed(() => new Map()),
   );
 
-const serverOperations = Effect.fn("OperationHistory.server")(function* (organizationId: string, machine: MachineId, attempt: string | null, limit: number) {
+const serverOperations = Effect.fn("OperationHistory.server")(function* (
+  organizationId: string, machine: MachineId, attempt: string | null, limit: number, known: string | null,
+) {
   const { drizzle } = yield* Database;
-  const name = (yield* serverNames(organizationId)).get(machine) ?? machine;
+  const name = (yield* serverNames(organizationId)).get(machine) ?? known ?? machine;
   const uuid = attempt !== null && isUuid(attempt) ? attempt : null;
   const hex = attempt?.replaceAll("-", "").toLowerCase() ?? null;
   const drains = attempt !== null && uuid === null ? [] : yield* drizzle.select().from(serverDrainAttempt).where(and(
@@ -123,10 +125,11 @@ const leftoverOperations = Effect.fn("OperationHistory.leftover")(function* (org
   }));
 });
 
-export const operationsOn = (organizationId: string, subject: Subject, attempt: string | null, limit: number) => {
+/** `serverName` names a Server run when the runtime's frame does not, as when an act already resolved it. */
+export const operationsOn = (organizationId: string, subject: Subject, attempt: string | null, limit: number, serverName: string | null = null) => {
   switch (subject.kind) {
     case "server":
-      return serverOperations(organizationId, subject.machine, attempt, limit);
+      return serverOperations(organizationId, subject.machine, attempt, limit, serverName);
     case "service":
       return attempt !== null && !isUuid(attempt)
         ? Effect.succeed<Operation[]>([])

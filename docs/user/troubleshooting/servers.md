@@ -162,9 +162,10 @@ the kernel is newer than ZFS supports. Either:
 
 ## The command was rejected
 
-You'll see `enroll HTTP 401`.
+You'll see `Cloud no longer takes this enrollment token`.
 
-The enrollment token expired or was mistyped. It works for 24 hours. Run
+The enrollment token expired or was mistyped, or the organization's servers were forgotten,
+which voids every token made before. A token works for 24 hours. Run
 `ployz server add --command` on your machine for a new one and run its line again.
 
 ## The server's name is invalid

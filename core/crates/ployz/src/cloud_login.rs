@@ -41,7 +41,7 @@ pub(crate) enum LoginError {
     },
     #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
-    #[error("Cloud answered HTTP {status}{}", readable(.body))]
+    #[error("{}", answered("Cloud answered", *.status, .body))]
     Status { status: u16, body: String },
     #[error("Cloud sent an unexpected reply: {0}")]
     Reply(String),
@@ -73,7 +73,7 @@ pub(crate) enum LoginError {
     #[error("sign-in is waiting for approval at {url}")]
     AwaitingApproval { url: String },
     #[error(
-        "Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"
+        "Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"
     )]
     TokenRefused,
     #[error("this sign-in's Organization {0} is no longer one of yours")]
@@ -621,9 +621,27 @@ async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginErr
     }
 }
 
+/// Cloud's own sentence for a failed call, else its status and any readable body.
+pub(crate) fn answered(prefix: &str, status: u16, body: &str) -> String {
+    cloud_message(body.as_bytes())
+        .unwrap_or_else(|| format!("{prefix} HTTP {status}{}", readable(body)))
+}
+
+/// The sentence a Cloud refusal carries: a route's `PublicError`, or the `{error}` a
+/// public endpoint sends.
+pub(crate) fn cloud_message(body: &[u8]) -> Option<String> {
+    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let text = |field: &str| body.get(field).and_then(serde_json::Value::as_str);
+    let message = match text("_tag") {
+        Some("PublicError") => text("code").and(text("message")),
+        _ => text("error"),
+    };
+    message.map(str::to_owned)
+}
+
 /// `body` as the tail of a status line: a short text or JSON answer is worth
 /// printing, a proxy's HTML error page is not.
-pub(crate) fn readable(body: &str) -> String {
+fn readable(body: &str) -> String {
     let body = body.trim();
     if body.is_empty() || body.starts_with('<') {
         String::new()
