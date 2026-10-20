@@ -5,9 +5,9 @@
 # Prerequisites (manual): a paired setup, started from core/ with
 #   run=$(scripts/verify-cluster up --machines 1 --daemon checkout --cloud)
 # (a release daemon refuses this checkout's CLI), seeded with Organization
-# `ada`, Project `shop`, Environment `production` holding web (nginx, generated
-# domain web.ada.ployz.test on port 80, custom domain acme.com), api, postgres
-# (Volume pg-data), worker and redis, plus a staged, undeployed Branch
+# `ada`, Project `shop`, Environment `production` holding web (nginx, custom
+# domain acme.com, no generated domain, so `domain set web` refuses), api,
+# postgres (Volume pg-data), worker and redis, plus a staged, undeployed Branch
 # `fix-api`. Then, through `scripts/verify-cluster cli "$run" --`, run
 # `link --project shop`, `service rm redis` (its HTTP health check never
 # passes) and `deploy`. This script never starts, restarts or tears the setup
