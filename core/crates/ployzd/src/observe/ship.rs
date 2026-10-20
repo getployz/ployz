@@ -188,13 +188,28 @@ impl Outbox {
         }))
     }
 
+    #[cfg(test)]
     pub fn push(&self, marker: MetricMarker) -> io::Result<()> {
+        let seq = self.reserve(marker.ts)?;
+        self.push_at(seq, marker)
+    }
+
+    /// Hands out the seq a crash is queued under.
+    pub fn reserve(&self, ts: i64) -> io::Result<u64> {
+        let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        ledger.take_seq(&self.dir, u64::try_from(ts).unwrap_or(0))
+    }
+
+    /// Queues `marker` under a seq [`Outbox::reserve`] handed out. Queuing
+    /// a seq again rewrites its entry, and Cloud keeps one crash per seq.
+    pub fn push_at(&self, seq: u64, marker: MetricMarker) -> io::Result<()> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         let seqs = seqs(&self.dir, "")?;
-        let excess = (seqs.len() + 1).saturating_sub(CAP);
+        let queued = seqs.binary_search(&seq).is_ok();
+        let excess = (seqs.len() + usize::from(!queued)).saturating_sub(CAP);
         if excess > 0 {
-            for seq in seqs.iter().take(excess) {
-                remove_entry(&self.dir, *seq, "")?;
+            for oldest in seqs.iter().filter(|queued| **queued != seq).take(excess) {
+                remove_entry(&self.dir, *oldest, "")?;
             }
             ledger.count_dropped(&self.dir, excess)?;
             tracing::warn!(
@@ -202,7 +217,6 @@ impl Outbox {
                 "the crash outbox is full; dropping its oldest entries"
             );
         }
-        let seq = ledger.take_seq(&self.dir, u64::try_from(marker.ts).unwrap_or(0))?;
         let entry = Entry { seq, marker };
         let json = serde_json::to_vec(&entry).map_err(io::Error::other)?;
         crate::filesystem::atomic_write(&self.dir.join(entry_name(seq, "")), &json, 0o600)?;

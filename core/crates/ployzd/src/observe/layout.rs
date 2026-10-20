@@ -10,8 +10,6 @@
 //!         scanned                       seq of the newest file the damage
 //!                                       scan has read past
 //!         first-set.json                FirstSeen, until max-file judges it
-//!         exited                        when the newest exit recorded died
-//!         oom-killed                    when the newest OOM kill recorded was
 //!         <seq>-<ino>.log               a hardlink to one Docker log file, raw
 //!     metrics/
 //!       raw/
@@ -36,6 +34,12 @@
 //!                                       Cloud
 //!     analytics/
 //!       salts.json                      the day salts Cloud handed out
+//!     settled/
+//!       <cid>-<exit|oom>-<ts>           an exit or OOM kill the harvester
+//!                                       settled, kept while a resumed
+//!                                       Docker event stream can repeat it
+//!       <cid>-<exit|oom>-<ts>.pending   one whose marker or crash is not
+//!                                       stored yet
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the
@@ -63,10 +67,6 @@ pub const SCANNED_FILE: &str = "scanned";
 pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
 pub const FIRST_SET_FILE: &str = "first-set.json";
 pub const FIRST_SET_TEMP_FILE: &str = "first-set.tmp";
-pub const EXITED_FILE: &str = "exited";
-pub const EXITED_TEMP_FILE: &str = "exited.tmp";
-pub const OOM_KILLED_FILE: &str = "oom-killed";
-pub const OOM_KILLED_TEMP_FILE: &str = "oom-killed.tmp";
 pub const METRICS_DIR: &str = "metrics";
 pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";
@@ -76,6 +76,7 @@ const REQUESTS_DIR: &str = "requests";
 const RETIRED_OUTBOXES: [&str; 1] = ["pageviews"];
 const ANALYTICS_DIR: &str = "analytics";
 const SALTS_FILE: &str = "salts.json";
+const SETTLED_DIR: &str = "settled";
 const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
@@ -128,6 +129,11 @@ impl StoreRoot {
     #[must_use]
     pub fn salts(&self) -> PathBuf {
         self.0.join(ANALYTICS_DIR).join(SALTS_FILE)
+    }
+
+    #[must_use]
+    pub fn settled(&self) -> PathBuf {
+        self.0.join(SETTLED_DIR)
     }
 
     /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.
