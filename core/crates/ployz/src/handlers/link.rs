@@ -601,8 +601,7 @@ struct Attention {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum Subject {
-    /// A Service whose In copies some live Machine's proxy has not acked.
-    Unrouted {
+    NotPickedUp {
         service: QualifiedService,
         /// Each such Machine by name, else by ID when the Machine list lacks it.
         machines: Vec<String>,
@@ -718,7 +717,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         match store.try_read(&NamespaceQuery {
             environment: scope.at(),
         }) {
-            Ok(view) => attention.extend(unrouted(root, &view.namespace)),
+            Ok(view) => attention.extend(server_attention(root, &view.namespace)),
             Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),
         }
     }
@@ -772,10 +771,8 @@ fn this_server() -> Option<LocalCheckin> {
 
 const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
 
-/// Each Down Machine, then the Services in `namespace` whose new copies some live
-/// Machine has not picked up. Empty when no Server is set up, and empty after one
-/// warning when a read fails.
-fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
+/// Empty when no Server is set up, and empty after one warning when a read fails.
+fn server_attention(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
     let found = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&found);
     let reached = Rc::new(std::cell::Cell::new(false));
@@ -902,7 +899,7 @@ fn not_picked_up(
                 ),
                 deployment: None,
                 next: None,
-                subject: Some(Subject::Unrouted {
+                subject: Some(Subject::NotPickedUp {
                     service: service.identity.clone(),
                     machines,
                 }),
@@ -991,7 +988,7 @@ fn status_record(status: &Status) -> Fields {
     }
     for attention in &status.attention {
         let label = match &attention.subject {
-            Some(Subject::Unrouted { service, .. }) => Cow::Owned(service.name.to_string()),
+            Some(Subject::NotPickedUp { service, .. }) => Cow::Owned(service.name.to_string()),
             Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
             None => Cow::Borrowed("needs attention"),
         };
