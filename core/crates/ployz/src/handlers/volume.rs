@@ -484,6 +484,7 @@ mod tests {
             mounts: Vec::new(),
             deployed: storage_locked,
             storage_locked,
+            recorded_storage: None,
             change: None,
         };
         let managed = VolumeKind::Provisioned {

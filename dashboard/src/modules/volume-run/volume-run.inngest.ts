@@ -347,9 +347,12 @@ async function resizeVolume(steps: RunSteps, phase: ResizePhase) {
     await step.run(`03-${index}-note`, () => runEffect(noteRun(run, runId, `${SIZING[phase.direction]} ${run.volumeName} to ${gb(phase.to)} on ${machine.name}`)));
     const outcome = await sizeSettle(steps, `03-${index}-size-${machine.id}`, each, phase);
     if (outcome.kind === "refused") {
-      const undone = undoOnRefusal(done);
-      if (undone) await step.run("04-unrecord", () => runEffect(recordVolumeSize(run, runId, { from: phase.to, to: phase.from })));
-      return fail(steps, "05-failed", refusedMessage(run.volumeName, phase, sets, machine, outcome, done.includes("recorded") && !undone));
+      let recorded = done.includes("recorded");
+      if (undoOnRefusal(done)) {
+        const undone: RecordAnswer = await step.run("04-unrecord", () => runEffect(recordVolumeSize(run, runId, { from: phase.to, to: phase.from })));
+        recorded = !undone.ok;
+      }
+      return fail(steps, "05-failed", refusedMessage(run.volumeName, phase, sets, machine, outcome, recorded));
     }
     done.push("held");
   }
