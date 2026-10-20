@@ -6,7 +6,7 @@ use crate::ui::{
     Hint,
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
-use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
+use ployz_core::{QualifiedService, RpcError, RpcErrorCode, config::MEM_LIMIT_MAX};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, DeploymentWarning, FailedAt,
     IngressAction, IngressFailure, NodeStatus, RowState,
@@ -394,13 +394,25 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             "--env",
             view.environment.name.as_str(),
         ];
-        // Twice the limit the Container ran out of memory under, in the unit it reads in.
+        // Twice the limit the Container ran out of memory under, in the unit it reads in,
+        // up to the most memLimit allows. At the most, only using less memory fixes it.
         if let Some(bytes) = memory_limit {
-            let doubled = ployz_store::memory_size(bytes.get() as f64 * 2.0 / 1e9).replace(' ', "");
-            let setting = format!("{name}.memLimit={doubled}");
-            hints.push(Hint::Next(command(
-                &[&["set", setting.as_str()][..], &scope].concat(),
-            )));
+            let gb = bytes.get() as f64 / 1e9;
+            if gb < MEM_LIMIT_MAX {
+                let raised = ployz_store::memory_size((gb * 2.0).min(MEM_LIMIT_MAX));
+                let setting = format!("{name}.memLimit={}", raised.replace(' ', ""));
+                hints.push(Hint::Next(command(
+                    &[&["set", setting.as_str()][..], &scope].concat(),
+                )));
+            } else {
+                diagnostic.failures.push(Detail {
+                    message: format!(
+                        "{name} already has the most memory memLimit allows, {}: it needs to use less.",
+                        ployz_store::memory_size(MEM_LIMIT_MAX)
+                    ),
+                    causes: Vec::new(),
+                });
+            }
         }
         // One hint per Service, by its config name: it reads every Server's logs, and a
         // token that reads through Cloud can serve it too. Before a Container exists it
@@ -680,6 +692,96 @@ mod tests {
             crate::ui::plain(&healthy_enough)
         );
         assert!(next(&healthy_enough).is_empty());
+
+        let limit_gb = |gb: i64| {
+            Some(ployz_core::OutOfMemory {
+                memory_bytes: Some(ployz_core::ByteQuantity::try_from(gb * 1_000_000_000).unwrap()),
+            })
+        };
+        let at_most = failed(limit_gb(1024));
+        assert!(next(&at_most).is_empty(), "{:?}", next(&at_most));
+        let text = crate::ui::plain(&at_most);
+        assert!(
+            text.contains(
+                "web already has the most memory memLimit allows, 1024 GB: it needs to use less."
+            ),
+            "{text}"
+        );
+        let large = failed(limit_gb(600));
+        assert_eq!(
+            next(&large),
+            ["ployz set 'web.memLimit=1024GB' --project shop --env production"]
+        );
+        for proposal in [next(&oom), next(&large)].concat() {
+            admits(&proposal);
+        }
+    }
+
+    /// `proposal` parses as `ployz set` and the Config Store admits what it sets.
+    fn admits(proposal: &str) {
+        use ployz_store::{
+            Actor, Change, ConfigStore, CreateProject, CreateService, Edit, EnvironmentId,
+            EnvironmentRef, OrganizationId, ProjectId, ProjectName, SealingKey, ServiceLineageId,
+            SettingPath,
+        };
+
+        let words = shell_words::split(proposal).unwrap();
+        let matches = crate::cli::command()
+            .try_get_matches_from(&words)
+            .unwrap_or_else(|error| panic!("{proposal}: {error}"));
+        let Some(("set", set)) = matches.subcommand() else {
+            panic!("{proposal} is not a set");
+        };
+        // As `ployz set` reads its assignments.
+        let changes = set
+            .get_many::<String>("assignment")
+            .unwrap()
+            .map(|assignment| {
+                let (path, value) = assignment.split_once('=').unwrap();
+                Change::Set {
+                    path: SettingPath::parse(path).unwrap(),
+                    value: serde_json::Value::String(value.to_owned()),
+                }
+            })
+            .collect();
+        let store =
+            ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap();
+        let who = Actor::system(OrganizationId::parse("org").unwrap());
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(
+                        "00000000-0000-4000-8000-000000000002",
+                    )
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_core::ServiceName::parse("web").unwrap(),
+                    image: Some("nginx".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{proposal}: {error:?}"));
     }
 
     #[test]

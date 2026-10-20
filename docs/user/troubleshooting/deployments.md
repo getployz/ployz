@@ -96,8 +96,10 @@ or a command's exit code and output.
 result as the cause, and `next: ployz set 'web.memLimit=32MiB' …`
 
 Docker killed a process in the new replica for going over the service's **memLimit**. Ployz
-stopped the replica and kept the old version serving. The `next:` command doubles the limit;
-set the size your app needs. A service without a **memLimit** gets no `next:` command.
+stopped the replica and kept the old version serving. The `next:` command doubles the limit,
+up to the most **memLimit** allows, 1024 GB; set the size your app needs. A service already at
+1024 GB gets no `next:` command: it has to use less memory. Nor does a service without a
+**memLimit**.
 
 ## My running service fails its healthcheck
 
