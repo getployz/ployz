@@ -40,7 +40,6 @@ pub mod management;
 pub mod mutation;
 pub mod network;
 pub mod observe;
-pub(crate) mod retire;
 pub(crate) mod route_acks;
 pub mod runtime_unit;
 pub(crate) mod runtime_watch;

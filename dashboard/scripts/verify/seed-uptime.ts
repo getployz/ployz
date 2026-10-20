@@ -4,9 +4,9 @@
 //   web       Up: 90 days of results, one closed 502 incident 12 days ago, an expired certificate in sin 3 days ago,
 //             and a stray TLS or timeout failure every few hours, so every range's tooltip has failures to show
 //   api       Unreachable: an open 502 incident from 18 minutes ago
-//   worker    Checking: a check with no results yet
-//   redis     Unreachable at its healthcheck path: every result a 404 since its first check 12 minutes ago, so the tab
+//   worker    Unreachable at its healthcheck path: every result a 404 since its first check 12 minutes ago, so the tab
 //             shows the Healthcheck path field
+//   redis     Checking: a check with no results yet
 //   postgres  Not checked: no check
 // ams and iad get display names and sin keeps its code, so the tooltip shows both a name and the fallback.
 // Each run replaces these checks wholesale (results and incidents cascade), so running it again converges.
@@ -194,9 +194,9 @@ const seed = Effect.gen(function* () {
   });
 
   const wrongFrom = now - 12 * MINUTE;
-  yield* history("redis", wrongFrom, 60, { from: wrongFrom, to: now, status: 404 });
+  yield* history("worker", wrongFrom, 60, { from: wrongFrom, to: now, status: 404 });
   yield* drizzle.insert(uptimeIncident).values({
-    id: randomUUID(), organizationId, checkId: checkId("redis"), checkRevision: 1, openedAt: new Date(wrongFrom),
+    id: randomUUID(), organizationId, checkId: checkId("worker"), checkRevision: 1, openedAt: new Date(wrongFrom),
     openedBy: { quorum: { distinctRegions: 2 }, observations: REGIONS.map((region) => observation(region, wrongFrom, "fail", 404)) },
   });
 
