@@ -890,13 +890,14 @@ describe("organization enrollment coordinator", () => {
     // A Server the Cluster doesn't report keeps the name Cloud has.
     fake.cluster.frames = [[[founder.machineId, "web-1"], [identity(2).machineId, "node-2"], [identity(9).machineId, "stranger"]]];
     await fake.coordinator.firstFrame();
-    expect(await names()).toEqual([
+    // The read hands its names to a write it doesn't wait on.
+    await expect.poll(names).toEqual([
       [founder.machineId, "web-1"], [joiner.machineId, "node-1"], [identity(2).machineId, "node-2"],
     ]);
 
     fake.cluster.frames = [[[founder.machineId, "web-1"]], [[founder.machineId, "web-2"], [joiner.machineId, "db-1"]]];
     expect(await fake.coordinator.watchAll()).toHaveLength(2);
-    expect(await names()).toEqual([
+    await expect.poll(names).toEqual([
       [founder.machineId, "web-2"], [joiner.machineId, "db-1"], [identity(2).machineId, "node-2"],
     ]);
   });
