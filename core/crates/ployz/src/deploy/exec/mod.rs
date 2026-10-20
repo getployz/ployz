@@ -914,11 +914,16 @@ async fn restore_group<C: MachineOperations>(
         })
         .collect();
     let mut restored = false;
+    let mut may_run = BTreeSet::new();
     for (spec, old) in &stopped {
         let why = if blocked.contains(&old.machine_id) {
             Some("its new copy may be serving".to_owned())
         } else {
-            match restore_old(client, old, spec, rows, &cleanup).await {
+            let restore = restore_old(client, old, spec, rows, &cleanup).await;
+            if restore.may_run {
+                may_run.insert(old.machine_id);
+            }
+            match restore.attempt {
                 RestoreAttempt::Restored => {
                     restored = true;
                     None
@@ -951,6 +956,16 @@ async fn restore_group<C: MachineOperations>(
             if let Some(left) = left {
                 rows.leave_running(progress, &copy, left);
             }
+        } else if may_run.contains(&copy.machine_id) {
+            // Its old copy may be writing the Volume, so it stays stopped.
+            rows.leave_running(
+                progress,
+                &copy,
+                Left::NotRestored(
+                    Box::new(Left::DeployFailed),
+                    "its old copy may be serving".to_owned(),
+                ),
+            );
         } else {
             // No old copy came back, so the healthy new copy serves again.
             leave_unstopped(client, progress, &copy, &spec, rows, Left::DeployFailed).await;
@@ -2702,7 +2717,8 @@ async fn compensate<C: MachineOperations>(
         Some(old) => ReplacementCompensation::OldStopped {
             stop_new_container,
             restore_old_container: restore_old(client, &old, &operation.spec, rows, cancellation)
-                .await,
+                .await
+                .attempt,
         },
         None => match stop_new_container {
             Some(stop_new_container) => {
@@ -2717,24 +2733,38 @@ async fn compensate<C: MachineOperations>(
     }
 }
 
+/// A restore that failed may still have started the old copy: `may_run`
+/// stays true once its start could have landed.
+struct Restore {
+    attempt: RestoreAttempt<ExecutionError>,
+    may_run: bool,
+}
+
 async fn restore_old<C: MachineOperations>(
     client: &C,
     old: &cleanup::Copy,
     spec: &ResolvedServiceSpec,
     rows: &Rows<'_>,
     cancellation: &CancellationToken,
-) -> RestoreAttempt<ExecutionError> {
+) -> Restore {
+    let ended = |attempt, may_run| Restore { attempt, may_run };
     let failed = |error| RestoreAttempt::Failed { error };
     match &old.rotation {
-        CopyRotation::Out => return RestoreAttempt::NotServing,
+        CopyRotation::Out => return ended(RestoreAttempt::NotServing, false),
         CopyRotation::Pending => {
             let want = ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Id(old.container_id)),
                 rotation: RunRotation::Pending,
             };
             return match client.ensure_container(&old.machine_id, want).await {
-                Ok(_) => RestoreAttempt::Restored,
-                Err(error) => failed(machine_error(MachineAction::StartContainer, error)),
+                Ok(_) => ended(RestoreAttempt::Restored, true),
+                Err(error) => {
+                    let may_run = error.target_unanswered();
+                    ended(
+                        failed(machine_error(MachineAction::StartContainer, error)),
+                        may_run,
+                    )
+                }
             };
         }
         CopyRotation::In | CopyRotation::Held(_) => {}
@@ -2749,23 +2779,32 @@ async fn restore_old<C: MachineOperations>(
                         deadline_millis: None,
                         last_check: None,
                     });
-            return failed(health_error(old.container_id, failure));
+            return ended(failed(health_error(old.container_id, failure)), true);
         }
         Ok(cleanup::BroughtIn::Refused(refusal))
             if refusal.reason == ployz_core::ContainerRefusalReason::HeldByOtherRun =>
         {
-            return RestoreAttempt::LeftHeld;
+            return ended(RestoreAttempt::LeftHeld, false);
         }
         Ok(cleanup::BroughtIn::Refused(refusal)) => {
-            return failed(machine_error(
-                MachineAction::StartContainer,
-                refusal.into_error(),
-            ));
+            return ended(
+                failed(machine_error(
+                    MachineAction::StartContainer,
+                    refusal.into_error(),
+                )),
+                false,
+            );
         }
-        Err(error) => return failed(machine_error(MachineAction::StartContainer, error)),
+        Err(error) => {
+            let may_run = error.target_unanswered();
+            return ended(
+                failed(machine_error(MachineAction::StartContainer, error)),
+                may_run,
+            );
+        }
     }
     let copies = BTreeSet::from([old.container_id]);
-    match cleanup::wait_listed(
+    let attempt = match cleanup::wait_listed(
         client,
         &old.machine_id,
         &old.service,
@@ -2782,7 +2821,8 @@ async fn restore_old<C: MachineOperations>(
             }
         }
         Err(error) => failed(machine_error(MachineAction::ReadRoutes, error)),
-    }
+    };
+    ended(attempt, true)
 }
 
 #[expect(

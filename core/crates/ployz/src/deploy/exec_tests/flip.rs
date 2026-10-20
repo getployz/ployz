@@ -1761,6 +1761,59 @@ async fn a_cancelled_stop_first_stops_the_new_copy_before_the_old_copy_returns()
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_restored_old_copy_whose_listing_is_unconfirmed_keeps_the_new_copy_stopped() {
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let cancellation = CancellationToken::new();
+    let client = Scripted {
+        read_latency: true,
+        cancel_on_move: Some((Move::To(new, CopyRotation::In), cancellation.clone())),
+        reads_fail_after: Some(Move::To(old, CopyRotation::In)),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Stop(machine, new)),
+            ok(Call::Restart(machine, old)),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let (outcome, warnings) = execute_reported(&plan, &[machine], &client, &cancellation).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(old, CopyRotation::Held(run_id())),
+            Move::To(new, CopyRotation::In),
+            Move::To(new, CopyRotation::Held(run_id())),
+            Move::To(old, CopyRotation::In),
+        ],
+        "the old copy may be writing the Volume, so the new copy never starts again"
+    );
+    assert_eq!(client.rotation(&new), Some(CopyRotation::Held(run_id())));
+    assert_eq!(
+        warnings,
+        [
+            left_running(
+                "machine-1",
+                "the Deploy failed, and it could not go back In: read routes failed: the route read failed"
+            ),
+            left_running(
+                "machine-1",
+                "the Deploy failed, and it could not go back In: its old copy may be serving"
+            ),
+        ]
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_unconfirmed_stop_first_publish_keeps_the_old_copy_stopped() {
     let (machine, lagging) = (machine('1'), machine('2'));
     let (old, new) = (container('a'), container('b'));
