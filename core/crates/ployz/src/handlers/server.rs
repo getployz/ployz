@@ -170,6 +170,14 @@ pub(super) fn cloud_machine(
     })
 }
 
+/// The Servers Cloud's dial sees, as [`cloud_machine`] picks among them.
+pub(super) fn servers(matches: &ArgMatches) -> Result<Vec<ployz_core::MachineObservation>, Error> {
+    super::runtime()?.block_on(async {
+        let mut client = connect(matches, None).await?;
+        Ok(client.machines().await?)
+    })
+}
+
 /// `rerun` with `--approval id`, the command that goes ahead once a human approved.
 pub(super) fn approved_rerun(matches: &ArgMatches, args: &[&str], id: &str) -> String {
     let mut args = args.to_vec();

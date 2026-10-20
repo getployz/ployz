@@ -1196,6 +1196,7 @@ impl MachineState {
                 pool_size_bytes: POOL_BYTES,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: self
                 .copies
                 .iter()

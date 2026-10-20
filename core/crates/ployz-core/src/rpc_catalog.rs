@@ -95,6 +95,8 @@ macro_rules! rpc_catalog {
             capabilities {
                 /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
                 VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
+                /// `SetVolumeSize` takes `allow_shrink` and lowers a bound down to its floor.
+                VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.

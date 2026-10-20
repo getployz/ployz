@@ -209,6 +209,10 @@ pub(crate) fn admit(
         ships: shipped(&nodes),
         runner: None,
         upload,
+        chooses_upload_at_start: super::chooses_upload_at_start(
+            DeploymentStatus::Queued,
+            service_uploads.as_ref(),
+        ),
         remove: saved == NOTHING,
         admitted_by: who.principal.clone(),
         admitted_at,
@@ -647,6 +651,7 @@ pub(crate) fn retry(
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
         json_text(&super::uploads::ServiceUploads {
             sent: false,
+            provisional: false,
             ..uploads
         })
     });
@@ -707,6 +712,7 @@ pub(crate) fn retry(
         push: None,
         ci: None,
         held: false,
+        chooses_upload_at_start: false,
         ..stored.summary
     };
     Ok((summary, rollback))
@@ -1076,7 +1082,6 @@ pub(crate) fn claim(
         }
     };
     let sources = build::sources_of(tx, &stored)?;
-    let uploads = build::uploads_of(tx, &stored)?;
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (services, removals) = stored.lowering();
@@ -1118,11 +1123,13 @@ pub(crate) fn claim(
              WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
             &[stored.summary.environment_id.as_str().into()],
         )?;
+        super::uploads::claimed(tx, &mut stored)?;
         save(tx, &mut stored)?;
         if taken_over > 0 {
             crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
         }
     }
+    let uploads = build::uploads_of(tx, &stored)?;
     if stored.run.warnings != warnings {
         stored.run.warnings = warnings;
         stored.summary.warnings = stored.run.summary_warnings();

@@ -27,7 +27,7 @@ use crate::{
     certificates,
     corrosion::{
         CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
-        MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
+        LiveRuntime, MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
     dns::DnsService,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
@@ -325,7 +325,13 @@ impl Daemon {
         let publisher = run_machine_publisher(
             replicated_store.clone().zip(machine_view.clone()),
             local.clone(),
-            running_builds,
+            LiveRuntime::new(
+                running_builds,
+                containers.as_ref().map_or_else(
+                    || tokio::sync::watch::channel(None).1,
+                    ContainerRuntime::pool_committable_bytes,
+                ),
+            ),
             shutdown.clone(),
         );
         let rediscovery = crate::machine::LocalMachine::new(local.clone());

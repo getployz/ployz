@@ -3,7 +3,9 @@ import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber } from "effect";
 import { asTestDouble } from "#/lib/test-double";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
+import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
 import {
+  closeCutWarning,
   firstFrame,
   makePloyzLayer,
   Ployz,
@@ -152,3 +154,16 @@ it.effect("marks a first frame not worth waiting for when the Cluster answered w
     assert.isFalse(ended.waitable);
   }),
 );
+
+it("says a cut close ran out of time only when its Cluster time did, and otherwise names the failure", () => {
+  assert.strictEqual(closeCutWarning(new ClusterOutOfTime({ inFlight: true })), "The Ployz session didn't close in time, so its connection was aborted.");
+  assert.strictEqual(
+    closeCutWarning(new PloyzProviderError({ operation: "close", cause: new Error("boom") })),
+    "The Ployz session's close failed with PloyzProviderError, so its connection was aborted.",
+  );
+  assert.strictEqual(
+    closeCutWarning(new Error("socket hang up")),
+    "The Ployz session's close failed with socket hang up, so its connection was aborted.",
+  );
+  assert.strictEqual(closeCutWarning(new TypeError()), "The Ployz session's close failed with TypeError, so its connection was aborted.");
+});

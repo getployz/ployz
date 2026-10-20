@@ -160,6 +160,12 @@ impl NamedRow {
     pub const fn node(&self) -> &NodeName {
         &self.node
     }
+
+    /// Where in the node it is; `None` for the node itself.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
 }
 
 /// `NODE`, or `NODE.name`: as reads show it.

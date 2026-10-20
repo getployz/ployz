@@ -88,7 +88,7 @@ impl VolumeStorage {
             mountpoint: String::new(),
             status: VolumePluginStatus {
                 bound_bytes: fs.refquota,
-                used_bytes: fs.used_bytes,
+                used_bytes: fs.referenced_bytes,
             },
         }))
     }
@@ -210,7 +210,7 @@ impl PluginVolume {
             mountpoint: dataset.mountpoint.clone(),
             status: VolumePluginStatus {
                 bound_bytes: dataset.refquota,
-                used_bytes: dataset.used_bytes,
+                used_bytes: dataset.referenced_bytes,
             },
         }
     }

@@ -376,6 +376,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         kernel_version: "stale".into(),
         memory_total_bytes: None,
         running_builds: 0,
+        pool_committable_bytes: None,
         capabilities: Default::default(),
     })
     .unwrap();

@@ -4,16 +4,16 @@ import { and, eq } from "drizzle-orm";
 import { Effect, Result } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { type CopyAsk, type MemberObserver, ReplyLost, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
+import { type CopyAsk, failureLines, type MemberObserver, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import { type BlockerReader, placementRefusal, readPlacementBlockers, UNANSWERED } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { volumeMirrorStatus } from "#/modules/volume-run/tables";
 import type { MirrorStatusView } from "#/modules/volume-copies/volume-copies.placement";
 import { askCopy, inspectVolumeCopies, observeVolumeMembers, resolveVolume } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
-const silent = (names: readonly string[]): StoreRefusal => ({
+const silent = (names: readonly string[], failures: readonly string[] = []): StoreRefusal => ({
   code: "unanswered",
-  message: names.length === 1 ? `${names[0]} isn't answering` : `${names.join(", ")} aren't answering`,
+  message: [...failures, names.length === 1 ? `${names[0]} isn't answering` : `${names.join(", ")} aren't answering`].join("; "),
   details: null,
 });
 
@@ -49,15 +49,15 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   const volume = yield* resolveVolume(caller.organizationId, environment, volumeId);
   const answer = yield* syncMirrors(caller.organizationId, { volumeId, name: volume.volumeName, dockerVolume: volume.dockerVolume, environment }, observe, ask)
     .pipe(Effect.result);
-  if (Result.isFailure(answer)) {
-    if (!(answer.failure instanceof ReplyLost)) return yield* named(UNANSWERED);
-    const message = `${answer.failure.server} didn't answer in time, so ${volume.volumeName}'s sync may have reached it; volume sync ${volume.volumeName} again says where its mirrors got to`;
-    return { ok: false, refusal: { code: "unanswered", message, details: null } satisfies StoreRefusal } as const;
-  }
-  const { sync, lines } = answer.success;
+  if (Result.isFailure(answer)) return yield* named(UNANSWERED);
+  const { reported, sync, lines } = answer.success;
+  if (sync.kind === "failed" && reported.length === 0) return yield* named(UNANSWERED);
   const refused = sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "refused");
-  if (!refused && (sync.kind === "synced" || sync.kind === "demoting")) return { ok: true, lines } as const;
-  if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers) } as const;
+  const unfinished = (kind: string) => kind === "unknown" || kind === "unasked" || kind === "failed";
+  const unknown = unfinished(sync.kind) || (sync.kind === "synced" && sync.mirrors.some((step) => unfinished(step.kind)));
+  if (!refused && !unknown && (sync.kind === "synced" || sync.kind === "demoting")) return { ok: true, lines } as const;
+  if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers, failureLines(reported)) } as const;
+  if (!refused && unknown) return { ok: false, refusal: { code: "unanswered", message: lines.join("; "), details: null } satisfies StoreRefusal } as const;
   return { ok: false, refusal: { code: "conflict", message: lines.join("; "), details: null } satisfies StoreRefusal } as const;
 }, withClusterBudget(SYNC_CLUSTER_BUDGET_MS));
 

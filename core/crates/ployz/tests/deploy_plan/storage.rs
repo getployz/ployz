@@ -10,6 +10,7 @@ fn capacity(free_gib: u64) -> StorageCapacity {
             host_available_bytes: free_gib * STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: BTreeMap::new(),
         copies: BTreeMap::new(),
     }

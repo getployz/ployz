@@ -3,11 +3,12 @@
 
 use clap::ArgMatches;
 use ployz_core::ServiceName;
-use ployz_core::config::{ChangeKind, ServiceSettingChange};
+use ployz_core::config::{ChangeKind, ReviewLifecycleKind, ServiceSettingChange};
 use ployz_store::{
     Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
-    EnvironmentRef, HintSource, KeepBranch, RowRef, ServicesQuery, SetupCommand, SourceKind,
-    SyncChanges, SyncId, SyncQuery, SyncView, Synced, Take, Taken, UndoSync, Undone,
+    EnvironmentRef, HintSource, KeepBranch, NodeName, RowRef, ServicesQuery, SetupCommand,
+    SourceKind, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, Take, Taken,
+    UndoSync, Undone,
 };
 
 use super::super::config::expected;
@@ -276,30 +277,43 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
         if view.rows.is_empty() {
             crate::ui::stream(format_args!("  nothing to sync"));
         }
-        for row in &view.rows {
-            let mut notes = Vec::new();
-            if !row.ticked {
-                notes.push("left out unless picked".to_owned());
-            }
-            match row.change {
-                ployz_store::SyncChange::Conflict => {
-                    notes.push(format!("{} changed it too", view.into.name));
-                }
-                ployz_store::SyncChange::New => notes.push("new".to_owned()),
-                ployz_store::SyncChange::Changed => {}
-            }
-            if row.secret.is_some() {
-                notes.push(format!(
-                    "{} lacks this secret: it arrives Not set",
-                    view.into.name
-                ));
-            }
-            let notes = match notes.is_empty() {
-                true => String::new(),
-                false => format!(" ({})", notes.join(", ")),
+        for (node, rows) in by_node(&view.rows) {
+            let whole = rows.iter().find(|row| row.at.name().is_none());
+            let lifecycle = match whole {
+                Some(row) if row.into.is_null() => ReviewLifecycleKind::Create,
+                Some(row) if row.from.is_null() => ReviewLifecycleKind::Delete,
+                _ => ReviewLifecycleKind::Update,
             };
-            for line in store::changed(&setting_change(row)) {
-                crate::ui::stream(format_args!("  {line}{notes}"));
+            // A node it creates is new throughout, as its header says.
+            let created = lifecycle == ReviewLifecycleKind::Create;
+            crate::ui::stream(format_args!(
+                "  {} ({}){}",
+                node_name(node),
+                store::word(&lifecycle),
+                whole.map_or_else(String::new, |row| sync_notes(view, row, created))
+            ));
+            // A node it creates lands as its introduction, so `diff` shows only its source;
+            // a row in it still names what it warns of.
+            if let (true, Some(whole)) = (created, whole) {
+                for line in created_lines(whole) {
+                    crate::ui::stream(format_args!("    {line}"));
+                }
+                for row in rows.iter().filter(|row| row.at.name().is_some()) {
+                    let notes = sync_notes(view, row, true);
+                    if !notes.is_empty() {
+                        crate::ui::stream(format_args!(
+                            "    {}{notes}",
+                            crate::ui::escaped(&row.at.to_string())
+                        ));
+                    }
+                }
+                continue;
+            }
+            for row in rows.iter().filter(|row| row.at.name().is_some()) {
+                let notes = sync_notes(view, row, false);
+                for line in sync_lines(row) {
+                    crate::ui::stream(format_args!("    {line}{notes}"));
+                }
             }
         }
         for row in &view.never_synced {
@@ -317,20 +331,97 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
     })
 }
 
-/// A Sync row as the change it stages in the receiver, so it reads as a diff does.
-fn setting_change(row: &ployz_store::SyncRow) -> ServiceSettingChange {
-    let kind = match (row.into.is_null(), row.from.is_null()) {
+/// `rows` under the node each is in, in the order the nodes first appear.
+fn by_node(rows: &[SyncRow]) -> Vec<(&NodeName, Vec<&SyncRow>)> {
+    let mut nodes: Vec<(&NodeName, Vec<&SyncRow>)> = Vec::new();
+    for row in rows {
+        match nodes.iter_mut().find(|(node, _)| *node == row.at.node()) {
+            Some((_, rows)) => rows.push(row),
+            None => nodes.push((row.at.node(), vec![row])),
+        }
+    }
+    nodes
+}
+
+/// A node by its name alone, as `diff` heads its changes.
+fn node_name(node: &NodeName) -> String {
+    match node {
+        NodeName::Service(service) => service.to_string(),
+        NodeName::Volume(volume) => volume.to_string(),
+        NodeName::Config(config) => config.to_string(),
+    }
+}
+
+/// What a row's line adds in brackets: whether it syncs, and what it overwrites or lacks.
+fn sync_notes(view: &SyncView, row: &SyncRow, created: bool) -> String {
+    let mut notes = Vec::new();
+    if !row.ticked {
+        notes.push("left out unless picked".to_owned());
+    }
+    match row.change {
+        SyncChange::Conflict => notes.push(format!("{} changed it too", view.into.name)),
+        SyncChange::New if !created => notes.push("new".to_owned()),
+        SyncChange::New | SyncChange::Changed => {}
+    }
+    if row.secret.is_some() {
+        notes.push(format!(
+            "{} lacks this secret: it arrives Not set",
+            view.into.name
+        ));
+    }
+    match notes.is_empty() {
+        true => String::new(),
+        false => format!(" ({})", notes.join(", ")),
+    }
+}
+
+/// A Sync row as `diff` reads the change it stages in the receiver, a Config's fields by name.
+fn sync_lines(row: &SyncRow) -> Vec<String> {
+    match (row.at.node(), row.at.name()) {
+        (NodeName::Config(_), Some(field)) => {
+            vec![store::config_field_changed(field, &row.into, &row.from)]
+        }
+        _ => store::changed(&setting_change(
+            row.at.to_string(),
+            row.into.clone(),
+            row.from.clone(),
+        )),
+    }
+}
+
+/// What `diff` shows under a node a Sync creates once it lands: a Service's source.
+fn created_lines(whole: &SyncRow) -> Vec<String> {
+    let NodeName::Service(service) = whole.at.node() else {
+        return Vec::new();
+    };
+    let lineage = whole.at.row().lineage();
+    let Ok(source) = ployz_core::config::arriving_source(lineage, &whole.from) else {
+        return Vec::new();
+    };
+    ployz_store::introduced_source(service.as_str(), lineage, &source)
+        .iter()
+        .flat_map(store::changed)
+        .collect()
+}
+
+/// The Setting change that moves `before` to `after` at `path`.
+fn setting_change(
+    path: String,
+    before: serde_json::Value,
+    after: serde_json::Value,
+) -> ServiceSettingChange {
+    let kind = match (before.is_null(), after.is_null()) {
         (true, _) => ChangeKind::Add,
         (_, true) => ChangeKind::Remove,
         _ => ChangeKind::Update,
     };
     ServiceSettingChange {
-        path: row.at.to_string(),
+        path,
         config_name: None,
         hostnames: None,
         kind,
-        before: row.into.clone(),
-        after: row.from.clone(),
+        before,
+        after,
         can_restore: false,
         row: None,
     }

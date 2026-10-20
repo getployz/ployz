@@ -434,7 +434,7 @@ impl Run {
             };
             builds.push((target, running));
             if let Err(error) = self
-                .report(service, BuildStatus::Building, None, String::new())
+                .report(service, BuildStatus::Building, None, String::new(), None)
                 .await
             {
                 return Err(stop_builds(&builds, error).await);
@@ -500,6 +500,7 @@ impl Run {
         } else {
             String::new()
         };
+        let mut server = None;
         let mut flushed = tokio::time::Instant::now();
         loop {
             let next = if log.is_empty() {
@@ -510,7 +511,7 @@ impl Run {
                     () = tokio::time::sleep_until(flushed + LOG_FLUSH) => {
                         // ponytail: a failed flush keeps the output for the next one.
                         if self
-                            .report(service, BuildStatus::Building, None, log.clone())
+                            .report(service, BuildStatus::Building, None, log.clone(), server.clone())
                             .await
                             .is_ok()
                         {
@@ -522,6 +523,12 @@ impl Run {
                 }
             };
             let Some(event) = next else { break };
+            if let Some(name) = event
+                .pointer("/Selected/machine/name")
+                .and_then(Value::as_str)
+            {
+                server = Some(name.to_owned());
+            }
             log.push_str(&log_line(&event));
         }
         let (status, message, ended) = match running.finished().await {
@@ -547,7 +554,7 @@ impl Run {
                 Err(error),
             ),
         };
-        self.report(service, status, message, log).await?;
+        self.report(service, status, message, log, server).await?;
         let receipt = match ended {
             Ok(receipt) => receipt,
             Err(error) => return Ok(Err(error)),
@@ -735,12 +742,14 @@ impl Run {
         status: BuildStatus,
         message: Option<String>,
         log: String,
+        server: Option<String>,
     ) -> Result<DeploymentSummary, RpcError> {
         self.record(RunEvidence::Build(BuildReport {
             service: service.clone(),
             status,
             message,
             log,
+            server,
         }))
         .await
     }

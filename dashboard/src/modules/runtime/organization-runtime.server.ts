@@ -47,12 +47,26 @@ type ClusterTime = { readonly budgetMs: number; spentMs: number; reading: number
 
 export const ClusterBudget = Context.Reference<ClusterTime | null>("ployz/ClusterBudget", { defaultValue: () => null });
 
-/** A read found the Cluster budget spent, or the budget ran out while it waited. */
-export class ClusterOutOfTime extends Data.TaggedError("ClusterOutOfTime") {}
+/**
+ * The Cluster time a short-lived session gets to close when its caller reads the Cluster under its own ceilings. Past
+ * it, the connection is aborted and the close goes on in the background.
+ */
+export const SESSION_CLOSE_CLUSTER_MS = 2_000;
+
+/** A read found the Cluster budget spent, or the budget ran out while it waited: `inFlight`, so what it asked may have landed. */
+export class ClusterOutOfTime extends Data.TaggedError("ClusterOutOfTime")<{ readonly inFlight: boolean }> {}
 
 /** `self` with `budgetMs` of Cluster time across all its Cluster reads. */
 export const withClusterBudget = (budgetMs: number) => <A, E, R>(self: Effect.Effect<A, E, R>) =>
   Effect.suspend(() => self.pipe(Effect.provideService(ClusterBudget, { budgetMs, spentMs: 0, reading: 0, since: 0 })));
+
+const timeLeft = (time: ClusterTime, now: number) => time.budgetMs - time.spentMs - (time.reading > 0 ? now - time.since : 0);
+
+/** Fails when the Cluster time is already spent, so an effect that leads up to a Cluster read does none of its work first. */
+export const requireClusterTime = Effect.gen(function* () {
+  const time = yield* ClusterBudget;
+  if (time !== null && timeLeft(time, yield* Clock.currentTimeMillis) <= 0) return yield* new ClusterOutOfTime({ inFlight: false });
+});
 
 /**
  * One Cluster read, cut on top of its own ceiling when its budget runs out. Only an SDK call goes through here, never a
@@ -64,12 +78,12 @@ export const clusterRead = <A, E, R>(read: Effect.Effect<A, E, R>): Effect.Effec
     const time = yield* ClusterBudget;
     if (time === null) return yield* read;
     const now = yield* Clock.currentTimeMillis;
-    const left = time.budgetMs - time.spentMs - (time.reading > 0 ? now - time.since : 0);
-    if (left <= 0) return yield* new ClusterOutOfTime();
+    const left = timeLeft(time, now);
+    if (left <= 0) return yield* new ClusterOutOfTime({ inFlight: false });
     if (time.reading === 0) time.since = now;
     time.reading += 1;
     return yield* read.pipe(
-      Effect.timeoutOrElse({ duration: left, orElse: () => Effect.fail(new ClusterOutOfTime()) }),
+      Effect.timeoutOrElse({ duration: left, orElse: () => Effect.fail(new ClusterOutOfTime({ inFlight: true })) }),
       Effect.ensuring(Effect.map(Clock.currentTimeMillis, (end) => {
         time.reading -= 1;
         if (time.reading === 0) time.spentMs += end - time.since;
@@ -276,7 +290,8 @@ export function makeOrganizationRuntimeLayer(
             if (connections.length === 0) {
               return { status: "unreachable" as const, error: null };
             }
-            return yield* ployz.connect({ connections }).pipe(
+            // A close spends the caller's Cluster budget; a long-lived session, opened with none, waits for its close.
+            return yield* ployz.connect({ connections }, { closeWithin: clusterRead }).pipe(
               Effect.timeoutOrElse({
                 duration: ORGANIZATION_CONNECT_TIMEOUT,
                 orElse: () => Effect.fail(new PloyzProviderError({
