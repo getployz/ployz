@@ -11,7 +11,7 @@ use crate::ui::{self, Hint};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 
-use ployz_core::{MachineId, MachineObservation, MachineTarget};
+use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
     NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
@@ -363,8 +363,9 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
 
 /// `value` as `set` sends it for `path`: a Server named as a Preferred Builder becomes
 /// its Machine ID, which is all the Store takes, as only the Servers know their names.
-/// It resolves as the `server` commands do: an exact Machine ID first, then a name.
-/// Without `servers`, the value goes as given.
+/// It resolves as the `server` commands do: an exact Machine ID first, then a name. An
+/// ID no Server lists, or any value without `servers`, goes as given: a preference needs
+/// no live Server.
 fn resolved(
     path: &str,
     value: &str,
@@ -373,8 +374,13 @@ fn resolved(
     let Some(servers) = servers.filter(|_| names_a_server(path, value)) else {
         return Ok(value.to_owned());
     };
-    let server = crate::cluster::visible_machine(&MachineTarget::parse(value)?, servers)?;
-    Ok(server.machine.id.to_string())
+    match crate::cluster::visible_machine(&MachineTarget::parse(value)?, servers) {
+        Ok(server) => Ok(server.machine.id.to_string()),
+        Err(error) if error.code == RpcErrorCode::NotFound && MachineId::parse(value).is_ok() => {
+            Ok(value.to_owned())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Whether `value` names a Server, by ID or name, as `path`'s Preferred Builder.
