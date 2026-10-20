@@ -27,6 +27,8 @@ export class CollectionReadDenied extends Data.TaggedError("CollectionReadDenied
   readonly publicErrorCategory = "not-found" as const;
 }
 
+const CURSOR = /^([0-9a-f-]{36})\.(\d{1,20})$/u;
+
 export const readCollection = Effect.fn("Collections.read")(function* (
   actor: Actor,
   data: CollectionReadInput,
@@ -85,15 +87,18 @@ export const readCollection = Effect.fn("Collections.read")(function* (
     }
   });
   type Row = Effect.Success<ReturnType<typeof readRows>>[number];
+  const issued = CURSOR.exec(data.since ?? "");
+  const since = issued?.[1] === organization.id ? issued[2] : undefined;
   const read = Effect.gen(function* (): Effect.fn.Return<CollectionRead<Row>, EffectDrizzleQueryError | OrganizationChangeLogFailure, Database> {
     // The window is read before the rows, so the rows are at least as new as its cursor.
-    const window = yield* readChangeWindow({ organizationId: organization.id, since: data.since, sourceTables: changeNameSources[data.table] });
-    if (window.kind === "full") return { full: true, rows: yield* readRows(), cursor: window.cursor };
+    const window = yield* readChangeWindow({ organizationId: organization.id, since, sourceTables: changeNameSources[data.table] });
+    const cursor = `${organization.id}.${window.cursor}`;
+    if (window.kind === "full") return { full: true, rows: yield* readRows(), cursor };
     // Deleted keys are re-read too: a key a filtered read shares with another user's row
     // (project preferences) can be deleted there and still exist here. The client drops, then upserts.
     const keys = [...new Set([...window.changed, ...window.deleted])];
     const rows = keys.length === 0 ? [] : yield* readRows(keys);
-    return { full: false, rows, deleted: window.deleted, cursor: window.cursor };
+    return { full: false, rows, deleted: window.deleted, cursor };
   });
   return yield* read.pipe(Effect.mapError((cause) => new CollectionReadFailure({ cause })));
 });
