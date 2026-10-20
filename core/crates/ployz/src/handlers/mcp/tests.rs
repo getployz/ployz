@@ -1908,6 +1908,7 @@ fn removed_but_unswept() -> ConfigStore {
             sought: Vec::new(),
             held: Vec::new(),
             unanswered: Vec::new(),
+            failure: None,
         }),
         ..Trusted::default()
     };

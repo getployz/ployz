@@ -70,6 +70,13 @@ pub(super) struct DeployService {
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
     pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
+    /// What `ListMachines` answers instead of the Machines, once set.
+    pub(super) machines_error: Arc<Mutex<Option<RpcError>>>,
+    /// Once set, counts `DescribeContract` calls and answers only the first; the rest
+    /// never return.
+    pub(super) describe_once: Option<Arc<AtomicUsize>>,
+    /// Once set, `DescribeContract` is refused as unauthenticated, with this message.
+    pub(super) describe_refusal: Arc<Mutex<Option<String>>>,
     /// Docker Volumes created and not yet removed.
     pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
     /// Volume copies every Machine reports from storage.
@@ -130,6 +137,9 @@ impl DeployService {
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
+            machines_error: Arc::new(Mutex::new(None)),
+            describe_once: None,
+            describe_refusal: Arc::new(Mutex::new(None)),
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
             pointers: Arc::new(Mutex::new(BTreeMap::new())),
@@ -423,6 +433,14 @@ impl FakeMachine for DeployService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(described) = &self.describe_once
+            && described.fetch_add(1, Ordering::SeqCst) > 0
+        {
+            std::future::pending::<()>().await;
+        }
+        if let Some(refusal) = self.describe_refusal.lock().unwrap().clone() {
+            return Err(Status::unauthenticated(refusal));
+        }
         let mut capabilities: BTreeSet<_> =
             [CapabilityName::parse(MACHINE_STORAGE_OBSERVATION_CAPABILITY).unwrap()].into();
         if self.builds.is_some() {
@@ -451,6 +469,9 @@ impl FakeMachine for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(error) = self.machines_error.lock().unwrap().clone() {
+            return encoded(RpcResponse::from(error));
+        }
         encoded(RpcResponse::from(MachineList {
             enrollment: None,
             machines: self.machines.clone(),
