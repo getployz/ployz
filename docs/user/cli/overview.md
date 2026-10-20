@@ -309,9 +309,10 @@ A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
 
 `ployz status` lists what needs you under **needs attention**: a deployment that didn't complete,
-a reference to a removed service, or, when none of the servers a deploy would reach answers within a
-few seconds, `Server web-1 isn't answering`. With `--json` these are the `attention` rows; that one
-has reason `no_server_answers` and names the servers in `servers`.
+a reference to a removed service, or `Server web-1 isn't answering` when its connection to the servers
+a deploy would reach found none answering. It waits a few seconds for that; a check that runs out of
+time adds no row, so no row doesn't prove a server answered. With `--json` these are the `attention`
+rows; that one has reason `no_server_answers` and names the servers in `servers`.
 
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
