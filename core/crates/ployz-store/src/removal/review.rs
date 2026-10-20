@@ -266,13 +266,17 @@ fn unchecked(removed: &[RemovedVolume], observed: Option<&VolumeObservation>) ->
                 (None, Some(endpoint)) => endpoint.clone(),
                 (None, None) => "the Server Ployz reached".to_owned(),
             };
+            let details = match server {
+                Some(server) => json!({ "volumes": volumes, "server": server }),
+                None => json!({ "volumes": volumes }),
+            };
             error::unobserved(
                 format!(
                     "This removes deployed Volumes, and {who} returned an error when Ployz \
                      checked for their data, so it refuses. Fix the error {who} returned, then \
                      try again"
                 ),
-                json!({ "volumes": volumes, "server": server }),
+                details,
             )
         }
     };

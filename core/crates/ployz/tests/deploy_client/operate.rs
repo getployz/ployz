@@ -671,6 +671,27 @@ async fn a_removal_deployed_while_its_server_fails_the_check_names_the_error() {
 }
 
 #[tokio::test]
+async fn a_removal_refused_by_an_unknown_daemon_names_the_endpoint_and_no_server() {
+    let store = tempfile::tempdir().unwrap();
+    let db = store.path().join("store.db");
+    let service = DeployService::new(machine('a', "one"));
+    let describe_refusal = std::sync::Arc::clone(&service.describe_refusal);
+    let (address, server) = removing_deployed_data(&db, service).await;
+    *describe_refusal.lock().unwrap() = Some("not authorized".into());
+
+    let (code, refused) = ployz(Some(&db), &address, &["deploy", "--skip-deploy"]).await;
+    assert_eq!(code, 1, "{refused}");
+    let refused = &refused["error"];
+    assert_eq!(refused["code"], "unavailable", "{refused}");
+    assert_eq!(
+        refused["details"],
+        serde_json::json!({ "volumes": ["data"], "endpoint": format!("tcp://{address}") }),
+        "{refused}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_removal_deployed_through_a_dead_endpoint_names_no_server_it_did_not_ask() {
     let store = tempfile::tempdir().unwrap();
     let db = store.path().join("store.db");
