@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
+import type { MachineId, MachineName, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
@@ -9,6 +9,7 @@ import { organizationPairing } from "#/modules/runtime/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createCliServerUpgradeRequestedEvent, createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { startingMachineName } from "#/modules/machines/machine-names.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
@@ -208,6 +209,7 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   readonly channel: ReleaseChannel;
   readonly fromVersion: string;
   readonly inngestRunId: string;
+  readonly serverName?: MachineName | null;
 }) {
   const line = releaseLine(input.fromVersion);
   // An unreadable pointer leaves the target to the Server's answer.
@@ -217,6 +219,7 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   yield* drizzle.insert(serverUpgradeAttempt).values({
     organizationId: input.request.organizationId,
     machineId: input.request.machineId,
+    serverName: startingMachineName(input.request.organizationId, input.request.machineId, input.serverName),
     attemptId: input.attemptId,
     trigger: input.request.trigger,
     requestedByUserId: input.request.userId,
@@ -496,6 +499,7 @@ const UNCLAIMED = "";
 export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
   input: { readonly machineId: MachineId; readonly channel: string | undefined },
+  serverName: MachineName | null = null,
 ) {
   const channel = yield* organizationReleaseChannel(caller.organizationId);
   if (input.channel !== undefined && input.channel !== channel) {
@@ -530,7 +534,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
   return (attempt: string) => Effect.gen(function* () {
     const attemptId = machineUpgradeAttemptId(attempt);
     const request = { organizationId: caller.organizationId, machineId: input.machineId, trigger: "manual", userId: caller.userId, attemptId } as const;
-    yield* recordUpgradeAttempt({ request, attemptId, channel, fromVersion: from, inngestRunId: UNCLAIMED });
+    yield* recordUpgradeAttempt({ request, attemptId, channel, fromVersion: from, inngestRunId: UNCLAIMED, serverName });
     yield* enqueueEvent(createCliServerUpgradeRequestedEvent(request));
     return { ok: true, id: attemptId } as const;
   });

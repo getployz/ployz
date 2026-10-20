@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { MachineId } from "@ployz/sdk";
+import type { MachineId, MachineName } from "@ployz/sdk";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -11,6 +11,7 @@ import {
 } from "#/modules/machines/machine-removal";
 import { Database, sqlErrorFrom } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
+import { startingMachineName } from "#/modules/machines/machine-names.server";
 import { machineRemoveAttempt as schemaMachineRemoveAttempt } from "#/modules/machines/tables";
 
 type Attempt = typeof schemaMachineRemoveAttempt.$inferSelect;
@@ -137,6 +138,7 @@ export const requestMachineRemoveAttempt = Effect.fn(
   noReset?: boolean;
   approvalId?: string | null;
   id?: string;
+  serverName?: MachineName | null;
 }) {
   const { drizzle } = yield* Database;
   const [attempt] = yield* drizzle
@@ -146,6 +148,7 @@ export const requestMachineRemoveAttempt = Effect.fn(
       organizationId: input.organizationId,
       requestedByUserId: input.requestedByUserId,
       machineId: input.machineId,
+      serverName: startingMachineName(input.organizationId, input.machineId, input.serverName),
       confirmDataLoss: input.confirmDataLoss,
       noReset: input.noReset ?? false,
       approvalId: input.approvalId ?? null,
