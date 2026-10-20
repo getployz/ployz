@@ -35,7 +35,13 @@ server joins. Paste the line in a shell on the server, as root or as a user with
 the token when it asks. The prompt doesn't show what you paste, so the token never enters the
 server's shell history or process list. The token works for 24 hours.
 
-The server takes its hostname as its name; to choose another, add `--name web-1`. When it
+A script, such as cloud-init or `ssh host '...'`, has no terminal to answer the prompt. There,
+`export PLOYZ_ENROLL_TOKEN=pmet_…` before the line: it keeps that variable through `sudo`. You can
+also pipe the token to `sudo ployz server add --token-stdin` after the install part of the line.
+
+The server takes its hostname as its name; to choose another, run
+`ployz server add --command --name web-1` and the printed line keeps the name. It keeps every other
+flag that shapes the server too, such as `--storage`, `--label-add` or `--accepts-ingress`. When it
 finishes, the server shows on the **Servers** page, ready for builds, services and web traffic. If
 it doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md).
 
@@ -225,12 +231,12 @@ install ends with `Cloud is ready to enroll this server. The check-in loop runs 
   `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- VERSION --enroll`. It does what
   `--storage none` does for `ployz server add`.
 - **From user data.** cloud-init runs user data as root with no terminal to prompt at, so pass the
-  token in `PLOYZ_ENROLL_TOKEN` instead:
+  token in `PLOYZ_FLEET_TOKEN` instead:
 
   ```yaml
   #cloud-config
   runcmd:
-    - curl -fsSL https://ployz.sh | PLOYZ_ENROLL_TOKEN=pflt_… sh -s -- VERSION
+    - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_… sh -s -- VERSION
   ```
 
   Any process on the server, containers included, can read user data from the provider's
@@ -269,8 +275,10 @@ An error after Cloud has answered the token, such as systemd failing to start th
 a partial install. The new token is already in `/etc/ployz/fleet-token`, and the service files
 and preparation may be set up. Fix the cause and run the install again.
 
-Without `--enroll`, the script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. For
-any other value it says so and only installs the CLI, as it does without a token. If the host
+Without `--enroll`, the script checks in only when `PLOYZ_FLEET_TOKEN` is set, and ends with
+`That isn't a Fleet Token` when it holds anything else. It leaves `PLOYZ_ENROLL_TOKEN` to
+`ployz server add`, and refuses a Fleet Token in it, which older install lines put there; use
+`PLOYZ_FLEET_TOKEN` instead. If the host
 waits longer than you expect, see
 [A server waits for approval](../troubleshooting/servers.md#a-server-waits-for-approval-and-never-shows-up).
 

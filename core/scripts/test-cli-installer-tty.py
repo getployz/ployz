@@ -93,7 +93,7 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
     stub(root / 'bin/id', '#!/bin/sh\necho 0\n')
     stub(root / 'bin/uname', '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac\n')
     stub(root / 'bin/systemctl', '#!/bin/sh\n')
-    env = {key: value for key, value in os.environ.items() if key != 'PLOYZ_ENROLL_TOKEN'}
+    env = {key: value for key, value in os.environ.items() if key not in ('PLOYZ_ENROLL_TOKEN', 'PLOYZ_FLEET_TOKEN')}
     env.pop('PLOYZ_VERSION', None)
     env.update(PATH=f'{root}/bin:{env["PATH"]}', PLOYZ_TEST_ROOT=tmp,
                INSTALL_BIN_DIR=str(root / 'install'), FAKE_RELEASE=str(root / 'release'),
@@ -114,4 +114,11 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
         assert detached.returncode == 1, (shell, detached)
         assert b'No terminal to read the Fleet Token from.' in detached.stderr, (shell, detached.stderr)
         assert not (root / 'install/ployz').exists(), shell
+        (root / 'stdin').unlink()
+        headless = subprocess.run([shell, *ARGS], input=SOURCE, env={**env, 'PLOYZ_FLEET_TOKEN': TOKEN},
+                                  capture_output=True, start_new_session=True)
+        assert headless.returncode == 0, (shell, headless)
+        assert b'Fleet Token (from Servers in Ployz Cloud)' not in headless.stdout + headless.stderr, shell
+        assert (root / 'stdin').read_text() == TOKEN + '\n', shell
+        assert TOKEN not in (root / 'argv').read_text(), shell
     print('install.sh keeps the Fleet Token off the terminal in', ', '.join(dict.fromkeys(shells)))
