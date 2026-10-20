@@ -734,11 +734,11 @@ impl LocalMachine {
         let mut wait = ReadyWait::new(healthcheck, monitor);
         let started = tokio::time::Instant::now();
         loop {
-            let details = containers
-                .inspect_managed_details(container_id, &machine_id)
+            let inspected = containers
+                .inspect_managed_run(container_id, &machine_id)
                 .await?;
             let elapsed = started.elapsed();
-            let wake = match wait.poll(&details, elapsed).0 {
+            let wake = match wait.poll(&inspected.details, elapsed).0 {
                 HealthPoll::Complete if checked || elapsed >= monitor => {
                     return Ok(HealthVerdict::Healthy);
                 }
@@ -751,6 +751,7 @@ impl LocalMachine {
                     return Ok(HealthVerdict::Failed {
                         observation,
                         last_check,
+                        oom_killed: inspected.oom_killed,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::TimedOut {
@@ -760,12 +761,14 @@ impl LocalMachine {
                     return Ok(HealthVerdict::TimedOut {
                         deadline_millis,
                         last_check,
+                        oom_killed: inspected.oom_killed,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::Cancelled) => {
                     return Ok(HealthVerdict::TimedOut {
                         deadline_millis: None,
                         last_check: None,
+                        oom_killed: false,
                     });
                 }
             };
@@ -1345,7 +1348,9 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | Docker::StorageUnobservable,
         ) => ContainerRefusalReason::NotEligible,
         Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
-        Error::Docker(Docker::ImagePull(_)) => ContainerRefusalReason::ImagePullFailed,
+        Error::Docker(Docker::ImagePull(_) | Docker::DiskFull { .. }) => {
+            ContainerRefusalReason::ImagePullFailed
+        }
         Error::Docker(Docker::ExternalVolumeNotFound(_) | Docker::VolumeShapeMismatch { .. }) => {
             ContainerRefusalReason::VolumesNotPrepared
         }

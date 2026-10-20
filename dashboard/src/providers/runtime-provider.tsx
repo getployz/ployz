@@ -136,6 +136,12 @@ export function useRuntimeStatus() {
   };
 }
 
+/** Cloud let go of the cluster: no Server is left to watch until the stream says otherwise. */
+export function useClusterReleased() {
+  const { collections } = useRuntimeContext();
+  return () => applyRuntimeSnapshot({ collections, snapshot: noConnectionRuntimeSnapshot() });
+}
+
 /** Read a direct Engine Service grouping by its exact `project/name` identity. */
 export function useRuntimeService(identity: string) {
   const { collections } = useRuntimeContext();

@@ -250,14 +250,30 @@ impl VolumeStorage {
         datasets.iter().find(|dataset| dataset.name == fs)
     }
 
+    /// The copy as one moment saw it. A receive task finishing between the reads would
+    /// mix the slot before and after it, so those reads are taken again; a finished task
+    /// and its children change nothing more, and the caller's mutation keeps every route
+    /// out.
+    pub(super) async fn current_copy(
+        &self,
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Result<Option<VolumeCopy>> {
+        let running = self.receives.running(name);
+        let copy = self.copy(&self.datasets(pool).await?, pool, name).await?;
+        if running && !self.receives.running(name) {
+            return self.copy(&self.datasets(pool).await?, pool, name).await;
+        }
+        Ok(copy)
+    }
+
     async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(VolumeCopyView { copy: None });
         };
-        let datasets = self.datasets(&pool).await?;
         Ok(VolumeCopyView {
-            copy: self.copy(&datasets, &pool, name).await?,
+            copy: self.current_copy(&pool, name).await?,
         })
     }
 }

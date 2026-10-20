@@ -1,7 +1,10 @@
 import { Schema } from "effect";
 
-/** An xid8 horizon from the Organization change log: every change before it has been read. */
-export const changeCursorSchema = Schema.String.check(Schema.isPattern(/^\d{1,20}$/u));
+/**
+ * An Organization's id and an xid8 horizon from its change log: every change before it has been read. A cursor read
+ * against another Organization, as a reused slug names after a delete, reads in full.
+ */
+export const changeCursorSchema = Schema.String.check(Schema.isMaxLength(64));
 
 export const collectionNames = [
   "environment_canvas_node_position", "organization_enrollment", "organization_cluster_domain", "organization_server_upgrades",

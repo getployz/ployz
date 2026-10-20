@@ -541,6 +541,22 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         machine_id: &MachineId,
     ) -> Result<ployz_core::ContainerDetails, Error> {
+        Ok(self
+            .inspect_managed_run(container_id, machine_id)
+            .await?
+            .details)
+    }
+
+    /// [`Self::inspect_managed_details`], and whether Docker OOM-killed a process of
+    /// the run that same inspect saw.
+    ///
+    /// # Errors
+    /// Rejects Docker failures, malformed metadata, and Containers not managed by Ployz.
+    pub async fn inspect_managed_run(
+        &self,
+        container_id: &ContainerId,
+        machine_id: &MachineId,
+    ) -> Result<InspectedRun, Error> {
         let inspected = decode_raw_inspect(
             self.docker
                 .client
@@ -620,14 +636,30 @@ impl ContainerRuntime {
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
             })?;
-        Ok(ployz_core::ContainerDetails {
-            container,
-            environment,
-            image_id: inspected.image,
-            last_check,
-            run,
+        let oom_killed = inspected
+            .state
+            .as_ref()
+            .and_then(|state| state.get("OOMKilled"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Ok(InspectedRun {
+            details: ployz_core::ContainerDetails {
+                container,
+                environment,
+                image_id: inspected.image,
+                last_check,
+                run,
+            },
+            oom_killed,
         })
     }
+}
+
+/// One inspect of a managed Container.
+pub struct InspectedRun {
+    pub details: ployz_core::ContainerDetails,
+    /// Docker OOM-killed a process of the run this inspect saw.
+    pub oom_killed: bool,
 }
 
 /// One operation's hold on a Container's `stopping` mark.
@@ -1132,6 +1164,13 @@ pub enum Error {
     SlotNameOccupied(String),
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
+    /// A pull failed while the Docker root had almost no free space.
+    #[error("{full}")]
+    DiskFull {
+        full: ployz_core::DiskFull,
+        #[source]
+        source: bollard::errors::Error,
+    },
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
     #[error("container duration exceeds Docker's range")]
@@ -1202,6 +1241,7 @@ impl Error {
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
+            | Self::DiskFull { .. }
             | Self::Io(_)
             | Self::Json(_)
             | Self::Network(_)
@@ -1229,6 +1269,7 @@ impl From<&Error> for RpcError {
             Error::VolumeInUse { services, .. } if !services.is_empty() => {
                 serde_json::json!({ "in_use_by": services })
             }
+            Error::DiskFull { full, .. } => full.details(),
             _ => serde_json::Value::Null,
         };
         let code = error.rpc_code();

@@ -36,12 +36,12 @@ pub(super) fn token_new_command(command: Command) -> Command {
                 .help("What it may do: full acts as you, read only reads, deploy stages and deploys one Environment"),
         )
         .arg(
-            value("environment", None)
+            value("env", None)
                 .value_name("ENVIRONMENT")
                 .required_if_eq("preset", "deploy")
                 .help("The one Environment a deploy token may change, by name"),
         )
-        .after_help("Examples:\n  ployz token new ci\n  ployz token new ci --preset deploy --environment staging")
+        .after_help("Examples:\n  ployz token new ci\n  ployz token new ci --preset deploy --env staging")
 }
 
 pub(super) fn token_list_command(command: Command) -> Command {
@@ -148,12 +148,12 @@ pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
         .expect("expires-in has a default");
     let preset = match (
         matches.get_one::<String>("preset").map(String::as_str),
-        matches.get_one::<String>("environment").cloned(),
+        matches.get_one::<String>("env").cloned(),
     ) {
         (Some("deploy"), Some(environment)) => TokenPreset::Deploy { environment },
         (Some("read"), None) => TokenPreset::Read,
         (Some("full") | None, None) => TokenPreset::Full,
-        _ => return Err(Error::usage("only --preset deploy takes --environment")),
+        _ => return Err(Error::usage("only --preset deploy takes --env")),
     };
     let token = in_cloud(root, async |_, credential| {
         cloud_account::new_token(credential, name, TokenKind::Cli, &preset, days).await

@@ -35,6 +35,12 @@ class CiTest(unittest.TestCase):
             (["core/scripts/build-cloud-sdk.sh"], {"contracts", "cloud"}),
             (["core/scripts/check-sdk-types.sh"], {"contracts", "cloud"}),
             (["core/scripts/pack-release.sh"], {"contracts", "release-contracts"}),
+            (["core/scripts/verify/boat.py", "core/scripts/verify/test_boat.py"], {"contracts"}),
+            (["core/scripts/verify-cluster", "core/scripts/verify/releases.py"], {"contracts"}),
+            (["core/scripts/verify/dns-soak.sh"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
+            (["dashboard/scripts/verify/up.sh", "dashboard/scripts/verify/runner.mjs"], {"contracts"}),
+            (["dashboard/scripts/verify/up.sh", "dashboard/scripts/verify/seed.ts"], {"contracts", "cloud"}),
+            (["dashboard/scripts/pr-check.sh"], {"contracts", "cloud"}),
         ]
         for paths, expected in cases:
             with self.subTest(paths=paths):
@@ -70,6 +76,11 @@ class CiTest(unittest.TestCase):
         metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=SCRIPT.parent.parent / "core"))
         path_deps = {p["name"]: {d["name"] for d in p["dependencies"] if d.get("path")} for p in metadata["packages"]}
         self.assertEqual(path_deps["ployz-store"] | path_deps["ployz-core"], {"ployz-core"})
+
+    def test_only_dns_soak_reaches_rust_from_the_verify_harness(self):
+        # select runs no Rust check for core/scripts/verify/; a crate that reads another of its files must join dns-soak.sh.
+        read = subprocess.check_output(["git", "grep", "-ho", "scripts/verify/[A-Za-z0-9_.-]*", "--", "core/crates"], cwd=SCRIPT.parent.parent, text=True)
+        self.assertEqual(read.split(), ["scripts/verify/dns-soak.sh"])
 
     def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
         self.assertEqual(
