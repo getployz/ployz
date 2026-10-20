@@ -938,7 +938,7 @@ async fn retire(
         client,
         wants: std::sync::Mutex::default(),
     };
-    let outcome = with_unreached_machines(
+    let outcome = named_left(
         view,
         retire_copies(&recording, &machines, left_copies(view)).await,
     );
@@ -997,7 +997,51 @@ async fn a_left_copy_whose_machine_does_not_answer_stays_left_naming_it() {
     );
 }
 
+/// What the planner records when `machine`, which may hold an old copy, did not
+/// answer before the Deploy.
 fn cut_off(view: &mut DeploymentView, machine: &str) {
+    use crate::global_fixtures::{machine as named, requested};
+    use ployz_core::{MachineFailure, MembershipObservation};
+    let away = named('3', machine);
+    let snapshot = crate::deploy::DeploySnapshot {
+        machines: vec![
+            MachineObservation::new(named('1', "observer"), MembershipObservation::Up),
+            MachineObservation::new(away.clone(), MembershipObservation::Up),
+        ],
+        container_failures: vec![MachineFailure {
+            machine_id: away.id,
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "target Machine RPC timed out".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }],
+        ..Default::default()
+    };
+    let spec = requested(ployz_core::ServiceMode::Replicated {
+        replicas: std::num::NonZeroU32::MIN,
+    });
+    let intent =
+        ployz_core::DeployIntent::apply_all(view.namespace.clone(), [&spec], Default::default());
+    let preview = crate::deploy::preview_deploy(&intent, &snapshot).unwrap();
+    assert!(
+        preview.warnings.contains(&DeployWarning::MixedAfterReturn {
+            machine: machine.into()
+        }),
+        "{:?}",
+        preview.warnings
+    );
+    match &mut view.preview {
+        Some(recorded) => recorded.warnings.extend(preview.warnings),
+        None => view.preview = Some(preview),
+    }
+}
+
+type CutOff = fn(&mut DeploymentView, &str);
+
+/// What the executor records when it loses `machine` mid-run.
+fn lost_mid_run(view: &mut DeploymentView, machine: &str) {
     view.deployment.warnings.push(DeploymentWarning::Deploy {
         warning: DeployWarning::MixedAfterReturn {
             machine: machine.into(),
@@ -1008,10 +1052,11 @@ fn cut_off(view: &mut DeploymentView, machine: &str) {
 #[tokio::test]
 async fn a_machine_the_deploy_could_not_reach_stays_left_once_without_a_service() {
     let (run, actor) = run();
-    for services in [&[][..], &[("web", NodeStatus::Failed, 'c')]] {
-        let mut view = left_running(&run, &actor, services);
-        cut_off(&mut view, "machine-3");
-        cut_off(&mut view, "machine-3");
+    let sources = [("planner", cut_off as CutOff), ("executor", lost_mid_run)];
+    for (source, record) in sources {
+        let mut view = left_running(&run, &actor, &[]);
+        record(&mut view, "machine-3");
+        record(&mut view, "machine-3");
         let retired = retire(&view, holding_c()).await;
         assert_eq!(
             retired.outcome.left,
@@ -1022,7 +1067,7 @@ async fn a_machine_the_deploy_could_not_reach_stays_left_once_without_a_service(
                          Deploy again once it is back."
                     .into(),
             }],
-            "{services:?}"
+            "{source}"
         );
         assert!(retired.wants.is_empty(), "{:?}", retired.wants);
         assert!(retired.removed.is_empty());
@@ -1055,11 +1100,18 @@ async fn a_machine_whose_reported_copy_retired_is_not_named_cut_off() {
 }
 
 #[tokio::test]
-async fn a_failed_services_left_copy_is_not_touched() {
+async fn a_failed_services_left_copy_is_not_touched_but_stays_named() {
     let (run, actor) = run();
     let view = left_running(&run, &actor, &[("web", NodeStatus::Failed, 'c')]);
     let retired = retire(&view, holding_c()).await;
-    assert_eq!(retired.outcome, RetireOutcome::default());
+    assert_eq!(
+        retired.outcome.left,
+        [RetireLeft {
+            machine: "one".into(),
+            service: Some(ServiceName::parse("web").unwrap()),
+            reason: "web did not deploy, so its old copy stays. Deploy again to replace it.".into(),
+        }]
+    );
     assert!(retired.wants.is_empty(), "{:?}", retired.wants);
     assert!(retired.removed.is_empty());
 }

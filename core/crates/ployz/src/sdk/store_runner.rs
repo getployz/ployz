@@ -273,9 +273,10 @@ pub struct RetireLeft {
 /// Retire the old copies Deployment `deployment` of `who`'s Organization left
 /// running, on one of `connections`: each copy its Deploy reported left running,
 /// of a Service it deployed or removed. A failed or unattempted Service keeps its
-/// old copy, which may be the one serving. A copy already gone counts as retired,
-/// so a retry observes again and only retires what is still there. A Machine the
-/// Deploy could not reach is reported left, since a copy it never saw may run there.
+/// old copy, which may be the one serving, and is reported left. A copy already
+/// gone counts as retired, so a retry observes again and only retires what is
+/// still there. A Machine the Deploy could not reach is reported left, since a copy
+/// it never saw may run there.
 ///
 /// # Errors
 /// Returns `not_found` for a Deployment of another Organization, the connection's
@@ -293,7 +294,7 @@ pub async fn retire_old(
     .await?;
     let copies = left_copies(&view);
     if copies.is_empty() {
-        return Ok(with_unreached_machines(&view, Vec::new()));
+        return Ok(named_left(&view, Vec::new()));
     }
     let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
     let retired: Result<_, RpcError> = async {
@@ -303,29 +304,35 @@ pub async fn retire_old(
     }
     .await;
     session.close().await;
-    Ok(with_unreached_machines(&view, retired?))
+    Ok(named_left(&view, retired?))
 }
 
-fn with_unreached_machines(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutcome {
-    let reported: BTreeSet<&str> = view
-        .deployment
-        .warnings
-        .iter()
+/// The Deploy's warnings, wherever its runner recorded them: the planner's on the
+/// Deploy Preview, the executor's on the Deployment.
+fn deploy_warnings(view: &DeploymentView) -> impl Iterator<Item = &DeployWarning> {
+    let ran = view.deployment.warnings.iter().filter_map(|warning| {
+        let DeploymentWarning::Deploy { warning } = warning else {
+            return None;
+        };
+        Some(warning)
+    });
+    ran.chain(view.preview.iter().flat_map(|preview| &preview.warnings))
+}
+
+/// What `retired` left, plus every old copy the Deploy kept and every Machine it
+/// could not reach, so nothing that may still run goes unnamed.
+fn named_left(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutcome {
+    left.extend(kept_copies(view));
+    let reported: BTreeSet<&str> = deploy_warnings(view)
         .filter_map(|warning| {
-            let DeploymentWarning::Deploy {
-                warning: DeployWarning::LeftRunning { machine, .. },
-            } = warning
-            else {
+            let DeployWarning::LeftRunning { machine, .. } = warning else {
                 return None;
             };
             Some(machine.as_str())
         })
         .collect();
-    for warning in &view.deployment.warnings {
-        let DeploymentWarning::Deploy {
-            warning: DeployWarning::MixedAfterReturn { machine },
-        } = warning
-        else {
+    for warning in deploy_warnings(view) {
+        let DeployWarning::MixedAfterReturn { machine } = warning else {
             continue;
         };
         if reported.contains(machine.as_str()) || left.iter().any(|entry| entry.machine == *machine)
@@ -351,51 +358,74 @@ struct LeftCopy {
     service_removed: bool,
 }
 
-fn left_copies(view: &DeploymentView) -> Vec<LeftCopy> {
-    let advanced: BTreeMap<QualifiedService, (&ServiceName, bool)> = view
+/// Each copy the Deploy reported left running, with its Service's outcome.
+fn reported_copies(view: &DeploymentView) -> impl Iterator<Item = (LeftCopy, NodeStatus)> {
+    let services: BTreeMap<QualifiedService, (&ServiceName, NodeStatus)> = view
         .nodes
         .iter()
         .filter_map(|node| {
             let DeployedNode::Service { name, .. } = &node.node else {
                 return None;
             };
-            let removed = match node.outcome {
-                NodeStatus::Deployed => false,
-                NodeStatus::Removed => true,
-                NodeStatus::Pending
-                | NodeStatus::Failed
-                | NodeStatus::NotAttempted
-                | NodeStatus::Unchanged
-                | NodeStatus::Unknown => return None,
-            };
             let runtime = view.runtime_names.get(name)?;
             let service = QualifiedService::new(view.namespace.clone(), runtime.clone());
-            Some((service, (name, removed)))
+            Some((service, (name, node.outcome)))
         })
         .collect();
-    view.deployment
-        .warnings
-        .iter()
-        .filter_map(|warning| {
-            let DeploymentWarning::Deploy {
-                warning:
-                    DeployWarning::LeftRunning {
-                        service,
-                        container_id,
-                        machine,
-                        ..
-                    },
-            } = warning
-            else {
-                return None;
-            };
-            let (name, removed) = advanced.get(service)?;
-            Some(LeftCopy {
-                service: (*name).clone(),
-                container_id: *container_id,
-                machine: machine.clone(),
-                service_removed: *removed,
-            })
+    deploy_warnings(view).filter_map(move |warning| {
+        let DeployWarning::LeftRunning {
+            service,
+            container_id,
+            machine,
+            ..
+        } = warning
+        else {
+            return None;
+        };
+        let (name, outcome) = services
+            .get(service)
+            .map_or((&service.name, NodeStatus::Unknown), |(name, outcome)| {
+                (*name, *outcome)
+            });
+        let copy = LeftCopy {
+            service: name.clone(),
+            container_id: *container_id,
+            machine: machine.clone(),
+            service_removed: outcome == NodeStatus::Removed,
+        };
+        Some((copy, outcome))
+    })
+}
+
+fn advanced(outcome: NodeStatus) -> bool {
+    match outcome {
+        NodeStatus::Deployed | NodeStatus::Removed => true,
+        NodeStatus::Pending
+        | NodeStatus::Failed
+        | NodeStatus::NotAttempted
+        | NodeStatus::Unchanged
+        | NodeStatus::Unknown => false,
+    }
+}
+
+fn left_copies(view: &DeploymentView) -> Vec<LeftCopy> {
+    reported_copies(view)
+        .filter(|(_, outcome)| advanced(*outcome))
+        .map(|(copy, _)| copy)
+        .collect()
+}
+
+/// The copies of every other Service: the old copy may be the one serving, so it stays.
+fn kept_copies(view: &DeploymentView) -> Vec<RetireLeft> {
+    reported_copies(view)
+        .filter(|(_, outcome)| !advanced(*outcome))
+        .map(|(copy, _)| RetireLeft {
+            reason: format!(
+                "{} did not deploy, so its old copy stays. Deploy again to replace it.",
+                copy.service
+            ),
+            machine: copy.machine,
+            service: Some(copy.service),
         })
         .collect()
 }
