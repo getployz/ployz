@@ -232,7 +232,7 @@ const volumeRunInput = (run: VolumeRun, name: string): VolumeRunInput => {
     case "release":
       return { kind: "release", args: {} };
     case "remove_mirror":
-      return { kind: "delete_mirror", args: { slot: null, confirmed_name: name } };
+      return { kind: "delete_mirror", args: { slot: null, confirmed_name: name, role: "any" } };
     case "restore":
       return { kind: "restore", args: { from: run.from.name, machine: run.from.machine } };
   }

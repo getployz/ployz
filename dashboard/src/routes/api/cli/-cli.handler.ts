@@ -124,7 +124,7 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
     case "sync":
       return { kind: "sync", args: { full: true } };
     case "delete_mirror":
-      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null } };
+      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: "any" } };
     case "move":
       return { kind: "move", args: { to: body.to } };
     case "release":

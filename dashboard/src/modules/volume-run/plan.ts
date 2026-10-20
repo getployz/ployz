@@ -122,6 +122,10 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       if (destroy.length === 0) return refuse("no_mirror", `${name} has no mirror`);
       return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null, role: null } };
     }
+    const { role } = input.args;
+    if (role === undefined) {
+      return refuse("invalid", `${name}'s delete was requested before Ployz recorded which copy it deletes, so nothing was deleted. Delete the copy again.`);
+    }
     if (unanswered !== undefined) return unknown(unanswered);
     const writers = withRole("writer");
     if (writers.length > 1) return refuse("two_writers", `${name} has two writers, ${writers.map(named).join(" and ")}`);
@@ -134,7 +138,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only} --confirm ${name}`);
     }
     const [writer] = roots;
-    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null, role: input.args.role ?? null } };
+    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null, role: role === "any" ? null : role } };
   }
 
   if (unanswered !== undefined) return unknown(unanswered);
