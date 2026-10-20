@@ -287,10 +287,17 @@ pub(super) fn completion(
         .preview
         .as_ref()
         .is_some_and(|preview| preview.has_observation_gaps())
+        || left_a_copy_running(view)
     {
         return Err(Failure::partial());
     }
     Ok(())
+}
+
+fn left_a_copy_running(view: &DeploymentView) -> bool {
+    view.deployment.warnings.iter().any(|warning| {
+        matches!(warning, DeploymentWarning::Deploy { warning } if warning.leaves_a_copy_running())
+    })
 }
 
 /// How a command names a Deployment: its number once it queued, else its ID.
@@ -1098,6 +1105,31 @@ mod tests {
         assert!(completion(&view, None, command).unwrap_err().is_outcome());
         view.deployment.remove = true;
         assert!(!completion(&view, None, command).unwrap_err().is_outcome());
+    }
+
+    #[test]
+    fn an_applied_deploy_that_left_a_copy_running_is_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        assert!(completion(&view, None, command).is_ok());
+        view.deployment.warnings = vec![
+            DeploymentWarning::Deploy {
+                warning: ployz_core::DeployWarning::LeftRunning {
+                    service: "shop-production/web".parse().unwrap(),
+                    container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                    machine: "one".into(),
+                    reason: "one did not answer".into(),
+                },
+            },
+            DeploymentWarning::Deploy {
+                warning: ployz_core::DeployWarning::MixedAfterReturn {
+                    machine: "one".into(),
+                },
+            },
+        ];
+        let failure = completion(&view, None, command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
     }
 
     #[test]

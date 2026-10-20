@@ -2613,6 +2613,43 @@ async fn an_owner_whose_calls_time_out_on_this_client_is_named_away() {
     );
 }
 
+/// The old copy's owner is cut off after the switch and its calls time out on this
+/// client, while the other Machine's proxy reads its routes. The Deploy applies, and
+/// names the copy left running and its Machine away.
+#[tokio::test(start_paused = true)]
+async fn an_applied_deploy_names_the_copy_its_cut_off_owner_kept() {
+    let [owner, other] = [machine('1'), machine('2')];
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&owner, &old, UpdateOrder::StartFirst)];
+    let mut steps = vec![created(
+        Call::Run(owner, ContainerKind::ServiceContainer),
+        &new,
+    )];
+    steps.extend(
+        std::iter::repeat_with(|| {
+            failed_unavailable(Call::Inspect(owner, old), "target Machine RPC timed out")
+        })
+        .take(1000),
+    );
+    let client = Scripted::new(steps).with_copy(&owner, &old, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[owner, other], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.moves(), [Move::To(new, CopyRotation::In)]);
+    assert_eq!(
+        warnings,
+        [
+            left_running("machine-1", "machine-1 did not answer"),
+            mixed_after_return("machine-1"),
+        ]
+    );
+}
+
 /// A planned removal whose owner was cut off after the switch: the copy may still
 /// be In, so it is named left running and its Machine away, and the Deploy fails.
 #[tokio::test(start_paused = true)]

@@ -822,6 +822,15 @@ pub enum DeployWarning {
 }
 
 impl DeployWarning {
+    /// Cleanup left a copy running, or its Machine may serve one once it returns.
+    #[must_use]
+    pub const fn leaves_a_copy_running(&self) -> bool {
+        matches!(
+            self,
+            Self::LeftRunning { .. } | Self::MixedAfterReturn { .. }
+        )
+    }
+
     /// A relevant, independently evidenced gap. Legacy and generic warnings have none.
     #[must_use]
     pub fn observation_gap(&self) -> Option<(MachineId, &ObservationGap)> {
