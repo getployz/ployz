@@ -1266,7 +1266,18 @@ fn pre_deploy_operations(
     hook_machine: Option<&MachineId>,
 ) -> Vec<DeployOperation> {
     if requested.pre_deploy.is_none() {
-        return Vec::new();
+        // Removing a running hook would drain it first, so it waits for a
+        // later deploy, after it exits.
+        return hooks
+            .iter()
+            .map(HookContainer::as_observation)
+            .filter(|observation| !super::is_active_runtime(&observation.runtime))
+            .map(|observation| DeployOperation::RemoveContainer {
+                machine_id: observation.machine_id,
+                container_id: observation.container_id,
+                purpose: ployz_core::RemoveContainerPurpose::Retire,
+            })
+            .collect();
     }
     let target = service_operations
         .iter()

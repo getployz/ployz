@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use super::support::*;
 use ployz::deploy::preview_deploy;
 use ployz_core::{
-    ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure, PruneRefusal,
-    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName, ServiceRemovals,
-    VolumeObservationFailure,
+    ContainerKind, ContainerRuntimeObservation, DependencyCondition, DockerVolumeId,
+    MachineFailure, PruneRefusal, QualifiedService, RpcError, RpcErrorCode, ServiceDependency,
+    ServiceName, ServiceRemovals, VolumeObservationFailure,
 };
 
 #[test]
@@ -367,6 +367,44 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
     .unwrap();
     assert!(removes(&plan, 'd'));
     assert!(removes(&plan, '8'));
+}
+
+#[test]
+fn a_service_without_a_pre_deploy_command_removes_its_finished_hook_and_leaves_a_running_one() {
+    let web = spec("web");
+    let hook = |hex| {
+        let mut hook = container(hex, '1', &web, &service_id('b'));
+        hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+            .unwrap();
+        hook
+    };
+    let mut finished = hook('8');
+    finished
+        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 3 })
+        .unwrap();
+    let plan = preview_deploy(
+        &DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&web],
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![
+                container('d', '1', &web, &service_id('b')),
+                finished,
+                hook('9'),
+            ],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(removes(&plan, '8'), "the finished hook is removed");
+    assert!(
+        !removes(&plan, '9'),
+        "a running hook is left for a later deploy"
+    );
+    assert!(!removes(&plan, 'd'));
 }
 
 #[test]
