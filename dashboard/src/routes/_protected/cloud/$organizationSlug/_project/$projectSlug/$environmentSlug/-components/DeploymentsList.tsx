@@ -65,9 +65,8 @@ export function StoreDeploymentRows({ service, origin }: { service: ServiceListi
   return <Rows hasMore={hasNextPage} loading={isFetchingNextPage} onShowMore={() => void fetchNextPage()}>
     {deployments.map((deployment) => {
       const { by, at } = admission(deployment);
-      const detail = deployment.upload
-        ? uploadLabel(deployment.upload)
-        : [deploysLabel(deployment), by && `by ${by}`, deployment.push?.head.slice(0, 7)].filter(Boolean).join(" · ");
+      const detail = uploadLabel(deployment)
+        ?? [deploysLabel(deployment), by && `by ${by}`, deployment.push?.head.slice(0, 7)].filter(Boolean).join(" · ");
       return (
         <Item key={deployment.id} size="sm" render={<Link {...deploymentDestination(params, deployment.id, { job: service?.id, origin })} />}>
           <ItemContent className="min-w-0">

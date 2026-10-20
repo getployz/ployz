@@ -1086,11 +1086,13 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// A Deployment's status in a word or two; a push waiting for CI says how its CI stands.
+/// A Deployment's status in a word or two; a push waiting for CI says how its CI stands,
+/// and a running one without a Deploy Preview yet reads preparing.
 fn status_word(deployment: &DeploymentSummary) -> String {
     match (deployment.status, deployment.ci) {
         (DeploymentStatus::WaitingForCi, Some(CiVerdict::Failed)) => "CI failed".to_owned(),
         (DeploymentStatus::WaitingForCi, _) => "waiting for CI".to_owned(),
+        (DeploymentStatus::Running, _) if deployment.preparing => "preparing".to_owned(),
         (status, _) => super::store::word(&status),
     }
 }

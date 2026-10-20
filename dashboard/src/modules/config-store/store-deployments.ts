@@ -1,6 +1,6 @@
 import type {
   ChangeKind, DiscardTarget, DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentWarning, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
-  ServiceListing, UploadedSource,
+  ServiceListing,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
@@ -276,15 +276,17 @@ export function nodeLight(outcome: ShownNodeStatus, deployment: Pick<DeploymentS
 /**
  * A Deployment's status in words. One that takes its Environment off the Servers reads as the Branch panel says it:
  * Coming off the servers, then Off the servers; one that completed with no Server left to take it off (`forgotten`)
- * says what it left. One waiting for CI says so, or that its CI failed.
+ * says what it left. One waiting for CI says so, or that its CI failed. One running without a Deploy Preview yet is
+ * Preparing: it unpacks its upload, builds and plans.
  */
 export function deploymentStatusLabel(
-  { status, remove, outcome, ci }: Pick<DeploymentSummary, "status" | "remove" | "outcome"> & WaitingCi,
+  { status, remove, outcome, ci, preparing }: Pick<DeploymentSummary, "status" | "remove" | "outcome" | "preparing"> & WaitingCi,
 ) {
   if (ci === "failed") return "CI failed";
   if (outcome?.type === "forgotten") return "Left on old servers";
   if (remove && status === "running") return "Coming off the servers";
   if (remove && status === "applied") return "Off the servers";
+  if (preparing && status === "running") return "Preparing";
   return deploymentStatusLabels[status];
 }
 
@@ -322,10 +324,18 @@ export function admission(deployment: DeploymentSummary) {
   };
 }
 
-/** Where an upload came from: "Uploaded by nick · abc1234 + changes"; it names no uploader who is `starter`. */
-export function uploadLabel(upload: UploadedSource, starter?: string | null) {
+/**
+ * Where a Deployment's upload came from: "Uploaded by nick · abc1234 + changes"; it names no uploader who is `starter`.
+ * A waiting Deploy that chooses its upload again as it starts says so.
+ */
+export function uploadLabel(
+  { upload, chooses_upload_at_start }: Pick<DeploymentSummary, "upload" | "chooses_upload_at_start">,
+  starter?: string | null,
+) {
+  if (!upload) return null;
   const base = upload.base ? ` · ${upload.base.commit.slice(0, 7)}${upload.base.changed ? " + changes" : ""}` : "";
-  return `Uploaded${upload.uploader && upload.uploader !== starter ? ` by ${upload.uploader}` : ""}${base}`;
+  const forNow = chooses_upload_at_start ? " for now; chosen again when it starts" : "";
+  return `Uploaded${upload.uploader && upload.uploader !== starter ? ` by ${upload.uploader}` : ""}${base}${forNow}`;
 }
 
 /**
@@ -337,7 +347,7 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
   const by = deployment.admitted_by;
   return [
     by ? `by ${by}` : null,
-    commit ? commit.slice(0, 7) : deployment.upload ? uploadLabel(deployment.upload, by) : null,
+    commit ? commit.slice(0, 7) : uploadLabel(deployment, by),
   ].filter(Boolean).join(" · ");
 }
 

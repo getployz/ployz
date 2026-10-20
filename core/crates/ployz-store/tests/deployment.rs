@@ -5418,7 +5418,10 @@ fn a_claimed_deployment_reads_preparing_until_its_runner_records_a_deploy_previe
     };
     let claimed = store.claim(&id(1), &a).unwrap();
     assert!(claimed.deployment.preparing);
-    assert!(read(&store).preparing, "a read shows what the claim answered");
+    assert!(
+        read(&store).preparing,
+        "a read shows what the claim answered"
+    );
     assert!(
         store.claim(&id(1), &a).unwrap().deployment.preparing,
         "renewing the claim before the preview still prepares"
@@ -5428,7 +5431,10 @@ fn a_claimed_deployment_reads_preparing_until_its_runner_records_a_deploy_previe
         .unwrap();
     let running = read(&store);
     assert_eq!(running.status, DeploymentStatus::Running);
-    assert!(!running.preparing, "a recorded Deploy Preview ends preparation");
+    assert!(
+        !running.preparing,
+        "a recorded Deploy Preview ends preparation"
+    );
     store
         .record(&id(1), &a, succeeded(&["web", "api"]))
         .unwrap();
