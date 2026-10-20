@@ -289,7 +289,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.container.limits.update.v1",
-        "gated and falls back: the planner updates in place only on a Machine advertising it, and a refusal replaces the Container",
+        "gated: the planner updates in place only on a Machine advertising it, and replaces the Container on any other",
     ),
 ];
 
