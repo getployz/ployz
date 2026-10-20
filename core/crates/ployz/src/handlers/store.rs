@@ -927,9 +927,7 @@ const SOURCE_PARTS: [(&str, &str); 4] = [
 
 /// A source row as the Settings it holds, `web.image: "nginx:1.26" → "nginx:1.27"`,
 /// or `None` when no part `set` names changed.
-pub(crate) fn source_changed(
-    row: &ployz_core::config::ServiceSettingChange,
-) -> Option<Vec<String>> {
+fn source_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
     let service = crate::ui::escaped(row.path.strip_suffix(".source")?);
     // No registry credential reads as unset, so a removed Service doesn't list one.
     let part = |value: &serde_json::Value, field: &str| {

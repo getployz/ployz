@@ -292,11 +292,15 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 store::word(&lifecycle),
                 whole.map_or_else(String::new, |row| sync_notes(view, row, created))
             ));
-            for row in rows {
-                let notes = match row.at.name() {
-                    Some(_) => sync_notes(view, row, created),
-                    None => String::new(),
-                };
+            // A node it creates lands as its introduction, so `diff` shows only its source.
+            if let (true, Some(whole)) = (created, whole) {
+                for line in created_lines(whole) {
+                    crate::ui::stream(format_args!("    {line}"));
+                }
+                continue;
+            }
+            for row in rows.iter().filter(|row| row.at.name().is_some()) {
+                let notes = sync_notes(view, row, false);
                 for line in sync_lines(row) {
                     crate::ui::stream(format_args!("    {line}{notes}"));
                 }
@@ -361,29 +365,33 @@ fn sync_notes(view: &SyncView, row: &SyncRow, created: bool) -> String {
     }
 }
 
-/// A Sync row as `diff` reads the change it stages in the receiver: a Config's
-/// fields by name, and a new or removed Service by its source.
+/// A Sync row as `diff` reads the change it stages in the receiver, a Config's fields by name.
 fn sync_lines(row: &SyncRow) -> Vec<String> {
     match (row.at.node(), row.at.name()) {
         (NodeName::Config(_), Some(field)) => {
             vec![store::config_field_changed(field, &row.into, &row.from)]
         }
-        (NodeName::Service(service), None) => {
-            let source = |node: &serde_json::Value| node.get("source").cloned().unwrap_or_default();
-            let change = setting_change(
-                format!("{service}.source"),
-                source(&row.into),
-                source(&row.from),
-            );
-            store::source_changed(&change).unwrap_or_default()
-        }
-        (_, None) => Vec::new(),
-        (_, Some(_)) => store::changed(&setting_change(
+        _ => store::changed(&setting_change(
             row.at.to_string(),
             row.into.clone(),
             row.from.clone(),
         )),
     }
+}
+
+/// What `diff` shows under a node a Sync creates once it lands: a Service's source.
+fn created_lines(whole: &SyncRow) -> Vec<String> {
+    let NodeName::Service(service) = whole.at.node() else {
+        return Vec::new();
+    };
+    let lineage = whole.at.row().lineage();
+    let Ok(source) = ployz_core::config::arriving_source(lineage, &whole.from) else {
+        return Vec::new();
+    };
+    ployz_store::introduced_source(service.as_str(), lineage, &source)
+        .iter()
+        .flat_map(store::changed)
+        .collect()
 }
 
 /// The Setting change that moves `before` to `after` at `path`.
