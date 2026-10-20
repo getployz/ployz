@@ -156,7 +156,7 @@ it.effect("marks a first frame not worth waiting for when the Cluster answered w
 );
 
 it("says a cut close ran out of time only when its Cluster time did, and otherwise names the failure", () => {
-  assert.strictEqual(closeCutWarning(new ClusterOutOfTime()), "The Ployz session didn't close in time, so its connection was aborted.");
+  assert.strictEqual(closeCutWarning(new ClusterOutOfTime({ inFlight: true })), "The Ployz session didn't close in time, so its connection was aborted.");
   assert.strictEqual(
     closeCutWarning(new PloyzProviderError({ operation: "close", cause: new Error("boom") })),
     "The Ployz session's close failed with PloyzProviderError, so its connection was aborted.",

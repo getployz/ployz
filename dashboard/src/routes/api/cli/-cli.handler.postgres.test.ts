@@ -326,6 +326,43 @@ const signIn = Effect.fn(function* (name: string) {
   return { session: response.headers.get("set-auth-token") ?? assert.fail("no session token") };
 });
 
+// Catches `ployz volume sync`, which asks no one, running under any approval carried into it.
+it.live(
+  "a quick volume sync refuses an approval carried into it for another operation, target or session, and takes one for exactly it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const laptop = yield* signIn("alice");
+        const [owner] = yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, alice.organization.id));
+        const userId = owner?.userId ?? assert.fail("no owner");
+        const sessionOf = (token: string) => drizzle.select({ id: session.id }).from(session).where(eq(session.token, token.split(".", 1)[0] ?? token))
+          .pipe(Effect.map(([row]) => row?.id ?? assert.fail("no session")));
+        const here = yield* sessionOf(alice.session);
+        const approved = (command: string, subject: string, credentialId: string) => drizzle.insert(operationApprovals).values({
+          organizationId: alice.organization.id, subject, requestedByUserId: userId, via: "cli", credentialKind: "session", credentialId,
+          command, digest: `${command}:${subject}`, status: "approved", decidedByUserId: userId, decidedAt: new Date(),
+          review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: [], operation: { verb: command, name: "data", preview: null } }),
+        }).returning({ id: operationApprovals.id }).pipe(Effect.map(([row]) => row?.id ?? assert.fail("no approval")));
+        const sync = (approval: string) => cli("POST", "volumes/vol-1/sync", { ...alice, approval }, { environment: { project: "shop", environment: "production" } });
+
+        for (const id of [
+          yield* approved("release", "volume:vol-1", here),
+          yield* approved("sync", "volume:vol-2", here),
+          yield* approved("sync", "volume:vol-1", yield* sessionOf(laptop.session)),
+        ]) {
+          const refused = yield* sync(id);
+          assert.deepStrictEqual([refused.status, refused.json.error?.code], [403, "forbidden"], refused.text);
+        }
+        // Its own approval passes, and the sync goes on to the Servers, which this test has none of.
+        const own = yield* sync(yield* approved("sync", "volume:vol-1", here));
+        assert.deepStrictEqual([own.status, own.json.error?.code], [500, "unanswered"], own.text);
+      }).pipe(Effect.provide(layer));
+    }),
+);
+
 it.live(
   "an Organization Token acts in its own Organization until it expires, is revoked, or its maker leaves",
   () =>
@@ -1622,16 +1659,16 @@ it.live(
         const approvalId = asked.approval_id ?? assert.fail("no approval id");
         yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
 
+        const covers = "This approval covers only the request to forget fra-1. Run the command again without it to ask for one.";
         const reset = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
-        assert.strictEqual(reset.json.error?.code, "approval_required");
-        assert.notStrictEqual(reset.json.error?.details?.approval_id ?? assert.fail("no approval id"), approvalId);
+        assert.deepStrictEqual(refusedWith(reset), [403, covers]);
 
         const started = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         const removalId = started.json.id ?? assert.fail("no removal id");
         const resetAfterUse = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
-        assert.strictEqual(resetAfterUse.json.error?.code, "approval_required");
+        assert.deepStrictEqual(refusedWith(resetAfterUse), [403, covers]);
         const elsewhere = yield* cli("POST", `servers/${"e".repeat(32)}/forget`, { ...alice, approval: approvalId }, {});
-        assert.strictEqual(elsewhere.json.error?.code, "not_found");
+        assert.deepStrictEqual(refusedWith(elsewhere), [403, covers]);
         const ended = new Date();
         yield* drizzle.update(machineRemoveAttempt).set({
           state: "failed", inngestRunId: "run-1", startedAt: ended, terminalAt: ended, failureCode: "unreachable", failureMessage: "gone",
@@ -1664,6 +1701,11 @@ it.live(
           .where(eq(machineRemoveAttempt.id, removalId));
         cluster.observesFra1 = false;
 
+        const laptop = yield* signIn("alice");
+        assert.deepStrictEqual(refusedWith(yield* cli("POST", `servers/${fra1}/forget`, { ...laptop, approval: approvalId }, {})), [
+          403,
+          "This approval was asked for from another session or token. Run the command again without it to ask for one from here.",
+        ]);
         const retried = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         assert.strictEqual(retried.status, 200);
         assert.strictEqual(retried.json.id, removalId);

@@ -12,7 +12,9 @@ use ployz_core::{
 };
 use serde_json::json;
 
-use super::{IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore};
+use super::{
+    IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore, store::RuntimeOverlay,
+};
 use crate::corrosion::{ApiClient, Statement};
 use crate::machine::{
     LocalMachine, LocalMachineBody, LocalMachinePrior, LocalMachineRecord, LocalMachineStore,
@@ -223,16 +225,27 @@ async fn publication_guard_rechecks_the_local_phase() {
     let (machine, local) = participating_record();
     let publication = store.machine_publication().await;
     assert_eq!(
-        publication.publishable_machine(&local, 0),
+        publication.publishable_machine(&local, RuntimeOverlay::default()),
         Some(machine.clone())
     );
-    // Running Builds are an observation on the published Machine, never in the record.
-    let mut building = machine;
-    building.runtime.running_builds = 2;
-    assert_eq!(publication.publishable_machine(&local, 2), Some(building));
-    assert!(
-        matches!(local.body(), LocalMachineBody::Participating { machine, .. } if machine.runtime.running_builds == 0)
+    let mut observed = machine;
+    observed.runtime.running_builds = 2;
+    observed.runtime.pool_committable_bytes = Some(7 << 30);
+    assert_eq!(
+        publication.publishable_machine(
+            &local,
+            RuntimeOverlay {
+                running_builds: 2,
+                pool_committable_bytes: Some(7 << 30),
+            }
+        ),
+        Some(observed)
     );
+    assert!(matches!(
+        local.body(),
+        LocalMachineBody::Participating { machine, .. }
+            if machine.runtime.running_builds == 0 && machine.runtime.pool_committable_bytes.is_none()
+    ));
 
     let LocalMachineBody::Participating {
         machine: body_machine,
@@ -251,7 +264,71 @@ async fn publication_guard_rechecks_the_local_phase() {
         local.private_key().clone(),
     )
     .unwrap();
-    assert_eq!(publication.publishable_machine(&local, 0), None);
+    assert_eq!(
+        publication.publishable_machine(&local, RuntimeOverlay::default()),
+        None
+    );
+}
+
+#[tokio::test]
+async fn publisher_republishes_when_pool_committable_bytes_change() {
+    use std::time::Duration;
+
+    let (replicated, server) = crate::corrosion::fake_cluster::store_with_subscriptions().await;
+    let data_dir = std::env::temp_dir().join(format!("ployzd-committable-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: ployz_core::MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.1:51820".parse().unwrap(),
+                )],
+            },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .unwrap();
+    let owner = RecordOwner::spawn(store).unwrap();
+    let id = owner.record().id();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
+    let (committable, observed) = tokio::sync::watch::channel(None);
+    let publisher = tokio::spawn(crate::corrosion::run_machine_publisher(
+        Some((replicated.clone(), view)),
+        owner,
+        crate::corrosion::LiveRuntime::new(tokio::sync::watch::channel(0).1, observed),
+        shutdown.clone(),
+    ));
+    let published = |expected: Option<u64>| {
+        let replicated = replicated.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let row = replicated.machine(id.as_str()).await.unwrap();
+                    if row.is_some_and(|machine| machine.runtime.pool_committable_bytes == expected)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{expected:?} was never published"));
+        }
+    };
+
+    published(None).await;
+    committable.send_replace(Some(7 << 30));
+    published(Some(7 << 30)).await;
+
+    shutdown.cancel();
+    publisher.await.unwrap().unwrap();
+    server.abort();
+    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 fn participating_record() -> (Machine, LocalMachineRecord) {
