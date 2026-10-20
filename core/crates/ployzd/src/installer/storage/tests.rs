@@ -773,9 +773,15 @@ struct AmazonCase {
     expected: Option<&'static str>,
 }
 
-const AMAZON_CASES: [AmazonCase; 4] = [
+const AMAZON_CASES: [AmazonCase; 5] = [
     AmazonCase {
         name: "success",
+        via_storage: false,
+        expected: None,
+    },
+    // zfs-dkms is already installed, so dnf builds nothing for the running kernel.
+    AmazonCase {
+        name: "packaged-unbuilt",
         via_storage: false,
         expected: None,
     },
@@ -858,8 +864,17 @@ fn zfs_amazon_linux_contract() {
             r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dnf.log"
 case "$*" in
   *repoquery*) [ "$PLOYZ_ZFS_AMAZON_CONTRACT" = no-kernel-devel ] || echo kernel-devel-1:6.1.186-228.376.amzn2023.x86_64 ;;
-  *zfs-dkms-*.rpm*) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;;
+  *zfs-dkms-*.rpm*) [ "$PLOYZ_ZFS_AMAZON_CONTRACT" = packaged-unbuilt ] || : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;;
 esac"#,
+        );
+        write_script(
+            &commands.join("rpm"),
+            r#"[ "$PLOYZ_ZFS_AMAZON_CONTRACT" = packaged-unbuilt ] && [ "$*" = '-ql zfs-dkms' ] && printf '/usr/src/zfs-2.4.4\n/usr/src/zfs-2.4.4/dkms.conf\n'"#,
+        );
+        write_script(
+            &commands.join("dkms"),
+            r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dkms.log"
+[ "$1" = install ] && : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module""#,
         );
         write_script(
             &commands.join("curl"),
@@ -909,6 +924,15 @@ done"#,
             continue;
         }
         assert_eq!(boot_load.as_deref(), Some("zfs\n"));
+        let dkms = read_log(root, "dkms.log");
+        if name == "packaged-unbuilt" {
+            assert_eq!(
+                dkms,
+                format!("install -m zfs -v 2.4.4 -k {AMAZON_KERNEL}\n")
+            );
+        } else {
+            assert_eq!(dkms, "", "{name}");
+        }
         let packages = if name == "prepared" {
             assert_eq!(
                 read_log(root, "curl.log"),
