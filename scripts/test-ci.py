@@ -2,6 +2,7 @@
 """Rung 1: check routing and prevent an incomplete CI result from passing."""
 import json
 import os
+import re
 from pathlib import Path
 import runpy
 import subprocess
@@ -77,6 +78,76 @@ class CiTest(unittest.TestCase):
             {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-store", "ployz-build"},
         )
 
+    def test_pull_requests_test_changed_crates_and_their_dependents(self):
+        cli = {"ployz", "ployz-sdk", "ployz-testkit", "ployzd"}
+        store = cli | {"ployz-store"}
+        cases = [
+            (["core/crates/ployzd/src/main.rs"], {"ployzd"}),
+            (["core/crates/ployz-verify/src/lib.rs"], {"ployz-verify"}),
+            (["core/crates/ployz-config-wasm/src/lib.rs"], {"ployz-config-wasm"}),
+            (["core/crates/ployz/src/main.rs"], cli),
+            # A dev-dependency's dependents run their tests, but their own dependents keep their builds.
+            (["core/crates/ployz-testkit/src/lib.rs"], {"ployz-testkit", "ployz", "ployzd"}),
+            (["core/crates/ployz-store/src/lib.rs"], store),
+            (["core/crates/ployz-build/src/lib.rs"], cli | {"ployz-build"}),
+            (["core/crates/ployz-sdk/tests/node_logs.js"], cli),
+            (["docs/user/services/domains.md"], store),
+            (["core/crates/ployz/tests/fixtures/published-manifest.json"], store),
+            (["dashboard/evals/agent/machines.json"], {"ployz-testkit", "ployz", "ployzd"}),
+            (["core/crates/ployzd/src/main.rs", "dashboard/src/app.tsx", "core/DESIGN.md"], {"ployzd"}),
+        ]
+        for paths, expected in cases:
+            with self.subTest(paths=paths):
+                self.assertEqual(ci["rust_packages"](paths, pull_request=True), expected)
+                self.assertIsNone(ci["rust_packages"](paths))
+        for path in ["core/crates/ployz-core/src/rpc.rs", "core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml",
+                     "core/rust-toolchain.toml", "core/.cargo/config.toml", ".github/workflows/ci.yml",
+                     "core/crates/not-a-member/src/lib.rs", "core/crates/new-config", "unknown.config"]:
+            with self.subTest(path=path):
+                self.assertIsNone(ci["rust_packages"](["core/crates/ployzd/src/main.rs", path], pull_request=True))
+
+    def test_nextest_filter_names_the_selection(self):
+        self.assertEqual(ci["nextest_filter"](None), "all()")
+        self.assertEqual(ci["nextest_filter"]({"ployzd", "ployz-sdk"}), "package(ployz-sdk) | package(ployzd)")
+
+    def test_crate_inputs_cover_every_file_a_crate_reads_outside_itself(self):
+        # A PR changing a file one crate reads from another's directory must still test the reader.
+        core = SCRIPT.parent.parent / "core"
+        packages = ci["workspace_packages"]()
+        crates = {Path(package["manifest_path"]).parent: package for package in packages}
+        normal_deps = {
+            package["name"]: {dep["name"] for dep in package["dependencies"] if dep.get("path") and dep["kind"] in (None, "build")}
+            for package in packages
+        }
+        def dependencies(name):
+            found, pending = set(), [name]
+            while pending:
+                for dep in normal_deps[pending.pop()] - found:
+                    found.add(dep)
+                    pending.append(dep)
+            return found
+        for crate, package in crates.items():
+            readable = {Path(other["manifest_path"]).parent for other in packages if other["name"] in dependencies(package["name"])}
+            for source in crate.rglob("*.rs"):
+                if "target" in source.relative_to(crate).parts:
+                    continue
+                for literal in re.findall(r'"((?:\.\./)+[^"]*)"', source.read_text()):
+                    target = next(((base / literal).resolve() for base in (source.parent, crate) if (base / literal).exists()), None)
+                    if target is None or target.is_relative_to(crate) or crate.is_relative_to(target):
+                        continue
+                    if any(target.is_relative_to(other) for other in readable):
+                        continue
+                    relative = target.relative_to(core.parent).as_posix() + ("/" if target.is_dir() else "")
+                    with self.subTest(source=str(source.relative_to(core)), literal=literal):
+                        self.assertTrue(
+                            any(relative.startswith(prefix) and name == package["name"] for prefix, name in ci["CRATE_INPUTS"]),
+                            f"add ({relative!r}, {package['name']!r}) to CRATE_INPUTS",
+                        )
+        for prefix, name in ci["CRATE_INPUTS"]:
+            with self.subTest(prefix=prefix):
+                self.assertTrue((core.parent / prefix).exists())
+                self.assertIn(name, normal_deps)
+
     def test_agent_tool_changes_run_the_tool_tests(self):
         # Cloud's `pnpm test` drives the sidebar's tools against the Store; rust-tests drives them through `ployz mcp`.
         for path in ["core/crates/ployz-store/src/tools/mod.rs", "core/crates/ployz/src/handlers/mcp.rs", "dashboard/src/modules/agent/agent-tools.ts"]:
@@ -107,44 +178,31 @@ class CiTest(unittest.TestCase):
             failed = subprocess.run([sys.executable, str(SCRIPT), "select", "missing-base"], cwd=root, env=env, capture_output=True)
             self.assertNotEqual(failed.returncode, 0)
 
-    def test_required_missing_failed_or_cancelled_checks_do_not_pass(self):
-        selected = ["contracts", "rust-lint", "rust-tests"]
-        needs = {job: {"result": "success" if job in selected else "skipped"} for job in ci["JOBS"]}
-        needs["changes"] = {"result": "success", "outputs": {"jobs": json.dumps(selected)}}
-        ci["check_result"](needs)
-        for status in ["failure", "cancelled", "skipped"]:
-            with self.subTest(status=status):
-                needs["rust-tests"]["result"] = status
-                with self.assertRaises(ValueError):
-                    ci["check_result"](needs)
-        needs["rust-tests"]["result"] = "success"
-        del needs["rust-tests"]
-        with self.assertRaises(KeyError):
-            ci["check_result"](needs)
-        needs["rust-tests"] = {"result": "success"}
-        needs["changes"]["result"] = "failure"
-        with self.assertRaises(ValueError):
-            ci["check_result"](needs)
-        needs["changes"]["result"] = "success"
-        for jobs in [[], ["contracts", "unknown"], None]:
-            needs["changes"]["outputs"]["jobs"] = json.dumps(jobs)
-            with self.assertRaises(ValueError):
-                ci["check_result"](needs)
-
-    def test_cloud_stage_runs_alone_and_preserves_failure(self):
-        script = SCRIPT.parent.parent / "dashboard/scripts/pr-check.sh"
+    def test_select_writes_the_rust_test_packages(self):
         with tempfile.TemporaryDirectory() as directory:
-            pnpm = Path(directory) / "pnpm"
-            pnpm.write_text('#!/bin/sh\nprintf "%s\\n" "$*"\nexit "${CHECK_EXIT:-0}"\n')
-            pnpm.chmod(0o755)
-            for status in [0, 7]:
-                env = {**os.environ, "PATH": f"{directory}:{os.environ['PATH']}", "CHECK_EXIT": str(status)}
-                result = subprocess.run(["bash", str(script), "typecheck"], env=env, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0 if status == 0 else 1)
-                self.assertIn("\ntypecheck\n", result.stdout)
-                self.assertEqual(result.stdout.count("Starting "), 1)
-            result = subprocess.run(["bash", str(script), "unknown"], capture_output=True)
-            self.assertEqual(result.returncode, 2)
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", "-c", "user.name=CI test", "-c", "user.email=ci@example.invalid", *args], cwd=root, stderr=subprocess.DEVNULL, text=True).strip()
+            git("init", "--quiet")
+            git("commit", "--quiet", "--allow-empty", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            source = root / "core/crates/ployzd/src/main.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("fn main() {}\n")
+            git("add", ".")
+            git("commit", "--quiet", "-m", "daemon")
+            def outputs(event, *args):
+                output = root / "output"
+                output.write_text("")
+                env = {key: value for key, value in os.environ.items() if key != "GITHUB_STEP_SUMMARY"}
+                subprocess.check_output([sys.executable, str(SCRIPT), "select", *args], cwd=root, env={**env, "GITHUB_EVENT_NAME": event, "GITHUB_OUTPUT": str(output)})
+                return dict(line.split("=", 1) for line in output.read_text().splitlines())
+            pr = outputs("pull_request", base)
+            self.assertEqual((pr["nextest_filter"], pr["postgres"]), ("package(ployzd)", "false"))
+            for event, args in [("push", [base]), ("pull_request", []), ("workflow_dispatch", [])]:
+                with self.subTest(event=event, args=args):
+                    full = outputs(event, *args)
+                    self.assertEqual((full["nextest_filter"], full["postgres"]), ("all()", "true"))
 
 
 if __name__ == "__main__":

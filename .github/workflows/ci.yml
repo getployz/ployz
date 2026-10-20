@@ -101,6 +101,8 @@ jobs:
     outputs:
       jobs: ${{ steps.select.outputs.jobs }}
       postgres: ${{ steps.select.outputs.postgres }}
+      # A PR runs the tests of its changed crates and their dependents; every other run, the whole workspace's.
+      nextest_filter: ${{ steps.select.outputs.nextest_filter }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -204,6 +206,7 @@ jobs:
       - name: Test with a hostile ambient Ployz context
         env:
           PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+          NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter }}
         run: |
           cat > "$PLOYZ_CONFIG" <<'EOF'
           current_context: hostile
@@ -212,7 +215,8 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          cargo nextest run --workspace --all-features --locked --no-fail-fast
+          # A PR touching only ployz-config-wasm selects a package with no Rust tests.
+          cargo nextest run --workspace --all-features --locked --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"
           cargo test --doc --workspace --all-features --locked
       # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres

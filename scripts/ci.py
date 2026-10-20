@@ -55,6 +55,62 @@ def store_postgres(paths, pull_request=False):
     )
 
 
+# Files outside a crate that its build script or tests read, where no crate it depends on owns them.
+CRATE_INPUTS = (
+    ("docs/user/", "ployz-store"),
+    ("core/crates/ployz/tests/fixtures/published-manifest.json", "ployz-store"),
+    # ployz's connect tests run the SDK's Node scripts against its native addon.
+    ("core/crates/ployz-sdk/", "ployz"),
+    ("core/site/skill.md", "ployz"),
+    ("core/scripts/verify/dns-soak.sh", "ployz"),
+    ("core/scripts/test-missing-ssh-client.sh", "ployz"),
+    ("dashboard/src/modules/approvals/approvals.ts", "ployz"),
+    ("dashboard/evals/agent/machines.json", "ployz-testkit"),
+)
+
+
+def rust_packages(paths, pull_request=False):
+    """The workspace packages whose tests a PR's rust-tests runs, or None for the whole workspace."""
+    if not pull_request:
+        return None
+    packages = workspace_packages()
+    crate_dirs = {
+        package["name"]: Path(package["manifest_path"]).parent.relative_to(ROOT).as_posix() + "/" for package in packages
+    }
+    changed = set()
+    for path in paths:
+        if Path(path).name in {"Cargo.toml", "Cargo.lock"}:
+            return None
+        owners = {name for name, directory in crate_dirs.items() if path.startswith(directory)}
+        owners |= {crate for prefix, crate in CRATE_INPUTS if path.startswith(prefix)}
+        # A path no crate owns that the routing still sends to rust-tests could change any crate's build.
+        if not owners and "rust-tests" in select_normal([path]):
+            return None
+        changed |= owners
+    # Building a dependency changes its dependents' builds; a dev-dependency changes only the dependent's tests.
+    affected, pending = set(), list(changed)
+    while pending:
+        name = pending.pop()
+        if name not in affected:
+            affected.add(name)
+            pending.extend(
+                package["name"] for package in packages
+                if any(dep["name"] == name and dep.get("path") and dep["kind"] in (None, "build") for dep in package["dependencies"])
+            )
+    affected |= {
+        package["name"] for package in packages
+        if any(dep["name"] in affected and dep.get("path") and dep["kind"] == "dev" for dep in package["dependencies"])
+    }
+    # Most of the workspace saves little, and it misses main's compiler cache where features unify differently.
+    return None if len(affected) * 3 > len(packages) * 2 else affected
+
+
+def nextest_filter(packages):
+    # rust-tests still builds the whole workspace: `--package` would resolve features for the subset alone,
+    # so a dependent would link differently than on main and miss main's compiler cache.
+    return "all()" if packages is None else " | ".join(f"package({name})" for name in sorted(packages))
+
+
 def release_inputs_changed(paths):
     # Batches keep a huge diff under the kernel's argument length limit.
     return any(
@@ -117,15 +173,19 @@ def select_normal(paths):
 
 
 @functools.cache
-def sdk_and_config_wasm_crates():
-    metadata = json.loads(
+def workspace_packages():
+    return json.loads(
         subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=ROOT / "core")
-    )
+    )["packages"]
+
+
+@functools.cache
+def sdk_and_config_wasm_crates():
     path_deps = {
         package["name"]: {
             dep["name"] for dep in package["dependencies"] if dep.get("path") and dep["kind"] in (None, "build")
         }
-        for package in metadata["packages"]
+        for package in workspace_packages()
     }
     shipped, pending = set(), ["ployz-sdk", "ployz-config-wasm"]
     while pending:
@@ -173,18 +233,28 @@ def main():
         if args.base and set(args.base) != {"0"}:
             paths = changed_paths(args.base, args.head)
             selected, postgres = select(paths, pull_request), store_postgres(paths, pull_request)
+            packages = rust_packages(paths, pull_request) if "rust-tests" in selected else None
         else:
-            selected, postgres = NORMAL, True
+            selected, postgres, packages = NORMAL, True, None
+        # The Postgres rerun filters the selected packages' tests to ployz-store's.
+        postgres = postgres and (packages is None or "ployz-store" in packages)
         output = json.dumps(sorted(selected))
         print(output)
+        if "rust-tests" in selected:
+            print(f"rust-tests runs: {nextest_filter(packages)}", file=sys.stderr)
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a") as file:
-                file.write(f"jobs={output}\npostgres={str(postgres).lower()}\n")
+                file.write(
+                    f"jobs={output}\npostgres={str(postgres).lower()}\nnextest_filter={nextest_filter(packages)}\n"
+                )
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as file:
                 file.write("| Check | Selection |\n|---|---|\n")
                 for job in sorted(JOBS):
                     file.write(f"| {job} | {'Run' if job in selected else 'Skipped: inputs unchanged'} |\n")
+                if "rust-tests" in selected:
+                    scope = "the whole workspace" if packages is None else ", ".join(sorted(packages))
+                    file.write(f"\nrust-tests runs the tests of {scope}.\n")
     else:
         needs = json.loads(os.environ["CI_NEEDS"])
         if os.environ.get("GITHUB_STEP_SUMMARY"):
