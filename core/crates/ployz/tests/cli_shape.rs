@@ -461,6 +461,33 @@ fn color_never_emits_no_escapes() {
 }
 
 #[test]
+fn asking_ps_for_a_container_column_says_where_the_ids_are() {
+    for args in [
+        &["ps", "--container"][..],
+        &["ps", "--wide"],
+        &["ps", "-o", "wide"],
+        &["ps", "--format={{.ID}}"],
+        &["ps", "-q"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("'ployz ps --json' lists each container's container_id"),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("--connect"), "{args:?}: {stderr}");
+    }
+
+    let (code, json, stderr) = run_json(&["ps", "--json", "--container"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "invalid_argument");
+    assert!(message(&json).contains("ployz ps --json"), "{json}");
+
+    let (_, stderr) = run_human(&["ps", "--bogus"]);
+    assert!(!stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
 fn color_always_keeps_a_piped_record_colored_and_auto_leaves_it_plain() {
     let stdout = |args: &[&str]| String::from_utf8(human_output(args, &[]).stdout).unwrap();
     assert_eq!(

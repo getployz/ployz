@@ -83,6 +83,43 @@ pub(super) fn ps_command(command: Command) -> Command {
     )
 }
 
+/// Flags other tools take for a container ID column. `ps` shows one only where two rows
+/// would read the same, so an ask for it names where every ID is instead.
+const CONTAINER_COLUMN_ASKS: [&str; 11] = [
+    "--container",
+    "--containers",
+    "--wide",
+    "-w",
+    "--output",
+    "-o",
+    "--format",
+    "--columns",
+    "--no-trunc",
+    "--quiet",
+    "-q",
+];
+
+/// `error` for `ployz ps` asked for a CONTAINER column, rewritten to say where the IDs are.
+pub(super) fn container_column_asked(error: clap::Error, path: &str) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if path != "ps" || error.kind() != ErrorKind::UnknownArgument {
+        return error;
+    }
+    let Some(ContextValue::String(invalid)) = error.get(ContextKind::InvalidArg) else {
+        return error;
+    };
+    let flag = invalid.split('=').next().unwrap_or_default();
+    if !CONTAINER_COLUMN_ASKS.contains(&flag) {
+        return error;
+    }
+    clap::Error::raw(
+        ErrorKind::UnknownArgument,
+        format!(
+            "ployz ps has no '{flag}': it shows a CONTAINER column only where two rows would read the same\n\n  tip: 'ployz ps --json' lists each container's container_id, which 'ployz exec --container' takes\n"
+        ),
+    )
+}
+
 /// The Namespace the addressed Project and Environment run in, so a bare Service name
 /// means that Environment's Service. `None` keeps the whole Cluster in view: nothing
 /// was asked for, and no Config Store is reachable, it has no Project yet, or
