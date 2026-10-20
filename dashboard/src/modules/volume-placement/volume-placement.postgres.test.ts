@@ -194,6 +194,7 @@ describe("volume placement", () => {
       [volumeId, organizationId, JSON.stringify(mirrors.map(web))],
     );
     const runs = async () => (await harness.pool.query("select count(*)::int as runs from volume_run")).rows;
+    const events = async () => (await harness.pool.query("select count(*)::int as events from operation_outbox")).rows;
     let copies: Member[];
     beforeEach(() => { copies = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")]; });
 
@@ -249,9 +250,19 @@ describe("volume placement", () => {
       ["the Cluster time runs out", () => Effect.fail(new ClusterOutOfTime())],
     ])("refuses deleting it when %s", async (_, inspect) => {
       await recorded(["web-2"]);
-      const events = async () => (await harness.pool.query("select count(*)::int as events from operation_outbox")).rows;
       const before = await events();
       expect(await run(request(inspect))).toEqual({ ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+      expect(await events()).toEqual(before);
+    });
+
+    it("refuses deleting it when its pairing was removed before its Server is asked", async () => {
+      await recorded(["web-2"]);
+      const before = await events();
+      const unpaired = { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) };
+      const deleted = requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null })
+        .pipe(Effect.provideService(OrganizationRuntime, unpaired));
+      expect(await run(deleted)).toEqual({ ok: false, refusal: { code: "unavailable", message: "Cloud has no connection to your servers. Try again once one is connected.", details: null } });
       expect(await runs()).toEqual([{ runs: 0 }]);
       expect(await events()).toEqual(before);
     });

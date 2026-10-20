@@ -957,10 +957,13 @@ export class ClusterUnreachable extends Data.TaggedError("ClusterUnreachable")<{
 export const unreachable = (error: Error) =>
   error instanceof ClusterUnreachable || (error instanceof RuntimeConnectionFailure && error.waitable);
 
+/** Cloud holds no connection to the Organization's Servers, as once their pairing is removed. */
+export class ClusterNotConnected extends Data.TaggedError("ClusterNotConnected")<{ readonly message: string }> {}
+
 const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status === "unreachable") return yield* new ClusterUnreachable({ message: "The cluster is unreachable." });
-  if (session.status !== "connected") return yield* Effect.fail(new Error(`The cluster is ${session.status}.`));
+  if (session.status === "no_connection") return yield* new ClusterNotConnected({ message: "The cluster is no_connection." });
   return session.connected;
 });
 
