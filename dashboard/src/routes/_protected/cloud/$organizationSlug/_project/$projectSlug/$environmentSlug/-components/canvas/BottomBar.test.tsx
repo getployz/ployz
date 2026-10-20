@@ -217,6 +217,15 @@ it("offers no Discard all while only a Save the Servers don't run is left", asyn
   expect(screen.queryByRole("menuitem", { name: "Discard all changes" })).toBeNull();
 });
 
+it("leaves Discard all out of Details while only a Save the Servers don't run is left", async () => {
+  stagedChanges = 0;
+  notRunning = 4;
+  open(canvasUrl, [replicas], 1);
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  expect(await screen.findByRole("button", { name: "Save only" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Discard all" })).toBeNull();
+});
+
 it("counts only staged changes when a Save isn't running too", async () => {
   stagedChanges = 2;
   notRunning = 4;

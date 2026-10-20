@@ -212,6 +212,8 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
+  // With only a Save left to deploy, Discard all returns to that Save: nothing would change.
+  const nothingToDiscard = stagedChanges === 0 && notRunning !== null;
   const counted = stagedChanges > 0 ? plural(stagedChanges, "change") : notRunning === null ? null : `#${notRunning} not running`;
   const staged = hasChanges ? (
     <Row staged title={busy.has("discarding") ? "Discarding…" : ((counted ?? "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
@@ -236,12 +238,11 @@ export function BottomBar({
           <DropdownMenuItem disabled={!saveable} onClick={save}>
             {busy.has("saving") ? <><Spinner />Saving…</> : "Save only"}
           </DropdownMenuItem>
-          {/* With only a Save left to deploy, Discard all returns to that Save: nothing would change. */}
-          {stagedChanges > 0 || notRunning === null ? (
+          {nothingToDiscard ? null : (
             <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
               Discard all changes
             </DropdownMenuItem>
-          ) : null}
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
@@ -260,7 +261,7 @@ export function BottomBar({
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
-    onDiscardAll: discardAll,
+    onDiscardAll: nothingToDiscard ? undefined : discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
     ...proposals,
