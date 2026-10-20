@@ -156,6 +156,8 @@ fn usage_failure(error: clap::Error) -> Error {
         let _ = stdout.flush();
         return Error::exit(0);
     }
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let error = operator::container_column_asked(error, &args);
     if !wants_json {
         error.exit();
     }
@@ -652,6 +654,7 @@ mod tests {
                 failed_machine: Some(failed),
                 logs: vec![LogTail {
                     service: QualifiedService::system_ingress(),
+                    name: QualifiedService::system_ingress().name,
                     machine: failed,
                     server: "same-name".into(),
                     log: None,

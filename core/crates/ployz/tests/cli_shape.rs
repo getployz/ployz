@@ -461,6 +461,81 @@ fn color_never_emits_no_escapes() {
 }
 
 #[test]
+fn asking_ps_for_a_container_column_says_where_the_ids_are() {
+    for args in [
+        &["ps", "--container"][..],
+        &["ps", "--wide"],
+        &["ps", "--sort", "service", "--wide"],
+        &["ps", "-o", "wide"],
+        &["ps", "--format={{.ID}}"],
+        &["ps", "-q"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(
+                "with server access, 'ployz ps --json' lists each container's container_id"
+            ),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("--connect"), "{args:?}: {stderr}");
+    }
+
+    let (code, json, stderr) = run_json(&["ps", "--json", "--container"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "invalid_argument");
+    assert!(message(&json).contains("ployz ps --json"), "{json}");
+
+    let (_, stderr) = run_human(&["ps", "--bogus"]);
+    assert!(!stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
+fn a_column_flag_given_as_the_sort_value_keeps_claps_error() {
+    for (args, says) in [
+        (
+            &["ps", "--sort", "--wide"][..],
+            "unexpected argument '--wide'",
+        ),
+        (&["ps", "--sort", "-w"], "unexpected argument '-w'"),
+        (&["ps", "--sort=--wide"], "invalid value '--wide'"),
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains(says), "{args:?}: {stderr}");
+        assert!(!stderr.contains("container_id"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn a_column_flag_after_the_option_terminator_keeps_claps_error() {
+    for args in [
+        &["ps", "--", "--wide"][..],
+        &["ps", "--sort", "service", "--", "--wide"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("unexpected argument '--wide'"),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("container_id"), "{args:?}: {stderr}");
+    }
+
+    let (code, stderr) = run_human(&["ps", "--wide", "--", "--wide"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
+fn a_column_flag_on_another_command_keeps_its_error_when_a_global_took_ps_as_its_value() {
+    let (code, stderr) = run_human(&["--connect", "ps", "server", "ls", "--wide"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("Usage: ployz server ls"), "{stderr}");
+    assert!(!stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
 fn color_always_keeps_a_piped_record_colored_and_auto_leaves_it_plain() {
     let stdout = |args: &[&str]| String::from_utf8(human_output(args, &[]).stdout).unwrap();
     assert_eq!(
@@ -634,6 +709,10 @@ struct WaitingCloud {
     rows: Vec<serde_json::Value>,
     list: &'static str,
     unreachable: Vec<String>,
+    /// The Servers Server Access says refused Cloud, with what each said.
+    refused: Vec<serde_json::Value>,
+    /// The names Server Access gives the Servers, by id.
+    names: serde_json::Value,
     /// The connections Server Access hands back, held before any Server was probed.
     connections: Vec<serde_json::Value>,
     rejects: Vec<(&'static str, Option<usize>)>,
@@ -666,6 +745,8 @@ impl WaitingCloud {
             rows,
             list: "200 OK",
             unreachable: Vec::new(),
+            refused: Vec::new(),
+            names: serde_json::json!({}),
             connections: Vec::new(),
             rejects: Vec::new(),
             refusal: None,
@@ -687,6 +768,8 @@ fn waiting_cloud(
         rows,
         list,
         unreachable,
+        refused,
+        names,
         connections,
         rejects,
         refusal,
@@ -743,7 +826,12 @@ fn waiting_cloud(
                 }
                 "POST /api/cli/server-access" => (
                     "200 OK",
-                    serde_json::json!({ "connections": connections, "unreachable": unreachable }),
+                    serde_json::json!({
+                        "connections": connections,
+                        "unreachable": unreachable,
+                        "refused": refused,
+                        "names": names,
+                    }),
                 ),
                 "GET /api/cli/enrollments" => {
                     if enrollment_reads > 0 {
@@ -1236,6 +1324,116 @@ fn server_show_falls_back_to_the_waiting_list_when_no_server_answers() {
         "unavailable",
         "{json}"
     );
+}
+
+#[test]
+fn a_server_that_is_not_answering_yet_is_named_with_when_to_try_again() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let joining = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            unreachable: vec![joining.clone()],
+            names: serde_json::json!({ joining.clone(): "box-node-7" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "ls", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/message").unwrap(),
+        "Server box-node-7 isn't answering. If it just joined or restarted, try again in a moment.",
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/details/unreachable").unwrap(),
+        &serde_json::json!([joining]),
+        "{json}"
+    );
+}
+
+#[test]
+fn removing_a_server_that_does_not_answer_points_to_forget() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gone = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            unreachable: vec![gone.clone()],
+            names: serde_json::json!({ gone: "web-1" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    let next = json
+        .pointer("/error/details/next")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(
+        next.ends_with(" server forget web-1 --confirm dead"),
+        "{json}"
+    );
+}
+
+#[test]
+fn removing_a_server_that_refused_cloud_says_why_and_not_to_forget_it() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let refusing = "b".repeat(32);
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            refused: vec![serde_json::json!({
+                "machine_id": refusing,
+                "message": "Machine is not participating",
+            })],
+            names: serde_json::json!({ refusing.clone(): "web-1" }),
+            ..WaitingCloud::of(Vec::new())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/message").unwrap(),
+        "Server web-1 couldn't give this command access: Machine is not participating",
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/details/refused/0/machine_id").unwrap(),
+        &serde_json::json!(refusing),
+        "{json}"
+    );
+    assert_eq!(json.pointer("/error/details/next"), None, "{json}");
+}
+
+#[test]
+fn removing_a_server_when_cloud_does_not_answer_says_to_retry_not_forget() {
+    let token = [
+        ("PLOYZ_TOKEN", "ployz_secret"),
+        ("PLOYZ_CLOUD_URL", "http://127.0.0.1:9"),
+    ];
+
+    let (code, json, _) = run_json_with(&["server", "rm", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unavailable",
+        "{json}"
+    );
+    assert_eq!(json.pointer("/error/details/next"), None, "{json}");
+    let retry = json
+        .pointer("/error/details/retry")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(retry.starts_with("ployz server rm web-1 --json"), "{json}");
 }
 
 #[test]
@@ -2589,7 +2787,7 @@ fn server_token_create_prints_the_secret_once_with_its_install_line() {
         "Created blue-heron\n",
         "Anyone with this token can add servers. Keep it secret.",
         &format!(
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' PLOYZ_ENROLL_TOKEN=pflt_secret sh -s -- {}\n",
+            "curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_secret sudo --preserve-env=PLOYZ_FLEET_TOKEN PLOYZ_CLOUD_URL='{cloud}' sh -s -- {}\n",
             env!("CARGO_PKG_VERSION")
         ),
         "Shown once. Expires in 7d.",
@@ -2626,14 +2824,16 @@ fn server_token_create_json_carries_the_secret_and_install_line() {
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(json.pointer("/fleet_token/token").unwrap(), "pflt_secret");
     assert_eq!(json.pointer("/fleet_token/name").unwrap(), "amber-falcon");
+    let install = json
+        .pointer("/install")
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
     assert!(
-        json.pointer("/install")
-            .and_then(serde_json::Value::as_str)
-            .unwrap()
-            .ends_with(&format!(
-                "PLOYZ_ENROLL_TOKEN=pflt_secret sh -s -- {}",
-                env!("CARGO_PKG_VERSION")
-            )),
+        install.contains("| PLOYZ_FLEET_TOKEN=pflt_secret sudo --preserve-env=PLOYZ_FLEET_TOKEN "),
+        "{json}"
+    );
+    assert!(
+        install.ends_with(&format!(" sh -s -- {}", env!("CARGO_PKG_VERSION"))),
         "{json}"
     );
 }
