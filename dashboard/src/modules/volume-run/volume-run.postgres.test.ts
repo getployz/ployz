@@ -14,6 +14,7 @@ import type {
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
+import { RpcError } from "@ployz/sdk";
 import { createHash } from "node:crypto";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Exit } from "effect";
@@ -48,6 +49,7 @@ import {
   releaseLanesOff,
   requestVolumeRun,
   requireOwner,
+  resolveVolume,
   type RunContext,
   sendSwitch,
   setVolumeCopy,
@@ -175,6 +177,10 @@ describe("volume runs", () => {
   let opens: number;
   let sent: SetVolumeCopyRequest[];
   let held: Map<string, () => CopyRefusal | null>;
+  /** The Project's name in the Store; a read of its Environment by another name is not found. */
+  let storeProject: string;
+  /** Runs once after the Store answers a namespaces read, as a write committed between that read and the next. */
+  let afterNamespaces: (() => void) | null;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
   /** The nodes every Deployment the Store reads back targets. */
   let deployNodes: Array<{ type: "volume" | "service"; id: string; name: string; outcome: "pending"; rows: [] }>;
@@ -420,11 +426,22 @@ describe("volume runs", () => {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
           githubCancel: async () => [],
           abandonDeployment: async (id: string) => ({ id, status: "failed" }),
-          read: async (_: string, query: { query: string; id?: string }) => query.query === "namespaces"
-            ? { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] }
-            : query.query === "deployment"
-              ? { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: "shop", name: "production" }, nodes: deployNodes }
-              : { environment: { id: "env-1", project: "shop", name: "production", revision: 1 }, volumes: storeVolumes },
+          read: async (_: string, query: { query: string; id?: string; environment?: { project: string | null } }) => {
+            if (query.query === "namespaces") {
+              const answer = { namespaces: [{ namespace: "shop-production", project: storeProject, environment: "production" }] };
+              const after = afterNamespaces;
+              afterNamespaces = null;
+              after?.();
+              return answer;
+            }
+            if (query.query === "deployment") {
+              return { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" }, nodes: deployNodes };
+            }
+            if (query.environment !== undefined && query.environment.project !== storeProject) {
+              throw new RpcError({ code: "not_found", message: `No Project named ${query.environment.project}`, details: null });
+            }
+            return { environment: { id: "env-1", project: storeProject, name: "production", revision: 1 }, volumes: storeVolumes };
+          },
         })),
       }),
       Effect.provideService(OrganizationRuntime, {
@@ -512,6 +529,8 @@ describe("volume runs", () => {
     slotIds = 0;
     snapshots = new Map([[base.name, base]]);
     containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true }];
+    storeProject = "shop";
+    afterNamespaces = null;
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
     deployNodes = [{ type: "service", id: "svc-web", name: "web", outcome: "pending", rows: [] }, { type: "volume", id: volumeId, name: "data", outcome: "pending", rows: [] }];
     machines = [
@@ -643,7 +662,7 @@ describe("volume runs", () => {
   });
 
   describe("C1", () => {
-    it("volume_run_second_request_refused: VolumeBusy names the Volume and how to stop its run, until it ends", async () => {
+    it("volume_run_second_request_refused: the refusal names the Volume, how to follow its run and how to stop it, until it ends", async () => {
       const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const second = await request({ kind: "sync", args: { full: false } });
@@ -652,23 +671,69 @@ describe("volume runs", () => {
         ok: false,
         refusal: {
           code: "conflict",
-          message: "VolumeBusy: data is busy with a mirror; ployz volume release data stops it",
+          message: `data is busy with a mirror; ployz volume runs data ${first.id} follows it, and ployz volume release data stops it`,
           details: { run: expect.objectContaining({ id: first.id }) },
         },
         busy: expect.objectContaining({ id: first.id, kind: "mirror", state: "requested" }),
       });
-      expect(volumeBusyMessage({ kind: "sync", volumeName: "data" })).toBe("VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it");
+      expect(volumeBusyMessage({ id: "r-1", kind: "sync", volumeName: "data" })).toBe("data is busy with a mirror refresh; ployz volume runs data r-1 follows it, and ployz volume release data stops it");
+      expect(volumeBusyMessage({ id: "r-1", kind: "release", volumeName: "data" })).toBe("data is busy with a release; ployz volume runs data r-1 follows it");
       expect(await rows()).toHaveLength(1);
 
       await execute(first.id);
       expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
     });
 
+    it("a move onto the Server holding the writer is settled, so nothing offers it again", async () => {
+      expect(await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "move", args: { to: "fsn-1" } }))).toEqual({
+        ok: false,
+        refusal: { code: "conflict", message: "data's writer is already on fsn-1", details: { settled: true } },
+      });
+    });
+
+    it("a Volume renamed during a run is refused by its new name, so the hints run as printed", async () => {
+      const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      storeVolumes = storeVolumes.map((volume) => volume.id === volumeId ? { ...volume, name: "files" } : volume);
+
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({
+        ok: false,
+        refusal: { message: `files is busy with a mirror; ployz volume runs files ${first.id} follows it, and ployz volume release files stops it` },
+      });
+    });
+
+    it("a Volume renamed after its request resolved is refused by the name it has at the refusal, and the printed runs command finds the run", async () => {
+      const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const resolved = await runEffect(resolveVolume(organizationId, environment, volumeId));
+      storeVolumes = storeVolumes.map((volume) => volume.id === volumeId ? { ...volume, name: "files" } : volume);
+
+      const refused = await runEffect(insertRun({ userId, organizationId }, { volumeId, kind: "sync", args: { full: false } }, resolved, crypto.randomUUID()));
+      expect(refused).toMatchObject({
+        ok: false,
+        refusal: { message: `files is busy with a mirror; ployz volume runs files ${first.id} follows it, and ployz volume release files stops it` },
+      });
+      const [, name, id] = /ployz volume runs (\S+) (\S+)/.exec(refused.ok ? "" : refused.refusal.message) ?? [];
+      const named = storeVolumes.find((volume) => volume.name === name);
+      expect(named?.id).toBe(volumeId);
+      expect((await runEffect(listVolumeRuns(organizationId, volumeId))).map((run) => run.id)).toContain(id);
+    });
+
+    it("a Project renamed between the refusal's Namespace and Volume reads still refuses the Volume as busy, by the name its run saved", async () => {
+      const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      const resolved = await runEffect(resolveVolume(organizationId, environment, volumeId));
+      afterNamespaces = () => { storeProject = "store"; };
+
+      expect(await runEffect(insertRun({ userId, organizationId }, { volumeId, kind: "sync", args: { full: false } }, resolved, crypto.randomUUID()))).toMatchObject({
+        ok: false,
+        refusal: { code: "conflict", message: `data is busy with a mirror; ployz volume runs data ${first.id} follows it, and ployz volume release data stops it` },
+      });
+      expect(storeProject).toBe("store");
+    });
+
     it("a mirror removal under way says it finishes on its own, and a release leaves it to, since it cannot retract a destroy a Machine started", async () => {
       const removal = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
 
-      const removing = "data is busy with a mirror removal; it finishes on its own";
-      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({ ok: false, refusal: { code: "conflict", message: `VolumeBusy: ${removing}` } });
+      const removing = `data is busy with a mirror removal, which finishes on its own; ployz volume runs data ${removal.id} follows it`;
+      expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({ ok: false, refusal: { code: "conflict", message: removing } });
       expect(await request({ kind: "release", args: {} })).toMatchObject({ ok: false, refusal: { code: "conflict", message: removing } });
       expect(await rows()).toMatchObject([{ id: removal.id, kind: "delete_mirror", state: "requested" }]);
     });
@@ -744,7 +809,7 @@ describe("volume runs", () => {
       });
       expect(await request({ kind: "sync", args: { full: false } })).toEqual({
         ok: false,
-        refusal: { code: "conflict", message: "VolumeBusy: data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: committed.id }) } },
+        refusal: { code: "conflict", message: "data is starting on fsn-2; it finishes there", details: { run: expect.objectContaining({ id: committed.id }) } },
         busy: expect.objectContaining({ id: committed.id }),
       });
       expect(await lanes()).toEqual(before);
@@ -780,7 +845,7 @@ describe("volume runs", () => {
         busy: expect.objectContaining({ id: seeding?.id, kind: "seed" }),
       });
       expect(await request({ kind: "sync", args: { full: false } })).toMatchObject({
-        ok: false, refusal: { message: "VolumeBusy: data is being copied into data-copy; it finishes on its own" },
+        ok: false, refusal: { message: "data is being copied into data-copy; it finishes on its own" },
       });
       expect(await lanes()).toMatchObject([{ id: seeding?.id, state: "running" }]);
       expect(send).not.toHaveBeenCalled();
@@ -1655,6 +1720,16 @@ describe("volume runs", () => {
         { machine: { id: A, name: "fsn-1" }, answered: false },
         { machine: { id: B, name: "fsn-2" }, address: "fdcc::2", answered: true, view: { copy: slotCopy(G, null, "2") }, floorless: false },
       ];
+
+      it("names a Volume renamed since it resolved by its new name, so the release it prints runs", async () => {
+        await pending();
+        storeVolumes = storeVolumes.map((entry) => entry.id === volumeId ? { ...entry, name: "files" } : entry);
+
+        expect(await insert({ kind: "sync", args: { full: true } })).toMatchObject({
+          ok: false,
+          refusal: { message: "files finishes on fsn-2; ployz volume release files finishes it now" },
+        });
+      });
 
       it("refuses a move, a mirror, any sync, a seed and a removal of B's mirror, of a slot that resolved to no Machine or of every mirror, returning the release that failed as busy, and admits removing another mirror", async () => {
         const release = await pending();
@@ -2807,7 +2882,7 @@ describe("volume runs", () => {
 
       expect(admitted).toEqual({
         ok: false,
-        refusal: { code: "conflict", message: "VolumeBusy: data is busy with a mirror refresh; ployz volume release data stops it", details: { run: expect.objectContaining({ id: busy.id }) } },
+        refusal: { code: "conflict", message: `data is busy with a mirror refresh; ployz volume runs data ${busy.id} follows it, and ployz volume release data stops it`, details: { run: expect.objectContaining({ id: busy.id }) } },
       });
       expect((await rows()).map((row) => row.id)).toEqual([busy.id]);
       expect(send).not.toHaveBeenCalled();

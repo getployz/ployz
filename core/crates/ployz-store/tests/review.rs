@@ -2738,7 +2738,7 @@ fn history_undo_volume_mount_named_name_and_shared_writes() {
         )
         .unwrap();
     assert!(
-        preview
+        !preview
             .changes
             .iter()
             .flat_map(|node| &node.settings)

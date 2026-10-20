@@ -17,7 +17,8 @@ free https address under your organization's domain, and you can add domains you
 ![Settings → Networking with a generated domain that uses PORT, and the private name](../images/service-settings-networking.png)
 
 The address is the service's name under your organization's domain, like
-`web.acme-x7q2.ployz.app`. A [branch](../environments/environments.md) adds its own name:
+`web.acme-x7q2.ployz.app`. It shows in full, with a copy button, as soon as you generate it, and
+answers once you deploy. Generating your organization's first domain reserves its domain. A [branch](../environments/environments.md) adds its own name:
 `web-staging.acme-x7q2.ployz.app`. Your organization's domain never changes; it's under
 **Domain** in **Organization → General**.
 
@@ -34,8 +35,7 @@ From the CLI, name the subdomain: `ployz domain add web --prefix shop`. Without 
 service that has a generated domain keeps it, and the CLI suggests a free subdomain. To change
 one of several, name it: `ployz domain set web store --domain shop`.
 `ployz get web` or `ployz get web.domains` lists a service's domains, and `ployz diff` shows a staged one by
-its full hostname, `web.domains: added shop.acme.ployz.app`. Before the cluster domain is known, it
-reads `shop.<cluster domain>`.
+its full hostname, `web.domains: added shop.acme.ployz.app`.
 
 ## Choose the port
 

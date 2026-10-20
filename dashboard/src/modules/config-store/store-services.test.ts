@@ -80,7 +80,8 @@ describe("catalog fields", () => {
     // Memory takes GB or a size with a unit; its field edits GB.
     const memory = scalarSetting("memLimit");
     expect(settingError(memory, "1.5")).toBeNull();
-    expect(settingError(memory, "2000")).toBe("Enter a number above 0, up to 1024.");
+    expect(settingError(memory, "2000")).toBe("Enter a number from 0.01 to 1024.");
+    expect(settingError(memory, "0.001")).toBe("Enter a number from 0.01 to 1024.");
     expect(settingChange("web.memLimit", memory, "1.5")).toEqual({ op: "set", path: "web.memLimit", value: 1.5 });
   });
 });
