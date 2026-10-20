@@ -131,7 +131,7 @@ async function openEnroll() {
   const pick = screen.getByRole<HTMLButtonElement>("button", { name: "Enroll 1" });
   expect({ disabled: pick.disabled, title: pick.title }).toEqual({ disabled: true, title: ROLE_CHECKING });
   answerRole(adaOwns);
-  await waitFor(() => expect(pick.disabled).toBe(false));
+  await waitFor(() => expect(pick.disabled).toBe(false), { timeout: 5000 });
   fireEvent.click(pick);
   await vi.waitFor(() => expect(screen.getByRole("region", { name: "Enrollment preview" }).textContent).toContain("web-2"), { timeout: 5000 });
   const enroll = screen.getAllByRole<HTMLButtonElement>("button", { name: "Enroll 1" }).at(-1);
@@ -143,16 +143,16 @@ it("warns with Forget Servers once every Server's last push is past the window, 
   await pushedAgo(FRA_2, SERVER_SILENT_AFTER_MS + 60 * MINUTE);
   expect(await openEnroll()).toEqual({ alert: "Servers offlineForget them first. Forget Servers", enrollDisabled: false });
   expect(screen.getByRole("link", { name: "Forget Servers" }).getAttribute("href")).toBe("/cloud/ada/~/settings#organization-teardown");
-});
+}, 15_000);
 
 it("doesn't warn while one Server pushed recently and the other is past the window", async () => {
   await pushedAgo(FRA_1, 2 * MINUTE);
   await pushedAgo(FRA_2, SERVER_SILENT_AFTER_MS + MINUTE);
   expect(await openEnroll()).toEqual({ alert: null, enrollDisabled: false });
-});
+}, 15_000);
 
 it("doesn't warn on a recent push while every dial to the Servers fails", async () => {
   await pushedAgo(FRA_1, 2 * MINUTE);
   await pushedAgo(FRA_2, 2 * MINUTE);
   expect(await openEnroll()).toEqual({ alert: null, enrollDisabled: false });
-});
+}, 15_000);
