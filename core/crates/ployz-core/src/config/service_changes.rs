@@ -44,14 +44,30 @@ pub struct ServiceSettingChange {
 }
 
 impl ServiceSettingChange {
-    /// Its path as people read it: a Config mount as `SERVICE.configs.NAME`, by the id
-    /// its path keeps only when it has no name.
+    /// Its path as people read it among `rows`, the others shown with it: a Config mount
+    /// as `SERVICE.configs.NAME`, by the id its path keeps only when it has no name, and
+    /// with a short id when another of `rows` would read the same.
     #[must_use]
-    pub fn shown_path(&self) -> String {
-        match (&self.config_name, self.path.split_once(".configs.@")) {
-            (Some(name), Some((service, _))) => format!("{service}.configs.{name}"),
-            _ => self.path.clone(),
+    pub fn shown_path(&self, rows: &[Self]) -> String {
+        let Some((service, name, id)) = self.mount() else {
+            return self.path.clone();
+        };
+        let shared = rows.iter().any(|row| {
+            row.path != self.path
+                && row
+                    .mount()
+                    .is_some_and(|(other, named, _)| other == service && named == name)
+        });
+        match shared {
+            true => format!("{service}.configs.{name} (@{})", id.get(..8).unwrap_or(id)),
+            false => format!("{service}.configs.{name}"),
         }
+    }
+
+    /// A Config mount's Service, Config name and id.
+    fn mount(&self) -> Option<(&str, &crate::ConfigName, &str)> {
+        let (service, id) = self.path.split_once(".configs.@")?;
+        Some((service, self.config_name.as_ref()?, id))
     }
 }
 

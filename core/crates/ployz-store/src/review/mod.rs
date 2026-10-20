@@ -178,8 +178,20 @@ impl NodeChange {
             Some(rest) if self.node.node_type == EnvironmentNodeType::Config => {
                 format!("configs.{}{rest}", self.name)
             }
-            _ => setting.shown_path(),
+            _ => setting.shown_path(&self.settings),
         }
+    }
+
+    /// `path` as people read it, named from whichever of `changes` holds it.
+    #[must_use]
+    pub fn shown_path_in(changes: &[Self], path: &str) -> String {
+        changes
+            .iter()
+            .find_map(|change| {
+                let row = change.settings.iter().find(|row| row.path == path)?;
+                Some(change.shown_path(row))
+            })
+            .unwrap_or_else(|| path.to_owned())
     }
 }
 

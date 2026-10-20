@@ -116,7 +116,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 from(Some(&change.row))
             ));
             for row in &change.settings {
-                for line in super::store::changed(row) {
+                for line in super::store::changed(row, &change.settings) {
                     crate::ui::stream(format_args!("  {line}{}", from(row.row.as_ref())));
                 }
             }
@@ -203,6 +203,15 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         version: matches.get_one::<String>("version").cloned(),
     };
     let store = store(root)?;
+    let staged = match path {
+        Some(_) => Vec::new(),
+        None => store
+            .read(&DiffQuery {
+                environment: discard.environment.clone(),
+            })
+            .map(|view| view.review_changes())
+            .unwrap_or_default(),
+    };
     let discarded = store
         .try_write(&discard)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
@@ -263,7 +272,11 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
                 } else {
                     "changes"
                 },
-                dropped.join(", ")
+                dropped
+                    .iter()
+                    .map(|path| ployz_store::NodeChange::shown_path_in(&staged, path))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
         }
         comes_back(&backs, saved);
@@ -475,6 +488,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 }
             }
             for path in &preview.overwritten {
+                let path = ployz_store::NodeChange::shown_path_in(&preview.changes, path);
                 crate::ui::stream(format_args!("  overwrites draft {path}"));
             }
             crate::ui::stream(format_args!("Review version: {}", preview.version));

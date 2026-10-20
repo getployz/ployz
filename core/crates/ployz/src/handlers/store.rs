@@ -892,7 +892,10 @@ fn pieces(text: &str) -> impl Iterator<Item = String> + '_ {
 
 /// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
 /// one line per domain, `web.domains: added shop.acme.ployz.app`, never as the field storing it.
-pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<String> {
+pub(crate) fn changed(
+    row: &ployz_core::config::ServiceSettingChange,
+    rows: &[ployz_core::config::ServiceSettingChange],
+) -> Vec<String> {
     if let Some(lines) = config_changed(row).or_else(|| source_changed(row)) {
         return lines;
     }
@@ -905,7 +908,7 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
         };
         return vec![format!(
             "{}: {} → {}",
-            crate::ui::escaped(&row.shown_path()),
+            crate::ui::escaped(&row.shown_path(rows)),
             value(&row.before),
             value(&row.after)
         )];
@@ -1133,7 +1136,10 @@ mod tests {
             "after": [{ "prefix": "web", "targetPort": null }, { "prefix": "shop", "targetPort": null }],
         }))
         .unwrap();
-        assert_eq!(changed(&row), ["web.domains: added shop.<cluster domain>"]);
+        assert_eq!(
+            changed(&row, &[]),
+            ["web.domains: added shop.<cluster domain>"]
+        );
         let named: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
             "path": "web.managedHostnames", "kind": "update", "canRestore": false,
             "before": [], "after": [{ "prefix": "shop", "targetPort": 8080 }],
@@ -1141,7 +1147,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            changed(&named),
+            changed(&named, &[]),
             ["web.domains: added shop.acme.ployz.app on port 8080"]
         );
         let route: ployz_core::config::ServiceSettingChange =
@@ -1151,7 +1157,10 @@ mod tests {
                 "after": null,
             }))
             .unwrap();
-        assert_eq!(changed(&route), ["web.domains: removed app.example.com"]);
+        assert_eq!(
+            changed(&route, &[]),
+            ["web.domains: removed app.example.com"]
+        );
     }
 
     fn row(path: &str, before: serde_json::Value, after: serde_json::Value) -> Vec<String> {
@@ -1161,6 +1170,7 @@ mod tests {
                 "before": before, "after": after,
             }))
             .unwrap(),
+            &[],
         )
     }
 
@@ -1225,6 +1235,7 @@ mod tests {
                     "before": null, "after": "/etc/sentry",
                 }))
                 .unwrap(),
+                &[],
             )
         };
         assert_eq!(
@@ -1244,7 +1255,7 @@ mod tests {
             "before": null, "after": 0.201_326_592,
         }))
         .unwrap();
-        assert_eq!(changed(&row), ["web.memLimit: null → 192 MiB"]);
+        assert_eq!(changed(&row, &[]), ["web.memLimit: null → 192 MiB"]);
     }
 
     #[test]
@@ -1255,7 +1266,7 @@ mod tests {
                 "before": before, "after": after,
             }))
             .unwrap();
-            changed(&row)
+            changed(&row, &[])
         };
         assert_eq!(
             row(json!(0.5), json!(2)),

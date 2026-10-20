@@ -67,7 +67,7 @@ impl Tool for ServiceInspect {
         let staged = view
             .changes
             .iter()
-            .map(|change| own_path(name, &change.shown_path()))
+            .map(|change| own_path(name, &change.shown_path(&view.changes)))
             .collect::<Vec<_>>();
         Ok(json!({
             "at": at(&view.environment),
