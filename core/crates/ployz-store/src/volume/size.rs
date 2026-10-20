@@ -1,17 +1,179 @@
 //! A deployed Managed Volume's size. It lives in three places: Working State, the
 //! `config_volume_storage` lock row and Applied State. The lock row is the one the
 //! Machines answer to, so Head and Applied State read the lock, and only Cloud, which
-//! drives the Machines through a resize, moves it. No `Command` reaches it, so
-//! `/api/config/write`, the CLI and the agent can't claim a size the Machines don't
-//! hold.
+//! drives the Machines through a resize, moves it ([`VolumeResized`]). No `Command`
+//! reaches it, so `/api/config/write`, the CLI and the agent can't claim a size the
+//! Machines don't hold.
 
-use ployz_core::config::{SavedEnvironmentIntent, VolumeKind};
+use ployz_core::config::{SavedEnvironmentIntent, SavedVolumeIntent, VolumeKind};
 use ployz_core::{ProvisionedVolumeMaximumBytes, RpcError};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
+use crate::Actor;
 use crate::error;
-use crate::id::EnvironmentId;
+use crate::id::{EnvironmentId, VolumeId};
+use crate::scope;
 use crate::storage::Tx;
+
+/// A deployed Managed Volume's size moved, in either direction, as Cloud's resize
+/// run reports it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeResized {
+    /// By ID: a rename since the run started can't redirect it.
+    pub environment: EnvironmentId,
+    pub volume: VolumeId,
+    /// The size the Store recorded when the run read it; the record is a
+    /// compare-and-set on it.
+    pub from: ProvisionedVolumeMaximumBytes,
+    /// The size the Store records from now on.
+    pub to: ProvisionedVolumeMaximumBytes,
+}
+
+/// Record `resized` in one transaction under the Environment's lock. This is the only
+/// way a deployed Volume's size changes: a run that grows records after the last
+/// Machine grew, a run that shrinks records before the first Machine shrinks, and one
+/// refused midway records the sizes swapped to put the old one back. The lock row
+/// moves from `from` to `to`, in either direction, and Applied State mirrors it: a
+/// different Applied size is what an older revision asked for, not what the Servers
+/// hold. Working State follows only where it still says `from`; anything else there
+/// is a user's intent, such as a staged History restore, and stays. Saved revisions
+/// are history and are never touched.
+///
+/// A lock row already at `to` is a replayed record: it answers Ok and writes nothing,
+/// even when Working State was restored to `from` since. Once the lock moved on from
+/// `to`, the same record is no replay and fails the compare-and-set.
+///
+/// Every record that writes changes Applied State, which Cloud's change log reads, so
+/// the lock row needs no change-log source of its own.
+///
+/// # Errors
+/// `not_found` when the Volume has no fixed storage, or is gone from both Working and
+/// Applied State; `conflict` with `reason: "size_changed"` when the lock row holds
+/// anything but `Provisioned { from }`, a Docker Volume included.
+pub(crate) fn record(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    resized: &VolumeResized,
+) -> Result<(), RpcError> {
+    let mut environment = scope::lock_id(tx, who, &resized.environment)?;
+    let id = environment.summary.id.clone();
+    let volume = resized.volume.as_str();
+    let applied = applied_volume(tx, &id, volume)?;
+    let staged = environment
+        .working
+        .volumes
+        .iter_mut()
+        .find(|node| node.resource_id == volume);
+    let recorded = super::locked_storage(tx, &id)?.remove(volume);
+    let (Some(recorded), Some(name)) = (
+        recorded,
+        staged
+            .as_deref()
+            .or(applied.as_ref())
+            .map(|node| node.name.clone()),
+    ) else {
+        return Err(error::not_found(
+            "No deployed Volume to record a size for.",
+            json!({ "volume": volume }),
+        ));
+    };
+    let to = VolumeKind::Provisioned {
+        maximum_bytes: resized.to,
+    };
+    if recorded == to {
+        return Ok(());
+    }
+    let from = VolumeKind::Provisioned {
+        maximum_bytes: resized.from,
+    };
+    if recorded != from {
+        let message = match recorded {
+            VolumeKind::Docker {} => {
+                format!("{name} is a Docker Volume; it has no size to record.")
+            }
+            VolumeKind::Provisioned { maximum_bytes } => format!(
+                "{name} is recorded at {maximum_bytes}, not {}; read its size again.",
+                resized.from
+            ),
+        };
+        return Err(error::conflict(
+            message,
+            json!({ "reason": "size_changed", "volume": volume, "recorded": recorded }),
+        ));
+    }
+    let storage = serde_json::to_string(&to).expect("storage is JSON");
+    tx.execute(
+        "UPDATE config_volume_storage SET storage = ?3 \
+         WHERE environment_id = ?1 AND volume_id = ?2",
+        &[id.as_str().into(), volume.into(), storage.as_str().into()],
+    )?;
+    if let Some(mut node) = applied {
+        node.storage = to;
+        tx.execute(
+            "UPDATE config_applied SET node = ?3 WHERE environment_id = ?1 AND node_id = ?2",
+            &[
+                id.as_str().into(),
+                volume.into(),
+                scope::Node::Volume(&node).document().as_str().into(),
+            ],
+        )?;
+    }
+    let follows = staged.is_some_and(|node| {
+        let follows = node.storage == from;
+        if follows {
+            node.storage = to;
+        }
+        follows
+    });
+    if follows {
+        scope::save_working(tx, &mut environment)?;
+    }
+    Ok(())
+}
+
+/// Applied State's node for Volume `volume`, if a Deploy put it there.
+fn applied_volume(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    volume: &str,
+) -> Result<Option<SavedVolumeIntent>, RpcError> {
+    tx.query(
+        "SELECT node FROM config_applied WHERE environment_id = ?1 AND node_id = ?2",
+        &[environment.as_str().into(), volume.into()],
+    )?
+    .first()
+    .map(|row| row.json(0, "Applied State"))
+    .transpose()
+}
+
+/// `volumes` at the size their Servers hold: a Provisioned Volume's lock row, once a
+/// Deploy fixed one, whatever its Saved revision asked for. A Saved revision keeps
+/// what it asked for as history; what it puts into Head or Applied State reads the
+/// lock. A Docker Volume and an undeployed one stay as they are.
+pub(crate) fn held(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    volumes: &mut [SavedVolumeIntent],
+) -> Result<(), RpcError> {
+    if volumes
+        .iter()
+        .all(|volume| matches!(volume.storage, VolumeKind::Docker {}))
+    {
+        return Ok(());
+    }
+    let locked = super::locked_storage(tx, environment)?;
+    for volume in volumes {
+        if let (VolumeKind::Provisioned { .. }, Some(fixed @ VolumeKind::Provisioned { .. })) =
+            (&volume.storage, locked.get(&volume.resource_id))
+        {
+            volume.storage = *fixed;
+        }
+    }
+    Ok(())
+}
 
 /// Whether a storage an intent asks for fits the storage a Volume was fixed at.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
