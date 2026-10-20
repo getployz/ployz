@@ -10,6 +10,10 @@ use crate::{DockerVolumeName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorC
 /// Bytes in one GiB; Pool growth rounds up to a multiple of it.
 pub const STORAGE_GIB: u64 = 1024 * 1024 * 1024;
 
+/// Pool metadata a hint leaves below the exact edge: an admission's own
+/// `zpool online -e` and ordinary churn move unmanaged bytes between samples.
+const COMMITTABLE_HINT_MARGIN_BYTES: u64 = 128 * 1024 * 1024;
+
 /// The physical backing from which a Machine can provision storage.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -322,6 +326,19 @@ impl StorageCapacity {
             }
         }
         Ok(admitted)
+    }
+
+    /// [`Self::committable_bytes`] as a Machine publishes it: below the exact edge by a
+    /// margin, then down to whole GiB, so a sample stays admissible while the Pool's
+    /// metadata moves and byte drift never changes it. A hint; admission stays final.
+    ///
+    /// # Errors
+    /// Returns unknown capacity for inconsistent observations.
+    pub fn committable_hint_bytes(&self) -> Result<u64, StorageCapacityError> {
+        let below = self
+            .committable_bytes()?
+            .saturating_sub(COMMITTABLE_HINT_MARGIN_BYTES);
+        Ok(below - below % STORAGE_GIB)
     }
 
     fn admit(&self, commitment: u64) -> Result<StorageBudget, StorageCapacityError> {
@@ -699,6 +716,26 @@ mod tests {
             capacity.committable_bytes(),
             Err(StorageCapacityError::StorageCapacityUnknown { .. })
         ));
+    }
+
+    #[test]
+    fn the_hint_keeps_a_margin_below_the_edge_in_whole_gib() {
+        let fixed = |pool_size_bytes, unmanaged_used_bytes| StorageCapacity {
+            backing: StorageBacking::Fixed { pool_size_bytes },
+            unmanaged_used_bytes,
+            slot_bound_bytes: 0,
+            volumes: BTreeMap::new(),
+            copies: BTreeMap::new(),
+        };
+        let roomy = fixed(10 * STORAGE_GIB, 0);
+        assert_eq!(roomy.committable_bytes().unwrap(), 9 * STORAGE_GIB);
+        assert_eq!(roomy.committable_hint_bytes().unwrap(), 8 * STORAGE_GIB);
+        let drifting = fixed(10 * STORAGE_GIB, 1000);
+        assert_eq!(drifting.committable_hint_bytes().unwrap(), 8 * STORAGE_GIB);
+        assert_eq!(
+            fixed(STORAGE_GIB + 1, 0).committable_hint_bytes().unwrap(),
+            0
+        );
     }
 
     #[test]

@@ -393,12 +393,8 @@ impl ContainerRuntime {
         {
             Ok(capacity) => {
                 observe_copies(&machine_id, &mut volumes, &capacity.copies);
-                // Byte drift in unmanaged Pool usage would otherwise republish the Machine
-                // row on every rescan, and each row change rebuilds every peer's mesh routes.
-                capacity
-                    .committable_bytes()
-                    .ok()
-                    .map(|bytes| bytes - bytes % ployz_core::STORAGE_GIB)
+                // Whole GiB: each Machine row change rebuilds every peer's mesh routes.
+                capacity.committable_hint_bytes().ok()
             }
             Err(error) => {
                 eprintln!("Volume copies unobserved, Docker Volumes stay writers: {error}");
