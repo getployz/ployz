@@ -1,12 +1,12 @@
 === volume ls :: $ ployz volume ls
-VOLUME	STORAGE	SHARED WRITES	MOUNTS	DEPLOYED	NEXT DEPLOY
-cache	Managed volume (1 GB limit)	off	api:/cache	no	create
-data	Docker volume (no size limit)	off	api:/data	no	create
+VOLUME   STORAGE                         SHARED WRITES   MOUNTS       DEPLOYED   NEXT DEPLOY
+cache    Managed volume (1 GB limit)     off             api:/cache   no         create
+data     Docker volume (no size limit)   off             api:/data    no         create
 
 === volume ls --json :: $ ployz volume ls --json
 {
   "environment": {
-    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "id": "96430fcc-088f-45be-9cbe-5e67e7e2f507",
     "name": "production",
     "project": "shop",
     "revision": 12
@@ -15,7 +15,7 @@ data	Docker volume (no size limit)	off	api:/data	no	create
     {
       "change": "create",
       "deployed": false,
-      "id": "b403d017-1d63-491c-8264-19180119b004",
+      "id": "39f15369-bfc8-4367-a9da-ae9ec8ff496c",
       "mounts": [
         {
           "path": "/cache",
@@ -33,7 +33,7 @@ data	Docker volume (no size limit)	off	api:/data	no	create
     {
       "change": "create",
       "deployed": false,
-      "id": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+      "id": "708d0431-a823-4abd-bace-7dd1461c5d21",
       "mounts": [
         {
           "path": "/data",
@@ -51,26 +51,26 @@ data	Docker volume (no size limit)	off	api:/data	no	create
 }
 
 === volume inspect :: $ ployz volume inspect data
-Volume data (fb5fbf41-f4eb-4151-a3b5-2158bb829dc4)
-Storage: Docker volume (no size limit)
-Storage settings: locked after deployment was requested
-Shared writes: off
-Deployed: no
-Next Deploy: create
-Mounted by api at /data
+volume            data
+storage           Docker volume (no size limit)
+storage settings  locked after deployment was requested
+shared writes     off
+deployed          no
+next deploy       create
+mounted by        api at /data
 
 === volume inspect --json :: $ ployz volume inspect data --json
 {
   "change": "create",
   "deployed": false,
   "environment": {
-    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "id": "96430fcc-088f-45be-9cbe-5e67e7e2f507",
     "name": "production",
     "project": "shop",
     "revision": 12
   },
-  "id": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
-  "lineage": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+  "id": "708d0431-a823-4abd-bace-7dd1461c5d21",
+  "lineage": "708d0431-a823-4abd-bace-7dd1461c5d21",
   "mounts": [
     {
       "path": "/data",
@@ -86,6 +86,6 @@ Mounted by api at /data
 }
 
 === volume ls after deploy :: $ ployz volume ls
-VOLUME	STORAGE	SHARED WRITES	MOUNTS	DEPLOYED	NEXT DEPLOY
-store	Docker volume (no size limit)	on	api:/data	yes	-
+VOLUME   STORAGE                         SHARED WRITES   MOUNTS      DEPLOYED   NEXT DEPLOY
+store    Docker volume (no size limit)   on              api:/data   ✔ yes      -
 
