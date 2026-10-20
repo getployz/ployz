@@ -147,6 +147,34 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
             Some(("The container for app/web stopped; exec ended.", "ployz ps")),
         ),
         (vec![web('a', running())], 137, None),
+        (
+            vec![
+                web('a', running()),
+                listing_container('b', 'b', "web", ContainerKind::ServiceContainer, running()),
+            ],
+            137,
+            None,
+        ),
+        (
+            vec![web('a', ContainerRuntimeObservation::Paused)],
+            137,
+            None,
+        ),
+        (
+            vec![web(
+                'a',
+                ContainerRuntimeObservation::Unknown {
+                    raw: json!("frozen"),
+                },
+            )],
+            137,
+            None,
+        ),
+        (
+            vec![],
+            1,
+            Some(("The container for app/web stopped; exec ended.", "ployz ps")),
+        ),
     ] {
         let mut service = DiscoveryService::new(test_description());
         service.exec_frames = Some(vec![

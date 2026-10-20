@@ -14,8 +14,8 @@ use ployz_core::{
     ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
     FanoutSelector, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
     MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, QualifiedService,
-    ServiceContainer, ServiceId, ServiceObservation, ServiceSelector, StreamProtocolError,
-    TailLogsRequest, op, resolve_container_selector, resolve_machine_selectors, select_service,
+    ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, TailLogsRequest,
+    op, resolve_container_selector, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -415,7 +415,7 @@ pub struct ExecSession {
 /// The container an exec session runs in.
 #[derive(Clone, Debug)]
 pub struct ExecTarget {
-    pub service_id: ServiceId,
+    pub identity: QualifiedService,
     pub machine_id: MachineId,
     pub container_id: ContainerId,
 }
@@ -490,7 +490,7 @@ pub async fn open_exec(
         input: sender,
         output,
         target: ExecTarget {
-            service_id: service.service_id,
+            identity: service.identity.clone(),
             machine_id,
             container_id: container.container_id,
         },
@@ -498,8 +498,10 @@ pub async fn open_exec(
 }
 
 /// Observe whether `target`'s container stopped running, and whether another
-/// container of its Service runs. `None` while it still runs, and when its Machine
-/// did not answer, since absence from a partial view proves nothing.
+/// container of its Service runs. Only its own Machine's answer counts as proof:
+/// the container listed there as exited, dead or being removed, or absent from it.
+/// `None` for any other state, and when that Machine did not answer, since absence
+/// from a partial view proves nothing.
 ///
 /// # Errors
 /// Returns the connect error when the Machines cannot be listed.
@@ -507,37 +509,38 @@ pub async fn exec_container_stopped(
     client: &mut Client,
     target: &ExecTarget,
 ) -> Result<Option<ContainerStopped>, OperatorError> {
+    use ployz_core::ContainerRuntimeObservation::{Dead, Exited, Removing, Running};
     let machines = client.machines().await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
-    if !live
+    let Some(answer) = live
         .containers
         .successes
         .iter()
-        .any(|answer| answer.machine_id == target.machine_id)
-    {
+        .find(|answer| answer.machine_id == target.machine_id)
+    else {
         return Ok(None);
+    };
+    match answer
+        .value
+        .iter()
+        .find(|container| container.container_id == target.container_id)
+        .map(|container| &container.runtime)
+    {
+        None | Some(Exited { .. } | Dead | Removing) => {}
+        Some(_) => return Ok(None),
     }
-    let mut another_runs = false;
-    for container in live
+    let another_runs = live
         .services()
         .iter()
-        .filter(|service| service.service_id == target.service_id)
+        .filter(|service| service.identity == target.identity)
         .flat_map(|service| &service.containers)
         .map(ServiceContainer::as_observation)
-        .filter(|container| {
-            matches!(
-                container.runtime,
-                ployz_core::ContainerRuntimeObservation::Running { .. }
-            )
-        })
-    {
-        if container.container_id == target.container_id {
-            return Ok(None);
-        }
-        another_runs = true;
-    }
+        .any(|container| {
+            container.container_id != target.container_id
+                && matches!(container.runtime, Running { .. })
+        });
     Ok(Some(ContainerStopped { another_runs }))
 }
 
