@@ -395,29 +395,40 @@ describe("drain-server", () => {
     expect(drainCalls).toHaveLength(1);
   });
 
-  it("times its wait as the sweep does: from the request, or from the Organization's last Drain end when later", async () => {
+  it("ends never started on its first try when the request is past the limit and its Server is silent, so no retry drains it", async () => {
     await request();
     await age(DRAIN_PENDING_LIMIT_MS + 60_000);
-    silentOpens = Number.POSITIVE_INFINITY;
-    const late = await drain();
+    silentOpens = 1;
+    const first = await drain();
 
-    expect(late.error).toBeDefined();
-    expect(sleeps(late)).toEqual([]);
-    await failRun();
-    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started" }]);
+    expect(first.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(sleeps(first)).toEqual([]);
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started", started_at: null }]);
+    // The Server answers by the time Inngest retries the step.
+    expect(await runEffect(executeDrainOnce(request0, "run-drain", { waited: false }))).toEqual({ attemptId: requestId, state: "failed" });
+    expect(drainCalls).toEqual([]);
     expect((await sweep()).result).toEqual({ failed: 0, unknown: 0 });
+  });
 
-    await harness.pool.query(`delete from server_drain_attempt`);
-    silentOpens = 0;
+  it("keeps its deadline at the request's pending limit while the Organization's other Drains end", async () => {
     await request();
-    await age(DRAIN_PENDING_LIMIT_MS + 60_000);
-    await endedAgo(30_000);
-    silentOpens = 2;
-    const queued = await drain();
+    silentOpens = 3;
+    let waits = 0;
+    whileWaiting = async () => {
+      waits += 1;
+      await age(10 * 60_000);
+      await harness.pool.query(
+        `insert into server_drain_attempt (id, organization_id, machine_id, state, inngest_run_id, requested_at, started_at, ended_at, end_code)
+         values ($1, $2, $3, 'unknown', $4, now() - interval '1 hour', now() - interval '1 minute', now() - interval '30 seconds', 'lost')`,
+        [`00000000-0000-4000-8000-0000000000f${waits}`, organizationId, otherMachineId, `run-other-${waits}`],
+      );
+    };
+    const output = await drain();
 
-    expect(queued.result).toEqual({ attemptId: requestId, state: "finished" });
-    expect(sleeps(queued)).toHaveLength(2);
-    expect((await sweep()).result).toEqual({ failed: 0, unknown: 0 });
+    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(sleeps(output)).toHaveLength(2);
+    expect(drainCalls).toEqual([]);
+    expect((await rows()).find(({ id }) => id === requestId)).toMatchObject({ state: "failed", end_code: "not_started", started_at: null });
   });
 
   it("fails at once, without waiting, when the Organization has no Cluster paired", async () => {
