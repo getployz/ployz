@@ -77,6 +77,10 @@ pub(crate) fn environment(
 ) -> Result<EnvironmentView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let path = query.path.as_ref();
+    let only = path.and_then(SettingPath::target);
+    if only == Some(&Target::Setup) {
+        crate::branch::refuse_service_named_setup(&environment)?;
+    }
     let services = match path {
         Some(path) => vec![environment.service(path.settings_of()?)?],
         None => {
@@ -85,13 +89,16 @@ pub(crate) fn environment(
             services
         }
     };
-    let only = path.and_then(SettingPath::target);
     let values = path
         .filter(|path| path.target().is_none())
         .and_then(|_| services.first())
         .map(|service| values(tx, &environment, service))
         .transpose()?;
     let whole = path.is_none() && !query.all;
+    let setup = match only {
+        Some(Target::Setup) => Some(crate::branch::Own::of_branch(tx, &environment)?),
+        _ => crate::branch::Own::of(tx, &environment)?,
+    };
     let mut settings = Vec::new();
     for service in services {
         let name = ServiceName::parse(service.slug.as_str())
@@ -109,6 +116,7 @@ pub(crate) fn environment(
                     Target::Setting(setting) => (None, setting.note(&service.config)),
                     Target::Source
                     | Target::Domains
+                    | Target::Setup
                     | Target::Exported(_)
                     | Target::Description(_)
                     | Target::Mount(_)
@@ -187,6 +195,19 @@ pub(crate) fn environment(
                 _ => Target::ConfigMount(config.into()),
             };
             row(target, Value::String(dir), Value::Null, Apply::Staged)?;
+        }
+        if let Some(setup) = &setup {
+            let value = setup.value(service);
+            if only.is_none_or(|only| *only == Target::Setup) && !(whole && value.is_null()) {
+                settings.push(SettingRow {
+                    path: SettingPath::at(&name, Target::Setup),
+                    value,
+                    default: Value::Null,
+                    apply: Apply::Immediate,
+                    row: None,
+                    note: setup.note(service),
+                });
+            }
         }
     }
     Ok(EnvironmentView {

@@ -17,8 +17,9 @@ use crate::agent::run::AgentRun;
 use crate::config::{ControlConfig, RegionConfig, Secret};
 use crate::control::engine::Tempo;
 use crate::control::plane::ControlPlane;
+use crate::control::schedule::next_slot;
 use crate::control::test_pg;
-use crate::domain::{AgentName, Region};
+use crate::domain::{AgentName, CheckId, Region, UnixMs};
 use crate::run::{self, Fatal, Shutdown, Trigger};
 
 const STEP: Duration = Duration::from_secs(30);
@@ -311,13 +312,27 @@ const REQUEST_PROBE: &str = "UPDATE uptime_check SET probe_requested_at = now() 
 const ANSWERED: &str = "SELECT count(*) FROM uptime_check WHERE id = $1 \
     AND probe_answered_at = date_trunc('milliseconds', probe_requested_at)";
 
-/// The interval is an hour (two minutes at this tempo) and rechecks wait a minute, so within one
-/// step only a requested probe can open or close.
+/// A check id whose routine slot every `period` came a second ago, so the next one is a period
+/// away. The slot's phase is the id's first eight bytes.
+fn routine_slot_just_passed(period: Duration) -> Uuid {
+    let period_ms = i64::try_from(period.as_millis()).unwrap();
+    let now = UnixMs::now();
+    let phase = u64::try_from((now.0 - 1_000).rem_euclid(period_ms)).unwrap();
+    let mut bytes = Uuid::new_v4().into_bytes();
+    bytes[..8].copy_from_slice(&phase.to_be_bytes());
+    let id = Uuid::from_bytes(bytes);
+    assert!(next_slot(CheckId(id), period, now).0 - now.0 > period_ms - 2_000);
+    id
+}
+
+/// The interval is an hour (two minutes at this tempo), the routine slot is two minutes away and
+/// rechecks wait a minute, so within one step only a requested probe can open or close.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_requested_probe_opens_and_closes_without_waiting_for_the_schedule() {
     let (pg, admin) = test_pg::postgres().await;
     let org = test_pg::org(&admin).await;
-    let check = test_pg::check(&admin, org, "http://127.0.0.1/").await;
+    let id = routine_slot_just_passed(Duration::from_secs(3600 / 30));
+    let check = test_pg::check_with_id(&admin, org, "http://127.0.0.1/", id).await;
     admin
         .execute(
             "UPDATE uptime_check SET interval_seconds = 3600, timeout_ms = 1000 WHERE id = $1",
