@@ -1,3 +1,4 @@
+import { Option, Schema } from "effect";
 import { endCleanup, type CleanupEnd, recordCleanupWaiting, retireOldCopies } from "#/modules/config-store/retire-old.server";
 import type { StoreEffectRunner } from "#/modules/config-store/store-deployment.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
@@ -12,6 +13,11 @@ export const RETIRE_OLD_FUNCTION_ID = "retire-old";
 export const RETIRE_ATTEMPTS = 3;
 export const RETIRE_PAUSE = "1m";
 
+const retireRequestedSchema = Schema.Struct({
+  data: Schema.Struct({ organizationId: Schema.String, environmentId: Schema.String, deploymentId: Schema.String }),
+});
+const decodeRetireRequested = Schema.decodeUnknownOption(retireRequestedSchema);
+
 /** After a Cloud Deploy ran, retire the old copies its run replaced, through the Store. */
 export const createRetireOld = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
   inngest.createFunction(
@@ -24,7 +30,10 @@ export const createRetireOld = (inngest: PloyzInngest, runEffect: StoreEffectRun
         event: configDeploymentAdmittedEventType,
         if: "async.data.environmentId == event.data.environmentId && async.data.deploymentId != event.data.deploymentId",
       }],
-      onFailure: async ({ event, error }) => runEffect(endCleanup(event.data.run_id, { state: "failed", message: error.message })),
+      onFailure: async ({ event, error }) => {
+        const requested = Option.map(decodeRetireRequested(event.data.event), ({ data }) => data);
+        return runEffect(endCleanup(event.data.run_id, { state: "failed", message: error.message }, requested));
+      },
     },
     async ({ event, step, runId }) => {
       await step.run("record-waiting", () => runEffect(recordCleanupWaiting(runId, event.data)));
@@ -34,7 +43,7 @@ export const createRetireOld = (inngest: PloyzInngest, runEffect: StoreEffectRun
           : attempt === RETIRE_ATTEMPTS ? { state: "left_running", left }
           : null;
         if (end !== null) {
-          await step.run("end", () => runEffect(endCleanup(runId, end)));
+          await step.run("end", () => runEffect(endCleanup(runId, end, Option.some(event.data))));
           return end;
         }
         await step.run(`waiting-${attempt}`, () => runEffect(recordCleanupWaiting(runId, event.data, left)));
@@ -61,7 +70,9 @@ export const createCancelRetireOld = (inngest: PloyzInngest, runEffect: StoreEff
     async ({ event, step }) => {
       const cancelled = decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event);
       if (!isRetireOld(cancelled.data.function_id)) return { skipped: true };
-      return { cancelled: await step.run("cancel-cleanup", () => runEffect(endCleanup(cancelled.data.run_id, { state: "cancelled" }))) };
+      const { run_id: runId, event: triggering } = cancelled.data;
+      const requested = Option.map(decodeRetireRequested(triggering), ({ data }) => data);
+      return { cancelled: await step.run("cancel-cleanup", () => runEffect(endCleanup(runId, { state: "cancelled" }, requested))) };
     },
   );
 
