@@ -31,7 +31,11 @@ export type ResizeVerdict =
   /** The size the Servers hold, over a restored revision that asks for less: staged back, not resized. */
   | { readonly kind: "restage" }
   | { readonly kind: "refused"; readonly message: string }
-  | { readonly kind: "grow"; readonly from: Bytes; readonly to: Bytes; readonly servers: readonly string[] | null };
+  /** `copies` is every copy the run grows, primary first, or null before the Servers answer. */
+  | { readonly kind: "grow"; readonly from: Bytes; readonly to: Bytes; readonly copies: readonly Copy[] | null };
+
+type Copy = Pick<Holder, "name" | "role">;
+const ROLE_ORDER: readonly Holder["role"][] = ["primary", "mirror", "old_copy"];
 
 /**
  * What the drawer does with a typed size, checked as the run checks it so the input refuses what the run would. The
@@ -40,29 +44,32 @@ export type ResizeVerdict =
 export function checkResize({ volume, recorded, working, requested, holders }: ResizeAsk): ResizeVerdict {
   if (requested < recorded) return { kind: "refused", message: `${volume} is deployed at ${gb(recorded)}; a deployed volume can't shrink yet.` };
   if (requested === recorded) return working === recorded ? { kind: "settled" } : { kind: "restage" };
-  if (holders === null) return { kind: "grow", from: recorded, to: requested, servers: null };
+  if (holders === null) return { kind: "grow", from: recorded, to: requested, copies: null };
 
   // The run asks every copy, old ones included, and a record listing no capabilities may not serve the verb.
   const lacking = holders.filter((holder) => holder.capabilities === null
     || RESIZE_ORDER.grow.requires.some((requirement) => serverSupports({ capabilities: holder.capabilities ?? [] }, requirement) !== true));
   if (lacking.length > 0) return { kind: "refused", message: `Growing needs a newer Ployz on ${lacking.map((holder) => holder.name).join(", ")}.` };
 
-  const serving = [...holders.filter((holder) => holder.role === "primary"), ...holders.filter((holder) => holder.role === "mirror")];
-  const [tightest] = serving.flatMap((holder) => holder.committableBytes === null ? [] : [{ name: holder.name, room: holder.committableBytes }])
+  // The run grows every slot, an old copy included, so each one's Pool must take the growth.
+  const growing = ROLE_ORDER.flatMap((role) => holders.filter((holder) => holder.role === role));
+  const [tightest] = growing.flatMap((holder) => holder.committableBytes === null ? [] : [{ name: holder.name, room: holder.committableBytes }])
     .sort((a, b) => a.room - b.room);
   if (tightest !== undefined && requested - recorded > tightest.room) {
     const room = Math.floor(tightest.room / GB) * GB;
     return { kind: "refused", message: room === 0 ? `${tightest.name} has no room to grow it.` : `${tightest.name} has room to grow it by ${gb(room)} at most.` };
   }
-  return { kind: "grow", from: recorded, to: requested, servers: serving.map((holder) => holder.name) };
+  return { kind: "grow", from: recorded, to: requested, copies: growing.map(({ name, role }) => ({ name, role })) };
 }
 
-/** What the confirm says a grow does: the primary first, as the Servers named it, then its mirrors. */
-export function growWords(volume: string, { from, to, servers }: Extract<ResizeVerdict, { kind: "grow" }>): string {
-  const [primary, ...mirrors] = servers ?? [];
-  const where = primary === undefined ? "on every server that holds a copy"
-    : mirrors.length === 0 ? `on ${primary}`
-    : `on ${primary} and its mirror${mirrors.length === 1 ? "" : "s"} on ${listNames(mirrors)}`;
+/** What the confirm says a grow does: the primary first, then its mirrors and old copies, by Server. */
+export function growWords(volume: string, { from, to, copies }: Extract<ResizeVerdict, { kind: "grow" }>): string {
+  const named = (role: Holder["role"]) => (copies ?? []).filter((copy) => copy.role === role).map((copy) => copy.name);
+  const [primary] = named("primary");
+  const others = [["mirror", named("mirror")], ["old copy", named("old_copy")]] as const;
+  const rest = others.flatMap(([noun, names]) => names.length === 0 ? [] : [`its ${noun}${names.length === 1 ? "" : "s"} on ${listNames(names)}`]);
+  const where = copies === null || primary === undefined ? "on every server that holds a copy"
+    : `on ${listNames([primary, ...rest])}`;
   return `Grow ${volume} from ${gb(from)} to ${gb(to)} ${where}. Its services keep running.`;
 }
 

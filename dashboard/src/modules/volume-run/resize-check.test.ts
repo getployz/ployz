@@ -4,6 +4,7 @@ import { checkResize, growWords, type Holder, holdersOf, type ResizeAsk, type Re
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const GB = 1_000_000_000;
+type ResizeVerdictCopies = Extract<ResizeVerdict, { kind: "grow" }>["copies"];
 const SIZE = ["ployz.volume.size.set.v1"];
 const holder = (name: string, role: Holder["role"], options: Partial<Holder> = {}): Holder =>
   ({ name, role, capabilities: SIZE, committableBytes: null, ...options });
@@ -15,8 +16,8 @@ describe("checkResize", () => {
     ["a smaller size is refused, as the Store refuses it", ask(5 * GB), { kind: "refused", message: "data is deployed at 10 GB; a deployed volume can't shrink yet." }],
     ["the held size is settled", ask(10 * GB), { kind: "settled" }],
     ["the held size over a restored smaller revision stages it back", ask(10 * GB, { working: 4 * GB }), { kind: "restage" }],
-    ["a larger size grows the primary and its mirrors", ask(20 * GB), { kind: "grow", from: 10 * GB, to: 20 * GB, servers: ["fsn-1", "fsn-2"] }],
-    ["before the Servers answer, a larger size grows without naming them", ask(20 * GB, { holders: null }), { kind: "grow", from: 10 * GB, to: 20 * GB, servers: null }],
+    ["a larger size grows the primary and its mirrors", ask(20 * GB), { kind: "grow", from: 10 * GB, to: 20 * GB, copies: [{ name: "fsn-1", role: "primary" }, { name: "fsn-2", role: "mirror" }] }],
+    ["before the Servers answer, a larger size grows without naming them", ask(20 * GB, { holders: null }), { kind: "grow", from: 10 * GB, to: 20 * GB, copies: null }],
     [
       "every holder without the verb is named, an old copy and a record listing nothing included",
       ask(20 * GB, { holders: [holder("fsn-1", "primary", { capabilities: [] }), holder("fsn-2", "mirror"), holder("fsn-3", "old_copy", { capabilities: ["ployz.volume.copy.set.v1"] })] }),
@@ -40,17 +41,22 @@ describe("checkResize", () => {
     [
       "growth that fits exactly is let through",
       ask(22 * GB, { holders: [holder("fsn-1", "primary", { committableBytes: 12 * GB })] }),
-      { kind: "grow", from: 10 * GB, to: 22 * GB, servers: ["fsn-1"] },
+      { kind: "grow", from: 10 * GB, to: 22 * GB, copies: [{ name: "fsn-1", role: "primary" }] },
     ],
     [
-      "an unknown room refuses nothing, and an old copy's room isn't read",
-      ask(500 * GB, { holders: [holder("fsn-1", "primary"), holder("fsn-3", "old_copy", { committableBytes: 0 })] }),
-      { kind: "grow", from: 10 * GB, to: 500 * GB, servers: ["fsn-1"] },
+      "an unknown room refuses nothing",
+      ask(500 * GB, { holders: [holder("fsn-1", "primary")] }),
+      { kind: "grow", from: 10 * GB, to: 500 * GB, copies: [{ name: "fsn-1", role: "primary" }] },
     ],
     [
-      "the Servers are named primary first",
-      ask(20 * GB, { holders: [holder("fsn-2", "mirror"), holder("fsn-3", "old_copy"), holder("fsn-1", "primary")] }),
-      { kind: "grow", from: 10 * GB, to: 20 * GB, servers: ["fsn-1", "fsn-2"] },
+      "an old copy grows too, so its Pool's room refuses",
+      ask(20 * GB, { holders: [holder("fsn-1", "primary"), holder("fsn-3", "old_copy", { committableBytes: 0 })] }),
+      { kind: "refused", message: "fsn-3 has no room to grow it." },
+    ],
+    [
+      "every copy is named, primary first, then mirrors and old copies",
+      ask(20 * GB, { holders: [holder("fsn-3", "old_copy"), holder("fsn-2", "mirror"), holder("fsn-1", "primary")] }),
+      { kind: "grow", from: 10 * GB, to: 20 * GB, copies: [{ name: "fsn-1", role: "primary" }, { name: "fsn-2", role: "mirror" }, { name: "fsn-3", role: "old_copy" }] },
     ],
   ])("%s", (_, input, verdict) => {
     expect(checkResize(input)).toEqual(verdict);
@@ -58,13 +64,15 @@ describe("checkResize", () => {
 });
 
 describe("growWords", () => {
-  it.each<[string, readonly string[] | null, string]>([
-    ["names the primary and its mirror", ["fsn-1", "fsn-2"], "Grow data from 10 GB to 20 GB on fsn-1 and its mirror on fsn-2. Its services keep running."],
-    ["names every mirror", ["fsn-1", "fsn-2", "fsn-3"], "Grow data from 10 GB to 20 GB on fsn-1 and its mirrors on fsn-2 and fsn-3. Its services keep running."],
-    ["names a lone primary", ["fsn-1"], "Grow data from 10 GB to 20 GB on fsn-1. Its services keep running."],
+  const copy = (name: string, role: Holder["role"]) => ({ name, role });
+  it.each<[string, ResizeVerdictCopies, string]>([
+    ["names the primary and its mirror", [copy("fsn-1", "primary"), copy("fsn-2", "mirror")], "Grow data from 10 GB to 20 GB on fsn-1 and its mirror on fsn-2. Its services keep running."],
+    ["names every mirror", [copy("fsn-1", "primary"), copy("fsn-2", "mirror"), copy("fsn-3", "mirror")], "Grow data from 10 GB to 20 GB on fsn-1 and its mirrors on fsn-2 and fsn-3. Its services keep running."],
+    ["names an old copy", [copy("fsn-1", "primary"), copy("fsn-2", "mirror"), copy("fsn-3", "old_copy")], "Grow data from 10 GB to 20 GB on fsn-1, its mirror on fsn-2 and its old copy on fsn-3. Its services keep running."],
+    ["names a lone primary", [copy("fsn-1", "primary")], "Grow data from 10 GB to 20 GB on fsn-1. Its services keep running."],
     ["says every copy before the Servers answer", null, "Grow data from 10 GB to 20 GB on every server that holds a copy. Its services keep running."],
-  ])("%s", (_, servers, words) => {
-    expect(growWords("data", { kind: "grow", from: 10 * GB, to: 20 * GB, servers })).toBe(words);
+  ])("%s", (_, copies, words) => {
+    expect(growWords("data", { kind: "grow", from: 10 * GB, to: 20 * GB, copies })).toBe(words);
   });
 });
 
