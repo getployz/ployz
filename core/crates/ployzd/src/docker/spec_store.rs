@@ -689,6 +689,120 @@ mod tests {
         assert_eq!(observed.copy_gen(), Gen::FIRST);
     }
 
+    struct Restorable {
+        runtime: crate::docker::ContainerRuntime,
+        containers: std::sync::Arc<
+            std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>,
+        >,
+        machine: ployz_core::MachineId,
+        id: ContainerId,
+        spec: ResolvedServiceSpec,
+        rotation: ployz_core::CopyRotation,
+    }
+
+    async fn keyed_copy_in_rotation() -> Restorable {
+        use crate::docker::test_support::{
+            FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+        };
+        use ployz_core::{ContainerKind, CopyRotation, DeploymentLogId, Namespace};
+
+        let containers = std::sync::Arc::default();
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(std::sync::Arc::clone(&containers)),
+            list_named: true,
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let mut request = container_request(
+            ContainerKind::ServiceContainer,
+            &namespace,
+            &spec,
+            std::future::ready(None),
+        );
+        request.creation_key = Some("restore-1");
+        let id = runtime
+            .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+            .await
+            .unwrap()
+            .container_id;
+        let rotation = CopyRotation::Held(DeploymentLogId::parse("d1").unwrap());
+        runtime
+            .rotation_turn(&id)
+            .await
+            .unwrap()
+            .write(&rotation)
+            .await
+            .unwrap();
+        Restorable {
+            runtime,
+            containers,
+            machine: machine.id,
+            id,
+            spec,
+            rotation,
+        }
+    }
+
+    fn other_id(id: &ContainerId) -> ContainerId {
+        let flipped = if id.as_str().starts_with('f') { 'e' } else { 'f' };
+        ContainerId::parse(format!("{flipped}{}", &id.as_str()[1..])).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_restored_copy_keeps_its_spec_and_rotation_under_its_new_id() {
+        let copy = keyed_copy_in_rotation().await;
+        let restored = other_id(&copy.id);
+        for container in copy.containers.lock().unwrap().values_mut() {
+            container["Id"] = serde_json::Value::from(restored.as_str());
+        }
+
+        let listed = copy.runtime.list_managed(&copy.machine).await.unwrap();
+
+        let observed = listed
+            .iter()
+            .find(|observed| observed.container_id == restored)
+            .expect("the restored copy is observed");
+        assert_eq!(observed.resolved_spec, copy.spec);
+        assert_eq!(observed.rotation(), &copy.rotation);
+        let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&restored).await.unwrap(), Some(copy.spec));
+        assert_eq!(store.get(&copy.id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_copy_with_its_slot_whose_old_id_still_runs_is_not_rehomed() {
+        let copy = keyed_copy_in_rotation().await;
+        let foreign = other_id(&copy.id);
+        {
+            let mut containers = copy.containers.lock().unwrap();
+            let mut twin = containers.values().next().unwrap().clone();
+            twin["Id"] = serde_json::Value::from(foreign.as_str());
+            twin["Name"] = serde_json::Value::from("/twin");
+            containers.insert("twin".into(), twin);
+        }
+
+        let listed = copy.runtime.list_managed(&copy.machine).await.unwrap();
+
+        assert_eq!(
+            listed
+                .iter()
+                .map(|observed| observed.container_id)
+                .collect::<Vec<_>>(),
+            vec![copy.id]
+        );
+        let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&foreign).await.unwrap(), None);
+        assert_eq!(store.rotation(&foreign).await.unwrap(), None);
+        assert_eq!(store.rotation(&copy.id).await.unwrap(), Some(copy.rotation));
+    }
+
     #[tokio::test]
     async fn rotation_entry_deleted_on_remove() {
         use crate::docker::test_support::runtime_with_running_container;
