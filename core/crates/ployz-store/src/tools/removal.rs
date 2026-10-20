@@ -100,7 +100,7 @@ fn waiting(waiting: &[Waiting], names: &BTreeMap<String, ServerName>) -> Vec<Val
         .iter()
         .map(|waiting| {
             let server = names
-                .get(&waiting.server)
+                .get(&waiting.server_id.to_string())
                 .map_or(waiting.server.as_str(), ServerName::as_str);
             let mut shown = json!({ "server": server, "why": waiting.why });
             if let (Some(fix), Value::Object(shown)) = (fix(&waiting.fix, names), &mut shown) {
