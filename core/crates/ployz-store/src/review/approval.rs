@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
-use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -155,6 +155,32 @@ fn add_missing<'a, T: Clone + 'a, K: PartialEq + ?Sized>(
     }
 }
 
+/// The Volumes Service `id` mounts in `running` that `target` keeps, by identity,
+/// and the Service no longer mounts there, removed or not.
+pub(crate) fn detached<'a>(
+    running: &'a SavedEnvironmentIntent,
+    target: &'a SavedEnvironmentIntent,
+    id: &'a str,
+) -> impl Iterator<Item = &'a SavedVolumeIntent> {
+    let mounts = move |intent: &'a SavedEnvironmentIntent| {
+        intent
+            .services
+            .iter()
+            .filter(move |service| service.id == id)
+            .flat_map(|service| &service.volume_attachments)
+    };
+    mounts(running)
+        .filter(move |mount| {
+            mounts(target).all(|kept| kept.volume_resource_id != mount.volume_resource_id)
+        })
+        .filter_map(move |mount| {
+            target
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == mount.volume_resource_id)
+        })
+}
+
 /// What publishing `target` destroys of what is `running`, naming each generated domain
 /// under its Cluster Domain in `cluster_domains`, by node ID and prefix.
 pub(crate) fn destructive_effects(
@@ -196,25 +222,12 @@ pub(crate) fn destructive_effects(
             continue;
         };
         let slug = &service.slug;
-        for attachment in &deployed.volume_attachments {
-            let id = &attachment.volume_resource_id;
-            let mounted = service
-                .volume_attachments
-                .iter()
-                .any(|kept| kept.volume_resource_id == *id);
-            let kept = target
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == *id);
-            if let Some(volume) = kept
-                && !mounted
-            {
-                let path = format!("{slug}.mounts.{}", volume.name);
-                effects.insert(DestructiveEffect {
-                    lost_after: lost_after(running, target, service, id),
-                    ..effect(DestructiveKind::DetachesVolume, &volume.name, path)
-                });
-            }
+        for volume in detached(running, target, &deployed.id) {
+            let path = format!("{slug}.mounts.{}", volume.name);
+            effects.insert(DestructiveEffect {
+                lost_after: lost_after(running, target, service, &volume.resource_id),
+                ..effect(DestructiveKind::DetachesVolume, &volume.name, path)
+            });
         }
         let config = &service.config;
         for route in &deployed.config.routes {

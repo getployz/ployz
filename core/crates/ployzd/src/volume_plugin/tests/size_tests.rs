@@ -342,7 +342,7 @@ fn gated_zfs(test: &TestDir, zfs: &Path) -> PathBuf {
             "#!/bin/sh\n\
              case \"$*\" in\n\
              \t'receive -u -s '*) while [ -e '{root}/receive-gate' ]; do sleep 0.01; done ;;\n\
-             \t'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank')\n\
+             \t'list -Hp -o name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly -r tank')\n\
              \t\tif [ -e '{root}/list-gate' ]; then\n\
              \t\t\tout=$('{zfs}' \"$@\") || exit $?\n\
              \t\t\ttouch '{root}/list-reached'\n\

@@ -872,6 +872,7 @@ async fn a_server_that_answers_holding_copies_is_refused_before_cloud_or_any_con
             host_available_bytes: 90 * ployz_core::STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: BTreeMap::new(),
         copies: BTreeMap::from([(
             docker("app-prod_logs"),

@@ -1628,6 +1628,7 @@ pub(super) fn empty_storage() -> ployz_core::StorageCapacity {
             host_available_bytes: 90 * ployz_core::STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: BTreeMap::new(),
         copies: BTreeMap::new(),
     }
