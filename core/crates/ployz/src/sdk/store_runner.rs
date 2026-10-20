@@ -72,10 +72,13 @@ enum Build {
         /// The Server the build tries first.
         preferred_machine: Option<ployz_core::MachineId>,
     },
-    /// An uploaded Service, from the upload when Cloud still holds it.
+    /// An uploaded Service, from its upload when Cloud still holds it and extracted it.
     Upload {
         digest: UploadDigest,
         source: Option<PathBuf>,
+        /// It builds from an earlier upload than the one its Deployment carries,
+        /// which is the one Cloud extracts.
+        earlier: bool,
         /// Its Build Order has GitHub, which can't build it.
         github_skipped: bool,
     },
@@ -267,6 +270,7 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let scrub = Scrub::new(&claimed);
+        let earlier = earlier(&targets);
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.preview(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -285,7 +289,7 @@ impl Run {
             Ok(prepared) => prepared,
             Err(error) => {
                 return match needs_upload(&error) {
-                    Some(services) => self.unbuilt(Unbuilt::UploadNeeded(services)).await,
+                    Some(services) => self.unbuilt(upload_needed(&earlier, services)).await,
                     None => self.not_executed(Failure::from(&error)).await,
                 };
             }
@@ -433,7 +437,7 @@ impl Run {
         }
         // A new upload is the one fix a user can act on first.
         if !uploads.is_empty() {
-            return Ok(Err(Unbuilt::UploadNeeded(uploads)));
+            return Ok(Err(upload_needed(&earlier(targets), uploads)));
         }
         if !failed.is_empty() {
             return Ok(Err(Unbuilt::Failed(format!(
@@ -952,22 +956,75 @@ fn targets(
             failed.join("; ")
         )));
     }
-    if claimed.uploads.is_empty() {
-        return Ok((targets, built));
+    let missing: Vec<ServiceName> = claimed
+        .uploads
+        .iter()
+        .filter(|(_, digest)| digest.is_none())
+        .map(|(service, _)| service.clone())
+        .collect();
+    if !missing.is_empty() {
+        return Err(Unbuilt::UploadNeeded(missing));
     }
-    let Some(upload) = &claimed.deployment.upload else {
-        return Err(Unbuilt::UploadNeeded(claimed.uploads.clone()));
-    };
-    let digest = upload.digest.clone();
-    targets.extend(claimed.uploads.iter().map(|service| Target {
-        service: service.clone(),
-        build: Build::Upload {
-            digest: digest.clone(),
-            source: sources.upload.clone(),
-            github_skipped: claimed.build_order.contains(&Builder::Github),
-        },
+    let carried = claimed
+        .deployment
+        .upload
+        .as_ref()
+        .map(|upload| &upload.digest);
+    targets.extend(claimed.uploads.iter().filter_map(|(service, digest)| {
+        let digest = digest.as_ref()?;
+        let earlier = carried != Some(digest);
+        Some(Target {
+            service: service.clone(),
+            build: Build::Upload {
+                digest: digest.clone(),
+                source: if earlier {
+                    None
+                } else {
+                    sources.upload.clone()
+                },
+                earlier,
+                github_skipped: claimed.build_order.contains(&Builder::Github),
+            },
+        })
     }));
     Ok((targets, built))
+}
+
+/// The uploaded Services among `targets` that build from an earlier upload than
+/// their Deployment carries.
+fn earlier(targets: &[Target]) -> BTreeSet<ServiceName> {
+    targets
+        .iter()
+        .filter(|target| matches!(target.build, Build::Upload { earlier: true, .. }))
+        .map(|target| target.service.clone())
+        .collect()
+}
+
+/// Why `needed`, uploaded Services with neither their upload nor a usable image,
+/// didn't build. One that builds from an earlier upload than its Deployment's may
+/// still have it: Cloud extracts only the Deployment's, so it builds again on its
+/// own. The rest need a new upload, the fix a user acts on first.
+fn upload_needed(earlier: &BTreeSet<ServiceName>, needed: Vec<ServiceName>) -> Unbuilt {
+    let (alone, rest): (Vec<_>, Vec<_>) = needed
+        .into_iter()
+        .partition(|service| earlier.contains(service));
+    if !rest.is_empty() || alone.is_empty() {
+        return Unbuilt::UploadNeeded(rest);
+    }
+    let names = alone
+        .iter()
+        .map(ServiceName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let deploys = alone
+        .iter()
+        .map(|service| format!("ployz deploy {service}"))
+        .collect::<Vec<_>>()
+        .join(", then ");
+    Unbuilt::Failed(format!(
+        "{names} must build again from an earlier upload than this Deployment's, and a \
+         Deployment builds from one upload. Deploy it on its own: {deploys}"
+    ))
 }
 
 /// `value` as a one-entry map for `service`, or an empty one.

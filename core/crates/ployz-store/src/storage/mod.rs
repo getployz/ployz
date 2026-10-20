@@ -119,6 +119,12 @@ const MIGRATIONS: &[(&str, Step)] = &[
             Ok(None)
         }),
     ),
+    (
+        "0022_deployment_service_uploads",
+        Step::Sql(include_str!(
+            "migrations/0022_deployment_service_uploads.sql"
+        )),
+    ),
 ];
 
 enum Step {
