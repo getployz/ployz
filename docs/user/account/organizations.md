@@ -122,9 +122,18 @@ How you answer depends on where the command runs:
   `ployz org rm`, and `ployz server forget` with no server named, ask for the organization's
   slug. Type it and the command carries on. Anything else, or Ctrl-C, leaves the approval
   pending and changes nothing.
-- Without a terminal, such as in a script, it prints the same list and waits until someone
-  approves or denies it in Ployz Cloud. It then carries on, or fails naming what was denied and
-  the reason given. Ctrl-C stops waiting and leaves the approval pending.
+- Without a terminal, such as in a script, it prints the same list, the approval's ID, a link to
+  the [Ployz agent](agent-sidebar.md) where it waits, and `ployz org approval approve ID`. With
+  `PLOYZ_TOKEN`, when Cloud doesn't name the organization, the link is Ployz Cloud itself. It
+  waits until someone approves or denies it in Ployz Cloud, then carries on, or fails naming what
+  was denied and the reason given. Ctrl-C, or losing Ployz Cloud, stops waiting and leaves the
+  approval pending, and the error names the command to run again with `--approval ID`. If Ployz
+  Cloud answers with an error instead, the command fails saying it couldn't check the approval,
+  and names the command to run again only when the error is on Cloud's side. If Cloud refuses
+  your sign-in or token, or you've left the organization, it names no command to run again;
+  it says what to do instead, such as `ployz login`, a new token or `ployz logout`. Once you've
+  left, `ployz logout` forgets the sign-in here though Cloud refuses to sign it out, and warns
+  that Cloud didn't revoke it.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
 - In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
@@ -223,6 +232,10 @@ If a server is offline, the organization stays, disabled, until that server is b
 
 The dashboard then opens another of your organizations. With none left, it offers **Create an
 organization**.
+
+Once it's gone, its slug is free, and a new organization can take it. Old links and emails that
+name the slug open the new organization only for its members, and for Ployz support if it allows
+support access. Once its **Domain** has served your services, no organization gets it again.
 
 From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,

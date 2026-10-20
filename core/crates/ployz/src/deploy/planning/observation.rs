@@ -37,7 +37,9 @@ pub(super) fn warnings(
             | DeployWarning::IngressHostname { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. } => continue,
+            | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::LeftRunning { .. }
+            | DeployWarning::MixedAfterReturn { .. } => continue,
         };
         let Some(machine) = snapshot
             .machines
@@ -73,6 +75,30 @@ pub(super) fn warnings(
             });
         }
     }
+    // Its old copies were never observed, so no cleanup report reaches them;
+    // once it is back they can answer beside the new copies.
+    let away: Vec<DeployWarning> = warnings
+        .iter()
+        .filter_map(|warning| {
+            let (DeployWarning::ObservationFailed {
+                kind: ObservationKind::Container,
+                gap: Some(gap),
+                ..
+            }
+            | DeployWarning::ObservationOmitted {
+                kind: ObservationKind::Container,
+                gap: Some(gap),
+                ..
+            }) = warning
+            else {
+                return None;
+            };
+            Some(DeployWarning::MixedAfterReturn {
+                machine: gap.machine_name.to_string(),
+            })
+        })
+        .collect();
+    warnings.extend(away);
     warnings
 }
 

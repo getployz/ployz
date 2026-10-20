@@ -147,6 +147,15 @@ pub(super) fn signed_in(
     }
 }
 
+/// Whether [`signed_in`] would find something to act with, read from `PLOYZ_TOKEN` and the
+/// stored sign-in alone: it never asks Cloud or writes, so a pending code counts as signed out.
+pub(super) fn signed_in_locally(matches: &ArgMatches) -> bool {
+    std::env::var(crate::cli::env::TOKEN).is_ok_and(|token| !token.is_empty())
+        || super::config_path(matches).is_ok_and(|config| {
+            matches!(CredentialStore::beside(&config).organization(), Ok(Some(_)))
+        })
+}
+
 /// The Server `selector` names, for a Cloud route, among the Servers Cloud's dial sees.
 /// An id resolves there too, since only the Engine knows the name prose says.
 pub(super) fn cloud_machine(
@@ -176,26 +185,26 @@ pub(super) enum Reach {
     Ask(Credential),
 }
 
-/// Reach the Cluster for a read Cloud can also answer, the way [`connect`] does, except
-/// that a credential Cloud refuses Server access, such as a Read only or Deploy token,
-/// comes back to ask Cloud instead.
-pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result<Reach, Error> {
+/// Reach the Cluster for a read Cloud can also answer, the way [`connect_or_none`] does,
+/// except that a credential Cloud refuses Server access, such as a Read only or Deploy
+/// token, comes back to ask Cloud instead.
+pub(super) async fn reach(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<Reach>, Error> {
     if matches.get_one::<String>("connect").is_none() && context.is_none() {
         let store = CredentialStore::beside(&super::config_path(matches)?);
         if let Ok(credential) = cloud_account::from_env(&store).await {
             return match cloud_account::server_access(&credential).await {
-                Ok(access) => dial(matches, access)
-                    .await?
-                    .map(Reach::Dial)
-                    .ok_or_else(no_servers),
+                Ok(access) => Ok(dial(matches, access).await?.map(Reach::Dial)),
                 Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
-                    Ok(Reach::Ask(credential))
+                    Ok(Some(Reach::Ask(credential)))
                 }
                 Err(error) => Err(error.into()),
             };
         }
     }
-    connect(matches, context).await.map(Reach::Dial)
+    Ok(connect_or_none(matches, context).await?.map(Reach::Dial))
 }
 
 /// What a forget reaches.
@@ -238,7 +247,8 @@ async fn answering(
     }
     let held = held_servers(&access.connections);
     let refused = access.refused.is_empty();
-    match dial_connections(matches, std::mem::take(&mut access.connections)).await {
+    let connections = named(std::mem::take(&mut access.connections), &access.names);
+    match dial_connections(matches, connections).await {
         Ok(client) => Ok(Some(client)),
         Err(ConnectError::AllFailed { reached: false, .. }) if refused => Ok(None),
         Err(error @ ConnectError::AllFailed { reached: false, .. }) => {
@@ -272,7 +282,7 @@ async fn entries(
                 }
                 return Ok(SelectedConnections {
                     source: ConnectionSource::Cloud,
-                    connections: access.connections,
+                    connections: named(access.connections, &access.names),
                 });
             }
             Err(LoginError::SignedOut) => signed_out = true,
@@ -310,7 +320,8 @@ async fn dial(
         return Err(no_server_access(access, Vec::new(), None));
     }
     let held = held_servers(&access.connections);
-    match dial_connections(matches, std::mem::take(&mut access.connections)).await {
+    let connections = named(std::mem::take(&mut access.connections), &access.names);
+    match dial_connections(matches, connections).await {
         Ok(client) => Ok(Some(client)),
         Err(error @ ConnectError::AllFailed { reached: false, .. })
             if !held.is_empty() || !access.unreachable.is_empty() || !access.refused.is_empty() =>
@@ -329,6 +340,26 @@ fn held_servers(connections: &[crate::context::Connection]) -> Vec<ployz_core::M
         .collect()
 }
 
+/// Cloud's `connections`, each carrying its Server's name where Cloud holds one.
+fn named(
+    connections: Vec<crate::context::Connection>,
+    names: &BTreeMap<ployz_core::MachineId, String>,
+) -> Vec<crate::context::Connection> {
+    connections
+        .into_iter()
+        .map(|connection| {
+            match connection
+                .machine_id()
+                .and_then(|id| names.get(id))
+                .cloned()
+            {
+                Some(name) => connection.with_name(name),
+                None => connection,
+            }
+        })
+        .collect()
+}
+
 async fn dial_connections(
     matches: &ArgMatches,
     connections: Vec<crate::context::Connection>,
@@ -343,7 +374,7 @@ async fn dial_connections(
 
 const NO_SERVERS: &str = "this Organization has no Servers";
 
-fn no_servers() -> Error {
+pub(super) fn no_servers() -> Error {
     Error::conflict(NO_SERVERS).hint(Hint::Next("ployz server add".into()))
 }
 
@@ -418,6 +449,8 @@ fn no_reachable_server(
         .map(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string()))
         .collect::<Vec<_>>();
     let message = match shown.as_slice() {
+        // This CLI's own connection to it failed: Cloud reached it to hand that over.
+        [one] if cause.is_some() => crate::connect::not_answering(one),
         [one] => format!(
             "Server {one} isn't answering. If it just joined or restarted, try again in a moment."
         ),

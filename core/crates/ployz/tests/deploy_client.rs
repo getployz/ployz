@@ -1,4 +1,6 @@
 //! Session-level preview/confirm/run behaviour against a fake Machine.
+#[path = "deploy_client/cleanup_report.rs"]
+mod cleanup_report;
 #[path = "deploy_client/operate.rs"]
 mod operate;
 #[path = "deploy_client/runner_cancellation.rs"]
@@ -114,17 +116,18 @@ async fn deploy_returns_success_for_a_completed_run() {
 
 #[tokio::test]
 async fn service_lifecycle_commands_change_each_named_service_container() {
-    for action in ["start", "stop"] {
+    // A stop holds each In copy out of rotation before it stops it.
+    for (action, rpcs) in [("start", 2), ("stop", 4)] {
         let machine = machine('a', "one");
         let service = DeployService::new(machine.clone());
-        let mut api = running_container(&machine, &spec("api"));
+        let mut api = deployed_container(&machine, &spec("api"));
         api.try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
             .unwrap();
         service
             .listed_containers()
             .lock()
             .unwrap()
-            .extend([running_container(&machine, &spec("web")), api]);
+            .extend([deployed_container(&machine, &spec("web")), api]);
         let mutating_rpcs = service.mutating_rpcs();
         let (address, server) = listening(service).await;
 
@@ -140,7 +143,7 @@ async fn service_lifecycle_commands_change_each_named_service_container() {
             "{action}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), 2, "{action}");
+        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), rpcs, "{action}");
         server.abort();
     }
 }
@@ -587,6 +590,8 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::StorageHeadroom { .. }
             | DeployWarning::UnbudgetedDiskUsage
             | DeployWarning::StorageObservationUnknown { .. }
+            | DeployWarning::LeftRunning { .. }
+            | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. } => false,
@@ -1076,6 +1081,136 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
 }
 
 #[tokio::test]
+async fn observing_a_server_that_cannot_be_reached_names_it_and_why() {
+    use ployz_core::{DockerVolumeName, MachineId};
+    use ployz_store::ObservationStage;
+
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = closed.local_addr().unwrap();
+    drop(closed);
+    let server = MachineId::parse("a".repeat(32)).unwrap();
+    let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
+
+    let observed = ployz::sdk::observe_volumes(
+        vec![ployz::context::Connection::tcp(address).with_machine_id(server)],
+        sought.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(observed.sought, sought);
+    assert!(observed.held.is_empty());
+    assert_eq!(observed.unanswered, [server]);
+    let failure = observed.failure.unwrap();
+    assert_eq!(failure.stage, ObservationStage::Unreachable);
+    let deepest = failure.cause.last().unwrap_or(&failure.reason);
+    assert!(deepest.contains("Connection refused"), "{failure:?}");
+}
+
+#[tokio::test]
+async fn observing_a_server_that_fails_the_check_returns_without_asking_it_again() {
+    use ployz_core::{DockerVolumeName, RpcError, RpcErrorCode};
+    use ployz_store::ObservationStage;
+
+    let one = machine('a', "one").machine.id;
+    let mut service = DeployService::new(machine('a', "one"));
+    let described = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    service.describe_once = Some(std::sync::Arc::clone(&described));
+    *service.machines_error.lock().unwrap() = Some(RpcError {
+        code: RpcErrorCode::Internal,
+        message: "The Machine list is unavailable.".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    });
+    let (address, server) = listening(service).await;
+    let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
+
+    let observed = tokio::time::timeout(
+        Duration::from_secs(6),
+        ployz::sdk::observe_volumes(vec![ployz::context::Connection::tcp(address)], sought),
+    )
+    .await
+    .expect("a failed check returns its refusal")
+    .unwrap();
+
+    assert_eq!(
+        observed.failure.unwrap().stage,
+        ObservationStage::Answered { server: Some(one) }
+    );
+    assert_eq!(described.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn observing_through_a_daemon_that_refuses_does_not_name_a_server_it_did_not_hear() {
+    use ployz_core::{DockerVolumeName, MachineId};
+    use ployz_store::ObservationStage;
+
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let down = closed.local_addr().unwrap();
+    drop(closed);
+    let one = MachineId::parse("a".repeat(32)).unwrap();
+    let service = DeployService::new(machine('b', "two"));
+    *service.describe_refusal.lock().unwrap() = Some("denied by two".into());
+    let (address, server) = listening(service).await;
+    let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
+
+    let observed = ployz::sdk::observe_volumes(
+        vec![
+            ployz::context::Connection::tcp(down).with_machine_id(one),
+            ployz::context::Connection::tcp(address),
+        ],
+        sought,
+    )
+    .await
+    .unwrap();
+
+    let failure = observed.failure.unwrap();
+    assert_eq!(failure.stage, ObservationStage::Answered { server: None });
+    let said = std::iter::once(&failure.reason)
+        .chain(&failure.cause)
+        .any(|line| line.contains("denied by two"));
+    assert!(said, "{failure:?}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn observing_a_server_that_answers_with_an_error_names_it_and_the_error() {
+    use ployz_core::{DockerVolumeName, RpcError, RpcErrorCode};
+    use ployz_store::ObservationStage;
+
+    let one = machine('a', "one").machine.id;
+    let service = DeployService::new(machine('a', "one"));
+    *service.machines_error.lock().unwrap() = Some(RpcError {
+        code: RpcErrorCode::Internal,
+        message: "The Machine list is unavailable.".into(),
+        details: serde_json::Value::Null,
+        cause: vec!["database is locked".into()],
+    });
+    let (address, server) = listening(service).await;
+    let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
+
+    let observed = ployz::sdk::observe_volumes(
+        vec![ployz::context::Connection::tcp(address).with_machine_id(one)],
+        sought.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(observed.sought, sought);
+    assert!(observed.held.is_empty());
+    assert_eq!(observed.unanswered, [one]);
+    let failure = observed.failure.unwrap();
+    assert_eq!(
+        failure.stage,
+        ObservationStage::Answered { server: Some(one) }
+    );
+    assert_eq!(failure.reason, "The Machine list is unavailable.");
+    assert_eq!(failure.cause, ["database is locked"]);
+    server.abort();
+}
+
+#[tokio::test]
 async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
     use ployz_core::{CopyRole, DockerVolumeId, DockerVolumeName, ProvisionedCopy};
     use std::sync::Arc;
@@ -1089,6 +1224,7 @@ async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
             NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
         ),
         used_bytes: 0,
+        slot_role: None,
     };
     let name = |suffix: &str| DockerVolumeName::parse(format!("shop-production_{suffix}")).unwrap();
     copies.lock().unwrap().extend([
@@ -1223,6 +1359,145 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
             ])
             .collect::<Vec<_>>())]
     );
+}
+
+/// A replacement Docker OOM-killed fails the Deployment as out of memory, naming
+/// the memLimit it ran under; the health check stays the cause.
+#[tokio::test]
+async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
+    use ployz_store::{
+        Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, Edit, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
+        ProjectName, RowState, RunnerId, SealingKey, ServiceLineageId, SettingPath, Trusted,
+    };
+    use std::sync::Arc;
+
+    for oom in [true, false] {
+        let store = Arc::new(
+            ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap(),
+        );
+        let who = Actor::system(OrganizationId::parse("org").unwrap());
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(
+                        "00000000-0000-4000-8000-000000000002",
+                    )
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_core::ServiceName::parse("web").unwrap(),
+                    image: Some("nginx".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Set {
+                        path: SettingPath::parse("web.memLimit").unwrap(),
+                        value: serde_json::json!("16MiB"),
+                    }],
+                },
+            )
+            .unwrap();
+        let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id.clone(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+        let machine = machine('a', "one");
+        let service = DeployService::new(machine.clone());
+        let service = if oom {
+            service.oom_kill_containers()
+        } else {
+            service.crash_containers()
+        };
+        let (address, server) = listening(service).await;
+
+        let summary = ployz::sdk::run_deployment(
+            Arc::clone(&store),
+            id.clone(),
+            RunnerId::parse("cloud-run-1").unwrap(),
+            vec![ployz::context::Connection::tcp(address)],
+            Ok(Default::default()),
+        )
+        .await
+        .unwrap();
+        server.abort();
+
+        assert_eq!(summary.status, DeploymentStatus::Failed);
+        let view = store
+            .read(&who, &ployz_store::DeploymentQuery { id })
+            .unwrap();
+        let Some(Outcome::Executed {
+            reason: Some(reason),
+            cause,
+            ..
+        }) = &view.deployment.outcome
+        else {
+            panic!(
+                "expected an executed failure, got {:?}",
+                view.deployment.outcome
+            );
+        };
+        let rows = view
+            .nodes
+            .iter()
+            .flat_map(|node| &node.rows)
+            .filter_map(|row| {
+                if let RowState::Failed { out_of_memory, .. } = &row.state {
+                    Some(*out_of_memory)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if oom {
+            assert_eq!(
+                reason,
+                "web: The Container ran out of memory under its 16 MiB memLimit"
+            );
+            assert_eq!(
+                rows,
+                [Some(ployz_core::OutOfMemory {
+                    memory_bytes: Some(ployz_core::ByteQuantity::try_from(16 << 20).unwrap()),
+                })]
+            );
+        } else {
+            assert_eq!(reason, "web: The Container exited");
+            assert_eq!(rows, [None]);
+        }
+        assert!(
+            cause.iter().any(|cause| cause.contains("exited with code")),
+            "{cause:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1615,4 +1890,117 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         "Build failed. web: acme/web has no build workflow. No other Builder in your Build Order can take it"
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn a_runner_that_cannot_reach_its_server_names_it() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
+        ProjectName, RunnerId, SealingKey, ServiceLineageId,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                image: Some("nginx".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let outcome = |deployment: &str, connection: serde_json::Value| {
+        let (store, who) = (Arc::clone(&store), who.clone());
+        let id = DeploymentId::parse(deployment).unwrap();
+        async move {
+            store
+                .write_trusted(
+                    &who,
+                    &Admit::Deploy(Deploy {
+                        id: id.clone(),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload: None,
+                        accept_volume_loss: Vec::new(),
+                        message: None,
+                    }),
+                    &ployz_store::Trusted::default(),
+                )
+                .unwrap();
+            // As Cloud hands them over: the same descriptors the SDK parses.
+            let connections = serde_json::from_value(serde_json::json!([connection])).unwrap();
+            let summary = ployz::sdk::run_deployment(
+                Arc::clone(&store),
+                id.clone(),
+                RunnerId::parse("cloud-run-1").unwrap(),
+                connections,
+                Ok(Default::default()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(summary.status, DeploymentStatus::Failed);
+            match store
+                .read(&who, &ployz_store::DeploymentQuery { id })
+                .unwrap()
+                .deployment
+                .outcome
+            {
+                Some(Outcome::NotExecuted { reason, cause, .. }) => (reason, cause),
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    let machine = "0123456789abcdef0123456789abcdef";
+    let (reason, cause) = outcome(
+        "00000000-0000-4000-8000-000000000101",
+        serde_json::json!({ "tcp": closed, "machine_id": machine, "name": "box-node-09c8" }),
+    )
+    .await;
+    assert_eq!(
+        reason,
+        "Server box-node-09c8 isn't answering. Check that its Ployz daemon is running, then retry."
+    );
+    assert!(
+        cause.iter().all(|line| !line.contains("isn't answering")),
+        "{cause:?}"
+    );
+    assert!(!cause.is_empty(), "the transport detail stays as the cause");
+
+    // Cloud never learned its name: the Machine ID says which.
+    let (reason, _) = outcome(
+        "00000000-0000-4000-8000-000000000102",
+        serde_json::json!({ "tcp": closed, "machine_id": machine }),
+    )
+    .await;
+    assert_eq!(
+        reason,
+        format!(
+            "Server {machine} isn't answering. Check that its Ployz daemon is running, then retry."
+        )
+    );
 }

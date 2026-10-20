@@ -314,7 +314,10 @@ function describeDrain(entry: DrainReport["services"][number]): string {
       return entry.error;
     case "interrupted":
       return `${entry.moves.length} moved, then the Drain stopped`;
+    case "old_copies":
+      return entry.ends.map((end) => end.kind).join(", ");
     case "nothing_to_move":
+    case "held":
     case "retired":
     case "not_attempted":
       // @ts-expect-error only failed arms carry a failure

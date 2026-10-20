@@ -269,6 +269,14 @@ pub async fn connect_answered(
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty".into()).into());
     }
+    Ok(dial(connections, connector).await?)
+}
+
+/// [`connect_connections`] to nonempty `connections`, keeping the connection error.
+async fn dial(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Session, ConnectError> {
     let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
@@ -940,7 +948,7 @@ impl Session {
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
                 | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
             })?;
-            crate::drain::retirement::retire_ingress_proxy(&mut client, &id, cancel).await
+            crate::drain::retirement::retire_ingress_proxy(&client, &id, cancel).await
         })
         .await
     }

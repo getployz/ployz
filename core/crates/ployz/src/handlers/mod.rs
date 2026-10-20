@@ -258,7 +258,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     if context_above_leaf(matches) {
         // Store commands address a Project and Environment, never a context.
-        let takes = |id| leaf_matches(matches).try_get_one::<String>(id).is_ok();
+        let takes = |id| takes_value(path.split(' '), id);
         return Err(Error::usage(if takes("context") {
             format!("--context goes after the command: ployz {path} --context NAME")
         } else if takes("project") {
@@ -268,6 +268,29 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         }));
     }
     (verb.run)(matches)
+        .map_err(|failure| context::with_no_contexts_next(failure, leaf_matches(matches)))
+}
+
+/// Whether the compiled command at `words` takes a value for the option `id`; a
+/// positional of the same name is not the option. Read from the command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
+/// unbuilt, so a global argument still sits on the ancestor that declares it.
+fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
+    let root = crate::cli::compiled();
+    let takes = |arg: &clap::Arg| {
+        arg.get_id() == id && arg.get_long().is_some() && arg.get_action().takes_values()
+    };
+    let mut command = &root;
+    let mut inherited = false;
+    for word in words {
+        let Some(child) = command.find_subcommand(word) else {
+            break;
+        };
+        inherited |= command
+            .get_arguments()
+            .any(|arg| arg.is_global_set() && takes(arg));
+        command = child;
+    }
+    inherited || command.get_arguments().any(takes)
 }
 
 /// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
@@ -548,12 +571,27 @@ where
         &'a mut crate::connect::Client,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
 {
+    with_lister(root, || Err(server::no_servers()), work)
+}
+
+/// [`with_reader`] for a list: an Organization with no Servers yet runs `empty` instead.
+fn with_lister<F>(
+    root: &ArgMatches,
+    empty: impl FnOnce() -> Result<(), Error>,
+    work: F,
+) -> Result<Option<crate::cloud_account::Credential>, Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         match server::reach(leaf, context).await? {
-            server::Reach::Dial(mut client) => work(&mut client).await.map(|()| None),
-            server::Reach::Ask(credential) => Ok(Some(credential)),
+            Some(server::Reach::Dial(mut client)) => work(&mut client).await.map(|()| None),
+            Some(server::Reach::Ask(credential)) => Ok(Some(credential)),
+            None => empty().map(|()| None),
         }
     })
 }
@@ -606,6 +644,45 @@ mod tests {
         ])));
         assert!(!context_above_leaf(&parsed(&["ployz", "ps", "-c", "prod"])));
         assert!(!context_above_leaf(&parsed(&["ployz", "ps"])));
+    }
+
+    #[test]
+    fn a_context_above_the_leaf_names_where_the_leaf_takes_its_scope() {
+        let mut command = command();
+        for (args, expected) in [
+            (
+                &["ps"][..],
+                "--context goes after the command: ployz ps --context NAME",
+            ),
+            (
+                &["config", "ls"],
+                "ployz config ls doesn't use a context; it takes --project and --env",
+            ),
+            (&["org", "ls"], "ployz org ls doesn't use a context"),
+            // A positional named `project` is not the --project option.
+            (
+                &["project", "rename", "old", "new"],
+                "ployz project rename doesn't use a context",
+            ),
+            // `history` hands its global --project and --env down to its actions.
+            (
+                &["history", "restore", "1"],
+                "ployz history restore doesn't use a context; it takes --project and --env",
+            ),
+            (
+                &["history", "undo", "1"],
+                "ployz history undo doesn't use a context; it takes --project and --env",
+            ),
+        ] {
+            let matches = command
+                .clone()
+                .try_get_matches_from(["ployz", "-c", "prod"].iter().chain(args))
+                .unwrap();
+            assert_eq!(
+                dispatch(&matches, &mut command).unwrap_err().to_string(),
+                expected,
+            );
+        }
     }
 
     #[test]
@@ -892,7 +969,13 @@ mod tests {
                 .unwrap_err()
                 .causes()
                 .get(..2),
-            Some(&["Could not connect to the Machine.", "transport error"].map(String::from)[..]),
+            Some(
+                &[
+                    "Couldn't open a connection to the Server.",
+                    "transport error"
+                ]
+                .map(String::from)[..]
+            ),
         );
     }
 

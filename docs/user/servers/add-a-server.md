@@ -14,7 +14,7 @@ your other servers on a private network.
   runs apps, but its builds fail.
 - **Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 on a VM or bare metal** for managed volumes.
   Anything else works [without them](#start-without-zfs).
-- **A main disk of 30 GB or more.** Ployz keeps a quarter of the disk, at least 10 GB, free for
+- **A main disk of 30 GiB or more.** Ployz keeps a quarter of the disk, at least 10 GiB, free for
   the system. On EC2, raise the root volume from its 8 GB default when you launch the instance.
 - **Root**, or a user that can run `sudo`.
 - **Outbound internet access**, and a **public IP address** on at least one server so visitors
@@ -51,9 +51,10 @@ you deploy; see [Scaling](../services/scaling.md#add-a-server).
 ## Add servers from the dashboard
 
 Before your first server, the **Servers** page shows one card instead of a list. Click
-**Get install command** and it makes a token that works for 7 days and shows the install line,
-under **Shown once. Expires in 7d.** Copy it now: Ployz can't show the token again. The card then
-says **Listening for servers…** until the first one checks in.
+**Get install command** and it makes a token that works for 7 days and shows the install line
+with the token under it, then **Shown once. Expires in 7d.** Copy the token now: Ployz can't show
+it again. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste the
+token when it asks. The card then says **Listening for servers…** until the first one checks in.
 
 Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can make a token. For a member, **Get install command** and **Add servers**
 say so instead.
@@ -64,17 +65,18 @@ Once you have a server, or one is waiting, make more tokens with **Add servers**
    environment offers it too.
 2. Name the token, or leave the name blank and Ployz picks one. Choose how long it works: 1 day,
    7 days or 30 days.
-3. Click **Create**. The dialog shows the install line with the token in it, under
-   **Shown once. Expires in 24h.** Copy it now: Ployz can't show the token again.
-4. Open a shell on the server, as root or as a user with `sudo`, and paste the line. To put it in
-   user data instead, take it from the **cloud-init** or **Terraform** tab; each holds the same
-   token. Not on Ubuntu, Debian or Amazon Linux, or can't run ZFS? See
-   [Start without ZFS](#start-without-zfs).
+3. Click **Create**. The **Shell** tab shows the install line and the token under it, then
+   **Shown once. Expires in 24h.** Copy the token now: Ployz can't show it again.
+4. Open a shell on the server, as root or as a user with `sudo`, and paste the line. When it asks
+   for the Fleet Token, paste the token. The prompt doesn't show what you paste, so the token stays
+   out of shell history and the process list. To put it in user data instead, take it from the
+   **cloud-init** or **Terraform** tab; each holds the same token. Not on Ubuntu, Debian or Amazon
+   Linux, or can't run ZFS? See [Start without ZFS](#start-without-zfs).
 
-![The Add servers dialog with its install line](../images/add-servers-dialog.png)
+![The Add servers dialog with its install line and the token to paste](../images/add-servers-dialog.png)
 
-Run the same line on as many servers as you like while the token works. Each one installs Docker
-and Ployz and shows up under **Waiting to join** on the **Servers** page within seconds, in a tray
+Run the same line, and paste the same token, on as many servers as you like while the token
+works. Each one installs Docker and Ployz and shows up under **Waiting to join** on the **Servers** page within seconds, in a tray
 above your other servers. The tray shows only while a server waits or enrolls. Its header counts
 the servers that are ready, preparing, blocked and offline, with a bar for the mix. New ones go
 to the bottom of the list, and the list never reorders while you look at it. When your very first
@@ -86,9 +88,10 @@ You can enroll while it prepares. Only an owner or admin, or [Ployz support](../
 review and enrollment flow.
 
 Each row shows the server's name and operating system, the IP address Ployz Cloud saw it check in
-from and its provider, its CPU, memory and main disk size, and its status. **Installing Docker** and **Building ZFS** mean it is
-still getting ready, and **Ready** means it has everything it needs. **Blocked** rows say what
-is wrong with the server, in the server's own words, such as `Disk is 20 GB. Ployz needs 30 GB.`
+from and its provider, its CPU, memory and main disk size, and its status. **Installing Docker** means it is
+still getting ready, and **Ready** means Docker is in place. **Building ZFS** under **Ready** means
+its ZFS build is still running, and an enrollment with ZFS volumes waits for it. **Blocked** rows say what
+is wrong with the server, in the server's own words, such as `Disk is 20 GiB. Ployz needs 30 GiB.`
 A server already in another cluster is blocked until you run `ployz server rm` for it there, and
 **Offline** means it stopped checking in. You can't select a blocked server. Once more than ten
 servers wait, filter the list by readiness, provider and token, or search by name or IP address.
@@ -119,22 +122,20 @@ See [Add many servers](add-many-servers.md). You can also make a token from your
 ployz server token create --expires 7d
 ```
 
-It prints the token once, and an install line with the token in it, for the release of the
-`ployz` CLI you ran. Run that line on each host:
+It prints the token once, and an install line for the release of the `ployz` CLI you ran. Run
+that line on each host and paste the token when it asks:
 
 ```sh
-curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_… sudo --preserve-env=PLOYZ_FLEET_TOKEN sh -s -- VERSION
+curl -fsSL https://ployz.sh | sudo sh -s -- VERSION --enroll
 ```
 
 Keep the version it names. Without one, the script installs the stable release, which may not
-match your Ployz Cloud. The token comes before `sudo`, so it reaches the script through the
-environment and stays out of the process list. It still lands in the host's shell history. To keep
-it out, leave out `PLOYZ_FLEET_TOKEN=…`, add `--enroll` after the version, and paste the token at
-the prompt.
+match your Ployz Cloud. With `--json`, the token is in `fleet_token.token` and the line in
+`install`.
 
 - **Hosts wait for you.** A host that runs the line checks in under **Waiting** until you enroll it from **Servers**.
 - **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
-- **Expiry and revoke stop new hosts only.** Servers already in stay.
+- **Expiry and revoke stop hosts that haven't joined.** Revoke drops waiting hosts at once. After expiry, each waiting host is dropped when it next checks in. Enrollments already started finish, and servers already in stay.
 - **Only your login makes or revokes one.** An organization token can't.
 
 List your tokens, and revoke one by name:

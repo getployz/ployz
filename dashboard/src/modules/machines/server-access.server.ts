@@ -132,8 +132,12 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     connections: results.flatMap(({ machine_id, management }) => management === null ? [] : [{ machine_id, management }]),
     unreachable: results.flatMap(({ machine_id, management, refused }) => management === null && refused === null ? [machine_id] : []),
     refused: results.flatMap(({ machine_id, refused }) => refused === null ? [] : [{ machine_id, message: refused }]),
-    // Cloud holds only the names enrollment gave, so a Server the CLI can't reach shows by name where it can.
-    names: Object.fromEntries((allocation?.assignments ?? []).filter(isNamed).map(({ machine }) => [machine.id, machine.name])),
+    // A Server the CLI can't reach shows by name where Cloud holds one: the last its Cluster reported, else the one
+    // enrollment gave. One Cloud never learned a name for is left out.
+    names: Object.fromEntries([
+      ...(allocation?.assignments ?? []).filter(isNamed).map(({ machine }) => [machine.id, machine.name]),
+      ...loaded.connections.flatMap(({ machine_id, name }) => name === undefined ? [] : [[machine_id, name]]),
+    ]),
   } };
 });
 

@@ -43,7 +43,7 @@ pub fn pending_rows(
         .collect()
 }
 
-fn machine_names(snapshot: &DeploySnapshot) -> BTreeMap<MachineId, MachineName> {
+pub(super) fn machine_names(snapshot: &DeploySnapshot) -> BTreeMap<MachineId, MachineName> {
     snapshot
         .machines
         .iter()

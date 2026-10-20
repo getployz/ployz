@@ -773,7 +773,9 @@ async fn change_container(
             .await
             .unwrap();
         }
-        ContainerAction::Remove => unreachable!("health transition only starts and stops"),
+        ContainerAction::Restart | ContainerAction::Remove => {
+            unreachable!("health transition only starts and stops")
+        }
     }
 }
 

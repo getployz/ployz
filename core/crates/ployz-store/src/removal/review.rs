@@ -20,7 +20,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, VolumeId, VolumeName};
 use crate::storage::Tx;
-use crate::trusted::VolumeObservation;
+use crate::trusted::{ObservationStage, VolumeObservation};
 
 /// A deployed Volume a Deploy removes, with the Docker Volume that holds its data.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -46,8 +46,8 @@ pub struct VolumeLoss {
 pub struct ConsentedQuery {}
 
 /// What a push needs observed: the Docker Volumes of each Volume whose loss was
-/// accepted when it was saved and that is still deployed. Pass what the Servers
-/// hold with the push, or it deletes none of them.
+/// accepted when it was saved and that still runs or is on its way. Pass what the
+/// Servers hold with the push, or it deletes none of them.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConsentedView {
     pub volumes: Vec<DockerVolumeName>,
@@ -55,7 +55,7 @@ pub struct ConsentedView {
 
 pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, RpcError> {
     let rows = tx.query(
-        "SELECT s.environment_id, s.accepted_losses FROM config_saved s \
+        "SELECT s.environment_id FROM config_saved s \
          JOIN config_environment e ON e.id = s.environment_id \
          WHERE s.organization_id = ?1 AND s.accepted_losses IS NOT NULL \
          AND s.revision = (SELECT MAX(l.revision) FROM config_saved l WHERE l.environment_id = s.environment_id) \
@@ -65,15 +65,18 @@ pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, R
     let mut volumes = Vec::new();
     for row in rows {
         let id: EnvironmentId = row.parse(0, "Environment ID")?;
-        let accepted: Vec<VolumeLoss> = serde_json::from_str(row.text(1)?)
-            .map_err(|_| error::corrupt("accepted Volume losses"))?;
+        let Some(saved) = crate::review::latest_saved(tx, &id)? else {
+            continue;
+        };
         let environment = crate::scope::load_by_id(tx, &id)?;
-        let applied = crate::deployment::head(tx, &environment)?.applied;
+        let head = crate::deployment::head(tx, &environment)?;
+        let dropped = crate::deployment::Landing::of(&head).dropped(&saved.intent);
         volumes.extend(
-            accepted
+            saved
+                .accepted
                 .into_iter()
                 .filter(|loss| {
-                    applied
+                    dropped
                         .volumes
                         .iter()
                         .any(|volume| volume.resource_id == loss.volume.id.as_str())
@@ -84,15 +87,14 @@ pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, R
     Ok(ConsentedView { volumes })
 }
 
-/// The Volumes Applied State holds that `target` drops: what a full Deploy of
-/// `target` removes from the Servers.
+/// The Volumes `held` holds that `target` drops: what a full Deploy of `target`
+/// removes from the Servers.
 pub(crate) fn removed(
-    applied: &SavedEnvironmentIntent,
+    held: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
     namespace: &Namespace,
 ) -> Result<Vec<RemovedVolume>, RpcError> {
-    applied
-        .volumes
+    held.volumes
         .iter()
         .filter(|old| drops(target, &old.resource_id))
         .map(|volume| {
@@ -197,7 +199,8 @@ pub(crate) fn review(
 }
 
 /// Each of `removed` with the Docker Volumes the Servers hold of it, and the
-/// Servers that didn't answer. Refuses `unavailable` when nobody looked for one.
+/// Servers that didn't answer. Refuses `unavailable` when nobody looked for one, or
+/// the look couldn't ask the Servers.
 pub(crate) fn held(
     removed: Vec<RemovedVolume>,
     observed: Option<&VolumeObservation>,
@@ -206,15 +209,12 @@ pub(crate) fn held(
         return Ok((Vec::new(), Vec::new()));
     }
     let Some(observed) = observed.filter(|observed| {
-        removed
-            .iter()
-            .all(|volume| observed.sought.contains(&volume.docker_volume))
+        observed.failure.is_none()
+            && removed
+                .iter()
+                .all(|volume| observed.sought.contains(&volume.docker_volume))
     }) else {
-        return Err(error::unobserved(
-            "This removes deployed Volumes, and the Servers weren't checked for their data, \
-             so it refuses. Try again once the Servers can be reached",
-            json!({ "volumes": removed.iter().map(|volume| &volume.name).collect::<Vec<_>>() }),
-        ));
+        return Err(unchecked(&removed, observed));
     };
     let losses = removed
         .into_iter()
@@ -230,6 +230,65 @@ pub(crate) fn held(
         })
         .collect();
     Ok((losses, observed.unanswered.clone()))
+}
+
+/// The refusal for `removed` when the Servers weren't checked for their data. When
+/// the check ran it names the Servers it couldn't check, and carries why as the cause.
+fn unchecked(removed: &[RemovedVolume], observed: Option<&VolumeObservation>) -> RpcError {
+    let volumes: Vec<&VolumeName> = removed.iter().map(|volume| &volume.name).collect();
+    let Some(failure) = observed.and_then(|observed| observed.failure.as_ref()) else {
+        return error::unobserved(
+            "This removes deployed Volumes, and the Servers weren't checked for their data, \
+             so it refuses. Try again once the Servers can be reached",
+            json!({ "volumes": volumes }),
+        );
+    };
+    let servers = &failure.servers;
+    let endpoint = failure.endpoint.as_ref();
+    let mut refused = match failure.stage {
+        ObservationStage::Unreachable => {
+            let (who, them) = match (servers.as_slice(), endpoint) {
+                ([], Some(endpoint)) => (endpoint.clone(), "it"),
+                ([], None) => ("the Servers".to_owned(), "they"),
+                ([server], _) => (format!("Server {server}"), "it"),
+                (servers, _) => (format!("Servers {}", servers.join(", ")), "they"),
+            };
+            error::unobserved(
+                format!(
+                    "This removes deployed Volumes, and Ployz couldn't reach {who} to check \
+                     for their data, so it refuses. Try again once {them} can be reached"
+                ),
+                json!({ "volumes": volumes, "unanswered": servers }),
+            )
+        }
+        ObservationStage::Answered { .. } => {
+            let server = servers.first();
+            let who = match (server, endpoint) {
+                (Some(server), _) => format!("Server {server}"),
+                (None, Some(endpoint)) => endpoint.clone(),
+                (None, None) => "the Server Ployz reached".to_owned(),
+            };
+            let details = match server {
+                Some(server) => json!({ "volumes": volumes, "server": server }),
+                None => json!({ "volumes": volumes }),
+            };
+            error::unobserved(
+                format!(
+                    "This removes deployed Volumes, and {who} returned an error when Ployz \
+                     checked for their data, so it refuses. Fix the error {who} returned, then \
+                     try again"
+                ),
+                details,
+            )
+        }
+    };
+    if let (Some(endpoint), Some(details)) = (endpoint, refused.details.as_object_mut()) {
+        details.insert("endpoint".to_owned(), json!(endpoint));
+    }
+    refused.cause = std::iter::once(failure.reason.clone())
+        .chain(failure.cause.iter().cloned())
+        .collect();
+    refused
 }
 
 /// Whether `consent` accepted deleting `loss`: the same Volume, and no Docker

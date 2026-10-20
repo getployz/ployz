@@ -57,14 +57,13 @@ async function mintWith(expiresIn?: string) {
 
 const occurrences = (text: string) => text.split(TOKEN).length - 1;
 
-it("puts the token in each tab's line exactly once", async () => {
+it("shows the token exactly once in each tab", async () => {
   await mintWith();
   await screen.findByRole("tab", { name: "Shell" });
 
   for (const tab of ["Shell", "cloud-init", "Terraform"]) {
     await act(async () => fireEvent.click(screen.getByRole("tab", { name: tab })));
-    const panel = screen.getByRole("tabpanel");
-    expect(occurrences(panel.querySelector("code")?.textContent ?? ""), tab).toBe(1);
+    expect(occurrences(screen.getByRole("tabpanel").textContent ?? ""), tab).toBe(1);
   }
 });
 
@@ -83,9 +82,11 @@ it("reads a one-day token's lifetime in hours", async () => {
   expect(await screen.findByText("Shown once. Expires in 24h.")).toBeTruthy();
 });
 
-it("shows a Shell line that installs the Cloud's own release", async () => {
+it("shows a Shell line that installs the Cloud's own release and asks for the token beside it", async () => {
   mintWith();
-  expect(await screen.findByText(`curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=${TOKEN} sudo --preserve-env=PLOYZ_FLEET_TOKEN sh -s -- 1.2.3`)).toBeTruthy();
+  expect(await screen.findByText("curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3 --enroll")).toBeTruthy();
+  expect(screen.getByText("Paste this Fleet Token when it asks. It doesn't show what you paste.")).toBeTruthy();
+  expect(screen.getByText(TOKEN)).toBeTruthy();
 });
 
 it("describes the token it submitted, not the form as it reads after", async () => {
@@ -125,6 +126,22 @@ it("submits a bounded arrival token and describes it after minting", async () =>
   expect(await screen.findByText("Auto up to 3")).toBeTruthy();
   expect(screen.getByText("Installs Docker and Ployz. Up to 3 servers join your existing cluster when ready.")).toBeTruthy();
   expect(create).toHaveBeenCalledWith({ data: { organizationSlug: "ada", name: null, expiresIn: "1d", autoEnroll: { maxServers: 3 } } });
+});
+
+it("describes Maximum servers with what the token can join, and the label toggles Enroll on arrival", async () => {
+  await renderDialog();
+  fireEvent.click(screen.getByRole("button", { name: "Add servers" }));
+  const arrival = screen.getByRole("switch", { name: "Enroll on arrival" });
+  fireEvent.click(screen.getByText("Enroll on arrival"));
+  expect(arrival.getAttribute("aria-checked")).toBe("true");
+  const max = screen.getByRole("spinbutton", {
+    name: "Maximum servers",
+    description: "Only joins an existing cluster. Enroll the first server yourself. Anyone with this token can join up to 10 servers before it expires.",
+  });
+  fireEvent.change(max, { target: { value: "0" } });
+  expect(screen.getByRole("spinbutton", { name: "Maximum servers", description: /can join up to N servers before it expires\.$/ })).toBe(max);
+  fireEvent.click(screen.getByText("Enroll on arrival"));
+  expect(arrival.getAttribute("aria-checked")).toBe("false");
 });
 
 it("shows the one-time command when Create is double-clicked", async () => {

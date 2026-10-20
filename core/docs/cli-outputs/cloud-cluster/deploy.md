@@ -12,7 +12,7 @@ $ ployz deploy --plan
 stdout:
 ```
 No authored changes to deploy in shop/production.
-Decided by the Servers when it runs: operations.
+Decided by the Servers when it runs: which containers start and stop.
 next: ployz deploy --expect-version 26:16:0.32
 ```
 
@@ -203,7 +203,7 @@ stdout:
 ```
 web (update)
   web.env.GREETING: null -> "hello"
-Decided by the Servers when it runs: operations.
+Decided by the Servers when it runs: which containers start and stop.
 next: ployz deploy --expect-version 27:16:0.34
 ```
 
@@ -930,7 +930,7 @@ Staged worker.image in shop/production.
 
 ```console
 $ ployz deploy
-# exit 3
+# exit 1
 ```
 
 stdout:
@@ -969,7 +969,7 @@ denied
   postgres: unchanged
   worker: failed
   pg-data: unchanged
-# exit 3
+# exit 1
 
 ```
 
@@ -977,7 +977,7 @@ denied
 
 ```console
 $ ployz --json deploy
-# exit 3
+# exit 1
 ```
 
 stdout:

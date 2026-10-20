@@ -1,8 +1,8 @@
 use ployz_core::{
-    ContainerRuntimeObservation, DEFAULT_HEALTH_MONITOR, DependencyHealthFailure, ExecutionError,
-    HEALTH_POLL_INTERVAL, HealthExpectation, HealthObservation, HealthPoll, HealthcheckSpec,
-    OperationPhase, QualifiedService, classify_health, health_deadline_for, healthcheck_deadline,
-    observed_health,
+    ContainerObservation, ContainerRuntimeObservation, CopyRotation, DEFAULT_HEALTH_MONITOR,
+    DependencyHealthFailure, DeploymentLogId, ExecutionError, HEALTH_POLL_INTERVAL,
+    HealthExpectation, HealthObservation, HealthPoll, HealthcheckSpec, OperationPhase,
+    QualifiedService, classify_health, health_deadline_for, healthcheck_deadline, observed_health,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -14,6 +14,7 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
     index: usize,
     progress: &Progress,
     dependency: &QualifiedService,
+    run: &DeploymentLogId,
     cancellation: &CancellationToken,
 ) -> Result<(), ExecutionError> {
     let started = Instant::now();
@@ -35,18 +36,20 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                 && container.namespace == dependency.namespace
                 && container.resolved_spec.name == dependency.name
         });
-        // The row says which copies serve. A superseded copy stays on its
-        // Machine until every Machine routes the row, and may be stopped or
-        // crashlooping by then, so it must not fail the dependent.
-        let serving = client
-            .read_pointer(dependency)
-            .await
-            .map_err(|error| {
-                dependency_health_error(dependency, DependencyHealthFailure::Observation { error })
-            })?
-            .pointer;
-        if let Some(serving) = &serving {
-            containers.retain(|container| serving.containers.contains(&container.container_id));
+        // This run's copies are the ones it is bringing up: Pending or In.
+        // Without any, the copies already In serve the dependent; a copy
+        // Held or Out by another run is leaving and must not fail it.
+        let of_this_run = |container: &ContainerObservation| {
+            container.deploy_label().as_ref() == Some(run)
+                && matches!(
+                    container.rotation(),
+                    CopyRotation::Pending | CopyRotation::In
+                )
+        };
+        if containers.iter().any(of_this_run) {
+            containers.retain(of_this_run);
+        } else {
+            containers.retain(|container| *container.rotation() == CopyRotation::In);
         }
         if containers.is_empty() {
             return Err(dependency_health_error(

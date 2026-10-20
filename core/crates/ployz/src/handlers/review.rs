@@ -61,7 +61,7 @@ pub(super) fn discard_command(command: Command) -> Command {
         )
         .arg(version())
         .arg(value("target", None).value_parser(["head", "saved", "review"])
-            .help("Head resets deploy changes; saved abandons draft reversals; review discards the displayed combined list [default: head, or saved for a path only saved lists]"))
+            .help("Head resets deploy changes; saved abandons draft reversals; review returns everything to the latest save [default: head, or saved for a path only saved lists]"))
 }
 
 /// `ployz diff --json`: the review, plus each staged domain change as people read it.
@@ -225,8 +225,17 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         comes_back: &backs,
     };
     if !discarded.changed {
+        let runs = match &path {
+            Some(path) if backs.is_empty() => source_of_create(&store, matches, path)?,
+            _ => None,
+        };
         return crate::ui::finish(&Next::new(&result, None), || {
-            if backs.is_empty() {
+            if let (Some(path), Some(service)) = (&path, &runs) {
+                crate::ui::stream(format_args!(
+                    "{path} is what the new service {service} runs; it has no Discard of its own. Discard the service: {}",
+                    next(matches, &["discard", service])
+                ));
+            } else if backs.is_empty() {
                 crate::ui::stream(format_args!(
                     "Nothing staged{} in {where_}; nothing to discard.",
                     path.map_or_else(String::new, |path| format!(" at {path}"))
@@ -260,6 +269,31 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         comes_back(&backs, saved);
         crate::ui::hint(&crate::ui::Hint::Inspect(hint));
     })
+}
+
+/// The new Service whose source row `path` names: a create's image, repository or
+/// branch row, which only discarding the Service takes.
+fn source_of_create(
+    store: &super::store::Store,
+    matches: &ArgMatches,
+    path: &SettingPath,
+) -> Result<Option<String>, Error> {
+    let view = store.read(&DiffQuery {
+        environment: environment(matches)?,
+    })?;
+    let path = path.to_string();
+    Ok(view
+        .changes
+        .iter()
+        .find(|change| {
+            change.lifecycle == ReviewLifecycleKind::Create
+                && change.node.node_type == EnvironmentNodeType::Service
+                && change
+                    .settings
+                    .iter()
+                    .any(|row| row.path == path && !row.can_restore && row.before.is_null())
+        })
+        .map(|change| change.name.clone()))
 }
 
 #[derive(Serialize)]

@@ -187,7 +187,11 @@ pub(crate) fn plan(
     let target = canonicalize_environment_intent(environment.working.clone());
     // Which Docker Volumes a removal deletes only the Servers can say.
     let removed: Vec<VolumeLoss> = if query.services.is_empty() {
-        removal::removed(&review.head.applied, &target, &namespace)?
+        removal::removed(
+            &review::approval::deployed(&review.head),
+            &target,
+            &namespace,
+        )?
     } else {
         Vec::new()
     }
@@ -204,7 +208,7 @@ pub(crate) fn plan(
     let frozen = deployment::freeze(
         &environment.summary.id,
         &target,
-        &review.head.applied,
+        &deployment::Landing::of(&review.head),
         deployment::Scope::of(&query.services, &removed),
         namespace.clone(),
         None,

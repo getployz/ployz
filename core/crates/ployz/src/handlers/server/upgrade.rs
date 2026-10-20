@@ -791,6 +791,7 @@ mod tests {
                 operation: "RequestUpgrade".into(),
                 wait: crate::setup_retry::WAIT,
                 last: Some(ConnectError::EntryNotReady),
+                in_flight: false,
             })),
             seen: Vec::new(),
         };

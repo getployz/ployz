@@ -99,10 +99,11 @@ changes, because it ships exactly what that deployment did.
 
 When a deploy or save would remove a running service, delete a volume, detach a volume from a
 service or remove a domain, the agent stops and shows a card. It does the same before it removes
-a server, cleans up after one, drains the last copy of a volume off one, or runs a volume
+a server, cleans up after one, drains a server whose global service runs on no other server, or runs a volume
 command that deletes data. The card leads with what would be
 destroyed. A detach that a [restore](../services/restore-a-volume.md) makes also says what the
-new volume leaves out, like "Changes after 10:27 are not in pg-data-1027". Everything else the change does is folded under a count, like **2 other changes**;
+new volume leaves out, like "Changes after 10:27 are not in pg-data-1027", with the date as well
+for a point from an earlier day. Everything else the change does is folded under a count, like **2 other changes**;
 click it to see them. Under its name the card says when it was asked, like **9 minutes ago**.
 
 1. Read the list of what gets destroyed.

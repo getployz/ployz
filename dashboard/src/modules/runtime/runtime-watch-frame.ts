@@ -43,11 +43,15 @@ const runtimeWatchIncompleteVolumeIdSchema = Schema.Struct({
   name: Schema.String,
 });
 
-/** A managed Volume's copy on one Machine. An unset Engine role is a writer; a read-only root reports `switching`. */
+/**
+ * A managed Volume's copy on one Machine. An unset Engine role is a writer; a read-only root reports `switching`. A slot
+ * carries what its Machine recorded it as, a mirror or an old copy; every other copy carries null.
+ */
 const runtimeWatchVolumeCopySchema = Schema.Struct({
   machine_id: Schema.String,
   name: Schema.String,
   role: Schema.Literals(["writer", "slot", "switching"]),
+  slot_role: Schema.NullOr(Schema.Literals(["mirror", "old_copy"])),
 });
 
 const runtimeWatchCertificateSchema = Schema.Struct({
@@ -147,7 +151,12 @@ export function runtimeWatchFrameForTransport(
     containers: frame.containers.map(runtimeWatchContainerForTransport),
     // Only managed Volumes have copies; their labels, options and paths stay on the Server.
     volumes: frame.volumes.flatMap((volume) => volume.storage.kind === "provisioned"
-      ? [{ machine_id: volume.id.machine_id, name: volume.id.name, role: volume.storage.role ?? "writer" }]
+      ? [{
+        machine_id: volume.id.machine_id,
+        name: volume.id.name,
+        role: volume.storage.role ?? "writer",
+        slot_role: volume.storage.role === "slot" ? volume.storage.slot_role ?? "mirror" : null,
+      }]
       : []),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
@@ -229,7 +238,7 @@ export function runtimeSnapshotFromWatchFrame(
       hookContainers: service.hook_containers.map(runtimeContainerRecordFromWatch),
       observedAt,
     })),
-    volumeCopies: frame.volumes.map((copy) => ({ machineId: copy.machine_id, name: copy.name, role: copy.role })),
+    volumeCopies: frame.volumes.map((copy) => ({ machineId: copy.machine_id, name: copy.name, role: copy.role, slotRole: copy.slot_role })),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
       status: certificate.status,

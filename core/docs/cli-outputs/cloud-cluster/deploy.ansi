@@ -366,7 +366,7 @@ denied
   postgres: unchanged
   worker: failed
   pg-data: unchanged
-# exit 3
+# exit 1
 
 
 === deployment show of the failed Deployment :: $ ployz deployment show c405d65a-c1f7-4ea9-9fa4-d1286e12dfc9

@@ -81,8 +81,10 @@ see [When a server goes down](scaling.md#when-a-server-goes-down).
 A volume's copies are the places its data lives besides the server that writes it. With Ployz
 Cloud a volume can have a mirror, a read-only copy on a second server that refreshes on every
 deploy and every 15 minutes. A move leaves an old copy on the server it left. Open the volume and
-look under **Copies**. An old copy never refreshes, so it doesn't protect the data. A mirror's age
-turns amber with a **⚠** once it is more than an hour old.
+look under **Copies**. An old copy never refreshes, so it doesn't protect the data. Each server
+records which of its copies is a mirror and which is an old copy, so a mirror made with
+`ployz volume mirror` refreshes like any other, and a move from the CLI leaves an old copy too. A
+mirror's age turns amber with a **⚠** once it is more than an hour old.
 
 Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
 deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for
@@ -148,6 +150,8 @@ confirmation stays with the change. See
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
 
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.
+A mounted volume whose first deploy is still running counts as deployed, since that deploy may
+already have created it. Saving or deploying its deletion asks first, the same way.
 
 ## Good to know
 

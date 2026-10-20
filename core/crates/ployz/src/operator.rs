@@ -127,7 +127,7 @@ pub enum OperatorError {
     Container(#[from] ployz_core::ContainerSelectorError),
     #[error("Service has no regular containers")]
     NoRegularContainer,
-    #[error("Machine RPC failed.")]
+    #[error("Ployz's call to your Server's daemon failed.")]
     Rpc(#[source] TransportError),
     #[error("Stream protocol failed.")]
     Protocol(#[from] StreamProtocolError),
@@ -175,6 +175,8 @@ pub enum OperatorError {
         #[source]
         source: Box<OperatorError>,
     },
+    #[error("The container for {service} stopped; exec ended.")]
+    ExecContainerStopped { service: String },
     #[error("Could not start the command in {container}.")]
     StartExec {
         container: String,
@@ -407,6 +409,22 @@ pub fn select_proxy_container(
 pub struct ExecSession {
     pub input: mpsc::Sender<OpaquePayload>,
     pub output: Streaming<OpaquePayload>,
+    pub target: ExecTarget,
+}
+
+/// The container an exec session runs in.
+#[derive(Clone, Debug)]
+pub struct ExecTarget {
+    pub identity: QualifiedService,
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+}
+
+/// An exec's container stopped running while the exec ran.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContainerStopped {
+    /// Another container of the Service runs now, so exec can attach again.
+    pub another_runs: bool,
 }
 
 pub struct LogInput {
@@ -471,7 +489,59 @@ pub async fn open_exec(
     Ok(ExecSession {
         input: sender,
         output,
+        target: ExecTarget {
+            identity: service.identity.clone(),
+            machine_id,
+            container_id: container.container_id,
+        },
     })
+}
+
+/// Observe whether `target`'s container stopped running, and whether another
+/// container of its Service runs. Only its own Machine's answer counts as proof:
+/// the container listed there as exited, dead or being removed, or absent from it.
+/// `None` for any other state, and when that Machine did not answer, since absence
+/// from a partial view proves nothing.
+///
+/// # Errors
+/// Returns the connect error when the Machines cannot be listed.
+pub async fn exec_container_stopped(
+    client: &mut Client,
+    target: &ExecTarget,
+) -> Result<Option<ContainerStopped>, OperatorError> {
+    use ployz_core::ContainerRuntimeObservation::{Dead, Exited, Removing, Running};
+    let machines = client.machines().await?;
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    let Some(answer) = live
+        .containers
+        .successes
+        .iter()
+        .find(|answer| answer.machine_id == target.machine_id)
+    else {
+        return Ok(None);
+    };
+    match answer
+        .value
+        .iter()
+        .find(|container| container.container_id == target.container_id)
+        .map(|container| &container.runtime)
+    {
+        None | Some(Exited { .. } | Dead | Removing) => {}
+        Some(_) => return Ok(None),
+    }
+    let another_runs = live
+        .services()
+        .iter()
+        .filter(|service| service.identity == target.identity)
+        .flat_map(|service| &service.containers)
+        .map(ServiceContainer::as_observation)
+        .any(|container| {
+            container.container_id != target.container_id
+                && matches!(container.runtime, Running { .. })
+        });
+    Ok(Some(ContainerStopped { another_runs }))
 }
 
 /// The label ployzd puts on each container a Deployment creates: its Deploy log ID.
