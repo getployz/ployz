@@ -61,7 +61,7 @@ impl VolumeStorage {
                 };
                 let name = ployz_core::DockerVolumeName::parse(name)
                     .map_err(|error| ployz_core::error_chain::inline(&error))?;
-                let (role, maximum_bytes) = match place {
+                let (role, maximum_bytes, slot_role) = match place {
                     super::Place::Root(_) => (
                         if dataset.readonly {
                             CopyRole::Switching
@@ -69,6 +69,7 @@ impl VolumeStorage {
                             CopyRole::Writer
                         },
                         dataset.refquota,
+                        None,
                     ),
                     super::Place::Slot(_) => {
                         let bound = super::storage::committed_bytes(dataset, pool.name());
@@ -82,7 +83,11 @@ impl VolumeStorage {
                         slot_bound_bytes = slot_bound_bytes
                             .checked_add(bound)
                             .ok_or("Volume commitments overflow u64")?;
-                        (CopyRole::Slot, bound)
+                        (
+                            CopyRole::Slot,
+                            bound,
+                            Some(self.slot_role(&dataset.name).await?),
+                        )
                     }
                     super::Place::Outside => continue,
                 };
@@ -98,7 +103,7 @@ impl VolumeStorage {
                         role,
                         maximum_bytes: maximum,
                         used_bytes: dataset.active_used_bytes,
-                        slot_role: None,
+                        slot_role,
                     },
                 );
             }

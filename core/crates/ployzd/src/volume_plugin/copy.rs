@@ -6,7 +6,7 @@
 use axum::{Json, extract::State};
 use ployz_core::{
     CopyRefusal, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
-    SetVolumeCopyRefused, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
+    SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
 };
 use ployzd::{
     faults::{Identity, Want},
@@ -318,10 +318,13 @@ impl VolumeStorage {
         self.ensure_mirror_root(&scope.pool, &scope.datasets)
             .await
             .map_err(internal)?;
+        let parent = slot_parent(&scope.pool, name);
         if scope.slot().is_none() {
-            self.create_bounded_slot(&slot_parent(&scope.pool, name), refquota)
-                .await?;
+            self.create_bounded_slot(&parent, refquota).await?;
         }
+        self.mark_slot_role(&parent, SlotRole::OldCopy)
+            .await
+            .map_err(internal)?;
         self.z(&["rename", &root_name, &slot_fs(&scope.pool, name)])
             .await?;
         self.copy_now(&scope).await
@@ -680,6 +683,9 @@ impl VolumeStorage {
             return self.copy_now(&scope).await;
         }
         if pulling.as_deref() != Some(target.as_str()) {
+            self.mark_slot_role(&parent, SlotRole::Mirror)
+                .await
+                .map_err(internal)?;
             self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
                 .await?;
         }

@@ -167,6 +167,7 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
             "zfs unmount tank/ployz/data",
             "zfs create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror",
             "zfs create -o canmount=off -o readonly=on -o refquota=1073741824 tank/ployz-mirror/data",
+            "zfs set ployz:role=old_copy tank/ployz-mirror/data",
             "zfs rename tank/ployz/data tank/ployz-mirror/data/fs",
         ]
     );

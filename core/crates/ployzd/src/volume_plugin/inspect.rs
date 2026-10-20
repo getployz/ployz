@@ -11,8 +11,8 @@ use super::{
     Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
     seed::SEED_PROPERTY,
     storage::{
-        EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs,
-        slot_parent,
+        EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, ROLE_PROPERTY,
+        slot_fs, slot_parent,
     },
 };
 
@@ -145,6 +145,24 @@ impl VolumeStorage {
         }
     }
 
+    /// What this Machine recorded a slot parent as.
+    pub(super) async fn slot_role(&self, parent: &str) -> Result<SlotRole> {
+        match self.property(parent, ROLE_PROPERTY).await? {
+            None => Ok(SlotRole::default()),
+            Some(value) => value.parse().map_err(|error| {
+                VolumeError::from(format!(
+                    "{parent} carries an unreadable {ROLE_PROPERTY} {value:?}: {error}"
+                ))
+            }),
+        }
+    }
+
+    pub(super) async fn mark_slot_role(&self, parent: &str, role: SlotRole) -> Result<()> {
+        self.zfs(&["set", &format!("{ROLE_PROPERTY}={}", role.as_str()), parent])
+            .await
+            .map(drop)
+    }
+
     async fn slot_id(&self, parent: &str) -> Result<SlotId> {
         let value = self.property(parent, "guid").await?.unwrap_or_default();
         value.parse().map(SlotId::new).map_err(|error| {
@@ -208,7 +226,7 @@ impl VolumeStorage {
             newest,
             resume_token,
             pull: self.pull(slot, name).await?,
-            role: SlotRole::Mirror,
+            role: self.slot_role(&slot.name).await?,
         }))
     }
 
