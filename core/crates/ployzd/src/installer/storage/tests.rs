@@ -497,9 +497,11 @@ case "$*" in
     case "$PLOYZ_ZFS_DEBIAN_CONTRACT" in no-module|packaged-unbuilt) ;; *) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;; esac ;;
 esac"#,
         );
+        // zfs-dkms lists its source even when its install already built the module, which
+        // leaves nothing for `dkms install` to do.
         write_script(
             &commands.join("dpkg"),
-            r#"[ "$PLOYZ_ZFS_DEBIAN_CONTRACT" = packaged-unbuilt ] && [ "$*" = '-L zfs-dkms' ] && printf '/.\n/usr/src\n/usr/src/zfs-2.1.11\n/usr/src/zfs-2.1.11/dkms.conf\n'"#,
+            r#"[ "$PLOYZ_ZFS_DEBIAN_CONTRACT" != no-module ] && [ "$*" = '-L zfs-dkms' ] && printf '/.\n/usr/src\n/usr/src/zfs-2.1.11\n/usr/src/zfs-2.1.11/dkms.conf\n'"#,
         );
         write_script(
             &commands.join("dkms"),
@@ -869,7 +871,7 @@ esac"#,
         );
         write_script(
             &commands.join("rpm"),
-            r#"[ "$PLOYZ_ZFS_AMAZON_CONTRACT" = packaged-unbuilt ] && [ "$*" = '-ql zfs-dkms' ] && printf '/usr/src/zfs-2.4.4\n/usr/src/zfs-2.4.4/dkms.conf\n'"#,
+            r#"[ "$*" = '-ql zfs-dkms' ] && printf '/usr/src/zfs-2.4.4\n/usr/src/zfs-2.4.4/dkms.conf\n'"#,
         );
         write_script(
             &commands.join("dkms"),

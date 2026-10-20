@@ -66,12 +66,20 @@ fn dpkg_owner(status: u8) -> String {
 }
 
 fn dpkg_query(installed: &[&str]) -> String {
-    let installed: String = installed
+    let statuses: Vec<_> = installed
         .iter()
-        .map(|package| format!("|{package}"))
+        .map(|package| (*package, "install ok installed"))
         .collect();
-    // The leading `''` keeps the pattern valid when nothing is installed.
-    format!("case \"$3\" in ''{installed}) printf 'install ok installed' ;; *) exit 1 ;; esac")
+    dpkg_statuses(&statuses)
+}
+
+/// A `dpkg-query` that prints each package's `${Status}` and doesn't know any other package.
+fn dpkg_statuses(statuses: &[(&str, &str)]) -> String {
+    let arms: String = statuses
+        .iter()
+        .map(|(package, status)| format!("{package}) printf '{status}' ;; "))
+        .collect();
+    format!("case \"$3\" in {arms}*) exit 1 ;; esac")
 }
 
 #[tokio::test]
@@ -106,7 +114,16 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
                 ("uname", &format!("echo {DEBIAN_KERNEL}")),
                 ("modinfo", "exit 1"),
                 ("dpkg", &dpkg_owner(1)),
-                ("dpkg-query", &dpkg_query(&["dkms", "perl"])),
+                // Held and half-configured packages are already here, so preparation neither
+                // installs nor claims them; a removed one's left configuration is no package.
+                (
+                    "dpkg-query",
+                    &dpkg_statuses(&[
+                        ("dkms", "hold ok installed"),
+                        ("perl", "install ok half-configured"),
+                        ("file", "deinstall ok config-files"),
+                    ]),
+                ),
                 (
                     "apt-get",
                     "case \"$*\" in *'download zfs-dkms') : > zfs-dkms_2.1.11-1_all.deb ;; esac",
@@ -411,7 +428,7 @@ fn amazon_linux_build_stops_at_dkms_build() {
             ),
             (
                 "rpm",
-                "case \"$1 ${3-}\" in *' make') exit 0 ;; -qf*) echo \"file $2 is not owned by any package\" ;; esac; exit 1",
+                "case \"$1 ${3-}\" in *' make') exit 0 ;; -qf*) [ \"$2\" = \"$PLOYZ_INSTALLER_CONTRACT_ROOT/usr/src/zfs-2.4.4\" ] || exit 2; echo \"file $2 is not owned by any package\" ;; esac; exit 1",
             ),
             (
                 "curl",
@@ -679,7 +696,7 @@ fn discard_leaves_a_build_its_package_ships_alone() {
         "installer::prepare::tests::discard_leaves_a_build_its_package_ships_alone",
         CASE,
         "source-owned",
-        &["dkms"],
+        &dpkg_query(&["dkms"]),
         &dpkg_owner(0),
     );
     let root = fixture.path();
@@ -701,24 +718,74 @@ fn discard_removes_another_versions_build_but_keeps_the_packages_zfs_dkms_needs(
         return;
     }
 
-    let (fixture, source_dir) = discard_beside_installed_zfs(
+    // Removing dkms would take zfs-dkms with it in any of these states: a held or deselected
+    // package is still installed, and a half-configured one is still there to remove.
+    for (name, zfs_dkms) in [
+        ("other-version-installed", "install ok installed"),
+        ("other-version-held", "hold ok installed"),
+        ("other-version-deinstall", "deinstall ok installed"),
+        ("other-version-purge", "purge ok installed"),
+        (
+            "other-version-half-configured",
+            "install ok half-configured",
+        ),
+        ("other-version-unpacked", "install ok unpacked"),
+        (
+            "other-version-reinstreq",
+            "install reinstreq half-installed",
+        ),
+    ] {
+        let (fixture, source_dir) = discard_beside_installed_zfs(
+            "installer::prepare::tests::discard_removes_another_versions_build_but_keeps_the_packages_zfs_dkms_needs",
+            CASE,
+            name,
+            &dpkg_statuses(&[("zfs-dkms", zfs_dkms), ("dkms", "install ok installed")]),
+            "exit 1",
+        );
+        let root = fixture.path();
+        assert_eq!(
+            host_changes(root),
+            ["dkms remove -m zfs -v 2.1.11 --all"],
+            "{name}: {}",
+            read_log(root)
+        );
+        assert!(!source_dir.exists(), "{name}");
+        let state = read_state(root);
+        assert_eq!(state.zfs_build, None, "{name}");
+        assert!(state.added_packages.is_empty(), "{name}");
+    }
+
+    // Only zfs-dkms's left configuration remains, so the build packages go.
+    let (fixture, _) = discard_beside_installed_zfs(
         "installer::prepare::tests::discard_removes_another_versions_build_but_keeps_the_packages_zfs_dkms_needs",
         CASE,
-        "other-version-installed",
-        &["zfs-dkms", "dkms"],
+        "other-version-config-files",
+        &dpkg_statuses(&[("zfs-dkms", "deinstall ok config-files")]),
         "exit 1",
     );
     let root = fixture.path();
     assert_eq!(
         host_changes(root),
-        ["dkms remove -m zfs -v 2.1.11 --all"],
+        [
+            "dkms remove -m zfs -v 2.1.11 --all",
+            "apt-get -o DPkg::Lock::Timeout=300 remove -y -qq dkms lsb-release",
+        ],
         "{}",
         read_log(root)
     );
-    assert!(!source_dir.exists());
-    let state = read_state(root);
-    assert_eq!(state.zfs_build, None);
-    assert!(state.added_packages.is_empty());
+}
+
+/// Anything but dpkg's three-word status is no answer, so discard refuses rather than reading it
+/// as "not installed".
+#[test]
+fn dpkg_status_without_three_words_is_no_answer() {
+    assert_eq!(dpkg_status_installed("hold ok installed"), Some(true));
+    assert_eq!(
+        dpkg_status_installed("unknown ok not-installed"),
+        Some(false)
+    );
+    assert_eq!(dpkg_status_installed(""), None);
+    assert_eq!(dpkg_status_installed("installed"), None);
 }
 
 #[test]
@@ -736,7 +803,7 @@ fn discard_keeps_a_build_whose_owner_is_unknown() {
         "installer::prepare::tests::discard_keeps_a_build_whose_owner_is_unknown",
         CASE,
         "owner-unknown",
-        &["dkms"],
+        &dpkg_query(&["dkms"]),
         &dpkg_owner(2),
     );
     let root = fixture.path();
@@ -881,7 +948,7 @@ fn discard_beside_installed_zfs(
     test: &str,
     case: &str,
     name: &str,
-    installed: &[&str],
+    dpkg_query: &str,
     dpkg: &str,
 ) -> (tempfile::TempDir, PathBuf) {
     let fixture = host(
@@ -889,7 +956,7 @@ fn discard_beside_installed_zfs(
         DEBIAN_12,
         &[
             ("apt-get", ""),
-            ("dpkg-query", &dpkg_query(installed)),
+            ("dpkg-query", dpkg_query),
             ("dpkg", dpkg),
             (
                 "dkms",

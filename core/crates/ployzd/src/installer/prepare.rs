@@ -710,8 +710,21 @@ fn deb_installed(package: &str) -> bool {
         .args(["-W", "-f=${Status}", package])
         .output()
         .is_ok_and(|output| {
-            output.status.success() && output.stdout.as_slice() == b"install ok installed"
+            output.status.success()
+                && dpkg_status_installed(&String::from_utf8_lossy(&output.stdout)) == Some(true)
         })
+}
+
+/// Whether a dpkg `${Status}` (`<want> <flag> <state>`) leaves the package's files on the
+/// Machine, or `None` when it isn't one. The want (`hold`, `deinstall`, `purge`) is only a wish
+/// and the flag only marks a failed operation, so neither removes anything. A half-installed,
+/// unpacked or half-configured package counts too, since apt would still remove it along with
+/// its dependencies.
+fn dpkg_status_installed(status: &str) -> Option<bool> {
+    match status.split_whitespace().collect::<Vec<_>>()[..] {
+        [_, _, state] => Some(!matches!(state, "not-installed" | "config-files")),
+        _ => None,
+    }
 }
 
 fn rpm_provided(capability: &str) -> bool {
@@ -795,7 +808,8 @@ fn zfs_dkms_installed(package_manager: &str) -> Result<bool, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     match output.status.code() {
-        Some(0) => Ok(dnf || stdout == "install ok installed"),
+        Some(0) if dnf => Ok(true),
+        Some(0) if let Some(installed) = dpkg_status_installed(&stdout) => Ok(installed),
         // dpkg-query exits 1 only for a package it doesn't know; errors exit 2.
         Some(1) if !dnf => Ok(false),
         Some(1)
