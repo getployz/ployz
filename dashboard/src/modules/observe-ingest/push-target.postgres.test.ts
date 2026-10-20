@@ -12,6 +12,7 @@ import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
+import { connectionAborts } from "#/test/connection-aborts";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f301";
@@ -24,10 +25,10 @@ type OnSet = (machine: string, republish: (machine: MachineId) => Promise<void>)
 
 const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => Promise<void> = async () => undefined) {
   const dialed: Array<{ machine: string; url: string | null }> = [];
-  const signals: AbortSignal[] = [];
+  const aborts = connectionAborts();
   const ployz = makePloyzLayer({
     connect: async (options) => {
-      if (options.signal) signals.push(options.signal);
+      aborts.watch(options.signal);
       const [connection] = options.connections;
       const machine = connection && "machine_id" in connection ? connection.machine_id ?? "" : "";
       if (machine === OFFLINE) throw new Error("Endpoint unavailable");
@@ -69,7 +70,7 @@ const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => P
       .where(eq(organizationMachine.machineId, machine));
   })));
   const sweep = () => deliverPushTargets().pipe(Effect.provide(cloud), Effect.orDie);
-  return { dialed, signals, confirmed, sweep, republish };
+  return { dialed, aborts, confirmed, sweep, republish };
 });
 
 it.live("a sweep points each Machine at its observe URL and records only what the Machine confirmed", () => Effect.gen(function* () {
@@ -112,10 +113,10 @@ it.live("a capability published while Cloud dials leaves the Machine pending for
 }));
 
 it.live("a sweep finishes within its Cluster time, and aborts each connection, when a Machine's session never closes", () => Effect.gen(function* () {
-  const { signals, confirmed, sweep } = yield* setup(undefined, () => new Promise<void>(() => {}));
+  const { aborts, confirmed, sweep } = yield* setup(undefined, () => new Promise<void>(() => {}));
   const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), SESSION_CLOSE_CLUSTER_MS + 8_000); }));
   const outcomes = yield* Effect.raceFirst(sweep(), held);
   expect(outcomes).toEqual(expect.arrayContaining([{ machineId: CURRENT, delivery: "set" }, { machineId: OLD, delivery: "lacks" }]));
   expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBe(url(CURRENT));
-  expect(signals.map((signal) => signal.aborted)).toEqual([true, true, true]);
+  expect(aborts.aborted()).toEqual([true, true, true]);
 }), 30_000);

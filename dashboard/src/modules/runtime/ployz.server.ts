@@ -168,8 +168,8 @@ type PloyzBindings = {
   readonly connect: (options: ConnectOptions) => Promise<Client>;
 };
 
-/** Why a bound cut a close, such as `ClusterOutOfTime`. */
-export type CloseCut = { readonly _tag: string };
+/** Why a bound cut a close, such as `ClusterOutOfTime`, or a plain error a bound failed with. */
+export type CloseCut = { readonly _tag: string } | Error;
 
 /**
  * How a session closes when its scope does. `closeWithin` bounds the close for a short-lived caller (pass `clusterRead`
@@ -382,9 +382,9 @@ function closeSession(session: Client) {
 
 /** The warning for a close its bound cut: only running out of Cluster time is "in time". */
 export function closeCutWarning(cut: CloseCut) {
-  return cut._tag === "ClusterOutOfTime"
-    ? "The Ployz session didn't close in time, so its connection was aborted."
-    : `The Ployz session's close failed with ${cut._tag}, so its connection was aborted.`;
+  if ("_tag" in cut && cut._tag === "ClusterOutOfTime") return "The Ployz session didn't close in time, so its connection was aborted.";
+  const failure = "_tag" in cut ? cut._tag : cut.message || cut.name;
+  return `The Ployz session's close failed with ${failure}, so its connection was aborted.`;
 }
 
 function closeSessionWithin(

@@ -46,6 +46,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError, Unauthorized } from "#/server/public-error";
 import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
+import { connectionAborts } from "#/test/connection-aborts";
 import { fakeGithubApi } from "#/test/fake-github";
 import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
@@ -81,11 +82,11 @@ function fakeServers() {
   const servers = new Map<string, {
     online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string>; closeHangs?: boolean;
   }>();
-  const signals: AbortSignal[] = [];
+  const aborts = connectionAborts();
   let sets = 0;
   const layer = makePloyzLayer({
     connect: async (options) => {
-      if (options.signal) signals.push(options.signal);
+      aborts.watch(options.signal);
       const [connection] = options.connections;
       const server = connection && "machine_id" in connection ? servers.get(connection.machine_id ?? "") : undefined;
       if (server?.online === "hangs") return new Promise<never>(() => undefined);
@@ -112,7 +113,7 @@ function fakeServers() {
       });
     },
   });
-  return { servers, layer, signals, sets: () => sets };
+  return { servers, layer, aborts, sets: () => sets };
 }
 
 const pairingSecret = "ppair_fixture_server_access";
@@ -861,7 +862,7 @@ it.live(
         const swept = yield* retireServerAccess();
         assert.deepStrictEqual(swept.confirmed, [machine]);
         assert.strictEqual(server.slots.size, 0);
-        assert.deepStrictEqual(fake.signals.map((signal) => signal.aborted), [true, true]);
+        assert.deepStrictEqual(fake.aborts.aborted(), [true, true]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -47,6 +47,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { fakeGithubApi } from "#/test/fake-github";
+import { connectionAborts } from "#/test/connection-aborts";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -91,6 +92,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
   const fail = { publish: false };
   const published: EnrollmentAssignment[] = [];
   const connected: ConnectOptions[] = [];
+  const aborts = connectionAborts();
   let closed = 0;
   const connection = {
     error: null as Error | null,
@@ -102,6 +104,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
   const cluster = { frames: [] as Array<Array<[string, string]>> };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
+    aborts.watch(options.signal);
     await connection.beforeConnect(options);
     if (connection.error) throw connection.error;
     return asTestDouble<Client>()({
@@ -127,7 +130,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     });
   });
   return {
-    coordinator, connected, connection, published, fail, cluster,
+    coordinator, connected, aborts, connection, published, fail, cluster,
     closed: () => closed,
     observations: () => observations,
     registerCalls: () => registerCalls,
@@ -746,7 +749,7 @@ describe("organization enrollment coordinator", () => {
     const held = new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), SESSION_CLOSE_CLUSTER_MS + 8_000); });
     expect(await Promise.race([fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" }), held]))
       .toMatchObject({ success: { machineId: attempt.machineId } });
-    expect(fake.connected.at(-1)?.signal?.aborted).toBe(true);
+    expect(fake.aborts.aborted().at(-1)).toBe(true);
   }, 30_000);
 
   const keyed = (key: number, secret = 0xee) => `ployz1:${Buffer.concat([Buffer.alloc(32, key), Buffer.alloc(32, secret)]).toString("base64url")}`;

@@ -161,4 +161,9 @@ it("says a cut close ran out of time only when its Cluster time did, and otherwi
     closeCutWarning(new PloyzProviderError({ operation: "close", cause: new Error("boom") })),
     "The Ployz session's close failed with PloyzProviderError, so its connection was aborted.",
   );
+  assert.strictEqual(
+    closeCutWarning(new Error("socket hang up")),
+    "The Ployz session's close failed with socket hang up, so its connection was aborted.",
+  );
+  assert.strictEqual(closeCutWarning(new TypeError()), "The Ployz session's close failed with TypeError, so its connection was aborted.");
 });

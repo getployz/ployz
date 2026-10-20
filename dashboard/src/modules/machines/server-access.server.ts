@@ -83,7 +83,8 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     isNull(serverAccess.revokedAt),
   ))).map((row) => [row.machineId, row.encryptedCapability]));
   const label = serverAccessLabel(caller.credential.id);
-  // Every Server at once, so the reply comes within one timeout, inside the CLI's 15 s request.
+  // Every Server at once, so the Cluster time is one dial and Set plus one close (12 s) inside the CLI's 15 s request.
+  // The SQL around it has no bound of its own.
   const results = yield* Effect.forEach(loaded.connections, (cloud) => Effect.gen(function* () {
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 import { seedAnonymousStoreOrganization, sendsNowhere } from "#/test/store-cloud";
+import { connectionAborts } from "#/test/connection-aborts";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -45,10 +46,12 @@ describe("protected pairing removal", () => {
     const cleared: string[] = [];
     const calls: string[] = [];
     const dialed: ConnectOptions[] = [];
+    const aborts = connectionAborts();
     let mutations = 0;
     const ployz = makePloyzLayer({
       connect: async (options) => {
         dialed.push(options);
+        aborts.watch(options.signal);
         const [connection] = options.connections;
         if (!connection || !("management" in connection) || connection.management !== capability || connection.machine_id !== machineId) {
           throw new Error("Endpoint unavailable");
@@ -74,7 +77,7 @@ describe("protected pairing removal", () => {
     });
     const layer = Layer.mergeAll(ployz, Layer.succeed(Database, harness.database), Layer.succeed(SecretEncryption, encryption), Layer.succeed(InngestClient, sendsNowhere()));
     const makeRuntime = () => ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(layer)));
-    return { endpoint, dialed, cleared, calls, mutations: () => mutations, makeRuntime };
+    return { endpoint, dialed, aborts, cleared, calls, mutations: () => mutations, makeRuntime };
   }
 
   it.each([
@@ -130,7 +133,7 @@ describe("protected pairing removal", () => {
       expect(await Promise.race([runtime.runPromise(revokeOrganizationPairing(organizationId)), held])).toEqual({
         confirmed: true, endpoints: [{ machineId, status: "confirmed" }],
       });
-      expect(fake.dialed.map((options) => options.signal?.aborted)).toEqual([true]);
+      expect(fake.aborts.aborted()).toEqual([true]);
     } finally { await runtime.dispose(); }
   }, 30_000);
 
