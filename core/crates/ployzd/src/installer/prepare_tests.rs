@@ -94,7 +94,7 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
             &[
                 ("uname", &format!("echo {DEBIAN_KERNEL}")),
                 ("modinfo", "exit 1"),
-                ("dpkg", ""),
+                ("dpkg", "[ \"$1\" != -S ]"),
                 ("dpkg-query", &dpkg_query(&["dkms", "perl"])),
                 (
                     "apt-get",
@@ -132,6 +132,7 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
             .lines()
             .filter(|line| !line.starts_with("uname") && !line.starts_with("modinfo"))
             .filter(|line| !line.starts_with("dpkg-query") && !line.starts_with("dkms status"))
+            .filter(|line| !line.starts_with("dpkg -S"))
             .collect();
         let headers = format!("linux-headers-{DEBIAN_KERNEL} linux-headers-amd64");
         // A registration this Machine did not make is only built, never removed or replaced.
@@ -190,6 +191,75 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
         );
         assert!(!root.join("data/machine.json").exists());
     }
+}
+
+/// A recorded build whose source a package now ships belongs to the package: prepare only builds
+/// it, never removes or replaces it.
+#[tokio::test]
+async fn debian_prepare_leaves_a_recorded_build_its_package_now_ships() {
+    const CASE: &str = "PLOYZ_PREPARE_DEBIAN_PACKAGED_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        prepare_at(&InstallPaths::at(&root), false, async || Ok(()))
+            .await
+            .unwrap();
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "packaged",
+        DEBIAN_12,
+        &[
+            ("uname", &format!("echo {DEBIAN_KERNEL}")),
+            ("modinfo", "exit 1"),
+            ("dpkg", "[ \"$1\" = -S ] && echo \"zfs-dkms: $2\"; exit 0"),
+            ("dpkg-query", &dpkg_query(&["dkms", "perl", "zfs-dkms"])),
+            (
+                "apt-get",
+                "case \"$*\" in *'download zfs-dkms') : > zfs-dkms_2.1.11-1_all.deb ;; esac",
+            ),
+            (
+                "dpkg-deb",
+                "mkdir -p \"$3/usr/src/zfs-2.1.11\"; : > \"$3/usr/src/zfs-2.1.11/dkms.conf\"",
+            ),
+            (
+                "dkms",
+                "case \"$*\" in 'status -m zfs -v 2.1.11') echo 'zfs/2.1.11: added' ;; esac",
+            ),
+        ],
+    );
+    let root = fixture.path();
+    let paths = InstallPaths::at(root);
+    let source_dir = root.join("usr/src/zfs-2.1.11");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::write(source_dir.join("dkms.conf"), "AUTOINSTALL=\"yes\"\n").unwrap();
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    claimed_build(&paths, &source_dir).save().unwrap();
+    run_contract_child_with_environment(
+        "installer::prepare::tests::debian_prepare_leaves_a_recorded_build_its_package_now_ships",
+        root,
+        OsString::from(CASE),
+        OsString::from("packaged"),
+        "packaged",
+        [],
+    );
+
+    let log = read_log(root);
+    let dkms_changes: Vec<&str> = log
+        .lines()
+        .filter(|line| line.starts_with("dkms") && !line.starts_with("dkms status"))
+        .collect();
+    assert_eq!(
+        dkms_changes,
+        [format!("dkms build -m zfs -v 2.1.11 -k {DEBIAN_KERNEL}")],
+        "{log}"
+    );
+    assert_eq!(
+        fs::read_to_string(source_dir.join("dkms.conf")).unwrap(),
+        "AUTOINSTALL=\"yes\"\n"
+    );
+    assert_eq!(read_state(root).zfs_build, None);
 }
 
 #[tokio::test]

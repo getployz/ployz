@@ -424,7 +424,7 @@ fn build_debian_zfs(
     let mut unpack = Command::new("dpkg-deb");
     unpack.arg("-x").arg(&archive).arg(&root);
     run_command("unpack zfs-dkms", &mut unpack)?;
-    dkms_build(paths, job, &root, kernel)
+    dkms_build(paths, job, &root, kernel, "apt-get")
 }
 
 fn build_amazon_zfs(
@@ -470,7 +470,7 @@ fn build_amazon_zfs(
         source,
     })?;
     unpack_rpm(dkms_rpm, &root)?;
-    dkms_build(paths, job, &root, kernel)
+    dkms_build(paths, job, &root, kernel, "dnf")
 }
 
 fn unpack_rpm(rpm: &Path, root: &Path) -> Result<(), Error> {
@@ -523,7 +523,13 @@ fn only_file(dir: &Path, matches: impl Fn(&str) -> bool) -> Result<PathBuf, Erro
         .ok_or_else(|| Error::Verification(format!("no ZFS source in {}", dir.display())))
 }
 
-fn dkms_build(paths: &InstallPaths, job: &mut Job, root: &Path, kernel: &str) -> Result<(), Error> {
+fn dkms_build(
+    paths: &InstallPaths,
+    job: &mut Job,
+    root: &Path,
+    kernel: &str,
+    package_manager: &str,
+) -> Result<(), Error> {
     let unpacked = only_file(&root.join("usr/src"), |name| name.starts_with("zfs-"))?;
     let name = unpacked
         .file_name()
@@ -532,12 +538,20 @@ fn dkms_build(paths: &InstallPaths, job: &mut Job, root: &Path, kernel: &str) ->
         .to_owned();
     let version = name.trim_start_matches("zfs-").to_owned();
     let source_dir = paths.usr_src.join(&name);
+    let build = ZfsBuild::Dkms {
+        module: "zfs".into(),
+        version: version.clone(),
+        source_dir: source_dir.clone(),
+    };
     let registered = dkms_registered(&version);
-    let ours = matches!(
-        &job.state.zfs_build,
-        Some(ZfsBuild::Dkms { version: built, .. }) if *built == version
-    );
-    if registered && !ours {
+    let recorded = job.state.zfs_build.as_ref() == Some(&build);
+    // A package may have shipped the same version since this Machine recorded it.
+    let packaged = package_ships_build_source(package_manager, &build);
+    if packaged || (registered && !recorded) {
+        if recorded {
+            job.state.zfs_build = None;
+            job.save()?;
+        }
         run_host(
             "build ZFS with DKMS",
             "dkms",
@@ -545,11 +559,7 @@ fn dkms_build(paths: &InstallPaths, job: &mut Job, root: &Path, kernel: &str) ->
         )?;
         return Ok(());
     }
-    job.set_build(ZfsBuild::Dkms {
-        module: "zfs".into(),
-        version: version.clone(),
-        source_dir: source_dir.clone(),
-    })?;
+    job.set_build(build)?;
     if registered {
         run_host(
             "remove the earlier ZFS build",
