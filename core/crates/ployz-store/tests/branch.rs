@@ -995,6 +995,37 @@ fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_ren
         Err(refused) => refused,
     };
     assert_eq!(restored.message, reserved);
+
+    // Nor is discarding back to it.
+    let discarded = store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("production"),
+                target: Some(ployz_store::DiscardTarget::Saved),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        discarded.message.contains(reserved),
+        "{}",
+        discarded.message
+    );
+    let names = store
+        .read(
+            &who,
+            &ployz_store::ServicesQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .services
+        .into_iter()
+        .map(|listing| listing.service.name.to_string())
+        .collect::<Vec<_>>();
+    assert!(!names.contains(&"setup".to_owned()), "{names:?}");
 }
 
 #[test]
