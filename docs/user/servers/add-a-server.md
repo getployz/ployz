@@ -88,8 +88,9 @@ You can enroll while it prepares. Only an owner or admin, or [Ployz support](../
 review and enrollment flow.
 
 Each row shows the server's name and operating system, the IP address Ployz Cloud saw it check in
-from and its provider, its CPU, memory and main disk size, and its status. **Installing Docker** and **Building ZFS** mean it is
-still getting ready, and **Ready** means it has everything it needs. **Blocked** rows say what
+from and its provider, its CPU, memory and main disk size, and its status. **Installing Docker** means it is
+still getting ready, and **Ready** means Docker is in place. **Building ZFS** under **Ready** means
+its ZFS build is still running, and an enrollment with ZFS volumes waits for it. **Blocked** rows say what
 is wrong with the server, in the server's own words, such as `Disk is 20 GB. Ployz needs 30 GB.`
 A server already in another cluster is blocked until you run `ployz server rm` for it there, and
 **Offline** means it stopped checking in. You can't select a blocked server. Once more than ten
@@ -134,7 +135,7 @@ match your Ployz Cloud. With `--json`, the token is in `fleet_token.token` and t
 
 - **Hosts wait for you.** A host that runs the line checks in under **Waiting** until you enroll it from **Servers**.
 - **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
-- **Expiry and revoke stop hosts that haven't joined.** Waiting hosts are dropped, enrollments already started finish, and servers already in stay.
+- **Expiry and revoke stop hosts that haven't joined.** Revoke drops waiting hosts at once. After expiry, each waiting host is dropped when it next checks in. Enrollments already started finish, and servers already in stay.
 - **Only your login makes or revokes one.** An organization token can't.
 
 List your tokens, and revoke one by name:

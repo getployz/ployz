@@ -100,13 +100,8 @@ button, input, select { font: inherit; color: inherit; }
 .filter.on { border-color: var(--border); background: var(--card); color: var(--foreground); }
 .search { height: 28px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); padding: 0 10px; width: 150px; outline: none; font-size: 13px; }
 select.search { width: auto; }
-.stagebar { display: grid; grid-template-columns: repeat(6, 1fr); font-size: 12px; color: var(--muted-foreground); margin: -2px 0 10px; border: 1px solid var(--border); border-radius: 10px; }
-.stagebar > span { padding: 7px 12px; border-left: 1px solid var(--border); white-space: nowrap; display: flex; justify-content: space-between; }
-.stagebar > span:first-child { border-left: 0; }
-.stagebar b { color: var(--foreground); font-weight: 500; font-variant-numeric: tabular-nums; }
-.stagebar b.zero { color: var(--muted-foreground); font-weight: 400; opacity: .6; }
 .wtable { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.wrow { display: grid; grid-template-columns: 20px minmax(0,1fr) 130px 92px 150px 150px 160px; gap: 12px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 13px; cursor: pointer; }
+.wrow { display: grid; grid-template-columns: 20px minmax(0,1fr) 150px 190px 180px; gap: 12px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 13px; cursor: pointer; }
 .wrow:hover { background: color-mix(in srgb, var(--muted) 60%, transparent); }
 .wrow.sel { background: color-mix(in srgb, var(--changed) 7%, transparent); }
 .wrow.head { border-top: 0; color: var(--muted-foreground); font-size: 12px; cursor: default; background: color-mix(in srgb, var(--muted) 45%, transparent); }
@@ -416,7 +411,7 @@ function makeServer(i) {
   return s;
 }
 const FLEET = Array.from({ length: 200 }, (_, i) => makeServer(i));
-FLEET[7].failed = { stage: "storage", msg: "zpool create: /dev/nvme1n1 is busy" };
+FLEET[7].failed = { stage: "storage", msg: "zpool create: /dev/nvme1n1 is busy" }; FLEET[7].returned = "failed";
 [23, 141].forEach((i) => { FLEET[i].offline = true; FLEET[i].lastSeen = 41 + i; FLEET[i].block = null; });
 [2, 30].forEach((i) => { FLEET[i].warn = "cgroup v1"; FLEET[i].cgroup = "v1"; FLEET[i].block = null; });
 const EXISTING = [
@@ -468,19 +463,17 @@ function classify(s) {
   if (s.block) return "blocked";
   return "ready";
 }
-function volumeCell(s) {
-  if (s.zfsWhy) return `<div class="two"><span>Docker only</span><span>${esc(s.zfsWhy)}</span></div>`;
-  const where = s.empty ? `Main or empty disk` : `Main disk`;
-  return `<div class="two"><span>ZFS${s.build > 10 ? ` <span class="t-muted">· ~${s.build} min</span>` : ""}</span><span>${where}</span></div>`;
-}
+// A sent-back row keeps its live status and says how its last enroll ended; the detail sheet says where it failed.
 function statusCell(s) {
   if (s.offline) return `<div class="two status"><b class="t-off">Offline</b><span>${s.lastSeen} min ago</span></div>`;
   if (s.block) return `<div class="two status"><b class="t-warn">${esc(s.block)}</b><span>${esc(s.blockWhy)}</span></div>`;
-  if (s.failed) return `<div class="two status"><b class="t-off">Failed at ${s.failed.stage}</b><span title="${esc(s.failed.msg)}">${esc(s.failed.msg)}</span></div>`;
-  if (s.prep === "docker") return `<div class="two status"><b class="t-info">Installing Docker</b><span>${s.lastSeen}s ago</span></div>`;
-  if (s.prep === "zfs") return `<div class="two status"><b class="t-ok">Ready</b><span>Building ZFS · ${s.lastSeen}s ago</span></div>`;
-  return `<div class="two status"><b class="t-ok">Ready</b><span>${s.warn ? `<span class="t-warn">${s.warn}</span> · ` : ""}${s.lastSeen}s ago</span></div>`;
+  const back = s.returned ? ` · Last enroll ${s.returned}` : "";
+  if (s.prep === "docker") return `<div class="two status"><b class="t-info">Installing Docker</b><span>${s.lastSeen}s ago${back}</span></div>`;
+  if (s.prep === "zfs") return `<div class="two status"><b class="t-ok">Ready</b><span>Building ZFS · ${s.lastSeen}s ago${back}</span></div>`;
+  return `<div class="two status"><b class="t-ok">Ready</b><span>${s.warn ? `<span class="t-warn">${s.warn}</span> · ` : ""}${s.lastSeen}s ago${back}</span></div>`;
 }
+// The host is ready for an attempt's storage: Docker installed, and the ZFS build done when it uses ZFS.
+function readyFor(s, zfs) { return !s.block && s.prep !== "docker" && (!zfs || s.prep !== "zfs"); }
 
 // ---------- servers page ----------
 function serverRow(s) {
@@ -512,37 +505,24 @@ function enrRow(e) {
     <span class="mono trunc">${e.ip}</span>
     ${stepDots({ ...e, stage: "done" }, true)}
     <span class="t-ok trunc">Joined</span><span></span></div>`;
+  const held = e.stage === "instructed" && !readyFor(e.w, e.zfs);
   const waitish = e.stage === "awaiting_founder" || e.stage === "queued" || e.stage === "instructed";
   return `<div class="erow"><span class="dot ${waitish ? "q" : "pulse"}"></span>
     <span class="trunc" style="font-weight:500">${esc(e.name)}${e.founder ? ` <span class="t-muted" style="font-weight:400">· first</span>` : ""}</span>
     <span class="mono t-muted trunc">${e.ip}</span>
     ${stepDots(e)}
-    <span class="${waitish ? "t-muted" : "t-info"} trunc">${STAGE_LABEL[e.stage]}</span>
+    <span class="${waitish ? "t-muted" : "t-info"} trunc">${held ? "Queued" : STAGE_LABEL[e.stage]}</span>
     <button class="btn ghost sm" data-cancel="${e.id}">Cancel</button></div>`;
 }
 
-// Fixed buckets, fixed order: counts change, the layout never does.
-const BUCKETS = [
-  ["Starting", ["awaiting_founder", "instructed"]],
-  ["Installing", ["installing"]],
-  ["Setting up ZFS", ["storage"]],
-  ["Enrolling", ["enrolling"]],
-  ["In line", ["queued"]],
-  ["Joining", ["joining", "publishing"]],
-];
+// Open attempts, and joined ones for an hour after they end. Failed and cancelled ones show back in Waiting.
+const RECENT_ENROLLMENT_MS = 60 * 60 * 1000;
 function renderEnrolling() {
-  const rows = st.enr.filter((e) => e.end !== "cancelled" && e.end !== "failed");
+  const rows = st.enr.filter((e) => !e.end || (e.end === "joined" && Date.now() - e.endedAt < RECENT_ENROLLMENT_MS));
   if (!rows.length) return "";
   const joined = rows.filter((e) => e.end === "joined").length;
-  const live = rows.filter((e) => !e.end);
-  const bucket = ([label, keys]) => {
-    const n = live.filter((e) => keys.includes(e.stage)).length;
-    return `<span>${label}<b class="${n ? "" : "zero"}">${n}${keys[0] === "joining" ? `<span class="t-muted" style="font-weight:400"> / 8</span>` : ""}</b></span>`;
-  };
-  return `<div class="shead"><h2>Enrolling</h2><span class="count" style="font-variant-numeric:tabular-nums">${joined} of ${rows.length} live</span>
-      <div class="bar wide" style="width:180px;margin-left:auto"><i style="width:${(joined / rows.length) * 100}%"></i></div>
-      <button class="btn sm" id="cancel-all">Cancel all</button></div>
-    <div class="stagebar">${BUCKETS.map(bucket).join("")}</div>
+  return `<div class="shead"><h2>Enrolling</h2><span class="count" style="font-variant-numeric:tabular-nums">${joined} of ${rows.length} joined</span>
+      <button class="btn sm" id="cancel-all" style="margin-left:auto">Cancel all</button></div>
     <div class="list ebox" style="margin-bottom:28px">${rows.map(enrRow).join("")}</div>`;
 }
 
@@ -569,16 +549,15 @@ function renderWaiting() {
       <select class="search" id="tok-filter"><option value="">All tokens</option>${toks.map((t) => `<option ${st.tokenFilter === t ? "selected" : ""}>${t}</option>`).join("")}</select>
       <input class="search" id="q" placeholder="Filter, or hz-fsn1-*" value="${esc(st.q)}"></div></div>
     <div class="wtable">
-      <div class="wrow head"><span class="cbcell"><input type="checkbox" id="all" ${allOn ? "checked" : ""}></span><span>Name</span><span>Source IP</span><span>Size</span><span>Disks</span><span>Volumes</span><span>Status</span></div>
+      <div class="wrow head"><span class="cbcell"><input type="checkbox" id="all" ${allOn ? "checked" : ""}></span><span>Name</span><span>Source IP</span><span>CPU · RAM · disk</span><span>Status</span></div>
       <div class="wbody">${rows.map((s) => {
         const ok = classify(s) === "ready";
         return `<div class="wrow ${st.sel.has(s.id) ? "sel" : ""}" data-id="${s.id}">
           <span class="cbcell" data-cb><input type="checkbox" ${st.sel.has(s.id) ? "checked" : ""} ${ok ? "" : "disabled"}></span>
           <div class="two"><span style="font-weight:500">${esc(s.host)}</span><span>${s.os}</span></div>
           <div class="two"><span class="mono">${s.ip}</span><span>${s.where}</span></div>
-          <span class="t-muted trunc">${s.cpu} · ${s.ram} GB</span>
-          <span class="trunc">${s.disk} GB${s.empty ? ` <span class="extra">+${s.empty} TB</span>` : ""}</span>
-          ${volumeCell(s)}${statusCell(s)}</div>`;
+          <span class="t-muted trunc">${s.cpu} vCPU · ${s.ram} GB · ${s.disk} GB</span>
+          ${statusCell(s)}</div>`;
       }).join("") || `<div class="wrow" style="cursor:default"><span></span><span class="t-muted">Nothing matches</span></div>`}</div>
     </div>
     ${st.rejected ? `<div class="footline">${st.rejected} rejected. They won't come back.</div>` : ""}</div>`;
@@ -627,6 +606,16 @@ function render() {
   page.innerHTML = st.page === "tokens" ? renderTokensPage() : renderServersPage();
   [".wbody", ".ebox"].forEach((sel, i) => { const el = page.querySelector(sel); if (el && keep[i]) el.scrollTop = keep[i]; });
   renderBulk();
+  renderLive();
+}
+// The mint dialog's arrivals line: an auto token counts its joins, a reviewed one the servers here.
+function renderLive() {
+  const token = st.tokens.find((t) => t.name === $("done-title").textContent);
+  if ($("mint").hidden || $("mint-done").hidden || !token) return;
+  const here = st.waiting.filter((s) => s.token === token.name).length;
+  if (!token.max && !here) return;
+  $("live-spin").style.display = "none"; $("live-go").hidden = false;
+  $("live-text").innerHTML = token.max ? (token.joined ? `<b>${token.joined}</b> joined` : "Servers join when ready") : `<b>${here}</b> ${here === 1 ? "server is" : "servers are"} here`;
 }
 
 // ---------- interactions ----------
@@ -670,8 +659,10 @@ function reject(ids) {
 function revoke(name) {
   const t = st.tokens.find((x) => x.name === name);
   t.revoked = "just now";
+  // Revoke deletes the token's rows that have no open attempt at once, joined ones included. Open attempts finish.
   const n = st.waiting.filter((s) => s.token === name).length;
-  st.waiting.forEach((s) => { if (s.token === name) { s.offline = true; s.lastSeen = 0; } });
+  st.waiting = st.waiting.filter((s) => s.token !== name);
+  st.enr = st.enr.filter((e) => e.end !== "joined" || e.w.token !== name);
   render();
   toast(`Revoked ${name}${n ? ` · ${n} waiting removed` : ""}`);
 }
@@ -686,7 +677,8 @@ function openDetail(s) {
   st.detail = s;
   const c = classify(s);
   const badge = c === "offline" ? `<span class="badge off">Offline</span>` : c === "blocked" ? `<span class="badge warn">${esc(s.block)}</span>` : s.failed ? `<span class="badge off">Failed</span>` : `<span class="badge ok">Ready</span>`;
-  const blockers = [s.block && [`<b class="t-warn">${esc(s.block)}</b>`, s.blockWhy], s.warn && [`<span class="t-warn">cgroup v1</span>`, "Works, with looser memory limits."], s.failed && [`<b class="t-off">Failed at ${s.failed.stage}</b>`, s.failed.msg]].filter(Boolean);
+  const blockers = [s.block && [`<b class="t-warn">${esc(s.block)}</b>`, s.blockWhy], s.warn && [`<span class="t-warn">cgroup v1</span>`, "Works, with looser memory limits."], s.returned === "failed" && s.failed && [`<b class="t-off">Failed at ${STAGE_LABEL[s.failed.stage]}</b>`, s.failed.msg],
+    s.returned === "cancelled" && [`<b>Cancelled</b>`, "Its last enroll was cancelled."]].filter(Boolean);
   $("detail-body").innerHTML = `
     <div class="dhead" style="margin:0"><h3>${esc(s.host)}</h3>${badge}<button class="x" data-close>×</button></div>
     <div class="sub">${c === "offline" ? `Last seen ${s.lastSeen} min ago` : `Seen ${s.lastSeen}s ago`}</div>
@@ -764,7 +756,7 @@ $("mint-go").onclick = () => {
   st.tokens.unshift({ name, by: "Ada", created: "just now", used: "never", expires: EXP_IN[mintExp], waiting: 0, joined: 0, max });
   $("done-title").textContent = name; $("done-auto").hidden = !mintAuto;
   $("done-exp").textContent = `Shown once. Expires ${EXP_IN[mintExp]}.`;
-  $("done-hint").textContent = mintAuto ? `Installs Docker and Ployz, then joins. Stops after ${max}.` : "Installs Docker and Ployz. Nothing joins until you say so.";
+  $("done-hint").textContent = mintAuto ? `Installs Docker and Ployz. Up to ${max} servers join your existing cluster when ready.` : "Installs Docker and Ployz. Nothing joins until you say so.";
   $("done-token").textContent = TOKEN;
   $("mint-form").hidden = true; $("mint-done").hidden = false;
   setTab("shell"); $("live-go").hidden = true; $("live-spin").style.display = ""; $("live-text").textContent = "Listening for servers…";
@@ -788,13 +780,9 @@ function simulateArrivals(n, done, tokenName) {
     if (n === 1) { s.host = "hz-fsn1-001"; s.empty = 3.8; s.zfsWhy = null; s.build = 0; s.os = "Ubuntu 24.04"; }
     s.prep = s.docker ? (s.zfsWhy ? null : "zfs") : "docker";
     s.prepT = 6 + Math.floor(rnd() * 10);
-    if (auto && !s.prep) startEnroll([s], { storage: "zfs", emptyDisk: true, fallback: true }, true);
-    else { s.autoOnReady = auto; st.waiting.push(s); runPrep(); }
+    s.autoOnReady = auto; st.waiting.push(s);
+    if (s.prep) runPrep(); else arrive();
     i++;
-    if (!$("mint").hidden) {
-      $("live-text").innerHTML = auto ? `<b>${i}</b> joining` : `<b>${i}</b> ${i === 1 ? "server is" : "servers are"} here`;
-      $("live-go").hidden = false;
-    }
     render();
   }, n === 1 ? 1400 : 700);
 }
@@ -894,7 +882,7 @@ function startEnroll(sel, o, isAuto) {
   return ordered.length;
 }
 function warm(e, i) { // pre-advance the Enrolling scene so it opens mid-run
-  if (i < 6) { e.end = "joined"; st.servers.push({ name: e.name, chips: [], fresh: true, dockerOnly: !e.zfs, cpu: 2 + Math.floor(rnd() * 4), mem: 6 + Math.floor(rnd() * 5) }); return; }
+  if (i < 6) { e.end = "joined"; e.endedAt = Date.now() - (i + 1) * 4 * 60 * 1000; st.servers.push({ name: e.name, chips: [], fresh: true, dockerOnly: !e.zfs, cpu: 2 + Math.floor(rnd() * 4), mem: 6 + Math.floor(rnd() * 5) }); return; }
   if (i < 14) { e.stage = "joining"; e.t = 2 + (i % 5); return; }
   if (i < 22) { e.stage = "queued"; return; }
   if (i < 30) { e.stage = "enrolling"; e.t = 1 + (i % 3); return; }
@@ -916,10 +904,12 @@ function tick() {
       if (joining < JOIN_SLOTS && !founderLive) { e.stage = "joining"; e.t = 6 + Math.floor(rnd() * 6); joining++; }
       continue;
     }
+    if (e.stage === "instructed" && !readyFor(e.w, e.zfs)) continue; // Queued in place until preparation catches up
     if (--e.t > 0) continue;
     if (e.stage === "storage" && rnd() < .015) { fail(e, "storage", "zpool create: /dev/nvme1n1 is busy"); continue; }
     if (e.stage === "publishing") {
-      e.end = "joined";
+      e.end = "joined"; e.endedAt = Date.now();
+      const tk = st.tokens.find((t) => t.name === e.w.token); if (tk) tk.joined++;
       if (e.founder) st.founded = true;
       st.servers.push({ name: e.name, chips: [], fresh: true, dockerOnly: !e.zfs, cpu: 2 + Math.floor(rnd() * 4), mem: 6 + Math.floor(rnd() * 5) });
       continue;
@@ -930,6 +920,7 @@ function tick() {
     e.t = { installing: e.install, storage: e.store, enrolling: 3, joining: 6 + Math.floor(rnd() * 6), publishing: 3 }[n] || 1;
     if (n === "joining" && !e.founder) { if (joining >= JOIN_SLOTS || founderLive) e.stage = "queued"; else joining++; }
   }
+  arrive(); // an ended attempt may free room under a token's maximum
   render();
 }
 function run() { if (!ticker) ticker = setInterval(tick, 260); }
@@ -938,24 +929,37 @@ let prepTimer = null;
 function runPrep() {
   if (prepTimer) return;
   prepTimer = setInterval(() => {
-    const preparing = st.waiting.filter((s) => s.prep);
+    // Preparation is the host's own job, so it goes on after the row moves to Enrolling.
+    const preparing = [...st.waiting, ...st.enr.filter((e) => !e.end).map((e) => e.w)].filter((s) => s.prep);
     if (!preparing.length) { clearInterval(prepTimer); prepTimer = null; return; }
     for (const s of preparing) {
       if (--s.prepT > 0) continue;
       if (s.prep === "docker" && !s.zfsWhy) { s.prep = "zfs"; s.prepT = 8 + Math.floor(rnd() * 12); continue; }
       s.prep = null;
-      if (s.autoOnReady) { st.waiting = st.waiting.filter((w) => w !== s); startEnroll([s], { storage: "zfs", emptyDisk: true, fallback: true }, true); }
     }
+    arrive();
     render();
   }, 400);
 }
+// Enroll on arrival: once per host per token, only when the host is fully prepared, and only while the token's
+// used count (open attempts plus joins) is under its maximum. The rest stay in Waiting.
+function used(token) { return st.enr.filter((e) => !e.end && e.w.token === token.name).length + token.joined; }
+function arrive() {
+  if (!st.founded) return;
+  for (const s of st.waiting.filter((w) => w.autoOnReady && !w.prep && !w.block && !w.offline)) {
+    const token = st.tokens.find((t) => t.name === s.token);
+    if (!token?.max || token.revoked || used(token) >= token.max) continue;
+    s.autoOnReady = false;
+    startEnroll([s], { storage: "zfs", emptyDisk: true, fallback: true }, true);
+  }
+}
 function fail(e, stage, msg) {
   e.end = "failed";
-  st.waiting.push({ ...e.w, failed: { stage, msg }, lastSeen: 2 });
+  st.waiting.push({ ...e.w, failed: { stage, msg }, returned: "failed", lastSeen: 2 });
 }
 function cancelEnr(ids) {
   let n = 0;
-  st.enr.forEach((e) => { if (ids.includes(e.id) && !e.end) { e.end = "cancelled"; st.waiting.push({ ...e.w, lastSeen: 1 }); n++; } });
+  st.enr.forEach((e) => { if (ids.includes(e.id) && !e.end) { e.end = "cancelled"; st.waiting.push({ ...e.w, failed: null, returned: "cancelled", lastSeen: 1 }); n++; } });
   render(); toast(`Cancelled ${n} · back in Waiting`);
 }
 
