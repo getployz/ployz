@@ -1,5 +1,10 @@
 //! Linux daemon runtime for one Ployz Machine.
 
+#[expect(
+    dead_code,
+    reason = "the daemon starts the boot pass in the next commit"
+)]
+pub(crate) mod boot_pass;
 mod build;
 
 /// Numeric status returned by the Ployz Docker Volume plugin.
