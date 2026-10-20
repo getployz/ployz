@@ -122,6 +122,12 @@ fn render(
     }
 }
 
+/// The exit code for `failure` once a result has printed.
+#[cfg(test)]
+pub(crate) fn after_result(failure: &Failure) -> u8 {
+    render(failure, Mode::Plain, true, &mut io::sink(), &mut io::sink())
+}
+
 /// What a person sees for `failure` in Plain mode.
 #[cfg(test)]
 pub(crate) fn plain(failure: &Failure) -> String {

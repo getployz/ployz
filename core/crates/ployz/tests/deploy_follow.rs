@@ -802,9 +802,8 @@ fn superseded_by(newer: &DeploymentView, candidate: Reply, follows: bool) -> Out
     output
 }
 
-/// The follow ended on #7 superseded: a Deploy that ended without applying exits 1.
 fn ended_superseded(output: &Output) {
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result.get("number"), Some(&json!(7)), "{result}");
     assert_eq!(result.get("status"), Some(&json!("superseded")), "{result}");

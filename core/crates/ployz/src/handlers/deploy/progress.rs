@@ -421,7 +421,14 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     if view.deployment.remove {
         return failure;
     }
-    failure.outcome().hint(Hint::Retry(command(&[
+    // Only a Deploy that failed is its own result (exit 1). One replaced, cancelled or
+    // whose runner was lost didn't fail: part of what was asked just didn't happen (3).
+    let failure = if view.deployment.status == DeploymentStatus::Failed {
+        failure.outcome()
+    } else {
+        failure
+    };
+    failure.hint(Hint::Retry(command(&[
         "deploy",
         "--project",
         view.environment.project.as_str(),
@@ -655,6 +662,21 @@ mod tests {
         assert!(completion(&view, command).unwrap_err().is_outcome());
         view.deployment.remove = true;
         assert!(!completion(&view, command).unwrap_err().is_outcome());
+    }
+
+    #[test]
+    fn only_a_failed_deploy_exits_1_and_a_superseded_one_stays_partial() {
+        let mut view = view();
+        for (status, code) in [
+            (DeploymentStatus::Failed, 1),
+            (DeploymentStatus::Superseded, 3),
+            (DeploymentStatus::Cancelled, 3),
+            (DeploymentStatus::Unknown, 3),
+        ] {
+            view.deployment.status = status;
+            let failure = completion(&view, command).unwrap_err();
+            assert_eq!(crate::ui::after_result(&failure), code, "{status:?}");
+        }
     }
 
     #[test]
