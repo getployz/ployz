@@ -42,7 +42,10 @@ and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
-`ployz ctx` shows where commands act from here.
+`ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
+which projects there are: it names your only project, or says the organization has several and
+how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
+`ployz link` step.
 
 ## Set up your coding agent
 
