@@ -111,6 +111,17 @@ impl Receives {
             .and_then(Result::err)
     }
 
+    /// Whether a task of `name` may still change its slot: it runs and has no outcome.
+    pub(super) fn settling(&self, name: &DockerVolumeName) -> bool {
+        self.0
+            .lock()
+            .expect("receive registry is not poisoned")
+            .get(&name.0)
+            .is_some_and(|task| {
+                task.running() && task.outcome.lock().expect("outcome lock").is_none()
+            })
+    }
+
     /// Drops `name`'s outcome, and its entry once no task of it has a child alive.
     pub(super) fn forget(&self, name: &DockerVolumeName) {
         let mut tasks = self.0.lock().expect("receive registry is not poisoned");
