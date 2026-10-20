@@ -1015,6 +1015,36 @@ it.each(["failed", "cancelled"] as const)("keeps a host whose arrival attempt %s
   expect(await autoAttempts()).toMatchObject([{ state }, { state: "instructed" }]);
 });
 
+it.each(["revoked", "expired"] as const)("keeps a host's spent arrival after it moves to a token that is then %s", async (end) => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const other = await run(createFleetToken(ada, { organizationSlug: "ada", name: "other", expiresIn: "30d", autoEnroll: null }));
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[0]?.id ?? "", "failed");
+  expect(await send(other.token, host, readyAuto)).toEqual(wait);
+  if (end === "revoked") await run(revokeFleetToken(ada, { organizationSlug: "ada", id: other.id }));
+  else {
+    await harness.pool.query("update fleet_token set expires_at = now() - interval '1 second' where id = $1", [other.id]);
+    expect(await send(other.token, host, readyAuto)).toMatchObject({ kind: "stop", reason: "token_expired" });
+  }
+  expect(await rows()).toHaveLength(0);
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+});
+
+it("refuses a second arrival to a joined host that returns on its token after the seven-day sweep", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[0]?.id ?? "", "joined");
+  await harness.pool.query("update server_enrollment set ended_at = now() - interval '8 days'");
+  expect(await run(closeStaleServerEnrollments())).toEqual({ failed: 0, removed: 1 });
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+});
+
 it("keeps joined usage after the seven-day sweep and refuses another arrival", async () => {
   await foundOrganization();
   const { token } = await autoToken(1);
