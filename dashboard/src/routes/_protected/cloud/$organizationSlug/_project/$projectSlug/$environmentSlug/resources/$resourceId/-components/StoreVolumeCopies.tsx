@@ -22,7 +22,7 @@ import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.place
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
-  appliedMirrors, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
+  appliedMirrors, editPlacement, failover, lossMoment, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
   placementTargets, type PlacementVolume, type RestorePoint, restorePoints, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
@@ -136,7 +136,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
   return <div className="flex flex-col gap-4">
     {offer ? <Alert variant="destructive">
       <AlertTitle>{offer.down.name} is not answering</AlertTitle>
-      <AlertDescription>{offer.lostAfter ? `Changes after ${lossTime(offer.lostAfter)} lost` : "Recent changes lost"}</AlertDescription>
+      <AlertDescription>{offer.lostAfter ? `Changes after ${lossMoment(offer.lostAfter, now)} lost` : "Recent changes lost"}</AlertDescription>
       {!owed && accepting.includes(offer.mirror.id) ? <AlertAction>
         <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
       </AlertAction> : null}
@@ -173,7 +173,7 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
       actionLabel="Delete" pendingLabel="Deleting"
       description={deleting ? <div className="flex flex-col gap-3">
         <p className="flex items-center gap-2 text-foreground"><Trash2Icon className="size-4 shrink-0" />
-          {[deleting.server.name, volume.name, deleting.since ? lossTime(deleting.since) : null].filter(Boolean).join(" · ")}
+          {[deleting.server.name, volume.name, deleting.since ? lossMoment(deleting.since, now) : null].filter(Boolean).join(" · ")}
         </p>
         <p>This runs now, not on deploy. It can't be undone.</p>
       </div> : null}
@@ -224,7 +224,7 @@ function CopyRow({ copy, now, locked, blocked, onOpen, onDelete, restore = null 
     : copy.staged === "new" ? `${COPY_WORDS[copy.kind]} · on deploy`
     : <>
       {[line.words, copy.kind === "mirror" ? "15 min" : null].filter(Boolean).join(" · ")}
-      {line.age ? <> · <span className={cn(line.stale && "text-warning")}>{line.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{copy.kind === "old" && copy.since ? lossTime(copy.since) : line.age}</span></> : null}
+      {line.age ? <> · <span className={cn(line.stale && "text-warning")}>{line.stale ? <TriangleAlertIcon className="mr-1 inline size-3.5" /> : null}{copy.kind === "old" && copy.since ? lossMoment(copy.since, now) : line.age}</span></> : null}
     </>;
   const badge = copy.staged ? <Badge variant={STAGED_STATE[copy.staged]}>{STAGED_WORDS[copy.staged]}</Badge> : null;
   const content = <>
@@ -343,7 +343,7 @@ function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, u
     </Field>}
     {offer ? <Row title="Restore point">
       <span className="flex items-center gap-2">
-        {lossTime(offer.point.at)}
+        {lossMoment(offer.point.at, now)}
         {offer.staged ? <span className="text-muted-foreground">Staged</span>
           : seeds ? <Button variant="outline" size="sm" disabled={offer.disabled} onClick={offer.stage}>Restore</Button> : null}
       </span>

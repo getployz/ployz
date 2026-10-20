@@ -611,14 +611,14 @@ export function placementLoss(changes: readonly PlacementChange[]): PlacementLos
   };
 }
 
-function detailsRow(volume: PlacementVolume, change: PlacementChange) {
+function detailsRow(volume: PlacementVolume, change: PlacementChange, now: Date) {
   const clears = "clears" in change && change.clears.length > 0 ? `Deletes ${detachedName(volume)} first` : undefined;
   switch (change.kind) {
     case "move":
       if (change.how !== "restore") return { name: "Primary", currentValue: change.from?.name ?? "", newValue: change.to.name, detail: clears };
       return {
         name: "Primary", currentValue: change.from?.name ?? "", newValue: change.to.name,
-        loss: change.lostAfter === null ? "Recent changes lost" : `Changes after ${lossTime(change.lostAfter)} lost`,
+        loss: change.lostAfter === null ? "Recent changes lost" : `Changes after ${lossMoment(change.lostAfter, now)} lost`,
       };
     case "add_mirror":
       return { name: "Mirror", currentValue: "", newValue: change.server.name, detail: clears };
@@ -627,7 +627,7 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange) {
     case "delete_copy":
       return { name: "Detached copy", currentValue: change.server.name, newValue: "" };
     case "seed": {
-      const at = lossTime(new Date(change.point.at * 1000));
+      const at = lossMoment(new Date(change.point.at * 1000), now);
       return {
         name: "From", currentValue: "", newValue: `${change.source.name} · ${at}`,
         loss: `Changes after ${at} are not in ${volume.name}`,
@@ -651,7 +651,7 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
     canDiscard: true,
     unreached,
     rows: changes.map((change, index) => {
-      const words = detailsRow(volume, change);
+      const words = detailsRow(volume, change, now);
       return {
         changeKey: `${volume.id}:placement:${index}`,
         label: words.name,
