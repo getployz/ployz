@@ -680,7 +680,14 @@ mod tests {
             _machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-            panic!("terminal answers are not polled")
+            Err(crate::setup_retry::Error::Permanent(ConnectError::Remote(
+                RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "upgrade record is unreadable".into(),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+            )))
         }
 
         async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error> {
@@ -757,6 +764,67 @@ mod tests {
         assert_eq!(result["attempts"].as_array().unwrap().len(), 2);
         assert_eq!(result["ingress"], Value::Null);
         assert_eq!(moved, [IngressImage::Latest]);
+    }
+
+    #[tokio::test]
+    async fn every_json_attempt_names_its_server_by_id() {
+        let failed = MachineUpgradeOutcome::Failed {
+            stage: ployz_core::MachineUpgradeStage::Launching,
+            error: "no systemd".into(),
+        };
+        let interrupted = MachineUpgradeOutcome::Interrupted {
+            stage: ployz_core::MachineUpgradeStage::Launching,
+        };
+        let (a, b, c) = (machine('a', 1), machine('b', 2), machine('c', 3));
+        let cases = [
+            (vec![a.clone()], vec![succeeded()], vec![("a", "succeeded")]),
+            (vec![a.clone()], vec![failed.clone()], vec![("a", "failed")]),
+            (
+                vec![a.clone()],
+                vec![interrupted.clone()],
+                vec![("a", "interrupted")],
+            ),
+            (
+                vec![a.clone()],
+                vec![MachineUpgradeOutcome::Accepted],
+                vec![("a", "accepted")],
+            ),
+            (
+                vec![a.clone(), b.clone(), c.clone()],
+                vec![succeeded(), succeeded(), failed],
+                vec![("a", "succeeded"), ("b", "succeeded"), ("c", "failed")],
+            ),
+            (
+                vec![a, b, c],
+                vec![succeeded(), interrupted],
+                vec![("a", "succeeded"), ("b", "interrupted")],
+            ),
+        ];
+        for (machines, outcomes, expected) in cases {
+            let (result, _, _) = run_sequence(&machines, outcomes, None).await;
+            let result = result.unwrap();
+            let attempts = result.pointer("/attempts").and_then(Value::as_array);
+            let named = attempts
+                .unwrap()
+                .iter()
+                .map(|attempt| {
+                    assert!(attempt.get("attempt_id").is_some(), "{attempt}");
+                    assert!(attempt.get("target").is_some(), "{attempt}");
+                    (
+                        attempt.get("server").cloned().unwrap_or_default(),
+                        attempt.get("outcome").cloned().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let expected = expected
+                .into_iter()
+                .map(|(name, outcome)| {
+                    let id = MachineId::parse(name.repeat(32)).unwrap();
+                    (json!(id), json!(outcome))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(named, expected, "{result}");
+        }
     }
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
