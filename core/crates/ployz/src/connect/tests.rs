@@ -558,6 +558,78 @@ async fn missing_ssh_client_keeps_an_earlier_daemons_answer() {
 }
 
 #[tokio::test]
+async fn several_refusing_daemons_name_the_server_tried_last() {
+    let dir = tempfile::tempdir().unwrap();
+    let sockets = ["first.sock", "second.sock"].map(|name| dir.path().join(name));
+    for socket in &sockets {
+        refusing_daemon(socket, || tonic::Status::unauthenticated("not authorized")).await;
+    }
+    let ids = ["a", "b"].map(|digit| MachineId::parse(&digit.repeat(32)).unwrap());
+    let refused = |name: fn(usize) -> Option<&'static str>| {
+        let connections = sockets
+            .iter()
+            .zip(&ids)
+            .enumerate()
+            .map(|(index, (socket, id))| {
+                let connection = Connection::unix(socket)
+                    .unwrap()
+                    .with_machine_id(id.clone());
+                match name(index) {
+                    Some(name) => connection.with_name(name),
+                    None => connection,
+                }
+            })
+            .collect();
+        async move {
+            connect_selected_with(
+                SelectedConnections {
+                    source: ConnectionSource::Cloud,
+                    connections,
+                },
+                Arc::new(SystemConnector::default()),
+            )
+            .await
+            .err()
+            .expect("every daemon refuses")
+            .to_string()
+        }
+    };
+
+    assert_eq!(
+        refused(|index| Some(["web-1", "web-2"][index])).await,
+        "A Server's daemon answered, but the 2 connections from Cloud all failed. \
+         Server web-2, tried last, refused the connection."
+    );
+    // Cloud never learned their names: the Machine ID says which.
+    assert_eq!(
+        refused(|_| None).await,
+        format!(
+            "A Server's daemon answered, but the 2 connections from Cloud all failed. \
+             Server {}, tried last, refused the connection.",
+            ids[1]
+        )
+    );
+    // A connection that says no Server, as `--connect` gives, names none.
+    let error = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: sockets
+                .iter()
+                .map(|socket| Connection::unix(socket).unwrap())
+                .collect(),
+        },
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .err()
+    .expect("every daemon refuses");
+    assert_eq!(
+        error.to_string(),
+        "A Server's daemon answered, but the 2 connections from the given connection all failed."
+    );
+}
+
+#[tokio::test]
 async fn a_cancelled_status_a_daemon_sent_is_an_answer() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("cancelling.sock");

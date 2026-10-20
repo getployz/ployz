@@ -1253,6 +1253,25 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_connections_say_the_server_tried_last_did_not_answer_after_one_refused() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 2,
+            server: Some("web-2".into()),
+            retry: ployz_core::Retry::AfterRestart,
+            reached: true,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            failure.to_string(),
+            "A Server's daemon answered, but the 2 connections from Cloud all failed. \
+             Server web-2, tried last, isn't answering. Check that its Ployz daemon is running, then retry."
+        );
+    }
+
+    #[test]
     fn connect_keeps_non_peeled_connect_error() {
         let failure = Failure::from(ConnectError::MissingMachineDetails);
         assert_eq!(

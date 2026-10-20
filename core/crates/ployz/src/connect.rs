@@ -712,7 +712,7 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("{}", all_failed(*attempts, selection, *reached, server.as_deref()))]
+    #[error("{}", all_failed(*attempts, selection, *reached, server.as_deref(), last.as_deref()))]
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
@@ -745,12 +745,13 @@ pub(crate) fn not_answering(server: &str) -> String {
 }
 
 /// Say a daemon answered when one did: a refusal is not an unreachable Server. Name the
-/// Server tried last where the connection says which it is.
+/// Server tried last where the connection says which it is, and how `last` failed there.
 fn all_failed(
     attempts: usize,
     selection: &ConnectionSource,
     reached: bool,
     server: Option<&str>,
+    last: Option<&ConnectError>,
 ) -> String {
     match (attempts, reached, server) {
         (1, false, Some(server)) => not_answering(server),
@@ -766,7 +767,18 @@ fn all_failed(
         (_, false, None) => format!(
             "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
         ),
-        (_, true, _) => format!(
+        (_, true, Some(server)) => {
+            let how = if last.is_some_and(|last| !last.unreached()) {
+                "refused the connection.".into()
+            } else {
+                format!("isn't answering. {NOT_ANSWERING_NEXT}")
+            };
+            format!(
+                "A Server's daemon answered, but the {attempts} connections from {selection} all failed. \
+                 Server {server}, tried last, {how}"
+            )
+        }
+        (_, true, None) => format!(
             "A Server's daemon answered, but the {attempts} connections from {selection} all failed."
         ),
     }
