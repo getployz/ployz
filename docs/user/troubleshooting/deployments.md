@@ -260,8 +260,8 @@ It removed the replicas it had started for `web`, and the newer version keeps se
 service deploys **Stop first** ([Service settings](../services/settings.md)), yours also removes
 the old replica it stopped, and says
 `A newer deploy is already serving; the old Container will not serve again.` A deploy that loses
-this way shows no log tail, because nothing failed to start. If you want your version, deploy
-again.
+this way shows no log tail, because nothing failed to start. `ployz deployment show` lists the
+service as `web: a newer deploy serves it`. If you want your version, deploy again.
 
 ## A stopped replica won't start
 
