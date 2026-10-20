@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "c5307845-ce80-4a6f-9851-6388ee408e0f",
+  "id": "5a78ca9e-8282-4bb0-81bc-6029dcc76ee4",
   "prevIds": [
-    "a77e832a-ff9f-448b-b8b7-23334cfa7dd5"
+    "847002a5-438a-4201-a9a9-73294b9de009"
   ],
   "ddl": [
     {
@@ -183,6 +183,12 @@
     {
       "isRlsEnabled": false,
       "name": "fleet_token",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "fleet_token_attempt",
       "entityType": "tables",
       "schema": "public"
     },
@@ -4566,6 +4572,58 @@
       "default": null,
       "generated": null,
       "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "fleet_token_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "checkin_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
       "name": "attempt_id",
       "entityType": "columns",
       "schema": "public",
@@ -4970,6 +5028,32 @@
       "generated": null,
       "identity": null,
       "name": "rejected_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "waiting_server"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reported_attempt_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "waiting_server"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reported_stage",
       "entityType": "columns",
       "schema": "public",
       "table": "waiting_server"
@@ -11880,6 +11964,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "fleet_token_attempt_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "fleet_token_id"
       ],
       "schemaTo": "public",
@@ -12702,6 +12803,17 @@
       "entityType": "pks",
       "schema": "public",
       "table": "server_access"
+    },
+    {
+      "columns": [
+        "fleet_token_id",
+        "checkin_key"
+      ],
+      "nameExplicit": false,
+      "name": "fleet_token_attempt_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "fleet_token_attempt"
     },
     {
       "columns": [
