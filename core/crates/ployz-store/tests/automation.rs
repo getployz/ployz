@@ -577,6 +577,79 @@ fn a_save_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
 }
 
 #[test]
+fn the_diff_marks_deleted_a_volume_a_deploy_in_flight_creates() {
+    let (store, who) = volume_in_flight();
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let data = diff
+        .changes
+        .iter()
+        .find(|change| change.name == "data")
+        .unwrap();
+    assert_eq!(
+        data.lifecycle,
+        ployz_core::config::ReviewLifecycleKind::Delete
+    );
+    assert_eq!(data.data, Some(ployz_store::DataEffect::Deleted));
+}
+
+#[test]
+fn the_diff_does_not_say_a_volume_it_deletes_keeps_its_data() {
+    let (store, who) = volume_in_flight();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let data = |name: &str| {
+        diff.changes
+            .iter()
+            .find(|change| change.name == name)
+            .unwrap()
+            .data
+    };
+    assert_eq!(data("data"), Some(ployz_store::DataEffect::Deleted));
+    assert_eq!(data("web"), None);
+}
+
+#[test]
+fn the_diff_does_not_say_a_volume_replaced_by_one_of_its_name_is_kept() {
+    let (store, who) = volume_in_flight();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("data").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let web = diff
+        .changes
+        .iter()
+        .find(|change| change.name == "web")
+        .unwrap();
+    assert_eq!(web.data, None);
+}
+
+#[test]
 fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
     let (store, who) = volume_in_flight();
     let deploy = |version: Option<String>| {

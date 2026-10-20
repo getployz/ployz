@@ -1260,8 +1260,7 @@ async fn departure_stops_a_pull_into_a_slot_it_keeps() {
         fs::write(test.0.join("props/stall-read"), "").unwrap();
         post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
         receive_pid(&test).await;
-        let scan =
-            "list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank";
+        let scan = "list -Hp -o name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly -r tank";
         // The pull ran this scan before it answered, so only a stall proves the departure's.
         let stalled = test.0.join("props/stalled");
         let _ = fs::remove_file(&stalled);

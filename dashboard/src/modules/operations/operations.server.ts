@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { askAgain, gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
 import { callerEnvironments, type Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -56,6 +56,9 @@ const gate = (caller: Caller, call: OperationCall, asked: OperationAsked) => {
   const loss = uncovered(asked, call);
   return loss === null ? gateOperation(caller, call.approvalId, asked) : Effect.succeed(loss);
 };
+/** A request that asks no one, named by `asked`, still refuses an approval carried into it that isn't for exactly it. */
+const unasked = (caller: Caller, call: OperationCall, asked: Redeeming) =>
+  Effect.map(carriedInto(caller, call.approvalId, asked), (refusal) => refusal === null ? null : refused(refusal));
 const actor = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id, credential: caller.credential });
 
 /**
@@ -77,16 +80,21 @@ export const unpermitted = (caller: Caller, requires: Permission) => {
   return lacking === null ? null : refused({ code: "forbidden", message: lacking, details: { permission: requires } });
 };
 
-/** `run`, unless `caller` may not run an operation that `requires` a permission. */
-const holding = <A, E, R>(caller: Caller, requires: Permission, environment: string | null | undefined, run: Effect.Effect<A, E, R>) =>
-  Effect.suspend((): Effect.Effect<A | ReturnType<typeof refused>, E, R> => {
+/**
+ * `run`, unless `caller` may not run an operation that `requires` a permission, or carries an approval someone else,
+ * or another credential, asked for: checked before a request key replays what it started, which never reaches the gate.
+ */
+const holding = <A, E, R>(caller: Caller, call: OperationCall, requires: Permission, environment: string | null | undefined, run: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
     const refusal = unheld(caller, requires, environment);
-    return refusal === null ? run : Effect.succeed(refusal);
+    if (refusal !== null) return refusal;
+    const carried = yield* unheldApproval(caller, call.approvalId);
+    return carried === null ? yield* run : refused(carried);
   });
 
 /** Null when no Server of the Organization has `machineId`. */
 export const drainServer = (caller: Caller, machineId: MachineId, call: OperationCall) =>
-  holding(caller, OPERATIONS["server.drain"].requires, undefined, Effect.gen(function* () {
+  holding(caller, call, OPERATIONS["server.drain"].requires, undefined, Effect.gen(function* () {
     const plan = yield* planDrain(caller.organization.id, machineId);
     if (plan === null) return null;
     return yield* admitOperation(caller.organization.id, { tool: OPERATIONS["server.drain"].idempotency, key: call.key, body: { machineId } }, Effect.gen(function* () {
@@ -100,21 +108,26 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
   }));
 
 export const upgradeServer = (caller: Caller, input: { readonly machineId: MachineId; readonly channel: string | undefined }, call: OperationCall) =>
-  holding(caller, OPERATIONS["server.upgrade"].requires, undefined,
-    admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, planCliServerUpgrade(actor(caller), input)));
+  holding(caller, call, OPERATIONS["server.upgrade"].requires, undefined,
+    admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, Effect.gen(function* () {
+      return (yield* unasked(caller, call, { command: "upgrade", subject: `server:${input.machineId}` })) ?? (yield* planCliServerUpgrade(actor(caller), input));
+    })));
 
 export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
-  holding(caller, OPERATIONS["server.set"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, Effect.gen(function* () {
+  holding(caller, call, OPERATIONS["server.set"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, Effect.gen(function* () {
     const plan = change.acceptsIngress === false ? yield* planIngressOff(caller.organization.id, machineId, change) : null;
     if (plan !== null) {
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
+    } else {
+      const carried = yield* unasked(caller, call, { command: "set", subject: `server:${machineId}` });
+      if (carried !== null) return carried;
     }
     return yield* planKeyedServerPolicyChange(caller, machineId, change);
   })));
 
 export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall) =>
-  holding(caller, OPERATIONS["namespace.clean"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {
+  holding(caller, call, OPERATIONS["namespace.clean"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {
     const plan = yield* planClean(caller.organization.id, namespace);
     const gated = yield* gate(caller, call, plan);
     if (!gated.ok) return refused(gated.refusal);
@@ -146,8 +159,11 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
   });
 
 const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
-  holding(caller, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
+  holding(caller, call, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
+    // A removal its approval already started answers only the one who could start it.
+    const redeemed = yield* redeemApproval(caller, call.approvalId, { command: noReset ? "forget" : "remove", subject: `server:${machineId}` });
+    if (!redeemed.ok) return refused(redeemed.refusal);
     const consumed = Schema.is(Uuid)(call.approvalId)
       ? yield* machineRemoveAttemptConsuming(caller.organization.id, call.approvalId, machineId, noReset)
       : null;
@@ -176,12 +192,15 @@ export const runVolume = (
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
   call: OperationCall,
 ) =>
-  holding(caller, VOLUME_OPERATIONS[input.kind].requires, input.environment.environment, admitOperation(caller.organization.id, { tool: VOLUME_OPERATIONS[input.kind].idempotency, key: call.key, body: input }, Effect.gen(function* () {
+  holding(caller, call, VOLUME_OPERATIONS[input.kind].requires, input.environment.environment, admitOperation(caller.organization.id, { tool: VOLUME_OPERATIONS[input.kind].idempotency, key: call.key, body: input }, Effect.gen(function* () {
     const planned = yield* planVolumeRun(caller.organization.id, input);
     if (!planned.ok) return refused(planned.refusal);
     if (planned.asked !== null) {
       const gated = yield* gate(caller, call, planned.asked);
       if (!gated.ok) return refused(gated.refusal);
+    } else {
+      const carried = yield* unasked(caller, call, { command: input.kind, subject: `volume:${input.volumeId}` });
+      if (carried !== null) return carried;
     }
     return (runId: string) => admitRun(actor(caller), planned.input, planned.volume, runId)
       .pipe(Effect.map((inserted) => inserted.ok
@@ -243,14 +262,14 @@ export const actService = (
   },
   call: OperationCall,
 ) =>
-  holding(caller, OPERATIONS[`service.${input.verb}`].requires, input.environment, admitOperation(
+  holding(caller, call, OPERATIONS[`service.${input.verb}`].requires, input.environment, admitOperation(
     caller.organization.id,
     { tool: OPERATIONS[`service.${input.verb}`].idempotency, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
     Effect.gen(function* () {
       const { environment: _environment, project: _project, ...act } = input;
       const run = (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...act });
       const interrupted = interrupts(input);
-      if (interrupted === null) return run;
+      if (interrupted === null) return (yield* unasked(caller, call, { command: input.verb, subject: `service:${input.environmentId}/${input.service}` })) ?? run;
       const busy = yield* activeServiceAct(caller.organization.id, input);
       if (busy !== null) return refused(busyRefusal(input.service, busy));
       const asked = yield* guarded(caller, input, interrupted);

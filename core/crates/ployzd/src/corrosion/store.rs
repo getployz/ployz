@@ -33,6 +33,12 @@ pub struct ReplicatedStore {
     machine_publication: Arc<tokio::sync::Mutex<()>>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RuntimeOverlay {
+    pub(crate) running_builds: u32,
+    pub(crate) pool_committable_bytes: Option<u64>,
+}
+
 pub(crate) struct MachinePublicationGuard<'a> {
     store: &'a ReplicatedStore,
     _guard: tokio::sync::MutexGuard<'a, ()>,
@@ -62,17 +68,17 @@ impl MachinePublicationGuard<'_> {
         Ok(completed)
     }
 
-    /// This Machine as it publishes: its record with the Builds it runs now,
-    /// an observation the record itself never holds.
+    /// This Machine as it publishes: its record with what it observes of itself now.
     pub(crate) fn publishable_machine(
         &self,
         local: &LocalMachineRecord,
-        running_builds: u32,
+        overlay: RuntimeOverlay,
     ) -> Option<Machine> {
         match local.body() {
             LocalMachineBody::Participating { machine, .. } => {
                 let mut machine = machine.clone();
-                machine.runtime.running_builds = running_builds;
+                machine.runtime.running_builds = overlay.running_builds;
+                machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
                 Some(machine)
             }
             LocalMachineBody::Uninitialized { .. }
