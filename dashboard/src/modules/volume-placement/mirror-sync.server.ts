@@ -58,9 +58,10 @@ type SlotMember = AnsweredMember & { readonly view: { readonly copy: Slot } };
 /**
  * A Server's answer, or why it couldn't be asked: a mirror skips the round and the others still get theirs. A request
  * whose reply never came back is `unanswered`: the Server may have taken it. One never sent is `unasked`, its message
- * saying why: the sync's Cluster time ran out, after which every later request is, or its session didn't open.
+ * saying why: the sync's Cluster time ran out, after which every later request is, its session didn't open, or the
+ * Cluster's dial to the Server failed. A failure the Server sent without a refusal is `failed`.
  */
-type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached" | "unanswered" | "unasked"; readonly copy: null; readonly message: string };
+type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "failed" | "unanswered" | "unasked"; readonly copy: null; readonly message: string };
 
 const isSlot = (member: Member): member is SlotMember => member.answered && member.view.copy?.kind === "slot";
 const pullingTo = (copy: Slot) => copy.pull !== null && copy.pull.failure === null ? copy.pull.target : null;
@@ -252,7 +253,9 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
       ),
       Effect.catchIf(
         (error) => error instanceof SwitchAttemptError,
-        (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.unanswered ? "unanswered" : "unreached", copy: null, message: error.message }),
+        (error) => Effect.succeed<MirrorAnswer>(error.reach === "unreached"
+          ? { ok: false, reason: "unasked", copy: null, message: `the dial to ${machine.name} failed` }
+          : { ok: false, reason: error.reach === "unanswered" ? "unanswered" : "failed", copy: null, message: error.message }),
       ),
       Effect.catch((error) => Effect.logWarning(`could not open a session to ask ${machine.name}`, { organizationId, volumeId: volume.volumeId, error }).pipe(
         Effect.as<MirrorAnswer>({ ok: false, reason: "unasked", copy: null, message: "Cloud couldn't reach the Cluster" }),

@@ -1014,14 +1014,23 @@ export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext,
 }
 
 /**
- * A failed attempt the step may retry; `reason` is the Machine's refusal, if it gave one. `unanswered` when no reply came
- * back, so the Machine may have acted on it.
+ * Whether the Machine got a failed request: `answered` when it sent the failure, `unanswered` when no reply came back, so
+ * it may have acted on it, and `unreached` when the Cluster's dial to it failed, so it never got the request.
  */
+export type SwitchReach = "answered" | "unanswered" | "unreached";
+
+/** A failed attempt the step may retry; `reason` is the Machine's refusal, if it gave one. */
 export class SwitchAttemptError extends Error {
-  constructor(readonly reason: SwitchReason | null, message: string, readonly unanswered = false) {
+  constructor(readonly reason: SwitchReason | null, message: string, readonly reach: SwitchReach = "answered") {
     super(message);
   }
 }
+
+const switchReach = (cause: unknown): SwitchReach => {
+  if (!(cause instanceof RpcError)) return "answered";
+  if (cause.targetUnreached) return "unreached";
+  return cause.unanswered ? "unanswered" : "answered";
+};
 
 /** The verbs a run still sends through `sendSwitch`: SeedVolume and the reads. */
 type SwitchRequest = Extract<VolumeSwitchRequest, { command: "seed_volume" | "inspect_volume_copy" }>;
@@ -1072,7 +1081,7 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
         const message = `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`;
-        return Effect.fail(new SwitchAttemptError(null, message, "cause" in error && error.cause instanceof RpcError && error.cause.unanswered));
+        return Effect.fail(new SwitchAttemptError(null, message, switchReach("cause" in error ? error.cause : undefined)));
       }
       const { reason, copy } = refused;
       const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
