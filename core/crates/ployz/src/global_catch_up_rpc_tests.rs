@@ -514,34 +514,58 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
 async fn an_ineligible_target_retires_its_own_in_copy() {
     use ployz_core::{
         ContainerList, ContainerLocator, ContainerWant, LocalMachinePhase, MachineDetails,
-        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RoutesRead,
-        RpcRequestBody,
+        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RotationTarget,
+        RoutesRead, RpcRequestBody,
     };
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
-    for eligible in [false, true] {
+    // `replaced`: another Machine already runs an In copy, so this one may go Out
+    // without emptying the Service.
+    for (eligible, replaced) in [(false, true), (false, false), (true, true)] {
         let mut stale = machine('1', "joiner");
         stale.accepts_services = true;
         let mut fresh = stale.clone();
         fresh.accepts_services = eligible;
+        let founder = machine('f', "founder");
         let spec = requested(ServiceMode::Global)
             .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
             .unwrap();
-        let mut old = grouped(qualified("app", "api"), spec, running_on(&fresh, 'a'))
-            .containers
-            .remove(0)
-            .into_observation();
-        old.try_update(|parts| parts.rotation = Some(CopyRotation::In))
-            .unwrap();
-        let local = Arc::new(Mutex::new(vec![old]));
+        let in_copy = |on: &Machine, hex| {
+            let mut copy = grouped(qualified("app", "api"), spec.clone(), running_on(on, hex))
+                .containers
+                .remove(0)
+                .into_observation();
+            copy.try_update(|parts| parts.rotation = Some(CopyRotation::In))
+                .unwrap();
+            copy
+        };
+        let old = in_copy(&fresh, 'a');
+        let peer = replaced.then(|| in_copy(&founder, 'b'));
+        let local = Arc::new(Mutex::new(vec![old.clone()]));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (current, recorded, observed) = (local.clone(), calls.clone(), fresh.clone());
         let (mut client, server) =
             crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
-                let (target, current, recorded) =
-                    (observed.clone(), current.clone(), recorded.clone());
+                let (target, founder, peer) = (observed.clone(), founder.clone(), peer.clone());
+                let (current, recorded) = (current.clone(), recorded.clone());
+                let selected = rpc
+                    .metadata()
+                    .get(ployz_core::ONE_TARGET_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
                 async move {
+                    let on_founder = selected.as_deref() == Some(founder.id.as_str());
+                    let mut machines = vec![MachineObservation::new(
+                        target.clone(),
+                        MembershipObservation::Up,
+                    )];
+                    if peer.is_some() {
+                        machines.push(MachineObservation::new(
+                            founder.clone(),
+                            MembershipObservation::Up,
+                        ));
+                    }
                     #[expect(
                         clippy::wildcard_enum_match_arm,
                         reason = "fixture rejects every RPC that would create or run"
@@ -549,18 +573,22 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                     let response = match rpc.into_inner().decode_request().unwrap().body {
                         RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
                             enrollment: None,
-                            machines: vec![MachineObservation::new(
-                                target.clone(),
-                                MembershipObservation::Up,
-                            )],
+                            machines,
                         }),
                         RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
-                            containers: current.lock().unwrap().clone(),
+                            containers: if on_founder {
+                                peer.into_iter().collect()
+                            } else {
+                                current.lock().unwrap().clone()
+                            },
                         }),
                         RpcRequestBody::ReadRoutes(_) => {
                             recorded.lock().unwrap().push("routes");
                             RpcResponse::from(RoutesRead {
-                                routes: BTreeMap::from([(target.id, Some(BTreeSet::new()))]),
+                                routes: machines
+                                    .iter()
+                                    .map(|machine| (machine.machine.id, Some(BTreeSet::new())))
+                                    .collect::<BTreeMap<_, _>>(),
                                 complete: true,
                                 ..Default::default()
                             })
@@ -591,12 +619,17 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                                 recorded.lock().unwrap().push("out");
                                 assert_eq!(id, container_id('a'));
                                 assert!(!allow_empty, "Global retirement never allows empty");
-                                assert_eq!(expect, Some(CopyRotation::In));
                                 let mut current = current.lock().unwrap();
                                 let copy = current.first_mut().unwrap();
-                                copy.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
-                                    .unwrap();
-                                ensured(ContainerNow::Present(copy.clone()))
+                                match owner_decides(
+                                    copy,
+                                    &RotationTarget::Out,
+                                    expect.as_ref(),
+                                    peer.is_none(),
+                                ) {
+                                    Some(refusal) => refused_with(copy.clone(), refusal),
+                                    None => ensured(ContainerNow::Present(copy.clone())),
+                                }
                             }
                             ContainerWant::Gone {
                                 container: ContainerLocator::Id(id),
@@ -604,10 +637,17 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                             } => {
                                 recorded.lock().unwrap().push("gone");
                                 assert_eq!(id, container_id('a'));
-                                current.lock().unwrap().clear();
-                                ensured(ContainerNow::Absent {
-                                    of: ContainerLocator::Id(id),
-                                })
+                                let mut current = current.lock().unwrap();
+                                let copy = current.first_mut().unwrap();
+                                match owner_decides(copy, &RotationTarget::Gone, None, false) {
+                                    Some(refusal) => refused_with(copy.clone(), refusal),
+                                    None => {
+                                        current.clear();
+                                        ensured(ContainerNow::Absent {
+                                            of: ContainerLocator::Id(id),
+                                        })
+                                    }
+                                }
                             }
                             other => panic!("an ineligible target never runs a copy: {other:?}"),
                         },
@@ -629,21 +669,35 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
             },
         )
         .await;
+        let calls = calls.lock().unwrap().clone();
+        let local = local.lock().unwrap().clone();
         if eligible {
             let error = result.unwrap_err();
             assert_eq!(error.unresolved, [qualified("app", "api")]);
             assert!(excluded.is_empty());
-            assert!(!calls.lock().unwrap().contains(&"gone"));
-            assert_eq!(local.lock().unwrap().len(), 1, "an eligible copy stays put");
-        } else {
+            assert!(!calls.contains(&"gone"));
+            assert_eq!(local.len(), 1, "an eligible copy stays put");
+        } else if replaced {
             result.unwrap();
             assert_eq!(excluded, [qualified("app", "api")]);
             assert_eq!(
-                calls.lock().unwrap().as_slice(),
+                calls,
                 ["inspect", "out", "routes", "gone"],
                 "an In copy goes Out, waits for the proxies, then goes"
             );
-            assert!(local.lock().unwrap().is_empty());
+            assert!(local.is_empty());
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.unresolved, [qualified("app", "api")]);
+            assert!(excluded.is_empty());
+            let message = message(error, &stale);
+            assert!(message.contains("no other copy is In"), "{message}");
+            assert_eq!(
+                calls,
+                ["inspect", "out"],
+                "the owner refuses to take the last In copy Out"
+            );
+            assert_eq!(local, [old], "the only In copy stays");
         }
         server.abort();
     }
