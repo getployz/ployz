@@ -220,6 +220,10 @@ the drain doesn't start; open it again to see what stops now. Drains in one orga
 at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs, the
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
+If your servers don't answer when its turn comes, as while one restarts, the drain reads **Queued**
+and tries again every 20 seconds. It starts once they answer. If they still don't answer 15 minutes
+after you confirmed, the drain doesn't start and reads **Drain didn't start. Try again.** Nothing on
+the server changed.
 
 While a server drains, you can't turn **Run services here** back on for it: Cloud refuses the
 change until the drain ends. Turning services on for another server waits until

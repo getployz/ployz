@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
-import type { DrainReport, DrainScope, QualifiedService } from "@ployz/sdk";
+import type { DrainReport, DrainScope, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { Data, Effect, Option, Schedule, Schema } from "effect";
+import { Clock, Data, Effect, Option, Schedule, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
 import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
@@ -20,12 +20,12 @@ import {
   type RequestedServerDrain,
   type RequestServerDrainInput,
 } from "#/modules/machines/server-drain";
-import { planDrain } from "#/modules/machines/server-operations.server";
+import { drainPlan, planDrain } from "#/modules/machines/server-operations.server";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
-import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
+import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { clusterRead, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -278,12 +278,17 @@ export const bindDrainRun = Effect.fn("ServerDrain.bind")(function* (request: Dr
   return { kind: "settled", state: row.state } as const;
 });
 
-const openSession = Effect.fn("ServerDrain.openSession")(function* (organizationId: string) {
+/** The Cluster as the Drain finds it when its turn comes: the session it drains through, and the frame it plans from. */
+const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") {
     return yield* new ServerDrainUnreachable({ operation: "open organization runtime", cause: session.status });
   }
-  return session.connected;
+  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
+    clusterRead,
+    Effect.mapError((cause) => new ServerDrainUnreachable({ operation: "read the cluster", cause })),
+  );
+  return { session: session.connected, frame };
 });
 
 const decodeMessage = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }));
@@ -308,8 +313,12 @@ const stateOf = Effect.fn("ServerDrain.stateOf")(function* (attemptId: string) {
  * again before it runs, and runs only if what it would destroy now is what its gate admitted. Also whether the plan
  * moves anything, which decides the Servers it may land on.
  */
-const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (request: DrainRequest, planDigest: string | null) {
-  const plan = yield* planDrain(request.organizationId, request.machineId);
+const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
+  request: DrainRequest,
+  frame: RuntimeWatchView,
+  planDigest: string | null,
+) {
+  const plan = drainPlan(frame, new Set(yield* ownedNamespaces(request.organizationId)), request.machineId);
   const moves = plan === null || plan.moves.length > 0;
   return { covered: plan === null || plan.effects.length === 0 || planDigest === operationDigest(plan), moves };
 });
@@ -320,6 +329,9 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (request: D
  * and never asks again; one that finds it ended returns what's there. An error from the Engine means nothing moved
  * (its preflight refused), so the row ends refused. An answer replaces an unknown end (a cancellation that couldn't
  * know what moved) but never another answer, and a Drain with no answer in a day ends lost here.
+ *
+ * A Cluster that doesn't answer before the claim leaves the row pending, for the run to try again after a wait, until
+ * the request is `DRAIN_PENDING_LIMIT_MS` old. Past that it fails the step as before, and the run ends `not_started`.
  */
 export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (request: DrainRequest, runId: string) {
   const { drizzle } = yield* Database;
@@ -332,9 +344,20 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (requ
     return yield* stateOf(request.attemptId);
   }
   if (current.state !== "pending") return current;
-  const [row] = yield* drizzle.select({ targets: serverDrainAttempt.targets, planDigest: serverDrainAttempt.planDigest })
-    .from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId));
-  const { covered, moves } = yield* stillCovered(request, row?.planDigest ?? null);
+  const [row] = yield* drizzle.select({
+    targets: serverDrainAttempt.targets, planDigest: serverDrainAttempt.planDigest, requestedAt: serverDrainAttempt.requestedAt,
+  }).from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId));
+  const reached = yield* reachCluster(request.organizationId).pipe(
+    Effect.map(Option.some),
+    Effect.catchIf((error) => error instanceof ServerDrainUnreachable, (unreachable) => Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const waits = row !== undefined && now < row.requestedAt.getTime() + DRAIN_PENDING_LIMIT_MS;
+      return waits ? Option.none() : yield* unreachable;
+    })),
+  );
+  if (Option.isNone(reached)) return current;
+  const { session, frame } = reached.value;
+  const { covered, moves } = yield* stillCovered(request, frame, row?.planDigest ?? null);
   if (!covered) {
     yield* drizzle.update(serverDrainAttempt)
       .set(refused("The drain now destroys something nobody approved. Drain the server again to review it."))
@@ -343,10 +366,7 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (requ
   }
   // The Drain's Container steps run on the drained Server, which retires its Globals, and, when the Drain moves
   // anything, on every other Server taking services, since a move may land on any of them.
-  const lacking = yield* serversLackingEnsure(
-    request.organizationId,
-    (machine) => machine.id === request.machineId || moves && machine.accepts_services,
-  );
+  const lacking = lackingEnsure(frame, (machine) => machine.id === request.machineId || moves && machine.accepts_services);
   if (lacking.length > 0) {
     yield* drizzle.update(serverDrainAttempt)
       .set(refused(`Drains need a newer Ployz on ${lacking.join(", ")}.`))
@@ -357,7 +377,6 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (requ
   const scope: DrainScope = targets === null
     ? { scope: "owned", namespaces: yield* ownedNamespaces(request.organizationId) }
     : { scope: "services", services: targets };
-  const session = yield* openSession(request.organizationId);
   const [claimed] = yield* drizzle.update(serverDrainAttempt).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"))).returning({ id: serverDrainAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
