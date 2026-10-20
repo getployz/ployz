@@ -1,8 +1,6 @@
 //! `server forget`: Forget one Server without a reset, or with no Server named, every
 //! Server of the Organization when they were deleted.
 
-use std::cell::Cell;
-
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 
@@ -101,7 +99,6 @@ fn forget_through_cloud(
     organization: &str,
     confirmed: &[&str],
 ) -> Result<(), Error> {
-    let announced = Cell::new(false);
     let forgotten = approval::approved(
         runtime,
         credential,
@@ -109,7 +106,7 @@ fn forget_through_cloud(
         matches.get_one::<String>("approval").cloned(),
         |id| super::approved_rerun(matches, confirmed, id),
         async |approval| {
-            if !announced.replace(true) && !crate::ui::json() {
+            if !crate::ui::json() {
                 crate::ui::note("Asking Cloud to forget the Servers…");
             }
             cloud_account::forget_servers(credential, organization, approval).await
