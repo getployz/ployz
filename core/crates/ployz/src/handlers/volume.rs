@@ -110,7 +110,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
         crate::ui::warn(NO_MANAGED_HOST);
     }
-    staged(matches, &created, "Staged new Volume", true)
+    staged(matches, &created, "Staged new Volume", "", true)
 }
 
 const NO_MANAGED_HOST: &str = "No Server here can host Managed volumes yet, so a Deploy of this one fails until one can: add a Server with Managed volumes, or use --docker instead.";
@@ -208,7 +208,13 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         storage,
     })?;
     warn_docker(storage);
-    staged(matches, &changed, "Staged Volume storage", true)
+    staged(
+        matches,
+        &changed,
+        "Staged Volume storage",
+        "already has that storage",
+        true,
+    )
 }
 
 /// Said once the store took a Docker volume, so a refused change stays quiet.
@@ -317,7 +323,13 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
         volume: volume.clone(),
         name: name.clone(),
     })?;
-    staged(matches, &renamed, "Staged rename of Volume", false)
+    staged(
+        matches,
+        &renamed,
+        "Staged rename of Volume",
+        "already has that name",
+        false,
+    )
 }
 
 pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -327,7 +339,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         volume: volume.clone(),
     })?;
-    staged(matches, &removed, "Staged removal of Volume", false)
+    staged(matches, &removed, "Staged removal of Volume", "", false)
 }
 
 /// Servers were seen and each says it is Docker only; one not
@@ -339,14 +351,25 @@ fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
             .all(|machine| machine.storage == Some(MachineStorageObservation::Stateless))
 }
 
-/// A staged Volume change and `ployz deploy` to ship it. `storage`: say the
-/// Volume's storage too, when the change set it.
+/// A staged Volume change and `ployz deploy` to ship it. A change that was already
+/// so says nothing changed: `already` follows the Volume, as in `Volume data already
+/// has that name`. `storage`: say the Volume's storage too, when the change set it.
 fn staged(
     matches: &ArgMatches,
     result: &VolumeStaged,
     what: &str,
+    already: &str,
     storage: bool,
 ) -> Result<(), Error> {
+    if result.staged.is_empty() {
+        return crate::ui::done(
+            &Next::new(result, None),
+            format_args!(
+                "Nothing changed in {}/{}; Volume {} {already}.",
+                result.environment.project, result.environment.name, result.volume.name
+            ),
+        );
+    }
     let hint = store::next(matches, &["deploy"]);
     crate::ui::finish(&Next::new(result, Some(hint.clone())), || {
         crate::ui::stream(format_args!(

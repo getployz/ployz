@@ -106,6 +106,14 @@ export async function* whileLogsShown(events: AsyncIterable<ContainerLogStreamEv
   }
 }
 
+/** What the viewer says for a source that failed. A Machine's error can quote its output, so its text stays in the server log. */
+export const LOGS_UNAVAILABLE = "Container logs are unavailable.";
+
+export function withheld<Failure extends { message: string }>(failure: Failure): Failure {
+  console.error("A container log source failed.", failure);
+  return { ...failure, message: LOGS_UNAVAILABLE };
+}
+
 /** Pull-driven delivery preserves every log record rather than coalescing watch snapshots. */
 export function containerLogResponse(request: Request, events: AsyncIterable<ContainerLogStreamEvent>, close: () => Promise<void>) {
   return eventStreamResponse(request.signal, () => containerLogEvents(events), { heartbeatMs: 15_000, retryMs: RETRY_MS, onClose: close });
@@ -126,7 +134,8 @@ async function* containerLogEvents(events: AsyncIterable<ContainerLogStreamEvent
     for await (const event of events) {
       if (event.type === "live") yield sseEvent({ event: "live", data: {} });
       else if (event.type === "hidden") yield sseEvent({ event: "hidden", data: {} });
-      else yield sseEvent({ event: "log", data: event.type === "record" ? { type: "record", record: projectContainerLog(event.record) } : event });
+      else if (event.type === "record") yield sseEvent({ event: "log", data: { type: "record", record: projectContainerLog(event.record) } });
+      else yield sseEvent({ event: "log", data: event.type === "source_error" ? withheld(event) : event });
     }
   } catch {
     // The upstream broke; ending the stream makes the browser reconnect.

@@ -10,6 +10,7 @@ use ployz_store::{
     DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
     EnvironmentSummary, EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal,
     RemovalsQuery, Remove, RemovedQuery, ServicesQuery, ShutDown, VolumeName, VolumesQuery,
+    Waiting,
 };
 use serde_json::json;
 
@@ -122,9 +123,9 @@ pub(super) fn with_accepted(accept: &[VolumeName]) -> Vec<&str> {
 /// removal Deployment it admitted. In process, this CLI also moves the removal on
 /// (sweep, admit what is due, run it) until the Store deleted the target; over
 /// HTTPS, Cloud carries on after the first ones and this waits until it deleted the
-/// target, or stops at once when a Server didn't answer the review or a removal
-/// Deployment didn't apply (running the command again finishes it). `None` once a
-/// failure after some removal Deployments applied was reported.
+/// target, or stops at once when a Server didn't answer the review, or when a
+/// removal Deployment didn't apply (running the command again finishes it). `None`
+/// once a failure after applied removal Deployments was reported.
 pub(super) fn remove(
     matches: &ArgMatches,
     store: &Store,
@@ -196,10 +197,11 @@ pub(super) fn remove(
         bound_to(error, &effects)
     })?;
     let mut ran = Vec::new();
+    let mut stopped = None;
     let result = (|| {
         let (id, left, waiting_on) = match removal {
             Removal::Removed { residuals } => {
-                return Ok((Removal::Removed { residuals }, Vec::new(), None));
+                return Ok(Some((Removal::Removed { residuals }, Vec::new())));
             }
             Removal::Removing {
                 id,
@@ -211,7 +213,7 @@ pub(super) fn remove(
         // it, so the finished mark says what was left on old servers.
         let removed = |ran: &mut Vec<DeploymentSummary>| {
             let residuals = store.read(&RemovedQuery { id: id.clone() })?.residuals;
-            Ok::<_, Error>((Removal::Removed { residuals }, std::mem::take(ran), None))
+            Ok::<_, Error>(Some((Removal::Removed { residuals }, std::mem::take(ran))))
         };
         let mut admitted: Vec<DeploymentSummary> = left
             .iter()
@@ -232,35 +234,33 @@ pub(super) fn remove(
                     }
                     shipped => shipped?,
                 };
-                let stopped = view.deployment.status != DeploymentStatus::Applied;
                 ran.push(view.deployment.clone());
-                if stopped {
-                    return Ok((
+                if view.deployment.status != DeploymentStatus::Applied {
+                    stopped = Some(Stopped {
+                        view,
+                        ran: outcome,
+                        again: again.clone(),
+                    });
+                    return Ok(Some((
                         Removal::Removing {
                             id,
                             left: applied(left, &ran),
                             waiting_on,
                         },
                         std::mem::take(&mut ran),
-                        Some(Stopped {
-                            view,
-                            ran: outcome,
-                            again: again.clone(),
-                        }),
-                    ));
+                    )));
                 }
             }
             if store.local().is_none() {
                 if matches.get_flag("detach") {
-                    return Ok((
+                    return Ok(Some((
                         Removal::Removing {
                             id,
                             left,
                             waiting_on,
                         },
                         std::mem::take(&mut ran),
-                        None,
-                    ));
+                    )));
                 }
                 // The review is the only word on `waiting_on`, and it skips an
                 // Environment once its removal applied, so it stays the freshest.
@@ -271,15 +271,14 @@ pub(super) fn remove(
                     swept_by_cloud(store, project, environment)?;
                 } else if !gone(store, project, environment)? {
                     let left = applied(left, &ran);
-                    return Ok((
+                    return Ok(Some((
                         Removal::Removing {
                             id,
                             left,
                             waiting_on,
                         },
                         std::mem::take(&mut ran),
-                        None,
-                    ));
+                    )));
                 }
                 return removed(&mut ran);
             }
@@ -309,12 +308,13 @@ pub(super) fn remove(
         }
     })();
     match result {
-        Ok((removal, ran, stopped)) => Ok(Some(Removed {
+        Ok(Some((removal, ran))) => Ok(Some(Removed {
             removal,
             effects,
             ran,
             stopped,
         })),
+        Ok(None) => Ok(None),
         Err(error) if !ran.is_empty() => {
             for deployment in &ran {
                 crate::ui::stream(format_args!("Deployment {} applied", deployment.label()));
@@ -654,34 +654,46 @@ pub(super) struct Removed {
     pub(super) effects: Vec<DestructiveEffect>,
     #[serde(rename = "deployments")]
     pub(super) ran: Vec<DeploymentSummary>,
-    #[serde(skip)]
+    #[serde(flatten)]
     stopped: Option<Stopped>,
 }
 
-/// The removal Deployment that didn't apply, how its run ended, and the command
-/// that finishes the removal.
+/// The removal Deployment that didn't apply (yet), how running it ended, and the
+/// command that finishes it.
+#[derive(serde::Serialize)]
 struct Stopped {
+    #[serde(rename = "deployment")]
     view: DeploymentView,
+    #[serde(skip)]
     ran: Result<(), Error>,
+    #[serde(rename = "next")]
     again: String,
 }
 
 impl Removed {
     /// Each line a person reads about it, after the ones `target` names.
     pub(super) fn say(&self, target: &str) {
-        for deployment in &self.ran {
-            if deployment.status == DeploymentStatus::Applied {
-                crate::ui::stream(format_args!(
-                    "Took an Environment off the Servers (Deployment {}).",
-                    deployment.label()
-                ));
+        if let Some(Stopped { view, .. }) = &self.stopped {
+            for deployment in self.ran.iter().filter(|ran| ran.id != view.deployment.id) {
+                crate::ui::stream(format_args!("Deployment {} applied", deployment.label()));
             }
+            deploy::say_view(view);
+            if let Removal::Removing { waiting_on, .. } = &self.removal {
+                say_waiting(waiting_on);
+            }
+            return;
+        }
+        for deployment in &self.ran {
+            crate::ui::stream(format_args!(
+                "Took an Environment off the Servers (Deployment {}).",
+                deployment.label()
+            ));
         }
         match &self.removal {
             Removal::Removed { residuals } => {
                 for residual in residuals {
                     crate::ui::stream(format_args!(
-                        "Left {} on old servers: no Server was left to take it off.",
+                        "No Server was left to take {} off; if a Server still runs it, it keeps running until you remove it there.",
                         residual.environment
                     ));
                 }
@@ -690,41 +702,30 @@ impl Removed {
             Removal::Removing {
                 left, waiting_on, ..
             } => {
-                match &self.stopped {
-                    Some(stopped) => deploy::say_view(&stopped.view),
-                    None => {
-                        for left in left {
-                            let why = left
-                                .why
-                                .as_deref()
-                                .map(|why| format!(": {why}"))
-                                .unwrap_or_default();
-                            crate::ui::stream(format_args!(
-                                "{} {}{why}",
-                                left.environment.name,
-                                store::word(&left.status)
-                            ));
-                        }
-                    }
-                }
-                for waiting in waiting_on {
+                for left in left {
+                    let why = left
+                        .why
+                        .as_deref()
+                        .map(|why| format!(": {why}"))
+                        .unwrap_or_default();
                     crate::ui::stream(format_args!(
-                        "Waiting on {}: {}",
-                        waiting.server, waiting.why
+                        "{} {}{why}",
+                        left.environment.name,
+                        store::word(&left.status)
                     ));
                 }
-                if self.stopped.is_none() {
-                    crate::ui::stream(format_args!("Cloud goes on removing {target}."));
-                }
+                say_waiting(waiting_on);
+                crate::ui::stream(format_args!("Cloud goes on removing {target}."));
             }
         }
     }
 
     /// Exit 3 when a Server didn't answer or a removal Deployment didn't apply,
-    /// unless `--detach` asked not to wait.
+    /// unless `--detach` asked not to wait; a removal Deployment that failed is its
+    /// error, naming the command that finishes it.
     pub(super) fn ended(self, matches: &ArgMatches) -> Result<(), Error> {
         if let Some(Stopped { ran, again, .. }) = self.stopped {
-            return retried(matches, ran, again);
+            return not_applied(matches, ran, again);
         }
         match (&self.removal, matches.get_flag("detach")) {
             (Removal::Removing { waiting_on, .. }, false) if !waiting_on.is_empty() => {
@@ -732,6 +733,16 @@ impl Removed {
             }
             _ => Ok(()),
         }
+    }
+}
+
+/// A line for each Server a removal waits on, and why.
+fn say_waiting(waiting_on: &[Waiting]) {
+    for waiting in waiting_on {
+        crate::ui::stream(format_args!(
+            "Waiting on {}: {}",
+            waiting.server, waiting.why
+        ));
     }
 }
 
@@ -899,12 +910,13 @@ pub(super) fn unfinished(
     crate::ui::finish(&store::Next::new(view, Some(again.to_owned())), || {
         deploy::say_view(view);
     })?;
-    retried(matches, ran, again.to_owned())
+    not_applied(matches, ran, again.to_owned())
 }
 
-/// How a removal Deployment that didn't apply ends this command: its run's
-/// failure naming `again`, or exit 3 unless `--detach` asked not to wait.
-fn retried(matches: &ArgMatches, ran: Result<(), Error>, again: String) -> Result<(), Error> {
+/// How a command ends after a removal Deployment didn't apply: how running it
+/// failed, naming `again`, the command that finishes it; else exit 3, or 0 when
+/// `--detach` asked not to wait.
+fn not_applied(matches: &ArgMatches, ran: Result<(), Error>, again: String) -> Result<(), Error> {
     ran.map_err(|error| error.hint(Hint::Retry(again)))
         .and_then(|()| match matches.get_flag("detach") {
             true => Ok(()),

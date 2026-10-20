@@ -349,6 +349,29 @@ pub(crate) fn admit(
             json!({ "next": next("remove", json!({ "project": summary.project, "environment": summary.name })) }),
         ));
     };
+    // Two sweeps can find it due at once: the mark admits its removal once. A
+    // removal whose row is gone neither runs nor ran.
+    let before = match mark
+        .evidence
+        .get(&summary.id)
+        .map(|before| deployment::load(tx, &before.deployment))
+    {
+        Some(Err(error)) if error.code == RpcErrorCode::NotFound => None,
+        loaded => loaded.transpose()?,
+    };
+    if let Some(removal) = before.map(|before| before.summary) {
+        let already = if removal.status == DeploymentStatus::Applied {
+            Some("removed")
+        } else {
+            removal.status.in_flight().then_some("is removing")
+        };
+        if let Some(already) = already {
+            return Err(error::conflict(
+                format!("Deployment {} {already} {}", removal.label(), summary.name),
+                json!({ "deployment": removal.id }),
+            ));
+        }
+    }
     if let Standing::Unknown = standing(tx, &mark, &environment)? {
         return Err(error::conflict(unknown(&environment), json!({})));
     }

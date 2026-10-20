@@ -57,5 +57,5 @@ it("says Cloud was unreachable when the request never got an answer", async () =
   const promise = Promise.reject(new TypeError("Failed to fetch"));
   act(() => result.current[1]("b", { isPersisted: { promise } }));
   await act(async () => { await promise.catch(() => {}); });
-  expect(result.current[2]).toEqual({ phase: "failed", to: "b", reason: "Couldn't reach Ployz Cloud." });
+  expect(result.current[2]).toEqual({ phase: "failed", to: "b", reason: "Couldn't reach Ployz Cloud. Check your connection and try again." });
 });

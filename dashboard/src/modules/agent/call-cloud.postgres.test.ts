@@ -12,6 +12,7 @@ import { presetGrant } from "#/modules/identity/token-grant";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import { serviceAct } from "#/modules/service-act/tables";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
@@ -46,6 +47,18 @@ describe("callCloud", () => {
         ok: true,
         value: { operations: [expect.objectContaining({ attempt: DRAIN, run: `drain ${MACHINE}`, state: "accepted" })] },
       });
+    }));
+
+  it.live("names a Server run by the name its act resolved when the runtime has no frame", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+
+      const [run] = yield* operationsOn(ORGANIZATION, { kind: "server", machine: MACHINE }, DRAIN, 1, "machine-1").pipe(Effect.provide(services));
+
+      expect(run).toEqual(expect.objectContaining({ attempt: DRAIN, run: "drain machine-1" }));
     }));
 
   const LOGS: CloudQuery = {
@@ -491,6 +504,25 @@ describe("callCloud", () => {
 
       const clicked = yield* callCloud({ ...caller, via: "dashboard" }, { act: stop("4") }).pipe(Effect.provide(services));
       expect(clicked).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+    }));
+
+  // Catches a human asked to approve a restart that can only be refused because another run holds the Service.
+  it.live("a stop or restart while the Service is busy is refused before anyone is asked", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller } = yield* deployedWeb;
+      const act = (verb: ServiceVerb, attempt: string): Act => ({
+        attempt: attempt.repeat(32),
+        digest: "d".repeat(64),
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb },
+      });
+      const stopped = yield* callCloud({ ...caller, via: "dashboard" }, { act: act("stop", "1") }).pipe(Effect.provide(services));
+      expect(stopped).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+
+      for (const [verb, attempt] of [["restart", "2"], ["stop", "3"]] as const) {
+        const busy = yield* callCloud(caller, { act: act(verb, attempt) }).pipe(Effect.provide(services));
+        expect(busy).toEqual({ ok: false, refusal: expect.objectContaining({ code: "conflict", message: "web is busy: stop web is still running." }) });
+      }
+      expect((yield* drizzle.select().from(serviceAct)).map((row) => row.verb)).toEqual(["stop"]);
     }));
 
   it.live("a member's stop approved before production was protected asks a protector once it is", () =>

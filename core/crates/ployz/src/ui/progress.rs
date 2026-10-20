@@ -520,7 +520,7 @@ fn drive(
                     .rows
                     .iter()
                     .filter(|row| row.state.active())
-                    .map(|row| format!("{}, {}", label(&row.subject, &frame), word(row)))
+                    .map(|row| format!("{} ({})", label(&row.subject, &frame), word(row)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = writeln!(writer, "  still waiting: {waiting}");
@@ -918,6 +918,27 @@ fn notices(frame: &Frame) -> Vec<String> {
         .collect()
 }
 
+/// The footer word a settled row counts under.
+fn outcome(row: &Row) -> Option<&'static str> {
+    match row.state {
+        State::Completed => Some(
+            if matches!(&row.subject, Subject::Service(graph) if graph.work == Work::Remove) {
+                "removed"
+            } else {
+                "deployed"
+            },
+        ),
+        State::ObservedRunning => Some("running"),
+        State::Unchanged => Some("unchanged"),
+        State::Failed => Some("failed"),
+        State::Warned => Some("warning"),
+        State::NotAttempted => Some("not attempted"),
+        State::Unknown => Some("unknown"),
+        State::Excluded => Some("excluded"),
+        State::Pending | State::Running(_) => None,
+    }
+}
+
 fn finish(
     writer: &mut impl Write,
     previous: &Frame,
@@ -928,7 +949,7 @@ fn finish(
     color: bool,
 ) -> io::Result<()> {
     if matches!(disposition, Disposition::UpToDate) {
-        return writeln!(writer, "Everything is up to date.");
+        return Ok(());
     }
     if interactive {
         writeln!(writer, "{}", frame.title)?;
@@ -961,17 +982,22 @@ fn finish(
             if gaps == 1 { "gap" } else { "gaps" }
         ));
     }
-    for (state, word) in [
-        (State::Completed, "deployed"),
-        (State::ObservedRunning, "running"),
-        (State::Unchanged, "unchanged"),
-        (State::Failed, "failed"),
-        (State::Warned, "warning"),
-        (State::NotAttempted, "not attempted"),
-        (State::Unknown, "unknown"),
-        (State::Excluded, "excluded"),
+    for word in [
+        "deployed",
+        "removed",
+        "running",
+        "unchanged",
+        "failed",
+        "warning",
+        "not attempted",
+        "unknown",
+        "excluded",
     ] {
-        let count = frame.rows.iter().filter(|row| row.state == state).count();
+        let count = frame
+            .rows
+            .iter()
+            .filter(|row| outcome(row) == Some(word))
+            .count();
         if count > 0 {
             counts.push(format!("{count} {word}"));
         }
