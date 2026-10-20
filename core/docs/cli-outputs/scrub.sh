@@ -12,6 +12,8 @@ perl -pi -e '
     1;
   }
   s/(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?!\d|\.\d)/public($1, $2, $3, $4) ? "203.0.113.10" : $&/ge;
+  # Global unicast IPv6 (2000::/3), as a Boat Server reports for its public IP.
+  s/(?<![0-9A-Fa-f:])([23][0-9A-Fa-f]{3}(?::[0-9A-Fa-f]{0,4}){2,7})(?![0-9A-Fa-f:])/do { my $ip = $1; ($ip =~ m{::} || ($ip =~ tr{:}{}) == 7) && $ip !~ m{^2001:db8:}i ? "2001:db8::10" : $ip }/ge;
   # Secrets are a prefix plus 43 base64url characters: tokens (ployz_), Server
   # enrollment tokens (pmet_) and pairing secrets (ppair_).
   s/(ployz|pmet|ppair)_[A-Za-z0-9_-]{40,}/$1_<redacted>/g;
