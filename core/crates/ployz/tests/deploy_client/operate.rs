@@ -560,8 +560,35 @@ async fn removing_deployed_data(
     (address, server)
 }
 
+/// The `--json` refusal of a Deploy that removes `data` through `address`, which
+/// no longer answers, as it names `address` and the connection's cause.
+async fn refused_through_dead_endpoint(db: &std::path::Path, address: &str) -> Value {
+    let (code, refused) = ployz(Some(db), address, &["deploy", "--skip-deploy"]).await;
+    assert_eq!(code, 1, "{refused}");
+    let refused = refused["error"].clone();
+    assert_eq!(refused["code"], "unavailable", "{refused}");
+    assert_eq!(
+        refused["message"],
+        format!(
+            "This removes deployed Volumes, and Ployz couldn't reach tcp://{address} to check \
+             for their data, so it refuses. Try again once it can be reached"
+        ),
+        "{refused}"
+    );
+    assert_eq!(
+        refused["details"],
+        serde_json::json!({
+            "volumes": ["data"],
+            "unanswered": [],
+            "endpoint": format!("tcp://{address}"),
+        }),
+        "{refused}"
+    );
+    refused
+}
+
 #[tokio::test]
-async fn a_removal_deployed_while_its_server_is_down_names_the_server_and_why() {
+async fn a_removal_deployed_while_its_server_is_down_names_the_endpoint_and_why() {
     let store = tempfile::tempdir().unwrap();
     let db = store.path().join("store.db");
     let (address, server) =
@@ -569,21 +596,7 @@ async fn a_removal_deployed_while_its_server_is_down_names_the_server_and_why() 
     server.abort();
     let _ = server.await;
 
-    let (code, refused) = ployz(Some(&db), &address, &["deploy", "--skip-deploy"]).await;
-    assert_eq!(code, 1, "{refused}");
-    let refused = &refused["error"];
-    assert_eq!(refused["code"], "unavailable", "{refused}");
-    assert_eq!(
-        refused["message"],
-        "This removes deployed Volumes, and Ployz couldn't reach Server one to check for their \
-         data, so it refuses. Try again once it can be reached",
-        "{refused}"
-    );
-    assert_eq!(
-        refused["details"],
-        serde_json::json!({ "volumes": ["data"], "unanswered": ["one"] }),
-        "{refused}"
-    );
+    let refused = refused_through_dead_endpoint(&db, &address).await;
     let cause: Vec<&str> = refused["cause"]
         .as_array()
         .unwrap()
@@ -601,8 +614,9 @@ async fn a_removal_deployed_while_its_server_is_down_names_the_server_and_why() 
     assert_eq!(human.status.code(), Some(1), "{human:?}");
     let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(
-        stderr
-            .contains("error: This removes deployed Volumes, and Ployz couldn't reach Server one"),
+        stderr.contains(&format!(
+            "error: This removes deployed Volumes, and Ployz couldn't reach tcp://{address}"
+        )),
         "{stderr}"
     );
     assert!(
@@ -654,4 +668,37 @@ async fn a_removal_deployed_while_its_server_fails_the_check_names_the_error() {
     let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(stderr.contains("cause: database is locked"), "{stderr}");
     server.abort();
+}
+
+#[tokio::test]
+async fn a_removal_deployed_through_a_dead_endpoint_names_no_server_it_did_not_ask() {
+    let store = tempfile::tempdir().unwrap();
+    let db = store.path().join("store.db");
+    // Server two ran an earlier Deployment of this Organization.
+    let (two, server) = listening(DeployService::new(machine('b', "two"))).await;
+    let two = two.to_string();
+    for args in [
+        &["project", "new", "shop"][..],
+        &["service", "add", "api", "--image", "api:1"],
+        &["deploy"],
+    ] {
+        let (code, result) = ployz(Some(&db), &two, args).await;
+        assert_eq!(code, 0, "{args:?}: {result}");
+    }
+    server.abort();
+    let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
+    let address = address.to_string();
+    for args in [
+        &["service", "add", "web", "--image", "web:1"][..],
+        &["volume", "add", "data", "--mount", "web:/data", "--docker"],
+        &["deploy"],
+        &["volume", "rm", "data"],
+    ] {
+        let (code, result) = ployz(Some(&db), &address, args).await;
+        assert_eq!(code, 0, "{args:?}: {result}");
+    }
+    server.abort();
+    let _ = server.await;
+
+    refused_through_dead_endpoint(&db, &address).await;
 }

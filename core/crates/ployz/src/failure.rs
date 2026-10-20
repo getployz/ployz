@@ -139,6 +139,22 @@ impl Failure {
         self
     }
 
+    /// A Server's daemon answered before this connection failed: a refusal, not an
+    /// unreachable Server.
+    pub(crate) fn daemon_answered(&self) -> bool {
+        let Inner::Command { error, .. } = &self.inner else {
+            return false;
+        };
+        let mut next: Option<&(dyn Error + 'static)> = Some(error.as_ref());
+        while let Some(error) = next {
+            if let Some(error) = error.downcast_ref::<ConnectError>() {
+                return !error.unreached();
+            }
+            next = error.source();
+        }
+        false
+    }
+
     pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
         self.diagnostic.as_deref()
     }

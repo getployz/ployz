@@ -1070,6 +1070,40 @@ async fn observing_a_server_that_cannot_be_reached_names_it_and_why() {
 }
 
 #[tokio::test]
+async fn observing_a_server_that_fails_the_check_returns_without_asking_it_again() {
+    use ployz_core::{DockerVolumeName, RpcError, RpcErrorCode};
+    use ployz_store::ObservationStage;
+
+    let one = machine('a', "one").machine.id;
+    let mut service = DeployService::new(machine('a', "one"));
+    let described = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    service.describe_once = Some(std::sync::Arc::clone(&described));
+    *service.machines_error.lock().unwrap() = Some(RpcError {
+        code: RpcErrorCode::Internal,
+        message: "The Machine list is unavailable.".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    });
+    let (address, server) = listening(service).await;
+    let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
+
+    let observed = tokio::time::timeout(
+        Duration::from_secs(6),
+        ployz::sdk::observe_volumes(vec![ployz::context::Connection::tcp(address)], sought),
+    )
+    .await
+    .expect("a failed check returns its refusal")
+    .unwrap();
+
+    assert_eq!(
+        observed.failure.unwrap().stage,
+        ObservationStage::Answered { server: Some(one) }
+    );
+    assert_eq!(described.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
 async fn observing_a_server_that_answers_with_an_error_names_it_and_the_error() {
     use ployz_core::{DockerVolumeName, RpcError, RpcErrorCode};
     use ployz_store::ObservationStage;

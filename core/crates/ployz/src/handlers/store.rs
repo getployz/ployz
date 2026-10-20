@@ -326,19 +326,32 @@ impl<'m> Store<'m> {
         let Ok(runtime) = runtime() else {
             return Ok(None);
         };
+        // The endpoint names the refusal only while no Server is known.
+        let endpoint = self
+            .matches
+            .try_get_one::<String>("connect")
+            .ok()
+            .flatten()
+            .cloned();
         Ok(Some(runtime.block_on(async {
             let mut client = match super::server::connect(self.matches, context).await {
                 Ok(client) => client,
                 Err(error) => {
-                    let failure = ObservationFailure::unreachable(error.report());
+                    let failure = if error.daemon_answered() {
+                        ObservationFailure::answered(None, error.report())
+                    } else {
+                        ObservationFailure::unreachable(error.report())
+                    };
+                    let failure = failure.at_endpoint(endpoint);
                     return VolumeObservation::failed(sought, Vec::new(), failure);
                 }
             };
             match client.observe_volumes(sought.clone()).await {
                 Ok(observed) => observed,
                 Err(error) => {
-                    let server = client.entry_machine().await;
-                    let failure = ObservationFailure::answered(server, error);
+                    let server = client.entry_machine();
+                    let failure = ObservationFailure::answered(server, error)
+                        .at_endpoint(endpoint.filter(|_| server.is_none()));
                     VolumeObservation::failed(sought, server.into_iter().collect(), failure)
                 }
             }

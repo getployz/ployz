@@ -193,27 +193,39 @@ pub async fn observe_volumes(
     connections: Vec<Connection>,
     sought: Vec<ployz_core::DockerVolumeName>,
 ) -> Result<ployz_store::VolumeObservation, RpcError> {
+    if connections.is_empty() {
+        return Err(super::invalid_argument(
+            "connections must not be empty".into(),
+        ));
+    }
     let servers: Vec<MachineId> = connections
         .iter()
         .filter_map(Connection::machine_id)
         .copied()
         .collect();
-    let session = match connect_connections(connections, Arc::new(SystemConnector::default())).await
-    {
+    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
         Ok(session) => session,
-        Err(error) if error.code == RpcErrorCode::InvalidArgument => return Err(error),
         Err(error) => {
-            let failure = ObservationFailure::unreachable(error);
+            let failure = if error.unreached() {
+                ObservationFailure::unreachable(error.into())
+            } else {
+                // Which Server refused is known only when there was one to try.
+                let server = match servers.as_slice() {
+                    [server] => Some(*server),
+                    _ => None,
+                };
+                ObservationFailure::answered(server, error.into())
+            };
             return Ok(VolumeObservation::failed(sought, servers, failure));
         }
     };
     let observed = match session.observe_volumes(sought.clone()).await {
         Ok(observed) => observed,
         Err(error) => {
-            let server = match session.client() {
-                Ok(client) => client.entry_machine().await,
-                Err(_) => None,
-            };
+            let server = session
+                .client()
+                .ok()
+                .and_then(|client| client.entry_machine());
             let failure = ObservationFailure::answered(server, error);
             VolumeObservation::failed(sought, servers, failure)
         }

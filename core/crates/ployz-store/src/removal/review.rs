@@ -242,12 +242,14 @@ fn unchecked(removed: &[RemovedVolume], observed: Option<&VolumeObservation>) ->
         );
     };
     let servers = &failure.servers;
+    let endpoint = failure.endpoint.as_ref();
     let mut refused = match failure.stage {
         ObservationStage::Unreachable => {
-            let (who, them) = match servers.as_slice() {
-                [] => ("the Servers".to_owned(), "they"),
-                [server] => (format!("Server {server}"), "it"),
-                servers => (format!("Servers {}", servers.join(", ")), "they"),
+            let (who, them) = match (servers.as_slice(), endpoint) {
+                ([], Some(endpoint)) => (endpoint.clone(), "it"),
+                ([], None) => ("the Servers".to_owned(), "they"),
+                ([server], _) => (format!("Server {server}"), "it"),
+                (servers, _) => (format!("Servers {}", servers.join(", ")), "they"),
             };
             error::unobserved(
                 format!(
@@ -259,10 +261,11 @@ fn unchecked(removed: &[RemovedVolume], observed: Option<&VolumeObservation>) ->
         }
         ObservationStage::Answered { .. } => {
             let server = servers.first();
-            let who = server.map_or_else(
-                || "the Server Ployz reached".to_owned(),
-                |server| format!("Server {server}"),
-            );
+            let who = match (server, endpoint) {
+                (Some(server), _) => format!("Server {server}"),
+                (None, Some(endpoint)) => endpoint.clone(),
+                (None, None) => "the Server Ployz reached".to_owned(),
+            };
             error::unobserved(
                 format!(
                     "This removes deployed Volumes, and {who} returned an error when Ployz \
@@ -273,6 +276,9 @@ fn unchecked(removed: &[RemovedVolume], observed: Option<&VolumeObservation>) ->
             )
         }
     };
+    if let (Some(endpoint), Some(details)) = (endpoint, refused.details.as_object_mut()) {
+        details.insert("endpoint".to_owned(), json!(endpoint));
+    }
     refused.cause = std::iter::once(failure.reason.clone())
         .chain(failure.cause.iter().cloned())
         .collect();

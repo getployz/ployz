@@ -111,9 +111,8 @@ impl Trusted {
     }
 
     /// This evidence with the Servers a failed Volume check couldn't check named from
-    /// `who`'s Deployments: the Server that answered with an error, those the check
-    /// meant to ask, or when it named none, every Server deployed to, as a check that
-    /// reached none checked none. A Server no Deployment ran on keeps its ID.
+    /// `who`'s Deployments: the Server that answered with an error, else those the check
+    /// meant to ask. A Server no Deployment ran on keeps its ID.
     pub(crate) fn naming(
         &self,
         tx: &mut dyn Tx,
@@ -135,12 +134,6 @@ impl Trusted {
         };
         let servers = match &failure.stage {
             ObservationStage::Answered { server } => server.iter().map(named).collect(),
-            ObservationStage::Unreachable if observed.unanswered.is_empty() => deployed
-                .values()
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
             ObservationStage::Unreachable => observed.unanswered.iter().map(named).collect(),
         };
         let mut trusted = self.clone();
@@ -304,6 +297,11 @@ pub struct ObservationFailure {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<String>>", optional)]
     pub cause: Vec<String>,
+    /// The endpoint the check dialed, as the user gave it, when the observer doesn't
+    /// know which Server it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub endpoint: Option<String>,
     /// The Servers it couldn't check, by name: the Store fills them from its
     /// Deployments before it reviews ([`Trusted::naming`]).
     #[serde(skip)]
@@ -339,11 +337,18 @@ impl ObservationFailure {
         Self::at(ObservationStage::Answered { server }, error)
     }
 
+    /// This failure, from dialing `endpoint`.
+    #[must_use]
+    pub fn at_endpoint(self, endpoint: Option<String>) -> Self {
+        Self { endpoint, ..self }
+    }
+
     fn at(stage: ObservationStage, error: RpcError) -> Self {
         Self {
             stage,
             reason: error.message,
             cause: error.cause,
+            endpoint: None,
             servers: Vec::new(),
         }
     }

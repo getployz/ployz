@@ -60,6 +60,8 @@ pub struct Client {
     connection: Connection,
     source: ConnectionSource,
     connector: Arc<dyn Connector>,
+    /// The Machine the entry described itself as when it was last confirmed.
+    entry: Option<MachineId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -82,6 +84,7 @@ impl Client {
             connection,
             source,
             connector,
+            entry: None,
         }
     }
 
@@ -95,19 +98,10 @@ impl Client {
         &self.source
     }
 
-    /// The entry Machine this client reaches: its connection's, else as the daemon
-    /// describes itself. None when it no longer answers.
-    pub(crate) async fn entry_machine(&self) -> Option<MachineId> {
-        if let Some(machine) = self.connection.machine_id() {
-            return Some(*machine);
-        }
-        let payload = op::DescribeContract::into_request(DescribeContractRequest {})
-            .encode()
-            .ok()?;
-        self.call_once::<op::DescribeContract>(payload, None)
-            .await
-            .ok()
-            .map(|description| description.machine_id)
+    /// The entry Machine this client reaches: as the daemon described itself when
+    /// confirmed, else its connection's. None when neither says.
+    pub(crate) fn entry_machine(&self) -> Option<MachineId> {
+        self.entry.or_else(|| self.connection.machine_id().copied())
     }
 
     /// One-shot check that this channel reaches a daemon. No unary retry — a
@@ -117,7 +111,7 @@ impl Client {
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
     /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
-    pub(crate) async fn confirm_entry(&self) -> Result<(), ConnectError> {
+    pub(crate) async fn confirm_entry(&mut self) -> Result<(), ConnectError> {
         let confirm = async {
             let payload =
                 op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
@@ -139,15 +133,16 @@ impl Client {
                             },
                         ));
                     }
-                    Ok(())
+                    Ok(Some(description.machine_id))
                 }
-                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(()),
+                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(None),
                 Err(error) => Err(error),
             }
         };
-        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
+        self.entry = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
             .await
-            .map_err(|_| ConnectError::EntryNotReady)?
+            .map_err(|_| ConnectError::EntryNotReady)??;
+        Ok(())
     }
 
     /// The id of the Machine this client enters by.
