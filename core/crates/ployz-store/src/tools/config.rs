@@ -86,7 +86,7 @@ impl Tool for ConfigWrite {
                     .map_err(|_| {
                         Stop::from(Refusal::invalid(
                             "A file name is a relative path of 1 to 4 segments",
-                            &format!("files.{name}"),
+                            "files",
                         ))
                     })
             })

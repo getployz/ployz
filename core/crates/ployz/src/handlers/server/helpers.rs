@@ -155,12 +155,16 @@ pub(in crate::handlers) async fn check_listed(client: &mut Client) -> Result<(),
     }
     // The published row is the participating identity, not the local key's id.
     let id = details.machine.map_or(details.id, |machine| machine.id);
-    if !client
-        .machines()
-        .await?
-        .iter()
-        .any(|machine| machine.machine.id == id)
+    // A Participating daemon still opening its Cluster store, as after the
+    // post-enroll restart, answers Unavailable: not ready yet, not a refusal.
+    let machines = client.machines().await;
+    if let Err(ConnectError::Remote(error)) = &machines
+        && error.code == RpcErrorCode::Unavailable
     {
+        return Err(ConnectError::Attempt(error.message.clone().into()));
+    }
+    let machines = machines?;
+    if !machines.iter().any(|machine| machine.machine.id == id) {
         return Err(ConnectError::Attempt(
             "Server is not yet published in the Cluster store".into(),
         ));

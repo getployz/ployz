@@ -212,7 +212,7 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          cargo nextest run --workspace --all-features --locked
+          cargo nextest run --workspace --all-features --locked --no-fail-fast
           cargo test --doc --workspace --all-features --locked
       # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres

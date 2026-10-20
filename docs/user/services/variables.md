@@ -153,5 +153,9 @@ their values, under your own variables.
   shares with its parent reads the parent's values.
 - **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
   `invalid_argument` and the limit. Split it into smaller changes.
+- **A variable holds up to 128 KiB, name included.** Linux won't start a program with a longer
+  one, so Ployz refuses such a value when you set it, and refuses a deploy where references
+  make one longer. When a secret makes it longer, the Deployment fails before anything runs and
+  names the variable. Put a large value in a [Config](configs.md) file instead.
 
 Next: [add a database](databases.md).
