@@ -33,12 +33,13 @@ import {
   clusterRead,
   OrganizationRuntime,
   PLAN_CLUSTER_BUDGET_MS,
+  requireClusterTime,
   RUNTIME_FRAME_TIMEOUT_MS,
   withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
-import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
+import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
@@ -293,9 +294,9 @@ const namedOwedRefusal = Effect.fn("VolumeRun.namedOwedRefusal")(function* (pend
 
 type DeleteMirrorArgs = VolumeRunArgs["delete_mirror"];
 
-const withSlotMachine = ({ slot, confirmed_name }: DeleteMirrorArgs, machines: readonly MachineRef[]): DeleteMirrorArgs => {
-  const machine = machines.find((entry) => entry.name === slot)?.id;
-  return machine === undefined ? { slot, confirmed_name } : { slot, confirmed_name, machine };
+const withSlotMachine = (args: DeleteMirrorArgs, machines: readonly MachineRef[]): DeleteMirrorArgs => {
+  const machine = machines.find((entry) => entry.name === args.slot)?.id;
+  return machine === undefined ? args : { ...args, machine };
 };
 
 export const releaseChangedMessage = (volumeName: string) => `${volumeName} changed since this release was planned; release it again`;
@@ -1012,9 +1013,12 @@ export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext,
   }
 }
 
-/** A failed attempt the step may retry; `reason` is the Machine's refusal, if it gave one. */
+/**
+ * A failed attempt the step may retry; `reason` is the Machine's refusal, if it gave one. `unanswered` when no reply came
+ * back, so the Machine may have acted on it.
+ */
 export class SwitchAttemptError extends Error {
-  constructor(readonly reason: SwitchReason | null, message: string) {
+  constructor(readonly reason: SwitchReason | null, message: string, readonly unanswered = false) {
     super(message);
   }
 }
@@ -1051,10 +1055,15 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
 
 /**
  * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
- * so a run's step retries.
+ * so a run's step retries. Spent Cluster time fails it before it opens a session, and out of time is `inFlight` only
+ * when the SetVolumeCopy itself was cut. Any other failure but a `SwitchAttemptError` is a session that didn't open, so
+ * the SetVolumeCopy was never sent.
  */
 export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
-  const session = yield* openSession(asker.organizationId);
+  yield* requireClusterTime;
+  const session = yield* openSession(asker.organizationId).pipe(
+    Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ClusterOutOfTime({ inFlight: false }))),
+  );
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
     clusterRead,
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
@@ -1062,7 +1071,8 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
       if (error instanceof ClusterOutOfTime) return Effect.fail(error);
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
-        return Effect.fail(new SwitchAttemptError(null, `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
+        const message = `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`;
+        return Effect.fail(new SwitchAttemptError(null, message, "cause" in error && error.cause instanceof RpcError && error.cause.unanswered));
       }
       const { reason, copy } = refused;
       const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;

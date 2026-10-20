@@ -1,21 +1,38 @@
-//! SetVolumeSize: raise the bound of a Provisioned Volume held on one Machine while its
-//! Container keeps running. The bound is the ZFS `refquota`, so a grow is one property
-//! write and no restart. A shrink is refused here: ZFS refuses a `refquota` below what the
-//! dataset already holds, and the Volume's Container may be writing toward the old bound.
+//! SetVolumeSize: change the bound of a Provisioned Volume held on one Machine while its
+//! Container keeps running. The bound is the ZFS `refquota`, so a resize is one property
+//! write and no restart. A shrink is opt-in and stops at a floor above what the Volume
+//! already references: ZFS refuses a `refquota` below that, and the Volume's Container
+//! may be writing toward the old bound.
+
+use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{DockerVolumeName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode};
 
-/// Raise the bound of this Machine's copy of Volume `name` to `maximum_bytes`, whether
+/// Set the bound of this Machine's copy of Volume `name` to `maximum_bytes`, whether
 /// it is the writer's root or a Mirror's slot. A copy already at `maximum_bytes` answers
 /// that bound without a write, so a resend converges. A copy above it is refused as a
-/// `Shrink`: a bound only grows.
+/// `Shrink` unless it sets `allow_shrink`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SetVolumeSizeRequest {
     pub name: DockerVolumeName,
     pub maximum_bytes: ProvisionedVolumeMaximumBytes,
+    /// The caller accepts a bound below the one held, down to [`shrink_floor`]. A daemon
+    /// without `ployz.volume.size.shrink.v1` ignores it and refuses as `Shrink`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub allow_shrink: bool,
+}
+
+/// The smallest bound a shrink accepts for a Volume that references `referenced_bytes`:
+/// that plus a tenth of it or 1 GB, whichever is larger, so its Container keeps room to
+/// write while the bound comes down.
+#[must_use]
+pub fn shrink_floor(referenced_bytes: u64) -> ProvisionedVolumeMaximumBytes {
+    let floor = referenced_bytes.saturating_add((referenced_bytes / 10).max(crate::domain::GB));
+    ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(floor).expect("a floor is at least 1 GB"))
 }
 
 /// The bound the Volume holds after the request, read back from ZFS.
@@ -36,8 +53,10 @@ pub enum SizeRefusal {
     Switching,
     /// The Pool cannot grow by the difference.
     NoCapacity,
-    /// The request is below the bound the Volume holds.
+    /// The request is below the bound the Volume holds and does not allow a shrink.
     Shrink,
+    /// The request is below [`shrink_floor`] of what the Volume references.
+    BelowFloor,
 }
 
 /// `RpcError.details` of a refused `SetVolumeSize`: the reason and the bound it left.
@@ -52,6 +71,10 @@ pub struct SetVolumeSizeRefused {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub capacity: Option<crate::StorageCapacityError>,
+    /// The smallest bound accepted, on a `BelowFloor` refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub floor_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
 impl SetVolumeSizeRefused {
@@ -75,9 +98,10 @@ impl SetVolumeSizeRefused {
                 RpcErrorCode::Conflict
             }
             SizeRefusal::NoCapacity => RpcErrorCode::Unavailable,
-            SizeRefusal::NotProvisioned | SizeRefusal::Switching | SizeRefusal::Shrink => {
-                RpcErrorCode::Conflict
-            }
+            SizeRefusal::NotProvisioned
+            | SizeRefusal::Switching
+            | SizeRefusal::Shrink
+            | SizeRefusal::BelowFloor => RpcErrorCode::Conflict,
         };
         RpcError {
             code,
@@ -90,7 +114,6 @@ impl SetVolumeSizeRefused {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
 
     use super::*;
 
@@ -102,6 +125,7 @@ mod tests {
                 NonZeroU64::new(2_000_000_000).unwrap(),
             )),
             capacity: None,
+            floor_bytes: None,
         };
         let error = refused.clone().rpc_error("too small");
 
@@ -113,6 +137,51 @@ mod tests {
         assert_eq!(
             SetVolumeSizeRefused::from_details(&serde_json::Value::Null),
             None
+        );
+    }
+
+    #[test]
+    fn a_below_floor_refusal_carries_the_floor() {
+        let error = SetVolumeSizeRefused {
+            reason: SizeRefusal::BelowFloor,
+            bound_bytes: None,
+            capacity: None,
+            floor_bytes: Some(shrink_floor(20_000_000_000)),
+        }
+        .rpc_error("below the floor");
+
+        assert_eq!(error.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            error.details,
+            serde_json::json!({"reason": "below_floor", "floor_bytes": 22_000_000_000u64})
+        );
+    }
+
+    #[test]
+    fn the_shrink_floor_keeps_a_tenth_and_at_least_a_gb_of_headroom() {
+        assert_eq!(shrink_floor(0).get(), 1_000_000_000);
+        assert_eq!(shrink_floor(20_000_000_000).get(), 22_000_000_000);
+        assert_eq!(shrink_floor(u64::MAX - 1).get(), u64::MAX);
+    }
+
+    #[test]
+    fn a_request_allows_a_shrink_only_when_it_says_so() {
+        let request: SetVolumeSizeRequest =
+            serde_json::from_value(serde_json::json!({"name": "data", "maximum_bytes": 5}))
+                .unwrap();
+        assert!(!request.allow_shrink);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"name": "data", "maximum_bytes": 5})
+        );
+
+        let request = SetVolumeSizeRequest {
+            allow_shrink: true,
+            ..request
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"name": "data", "maximum_bytes": 5, "allow_shrink": true})
         );
     }
 }

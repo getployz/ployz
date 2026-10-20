@@ -245,16 +245,18 @@ const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short",
 /** The time alone for a point from today, the date as well for an older one. */
 export const lossMoment = (at: Date, now = new Date()) => (at.toDateString() === now.toDateString() ? lossTime(at) : dated.format(at));
 
-const deleteSlot = (server: MachineRef): VolumeRunInput => ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null, machine: server.id } });
+const deleteSlot = (role: SlotRole) => (server: MachineRef): VolumeRunInput =>
+  ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null, machine: server.id, role } });
+const deleteOld = deleteSlot("old_copy");
 
 /** Each change's runs; deletions free the one copy slot before a move or a mirror fills it. */
 const STEPS = {
-  delete_copy: { order: 0, runs: (change) => [deleteSlot(change.server)] },
-  remove_mirror: { order: 1, runs: (change) => [deleteSlot(change.server)] },
+  delete_copy: { order: 0, runs: (change) => [deleteOld(change.server)] },
+  remove_mirror: { order: 1, runs: (change) => [deleteSlot("mirror")(change.server)] },
   move: {
     order: 2,
     runs: (change) => [
-      ...change.clears.map(deleteSlot),
+      ...change.clears.map(deleteOld),
       change.how === "restore" ? { kind: "restore", args: { from: change.to.name } } : { kind: "move", args: { to: change.to.name } },
     ],
   },
@@ -265,7 +267,7 @@ const STEPS = {
       args: { into: { volumeId: change.volume.id, dockerVolume: change.dockerVolume, name: change.volume.name }, guid: change.point.guid, name: change.point.name },
     }],
   },
-  add_mirror: { order: 3, runs: (change) => [...change.clears.map(deleteSlot), { kind: "mirror", args: { to: change.server.name } }] },
+  add_mirror: { order: 3, runs: (change) => [...change.clears.map(deleteOld), { kind: "mirror", args: { to: change.server.name } }] },
 } satisfies { [K in PlacementChange["kind"]]: { order: number; runs: (change: Extract<PlacementChange, { kind: K }>) => VolumeRunInput[] } };
 
 function runsOf(change: PlacementChange): VolumeRunInput[] {

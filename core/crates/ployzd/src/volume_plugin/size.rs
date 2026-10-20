@@ -1,14 +1,16 @@
-//! SetVolumeSize: a Provisioned Volume's bound raised in place. The bound is the
+//! SetVolumeSize: a Provisioned Volume's bound changed in place. The bound is the
 //! `refquota` of the dataset this Machine holds for the Volume, its root or its slot's
 //! parent, so a grow commits the difference to the Pool, writes the one property and
 //! reads it back, with the Container on the Volume still running. A slot's landed copy
 //! carries the same bound, and a promote renames that copy into the writer root, so a
-//! grow raises the copy too, with nothing more committed.
+//! grow raises the copy too, with nothing more committed. A shrink the request allows
+//! lowers the bound, and a slot's copy with it, no lower than [`shrink_floor`] of what
+//! the Volume references, and so releases the difference.
 
 use axum::{Json, extract::State};
 use ployz_core::{
     ProvisionedVolumeMaximumBytes, RpcError, SetVolumeSizeRefused, SetVolumeSizeReply,
-    SetVolumeSizeRequest, SizeRefusal,
+    SetVolumeSizeRequest, SizeRefusal, shrink_floor,
 };
 
 use super::{
@@ -22,11 +24,12 @@ impl VolumeStorage {
     ) -> Result<SetVolumeSizeReply, RpcError> {
         let name = mirror::name(&request.name)?;
         let wanted = request.maximum_bytes;
+        let allow_shrink = request.allow_shrink;
         let admission = self.admit_mutation().await.map_err(internal)?;
         let storage = self.clone();
         tokio::spawn(async move {
             let _admission = admission;
-            storage.set_size_admitted(&name, wanted).await
+            storage.set_size_admitted(&name, wanted, allow_shrink).await
         })
         .await
         .unwrap_or_else(|error| Err(internal(VolumeError::from(error.to_string()))))
@@ -36,6 +39,7 @@ impl VolumeStorage {
         &self,
         name: &DockerVolumeName,
         wanted: ProvisionedVolumeMaximumBytes,
+        allow_shrink: bool,
     ) -> Result<SetVolumeSizeReply, RpcError> {
         let _pool_guard = self.pool.lock_mutation().await.map_err(internal)?;
         let not_found = || {
@@ -76,7 +80,7 @@ impl VolumeStorage {
             return Err(refuse(
                 SizeRefusal::NotProvisioned,
                 None,
-                format!("Volume {name} has no Provisioned Volume bound to raise"),
+                format!("Volume {name} has no Provisioned Volume bound to change"),
             ));
         };
         let bound = ProvisionedVolumeMaximumBytes::new(bound);
@@ -84,22 +88,7 @@ impl VolumeStorage {
             Held::Slot { fs: Some(fs), .. } if fs.refquota < wanted.get() => Some(fs.name.as_str()),
             Held::Root(_) | Held::Slot { .. } => None,
         };
-        if wanted < bound {
-            return Err(refuse(
-                SizeRefusal::Shrink,
-                Some(bound),
-                format!(
-                    "Volume {name} holds a {bound} bound; a Volume does not shrink to {wanted}"
-                ),
-            ));
-        }
-        if wanted == bound && copy_behind.is_none() {
-            return Ok(SetVolumeSizeReply { bound_bytes: bound });
-        }
-        if held.switching() {
-            if wanted == bound {
-                return Ok(SetVolumeSizeReply { bound_bytes: bound });
-            }
+        let switching = || {
             let message = match &held {
                 Held::Root(root) => format!(
                     "Volume {name} is mid-run on this Machine (ZFS dataset {} is read-only); wait for the run to finish",
@@ -109,7 +98,49 @@ impl VolumeStorage {
                     "Volume {name} is receiving a copy on this Machine; wait for the receive to land"
                 ),
             };
-            return Err(refuse(SizeRefusal::Switching, Some(bound), message));
+            refuse(SizeRefusal::Switching, Some(bound), message)
+        };
+        if wanted < bound {
+            if !allow_shrink {
+                return Err(refuse(
+                    SizeRefusal::Shrink,
+                    Some(bound),
+                    format!(
+                        "Volume {name} holds a {bound} bound; a Volume does not shrink to {wanted}"
+                    ),
+                ));
+            }
+            if held.switching() {
+                return Err(switching());
+            }
+            let referenced = held.referenced_bytes();
+            let floor = shrink_floor(referenced);
+            if wanted < floor {
+                return Err(SetVolumeSizeRefused {
+                    reason: SizeRefusal::BelowFloor,
+                    bound_bytes: Some(bound),
+                    capacity: None,
+                    floor_bytes: Some(floor),
+                }
+                .rpc_error(format!(
+                    "Volume {name} references {referenced} bytes, so it shrinks to no less than {floor}, not {wanted}"
+                )));
+            }
+            self.shrink_bound(&held, wanted.get())
+                .await
+                .map_err(internal)?;
+            return Ok(SetVolumeSizeReply {
+                bound_bytes: wanted,
+            });
+        }
+        if wanted == bound && copy_behind.is_none() {
+            return Ok(SetVolumeSizeReply { bound_bytes: bound });
+        }
+        if held.switching() {
+            if wanted == bound {
+                return Ok(SetVolumeSizeReply { bound_bytes: bound });
+            }
+            return Err(switching());
         }
         if wanted > bound {
             match self
@@ -128,6 +159,7 @@ impl VolumeStorage {
                         reason: SizeRefusal::NoCapacity,
                         bound_bytes: Some(bound),
                         capacity: Some(capacity.clone()),
+                        floor_bytes: None,
                     }
                     .rpc_error(format!(
                         "this Machine has no room to grow Volume {name} to {wanted}: {capacity}"
@@ -156,6 +188,7 @@ fn refuse(
         reason,
         bound_bytes,
         capacity: None,
+        floor_bytes: None,
     }
     .rpc_error(message)
 }

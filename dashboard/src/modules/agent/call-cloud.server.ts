@@ -100,7 +100,7 @@ const copies = Effect.fn("CallCloud.copies")(function* (caller: Caller, namespac
   const loaded = yield* loadOrganizationConnections(organizationId);
   if (loaded.kind !== "ready" || loaded.connections.length === 0) return yield* notConnected(organizationId);
   const observed = yield* observeVolumeCopies(loaded.connections);
-  const names = yield* serverNames(organizationId);
+  const names = yield* serverNames(organizationId, [...observed.copies.map((copy) => copy.machine_id), ...observed.unanswered]);
   const server = (machine: MachineId) => ({ machine, name: names.get(machine) ?? machine });
   const now = Math.floor(Date.now() / 1000);
   return answer<CopiesAnswer>({
@@ -233,7 +233,7 @@ const volumeRunInput = (run: VolumeRun, name: string): VolumeRunInput => {
     case "release":
       return { kind: "release", args: {} };
     case "remove_mirror":
-      return { kind: "delete_mirror", args: { slot: null, confirmed_name: name } };
+      return { kind: "delete_mirror", args: { slot: null, confirmed_name: name, role: "any" } };
     case "restore":
       return { kind: "restore", args: { from: run.from.name, machine: run.from.machine } };
   }

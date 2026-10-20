@@ -383,6 +383,11 @@ pub struct NodeOutcome {
     #[serde(flatten)]
     pub node: DeployedNode,
     pub outcome: NodeStatus,
+    /// The Deployment's cancel stopped its work, so it reads Cancelled. Set only
+    /// on a Failed `outcome`, which a reader from before Cancelled reads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub cancelled: bool,
     /// Its work on each Server, once its runner started executing.
     #[serde(default)]
     pub rows: Vec<ServerRow>,
@@ -743,6 +748,11 @@ struct Run {
     /// Each target node's Node Outcome, by node ID, once execution ran.
     #[serde(default)]
     nodes: BTreeMap<String, NodeStatus>,
+    /// The Failed nodes only the Deployment's cancel stopped, which read
+    /// Cancelled. Kept apart from `nodes` so a Store from before Cancelled reads
+    /// them Failed.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    cancelled: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<DeploymentWarning>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1014,10 +1024,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|_| error::corrupt("Deployment upload"))?,
-            chooses_upload_at_start: status == DeploymentStatus::Queued
-                && service_uploads
-                    .as_ref()
-                    .is_some_and(|uploads| uploads.provisional),
+            chooses_upload_at_start: chooses_upload_at_start(status, service_uploads.as_ref()),
             remove: row.number::<Revision>(4, "revision")? == NOTHING,
             admitted_by: row.parse_optional(13, "identity")?,
             admitted_at: row.int(14)?,
@@ -1048,9 +1055,21 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     })
 }
 
-/// Write `stored`'s status and run, keeping `in_flight` in step with its status.
+/// Whether a Deployment in `status` chooses its upload again as it starts: it is
+/// queued, and admission chose `uploads` while one ahead of it could still move them.
+fn chooses_upload_at_start(
+    status: DeploymentStatus,
+    uploads: Option<&uploads::ServiceUploads>,
+) -> bool {
+    status == DeploymentStatus::Queued && uploads.is_some_and(|uploads| uploads.provisional)
+}
+
+/// Write `stored`'s status and run, keeping `in_flight` and
+/// `chooses_upload_at_start` in step with its status.
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
     stored.summary.in_flight = stored.summary.status.in_flight();
+    stored.summary.chooses_upload_at_start =
+        chooses_upload_at_start(stored.summary.status, stored.service_uploads.as_ref());
     tx.execute(
         "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
          started = ?6, ended = ?7 WHERE id = ?3",

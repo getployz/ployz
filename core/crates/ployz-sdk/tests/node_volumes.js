@@ -40,6 +40,7 @@ async function expectRpc(fn, code) {
     if (rpc.code !== code) {
       throw new Error(`expected ${code}, got ${rpc.code}: ${rpc.message}`);
     }
+    return rpc;
   }
 }
 
@@ -86,15 +87,12 @@ function volume(machine, name) {
   );
 
   // A well-formed switch verb reaches the Machine instead of failing to parse; this
-  // fixture refuses every switch verb.
-  await expectRpc(
-    () =>
-      client.volumeSwitch(machineB, {
-        command: "set_volume_copy",
-        payload: { name: "data", expect: { kind: "none" }, want: { kind: "forget" } },
-      }),
-    "unsupported",
-  );
+  // fixture's Machine B refuses every switch verb, and Machine A never answers one.
+  const forget = { command: "set_volume_copy", payload: { name: "data", expect: { kind: "none" }, want: { kind: "forget" } } };
+  const refused = await expectRpc(() => client.volumeSwitch(machineB, forget), "unsupported");
+  if (refused.unanswered !== false) throw new Error("a Machine's refusal is an answer");
+  const silent = await expectRpc(() => client.volumeSwitch(machineA, forget), "unavailable");
+  if (silent.unanswered !== true) throw new Error("a switch no Machine answered must say so, since it may have been taken");
 
   await client.close();
   await expectRpc(
