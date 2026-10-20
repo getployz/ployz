@@ -4889,7 +4889,7 @@ fn partly(store: &ConfigStore, n: u8, completed: &str, failed: &str) {
 }
 
 #[test]
-#[ignore = "needs claim-time upload resolution, a user-visible choice awaiting Nick: fu-2318-partial-retry-revert/options.md"]
+#[ignore = "needs claim-time upload resolution: fu-2318-claim-time-uploads un-ignores it"]
 fn verifier_a_running_retry_that_fails_a_service_leaves_its_queued_deploy_on_its_confirmed_upload()
 {
     let (store, who) = shop();
