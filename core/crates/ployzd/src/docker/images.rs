@@ -12,8 +12,8 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, RemoveImageOptions},
 };
 use ployz_core::{
-    DiskSpace, ExposedPort, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved,
-    PullPolicy, RegistryAuth,
+    DiskFull, DiskSpace, ExposedPort, ImageRemoval, ImageRemovalOutcome, ImageSummary,
+    ImagesRemoved, PullPolicy, RegistryAuth,
 };
 
 use super::{ContainerRuntime, Error};
@@ -27,6 +27,8 @@ const KEEP_UNDER_PRESSURE: usize = 1;
 const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// Below this free share of the Docker root, keep only [`KEEP_UNDER_PRESSURE`].
 const PRESSURE_FREE_PERCENT: u64 = 20;
+/// Below this free under the Docker root, a failed pull is a full disk.
+const DISK_FULL_FREE_BYTES: u64 = 1_000_000_000;
 
 impl ContainerRuntime {
     /// Make `image` present as `policy` asks, confirm Docker holds it, and answer
@@ -42,9 +44,9 @@ impl ContainerRuntime {
         auth: Option<&RegistryAuth>,
     ) -> Result<Vec<ExposedPort>, Error> {
         let docker = &self.docker.client;
-        crate::docker_image::prepare_image(docker, image, policy, auth)
-            .await
-            .map_err(Error::ImagePull)?;
+        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, auth).await {
+            return Err(self.pull_failure(error).await);
+        }
         let inspect = docker
             .inspect_image(image)
             .await
@@ -55,6 +57,23 @@ impl ContainerRuntime {
                 .and_then(|config| config.exposed_ports)
                 .unwrap_or_default(),
         ))
+    }
+
+    /// `error` from a pull, as a full disk when the Docker root has almost no free
+    /// space left: containerd then fails mid-extract with whatever call ran out.
+    pub(super) async fn pull_failure(&self, error: DockerError) -> Error {
+        let free = self
+            .docker
+            .client
+            .info()
+            .await
+            .ok()
+            .and_then(|info| info.docker_root_dir)
+            .and_then(|root| {
+                let (_, free_bytes) = crate::host_capacity::filesystem_space(&root).ok()?;
+                Some((root, free_bytes))
+            });
+        pull_failure(error, free)
     }
 
     /// Unix seconds this Machine last tagged the image, when Docker recorded it.
@@ -167,6 +186,27 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         .filter(|(tagged, _)| pressure || tagged.is_some_and(|at| now - at > IDLE_SECONDS))
         .map(|(_, tag)| tag.clone())
         .collect()
+}
+
+/// A registry's answer stays itself; any other failure with `free` under
+/// [`DISK_FULL_FREE_BYTES`] is the full disk, with Docker's error as its cause.
+fn pull_failure(error: DockerError, free: Option<(String, u64)>) -> Error {
+    let answered = matches!(
+        &error,
+        DockerError::DockerResponseServerError { status_code, .. } if (400..500).contains(status_code)
+    );
+    match free {
+        Some((docker_root, free_bytes)) if free_bytes < DISK_FULL_FREE_BYTES && !answered => {
+            Error::DiskFull {
+                full: DiskFull {
+                    docker_root,
+                    free_bytes,
+                },
+                source: error,
+            }
+        }
+        _ => Error::ImagePull(error),
+    }
 }
 
 /// The routable ports among Docker's exposed-port keys, in order and without repeats.
@@ -300,6 +340,61 @@ mod tests {
         assert!(under_pressure(space(19)));
         assert!(!under_pressure(space(20)));
         assert!(!under_pressure(None));
+    }
+
+    /// The deploy output for a pull that containerd failed mid-extract, as the
+    /// Server reports `free_bytes` under its Docker root.
+    fn failed_pull(free_bytes: u64) -> ployz_store::Failure {
+        let lchown = DockerError::DockerStreamError {
+            error: "failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory".into(),
+        };
+        let error = pull_failure(lchown, Some(("/var/lib/docker".into(), free_bytes)));
+        ployz_store::Failure::of(
+            &ployz_core::ExecutionError::Machine {
+                action: ployz_core::MachineAction::PullImage,
+                error: ployz_core::RpcError::from(&error),
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn a_pull_on_a_full_disk_names_the_disk_and_keeps_dockers_error() {
+        let failure = failed_pull(48_000_000);
+        assert_eq!(
+            failure.reason,
+            "The Server's disk is full: 48 MB free under /var/lib/docker"
+        );
+        assert_eq!(
+            failure.cause,
+            [
+                "Docker stream error: failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pull_with_free_space_keeps_dockers_error() {
+        let failure = failed_pull(50_000_000_000);
+        assert_eq!(failure.reason, "pull image failed");
+        assert_eq!(
+            failure.cause.last().map(String::as_str),
+            Some(
+                "Docker stream error: failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory"
+            )
+        );
+    }
+
+    #[test]
+    fn a_registry_answer_stays_itself_on_a_full_disk() {
+        let error = pull_failure(
+            DockerError::DockerResponseServerError {
+                status_code: 404,
+                message: "not found".into(),
+            },
+            Some(("/var/lib/docker".into(), 0)),
+        );
+        assert!(matches!(error, Error::ImagePull(_)));
     }
 
     #[test]
