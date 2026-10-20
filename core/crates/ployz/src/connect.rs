@@ -952,7 +952,8 @@ pub struct TransportError {
     /// The entry's router marked this status: the target did not answer it.
     routed_unanswered: bool,
     /// The entry's router marked this status: its dial to the target failed, so the
-    /// target never got the call.
+    /// target never got the call. Never set on a local failure, whose metadata may be
+    /// headers that came back before the stream broke.
     routed_unreached: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
@@ -1048,9 +1049,10 @@ impl From<tonic::Status> for TransportError {
             routed_unanswered: status
                 .metadata()
                 .contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY),
-            routed_unreached: status
-                .metadata()
-                .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
+            routed_unreached: !local
+                && status
+                    .metadata()
+                    .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
             cause,
             code: status.code(),
             message: status.message().to_owned(),

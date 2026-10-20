@@ -157,11 +157,12 @@ impl MachineProxy {
         target: &Machine,
     ) -> http::Response<Body> {
         clear_routing_headers(request.headers_mut());
+        clear_router_marks(request.headers_mut());
         if target.id == self.local_id {
             return self.call_local(request).await;
         }
         match self.call_remote(request, target.management_address()).await {
-            Ok(response) => response,
+            Ok(response) => without_router_marks(response),
             Err(status) => status.into_http(),
         }
     }
@@ -246,6 +247,26 @@ impl MachineProxy {
         backends.insert(address, channel.clone());
         Ok(channel)
     }
+}
+
+/// Only this router may say a forwarded call went unanswered or never reached its target,
+/// so the marks are stripped from whatever the target sends back.
+fn without_router_marks(response: http::Response<Body>) -> http::Response<Body> {
+    let (mut parts, body) = response.into_parts();
+    clear_router_marks(&mut parts.headers);
+    let body = body.map_frame(|frame| match frame.into_trailers() {
+        Ok(mut trailers) => {
+            clear_router_marks(&mut trailers);
+            http_body::Frame::trailers(trailers)
+        }
+        Err(frame) => frame,
+    });
+    http::Response::from_parts(parts, Body::new(body))
+}
+
+fn clear_router_marks(headers: &mut http::HeaderMap) {
+    headers.remove(ployz_core::rpc::TARGET_UNANSWERED_KEY);
+    headers.remove(ployz_core::rpc::TARGET_UNREACHED_KEY);
 }
 
 /// Tonic wraps only its connector's failures in [`tonic::ConnectError`]: the connection to
