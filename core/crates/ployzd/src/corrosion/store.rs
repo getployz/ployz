@@ -951,6 +951,18 @@ impl ReplicatedStore {
         }))
     }
 
+    /// This Machine's own Corrosion actor, which only this Machine's writes advance.
+    pub(crate) async fn local_actor(&self) -> Result<String, Error> {
+        let query = self
+            .api
+            .query(Statement::new("SELECT crsql_site_id() AS site_id", []))
+            .await?;
+        match query.rows(["site_id"])?.as_slice() {
+            [[actor]] => actor_id(actor),
+            _ => Err(Error::Protocol("invalid local actor row".into())),
+        }
+    }
+
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
         let query = self
             .api
