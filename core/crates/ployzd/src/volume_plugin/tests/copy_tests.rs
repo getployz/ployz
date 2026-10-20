@@ -275,6 +275,61 @@ async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
     server.abort();
 }
 
+/// What the daemon does for a `SetVolumeCopy` Forget want against a slot: plan against
+/// the inspected copy, and call the Destroy route only on `MirrorToForget`.
+async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy) -> Value {
+    let copy = parsed_copy(&post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await);
+    let plan = ployz_core::plan(
+        copy.as_ref(),
+        false,
+        expect,
+        &ployz_core::WantedCopy::Forget,
+    );
+    if plan != ployz_core::CopyPlan::Transition(ployz_core::CopyTransition::MirrorToForget) {
+        return json!({"Planned": format!("{plan:?}")});
+    }
+    post(socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await
+}
+
+/// Cloud deletes an old copy it saw; a cancelled run's pull that landed after Cloud looked
+/// made the slot the mirror at the same snapshot, so the delete names the old copy's role
+/// and the Machine refuses it.
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+async fn a_delete_of_an_old_copy_refuses_the_mirror_a_late_pull_made_of_it() {
+    let source = Source::start(Some(BOUND), "").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
+    set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
+    let seen = post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert_eq!(seen.pointer("/Ok/role"), Some(&json!("old_copy")), "{seen}");
+    let delete: ployz_core::ExpectedCopy = serde_json::from_value(json!({
+        "kind": "mirror",
+        "newest": seen["Ok"]["newest"]["guid"],
+        "slot": seen["Ok"]["slot"],
+        "role": "old_copy",
+    }))
+    .unwrap();
+
+    let late = post(&socket, "/Volume.Copy.Pull", pull("f-1")).await;
+    assert_eq!(late.pointer("/Ok/role"), Some(&json!("mirror")), "{late}");
+
+    assert_eq!(
+        set_forget(&socket, &delete).await,
+        json!({"Planned": "Refuse(Mismatch)"})
+    );
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("mirror"), json!("mirror"))
+    );
+    server.abort();
+}
+
 /// Docker drops a Volume's labels and options when Get says it does not exist.
 #[tokio::test]
 async fn docker_still_gets_a_root_cut_into_its_slot() {
