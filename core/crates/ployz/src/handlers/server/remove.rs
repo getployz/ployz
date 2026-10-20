@@ -20,7 +20,7 @@ use crate::handlers::{
     data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
     leaf_matches, store, typed_with,
 };
-use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues};
+use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues, LiveServices};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
 
@@ -174,11 +174,12 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         }
         let last = machines.len() == 1;
         let services = services_on(&selected.id, &live);
-        let movable = if last {
-            Vec::new()
-        } else {
-            movable_services_on(&selected.id, &live)
-        };
+        let movable = drain_first(
+            &selected.id,
+            &live,
+            last,
+            matches.get_one::<String>("confirm").is_some(),
+        );
         let replicated_services =
             under_replicated(replicated_services_on(&selected.id, &live), last);
         Ok::<_, Error>((cloud, observed, services, movable, replicated_services))
@@ -441,6 +442,21 @@ async fn cloud_manages(
         .management_clients
         .iter()
         .any(|label| label.as_str() == "cloud"))
+}
+
+/// The Services to drain off the Server before removing it, named only while the removal
+/// still asks: a typed `--confirm` goes ahead and leaves no Server to drain, and the last
+/// Server has nowhere to move them.
+fn drain_first(
+    server: &MachineId,
+    live: &LiveServices<RpcError>,
+    last: bool,
+    confirmed: bool,
+) -> Vec<QualifiedService> {
+    if last || confirmed {
+        return Vec::new();
+    }
+    movable_services_on(server, live)
 }
 
 /// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
