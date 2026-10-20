@@ -35,8 +35,10 @@ The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fa
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
 
 You can change the limit under **Storage** in the volume's panel until you deploy the volume.
-After that, even if that deploy failed, the panel can't change it. On Ployz Cloud you can grow
-a deployed volume from the CLI while its service keeps running:
+On Ployz Cloud you can then grow it while its service keeps running. Type a larger
+**Storage limit** in the panel and confirm **Grow volume**. The panel shows the resize until it
+ends. It refuses a smaller limit, a server whose Ployz is too old to grow it, or a size a server
+reports no room for, before you confirm. You can also grow it from the CLI:
 
 ```sh
 # Grow the data volume to 20 GB on every server that holds a copy
@@ -47,7 +49,10 @@ Ployz grows each mirror first and the copy your service writes to last. If one s
 a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its
 old limit. `ployz volume runs data` shows how a resize went. The new limit isn't a staged
 change: `ployz diff` shows nothing, and your next deploy leaves the service's container alone.
-Shrinking a volume isn't supported yet.
+Shrinking a deployed volume isn't supported yet. A Docker volume has no limit to grow.
+
+If you restore an older revision that asked for a smaller limit, the servers keep the size they
+hold. The panel shows the smaller one; enter the held size to stage it back.
 
 The dashboard doesn't show how full a volume is yet:
 
