@@ -190,7 +190,8 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
-        options: --health-cmd pg_isready --health-interval 2s --health-retries 15
+        # Docker's 64 MB /dev/shm can run out over the suite's thousand databases.
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 15 --shm-size=256m
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -207,6 +208,8 @@ jobs:
       - name: Test with a hostile ambient Ployz context
         env:
           PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+          # Built above with `eval`; the SDK tests would otherwise rebuild it with other features.
+          PLOYZ_SDK_ADDON: ${{ github.workspace }}/core/target/debug/libployz_sdk.so
         run: |
           cat > "$PLOYZ_CONFIG" <<'EOF'
           current_context: hostile
@@ -217,6 +220,15 @@ jobs:
           EOF
           cargo nextest run --workspace --all-features --locked --no-fail-fast
           cargo test --doc --workspace --all-features --locked
+      # A throwaway server: durability only slows each test's new database.
+      - name: Stop the test Postgres syncing to disk
+        if: needs.changes.outputs.postgres == 'true'
+        run: >-
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -q
+          -c 'ALTER SYSTEM SET fsync = off'
+          -c 'ALTER SYSTEM SET synchronous_commit = off'
+          -c 'ALTER SYSTEM SET full_page_writes = off'
+          -c 'SELECT pg_reload_conf()'
       # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres
         if: needs.changes.outputs.postgres == 'true'
