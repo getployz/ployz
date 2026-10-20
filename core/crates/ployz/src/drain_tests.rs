@@ -18,7 +18,7 @@ use super::{
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
 };
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Converged, LastIn, Moving, OldCopyEnd, Unconfirmed};
+use crate::deploy::{Converged, Converging, LastIn, Moving, OldCopyEnd, Reservations, Unconfirmed};
 use crate::drain::retirement::Retirement;
 use crate::global_fixtures::container_id;
 
@@ -136,10 +136,13 @@ struct Scripted {
     let_go: Vec<Copy>,
     /// How long each moved Service's old copy takes to retire.
     retire_time: Duration,
+    /// How long each moved Service's last new copy takes to go In and be listed.
+    listing_time: Duration,
     /// Services whose old copy is refused Out as the last copy In.
     last_in: Vec<QualifiedService>,
-    /// `in <service>` as each Service's new copy comes In, `gone <service>` as its old one
-    /// is removed.
+    /// `create <service>` as each Service starts converging, `in <service>` as its new copy
+    /// comes In, `listed <service>` once its last one is listed, and `gone <service>` as its
+    /// old one is removed.
     calls: Arc<Mutex<Vec<String>>>,
 }
 
@@ -192,19 +195,34 @@ impl DrainClient for Scripted {
     async fn converge(
         &mut self,
         service: &QualifiedService,
+        _reservations: &Reservations,
         _cancellation: &CancellationToken,
-    ) -> Converged<Moving> {
+    ) -> Converging<Moving> {
+        self.calls.lock().unwrap().push(format!("create {service}"));
         if let Some(cancellation) = &self.cancel_after_converge {
             cancellation.cancel();
         }
-        match self
+        let decided = match self
             .convergences
             .pop_front()
             .expect("one scripted convergence per Service")
         {
-            Converged::Moved { moves } => Converged::Moved {
-                moves: self.retiring(service, moves),
-            },
+            Converged::Moved { moves } => {
+                let mut moves = self.retiring(service, moves);
+                let last = moves.pop().expect("a scripted move");
+                let calls = Arc::clone(&self.calls);
+                let listing_time = self.listing_time;
+                let service = service.clone();
+                let last = async move {
+                    tokio::time::sleep(listing_time).await;
+                    calls.lock().unwrap().push(format!("listed {service}"));
+                    Ok(last)
+                };
+                return Converging::Admitting {
+                    moves,
+                    last: last.boxed(),
+                };
+            }
             Converged::Failed { moves, failure } => Converged::Failed {
                 moves: self.retiring(service, moves),
                 failure,
@@ -215,7 +233,8 @@ impl DrainClient for Scripted {
             },
             Converged::NothingToMove => Converged::NothingToMove,
             Converged::Stays { reason } => Converged::Stays { reason },
-        }
+        };
+        Converging::Decided(decided)
     }
 
     async fn copies_on(
@@ -790,6 +809,32 @@ async fn old_copy_retires_overlap_the_next_move() {
     assert!(
         at("in app/api") < at("gone app/web"),
         "the next move starts before the old copy is Gone: {calls:?}"
+    );
+    assert_eq!(
+        outcomes(&report),
+        [entry("web", moved()), entry("api", moved())]
+    );
+    assert!(report.complete());
+}
+
+#[tokio::test(start_paused = true)]
+async fn next_create_overlaps_current_listing() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [
+            Converged::Moved { moves: one_move() },
+            Converged::Moved { moves: one_move() },
+        ]
+        .into(),
+        listing_time: Duration::from_secs(5),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    let calls = client.calls.lock().unwrap().clone();
+    let at = |call: &str| calls.iter().position(|seen| seen == call).unwrap();
+    assert!(
+        at("create app/api") < at("listed app/web"),
+        "api starts its copy while web's is still going In: {calls:?}"
     );
     assert_eq!(
         outcomes(&report),

@@ -2,7 +2,8 @@
 //! Placement convergence for each chosen replicated Service with a Container on it, then
 //! observe what still runs there. One bounded command.
 //!
-//! Each move's old copy retires alongside the moves after it; the report waits for every
+//! Each move's old copy retires alongside the moves after it, and each Service's last new
+//! copy goes In while the next Service starts its own; the report waits for every
 //! retirement and still lists the Services in the order they were handled.
 //!
 //! A preflight that may refuse comes first; nothing has moved when it does. After it the
@@ -13,9 +14,10 @@
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
 use std::collections::VecDeque;
-use std::pin::pin;
+use std::future::poll_fn;
+use std::pin::{Pin, pin};
 
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, MaybeDone, maybe_done};
 use futures_util::stream::FuturesUnordered;
 use futures_util::{FutureExt, StreamExt};
 use ployz_core::{
@@ -30,7 +32,7 @@ use ts_rs::TS;
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Converged, LastIn, Moving, converge};
+use crate::deploy::{Converged, Converging, LastIn, Moving, Reservations, converge};
 
 pub(crate) mod retirement;
 
@@ -406,11 +408,13 @@ trait DrainClient {
         globals: &[QualifiedService],
         cancellation: &CancellationToken,
     ) -> Vec<(QualifiedService, Retirement)>;
+    /// Converges `service` up to its last move's In, placing beside `reservations`.
     async fn converge(
         &mut self,
         service: &QualifiedService,
+        reservations: &Reservations,
         cancellation: &CancellationToken,
-    ) -> Converged<Moving>;
+    ) -> Converging<Moving>;
     /// Every copy of `service` on `server`, from a fresh listing.
     async fn copies_on(
         &mut self,
@@ -447,9 +451,10 @@ impl DrainClient for Client {
     async fn converge(
         &mut self,
         service: &QualifiedService,
+        reservations: &Reservations,
         cancellation: &CancellationToken,
-    ) -> Converged<Moving> {
-        converge(self, service, cancellation).await
+    ) -> Converging<Moving> {
+        converge(self, service, reservations, cancellation).await
     }
 
     async fn copies_on(
@@ -537,9 +542,22 @@ async fn execute<C: DrainClient>(
                 break 'work;
             }
         }
+        let reservations = Reservations::default();
+        let mut settling: Option<Settling> = None;
         let mut rest = replicated.as_slice();
         while let Some((service, after)) = rest.split_first() {
             if cancellation.is_cancelled() {
+                if let Some(previous) = settling.take() {
+                    settle(
+                        client,
+                        &mut behind,
+                        &mut record,
+                        previous,
+                        &mut None,
+                        cancellation,
+                    )
+                    .await;
+                }
                 behind.finish(&mut record).await;
                 record.stop(DrainStop::Cancelled, rest);
                 break 'work;
@@ -548,57 +566,92 @@ async fn execute<C: DrainClient>(
             // once, by the move, and not waited on twice. A failed listing leaves the
             // copies to `remaining`, which still finds the Service there.
             let left_behind = behind
-                .alongside(&mut record, client.copies_on(&server.id, service))
+                .alongside(
+                    &mut record,
+                    beside(client.copies_on(&server.id, service), &mut settling),
+                )
                 .await
                 .unwrap_or_default();
-            let converged = behind
-                .alongside(&mut record, client.converge(service, cancellation))
+            let converging = behind
+                .alongside(
+                    &mut record,
+                    beside(
+                        client.converge(service, &reservations, cancellation),
+                        &mut settling,
+                    ),
+                )
                 .await;
-            let (shape, moves) = match converged {
-                Converged::Moved { moves } => (Shape::Moved, moves),
-                Converged::NothingToMove => (Shape::Done(DrainOutcome::NothingToMove), Vec::new()),
-                Converged::Failed { moves, failure } => (Shape::Failed(failure), moves),
-                Converged::Stays { reason } => {
-                    (Shape::Done(DrainOutcome::Stays { reason }), Vec::new())
+            let decided = match converging {
+                Converging::Decided(Converged::Moved { moves }) => {
+                    MaybeDone::Done((Shape::Moved, moves))
                 }
-                Converged::Stopped { moves, stop } => {
+                Converging::Decided(Converged::NothingToMove) => {
+                    MaybeDone::Done((Shape::Done(DrainOutcome::NothingToMove), Vec::new()))
+                }
+                Converging::Decided(Converged::Failed { moves, failure }) => {
+                    MaybeDone::Done((Shape::Failed(failure), moves))
+                }
+                Converging::Decided(Converged::Stays { reason }) => {
+                    MaybeDone::Done((Shape::Done(DrainOutcome::Stays { reason }), Vec::new()))
+                }
+                Converging::Decided(Converged::Stopped { moves, stop }) => {
+                    if let Some(previous) = settling.take() {
+                        settle(
+                            client,
+                            &mut behind,
+                            &mut record,
+                            previous,
+                            &mut None,
+                            cancellation,
+                        )
+                        .await;
+                    }
                     behind.moved(service.clone(), Shape::Interrupted, moves);
                     behind.finish(&mut record).await;
                     record.stop(stop, after);
                     break 'work;
                 }
-            };
-            let held = left_behind
-                .iter()
-                .any(|copy| matches!(copy.rotation, CopyRotation::Held(_)));
-            let out = left_behind
-                .iter()
-                .filter(|copy| copy.rotation == CopyRotation::Out)
-                .collect::<Vec<_>>();
-            let only_leftovers = matches!(shape, Shape::Done(DrainOutcome::NothingToMove))
-                && (held || !out.is_empty());
-            if !only_leftovers {
-                behind.moved(service.clone(), shape, moves);
-            }
-            if held {
-                behind.done(service.clone(), DrainOutcome::Held);
-            }
-            if !out.is_empty() {
-                let mut ends = Vec::with_capacity(out.len());
-                for copy in out {
-                    ends.push(if cancellation.is_cancelled() {
-                        OldCopyEnd::Running {
-                            unconfirmed: Unconfirmed::Cancelled,
+                Converging::Admitting { mut moves, last } => maybe_done(
+                    async move {
+                        match last.await {
+                            Ok(moved) => {
+                                moves.push(moved);
+                                (Shape::Moved, moves)
+                            }
+                            Err(failure) => (Shape::Failed(failure), moves),
                         }
-                    } else {
-                        behind
-                            .alongside(&mut record, client.let_go(copy, cancellation))
-                            .await
-                    });
-                }
-                behind.done(service.clone(), DrainOutcome::OldCopies { ends });
+                    }
+                    .boxed(),
+                ),
+            };
+            let next = Settling {
+                service: service.clone(),
+                left_behind,
+                decided,
+            };
+            if let Some(previous) = settling.replace(next) {
+                settle(
+                    client,
+                    &mut behind,
+                    &mut record,
+                    previous,
+                    &mut settling,
+                    cancellation,
+                )
+                .await;
             }
             rest = after;
+        }
+        if let Some(last) = settling.take() {
+            settle(
+                client,
+                &mut behind,
+                &mut record,
+                last,
+                &mut None,
+                cancellation,
+            )
+            .await;
         }
     }
     behind.finish(&mut record).await;
@@ -623,6 +676,77 @@ async fn execute<C: DrainClient>(
         stopped,
         remaining,
     }
+}
+
+/// A Service handled up to its last move's In, with its copies on the drained Server
+/// listed before it moved.
+struct Settling {
+    service: QualifiedService,
+    left_behind: Vec<Copy>,
+    decided: MaybeDone<BoxFuture<'static, (Shape, Vec<Moving>)>>,
+}
+
+/// Waits, beside `next`, until `settling` is decided, then hands its moves to `behind` and
+/// lets go of the Out copies it left on the drained Server.
+async fn settle<C: DrainClient>(
+    client: &mut C,
+    behind: &mut Behind,
+    record: &mut Record<'_>,
+    settling: Settling,
+    next: &mut Option<Settling>,
+    cancellation: &CancellationToken,
+) {
+    let Settling {
+        service,
+        left_behind,
+        mut decided,
+    } = settling;
+    behind.alongside(record, beside(&mut decided, next)).await;
+    let (shape, moves) = Pin::new(&mut decided)
+        .take_output()
+        .expect("a settled Service was just decided");
+    let held = left_behind
+        .iter()
+        .any(|copy| matches!(copy.rotation, CopyRotation::Held(_)));
+    let out = left_behind
+        .iter()
+        .filter(|copy| copy.rotation == CopyRotation::Out)
+        .collect::<Vec<_>>();
+    let only_leftovers =
+        matches!(shape, Shape::Done(DrainOutcome::NothingToMove)) && (held || !out.is_empty());
+    if !only_leftovers {
+        behind.moved(service.clone(), shape, moves);
+    }
+    if held {
+        behind.done(service.clone(), DrainOutcome::Held);
+    }
+    if !out.is_empty() {
+        let mut ends = Vec::with_capacity(out.len());
+        for copy in out {
+            ends.push(if cancellation.is_cancelled() {
+                OldCopyEnd::Running {
+                    unconfirmed: Unconfirmed::Cancelled,
+                }
+            } else {
+                behind
+                    .alongside(record, beside(client.let_go(copy, cancellation), next))
+                    .await
+            });
+        }
+        behind.done(service, DrainOutcome::OldCopies { ends });
+    }
+}
+
+/// Runs `work` while `next`'s last move keeps going In.
+async fn beside<T>(work: impl Future<Output = T>, next: &mut Option<Settling>) -> T {
+    let mut work = pin!(work);
+    poll_fn(|cx| {
+        if let Some(next) = next.as_mut() {
+            let _ = Pin::new(&mut next.decided).poll(cx);
+        }
+        work.as_mut().poll(cx)
+    })
+    .await
 }
 
 /// The replicated Services' entries in the order they were handled, each held until the

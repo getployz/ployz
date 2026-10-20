@@ -4,7 +4,7 @@ use ployz_core::{DeploymentLogId, Gen, MachineName};
 
 use super::*;
 use crate::deploy::cleanup::Copy;
-use crate::deploy::convergence::{LastIn, RelocateError, Relocated, relocate, retire_old};
+use crate::deploy::convergence::{LastIn, RelocateError, Relocated, admit, create_new, retire_old};
 use crate::deploy::{MachineRef, OldCopyEnd, Unconfirmed};
 
 const FROM: char = '1';
@@ -55,21 +55,23 @@ fn name(id: &MachineId) -> MachineRef {
     }
 }
 
-/// The whole move: the new copy brought In, then the old one retired once it is listed.
+/// The whole move: the new copy started and brought In, then the old one retired once it
+/// is listed.
 async fn relocate_with(
     client: &Scripted,
     cancellation: &CancellationToken,
 ) -> Result<Result<OldCopyEnd, LastIn>, RelocateError> {
-    let relocated = relocate(
+    let spec = spec(Some(0), None, None);
+    let new = create_new(
         client,
         &test_namespace(),
-        &spec(Some(0), None, None),
+        &spec,
         &machine(TO),
         &old_copy(),
-        &name,
         cancellation,
     )
     .await?;
+    let relocated = admit(client, &new, &spec, &name, cancellation).await?;
     Ok(match relocated {
         Relocated::Listed => retire_old(client, &old_copy(), &name, cancellation).await,
         Relocated::Unlisted(unconfirmed) => Ok(OldCopyEnd::In { unconfirmed }),
