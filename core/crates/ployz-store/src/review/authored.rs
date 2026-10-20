@@ -323,6 +323,7 @@ impl Plan {
             Target::Setting(_)
             | Target::Source
             | Target::Domains
+            | Target::Setup
             | Target::Mount(_)
             | Target::ConfigMount(_) => {
                 return None;
@@ -2417,6 +2418,9 @@ pub(super) fn prepare_discard(
         if let (Some(Target::Domains), Some(service)) = (path.target(), path.service()) {
             return Err(crate::settings::domains_are_read_only(path, service));
         }
+        if let Some(Target::Setup) = path.target() {
+            return Err(crate::branch::setup_is_not_staged(path));
+        }
         let node = resolve_node(path, environment, &baseline)?;
         if target == DiscardTarget::Head
             && (path.target().is_some() || path.node_field().is_some())
@@ -2651,11 +2655,13 @@ fn selector_path(
             | Target::Exported(_)
             | Target::Description(_)
             | Target::Domains
+            | Target::Setup
             | Target::Mount(_)
             | Target::ConfigMount(_) => unreachable!("setting covers a setting or source"),
         },
         Some(Target::Source) => format!("{name}.source"),
         Some(Target::Domains) => format!("{name}.domains"),
+        Some(Target::Setup) => format!("setup.{name}"),
         Some(Target::Variable(key)) => format!("{name}.env.{key}"),
         Some(Target::Exported(key)) => format!("{name}.env.{key}.exported"),
         Some(Target::Description(key)) => format!("{name}.env.{key}.description"),

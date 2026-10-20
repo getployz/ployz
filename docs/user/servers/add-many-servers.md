@@ -61,6 +61,12 @@ check-in refreshes the row. Offline hosts have stopped checking in.
 5. Review the names, storage choices and any **Skip** reasons. For a selection across
    providers or networks, check that every source belongs to you. Click **Enroll N**.
 
+When no server already in the organization has contacted Ployz Cloud for three hours, the sheet
+says **Servers offline**. A running server contacts Cloud at least once an hour. Cloud can't join
+hosts to a cluster it can't reach, so the enroll fails. If those servers were deleted, follow
+**Forget Servers** to forget them first, then enroll. Servers that went down less than three hours
+ago don't raise the warning yet. The enroll then fails with the same advice.
+
 ## Use spare disk
 
 The Enroll sheet currently uses ZFS on the main disk. Hosts that check in do not yet
@@ -81,8 +87,8 @@ running cluster. A new server takes no apps until you deploy.
 
 **Cancel** on a row ends that attempt and revokes its enrollment token. A failed or cancelled
 host returns to the bottom of Waiting. The live host status stays primary, with **Last enroll failed** or
-**Last enroll cancelled** below it. Open the host to see the stage and reason. Both
-stay until you enroll the host again, however often it checks in. Fix the cause, then enroll the host again. Reloading restores the list and its order.
+**Last enroll cancelled** below it. Open the host to see how its last attempt ended (**Failed at**
+a stage, **Failed**, or **Cancelled**) and its reason, when there is one. Both stay until you enroll the host again, however often it checks in. Fix the cause, then enroll the host again. Reloading restores the list and its order.
 
 **Reject** turns away an unrecognized host. The same installation cannot come back with the
 same Fleet Token. Reimaging a host creates a new identity, so review arrivals even when you

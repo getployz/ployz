@@ -83,6 +83,10 @@ export async function startPostgresServer() {
     "full_page_writes=off",
     "-c",
     "max_connections=500",
+    "-c",
+    "shared_preload_libraries=pg_stat_statements",
+    "-c",
+    "pg_stat_statements.track=none",
   );
   const stop = () => docker("rm", "--force", name).then(() => undefined, () => undefined);
   try {

@@ -234,9 +234,10 @@ prepares Docker and ZFS meanwhile.
    before if Cloud accepts it. A new token in the file starts over with its own two chances. A
    refusal during the install itself ends it with an error instead, since the token was only just
    given, and starts nothing.
-10. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
-   `/etc/ployz/fleet-token` if it still holds the token Cloud answered, and won't start again at
-   boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
+10. `Rejected`, `Token expired` or `Token revoked` are final. The running check-in loop stops,
+   deletes `/etc/ployz/fleet-token`, or the file you named with `--token-file`, if it still holds
+   the token Cloud answered, and won't start again at boot. If the answer comes during
+   `ployz server checkin --install`, the install ends with an error and keeps the file. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
    deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
    keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
    again to start a new check-in attempt. A non-rejection response clears the local rejection
@@ -251,8 +252,8 @@ prepares Docker and ZFS meanwhile.
 12. Once you approve the server, the loop enrolls it and the **this server** line walks through
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
     the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
-    fleet first. When it reads `Joined`, the loop turns itself off and deletes
-    `/etc/ployz/fleet-token`.
+    fleet first. When it reads `Joined`, the running check-in loop turns itself off and deletes
+    `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
     example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
     and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz
@@ -322,7 +323,8 @@ No other server can join until the first one finishes.
 
 The **Servers** page shows **Can't reach your servers right now**, with what your servers last
 reported or nothing at all. Adding a server can fail with `This Organization's Servers can't be
-reached`.
+reached`. A CLI command says `Server web-1 isn't answering`, naming each server it couldn't reach.
+A server that just joined or restarted answers within a minute; try again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with
@@ -330,6 +332,10 @@ reached`.
 3. If your servers' outgoing traffic is filtered, allow https to `relay.ployz.dev`.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
+
+A server that answers but refuses says so instead, with its own reason:
+`Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so
+don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
 
 ## A server shows Offline
 
@@ -388,8 +394,8 @@ web-1 now dials web-2 at 203.0.113.20:51820.
 Updated Server web-2.
 ```
 
-If `web-2` still can't be reached, the second line reads `! web-2 unreachable; its record is
-unchanged.` and the command still succeeds. Run it again once both servers show up in `ployz server
+If `web-2` still can't be reached, the second line reads `! web-2 didn't answer, so its record may
+or may not have changed.` and the command still succeeds. Run it again once both servers show up in `ployz server
 ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
 server that still shows as not answering.
 

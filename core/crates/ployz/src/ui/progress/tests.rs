@@ -802,3 +802,21 @@ fn a_notice_raised_mid_deploy_shows_under_the_live_rows_and_in_plain_output() {
     );
     assert_eq!(text.matches(line).count(), 1, "{text}");
 }
+
+#[test]
+fn heartbeat_pairs_each_waiting_row_with_its_state() {
+    let mut initial = frame(State::Pending);
+    let mut api = initial.rows.first().unwrap().clone();
+    api.subject = Subject::ServiceOnServer {
+        service: QualifiedService::parse("shop/api").unwrap(),
+        machine: MachineId::random(),
+        server: "beta".into(),
+    };
+    api.state = State::Running(RowPhase::WaitingForHealth);
+    initial.rows.push(api);
+    let text = plain(initial, vec![(30_001, Message::Abandon)]);
+    assert!(
+        text.contains("still waiting: web on alpha (pending), api on beta (waiting for health)\n"),
+        "{text}"
+    );
+}

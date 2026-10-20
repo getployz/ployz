@@ -36,9 +36,10 @@ import { latestPageContext, PageContext, type PagePlace, placeOfPage, renderPage
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
+import { findCommand } from "#/modules/commands/commands.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import type { Caller } from "#/modules/identity/actor";
-import { projectJsonValue } from "#/lib/json";
+import { canonicalJson, projectJsonValue } from "#/lib/json";
 
 type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };
 type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;
@@ -83,6 +84,8 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
 const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
   const outcomes = new Map<string, ToolOutcome>();
   const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
+  // The approval a published command refused under, by tool and input: the model repeats the call without it.
+  const held = new Map<string, string>();
   const decide = (call: { id: string; function: { name: string; arguments: string } }, turn: string) =>
     Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runAgentCall>>, AgentServices> {
       const answer = answers.get(call.id);
@@ -93,7 +96,11 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
         return { outcome: { ok: false, cancelled: true } };
       }
       const input = toolInput(call.function.arguments);
-      return shown(yield* runAgentCall(caller, { tool: call.function.name, input, key: `${turn}:${call.id}`, approvalId: answer?.approvalId ?? null, page: here.page }));
+      const same = `${call.function.name}:${canonicalJson(input)}`;
+      const approvalId = answer?.approvalId ?? held.get(same) ?? null;
+      const result = yield* runAgentCall(caller, { tool: call.function.name, input, key: `${turn}:${call.id}`, approvalId, page: here.page });
+      if (approvalId !== null && findCommand(call.function.name) !== undefined && "outcome" in result && !result.outcome.ok) held.set(same, approvalId);
+      return shown(result);
     });
 
   return defineChatMiddleware<unknown, readonly [], readonly [], typeof approvalInterrupt>({

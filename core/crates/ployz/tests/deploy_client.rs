@@ -318,6 +318,39 @@ async fn a_missing_image_fails_the_deploy_naming_the_image() {
 }
 
 #[tokio::test]
+async fn an_image_absent_under_pull_policy_never_says_nothing_was_pulled() {
+    let one = machine('a', "one");
+    let service = DeployService::new(one.clone())
+        .missing_image()
+        .fail_pulls_on(one.machine.id);
+    let (mut client, server) = connected(service).await;
+    let mut web = spec("web");
+    web.container.pull_policy = ployz_core::PullPolicy::Never;
+
+    let outcome = client
+        .run(
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), web, skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = outcome
+    else {
+        panic!("expected a failed Deploy: {outcome:?}");
+    };
+    assert_eq!(
+        ployz_store::Failure::of(&error, &[]).reason,
+        "Image nginx is not on this Server, and the pull policy is Never"
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn volume_ensure_failure_is_reported_on_the_container_operation() {
     let machine = machine('a', "one");
     let (mut client, server) =
