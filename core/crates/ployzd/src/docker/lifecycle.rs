@@ -869,6 +869,50 @@ mod tests {
         )));
     }
 
+    #[tokio::test]
+    async fn a_keyed_container_is_named_after_its_service() {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            ..Default::default()
+        })
+        .await;
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                ContainerRequest {
+                    creation_key: Some("plan:0"),
+                    ..container_request(
+                        ContainerKind::ServiceContainer,
+                        &namespace,
+                        &spec,
+                        std::future::ready(None),
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        let names = containers
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let [name] = names.as_slice() else {
+            panic!("one keyed create makes one Container: {names:?}");
+        };
+        let suffix = name
+            .strip_prefix("api-")
+            .unwrap_or_else(|| panic!("{name} starts with the Service name"));
+        assert!(
+            suffix.len() == 12 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{name} ends in 12 hex digits"
+        );
+    }
+
     async fn stranded(error: &str) -> (ContainerRuntime, FakeDocker, ContainerId) {
         stranded_with("created", error, FakeDocker::default()).await
     }
