@@ -1,9 +1,10 @@
-import type { Client, Connection, MachineId } from "@ployz/sdk";
+import type { Client, Connection, MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import {
+  firstRuntimeFrame,
   makeOrganizationRuntimeLayer,
   ORGANIZATION_CONNECT_TIMEOUT,
   PAIRING_CHANGE_POLL,
@@ -18,6 +19,21 @@ const connections: Connection[] = [
   { management: "ployz1:preferred" },
   { management: "ployz1:spare" },
 ];
+
+/** A Runtime Watch frame reporting one Machine, `machine-1`, named `name`. */
+const named = (name: string) => asTestDouble<RuntimeWatchView>()({ machines: [{ machine: { id: "machine-1", name } }] });
+
+/** A runtime whose one Cluster streams `frames`, recording each with `recordFrame`. */
+const streamingRuntime = (
+  frames: readonly RuntimeWatchView[],
+  recordFrame: Parameters<typeof makeOrganizationRuntimeLayer>[2],
+) => makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections }), noPairingChanges, recordFrame)
+  .pipe(Layer.provide(makePloyzLayer({
+    connect: async () => asTestDouble<Client>()({
+      close: async () => {},
+      runtime: { watch: async function* () { yield* frames; } },
+    }),
+  })));
 
 it.effect("passes ordered candidates to one SDK connection and finalizes the session", () =>
   Effect.gen(function* () {
@@ -400,5 +416,61 @@ it.effect("lets an in-flight pairing check finish when the caller's scope closes
       assert.isTrue(finished);
       assert.isFalse(interrupted);
     }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("records a frame read once after its timed read, so a slow write finishes and is never interrupted", () =>
+  Effect.gen(function* () {
+    const writing = yield* Deferred.make<void>();
+    let written = false;
+    let interrupted = false;
+    const runtime = streamingRuntime([named("web-1")], () => Effect.gen(function* () {
+      yield* Deferred.succeed(writing, undefined);
+      // Longer than the read's 5 second deadline.
+      yield* Effect.sleep("6 seconds");
+      written = true;
+    }).pipe(Effect.onInterrupt(() => Effect.sync(() => { interrupted = true; }))));
+    yield* Effect.gen(function* () {
+      const read = yield* firstRuntimeFrame("org-1").pipe(Effect.forkChild);
+      yield* Deferred.await(writing);
+      yield* TestClock.adjust("6 seconds");
+      assert.deepStrictEqual(yield* Fiber.join(read), named("web-1"));
+      assert.isTrue(written);
+      assert.isFalse(interrupted);
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("retries a failed name write on the next frame until it lands", () =>
+  Effect.gen(function* () {
+    let stored: string | undefined;
+    let failuresLeft = 2;
+    let writes = 0;
+    const frames = [named("one"), named("two"), named("two"), named("two"), named("two")];
+    const runtime = streamingRuntime(frames, (_organizationId, frame) => Effect.suspend(() => {
+      writes += 1;
+      const name = frame.machines[0]?.machine.name;
+      if (name === "two" && failuresLeft > 0) {
+        failuresLeft -= 1;
+        return Effect.fail(new Error("database unavailable"));
+      }
+      stored = name;
+      return Effect.void;
+    }));
+    const read = yield* Effect.scoped(Effect.gen(function* () {
+      const session = yield* (yield* OrganizationRuntime).open("org-1");
+      if (session.status !== "connected") throw new Error("Cluster not connected");
+      const watched = yield* session.connected.watch();
+      return yield* Effect.promise(async () => {
+        const frames: RuntimeWatchView[] = [];
+        for await (const frame of watched) frames.push(frame);
+        return frames;
+      });
+    })).pipe(Effect.provide(runtime));
+    // A failed write never fails the read: every frame still arrives.
+    assert.strictEqual(read.length, frames.length);
+    assert.strictEqual(stored, "two");
+    // Once `two` lands, unchanged frames write nothing.
+    assert.strictEqual(writes, 4);
   }),
 );

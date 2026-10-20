@@ -49,6 +49,11 @@ export interface OrganizationRuntimeService {
     organizationId: string,
     machineId?: MachineId,
   ) => Effect.Effect<ScopedRuntimeClientSession, Error, Scope.Scope>;
+  /**
+   * Keeps what Cloud records from a frame read once. Called after the read, outside its deadline; it never fails and
+   * is never interrupted. Absent from runtimes that record nothing.
+   */
+  readonly record?: (organizationId: string, frame: RuntimeWatchView) => Effect.Effect<void>;
 }
 
 export class OrganizationRuntime extends Context.Service<
@@ -75,25 +80,18 @@ export type PairingChanges = {
 /** What Cloud keeps from a Runtime Watch frame its Organization's session read. */
 export type RecordFrame = (organizationId: string, frame: RuntimeWatchView) => Effect.Effect<void, Error>;
 
-/** `session`, recording each frame read through it; a stream records only frames whose Machines changed name. */
-function recordingFrames(session: PloyzSession, record: (frame: RuntimeWatchView) => Effect.Effect<void, Error>): PloyzSession {
-  const recorded = (frame: RuntimeWatchView) => record(frame).pipe(Effect.ignoreCause({ log: true, message: "Runtime frame not recorded" }));
+/** `session`, whose streams record each frame whose Machines' names differ from the names last recorded. */
+function recordingStreams(session: PloyzSession, record: (frame: RuntimeWatchView) => Effect.Effect<boolean>): PloyzSession {
   async function* recordEach(frames: AsyncIterable<RuntimeWatchView>) {
     let named: string | undefined;
     for await (const frame of frames) {
       const names = JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name]));
-      if (names !== named) {
-        named = names;
-        await Effect.runPromise(recorded(frame));
-      }
+      // Advanced only once the write lands, so a failed write is retried on the next frame.
+      if (names !== named && await Effect.runPromise(record(frame))) named = names;
       yield frame;
     }
   }
-  return {
-    ...session,
-    watch: (options) => session.watch(options).pipe(Effect.map(recordEach)),
-    watchFirstFrame: (timeoutMs) => session.watchFirstFrame(timeoutMs).pipe(Effect.tap(recorded)),
-  };
+  return { ...session, watch: (options) => session.watch(options).pipe(Effect.map(recordEach)) };
 }
 
 export function makeOrganizationRuntimeLayer(
@@ -105,6 +103,13 @@ export function makeOrganizationRuntimeLayer(
     OrganizationRuntime,
     Effect.gen(function* () {
       const ployz = yield* Ployz;
+      // Whether the frame was recorded. A failed write is only logged: it never fails the read that carried the frame.
+      // Uninterruptible like the pairing check, since interrupting pooled SQL can cancel a later statement.
+      const recorded = (organizationId: string, frame: RuntimeWatchView) => recordFrame(organizationId, frame).pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) => Effect.logWarning("Runtime frame not recorded", cause).pipe(Effect.as(false))),
+        Effect.uninterruptible,
+      );
       type Session = {
         scope: Scope.Closeable;
         generation?: string;
@@ -156,6 +161,7 @@ export function makeOrganizationRuntimeLayer(
       };
       return {
         cancel,
+        record: (organizationId, frame) => Effect.asVoid(recorded(organizationId, frame)),
         open: Effect.fn("OrganizationRuntime.open")(function* (organizationId: string, machineId?: MachineId) {
           const parent = yield* Effect.scope;
           const scope = yield* Scope.fork(parent);
@@ -203,7 +209,7 @@ export function makeOrganizationRuntimeLayer(
               Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
-                connected: recordingFrames(connected, (frame) => recordFrame(organizationId, frame)),
+                connected: recordingStreams(connected, (frame) => recorded(organizationId, frame)),
               })),
               Effect.catch((error) => Effect.succeed(session.closed ? noConnection : ({
                 status: "unreachable" as const,
@@ -244,12 +250,20 @@ export const OrganizationRuntimeLive = Layer.unwrap(
   }),
 );
 
+const readFirstFrame = Effect.fn("OrganizationRuntime.readFirstFrame")(function* (organizationId: string) {
+  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (session.status !== "connected") return null;
+  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+}, Effect.scoped, Effect.timeout("5 seconds"));
+
 /**
  * One Runtime Watch frame of the Organization's Cluster, for a read that looks once: null when no Cluster is paired.
  * Fails when the Cluster doesn't answer within 5 seconds, so a slow one never holds up what asked.
  */
 export const firstRuntimeFrame = Effect.fn("OrganizationRuntime.firstFrame")(function* (organizationId: string) {
-  const session = yield* (yield* OrganizationRuntime).open(organizationId);
-  if (session.status !== "connected") return null;
-  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
-}, Effect.scoped, Effect.timeout("5 seconds"));
+  const runtime = yield* OrganizationRuntime;
+  const frame = yield* readFirstFrame(organizationId);
+  // Recorded after the timed read, so the Cluster's deadline never interrupts the SQL write.
+  if (frame !== null && runtime.record) yield* runtime.record(organizationId, frame);
+  return frame;
+});
