@@ -2,7 +2,7 @@ import { teardownJsdom } from "#/test/jsdom-globals";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { createElement } from "react";
@@ -16,6 +16,8 @@ import { createFleetToken } from "#/modules/machines/waiting/fleet-token.server"
 import { SERVER_SILENT_AFTER_MS } from "#/modules/machines/waiting/servers-offline";
 import { listWaitingServers } from "#/modules/machines/waiting/waiting-servers.server";
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
+import * as memberFunctions from "#/modules/organization/members.functions";
+import { ROLE_CHECKING } from "#/modules/organization/members.queries";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, type Ployz } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
@@ -96,13 +98,26 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+type Members = Awaited<ReturnType<typeof memberFunctions.listMembersServerFn>>;
+const adaOwns: Members = {
+  members: [{ you: true, role: "owner", name: "Ada", email: "ada@example.test", joined_at: "2026-10-01T00:00:00Z" }],
+  invites: [],
+  mail: false,
+  support: false,
+};
+
 const pushedAgo = (machine: string, ms: number) => harness.pool.query(
   "insert into observe_ingest_cursor (organization_id, machine_id, stream, seq, updated_at) values ($1, $2, 'crash', 1, now() - $3 * interval '1 millisecond')",
   [adaOrg, machine, ms],
 );
 
-/** Opens the Enroll sheet for the waiting host from the Servers page's tray, and waits for its plan. */
+/**
+ * Opens the Enroll sheet for the waiting host from the Servers page's tray, and waits for its plan. Enroll stays closed
+ * while the read of Ada's role is in flight, and opens once it names her the owner.
+ */
 async function openEnroll() {
+  let answerRole = (_members: Members) => {};
+  vi.spyOn(memberFunctions, "listMembersServerFn").mockReturnValue(new Promise((resolve) => { answerRole = resolve; }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createRouter({
     routeTree: createRootRoute({
@@ -113,7 +128,11 @@ async function openEnroll() {
   await router.load();
   render(createElement(RouterProvider, { router }));
   fireEvent.click(await screen.findByRole("checkbox", { name: "Select web-2" }, { timeout: 5000 }));
-  fireEvent.click(screen.getByRole("button", { name: "Enroll 1" }));
+  const pick = screen.getByRole<HTMLButtonElement>("button", { name: "Enroll 1" });
+  expect({ disabled: pick.disabled, title: pick.title }).toEqual({ disabled: true, title: ROLE_CHECKING });
+  answerRole(adaOwns);
+  await waitFor(() => expect(pick.disabled).toBe(false));
+  fireEvent.click(pick);
   await vi.waitFor(() => expect(screen.getByRole("region", { name: "Enrollment preview" }).textContent).toContain("web-2"), { timeout: 5000 });
   const enroll = screen.getAllByRole<HTMLButtonElement>("button", { name: "Enroll 1" }).at(-1);
   return { alert: screen.queryByRole("alert")?.textContent ?? null, enrollDisabled: enroll?.disabled };
