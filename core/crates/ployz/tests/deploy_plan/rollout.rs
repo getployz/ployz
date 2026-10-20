@@ -268,7 +268,6 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
     let mut hook = container('c', '1', &requested, &current_service_id);
     hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
         .unwrap();
-    let hook_id = container_id('c');
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         containers: vec![container('b', '1', &requested, &current_service_id), hook],
@@ -277,12 +276,7 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
 
     let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
-    // The old hook is retired because the service has no pre-deploy command,
-    // but it never stands in for the one running replica.
-    assert!(matches!(
-        operations(&plan).as_slice(),
-        [DeployOperation::RemoveContainer { container_id, .. }] if *container_id == hook_id
-    ));
+    assert!(plan.operations.is_empty());
 }
 
 #[test]

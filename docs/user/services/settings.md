@@ -217,7 +217,7 @@ and runs without a shell; wrap it in `sh -c '…'` to get one. See
 Off until you click **Pre-deploy command**. Use it for migrations, like `npm run migrate`: if it
 fails or runs past 5 minutes, the deploy fails and the old version keeps running, but Ployz
 doesn't undo what it changed. Turn it off and the next deploy removes the service's old pre-deploy
-containers, so `ployz ps` stops listing them. See
+containers once they have finished, so `ployz ps` stops listing them. See
 [Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
 
 ### Healthcheck
