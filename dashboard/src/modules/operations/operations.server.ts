@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { askAgain, gateOperation, operationDigest, type OperationAsked, redeemApproval, unheldApproval } from "#/modules/approvals/approvals.server";
+import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
 import { callerEnvironments, type Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -56,6 +56,9 @@ const gate = (caller: Caller, call: OperationCall, asked: OperationAsked) => {
   const loss = uncovered(asked, call);
   return loss === null ? gateOperation(caller, call.approvalId, asked) : Effect.succeed(loss);
 };
+/** A request that asks no one, named by `asked`, still refuses an approval carried into it that isn't for exactly it. */
+const unasked = (caller: Caller, call: OperationCall, asked: Redeeming) =>
+  Effect.map(carriedInto(caller, call.approvalId, asked), (refusal) => refusal === null ? null : refused(refusal));
 const actor = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id, credential: caller.credential });
 
 /**
@@ -106,7 +109,9 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
 
 export const upgradeServer = (caller: Caller, input: { readonly machineId: MachineId; readonly channel: string | undefined }, call: OperationCall) =>
   holding(caller, call, OPERATIONS["server.upgrade"].requires, undefined,
-    admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, planCliServerUpgrade(actor(caller), input)));
+    admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, Effect.gen(function* () {
+      return (yield* unasked(caller, call, { command: "upgrade", subject: `server:${input.machineId}` })) ?? (yield* planCliServerUpgrade(actor(caller), input));
+    })));
 
 export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
   holding(caller, call, OPERATIONS["server.set"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, Effect.gen(function* () {
@@ -114,6 +119,9 @@ export const setServer = (caller: Caller, machineId: MachineId, change: ServerPo
     if (plan !== null) {
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
+    } else {
+      const carried = yield* unasked(caller, call, { command: "set", subject: `server:${machineId}` });
+      if (carried !== null) return carried;
     }
     return yield* planKeyedServerPolicyChange(caller, machineId, change);
   })));
@@ -190,6 +198,9 @@ export const runVolume = (
     if (planned.asked !== null) {
       const gated = yield* gate(caller, call, planned.asked);
       if (!gated.ok) return refused(gated.refusal);
+    } else {
+      const carried = yield* unasked(caller, call, { command: input.kind, subject: `volume:${input.volumeId}` });
+      if (carried !== null) return carried;
     }
     return (runId: string) => admitRun(actor(caller), planned.input, planned.volume, runId)
       .pipe(Effect.map((inserted) => inserted.ok
@@ -258,7 +269,7 @@ export const actService = (
       const { environment: _environment, project: _project, ...act } = input;
       const run = (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...act });
       const interrupted = interrupts(input);
-      if (interrupted === null) return run;
+      if (interrupted === null) return (yield* unasked(caller, call, { command: input.verb, subject: `service:${input.environmentId}/${input.service}` })) ?? run;
       const busy = yield* activeServiceAct(caller.organization.id, input);
       if (busy !== null) return refused(busyRefusal(input.service, busy));
       const asked = yield* guarded(caller, input, interrupted);

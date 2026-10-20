@@ -6,7 +6,7 @@ import { AGENT, agentResume, agentStart, CATALOG, finish, GATED, untilWrite } fr
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
-import { gateOperation, onceFor, redeemApproval, redeeming, requestApproval, reviewedDiff } from "#/modules/approvals/approvals.server";
+import { carriedInto, gateOperation, onceFor, redeemApproval, redeeming, requestApproval, reviewedDiff, unheldApproval } from "#/modules/approvals/approvals.server";
 import { type Called, type Command, inputSchema } from "#/modules/commands/command.server";
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
@@ -240,10 +240,18 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
   if ("refusal" in at) return done(at.refusal);
   const read = agentRead(caller);
   const started = agentStart(call.tool, call.input, at.place, call.key);
-  if (!GATED.has(call.tool)) return done(yield* finish(started, read, agentWrite(caller)));
+  // A tool that asks no one still refuses an approval carried into it.
+  if (!GATED.has(call.tool)) {
+    const refused = yield* carriedInto(caller, call.approvalId, { command: call.tool });
+    return done(refused === null ? yield* finish(started, read, agentWrite(caller)) : { ok: false, refusal: refused });
+  }
   const paused = yield* untilWrite(started, read);
   const { step, state } = paused;
-  if (step.step !== "write") return done(yield* finish(paused, read, agentWrite(caller)));
+  // One that finds nothing to write, such as a retry of a save that landed, still answers only whoever asked.
+  if (step.step !== "write") {
+    const refused = yield* unheldApproval(caller, call.approvalId);
+    return done(refused === null ? yield* finish(paused, read, agentWrite(caller)) : { ok: false, refusal: refused });
+  }
   const { write } = step;
   // Protecting asks no one; unprotecting asks a human once, as Cloud's operations do, then the tool finishes.
   if (write.at === "store" && write.write.command === "set_environment_protected") {
@@ -257,6 +265,10 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
       if (refused !== null) return done({ ok: false, refusal: refused });
       const gated = yield* gateOperation(caller, call.approvalId, asked);
       if (!gated.ok) return asking(gated.refusal) ?? done({ ok: false, refusal: gated.refusal });
+    } else {
+      // Already unprotected, or protecting: nothing asks, and an approval carried into it must be for exactly this.
+      const refused = yield* carriedInto(caller, call.approvalId, yield* redeeming(caller.organization.id, write.write, call.approvalId));
+      if (refused !== null) return done({ ok: false, refusal: refused });
     }
     const written = yield* storeAnswer(caller, { operation: "write", command }, AGENT);
     return done(yield* finish(agentResume(state, [written]), read, agentWrite(caller)));

@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
-import { type Gate, gateOperation } from "#/modules/approvals/approvals.server";
+import { carriedInto, type Gate, gateOperation } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -204,6 +204,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { organization: yield* createOrganizationForSession(caller.userId, caller.credential.id, input) };
     }
     case "DELETE organizations/:id": {
+      // A Project refuses the removal before the gate, so an approval it carries is checked first.
+      const carried = yield* carriedInto(caller, approvalHeader(request), { command: "remove", subject: `organization:${caller.organization.id}` });
+      if (carried !== null) return refusal(carried);
       const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""), { gate: gated(caller, request) });
       return removal.ok ? removal.value : refusal(removal.refusal);
     }
@@ -412,6 +415,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
           details: { next: `ployz org use ${input.organization}` },
         });
       }
+      // Nothing to forget skips the gate, so an approval it carries is checked first.
+      const carried = yield* carriedInto(caller, approvalHeader(request), { command: "forget", subject: `servers:${caller.organization.id}` });
+      if (carried !== null) return refusal(carried);
       const forgotten = yield* forgetServers(forgetter(caller), (checked) => gated(caller, request)(forgetServersAsked(caller.organization, checked)));
       return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : refusal(forgotten.refusal);
     }

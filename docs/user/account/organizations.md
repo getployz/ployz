@@ -165,7 +165,8 @@ An approval works only for the person who asked for it, from the same login or t
 from, and only for the command and the target they asked about. Anyone else who sends it is
 refused with `forbidden`, and nothing changes. So is the same person from another login or
 token, or a different command or target, even one that wouldn't ask for an approval at all, such
-as a save into another environment that removes nothing. The refusal says which. Run the command
+as a save into another environment that removes nothing, or one already done, such as
+`ployz env protect --off` for an environment that isn't protected. The refusal says which. Run the command
 again without `--approval` to ask for an approval of your own. When two people, or one person from
 two logins, ask for the same thing, each gets an approval of their own to answer.
 

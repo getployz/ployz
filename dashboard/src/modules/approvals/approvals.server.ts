@@ -284,6 +284,7 @@ export const writeTarget = Effect.fn("Approvals.writeTarget")(function* (organiz
       case "remove":
         return command.environment == null ? `project:${command.project}` : yield* named({ project: command.project, environment: command.environment });
       case "publish":
+      case "set_environment_protected":
         return yield* named(command.environment);
       case "admit":
         if (command.admit === "retry") return (yield* readStore(organizationId, { query: "deployment", id: command.deployment })).environment.id;
@@ -304,13 +305,29 @@ export const writeTarget = Effect.fn("Approvals.writeTarget")(function* (organiz
   return yield* target.pipe(Effect.catchIf((error) => error instanceof StoreRefused, () => Effect.succeed(undefined)));
 });
 
-/** What a Store write that carries approval `approvalId` redeems it for: its command and, read only then, its target. */
+/**
+ * What a Store write that carries approval `approvalId` redeems it for: its command and, read only then, its target.
+ * Protection is an operation on the Environment, so an unprotect's approval is the gate's `unprotect`.
+ */
 export const redeeming = Effect.fn("Approvals.redeeming")(function* (organizationId: string, command: ConfigCommand, approvalId: string | null) {
+  if (command.command === "set_environment_protected") {
+    const asked: Redeeming = { command: command.protected ? "protect" : "unprotect" };
+    const environment = approvalId === null ? undefined : yield* writeTarget(organizationId, command);
+    return environment === undefined ? asked : { ...asked, subject: `environment:${environment}` };
+  }
   const asked: Redeeming = { command: approvalCommand(command) };
   if (approvalId === null) return asked;
   const subject = yield* writeTarget(organizationId, command);
   return subject === undefined ? asked : { ...asked, subject };
 });
+
+/**
+ * The refusal for approval `approvalId` carried into a request that may ask no one, which `asked` names; null when it
+ * carries none, or one `caller` may run for exactly this. Checked before anything that can skip the gate, such as a
+ * write that destroys nothing or is already done, so a carried approval is refused the same way wherever it lands.
+ */
+export const carriedInto = (caller: Pick<Caller, "userId" | "organization" | "credential">, approvalId: string | null, asked: Redeeming) =>
+  approvalId === null ? Effect.succeed(null) : Effect.map(redeemApproval(caller, approvalId, asked), (redeemed) => redeemed.ok ? null : redeemed.refusal);
 
 /** The Environment review a human was asked to approve as `approvalId`, whatever the Organization asks now. */
 export const reviewedDiff = Effect.fn("Approvals.reviewedDiff")(function* (organizationId: string, approvalId: string) {

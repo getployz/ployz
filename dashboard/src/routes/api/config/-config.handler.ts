@@ -59,7 +59,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   // `ployz` asks only into a Protected Environment, so it carries the approval it was given there.
   const named = request.headers.get("x-ployz-approval");
   const asks = call.operation === "write" && (asksApproval(caller.via, call.command) || (named !== null && approvalCommand(call.command) === "retry"));
-  const trusted = asks
+  // Any write that carries one redeems it, even one that would ask no one or is already done.
+  const trusted = call.operation === "write" && (asks || named !== null)
     ? yield* redeemApproval(caller, named, yield* redeeming(caller.organization.id, call.command, named))
     : { ok: true, approval: "not_required" } as const;
   if (!trusted.ok) return refusal(trusted.refusal);
