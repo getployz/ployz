@@ -196,9 +196,11 @@ fn env_named<T>(
     var: &str,
     parse: fn(String) -> Result<T, ployz_core::RpcError>,
 ) -> Result<Option<Named<T>>, Error> {
-    let Ok(name) = std::env::var(var) else {
+    let Some(name) = std::env::var_os(var) else {
         return Ok(None);
     };
+    // A set name that isn't UTF-8 names nothing, so it is refused as an empty one is.
+    let name = name.into_string().unwrap_or_default();
     Ok(Some(Named {
         name: parse(name)?,
         source: Source::Env,

@@ -6,8 +6,10 @@
 )]
 
 use std::{
+    ffi::OsStr,
     io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
+    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     process::{Command, Output},
     sync::{Arc, Mutex},
@@ -567,11 +569,16 @@ fn scoped_args(entry: &Value) -> Vec<String> {
 
 /// A directory linked to `shop`'s `staging` Environment, as `ployz link` records it.
 fn linked_dir(cloud: &Fixture) -> tempfile::TempDir {
+    linked_dir_as(
+        cloud,
+        json!({ "project": "shop", "environment": "staging" }),
+    )
+}
+
+fn linked_dir_as(cloud: &Fixture, link: Value) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let canonical = dir.path().canonicalize().unwrap();
-    let links = json!({
-        canonical.to_str().unwrap(): { "project": "shop", "environment": "staging" }
-    });
+    let links = json!({ canonical.to_str().unwrap(): link });
     std::fs::write(
         cloud.home.path().join("links.json"),
         serde_json::to_vec(&links).unwrap(),
@@ -673,14 +680,14 @@ fn a_typed_environment_wins_over_an_empty_ployz_env() {
     assert_eq!(bodies[0]["input"]["environment"], "production");
 }
 
-fn refused_before_cloud_is_asked(var: &str, message: &str) {
+fn refused_before_cloud_is_asked(var: &str, value: &OsStr, message: &str) {
     let cloud = Fixture::new("one");
     let args = scoped_args(&entry_scoped());
 
     let output = cloud
         .command_in(cloud.home.path())
         .args(&args)
-        .env(var, "")
+        .env(var, value)
         .output()
         .unwrap();
 
@@ -696,10 +703,25 @@ fn refused_before_cloud_is_asked(var: &str, message: &str) {
 
 #[test]
 fn an_empty_ployz_project_with_no_typed_project_is_refused_before_cloud_is_asked() {
-    refused_before_cloud_is_asked("PLOYZ_PROJECT", "Expected a Project name");
+    refused_before_cloud_is_asked("PLOYZ_PROJECT", OsStr::new(""), "Expected a Project name");
 }
 
 #[test]
 fn an_empty_ployz_env_with_no_typed_environment_is_refused_before_cloud_is_asked() {
-    refused_before_cloud_is_asked("PLOYZ_ENV", "Expected an Environment name");
+    refused_before_cloud_is_asked("PLOYZ_ENV", OsStr::new(""), "Expected an Environment name");
+}
+
+/// Byte `ff` alone is not UTF-8.
+fn not_utf8() -> &'static OsStr {
+    OsStr::from_bytes(b"\xff")
+}
+
+#[test]
+fn a_ployz_project_that_is_not_utf8_is_refused_before_cloud_is_asked() {
+    refused_before_cloud_is_asked("PLOYZ_PROJECT", not_utf8(), "Expected a Project name");
+}
+
+#[test]
+fn a_ployz_env_that_is_not_utf8_is_refused_before_cloud_is_asked() {
+    refused_before_cloud_is_asked("PLOYZ_ENV", not_utf8(), "Expected an Environment name");
 }
