@@ -46,11 +46,17 @@ pub(crate) fn run(
             })
             .hint(Hint::Next(format!("{}/", setup.cloud))));
         }
-        let organization = runtime
-            .block_on(cloud_account::acting_in(&credential))
+        let acting = runtime
+            .block_on(cloud_account::acting_as(&credential))
             .map_err(Failure::from)?;
+        if acting.agent && !command.agents {
+            return Err(Failure::command(PublishError::AgentRefused {
+                path: command.path(),
+            })
+            .hint(Hint::Next(format!("{}/", setup.cloud))));
+        }
         ui::confirm_name(
-            &organization.slug,
+            &acting.organization.slug,
             || {
                 Failure::command(PublishError::NeedsTerminal {
                     path: command.path(),
