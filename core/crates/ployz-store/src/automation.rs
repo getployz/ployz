@@ -22,7 +22,7 @@ use ts_rs::TS;
 
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, GitPush};
 use crate::error;
-use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId};
+use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId, ServiceLineageId};
 use crate::policy::{self, is_repository_path};
 use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
@@ -706,13 +706,26 @@ fn admit(
             selected.push((service, follows));
         }
     }
-    // What the merges removed goes with them, unless it never ran. A shut-down
-    // Environment deploys all of it, which tears every one down.
+    // A push ships every Saved change, so what the merges or a Save removed goes
+    // with it, unless it never ran. A shut-down Environment deploys all of it,
+    // which tears every one down.
     let retire = match shut_down {
         true => Vec::new(),
-        false => deployment::retirements(tx, id, &saved.intent, &landed.removals)?,
+        false => {
+            let head = deployment::head(tx, &environment)?;
+            let mut removed = landed.removals.clone();
+            for service in deployment::Landing::of(&head)
+                .dropped(&saved.intent)
+                .services
+            {
+                removed.insert(ServiceLineageId::parse(service.id.as_str())?);
+            }
+            deployment::retirements(tx, id, &saved.intent, &removed)?
+        }
     };
-    if selected.is_empty() && retire.is_empty() {
+    // Only what it selects or the merges removed makes a push deploy.
+    let merged_removal = retire.iter().any(|gone| landed.removals.contains(&gone.id));
+    if selected.is_empty() && !merged_removal {
         forget_landed(tx, id, push, &merges)?;
         return Ok(Some(Deploy::Idle));
     }
@@ -749,14 +762,26 @@ fn admit(
         )?;
         return Ok(None);
     }
-    // A Service that builds the head is pinned to it; another Git Service to the
-    // commit it last built here, or its branch's head when it never built.
+    // A Service that builds the head is pinned to it. Another Git Service the push
+    // ships for its Saved change stays on the commit it last built here; one that
+    // never built builds the head when it follows the branch, else its own head.
     let mut pins: BTreeMap<ServiceName, CommitSha> = BTreeMap::new();
-    for (service, follows) in &selected {
-        let pin = if *follows {
+    for service in &saved.intent.services {
+        let follows = selected
+            .iter()
+            .any(|(selected, follows)| *follows && selected.id == service.id);
+        let pin = if follows {
             Some(push.head.clone())
-        } else if crate::git::is_git(service) {
-            last_built(tx, id, service)?
+        } else if let ServiceSource::Git { repository_id, .. } = &service.config.source {
+            let repository = RepositoryId::parse(*repository_id)?;
+            match last_built(tx, id, service)? {
+                Some(commit) if crate::pull_request::admits(tx, id, repository, &commit)? => {
+                    Some(commit)
+                }
+                Some(_) => None,
+                None => crate::git::tracks(service, push.repository_id, &push.branch)
+                    .then(|| push.head.clone()),
+            }
         } else {
             None
         };
@@ -969,45 +994,75 @@ pub(crate) fn auto_admit(
         trusted,
     )?;
     let head = deployment::head(tx, environment)?;
-    let losses = consented(&head.applied, saved, &namespace, trusted)?;
+    // Diffed against what may run once the Deployments in flight end, not Applied
+    // State alone: those may still add, change or remove any node.
+    let landing = deployment::Landing::of(&head);
+    let full = services.is_empty() && retire.is_empty();
+    let losses = consented(&landing.dropped(&saved.intent), saved, &namespace, trusted)?;
     let mut frozen = deployment::freeze(
         id,
         &saved.intent,
-        &head.applied,
-        if services.is_empty() && retire.is_empty() {
+        &landing,
+        if full {
             deployment::Scope::All { losses: &losses }
         } else {
             deployment::Scope::Narrow {
                 services,
                 retire,
                 losses: &losses,
+                every_saved: true,
             }
         },
         namespace,
         cluster_domain,
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved.intent, &frozen)?;
+    let pins: BTreeMap<ServiceName, CommitSha> = pins
+        .iter()
+        .filter(|(name, _)| {
+            frozen.nodes.iter().any(|node| {
+                matches!(node, deployment::TargetNode::Service { runtime, .. } if runtime == *name)
+            })
+        })
+        .map(|(name, commit)| (name.clone(), commit.clone()))
+        .collect();
+    // Each Service it ships for a Saved change is a target too, so the planner runs it.
+    let targets: Vec<ServiceName> = match full {
+        true => Vec::new(),
+        false => frozen
+            .nodes
+            .iter()
+            .filter(|node| !node.retires())
+            .filter_map(|node| match node {
+                deployment::TargetNode::Service { name, .. } => Some(name.clone()),
+                deployment::TargetNode::Volume { .. } | deployment::TargetNode::Config { .. } => {
+                    None
+                }
+            })
+            .collect(),
+    };
     let summary = deployment::admit(
         tx,
         who,
-        (admission, services, None, None),
+        (admission, &targets, None, None),
         id,
         saved.revision,
         &frozen,
     )?;
-    build::pin(tx, &summary.id, pins)?;
+    build::pin(tx, &summary.id, &pins)?;
     Ok(summary)
 }
 
-/// The losses `saved` holds consent for that the Servers still show unchanged.
-/// Without that evidence a push keeps the data, and the next Deploy asks again.
+/// The losses of the Volumes `dropped` that `saved` holds consent for, while the
+/// Servers still show them unchanged. Without that evidence a push keeps the data,
+/// and the next Deploy asks again.
 fn consented(
-    applied: &SavedEnvironmentIntent,
+    dropped: &SavedEnvironmentIntent,
     saved: &review::Saved,
     namespace: &ployz_core::Namespace,
     trusted: &Trusted,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
-    let removed: Vec<_> = crate::removal::removed(applied, &saved.intent, namespace)?
+    let removed: Vec<_> = crate::removal::removed(dropped, &saved.intent, namespace)?
         .into_iter()
         .filter(|volume| {
             saved

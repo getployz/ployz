@@ -9,10 +9,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Every main commit runs to the end, so each leaves its builds behind for later runs and local verify.
-  # A shared group would still cancel a pending main run, so main groups by commit.
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Main pushes share one group, so a newer one cancels older ones. Kache's main builds come mostly from the
+  # latest main run, though a cancelled run keeps what it wrote first, and an older main commit may have no
+  # finished run. A manual run of main groups by commit and is never cancelled once it runs; a newer manual
+  # run of the same commit can still replace it while it waits. Manual runs and pushes never cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -129,7 +131,8 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
-        options: --health-cmd pg_isready --health-interval 2s --health-retries 15
+        # Docker's 64 MB /dev/shm can run out over the suite's thousand databases.
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 15 --shm-size=256m
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -146,6 +149,8 @@ jobs:
       - name: Test with a hostile ambient Ployz context
         env:
           PLOYZ_CONFIG: ${{ runner.temp }}/hostile-ployz-config.yaml
+          # Built above with `eval`; the SDK tests would otherwise rebuild it with other features.
+          PLOYZ_SDK_ADDON: ${{ github.workspace }}/core/target/debug/libployz_sdk.so
         run: |
           cat > "$PLOYZ_CONFIG" <<'EOF'
           current_context: hostile
@@ -156,6 +161,15 @@ jobs:
           EOF
           cargo nextest run --workspace --all-features --locked --no-fail-fast
           cargo test --doc --workspace --all-features --locked
+      # A throwaway server: durability only slows each test's new database.
+      - name: Stop the test Postgres syncing to disk
+        if: needs.changes.outputs.postgres == 'true'
+        run: >-
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -q
+          -c 'ALTER SYSTEM SET fsync = off'
+          -c 'ALTER SYSTEM SET synchronous_commit = off'
+          -c 'ALTER SYSTEM SET full_page_writes = off'
+          -c 'SELECT pg_reload_conf()'
       # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres
         if: needs.changes.outputs.postgres == 'true'
@@ -259,7 +273,8 @@ jobs:
       actions: write
     secrets: inherit
 
-  # The binaries the verify harness runs, built once per change on main so local runs download them.
+  # The binaries the verify harness runs, built on main so local runs download them. A cancelled main run may
+  # upload none, so a commit's nearest build can be several commits back.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
     needs: changes

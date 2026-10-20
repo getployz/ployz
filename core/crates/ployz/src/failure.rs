@@ -90,6 +90,16 @@ impl Failure {
         self
     }
 
+    /// Whether a command failed because the Ployz config has no contexts.
+    pub(crate) fn has_no_contexts(&self) -> bool {
+        std::iter::successors(self.source(), |&link| link.source()).any(|link| {
+            matches!(
+                link.downcast_ref::<ContextError>(),
+                Some(ContextError::NoContexts(_))
+            )
+        })
+    }
+
     /// End the process with `code`, whatever it printed already said: the remote
     /// command's exit code, a cancelled prompt, or clap's help.
     #[must_use]
@@ -500,6 +510,7 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Remote(error) => error.code.clone(),
         ConnectError::Rpc(error) => error.to_rpc_error().code,
         ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
+        ConnectError::OlderMachine => RpcErrorCode::Unsupported,
         ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
             RpcErrorCode::Unsupported
         }
@@ -1205,13 +1216,30 @@ mod tests {
             )))),
         });
         let display = failure.to_string();
-        assert!(
-            display.contains("3 connections from context prod"),
-            "{display}"
+        assert_eq!(
+            display,
+            "Ployz couldn't reach a Server's daemon through any of the 3 connections from context prod."
         );
         assert!(
             !display.contains("Os {") && !display.contains("code: 111"),
             "{display}"
+        );
+    }
+
+    #[test]
+    fn exhausted_connections_say_a_daemon_answered_when_one_did() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Context("prod".into()),
+            attempts: 2,
+            retry: ployz_core::Retry::Never,
+            reached: true,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            failure.to_string(),
+            "A Server's daemon answered, but the 2 connections from context prod all failed."
         );
     }
 

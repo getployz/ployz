@@ -13,7 +13,7 @@ use ts_rs::TS;
 
 use crate::{
     ContainerId, DockerVolumeName, ManagementAddress, Namespace, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, SlotId, SnapshotGuid, SnapshotName, VolumeCopy,
+    RpcErrorCode, SlotId, SlotRole, SnapshotGuid, SnapshotName, VolumeCopy,
 };
 
 /// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
@@ -348,7 +348,8 @@ pub enum CopyPlan {
 /// converges too. A slot whose pull for the want's target landed finishes that pull
 /// whatever `expect` says, since the landing itself moved `newest` past the expect. A
 /// slot pulling the want's target continues that pull when `expect` names the same
-/// slot, even after its `newest` moved or emptied.
+/// slot, even after its `newest` moved or emptied. An old copy already at a sourced
+/// Mirror want's target becomes the mirror whatever `expect` says.
 #[must_use]
 pub fn plan(
     copy: Option<&VolumeCopy>,
@@ -429,13 +430,22 @@ pub fn plan(
         }
         (
             Some(VolumeCopy::Slot {
-                slot, newest, pull, ..
+                slot,
+                newest,
+                pull,
+                role,
+                ..
             }),
             WantedCopy::Mirror { from, target, .. },
         ) => {
             let landed = newest.as_ref().is_some_and(|newest| newest.name == *target);
+            // A cut carries no source, and the old copy it left is its want. A pull's want
+            // is a mirror, so an old copy already at its target still takes the pull.
             if landed && pull.is_none() {
-                return AtWant;
+                if *role == SlotRole::Mirror || from.is_none() {
+                    return AtWant;
+                }
+                return Transition(MirrorToMirror);
             }
             // This request's own pull moves `newest` past its expect: it lands, or a Full
             // fallback empties the slot first. A resend continues it on the same slot.
@@ -492,7 +502,7 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Pull, Snapshot};
+    use crate::{Pull, SlotRole, Snapshot};
 
     fn snapshot(name: &str, guid: u64) -> Snapshot {
         Snapshot {
@@ -527,6 +537,18 @@ mod tests {
             newest,
             resume_token: None,
             pull,
+            role: SlotRole::Mirror,
+        }
+    }
+
+    fn old_copy(newest: Option<Snapshot>) -> VolumeCopy {
+        VolumeCopy::Slot {
+            slot: SLOT,
+            readonly: true,
+            newest,
+            resume_token: None,
+            pull: None,
+            role: SlotRole::OldCopy,
         }
     }
 
@@ -742,6 +764,22 @@ mod tests {
                 false,
                 ExpectedCopy::None,
                 mirror(true, "f-1"),
+                AtWant,
+            ),
+            (
+                "old copy at the mirror's target becomes the mirror whatever expect",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                ExpectedCopy::None,
+                mirror(true, "f-1"),
+                Transition(MirrorToMirror),
+            ),
+            (
+                "cut resent to the old copy it left",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                WRITER_1,
+                mirror(false, "f-1"),
                 AtWant,
             ),
             (

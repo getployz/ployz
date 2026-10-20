@@ -328,7 +328,7 @@ async fn window(
                         }
                     });
                 }
-                _ = serving.next(), if !binding && !serving.is_empty() => {}
+                _ = serving.next(), if !serving.is_empty() => {}
             }
         }
     }

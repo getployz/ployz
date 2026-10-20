@@ -17,9 +17,9 @@ use std::collections::BTreeSet;
 use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
-    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableValue, SavedVolumeIntent, ServiceGitBranch,
-    ServiceSettingChange, ServiceSource, canonicalize_environment_intent,
+    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedConfigIntent,
+    SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue, SavedVolumeIntent,
+    ServiceGitBranch, ServiceSettingChange, ServiceSource, canonicalize_environment_intent,
     compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
@@ -201,6 +201,9 @@ pub(crate) struct InFlight {
     pub(crate) cluster_domain: Option<Hostname>,
     pub(crate) services: Vec<SavedServiceIntent>,
     pub(crate) volumes: Vec<SavedVolumeIntent>,
+    pub(crate) configs: Vec<SavedConfigIntent>,
+    /// The ID of each node it removes.
+    pub(crate) removes: BTreeSet<String>,
 }
 
 /// A review and the bases it was computed on.
@@ -494,14 +497,6 @@ pub(crate) fn destructive(
 /// The losses saved with `saved` as consent for its next Deploy.
 pub(crate) fn consent(saved: Option<&Saved>) -> &[crate::VolumeLoss] {
     saved.map_or(&[], |saved| saved.accepted.as_slice())
-}
-
-/// The reviewed losses that delete data, which saving keeps as that consent.
-pub(crate) fn lost(losses: Vec<crate::VolumeLoss>) -> Vec<crate::VolumeLoss> {
-    losses
-        .into_iter()
-        .filter(|loss| !loss.deletes.is_empty())
-        .collect()
 }
 
 /// Core compares Settings only, so a Service renamed since Head gets its name row

@@ -19,7 +19,7 @@ use crate::{
 };
 use ployz_core::EnvironmentValues;
 
-use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_reader};
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_lister};
 
 /// List observed Service and hook Containers.
 ///
@@ -36,7 +36,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     let namespace = scoped.as_ref().map(|scoped| scoped.namespace.clone());
     let labels = scoped.clone();
     let order = sort.clone();
-    let credential = with_reader(root, |client| {
+    let credential = with_lister(root, no_processes, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
             let live = client
@@ -73,6 +73,19 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     credential.map_or(Ok(()), |credential| {
         super::cloud_read::processes(&credential, scoped, &order)
     })
+}
+
+/// What `ps` lists for an Organization with no Servers yet.
+fn no_processes() -> Result<(), Error> {
+    let table = process_table(&[], None, &HashMap::new(), &HashSet::new());
+    crate::ui::finish_fanout(
+        "containers",
+        &Vec::<Process>::new(),
+        &Gaps::default(),
+        || {
+            crate::ui::rows(&table);
+        },
+    )
 }
 
 async fn retiring<C: PointerClient + Clone, E>(

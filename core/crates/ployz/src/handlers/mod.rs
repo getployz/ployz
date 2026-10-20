@@ -268,6 +268,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         }));
     }
     (verb.run)(matches)
+        .map_err(|failure| context::with_no_contexts_next(failure, leaf_matches(matches)))
 }
 
 /// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
@@ -548,12 +549,27 @@ where
         &'a mut crate::connect::Client,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
 {
+    with_lister(root, || Err(server::no_servers()), work)
+}
+
+/// [`with_reader`] for a list: an Organization with no Servers yet runs `empty` instead.
+fn with_lister<F>(
+    root: &ArgMatches,
+    empty: impl FnOnce() -> Result<(), Error>,
+    work: F,
+) -> Result<Option<crate::cloud_account::Credential>, Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         match server::reach(leaf, context).await? {
-            server::Reach::Dial(mut client) => work(&mut client).await.map(|()| None),
-            server::Reach::Ask(credential) => Ok(Some(credential)),
+            Some(server::Reach::Dial(mut client)) => work(&mut client).await.map(|()| None),
+            Some(server::Reach::Ask(credential)) => Ok(Some(credential)),
+            None => empty().map(|()| None),
         }
     })
 }
@@ -892,7 +908,13 @@ mod tests {
                 .unwrap_err()
                 .causes()
                 .get(..2),
-            Some(&["Could not connect to the Machine.", "transport error"].map(String::from)[..]),
+            Some(
+                &[
+                    "Couldn't open a connection to the Server.",
+                    "transport error"
+                ]
+                .map(String::from)[..]
+            ),
         );
     }
 

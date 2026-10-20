@@ -9,8 +9,8 @@ use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ContainerRuntimeObservation, HealthObservation, LastHealthCheck, RequestedServiceSpec,
-    ResolvedServiceSpec,
+    ByteQuantity, ContainerRuntimeObservation, HealthObservation, LastHealthCheck,
+    RequestedServiceSpec, ResolvedServiceSpec,
 };
 use crate::{
     ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
@@ -924,6 +924,15 @@ impl Display for HealthFailure {
     }
 }
 
+/// Docker OOM-killed a process of a Container, which ran under this limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct OutOfMemory {
+    /// The Service's memLimit; `None` when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub memory_bytes: Option<ByteQuantity>,
+}
+
 /// Why a `service_healthy` dependency gate failed.
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -990,6 +999,10 @@ pub enum ExecutionError {
     Health {
         container_id: ContainerId,
         failure: HealthFailure,
+        /// Docker OOM-killed a process of the Container while it was checked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        out_of_memory: Option<OutOfMemory>,
     },
     #[error("dependency {dependency} failed health gate: {failure}")]
     DependencyHealth {

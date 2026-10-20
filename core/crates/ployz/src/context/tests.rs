@@ -121,14 +121,12 @@ fn update_founds_a_missing_config_and_its_directory() {
 #[test]
 fn connection_sources_are_plain_text() {
     use super::ConnectionSource;
-    assert_eq!(
-        ConnectionSource::Direct.to_string(),
-        "the explicit connection"
-    );
+    assert_eq!(ConnectionSource::Direct.to_string(), "the given connection");
     assert_eq!(
         ConnectionSource::LocalSocket.to_string(),
         "the local socket"
     );
+    assert_eq!(ConnectionSource::Cloud.to_string(), "Cloud");
     assert_eq!(
         ConnectionSource::Context("prod".into()).to_string(),
         "context prod"

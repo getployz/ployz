@@ -68,4 +68,5 @@ panel had a 60% real-bug rate; CodeRabbit had 11%.
 
 ### Main is red
 
-Revert the culprit first, then fix forward in a new PR.
+Revert the culprit first, then fix forward in a new PR. A newer main run cancels older ones, so when the
+commits before the red run show cancelled, the culprit may be among them: check those predecessors.
