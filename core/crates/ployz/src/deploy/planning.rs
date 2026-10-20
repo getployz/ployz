@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, CopyRotation, DataLoss, DependencyCondition,
-    HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
-    ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
-    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
-    hostname_owners, machine_matches_placement, same_service_mode_kind,
+    ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition, HookContainer,
+    IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
+    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode,
+    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
+    machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
@@ -206,7 +206,6 @@ pub(super) fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
             service.clone(),
             dependencies,
             range,
-            Vec::new(),
         ));
         if service.is_some() {
             previous = service;
@@ -220,7 +219,6 @@ fn service_group(
     service: Option<ServiceName>,
     dependencies: Vec<ServiceName>,
     range: std::ops::Range<usize>,
-    kept: Vec<ContainerId>,
 ) -> Vec<ServiceGroup> {
     let indexed = || {
         operations
@@ -282,7 +280,6 @@ fn service_group(
         dependencies,
         steps,
         publish,
-        kept,
     }];
     if !removals.is_empty() {
         groups.push(ServiceGroup {
@@ -290,33 +287,9 @@ fn service_group(
             dependencies: service.into_iter().collect(),
             steps: removals,
             publish: false,
-            kept: Vec::new(),
         });
     }
     groups
-}
-
-/// Running Service Containers of `identity` that no operation in `operations`
-/// names: the flip keeps pointing at them.
-fn kept_containers(
-    snapshot: &DeploySnapshot,
-    identity: &QualifiedService,
-    operations: &[DeployOperation],
-) -> Vec<ContainerId> {
-    let named: BTreeSet<_> = operations
-        .iter()
-        .filter_map(DeployOperation::container_id)
-        .collect();
-    snapshot
-        .containers
-        .iter()
-        .filter(|container| {
-            container.kind == ContainerKind::ServiceContainer
-                && container.identity() == *identity
-                && !named.contains(&container.container_id)
-        })
-        .map(|container| container.container_id)
-        .collect()
 }
 
 impl std::ops::Deref for DeployPlan {
@@ -378,7 +351,6 @@ pub(super) fn prepare_namespace_removal(
                     None,
                     every_service,
                     range,
-                    Vec::new(),
                 ));
             }
             _ => {}
@@ -523,7 +495,7 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
                     SlotAction::Restarting(restarting.container_id)
                 }
                 HeldIngress::None => SlotAction::Create(
-                    plan_create(intent, snapshot, empty.machine, service_id).map(Box::new),
+                    plan_create(intent, &snapshot.only(empty.machine), service_id).map(Box::new),
                 ),
             },
         });
@@ -532,29 +504,21 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
     all
 }
 
-/// Plan the Ingress Proxy on `machine` alone as the Service `service_id`, which its
-/// siblings run or are created as in the same check: they share its creation key. The
-/// flip still keeps every sibling `snapshot` observes, or it would retire them.
+/// Plan the Ingress Proxy on the one Machine of `only` as the Service `service_id`, which
+/// its siblings run or are created as in the same check and `only` cannot see: they share
+/// its creation key.
 fn plan_create(
     intent: &DeployIntent,
-    snapshot: &DeploySnapshot,
-    machine: &MachineObservation,
+    only: &DeploySnapshot,
     service_id: ServiceId,
 ) -> Result<DeployPlan, PlanError> {
-    let only = snapshot.only(machine);
-    let mut planned = plan_operations(intent, &only)?;
+    let mut planned = plan_operations(intent, only)?;
     for operation in &mut planned.operations {
         if let DeployOperation::RunContainer { spec, .. } = operation {
             spec.service_id = service_id;
         }
     }
-    for group in &mut planned.groups {
-        if let Some(name) = &group.service {
-            let identity = QualifiedService::new(intent.namespace.clone(), name.clone());
-            group.kept = kept_containers(snapshot, &identity, &planned.operations);
-        }
-    }
-    Ok(admit(intent, &only, planned))
+    Ok(admit(intent, only, planned))
 }
 
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {
@@ -761,36 +725,18 @@ fn assemble_plan(
     operations.extend(removal_operations(&services, &retiring));
     let mut groups = Vec::new();
     if prelude > 0 {
-        groups.extend(service_group(
-            &operations,
-            None,
-            Vec::new(),
-            0..prelude,
-            Vec::new(),
-        ));
+        groups.extend(service_group(&operations, None, Vec::new(), 0..prelude));
     }
     let dependencies = intent.dependencies();
     for (name, range) in ranges {
         let range = range.start + prelude..range.end + prelude;
-        let identity = QualifiedService::new(intent.namespace.clone(), name.clone());
-        let kept = kept_containers(
-            snapshot,
-            &identity,
-            operations.get(range.clone()).unwrap_or_default(),
-        );
         let dependencies = dependencies
             .get(&name)
             .into_iter()
             .flatten()
             .map(|dependency| dependency.service.clone())
             .collect();
-        groups.extend(service_group(
-            &operations,
-            Some(name),
-            dependencies,
-            range,
-            kept,
-        ));
+        groups.extend(service_group(&operations, Some(name), dependencies, range));
     }
     if tail_start < operations.len() {
         let every_service = requested.iter().map(|spec| spec.name.clone()).collect();
@@ -799,7 +745,6 @@ fn assemble_plan(
             None,
             every_service,
             tail_start..operations.len(),
-            Vec::new(),
         ));
     }
     Ok(Planned {

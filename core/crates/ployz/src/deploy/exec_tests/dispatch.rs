@@ -437,6 +437,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::InspectVolumeCopy(_)
                     | RpcRequestBody::SeedVolume(_)
                     | RpcRequestBody::SetVolumeCopy(_)
+                    | RpcRequestBody::SetVolumeSize(_)
                     | RpcRequestBody::ListImages(_)
                     | RpcRequestBody::PruneImages(_)
                     | RpcRequestBody::EnsureImageIngest(_)

@@ -209,8 +209,7 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
     .with_copy(&machine, &kept, CopyRotation::In)
     .with_copy(&machine, &replaced, CopyRotation::In)
     .with_copy(&machine, &draining, CopyRotation::Out);
-    let mut groups = crate::deploy::planning::test_groups(&plan);
-    groups.first_mut().unwrap().kept = vec![kept];
+    let groups = crate::deploy::planning::test_groups(&plan);
 
     let outcome = super::super::execute_operation_sequence(
         &crate::deploy::DeployPlan::for_execution_test_with_groups(
@@ -263,8 +262,7 @@ async fn a_flip_keeps_a_retiring_copy_its_plan_never_saw() {
     .with_copy(&machine, &kept, CopyRotation::In)
     .with_copy(&machine, &replaced, CopyRotation::In)
     .with_copy(&machine, &pending, CopyRotation::Out);
-    let mut groups = crate::deploy::planning::test_groups(&plan);
-    groups.first_mut().unwrap().kept = vec![kept];
+    let groups = crate::deploy::planning::test_groups(&plan);
 
     let outcome = execute_groups(&plan, groups, &client).await;
 
@@ -299,7 +297,7 @@ async fn a_scale_down_retires_the_copy_it_removes_before_removing_it() {
     .with_copy(&machine, &kept, CopyRotation::In)
     .with_copy(&machine, &removed, CopyRotation::In);
 
-    let outcome = execute_groups(&plan, scale_down_groups(&[kept]), &client).await;
+    let outcome = execute_groups(&plan, scale_down_groups(), &client).await;
 
     assert!(
         matches!(outcome, DeployOutcome::Success { .. }),
@@ -331,7 +329,7 @@ async fn a_removal_whose_out_no_proxy_confirms_fails_the_deploy() {
     .with_copy(&machine, &removed, CopyRotation::In);
 
     let (outcome, warnings) =
-        execute_groups_reported(&plan, scale_down_groups(&[kept]), &[machine], &client).await;
+        execute_groups_reported(&plan, scale_down_groups(), &[machine], &client).await;
 
     assert!(
         !matches!(outcome, DeployOutcome::Success { .. }),
@@ -361,7 +359,7 @@ async fn a_removal_of_the_last_in_copy_is_refused() {
     let client = Scripted::new(vec![observed(Call::Inspect(machine, removed), running())])
         .with_copy(&machine, &kept, CopyRotation::Pending)
         .with_copy(&machine, &removed, CopyRotation::In);
-    let mut groups = scale_down_groups(&[kept]);
+    let mut groups = scale_down_groups();
     groups.first_mut().unwrap().publish = false;
 
     let outcome = execute_groups(&plan, groups, &client).await;
@@ -386,7 +384,7 @@ async fn a_removal_of_the_last_in_copy_is_refused() {
     client.assert_done();
 }
 
-fn scale_down_groups(kept: &[ContainerId]) -> Vec<crate::deploy::schedule::ServiceGroup> {
+fn scale_down_groups() -> Vec<crate::deploy::schedule::ServiceGroup> {
     let service = ServiceName::parse("api").unwrap();
     vec![
         crate::deploy::schedule::ServiceGroup {
@@ -394,14 +392,12 @@ fn scale_down_groups(kept: &[ContainerId]) -> Vec<crate::deploy::schedule::Servi
             dependencies: Vec::new(),
             steps: Vec::new(),
             publish: true,
-            kept: kept.to_vec(),
         },
         crate::deploy::schedule::ServiceGroup {
             service: None,
             dependencies: vec![service],
             steps: vec![crate::deploy::schedule::Step::Serial(0)],
             publish: false,
-            kept: Vec::new(),
         },
     ]
 }
@@ -592,14 +588,12 @@ async fn a_failed_deploy_keeps_the_services_it_removes() {
             dependencies: Vec::new(),
             steps: vec![Step::Parallel(vec![0])],
             publish: true,
-            kept: Vec::new(),
         },
         ServiceGroup {
             service: None,
             dependencies: vec![api],
             steps: vec![Step::Serial(1), Step::Serial(2)],
             publish: false,
-            kept: Vec::new(),
         },
     ];
     let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
@@ -713,7 +707,7 @@ async fn a_cancel_before_the_stop_ends_the_service_old() {
         ..Scripted::new(vec![observed(Call::Inspect(machine, old), running())])
     }
     .with_copy(&machine, &old, CopyRotation::In);
-    let mut groups = scale_down_groups(&[]);
+    let mut groups = scale_down_groups();
     groups.truncate(1);
     groups.first_mut().unwrap().steps = vec![crate::deploy::schedule::Step::Serial(0)];
     let plan =
@@ -753,8 +747,7 @@ async fn a_first_flip_keeps_the_replicas_the_plan_left_running() {
         )])
     }
     .with_copy(&machine, &kept, CopyRotation::In);
-    let mut groups = crate::deploy::planning::test_groups(&plan);
-    groups.first_mut().unwrap().kept = vec![kept];
+    let groups = crate::deploy::planning::test_groups(&plan);
 
     let outcome = execute_groups(&plan, groups, &client).await;
 
@@ -1030,7 +1023,6 @@ async fn a_failed_group_removes_a_container_a_sibling_starts_afterwards() {
         dependencies: Vec::new(),
         steps: vec![crate::deploy::schedule::Step::Parallel(vec![0, 1])],
         publish: true,
-        kept: Vec::new(),
     }];
 
     let outcome = execute_groups(&plan, groups, &client).await;
@@ -1133,7 +1125,6 @@ async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
                 .collect(),
             steps: vec![crate::deploy::schedule::Step::Parallel(vec![task])],
             publish: true,
-            kept: Vec::new(),
         };
     let groups = vec![
         group("db", &[], 0),
@@ -1166,14 +1157,12 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
             dependencies: Vec::new(),
             steps: Vec::new(),
             publish: false,
-            kept: vec![container('d')],
         },
         ServiceGroup {
             service: Some(ServiceName::parse("api").unwrap()),
             dependencies: vec![ServiceName::parse("db").unwrap()],
             steps: vec![Step::Parallel(vec![0])],
             publish: true,
-            kept: Vec::new(),
         },
     ];
     let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
@@ -1703,7 +1692,6 @@ async fn a_slow_retirement_does_not_hold_up_another_services_flip() {
         dependencies: Vec::new(),
         steps: vec![crate::deploy::schedule::Step::Serial(task)],
         publish: true,
-        kept: Vec::new(),
     };
     let started = tokio::time::Instant::now();
     let web_in = async {
@@ -2676,7 +2664,7 @@ async fn a_removal_whose_owner_does_not_answer_names_the_copy_left_running() {
     .with_copy(&machine, &removed, CopyRotation::In);
 
     let (outcome, warnings) =
-        execute_groups_reported(&plan, scale_down_groups(&[kept]), &[machine], &client).await;
+        execute_groups_reported(&plan, scale_down_groups(), &[machine], &client).await;
 
     assert!(
         !matches!(outcome, DeployOutcome::Success { .. }),

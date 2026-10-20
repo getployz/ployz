@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
-use crate::connect::{Client, ConnectError, SystemConnector};
+use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
@@ -165,29 +165,14 @@ pub async fn run_deployment(
     {
         Ok(Some(session)) => session,
         Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
-        // Users read it on the Deployment: plain words and one action first, then
-        // what the connection said.
-        Err(
-            error @ ConnectError::AllFailed {
-                server: Some(_), ..
-            },
-        ) => {
+        // Users read it on the Deployment: the connection's own sentence first, naming the
+        // Server where it knows which and saying whether a daemon answered, then what the
+        // connection said.
+        Err(error) => {
             return run
                 .not_executed(Failure {
                     reason: error.to_string(),
                     cause: ployz_core::error_chain::causes(&error),
-                })
-                .await;
-        }
-        Err(error) => {
-            let Failure { reason, mut cause } = Failure::from(&RpcError::from(error));
-            cause.insert(0, reason);
-            return run
-                .not_executed(Failure {
-                    reason:
-                        "Ployz couldn't reach your Servers. Check that they're online, then retry."
-                            .into(),
-                    cause,
                 })
                 .await;
         }
@@ -388,12 +373,13 @@ impl Run {
     async fn fill_ingress(&self, session: &Session) {
         let filled = match session.client() {
             Ok(mut client) => {
+                let server = client.server();
                 let stop = CancellationToken::new();
                 self.renewing(crate::ingress::fill_slots(&mut client, &stop), || {
                     stop.cancel()
                 })
                 .await
-                .map_err(|failure| crate::ui::row(&failure))
+                .map_err(|failure| crate::ingress::unchecked(&failure, server))
             }
             Err(error) => Err(crate::ui::row(&error)),
         };

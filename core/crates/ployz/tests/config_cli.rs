@@ -1267,6 +1267,64 @@ fn a_deployed_service_staged_for_removal_still_inspects() {
 }
 
 #[test]
+fn a_new_services_diff_and_plan_say_the_image_it_runs() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(
+        &store,
+        &["service", "add", "web", "--image", "traefik/whoami:v1.10.0"],
+    );
+    ok(&store, &["set", "web.env.PORT=80"]);
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let change = "web (create)\n  web.image: null → \"traefik/whoami:v1.10.0\"\n  web.env.PORT: null → \"80\"\n";
+    for args in [&["diff"][..], &["deploy", "--plan"]] {
+        let shown = human(args);
+        assert!(shown.starts_with(change), "{args:?}: {shown}");
+    }
+}
+
+#[test]
+fn discarding_a_new_services_image_points_at_discarding_the_service() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(
+        &store,
+        &["service", "add", "web", "--image", "traefik/whoami:v1.10.0"],
+    );
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
+    };
+    let row = "web.image: null → \"traefik/whoami:v1.10.0\"";
+
+    let refused = human(&["discard", "web.image"]);
+    assert!(
+        refused.contains(
+            "web.image is what the new service web runs; it has no Discard of its own. Discard the service: ployz discard web"
+        ),
+        "{refused}"
+    );
+    assert!(human(&["diff"]).contains(row));
+    let nothing = human(&["discard", "web.env.PORT"]);
+    assert!(
+        nothing.contains("Nothing staged at web.env.PORT in shop/production; nothing to discard."),
+        "{nothing}"
+    );
+
+    human(&["discard", "web"]);
+    let diff = human(&["diff"]);
+    assert!(!diff.contains(row), "{diff}");
+    assert_eq!(ok(&store, &["diff"]).get("changes"), Some(&json!([])));
+}
+
+#[test]
 fn removing_a_referenced_service_stages_and_prints_the_broken_reference() {
     let store = Target::Local(tempfile::tempdir().unwrap());
     ok(&store, &["project", "new", "shop"]);
@@ -1423,6 +1481,33 @@ fn an_agent_adds_checks_and_removes_domains() {
             ) && cause.contains("refused"),
             "{unreached}"
         );
+
+        // A context connection that knows its Server names it, and says why in a few words.
+        if !cloud {
+            let home = tempfile::tempdir().unwrap();
+            let machine = "0123456789abcdef0123456789abcdef";
+            std::fs::write(
+                home.path().join("config.yaml"),
+                format!(
+                    "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: 127.0.0.1:1\n        machine_id: {machine}\n"
+                ),
+            )
+            .unwrap();
+            let output = store
+                .command(home.path())
+                .args(["--json", "deploy", "--plan"])
+                .output()
+                .unwrap();
+            let planned: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let cause = planned["ingress_unchecked"][0].as_str().unwrap_or_default();
+            assert!(
+                cause.starts_with(&format!("Server {machine} isn't answering ("))
+                    && cause.contains("refused")
+                    && !cause.contains("retry")
+                    && !cause.contains("Machine"),
+                "{planned}"
+            );
+        }
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];
@@ -1966,6 +2051,18 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
             labels(&plan["rows"]),
             ["web.source", "web.env.DEBUG", "web.env.NEW"]
         );
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["env", "sync", "--to", "--plan", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert!(
+            human.contains("\n  web.image: \"web:1\" → \"web:2\"\n"),
+            "{human}"
+        );
         let image = &rows[0];
         assert_eq!(
             (
@@ -2276,13 +2373,20 @@ fn edits_to_a_service_never_deployed_show_in_the_diff_and_discard() {
         let diff = ok(store, &["diff"]);
         let nginx = &diff["changes"][0];
         assert_eq!(nginx["lifecycle"], json!("create"), "{diff}");
+        assert_eq!(nginx["settings"][0]["path"], json!("nginx.image"));
         assert_eq!(
-            nginx["settings"][0]["path"],
+            nginx["settings"][1]["path"],
             json!("nginx.preDeployCommand")
         );
         ok(store, &["discard", "nginx.preDeployCommand"]);
         let diff = ok(store, &["diff"]);
-        assert_eq!(diff["changes"][0]["settings"], json!([]), "{diff}");
+        let paths = diff["changes"][0]["settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["path"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, [json!("nginx.image")], "{diff}");
     }
 }
 
@@ -2435,7 +2539,7 @@ fn an_agent_reviews_saves_and_discards() {
         assert_eq!(diff.pointer("/changes/0/name"), Some(&json!("web")));
         assert_eq!(diff.pointer("/changes/0/lifecycle"), Some(&json!("create")));
         assert_eq!(
-            diff.pointer("/changes/0/settings/0/path"),
+            diff.pointer("/changes/0/settings/1/path"),
             Some(&json!("web.replicas"))
         );
         assert_eq!(diff.get("next"), Some(&json!("ployz deploy")));
