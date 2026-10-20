@@ -449,6 +449,7 @@ mod plan {
                 resolved_spec: spec(image),
                 address: Some(ContainerAddress([10, 210, 1, 2].into())),
                 labels: BTreeMap::new(),
+                stopped: false,
             })
             .unwrap(),
         )
@@ -1278,5 +1279,131 @@ mod settled {
             waited >= Duration::from_millis(1_800) && waited < Duration::from_millis(2_900),
             "waited {waited:?}"
         );
+    }
+}
+
+mod stopped_on_request {
+    use std::{collections::BTreeMap, sync::Mutex};
+
+    use ployz_core::{
+        ContainerLocator, ContainerNow, ContainerObservation, ContainerRuntimeObservation,
+        ContainerWant, Drain, EnsuredContainer, MachineName, NewContainer, RunRotation, RunTarget,
+        StopOptions,
+    };
+    use serde_json::json;
+
+    use super::*;
+    use crate::docker::test_support::{FakeDocker, fake_runtime_with, spec_with_sources};
+
+    async fn ensure(local: &LocalMachine, want: ContainerWant) -> ContainerObservation {
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(observed),
+            ..
+        } = local.ensure_container(want).await.unwrap()
+        else {
+            panic!("the want was refused");
+        };
+        observed
+    }
+
+    #[tokio::test]
+    async fn a_stopped_want_marks_only_the_run_it_stopped() {
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-stopped-mark-{}", MachineId::random()));
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        store
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            })
+            .unwrap();
+        let owner = RecordOwner::spawn(store).unwrap();
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+            stamp_starts: true,
+            stop_exit_code: 1,
+            ..Default::default()
+        })
+        .await;
+        let local = LocalMachine::new(owner)
+            .with_containers(Some(runtime.clone()))
+            .with_zpool("true");
+        let new: NewContainer = serde_json::from_value(json!({
+            "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
+            "resolved_spec": spec_with_sources(vec![]),
+            "gen": 1,
+        }))
+        .unwrap();
+        let id = ensure(
+            &local,
+            ContainerWant::Running {
+                container: RunTarget::New(new),
+                rotation: RunRotation::Pending,
+            },
+        )
+        .await
+        .container_id;
+        let start = || ContainerWant::Running {
+            container: RunTarget::Existing(ContainerLocator::Id(id)),
+            rotation: RunRotation::Pending,
+        };
+
+        let stopped = ensure(
+            &local,
+            ContainerWant::Stopped {
+                container: ContainerLocator::Id(id),
+                drain: Drain::NONE,
+                stop: StopOptions::default(),
+            },
+        )
+        .await;
+        assert_eq!(
+            stopped.runtime,
+            ContainerRuntimeObservation::Exited { code: 1 }
+        );
+        assert!(stopped.stopped, "the Machine stopped this run");
+
+        let started = ensure(&local, start()).await;
+        assert!(
+            matches!(started.runtime, ContainerRuntimeObservation::Running { .. }),
+            "{:?}",
+            started.runtime
+        );
+        assert!(!started.stopped, "a start begins a run nobody stopped");
+
+        for container in fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+        {
+            let state = container
+                .get_mut("State")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap();
+            state.insert("Status".into(), "exited".into());
+            state.insert("ExitCode".into(), 1.into());
+        }
+        let crashed = runtime
+            .inspect_managed(&id, &local.record().id())
+            .await
+            .unwrap();
+        assert_eq!(
+            crashed.runtime,
+            ContainerRuntimeObservation::Exited { code: 1 }
+        );
+        assert!(!crashed.stopped, "a run that exits on its own crashed");
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 }

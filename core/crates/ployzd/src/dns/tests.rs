@@ -788,6 +788,7 @@ fn observation(
         resolved_spec: fixture_spec(service_id, service_name),
         address: address.map(|octets| ContainerAddress(octets.into())),
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

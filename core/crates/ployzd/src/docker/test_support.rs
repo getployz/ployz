@@ -53,9 +53,12 @@ pub(crate) struct FakeDocker {
     /// Named mode: every start lands, then the process exits at once.
     pub(crate) exit_on_start: Arc<AtomicBool>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
-    /// Named mode: each start of a stopped Container stamps a new `StartedAt`, as
-    /// Docker does.
+    /// Named mode: each start of a stopped Container stamps a new `StartedAt`, and a
+    /// stop keeps it, as Docker does.
     pub(crate) stamp_starts: bool,
+    /// Named mode: the code a stopped process exits with, as an app that exits non-zero
+    /// on SIGTERM leaves it.
+    pub(crate) stop_exit_code: i64,
     /// Every stop waits while a test holds this for writing; the request is recorded first.
     pub(crate) stop_gate: Arc<tokio::sync::RwLock<()>>,
     /// Every inspect of this Container waits while a test holds `inspect_gate` for writing.
@@ -237,14 +240,18 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 let (status, code) =
                     if status == "running" && fake.exit_on_start.load(Ordering::SeqCst) {
                         ("exited", 1)
+                    } else if status == "exited" {
+                        (status, fake.stop_exit_code)
                     } else {
                         (status, 0)
                     };
                 let container = containers.get_mut(&name).unwrap();
                 let previous = container["State"].take();
                 let mut state = serde_json::json!({"Status": status, "ExitCode": code});
-                if fake.stamp_starts && status == "running" {
-                    let started_at = if previous.get("Status") == Some(&"running".into()) {
+                if fake.stamp_starts && (status == "running" || path.ends_with("/stop")) {
+                    let started_at = if path.ends_with("/stop")
+                        || previous.get("Status") == Some(&"running".into())
+                    {
                         previous.get("StartedAt").cloned().unwrap_or_default()
                     } else {
                         chrono::Utc::now().to_rfc3339().into()

@@ -323,6 +323,7 @@ fn container_observation() -> ContainerObservation {
         resolved_spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

@@ -615,6 +615,7 @@ impl DeployService {
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
+            stopped: false,
         })
         .unwrap()
     }
@@ -875,6 +876,7 @@ impl FakeMachine for DeployService {
                     resolved_spec: spec,
                     address: None,
                     labels: BTreeMap::new(),
+                    stopped: false,
                 },
             )
             .unwrap(),
@@ -1490,6 +1492,7 @@ pub(super) fn running_container_in(
         resolved_spec: resolved,
         address: None,
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

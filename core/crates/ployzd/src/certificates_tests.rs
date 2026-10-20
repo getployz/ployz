@@ -875,6 +875,7 @@ fn observation(
         resolved_spec,
         address: Some(ContainerAddress([10, 210, 1, 2].into())),
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

@@ -1282,6 +1282,7 @@ fn observation(
         resolved_spec,
         address: address.map(|address| ContainerAddress(address.into())),
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

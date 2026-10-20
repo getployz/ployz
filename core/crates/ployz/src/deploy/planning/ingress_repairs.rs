@@ -35,6 +35,7 @@ pub(in crate::deploy) fn ingress_on(
         labels: Default::default(),
         rotation: None,
         r#gen: None,
+        stopped: false,
     })
     .unwrap()
 }

@@ -1375,6 +1375,7 @@ fn observation(
         resolved_spec: spec,
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

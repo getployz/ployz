@@ -254,6 +254,11 @@ pub struct ContainerObservationParts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub r#gen: Option<Gen>,
+    /// The owning Machine ended this exited run for a `Stopped` want, so its exit
+    /// code is no crash. Never set on a later run, nor by older daemons.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub stopped: bool,
 }
 
 /// A coherent observation of one managed Container, retaining its historical spec.
@@ -1004,6 +1009,7 @@ mod tests {
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
+            stopped: false,
         })
         .unwrap()
     }

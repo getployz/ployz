@@ -1155,6 +1155,7 @@ fn listing_container(
         .unwrap(),
         address: None,
         labels: BTreeMap::from([("detail".into(), "preserved".into())]),
+        stopped: false,
     })
     .unwrap()
 }
@@ -1238,6 +1239,7 @@ async fn observing_containers_past_tonic_s_default_4_mib_succeeds() {
             labels: BTreeMap::new(),
             rotation: None,
             r#gen: None,
+            stopped: false,
         })
         .unwrap();
     service.listed_containers.lock().unwrap().push(container);
