@@ -655,3 +655,67 @@ async fn a_queued_restart_waits_for_the_stops_ahead_of_it() {
         );
     }
 }
+
+/// The copy is In, running, not stopped, and every live proxy lists it.
+fn assert_serving(fake: &Scripted, command: Command) {
+    let copy = container('1');
+    assert_eq!(fake.rotation(&copy), Some(CopyRotation::In), "{command:?}");
+    let service = {
+        let copies = fake.copies.lock().unwrap();
+        assert!(!copies[&copy].stopped, "{command:?} left the copy stopped");
+        copies[&copy].service.clone()
+    };
+    let routes = fake.routes(&service, false);
+    assert!(!routes.is_empty(), "{command:?}");
+    for (machine, routed) in routes {
+        assert!(
+            routed.is_some_and(|routed| routed.contains(&copy)),
+            "{command:?}: the proxy on {machine} dropped the copy"
+        );
+    }
+}
+
+fn assert_failed_back_in(ran: &Ran, command: Command) {
+    let error = ran.answer.as_ref().unwrap_err();
+    assert!(error.message.contains("back In"), "{command:?}: {error:?}");
+    assert!(
+        !ran.wants
+            .iter()
+            .any(|want| matches!(want, ContainerWant::Stopped { .. })),
+        "{command:?} stopped a copy it never confirmed unlisted"
+    );
+    assert_serving(&ran.fake, command);
+}
+
+/// The Held lands and the route read then fails: the command fails, and the
+/// copy it withdrew goes back In rather than staying Held unrouted.
+#[tokio::test(start_paused = true)]
+async fn a_route_read_error_after_held_brings_the_copy_back_in() {
+    for command in [Command::Restart, Command::Stop] {
+        let fake = Scripted {
+            failed_route_reads: Mutex::new(1),
+            ..Scripted::new(vec![inspected()])
+        }
+        .with_copy(&machine('a'), &container('1'), CopyRotation::In);
+        let ran = run_command(command, Recording::of(fake)).await;
+        assert_failed_back_in(&ran, command);
+    }
+}
+
+/// The Held ask lands unanswered and the re-read of the copy fails: whether
+/// it landed is unknown, so the copy is brought back In as if it had.
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_held_ask_whose_re_read_fails_brings_the_copy_back_in() {
+    for command in [Command::Restart, Command::Stop] {
+        let fake = Scripted {
+            unanswered_held: BTreeSet::from([container('1')]),
+            ..Scripted::new(vec![
+                inspected(),
+                failed(Call::Inspect(machine('a'), container('1')), "no answer"),
+            ])
+        }
+        .with_copy(&machine('a'), &container('1'), CopyRotation::In);
+        let ran = run_command(command, Recording::of(fake)).await;
+        assert_failed_back_in(&ran, command);
+    }
+}

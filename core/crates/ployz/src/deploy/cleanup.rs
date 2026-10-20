@@ -377,11 +377,21 @@ pub(crate) async fn user_stop<C: MachineOperations>(
             CopyRotation::Held(run) => run.clone(),
             CopyRotation::Pending | CopyRotation::In | CopyRotation::Out => fresh_run(),
         };
-        let step = hold(client, &copy, run.clone(), cancellation).await?;
-        if matches!(step, Step::Cancelled) && copy.rotation == CopyRotation::In {
-            return Err(stop_cancelled(client, &copy, &observed.resolved_spec, run).await);
+        let step = hold(client, &copy, run.clone(), cancellation).await;
+        if copy.rotation == CopyRotation::In {
+            let failed = match step {
+                Ok(Step::Cancelled) => Some(unavailable(
+                    "the wait for its proxies was cancelled".to_owned(),
+                )),
+                // The ask may have landed, so the copy is restored as if Held.
+                Err(ref error) => Some(error.clone()),
+                Ok(Step::Done | Step::Refused(_) | Step::NotConfirmed(_)) => None,
+            };
+            if let Some(error) = failed {
+                return Err(not_stopped(client, &copy, &observed.resolved_spec, run, error).await);
+            }
         }
-        left_running(&copy, "Held", step)?;
+        left_running(&copy, "Held", step?)?;
     }
     stopped(client, &copy, &observed.resolved_spec, stop, queued).await
 }
@@ -438,18 +448,27 @@ pub(crate) async fn user_restart<C: MachineOperations>(
         rotation: CopyRotation::Held(run.clone()),
         ..copy.clone()
     };
-    let stopped = match hold(client, &copy, run.clone(), cancellation).await? {
-        Step::Refused(refusal) => return Err(refusal.into_error()),
-        Step::Done => stopped(client, &held, spec, stop, queued).await,
-        Step::NotConfirmed(unconfirmed) => Err(unavailable(format!(
+    let stopped = match hold(client, &copy, run.clone(), cancellation).await {
+        Ok(Step::Refused(refusal)) => return Err(refusal.into_error()),
+        Ok(Step::Done) => stopped(client, &held, spec, stop, queued).await,
+        Ok(Step::NotConfirmed(unconfirmed)) => Err(unavailable(format!(
             "Container {} was not restarted: the proxies on {} did not confirm they stopped routing it.",
             copy.container_id,
             listed(&unconfirmed.machines)
         ))),
-        Step::Cancelled => Err(unavailable(format!(
+        Ok(Step::Cancelled) => Err(unavailable(format!(
             "Container {} was not restarted: the wait for its proxies was cancelled.",
             copy.container_id
         ))),
+        // The ask may have landed, so the copy is restored as if Held.
+        Err(error) => Err(RpcError {
+            message: format!(
+                "Container {} was not restarted: {}.",
+                copy.container_id,
+                error.message.trim_end_matches('.')
+            ),
+            ..error
+        }),
     };
     let brought = bring_in(client, &held, spec, Some(run)).await;
     if let Err(mut error) = stopped {
@@ -576,13 +595,14 @@ fn rotation_name(rotation: &CopyRotation) -> &'static str {
     }
 }
 
-/// A stop cancelled while its proxies drop the copy withdrew a serving copy for
+/// A stop that ends while its proxies drop the copy withdrew a serving copy for
 /// nothing, so it goes back In, as a restart does when its wait fails.
-async fn stop_cancelled<C: MachineOperations>(
+async fn not_stopped<C: MachineOperations>(
     client: &C,
     copy: &Copy,
     spec: &ResolvedServiceSpec,
     run: DeploymentLogId,
+    mut error: RpcError,
 ) -> RpcError {
     let held = Copy {
         rotation: CopyRotation::Held(run.clone()),
@@ -594,10 +614,12 @@ async fn stop_cancelled<C: MachineOperations>(
             "It is left running and Held."
         }
     };
-    unavailable(format!(
-        "Container {} was not stopped: the wait for its proxies was cancelled. {back}",
-        copy.container_id
-    ))
+    error.message = format!(
+        "Container {} was not stopped: {}. {back}",
+        copy.container_id,
+        error.message.trim_end_matches('.')
+    );
+    error
 }
 
 fn left_running(copy: &Copy, rotation: &str, step: Step) -> Result<(), RpcError> {
