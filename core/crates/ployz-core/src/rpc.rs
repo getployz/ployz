@@ -1325,6 +1325,42 @@ pub struct RoutesRead {
     pub down: BTreeSet<MachineId>,
 }
 
+/// A listed Machine whose proxy has not acked the copies a reader waits for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unacked {
+    /// Its row arrived without them.
+    Stale(MachineId),
+    /// Its row has not arrived or does not decode.
+    Unanswered(MachineId),
+}
+
+impl Unacked {
+    #[must_use]
+    pub const fn machine(&self) -> MachineId {
+        match self {
+            Self::Stale(machine) | Self::Unanswered(machine) => *machine,
+        }
+    }
+}
+
+impl RoutesRead {
+    /// Each listed Machine outside this read's `down` whose proxy acks no copies
+    /// `satisfied` accepts.
+    pub fn unacked<'read>(
+        &'read self,
+        satisfied: impl Fn(&BTreeSet<ContainerId>) -> bool + 'read,
+    ) -> impl Iterator<Item = Unacked> + 'read {
+        self.routes
+            .iter()
+            .filter(|(machine, _)| !self.down.contains(*machine))
+            .filter_map(move |(machine, routed)| match routed {
+                None => Some(Unacked::Unanswered(*machine)),
+                Some(routed) if !satisfied(routed) => Some(Unacked::Stale(*machine)),
+                Some(_) => None,
+            })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineUpdated {
     pub machine: Machine,

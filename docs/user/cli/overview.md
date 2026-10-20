@@ -314,6 +314,15 @@ server waiting for approval, it leads with a **this server** line: `Installing D
 `Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
 it as `blocked` lines. With `--json` this is the `this_server` object.
 
+When a server is up but its proxy hasn't picked up a service's current replicas after a deploy,
+`ployz status` names it, one line per service, like
+`web = web-2 has not picked up the new copies. Check its network.` A server that's down shows as
+**Down** instead. See
+[A server hasn't picked up the new version](../troubleshooting/deployments.md#a-server-hasnt-picked-up-the-new-version).
+A `read` or `deploy` token without server access doesn't show this line yet. To check this, `ployz status`
+reaches your servers the way `ployz ps` does, so it takes the same `--context` and
+`--ssh-timeout` options.
+
 `ployz server enroll 'host-*' --name 'web-{n}'` prints Cloud's enrollment plan and asks before
 starting. Add `--yes` to accept it without a prompt, including with `--json`. `--status` follows
 the stages. Run `ployz server enroll --status` to resume following after Ctrl-C. See

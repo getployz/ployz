@@ -179,7 +179,7 @@ impl ContainerRuntime {
             namespace,
             spec,
         )?;
-        create::migrate_ingress_requests(
+        create::ingress_sysctls(
             &mut body,
             namespace,
             spec,
