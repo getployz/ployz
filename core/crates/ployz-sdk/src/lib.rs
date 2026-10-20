@@ -584,7 +584,8 @@ impl Client {
     /// Returns a generated [`RpcError`] JSON payload when `request` is not a Volume
     /// switch request, the session is closed, or the Machine refuses; a fence refusal
     /// carries its `SwitchError` in `details`. One no Machine sent is `unanswered`: the
-    /// Machine may have taken the request.
+    /// Machine may have taken the request. One whose entry Machine could not dial
+    /// `machine` is not, since `machine` never got it.
     #[napi(ts_return_type = "Promise<SetVolumeCopyReply | VolumeCopyView>")]
     pub async fn volume_switch(
         &self,
@@ -976,14 +977,22 @@ fn rpc_to_napi(error: RpcError) -> Error {
     }
 }
 
-/// [`rpc_to_napi`], marking with `unanswered` a failure no Machine sent.
+/// [`rpc_to_napi`], marking with `unanswered` a failure no Machine sent, and with
+/// `targetUnreached` one whose entry Machine could not dial the target.
 fn call_to_napi(failure: sdk::CallError) -> Error {
-    if !failure.unanswered {
+    if !failure.unanswered && !failure.target_unreached {
         return rpc_to_napi(failure.error);
     }
     match serde_json::to_value(&failure.error) {
         Ok(serde_json::Value::Object(mut fields)) => {
-            fields.insert("unanswered".into(), serde_json::Value::Bool(true));
+            for (field, set) in [
+                ("unanswered", failure.unanswered),
+                ("targetUnreached", failure.target_unreached),
+            ] {
+                if set {
+                    fields.insert(field.into(), serde_json::Value::Bool(true));
+                }
+            }
             let json = serde_json::Value::Object(fields);
             Error::from_reason(format!("{RPC_ERROR_PREFIX}{json}"))
         }

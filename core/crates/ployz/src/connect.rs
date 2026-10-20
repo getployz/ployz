@@ -913,6 +913,12 @@ impl ConnectError {
         matches!(self, Self::Rpc(error)
             if error.unanswered || error.budget_expired || error.routed_unanswered)
     }
+
+    /// The entry's router could not dial the target, so the target never got the call.
+    /// An entry Machine too old to say so leaves this false.
+    pub(crate) fn target_unreached(&self) -> bool {
+        matches!(self, Self::Rpc(error) if error.routed_unreached)
+    }
 }
 
 /// A target that replied on an earlier attempt was not silent: its reply stands in for a
@@ -945,6 +951,10 @@ pub struct TransportError {
     budget_expired: bool,
     /// The entry's router marked this status: the target did not answer it.
     routed_unanswered: bool,
+    /// The entry's router marked this status: its dial to the target failed, so the
+    /// target never got the call. Never set on a local failure, whose metadata may be
+    /// headers that came back before the stream broke.
+    routed_unreached: bool,
     /// Why the client's connection or stream failed, below tonic's own words.
     #[source]
     cause: Option<crate::failure::JoinedChain>,
@@ -1039,6 +1049,10 @@ impl From<tonic::Status> for TransportError {
             routed_unanswered: status
                 .metadata()
                 .contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY),
+            routed_unreached: !local
+                && status
+                    .metadata()
+                    .contains_key(ployz_core::rpc::TARGET_UNREACHED_KEY),
             cause,
             code: status.code(),
             message: status.message().to_owned(),

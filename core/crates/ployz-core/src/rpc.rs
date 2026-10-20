@@ -1829,6 +1829,22 @@ pub fn target_unanswered_status(error: &(dyn std::error::Error + 'static)) -> to
     status
 }
 
+/// Metadata an entry Machine's router adds to a [`TARGET_UNANSWERED_KEY`] status when its
+/// dial to the target failed, so the target never got the call. Its absence says nothing.
+pub const TARGET_UNREACHED_KEY: &str = "ployz-target-unreached";
+
+/// [`target_unanswered_status`], also marked [`TARGET_UNREACHED_KEY`].
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn target_unreached_status(error: &(dyn std::error::Error + 'static)) -> tonic::Status {
+    let mut status = target_unanswered_status(error);
+    status.metadata_mut().insert(
+        TARGET_UNREACHED_KEY,
+        tonic::metadata::MetadataValue::from_static("1"),
+    );
+    status
+}
+
 /// A gRPC status with `error`'s own sentence as the message and its sources in
 /// the details as `{"cause": [...]}`, read back by [`status_causes`].
 #[cfg(not(target_arch = "wasm32"))]
