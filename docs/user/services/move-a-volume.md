@@ -35,7 +35,9 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
   Ployz is newer than 0.3.0-beta.6 refuses the delete and keeps the copy. The run says "data-web-1
   is no longer an old copy, so nothing was deleted". A deploy that deletes an old copy or removes a
   mirror is refused the same way when the copy changed. `ployz volume mirror rm` deletes the copy on
-  that server either way.
+  that server either way. Add `--if-old-copy` to delete it only while it is still an old copy. Ployz
+  adds it to every cleanup line it prints for an old copy, so a line you run late is refused with
+  "data-web-1 is no longer an old copy, so nothing was deleted" and the mirror stays.
 - A move or mirror deletes the old copies on other servers first. Details says so. An old copy on
   the server you move or mirror onto stays, so Ployz sends only what changed since.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
@@ -163,10 +165,11 @@ A volume holds one other copy, so a move to a third server is refused while that
 
 ```
 error: data already has a copy on web-1, data-web-1
-next: ployz volume mirror rm data-web-1
+next: ployz volume mirror rm data-web-1 --if-old-copy
 ```
 
-Remove the old copy with that command, then move again.
+Remove the old copy with that command, then move again. If that copy is a mirror instead, the
+line has no `--if-old-copy`.
 
 A deploy never waits for a move. Until `web-2` is told to start your service, a deploy takes the
 move over: the run ends with "a Deploy took this run over", your service deploys on the old

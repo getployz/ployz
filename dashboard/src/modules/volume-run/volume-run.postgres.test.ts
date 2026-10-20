@@ -2299,7 +2299,7 @@ describe("volume runs", () => {
 
       await execute(admitted.run.id);
 
-      expect(sent.find((request) => request.want.kind === "forget")?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
+      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
@@ -3257,7 +3257,8 @@ describe("volume runs", () => {
       const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
 
       expect(admitted).toMatchObject({ ok: true });
-      expect(await rows()).toMatchObject([{ kind: "delete_mirror", state: "requested", args: { slot: "fsn-2", role: "old_copy" } }]);
+      expect((await harness.pool.query("select kind, state, args from volume_run")).rows)
+        .toMatchObject([{ kind: "delete_mirror", state: "requested", args: { slot: "fsn-2", role: "old_copy" } }]);
     });
 
     it("a Mirror Remove on a busy Volume is refused as busy before it asks", async () => {

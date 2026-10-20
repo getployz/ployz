@@ -342,18 +342,14 @@ async fn each_kind_posts_only_its_own_fields() {
 #[test]
 fn a_removal_s_retry_line_keeps_if_old_copy() {
     let volume = VolumeName::parse("data").unwrap();
-    let removal = |confirm: Option<&str>, role| RunAsk::DeleteMirror {
-        slot: MachineName::parse("web-1").unwrap(),
-        confirm: confirm.map(str::to_owned),
-        role,
-    };
+    let slot = MachineName::parse("web-1").unwrap();
     assert_eq!(
-        removal(Some("data"), Some(IfOldCopy)).words(&volume),
-        ["volume", "mirror", "rm", "data-web-1", "--if-old-copy", "--confirm", "data"]
+        removal_words(&volume, &slot, true, Some("data")).join(" "),
+        "volume mirror rm data-web-1 --if-old-copy --confirm data"
     );
     assert_eq!(
-        removal(None, None).words(&volume),
-        ["volume", "mirror", "rm", "data-web-1"]
+        removal_words(&volume, &slot, false, None).join(" "),
+        "volume mirror rm data-web-1"
     );
 }
 

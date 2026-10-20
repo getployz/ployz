@@ -176,6 +176,8 @@ pub(crate) enum RunAsk {
         slot: MachineName,
         #[serde(skip_serializing_if = "Option::is_none")]
         confirm: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        role: Option<IfOldCopy>,
     },
     Move {
         to: MachineName,
@@ -191,6 +193,34 @@ pub(crate) enum RunAsk {
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct Full;
+
+/// `--if-old-copy`: Cloud deletes the slot only while it is still an old copy, never once it is the mirror.
+#[derive(Debug, PartialEq)]
+pub(crate) struct IfOldCopy;
+
+impl Serialize for IfOldCopy {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str("old_copy")
+    }
+}
+
+/// The `volume mirror rm` line that asks again to remove `volume`'s copy on `slot`.
+fn removal_words(
+    volume: &VolumeName,
+    slot: &MachineName,
+    if_old_copy: bool,
+    confirm: Option<&str>,
+) -> Vec<String> {
+    let mut words = ["volume", "mirror", "rm"].map(str::to_owned).to_vec();
+    words.push(format!("{volume}-{slot}"));
+    if if_old_copy {
+        words.push("--if-old-copy".to_owned());
+    }
+    if let Some(confirm) = confirm {
+        words.extend(["--confirm".to_owned(), confirm.to_owned()]);
+    }
+    words
+}
 
 impl Serialize for Full {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -322,6 +352,9 @@ pub(crate) fn remove_mirror_command(command: Command) -> Command {
                 .value_name("VOLUME")
                 .help("The Volume's name, to delete a Mirror that is its only copy left"),
         )
+        .arg(switch("if-old-copy", None).help(
+            "Delete it only while it is an old copy a move left; refused once it is the live Mirror",
+        ))
         .arg(approval_arg())
         .arg(wait_flag())
 }
@@ -535,6 +568,7 @@ pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let mirror = super::super::required(matches, "mirror")?;
     let confirm = matches.get_one::<String>("confirm").cloned();
+    let if_old_copy = matches.get_flag("if-old-copy");
     let store = store::store(root)?;
     cloud(store.backend())?;
     let listed = store.read(&VolumesQuery {
@@ -552,6 +586,7 @@ pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
         ask: RunAsk::DeleteMirror {
             slot: slot.clone(),
             confirm: confirm.clone(),
+            role: if_old_copy.then_some(IfOldCopy),
         },
     })
 }
@@ -604,13 +639,12 @@ fn request_located(
         project: environment.project,
         environment: environment.name,
     });
-    let confirming = matches!(asked.ask, RunAsk::DeleteMirror { confirm: None, .. });
     let run = match approved(runtime, credential, matches, volume, volume_id, &asked)? {
         Ok(run) => run,
         Err(StoreCallError::Refused(refusal)) if already(&asked.ask, &refusal) => {
             return crate::ui::done(&refusal, format_args!("{}.", refusal.message));
         }
-        Err(error) => return Err(refused(store, matches, error, confirming, volume)),
+        Err(error) => return Err(refused(store, matches, error, &asked.ask, volume)),
     };
     let follow = store::next(
         matches,
@@ -654,14 +688,14 @@ fn approved(
                 volume.to_string(),
             ],
         ),
-        RunAsk::DeleteMirror { slot, confirm } => {
-            let mut words = ["volume", "mirror", "rm"].map(str::to_owned).to_vec();
-            words.push(format!("{volume}-{slot}"));
-            if let Some(confirm) = confirm {
-                words.extend(["--confirm".to_owned(), confirm.clone()]);
-            }
-            (Verb::RemoveMirror, words)
-        }
+        RunAsk::DeleteMirror {
+            slot,
+            confirm,
+            role,
+        } => (
+            Verb::RemoveMirror,
+            removal_words(volume, slot, role.is_some(), confirm.as_deref()),
+        ),
         RunAsk::Mirror { .. }
         | RunAsk::Sync { .. }
         | RunAsk::Move { .. }
@@ -750,25 +784,21 @@ fn refused(
     store: &store::Store<'_>,
     matches: &ArgMatches,
     error: StoreCallError,
-    confirming: bool,
+    ask: &RunAsk,
     volume: &VolumeName,
 ) -> Error {
     let confirm = matches!(&error, StoreCallError::Refused(refusal) if refusal.code == RpcErrorCode::ConfirmationRequired);
     let failure = store.fail(error);
-    if confirming && confirm {
-        let mirror = super::super::required(matches, "mirror").unwrap_or_default();
-        let retry = store::next(
-            matches,
-            &[
-                "volume",
-                "mirror",
-                "rm",
-                &mirror,
-                "--confirm",
-                volume.as_str(),
-            ],
-        );
-        return failure.hint(Hint::Retry(retry));
+    if let RunAsk::DeleteMirror {
+        slot,
+        confirm: None,
+        role,
+    } = ask
+        && confirm
+    {
+        let words = removal_words(volume, slot, role.is_some(), Some(volume.as_str()));
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        return failure.hint(Hint::Retry(store::next(matches, &words)));
     }
     failure
 }

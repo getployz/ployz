@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
-import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
+import type { VolumeRunInput, VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
 /** `server rm`: the reset's DataLossConfirmation, the Volumes the user accepted losing. */
 export const RemoveServer = Schema.Struct({ confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }) });
@@ -32,6 +32,8 @@ export const VOLUME_RUN_BODIES = {
     kind: Schema.Literal("delete_mirror"),
     slot: Schema.optional(Destination),
     confirm: Schema.optional(Schema.String),
+    /** `--if-old-copy`: the slot is deleted only while it is still an old copy. */
+    role: Schema.optional(Schema.Literal("old_copy")),
   }),
   move: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("move"), to: Destination }),
   release: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
@@ -40,6 +42,26 @@ export const VOLUME_RUN_BODIES = {
 } as const satisfies Record<Exclude<VolumeRunRequestKind, "seed">, Schema.Top>;
 
 export const NewVolumeRun = Schema.Union(Object.values(VOLUME_RUN_BODIES));
+
+/** The run a CLI body asks for. A bare `mirror rm` deletes the slot whichever role it holds. */
+export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
+  switch (body.kind) {
+    case "mirror":
+      return { kind: "mirror", args: { to: body.to } };
+    case "sync":
+      return { kind: "sync", args: { full: true } };
+    case "delete_mirror":
+      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: body.role ?? "any" } };
+    case "move":
+      return { kind: "move", args: { to: body.to } };
+    case "release":
+      return { kind: "release", args: {} };
+    case "restore":
+      return { kind: "restore", args: { from: body.from } };
+    case "resize":
+      return { kind: "resize", args: { maximum_bytes: body.maximum_bytes } };
+  }
+}
 
 /** `volume sync` without `--full`: the mirror sync, answered once the mirror has the pull. */
 export const SyncVolume = Schema.Struct({ environment: RunEnvironment });
