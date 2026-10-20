@@ -6,13 +6,13 @@ DEPLOYMENT   STATUS   SAVED REVISION
 {
   "deployments": [
     {
-      "admitted_at": 1792489758,
+      "admitted_at": 1792494100,
       "admitted_by": "Ada Lovelace",
       "ci": null,
       "ended_at": null,
-      "environment_id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
+      "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
       "held": false,
-      "id": "550eafae-bd03-4720-ba7c-9271a8f2bbfe",
+      "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
       "in_flight": true,
       "message": "Ship everything",
       "number": 1,
@@ -23,11 +23,11 @@ DEPLOYMENT   STATUS   SAVED REVISION
       "saved": 1,
       "services": [],
       "ships": [
-        "web",
-        "api",
         "redis",
+        "postgres",
         "worker",
-        "postgres"
+        "api",
+        "web"
       ],
       "started_at": null,
       "status": "queued",
@@ -35,20 +35,20 @@ DEPLOYMENT   STATUS   SAVED REVISION
     }
   ],
   "environment": {
-    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
+    "id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
     "name": "production",
     "project": "shop",
     "revision": 21
   },
   "in_flight": [
     {
-      "admitted_at": 1792489758,
+      "admitted_at": 1792494100,
       "admitted_by": "Ada Lovelace",
       "ci": null,
       "ended_at": null,
-      "environment_id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
+      "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
       "held": false,
-      "id": "550eafae-bd03-4720-ba7c-9271a8f2bbfe",
+      "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
       "in_flight": true,
       "message": "Ship everything",
       "number": 1,
@@ -59,11 +59,11 @@ DEPLOYMENT   STATUS   SAVED REVISION
       "saved": 1,
       "services": [],
       "ships": [
-        "web",
-        "api",
         "redis",
+        "postgres",
         "worker",
-        "postgres"
+        "api",
+        "web"
       ],
       "started_at": null,
       "status": "queued",
@@ -71,13 +71,13 @@ DEPLOYMENT   STATUS   SAVED REVISION
     }
   ],
   "latest": {
-    "admitted_at": 1792489758,
+    "admitted_at": 1792494100,
     "admitted_by": "Ada Lovelace",
     "ci": null,
     "ended_at": null,
-    "environment_id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
+    "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
     "held": false,
-    "id": "550eafae-bd03-4720-ba7c-9271a8f2bbfe",
+    "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
     "in_flight": true,
     "message": "Ship everything",
     "number": 1,
@@ -88,11 +88,11 @@ DEPLOYMENT   STATUS   SAVED REVISION
     "saved": 1,
     "services": [],
     "ships": [
-      "web",
-      "api",
       "redis",
+      "postgres",
       "worker",
-      "postgres"
+      "api",
+      "web"
     ],
     "started_at": null,
     "status": "queued",
@@ -103,78 +103,78 @@ DEPLOYMENT   STATUS   SAVED REVISION
 
 === deployment show 1 :: $ ployz deployment show 1
 Deployment #1 of shop/production: queued
-  web: pending
-  api: pending
   redis: pending
-  worker: pending
   postgres: pending
+  worker: pending
+  api: pending
+  web: pending
   pg-data: pending
   sentry: pending
 
 === deployment show 1 --json :: $ ployz deployment show 1 --json
 {
-  "admitted_at": 1792489758,
+  "admitted_at": 1792494100,
   "admitted_by": "Ada Lovelace",
   "builds": [],
   "ci": null,
   "ended_at": null,
   "environment": {
-    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
+    "id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
     "name": "production",
     "project": "shop",
     "revision": 21
   },
-  "environment_id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
+  "environment_id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
   "held": false,
-  "id": "550eafae-bd03-4720-ba7c-9271a8f2bbfe",
+  "id": "05fd264c-552d-4cbc-89fa-d8b0106636a2",
   "in_flight": true,
   "message": "Ship everything",
   "namespace": "shop-production",
   "nodes": [
     {
-      "id": "1c4d35e0-f081-4c62-af72-2e7103a71678",
-      "name": "web",
-      "outcome": "pending",
-      "rows": [],
-      "type": "service"
-    },
-    {
-      "id": "5698b0ec-d906-43b0-8c40-532d58e780ba",
-      "name": "api",
-      "outcome": "pending",
-      "rows": [],
-      "type": "service"
-    },
-    {
-      "id": "5da25d66-034b-4049-ae6c-c7631bc12e19",
+      "id": "030ddc04-33d9-4149-a489-ee4788da4aa6",
       "name": "redis",
       "outcome": "pending",
       "rows": [],
       "type": "service"
     },
     {
-      "id": "bf6d0b48-8b62-483f-900c-ee4c97b6e9a9",
-      "name": "worker",
-      "outcome": "pending",
-      "rows": [],
-      "type": "service"
-    },
-    {
-      "id": "e0ce950e-88e1-4ec1-a11b-fa2337519b6f",
+      "id": "54b62342-54f6-46c0-aa79-eaa89c03f4bd",
       "name": "postgres",
       "outcome": "pending",
       "rows": [],
       "type": "service"
     },
     {
-      "id": "b115abc4-23f5-40cd-8bc4-483ed2bd65bb",
+      "id": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9",
+      "name": "worker",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "d25db7f1-82e7-4e78-ad08-a12f91c227d2",
+      "name": "api",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "f59287b3-06ba-4d82-aa22-f3ff607bc95f",
+      "name": "web",
+      "outcome": "pending",
+      "rows": [],
+      "type": "service"
+    },
+    {
+      "id": "313a7879-5239-4f45-8d0a-978eb58a8994",
       "name": "pg-data",
       "outcome": "pending",
       "rows": [],
       "type": "volume"
     },
     {
-      "id": "4849f9d4-0fae-4e37-968a-cfddb92da2e3",
+      "id": "46b22ea1-47ad-4f35-baeb-4d044871c79c",
       "name": "sentry",
       "outcome": "pending",
       "rows": [],
@@ -198,11 +198,11 @@ Deployment #1 of shop/production: queued
   "saved": 1,
   "services": [],
   "ships": [
-    "web",
-    "api",
     "redis",
+    "postgres",
     "worker",
-    "postgres"
+    "api",
+    "web"
   ],
   "started_at": null,
   "status": "queued",
@@ -224,14 +224,14 @@ error: shop/production has no Deployment #99
 next: ployz deployment ls
 
 === deploy --plan :: $ ployz deploy --plan
+worker (update)
+  worker.domains: added myworker.ada.ployz.test
 api (update)
   api.image: "traefik/whoami:v1.10.3" → "traefik/whoami:v1.11.0"
   api.domains: added myapi.ada.ployz.test
   api.env.FEATURE_SEARCH: null → "on"
-worker (update)
-  worker.domains: added myworker.ada.ployz.test
 Couldn't check ingress: Server 0123456789abcdef0123456789abcdef couldn't give this command access: invalid management connections.
-Decided by the Servers when it runs: operations.
+Decided by the Servers when it runs: which containers start and stop.
 next: ployz deploy --expect-version 21:1:2.1 --project shop
 
 === deploy --plan --json :: $ ployz deploy --plan --json
@@ -240,63 +240,11 @@ next: ployz deploy --expect-version 21:1:2.1 --project shop
     {
       "comparison": "head",
       "data": null,
-      "id": "5698b0ec-d906-43b0-8c40-532d58e780ba",
-      "lifecycle": "update",
-      "name": "api",
-      "restarts": [],
-      "row": "5698b0ec-d906-43b0-8c40-532d58e780ba:node",
-      "settings": [
-        {
-          "after": {
-            "credentials": false,
-            "image": "traefik/whoami:v1.11.0",
-            "type": "image"
-          },
-          "before": {
-            "credentials": false,
-            "image": "traefik/whoami:v1.10.3",
-            "type": "image"
-          },
-          "canRestore": true,
-          "kind": "update",
-          "path": "api.source",
-          "row": "5698b0ec-d906-43b0-8c40-532d58e780ba:source"
-        },
-        {
-          "after": [
-            {
-              "prefix": "myapi",
-              "targetPort": null
-            }
-          ],
-          "before": [],
-          "canRestore": false,
-          "hostnames": {
-            "myapi": "myapi.ada.ployz.test"
-          },
-          "kind": "update",
-          "path": "api.managedHostnames",
-          "row": "5698b0ec-d906-43b0-8c40-532d58e780ba:managedHostnames"
-        },
-        {
-          "after": "on",
-          "before": null,
-          "canRestore": true,
-          "kind": "add",
-          "path": "api.env.FEATURE_SEARCH",
-          "row": "5698b0ec-d906-43b0-8c40-532d58e780ba:variables.FEATURE_SEARCH"
-        }
-      ],
-      "type": "service"
-    },
-    {
-      "comparison": "head",
-      "data": null,
-      "id": "bf6d0b48-8b62-483f-900c-ee4c97b6e9a9",
+      "id": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9",
       "lifecycle": "update",
       "name": "worker",
       "restarts": [],
-      "row": "bf6d0b48-8b62-483f-900c-ee4c97b6e9a9:node",
+      "row": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9:node",
       "settings": [
         {
           "after": [
@@ -312,7 +260,59 @@ next: ployz deploy --expect-version 21:1:2.1 --project shop
           },
           "kind": "update",
           "path": "worker.managedHostnames",
-          "row": "bf6d0b48-8b62-483f-900c-ee4c97b6e9a9:managedHostnames"
+          "row": "99e8f125-0dd3-4a14-baa8-8244c36e8cd9:managedHostnames"
+        }
+      ],
+      "type": "service"
+    },
+    {
+      "comparison": "head",
+      "data": null,
+      "id": "d25db7f1-82e7-4e78-ad08-a12f91c227d2",
+      "lifecycle": "update",
+      "name": "api",
+      "restarts": [],
+      "row": "d25db7f1-82e7-4e78-ad08-a12f91c227d2:node",
+      "settings": [
+        {
+          "after": {
+            "credentials": false,
+            "image": "traefik/whoami:v1.11.0",
+            "type": "image"
+          },
+          "before": {
+            "credentials": false,
+            "image": "traefik/whoami:v1.10.3",
+            "type": "image"
+          },
+          "canRestore": true,
+          "kind": "update",
+          "path": "api.source",
+          "row": "d25db7f1-82e7-4e78-ad08-a12f91c227d2:source"
+        },
+        {
+          "after": [
+            {
+              "prefix": "myapi",
+              "targetPort": null
+            }
+          ],
+          "before": [],
+          "canRestore": false,
+          "hostnames": {
+            "myapi": "myapi.ada.ployz.test"
+          },
+          "kind": "update",
+          "path": "api.managedHostnames",
+          "row": "d25db7f1-82e7-4e78-ad08-a12f91c227d2:managedHostnames"
+        },
+        {
+          "after": "on",
+          "before": null,
+          "canRestore": true,
+          "kind": "add",
+          "path": "api.env.FEATURE_SEARCH",
+          "row": "d25db7f1-82e7-4e78-ad08-a12f91c227d2:variables.FEATURE_SEARCH"
         }
       ],
       "type": "service"
@@ -320,16 +320,16 @@ next: ployz deploy --expect-version 21:1:2.1 --project shop
   ],
   "domain_changes": [
     {
-      "change": "added myapi.ada.ployz.test",
-      "path": "api.domains"
-    },
-    {
       "change": "added myworker.ada.ployz.test",
       "path": "worker.domains"
+    },
+    {
+      "change": "added myapi.ada.ployz.test",
+      "path": "api.domains"
     }
   ],
   "environment": {
-    "id": "2aff4644-5322-460a-97ec-ec5a24b95fef",
+    "id": "41cccaac-61fd-42f4-8429-3eba71af5b34",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -377,7 +377,7 @@ error: Server 0123456789abcdef0123456789abcdef couldn't give this command access
 That Deployment built nothing.
 
 === status after link :: $ ployz status
-cloud         http://localhost:35249
+cloud         http://localhost:44553
 organization  ada
 signed in as  ada@example.com
 environment   shop/production
