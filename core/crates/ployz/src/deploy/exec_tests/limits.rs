@@ -2,7 +2,7 @@
 
 use super::flip::execute_reported;
 use super::*;
-use ployz_core::{LimitsUpdateOperation, MachineAction, RpcError};
+use ployz_core::{LimitsUpdateOperation, MachineAction, OperationStatus, RpcError};
 
 fn update(
     machine_id: &MachineId,
@@ -52,6 +52,57 @@ async fn an_update_keeps_the_same_copy_in_and_starts_nothing() {
     assert_eq!(warnings, Vec::<String>::new());
     assert_eq!(client.rotation(&old), Some(CopyRotation::In));
     assert!(!touched(&client, &old), "{:?}", client.moves());
+    client.assert_done();
+}
+
+/// A row that starts nothing never reads as starting: the copy serves
+/// throughout, and the history shows it updating from its first frame.
+#[tokio::test]
+async fn an_update_row_is_updating_from_its_first_frame() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![DeployOperation::UpdateContainer(update(
+        &machine,
+        &old,
+        UpdateOrder::StartFirst,
+    ))];
+    let client = Scripted::new(vec![ok(Call::UpdateLimits(machine, old))]).with_copy(
+        &machine,
+        &old,
+        CopyRotation::In,
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace()),
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let mut statuses = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            statuses.extend(rows.into_iter().map(|row| row.status));
+        }
+    }
+    statuses.dedup();
+    assert_eq!(
+        statuses,
+        [
+            OperationStatus::Pending,
+            OperationStatus::Running {
+                phase: OperationPhase::UpdatingContainer
+            },
+            OperationStatus::Completed,
+        ]
+    );
     client.assert_done();
 }
 

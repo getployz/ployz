@@ -139,7 +139,12 @@ pub(crate) fn service_row<'a>(
         .filter(|replica| removal || replica.starts)
         .collect();
     // A failure cancels the switch, so a copy waiting on it will never serve.
+    // A copy under an in-place update serves throughout, and is ready once done.
     let is_ready = |replica: &Replica<'_>| match replica.state {
+        RowState::Running {
+            phase: RowPhase::UpdatingContainer,
+            ..
+        } => false,
         RowState::Completed | RowState::Running { serving: true, .. } => true,
         RowState::Running {
             phase: RowPhase::WaitingForSwitch,
@@ -160,7 +165,9 @@ pub(crate) fn service_row<'a>(
     let switching = failed == 0 && ready == counted.len();
     let work = |replica: &Replica<'_>| match replica.state {
         RowState::Running { phase, serving } => Some((
-            if *serving || (served && !replica.starts) {
+            if *phase == RowPhase::UpdatingContainer {
+                Step::Start
+            } else if *serving || (served && !replica.starts) {
                 Step::Retire
             } else if stops_or_removes(*phase) {
                 Step::Clear
@@ -189,6 +196,10 @@ pub(crate) fn service_row<'a>(
         .iter()
         .filter(|replica| match replica.state {
             RowState::Pending => served && !replica.starts,
+            RowState::Running {
+                phase: RowPhase::UpdatingContainer,
+                ..
+            } => false,
             RowState::Running { serving, .. } => *serving || (served && !replica.starts),
             RowState::Completed
             | RowState::Failed { .. }

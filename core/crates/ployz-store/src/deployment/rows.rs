@@ -23,7 +23,8 @@ use crate::tools::{LogText, Withheld};
 pub enum RowState {
     Pending,
     /// `serving` is true once every new Container this Server starts serves,
-    /// so stop and remove phases then work on old ones.
+    /// so stop and remove phases then work on old ones. A Container updated
+    /// in place serves throughout.
     Running {
         phase: RowPhase,
         #[serde(default)]
@@ -536,8 +537,9 @@ impl RowTracker {
                 .or_insert_with(|| (server, Vec::new(), None));
             statuses.push((&row.status, starts_container(&row.operation)));
             if starts_container(&row.operation) {
-                let done = matches!(row.status, OperationStatus::Completed);
-                *serving = Some(serving.unwrap_or(true) && done);
+                let serves = matches!(row.operation, DeployOperation::UpdateContainer(_))
+                    || matches!(row.status, OperationStatus::Completed);
+                *serving = Some(serving.unwrap_or(true) && serves);
             }
         }
         let mut changes = Vec::new();
@@ -1124,6 +1126,40 @@ mod tests {
             format!(
                 "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
             )
+        );
+    }
+
+    #[test]
+    fn a_container_updated_in_place_serves_throughout() {
+        let machine_id = "a".repeat(32);
+        let tracked = |status: serde_json::Value| {
+            let rows: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+                "index": 0, "machine_id": machine_id, "service_name": "web",
+                "operation": {
+                    "type": "update_container", "machine_id": machine_id, "container_id": "c".repeat(64),
+                    "spec": {
+                        "service_id": "b".repeat(32), "name": "web",
+                        "mode": {"mode": "replicated", "replicas": 1},
+                        "container": {"image": "web:1", "pull_policy": "missing", "resources": {"memory_bytes": 64}}
+                    }
+                },
+                "status": status
+            }]))
+            .unwrap();
+            super::RowTracker::default().changes(&rows).remove(0).state
+        };
+        assert_eq!(
+            tracked(
+                serde_json::json!({"type": "running", "phase": {"type": "updating_container"}})
+            ),
+            RowState::Running {
+                phase: RowPhase::UpdatingContainer,
+                serving: true,
+            }
+        );
+        assert_eq!(
+            tracked(serde_json::json!({"type": "completed"})),
+            RowState::Completed
         );
     }
 

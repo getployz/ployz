@@ -2057,7 +2057,15 @@ async fn execute_operation<C: MachineOperations>(
     slots: &Slots<'_>,
     rows: &Rows<'_>,
 ) -> Result<Ran, OperationFailure> {
-    progress.set_running(index, OperationPhase::Starting);
+    // An in-place update starts nothing, so its row never reads as starting.
+    progress.set_running(
+        index,
+        if matches!(operation, DeployOperation::UpdateContainer(_)) {
+            OperationPhase::UpdatingContainer
+        } else {
+            OperationPhase::Starting
+        },
+    );
     match operation {
         DeployOperation::PrepareVolumes { machine_id, specs } => client
             .prepare_volumes(machine_id, specs)
@@ -2229,20 +2237,17 @@ async fn execute_operation<C: MachineOperations>(
         }
         // The copy stays In under its own id either way: with the new limits, or
         // with its old ones when the Machine refuses or fails.
-        DeployOperation::UpdateContainer(update) => {
-            progress.set_running(index, OperationPhase::UpdatingContainer);
-            client
-                .update_container_limits(&update.machine_id, &update.container_id, &update.spec)
-                .await
-                .map(|_| Ran::default())
-                .map_err(|error| {
-                    machine_error(
-                        MachineAction::UpdateContainerLimits,
-                        naming_machine(error, &update.machine_id),
-                    )
-                    .into()
-                })
-        }
+        DeployOperation::UpdateContainer(update) => client
+            .update_container_limits(&update.machine_id, &update.container_id, &update.spec)
+            .await
+            .map(|_| Ran::default())
+            .map_err(|error| {
+                machine_error(
+                    MachineAction::UpdateContainerLimits,
+                    naming_machine(error, &update.machine_id),
+                )
+                .into()
+            }),
         DeployOperation::StopHook {
             machine_id,
             container_id,
