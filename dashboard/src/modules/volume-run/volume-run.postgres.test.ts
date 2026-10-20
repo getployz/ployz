@@ -2205,6 +2205,37 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
 
+    const LEGACY = "data's delete was requested before Ployz recorded which copy it deletes, so nothing was deleted. Delete the copy again.";
+    const legacyOldCopyDelete = async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
+      const admitted = await runEffect(deleteOldCopy(organizationId, userId, { volumeId, environment, server: "fsn-2" }));
+      if (!admitted.ok) throw new Error(admitted.refusal.message);
+      await harness.pool.query(`update volume_run set args = args - 'role' where id = $1`, [admitted.run.id]);
+      named("fsn-2").copy = slotCopy(base, null, "7", "mirror");
+      return admitted.run.id;
+    };
+
+    it("refuses an old copy's delete admitted before runs recorded the role, and deletes nothing", async () => {
+      const id = await legacyOldCopyDelete();
+
+      await execute(id);
+
+      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
+      expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
+      expect(await rows()).toMatchObject([{ state: "failed", message: LEGACY }]);
+    });
+
+    it("refuses such a delete resumed while already running, and deletes nothing", async () => {
+      const id = await legacyOldCopyDelete();
+      await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [id]);
+
+      await execute(id, "run-1", undefined, volumeId, undefined, 1);
+
+      expect(verbs.filter((verb) => verb.startsWith("forget"))).toEqual([]);
+      expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
+      expect(await rows()).toMatchObject([{ state: "failed", message: LEGACY }]);
+    });
+
     it("deletes only the old copy it was admitted for, though a pull made it the mirror before the run looked", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
       const admitted = await runEffect(deleteOldCopy(organizationId, userId, { volumeId, environment, server: "fsn-2" }));
