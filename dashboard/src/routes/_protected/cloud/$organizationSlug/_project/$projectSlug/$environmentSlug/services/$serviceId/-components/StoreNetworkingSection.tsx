@@ -146,7 +146,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
                 label={hostname ?? name}
                 portLabel={portLabel(domain.port)}
                 view={storeStatusView(domain)}
-                dnsRecords={domain.action?.type === "dns" ? domain.action.records : []}
+                dnsRecords={domain.status === "ready" ? [] : domain.records ?? []}
                 changed={domainChanged(changes, domain)}
                 pending={isPending(domain)}
                 onEdit={() => domain.kind === "custom"
