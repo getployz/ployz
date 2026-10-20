@@ -369,6 +369,8 @@ them, even by exact version.
 running and private DNS keeps answering (with the exceptions in
 [Private networking](../services/private-networking.md)), Ployz stops at the first server that fails, and a server whose upgrade fails goes back to
 the release it ran before.
+The command prints one line per server it tried, the failed one included. The error after it, on
+stderr, says why that server failed.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
 
