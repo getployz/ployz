@@ -37,6 +37,7 @@ function input(container, tail, follow) {
 
 /** One Corrosion watch discovers sources; slow Machines never block other sources. */
 async function* logs(transport, options = {}) {
+  if (!options.sealed) throw new TypeError("sealed is required");
   if (!Number.isInteger(options.tail ?? 200) || (options.tail ?? 200) < 0 || (options.tail ?? 200) > 1000) throw new RangeError("tail must be 0..1000");
   const controller = new AbortController();
   const stop = () => controller.abort();
@@ -53,7 +54,7 @@ async function* logs(transport, options = {}) {
     source.skip = source.last === null ? 0 : counts.get(`${key}/${source.last}`) ?? 0;
     const request = input(source.container, source.last === null ? options.tail ?? 200 : -1, options.follow !== false);
     if (source.last !== null) request.since_unix_seconds = Number(BigInt(source.last) / 1_000_000_000n);
-    pending.set(key, transport.open(request).then(reader => {
+    pending.set(key, transport.open(request, options.sealed).then(reader => {
       if (controller.signal.aborted) reader.cancel();
       return { key, opened: reader };
     }, error => ({ key, error })));
@@ -158,8 +159,8 @@ function selector(filter, containers) {
   return { namespace: filter.namespace, service, deployment: filter.deploymentId, container_id: filter.containerId };
 }
 
-async function readPage(transport, machineId, chosen, state, limit, signal) {
-  const reader = await transport.history({ machine_id: machineId, ...chosen, direction: "backward", limit, cursor: state.c ?? null, until_nanos: state.u ?? null });
+async function readPage(transport, machineId, chosen, state, limit, sealed, signal) {
+  const reader = await transport.history({ machine_id: machineId, ...chosen, direction: "backward", limit, cursor: state.c ?? null, until_nanos: state.u ?? null }, sealed);
   const cancel = () => reader.cancel();
   signal?.addEventListener("abort", cancel, { once: true });
   try {
@@ -181,6 +182,7 @@ async function readPage(transport, machineId, chosen, state, limit, signal) {
  * left. A Server that fails is named and asked again on the next page.
  */
 async function history(transport, options) {
+  if (!options.sealed) throw new TypeError("sealed is required");
   options.signal?.throwIfAborted();
   const limit = options.limit ?? 200;
   if (!Number.isInteger(limit) || limit < 1 || limit > HISTORY_LIMIT) throw new RangeError(`limit must be between 1 and ${HISTORY_LIMIT}`);
@@ -197,7 +199,7 @@ async function history(transport, options) {
     ? Object.fromEntries(view.machines.map(({ machine }) => [machine.id, options.before === undefined ? {} : { u: options.before }]))
     : decodeCursor(options.cursor);
   const machines = Object.keys(states).filter(id => !filter.machineId || id === filter.machineId);
-  const reads = await Promise.all(machines.map(machineId => readPage(transport, machineId, chosen, states[machineId], limit, options.signal)
+  const reads = await Promise.all(machines.map(machineId => readPage(transport, machineId, chosen, states[machineId], limit, options.sealed, options.signal)
     .then(page => ({ machineId, page }), error => { options.signal?.throwIfAborted(); return { machineId, error }; })));
   const oldest = rows => rows.reduce((min, row) => earlier(min, rowTime(row)), rowTime(rows[0]));
   const horizon = reads.filter(read => read.page?.next && read.page.rows.length)
@@ -217,6 +219,8 @@ async function history(transport, options) {
     else if (kept.length < rows.length || read.page.next) next[read.machineId] = { u: horizon };
     const state = states[read.machineId];
     const counts = new Map(state.t === undefined ? [] : [[state.t, state.n]]);
+    // One gap stands for each run of a container's lines that couldn't be checked for Sealed values.
+    const hidden = new Map();
     for (const row of kept) {
       const time = rowTime(row);
       const ordinal = counts.get(time) ?? 0;
@@ -225,6 +229,17 @@ async function history(transport, options) {
       if (filter.kind && KINDS[filter.kind] !== container.kind) continue;
       const serviceName = container.service ?? container.replica;
       const source = { machineId: read.machineId, machineName, containerId: row.container_id, serviceName };
+      if (row.row === "hidden") {
+        const run = hidden.get(row.container_id);
+        if (run) run.fromNanos = row.timestamp_nanos;
+        else {
+          const gap = { ...source, fromNanos: row.timestamp_nanos, toNanos: row.timestamp_nanos, reason: "hidden" };
+          hidden.set(row.container_id, gap);
+          page.gaps.push(gap);
+        }
+        continue;
+      }
+      hidden.delete(row.container_id);
       if (row.row === "gap") page.gaps.push({ ...source, fromNanos: row.from_nanos, toNanos: row.to_nanos, reason: row.reason });
       else if (row.row === "exit") page.exits.push({ ...source, timestampNanos: row.timestamp_nanos, exitCode: row.exit_code, oomKilled: row.oom_killed });
       else {
@@ -236,7 +251,7 @@ async function history(transport, options) {
             origin: { origin: "service", service_id: live?.labels["cloud.ployz.service.id"] ?? filter.serviceId ?? "", service_name: serviceName, container_id: row.container_id, hook: container.kind === "pre_deploy_hook" ? container.replica : null },
             machine_id: read.machineId, machine_name: machineName,
           },
-          timestamp_nanos: row.timestamp_nanos, channel: row.stream, level: row.level, message: row.message,
+          timestamp_nanos: row.timestamp_nanos, channel: row.stream, text: "shown", level: row.level, message: row.message,
         });
       }
     }

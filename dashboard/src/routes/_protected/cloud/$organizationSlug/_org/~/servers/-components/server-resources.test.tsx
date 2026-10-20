@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import type { MachineId } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as functions from "#/modules/metrics/metrics.functions";
 import type { MetricRead } from "#/modules/metrics/metrics";
 import { serverMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
-import { ServerResources } from "./server-resources";
+import { MetricsNeedUpgrade, ServerResources } from "./server-resources";
 import { NOW_RANGE } from "./server-now";
 
 beforeEach(() => vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} }));
@@ -42,7 +42,7 @@ async function show(landedAt: number) {
   client.setQueryData(short.queryKey, readAt(landedAt, landedAt - 300_000), { updatedAt: landedAt });
   const root = createRootRoute({
     loader: () => ({ timeZone: "UTC" }),
-    component: () => <ServerResources organizationSlug="acme" server={{ id: SYD_1, name: "syd-1" }} />,
+    component: () => <ServerResources organizationSlug="acme" server={{ id: SYD_1, name: "syd-1", version: "0.3.0" }} />,
   });
   const router = createRouter({ routeTree: root, history: createMemoryHistory() });
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
@@ -77,4 +77,18 @@ it("doesn't call an hour-old cached read current while its refresh is out", asyn
   vi.spyOn(functions, "readServerMetricsServerFn").mockReturnValue(new Promise(() => {}) as never);
   await show(Date.now() - HOUR);
   expect(nowValues()).toEqual({ meters: [], network: null, disk: 0 });
+});
+
+it("asks to upgrade the Server while its Releases offer one", () => {
+  render(<MetricsNeedUpgrade name="syd-1" beta={false} onSettings={vi.fn()} />);
+  expect(screen.getByRole("heading").textContent).toBe("Upgrade syd-1 to see its metrics");
+  expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("sends a Server Stable can't upgrade to Upgrade settings to switch to Beta", () => {
+  const onSettings = vi.fn();
+  render(<MetricsNeedUpgrade name="syd-1" beta onSettings={onSettings} />);
+  expect(screen.getByRole("heading").textContent).toBe("Metrics need a Beta release");
+  fireEvent.click(screen.getByRole("button", { name: "Upgrade settings" }));
+  expect(onSettings).toHaveBeenCalledOnce();
 });

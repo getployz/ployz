@@ -26,7 +26,7 @@ export const loadClusterDomain = Effect.fn("ClusterDomain.load")(function* (orga
 /**
  * The Organization's Cluster Domain row, reserving one from `PLOYZ_HOSTED_DNS_URL` with the
  * Organization slug as the preferred label when there is none, and requesting the first sync for
- * a new name. Only a deployment that needs a generated hostname calls it. Fails with
+ * a new name. Only staging or deploying a generated domain calls it. Fails with
  * `HostedDnsError` when Hosted DNS grants nothing.
  */
 export const reserveClusterDomain = Effect.fn("ClusterDomain.reserve")(function* (organizationId: string) {

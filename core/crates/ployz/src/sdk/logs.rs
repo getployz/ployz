@@ -18,7 +18,7 @@ use crate::connect::{Client, ConnectError};
 use ployz_core::InspectContainerRequest;
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 
-const ROW_DEADLINE: Duration = Duration::from_secs(10);
+pub(super) const ROW_DEADLINE: Duration = Duration::from_secs(10);
 
 /// One running Container's Docker output on one Machine.
 #[derive(Clone, Debug, Deserialize)]
@@ -81,6 +81,11 @@ pub enum LogHistoryRecord {
         timestamp_nanos: String,
         exit_code: Option<i64>,
         oom_killed: bool,
+    },
+    /// A line the scrubbed reader could not check for Sealed values, without its text.
+    Hidden {
+        container_id: ContainerId,
+        timestamp_nanos: String,
     },
     End {
         next: Option<String>,
@@ -197,6 +202,11 @@ impl LogHistoryStream {
     /// Returns the store's error row, malformed frames, transport failures,
     /// and a timeout when the store sends no frame for ten seconds.
     pub async fn next(&self) -> Result<Option<LogHistoryRecord>, RpcError> {
+        Ok(self.row().await?.map(history_record))
+    }
+
+    /// The next row as the store sent it, skipping heartbeats. `None` after `end`.
+    pub(super) async fn row(&self) -> Result<Option<HistoryRow>, RpcError> {
         let mut stream = self.stream.lock().await;
         loop {
             let payload = tokio::select! {
@@ -213,14 +223,18 @@ impl LogHistoryStream {
             let Some(payload) = payload else {
                 return Ok(None);
             };
-            if let Some(record) = history_record(&payload)? {
-                return Ok(Some(record));
+            if let Some(row) = history_row(&payload)? {
+                return Ok(Some(row));
             }
         }
     }
 
     pub fn cancel(&self) {
         self.cancel.cancel();
+    }
+
+    pub(super) fn cancelled(&self) -> &CancellationToken {
+        &self.cancel
     }
 }
 
@@ -240,10 +254,28 @@ fn nanos(value: Option<&str>, field: &str) -> Result<Option<i64>, RpcError> {
         .transpose()
 }
 
-fn history_record(payload: &OpaquePayload) -> Result<Option<LogHistoryRecord>, RpcError> {
-    let row = HistoryRow::decode(payload)
-        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
-    Ok(Some(match row {
+fn history_row(payload: &OpaquePayload) -> Result<Option<HistoryRow>, RpcError> {
+    match HistoryRow::decode(payload)
+        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?
+    {
+        HistoryRow::Heartbeat => Ok(None),
+        HistoryRow::Error(message) => Err(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message,
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        }),
+        row @ (HistoryRow::Container(_)
+        | HistoryRow::Line { .. }
+        | HistoryRow::Gap { .. }
+        | HistoryRow::Exit { .. }
+        | HistoryRow::End { .. }) => Ok(Some(row)),
+    }
+}
+
+/// `row` as a page row. Heartbeats and errors never get here: [`history_row`] took them.
+pub(super) fn history_record(row: HistoryRow) -> LogHistoryRecord {
+    match row {
         HistoryRow::Container(container) => LogHistoryRecord::Container(container),
         HistoryRow::Line {
             container_id,
@@ -280,22 +312,21 @@ fn history_record(payload: &OpaquePayload) -> Result<Option<LogHistoryRecord>, R
             oom_killed,
         },
         HistoryRow::End { next } => LogHistoryRecord::End { next },
-        HistoryRow::Heartbeat => return Ok(None),
-        HistoryRow::Error(message) => {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message,
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
+        HistoryRow::Heartbeat | HistoryRow::Error(_) => {
+            unreachable!("history_row takes heartbeats and errors")
         }
-    }))
+    }
 }
 impl ContainerLogStream {
     /// Read the next output record, skipping transport heartbeats.
     /// # Errors
     /// Returns malformed-frame and Machine transport failures.
     pub async fn next(&self) -> Result<Option<ContainerLogRecord>, RpcError> {
+        Ok(self.entry().await?.map(decode_record))
+    }
+
+    /// The next frame as the Machine sent it, skipping heartbeats.
+    pub(super) async fn entry(&self) -> Result<Option<LogEntry>, RpcError> {
         let mut stream = self.stream.lock().await;
         loop {
             let payload = tokio::select! {
@@ -305,8 +336,10 @@ impl ContainerLogStream {
             let Some(payload) = payload else {
                 return Ok(None);
             };
-            if let Some(record) = decode_record(&payload)? {
-                return Ok(Some(record));
+            let entry = LogEntry::decode(&payload)
+                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+            if !matches!(entry.body, LogBody::Heartbeat) {
+                return Ok(Some(entry));
             }
         }
     }
@@ -321,9 +354,8 @@ impl Drop for ContainerLogStream {
     }
 }
 
-fn decode_record(payload: &OpaquePayload) -> Result<Option<ContainerLogRecord>, RpcError> {
-    let entry = LogEntry::decode(payload)
-        .map_err(|error| crate::ui::rpc_error(ployz_core::RpcErrorCode::InvalidArgument, &error))?;
+/// `entry` as a raw record. Heartbeats never get here: [`ContainerLogStream::entry`] took them.
+fn decode_record(entry: LogEntry) -> ContainerLogRecord {
     let (channel, message) = match entry.body {
         LogBody::Stdout(bytes) => (
             LogChannel::Stdout,
@@ -334,14 +366,14 @@ fn decode_record(payload: &OpaquePayload) -> Result<Option<ContainerLogRecord>, 
             String::from_utf8_lossy(&bytes).into_owned(),
         ),
         LogBody::Error(message) => (LogChannel::Error, message),
-        LogBody::Heartbeat => return Ok(None),
+        LogBody::Heartbeat => unreachable!("the reader skips heartbeats"),
     };
-    Ok(Some(ContainerLogRecord {
+    ContainerLogRecord {
         source: entry.metadata,
         timestamp_nanos: entry.timestamp_unix_nanos.to_string(),
         channel,
         message,
-    }))
+    }
 }
 
 /// How long reading a failed Container's tail may take.
@@ -814,7 +846,7 @@ mod tests {
     #[test]
     fn malformed_log_frame_is_an_error_not_empty_output() {
         let payload = OpaquePayload { json: vec![0xff] };
-        assert!(decode_record(&payload).is_err());
-        assert!(history_record(&payload).is_err());
+        assert!(LogEntry::decode(&payload).is_err());
+        assert!(history_row(&payload).is_err());
     }
 }

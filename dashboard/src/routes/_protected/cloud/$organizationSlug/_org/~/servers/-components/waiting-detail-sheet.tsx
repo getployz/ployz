@@ -2,27 +2,36 @@ import type { ReactNode } from "react";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Button } from "#/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "#/components/ui/sheet";
-import type { WaitingServerDetail } from "#/modules/machines/waiting/waiting-servers.server";
+import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
+import type { WaitingReturn, WaitingServerDetail } from "#/modules/machines/waiting/waiting-servers.server";
+import { STAGES } from "./enrolling-list";
 import { blockerLabel, bytes, lastSeen, portText, providerOf, sizeText, statusCell, volumesText } from "./waiting-row";
 
-export function WaitingDetailSheet({ server, open, failed, now, onOpenChange, onReject }: {
+export function WaitingDetailSheet({ server, open, failed, now, onOpenChange, onEnroll, onReject }: {
   server: WaitingServerDetail | null;
   open: boolean;
   failed: boolean;
   now: number;
   onOpenChange: (open: boolean) => void;
+  /** Null when the server can't be enrolled now. */
+  onEnroll: (() => void) | null;
   onReject: (id: string) => void;
 }) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-md">
-        {server === null ? <><SheetHeader><SheetTitle>Server details</SheetTitle><SheetDescription>{failed ? "Couldn’t load server details." : "Loading server details."}</SheetDescription></SheetHeader>{failed ? null : <Skeleton className="mx-4 h-32" />}</> : <Detail server={server} now={now} onReject={onReject} />}
+        {server === null ? <><SheetHeader><SheetTitle>Server details</SheetTitle><SheetDescription>{failed ? "Couldn’t load server details." : "Loading server details."}</SheetDescription></SheetHeader>{failed ? null : <Skeleton className="mx-4 h-32" />}</> : <Detail server={server} now={now} onEnroll={onEnroll} onReject={onReject} />}
       </SheetContent>
     </Sheet>
   );
 }
 
-function Detail({ server, now, onReject }: { server: WaitingServerDetail; now: number; onReject: (id: string) => void }) {
+function Detail({ server, now, onEnroll, onReject }: {
+  server: WaitingServerDetail;
+  now: number;
+  onEnroll: (() => void) | null;
+  onReject: (id: string) => void;
+}) {
   const { report } = server;
   const status = statusCell(server, now);
   const volumes = volumesText(report);
@@ -59,10 +68,23 @@ function Detail({ server, now, onReject }: { server: WaitingServerDetail; now: n
         </dl>
       </div>
       <SheetFooter>
+        {server.returned === null ? null : <LastEnroll returned={server.returned} />}
+        {onEnroll === null ? null : <Button variant="ink" onClick={onEnroll}>Enroll</Button>}
         <Button variant="destructive" onClick={() => onReject(server.id)}>Reject</Button>
         <p className="text-xs text-muted-foreground">It stops checking in. Asking again with the same token gets it turned away.</p>
       </SheetFooter>
     </>
+  );
+}
+
+function LastEnroll({ returned }: { returned: WaitingReturn }) {
+  const stage = ENROLLMENT_STAGES.find((stage) => stage === returned.stage);
+  const reason = returned.state === "cancelled" ? "Cancelled" : stage === undefined ? "Failed" : `Failed at ${STAGES[stage]}`;
+  return (
+    <section aria-label="Last enroll" className="rounded-md border px-3 py-2">
+      <p className="font-medium">{reason}</p>
+      {returned.message ? <p className="text-muted-foreground">{returned.message}</p> : null}
+    </section>
   );
 }
 

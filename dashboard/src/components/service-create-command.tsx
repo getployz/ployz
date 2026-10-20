@@ -27,6 +27,7 @@ import {
 } from "#/components/create-menu-items";
 import { DATABASE_LOGOS } from "#/components/icons/database-logos";
 import { Spinner } from "#/components/ui/spinner";
+import { toErrorMessage } from "#/lib/error-message";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_SERVICE_ROUTE_TO,
@@ -375,11 +376,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
               : "Couldn’t create project"}
           </AlertTitle>
           <AlertDescription>
-            {error instanceof Error
-              ? error.message
-              : mode === "service"
-                ? "Check the selected source and try again."
-                : "Try again."}
+            {toErrorMessage(error, mode === "service" ? "Check the selected source and try again." : "Try again.")}
           </AlertDescription>
         </Alert>
       ) : null}
