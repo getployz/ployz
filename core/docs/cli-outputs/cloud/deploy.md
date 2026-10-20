@@ -693,7 +693,7 @@ $ ployz cloud reset -y
 
 stderr:
 ```
-Cloud answered HTTP 409: {"_tag":"PublicError","code":"CONFLICT","message":"The request conflicts with the current state."}
+The request conflicts with the current state.
 ```
 
 ### cloud reset -y --json
@@ -705,6 +705,6 @@ $ ployz cloud reset -y --json
 
 stdout:
 ```
-{"error":{"code":"conflict","details":null,"message":"Cloud answered HTTP 409: {\"_tag\":\"PublicError\",\"code\":\"CONFLICT\",\"message\":\"The request conflicts with the current state.\"}"}}
+{"error":{"code":"conflict","details":null,"message":"The request conflicts with the current state."}}
 ```
 

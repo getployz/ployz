@@ -18,9 +18,13 @@ export function storeEnvironmentTree(environments: readonly EnvironmentListing[]
   return tree;
 }
 
-/** A removal from the Servers that hasn't ended. */
-export const removing = (environment: EnvironmentListing) =>
-  environment.removal !== null && environment.removal.in_flight;
+/** The Deployment that removes an Environment from the Servers, running or ended; null while none started. */
+export const removalDeployment = ({ removal }: Pick<EnvironmentListing, "removal">) =>
+  removal?.kind === "deployment" ? removal : null;
+
+/** A removal Deployment that hasn't ended. A close still waiting for the sweep isn't one, so it can be asked again. */
+export const removing = (environment: Pick<EnvironmentListing, "removal">) =>
+  removalDeployment(environment)?.in_flight === true;
 
 /** What an Environment has, in a few words, wherever the tree is listed: "default", "merged", "deleting". */
 export function storeEnvironmentNotes(environment: EnvironmentListing) {
@@ -28,7 +32,8 @@ export function storeEnvironmentNotes(environment: EnvironmentListing) {
   return [
     environment.default && "default",
     environment.merged && "merged",
-    removal && (removing(environment) ? "deleting" : removal.status === "applied" ? "off your servers" : `deletion ${removal.status}`),
+    removal && (removal.kind === "pending" ? "deletion pending" : removal.in_flight ? "deleting"
+      : removal.status === "applied" ? "off your servers" : `deletion ${removal.status}`),
   ].filter((note): note is string => typeof note === "string");
 }
 
@@ -87,22 +92,28 @@ function same(left: ByEnvironment, right: ByEnvironment) {
  * it holds the data: the Store offers giving up every copy.
  */
 export async function removeTarget(commit: Commit, target: TeardownTarget, consent: RemovalConsent): Promise<RemovalAnswer> {
-  const written = await commit({
-    command: "remove", project: target.project, environment: target.environment, version: consent.version,
-    accept_volume_loss: carried(consent.accept), every_copy: carried(consent.everyCopy),
-  }, ["confirmation_required", "unavailable"]).catch((error: Error) => error);
-  if (!(written instanceof Error)) {
-    if (written.written !== "removal") throw new Error(`The Store answered a removal with ${written.written}`);
-    return { sent: written };
+  let written: ConfigWritten;
+  try {
+    written = await commit({
+      command: "remove", project: target.project, environment: target.environment, version: consent.version,
+      accept_volume_loss: carried(consent.accept), every_copy: carried(consent.everyCopy),
+    }, ["confirmation_required", "unavailable"]);
+  } catch (error) {
+    if (!(error instanceof StoreRefused)) throw error;
+    return answerRefusal(commit, target, consent, error);
   }
-  if (!(written instanceof StoreRefused)) throw written;
-  const reviewed = written.code === "confirmation_required" ? Option.getOrNull(decodeReviewed(written.details)) : null;
+  if (written.written !== "removal") throw new Error(`The Store answered a removal with ${written.written}`);
+  return { sent: written };
+}
+
+async function answerRefusal(commit: Commit, target: TeardownTarget, consent: RemovalConsent, refused: StoreRefused): Promise<RemovalAnswer> {
+  const reviewed = refused.code === "confirmation_required" ? Option.getOrNull(decodeReviewed(refused.details)) : null;
   if (reviewed) {
     const asked: RemovalConsent = { ...consent, accept: reviewed.accept, version: reviewed.version };
     return consent.version === null && same(asked.accept, consent.accept) ? removeTarget(commit, target, asked) : { ask: asked, waitingOn: [] };
   }
-  const unchecked = written.code === "unavailable" ? Option.getOrNull(decodeUnchecked(written.details)) : null;
-  if (!unchecked) throw written;
+  const unchecked = refused.code === "unavailable" ? Option.getOrNull(decodeUnchecked(refused.details)) : null;
+  if (!unchecked) throw refused;
   const { input } = unchecked.every_copy;
   return {
     ask: { accept: input.accept_volume_loss, version: input.version, everyCopy: input.every_copy },

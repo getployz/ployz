@@ -22,6 +22,7 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { kindText, Value } from "./canvas/EnvironmentChangesReview";
 import { notSetToast, sealedOnlyPaths } from "./history-not-set";
+import { toErrorMessage } from "#/lib/error-message";
 
 /** How many more revisions each Show older reads. */
 const HISTORY_PAGE = 50;
@@ -35,7 +36,7 @@ type HistoryReview =
   | { kind: "failed"; message: string };
 
 /** One change a save made, by the Store path its row undo names. */
-type Line = {
+export type Line = {
   path: string;
   kind: ChangeKind;
   node: string;
@@ -64,20 +65,24 @@ function lines(groups: ChangeGroup[]): Line[] {
 
 const unique = (names: string[]) => [...new Set(names)];
 
+/** Add or Remove when every change is one, else `mixed`. */
+const verbOf = (changes: Line[], mixed: string) =>
+  changes.every((line) => line.kind === "add") ? "Add" : changes.every((line) => line.kind === "remove") ? "Remove" : mixed;
+
 /** What a save did, from its changes, when nobody titled it. */
-function saveTitle(changes: Line[], revision: number) {
+export function saveTitle(changes: Line[], revision: number) {
   if (!changes.length) return `Saved version #${revision}`;
   const nodes = unique(changes.map((line) => line.node));
   const lifecycle = changes.filter((line) => line.lifecycle);
-  if (lifecycle.length) {
-    const verb = lifecycle.every((line) => line.kind === "add") ? "Add" : lifecycle.every((line) => line.kind === "remove") ? "Remove" : "Change";
-    return `${verb} ${listNames(lifecycle.map((line) => line.name))}`;
-  }
+  if (lifecycle.length) return `${verbOf(lifecycle, "Change")} ${listNames(lifecycle.map((line) => line.name))}`;
   const names = unique(changes.map((line) => line.name));
-  if (changes.length === 1) return `Change ${changes[0]?.node} ${changes[0]?.name}`;
-  if (nodes.length === 1) return `Update ${nodes[0]} ${listNames(names)}`;
-  if (names.length === 1) return `Set ${names[0]} on ${listNames(nodes)}`;
-  return `Update ${listNames(nodes)}`;
+  if (changes.length === 1) return `${verbOf(changes, "Change")} ${changes[0]?.node} ${changes[0]?.name}`;
+  if (nodes.length === 1) return `${verbOf(changes, "Update")} ${nodes[0]} ${listNames(names)}`;
+  if (names.length === 1) {
+    const verb = verbOf(changes, "Set");
+    return `${verb} ${names[0]} ${verb === "Add" ? "to" : verb === "Remove" ? "from" : "on"} ${listNames(nodes)}`;
+  }
+  return `${verbOf(changes, "Update")} ${listNames(nodes)}`;
 }
 
 /** "#9 and #10": the saves after this one, oldest first. */
@@ -139,7 +144,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
       else await stage(preview, false);
     } catch (error) {
       if (requested !== request.current) return;
-      setReview({ kind: "failed", message: error instanceof Error ? error.message : "Could not review this version." });
+      setReview({ kind: "failed", message: toErrorMessage(error, "Could not review this version.") });
     }
   }
 

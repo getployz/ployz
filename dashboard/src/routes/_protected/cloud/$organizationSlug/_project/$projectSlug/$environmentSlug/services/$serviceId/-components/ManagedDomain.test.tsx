@@ -23,14 +23,15 @@ it("a refused subdomain shows core's reason, not the schema's", async () => {
   expect(errors[0]).toMatch(/DNS label/u);
 });
 
-it("says a blank port follows PORT, 8080 unless set, and names that in a refused port", async () => {
+it("says a blank port uses the Service's PORT and what it is", async () => {
   render(
     <ManagedDomainDialog managed={{ prefix: "web", targetPort: null }} clusterDomain="example.ployz.app" takenPrefixes={[]}
-      defaultTargetPort={null} onClose={vi.fn()} onSubmit={vi.fn()} />,
+      defaultTargetPort={8080} onClose={vi.fn()} onSubmit={vi.fn()} />,
   );
-  expect(screen.getByText("Leave blank to use PORT, 8080 unless set.")).toBeTruthy();
+  expect(screen.getByText("Leave blank to use this service's PORT variable, 8080.")).toBeTruthy();
+  expect(screen.queryByText(/listens on/u)).toBeNull();
   const port = screen.getByLabelText(/port/iu);
   fireEvent.change(port, { target: { value: "70000" } });
   fireEvent.blur(port);
-  await waitFor(() => expect(screen.getByText("Enter a port between 1 and 65535, or leave blank to use PORT, 8080 unless set.")).toBeTruthy());
+  await waitFor(() => expect(screen.getByText("Enter a port between 1 and 65535, or leave it blank.")).toBeTruthy());
 });
