@@ -375,7 +375,7 @@ fn summary(revision: &ployz_store::SavedRevision) -> String {
         .iter()
         .flat_map(|change| {
             if change.lifecycle == ReviewLifecycleKind::Update && !change.settings.is_empty() {
-                change.settings.iter().map(|row| row.path.clone()).collect()
+                change.settings.iter().map(|row| row.shown_path()).collect()
             } else {
                 vec![format!(
                     "{} ({})",
@@ -464,7 +464,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 for row in &change.settings {
                     crate::ui::stream(format_args!(
                         "  {}: {} → {}",
-                        row.path,
+                        row.shown_path(),
                         super::store::shown(&row.before),
                         super::store::shown(&row.after)
                     ));

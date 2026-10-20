@@ -43,6 +43,18 @@ pub struct ServiceSettingChange {
     pub row: Option<super::RowId>,
 }
 
+impl ServiceSettingChange {
+    /// Its path as people read it: a Config mount as `SERVICE.configs.NAME`, by the id
+    /// its path keeps only when it has no name.
+    #[must_use]
+    pub fn shown_path(&self) -> String {
+        match (&self.config_name, self.path.split_once(".configs.@")) {
+            (Some(name), Some((service, _))) => format!("{service}.configs.{name}"),
+            _ => self.path.clone(),
+        }
+    }
+}
+
 /// Each compared field and the Setting whose row it falls in.
 const FIELDS: &[(&str, Setting)] = &[
     ("source.branch", Setting::Branch),

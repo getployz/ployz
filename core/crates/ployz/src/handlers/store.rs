@@ -905,7 +905,7 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
         };
         return vec![format!(
             "{}: {} → {}",
-            crate::ui::escaped(&row.path),
+            crate::ui::escaped(&row.shown_path()),
             value(&row.before),
             value(&row.after)
         )];
