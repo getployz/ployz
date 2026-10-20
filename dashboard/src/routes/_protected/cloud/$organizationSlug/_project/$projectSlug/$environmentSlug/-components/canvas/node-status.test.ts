@@ -267,6 +267,10 @@ describe("deployChip", () => {
     expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], new Set())).toEqual({ kind: "queued" });
     expect(deployChip(service, 0, running, null)).toEqual({ kind: "deploying", since: 100 });
   });
+
+  it("shows Deploying on a Service a narrowed Deploy restarts though it didn't select it", () => {
+    expect(deployChip(service, 0, [deployment("running", ["client"])], new Set(["client", "web"]))).toEqual({ kind: "deploying", since: 100 });
+  });
 });
 
 describe("restartedServices", () => {
@@ -279,10 +283,26 @@ describe("restartedServices", () => {
     expect([...restartedServices({ nodes, preview: planned, builds: [] })]).toEqual(["web", "worker"]);
   });
 
-  it("names only the Services it builds anew until its plan is recorded", () => {
+  it("names only the Services it built a new image for until its plan is recorded", () => {
     const nodes = ["api", "web", "static", "dockerfile"].map((name) => node("service", name, "pending"));
-    const builds = [build("api", "building"), build("static", "reused"), build("dockerfile", "reused")];
+    const builds = [build("api", "built"), build("static", "reused"), build("dockerfile", "reused")];
     expect([...restartedServices({ nodes, preview: null, builds })]).toEqual(["api"]);
+  });
+
+  it("never takes a Service off and back on as its build and then its plan come in", () => {
+    const nodes = (outcome: (name: string) => string) => ["api", "web", "static"].map((name) => node("service", name, outcome(name)));
+    const pending = nodes(() => "pending");
+    const steps = [
+      { nodes: pending, preview: null, builds: [build("api", "pending"), build("web", "pending"), build("static", "pending")] },
+      { nodes: pending, preview: null, builds: [build("api", "building"), build("web", "building"), build("static", "building")] },
+      { nodes: pending, preview: null, builds: [build("api", "building"), build("web", "reused"), build("static", "reused")] },
+      { nodes: pending, preview: null, builds: [build("api", "built"), build("web", "reused"), build("static", "reused")] },
+      { nodes: nodes((name) => name === "static" ? "unchanged" : "pending"), preview: planned, builds: [] },
+    ];
+    const shown = (name: string) => steps.map((step) => restartedServices(step).has(name));
+    expect(shown("api")).toEqual([false, false, false, true, true]);
+    expect(shown("web")).toEqual([false, false, false, false, true]);
+    expect(shown("static")).toEqual([false, false, false, false, false]);
   });
 });
 
