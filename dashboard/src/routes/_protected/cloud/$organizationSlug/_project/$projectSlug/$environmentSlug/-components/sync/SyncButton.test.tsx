@@ -136,7 +136,7 @@ it("reads In sync once nothing is left to sync", async () => {
 });
 
 it("shows a shutdown under way, and Off, ahead of the count", async () => {
-  const removal = { id: "d", number: 3, status: "applied" as const, saved: 0, services: [], runner: null, upload: null, remove: true,
+  const removal = { kind: "deployment" as const, id: "d", number: 3, status: "applied" as const, saved: 0, services: [], runner: null, upload: null, remove: true,
     admitted_by: null, admitted_at: 0, started_at: null, ended_at: null, message: null, push: null, ci: null, held: false, environment_id: "id-fix-api", in_flight: false, outcome: null };
   open({ branch: branchView({ pull_request: { repository_id: 1, number: 142 } }), environments: [
     listing("production", { default: true }), listing("fix-api", { parent: "production", removal }),
@@ -145,6 +145,27 @@ it("shows a shutdown under way, and Off, ahead of the count", async () => {
   const items = await menu();
   // Off until the next push: a Deploy brings it back before that.
   expect(items.getByRole("menuitem", { name: "Deploy fix-api" })).toBeTruthy();
+});
+
+it("reads Closing while a close waits for the sweep, and can close it again", async () => {
+  open({ environments: [
+    listing("production", { default: true }),
+    listing("fix-api", { parent: "production", removal: { kind: "pending", because: "synced", since: 0 } }),
+  ] });
+  expect(await screen.findByRole("button", { name: "Closing" })).toBeTruthy();
+  const items = await menu();
+  expect(items.getByRole("menuitem", { name: "Close fix-api…" }).getAttribute("aria-disabled")).toBeNull();
+});
+
+it("reads Shutting down while a closed pull request's close waits for the sweep, and can shut it down again", async () => {
+  open({ branch: branchView({ pull_request: { repository_id: 1, number: 142 } }), environments: [
+    listing("production", { default: true }),
+    listing("fix-api", { parent: "production", removal: { kind: "pending", because: "pull_request", since: 0 } }),
+  ] });
+  expect(await screen.findByRole("button", { name: "Shutting down" })).toBeTruthy();
+  const items = await menu();
+  expect(items.getByRole("menuitem", { name: "Shut down until the next push" }).getAttribute("aria-disabled")).toBeNull();
+  expect(items.getByRole("menuitem", { name: "Close fix-api…" }).getAttribute("aria-disabled")).toBeNull();
 });
 
 it("holds Keep, Closes in and Close in its menu", async () => {

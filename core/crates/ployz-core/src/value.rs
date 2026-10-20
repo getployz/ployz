@@ -241,13 +241,13 @@ validated_string_newtype!(
 
 validated_string_newtype!(
     /// A generated domain's prefix under the Cluster Domain: one DNS label.
-    DomainPrefix, "domain prefix", "one DNS label: lowercase letters, digits and '-'",
+    DomainPrefix, "domain prefix", "one DNS label: up to 63 lowercase letters, digits and '-', starting and ending with a letter or digit",
     |value| is_dns_label(value)
 );
 
 validated_string_newtype!(
     /// A Service Template's ID: one DNS label, such as `postgres`.
-    ServiceTemplateId, "Service Template ID", "one DNS label: lowercase letters, digits and '-'",
+    ServiceTemplateId, "Service Template ID", "one DNS label: up to 63 lowercase letters, digits and '-', starting and ending with a letter or digit",
     |value| is_dns_label(value)
 );
 

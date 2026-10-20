@@ -33,6 +33,8 @@ function InvitePage() {
       <div className="w-full max-w-md">
         {invite === null ? (
           <Notice title="This invite doesn't exist" detail="Check the link, or ask for a new one." signedIn={session !== null} />
+        ) : invite.member ? (
+          <Member invite={invite} />
         ) : invite.state !== "pending" ? (
           <Notice title={UNUSABLE[invite.state]} detail={`Ask someone in ${invite.organization} for a new one.`} signedIn={session !== null} />
         ) : session ? (
@@ -55,6 +57,18 @@ function Notice({ title, detail, signedIn }: { title: string; detail: string; si
       </div>
       <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
         {signedIn ? "Go to Cloud" : "Sign in"}
+      </Link>
+    </div>
+  );
+}
+
+function Member({ invite }: { invite: Invite }) {
+  return (
+    <div className="flex flex-col items-center gap-6 text-center">
+      <PloyzMark className="size-11" decorative />
+      <h1 className="text-xl font-semibold">You're in {invite.organization}</h1>
+      <Link to="/cloud/$organizationSlug/~" params={{ organizationSlug: invite.slug }} reloadDocument className={buttonVariants({ variant: "outline" })}>
+        Open
       </Link>
     </div>
   );

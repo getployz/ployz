@@ -136,8 +136,15 @@ impl Tool for ServiceAdd {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let staged = match (self.image, self.repository) {
-            (Some(_), Some(_)) | (None, None) => {
-                return Err(Refusal::invalid("Give image or repository, not both", "image").into());
+            (None, None) => {
+                return Err(Refusal::invalid("Give an image or a repository", "image").into());
+            }
+            (Some(_), Some(_)) => {
+                return Err(Refusal::invalid(
+                    "Give an image or a repository, not both",
+                    "repository",
+                )
+                .into());
             }
             (Some(image), None) => {
                 if self.branch.is_some() {
@@ -391,14 +398,10 @@ impl ServiceUpdate {
         }
         for (from, to) in &self.rename_env {
             let Some(to) = to.as_str() else {
-                return Err(Refusal::invalid(
-                    "A new variable name is text",
-                    &format!("rename_env.{from}"),
-                )
-                .into());
+                return Err(Refusal::invalid("A new variable name is text", "rename_env").into());
             };
             changes.push(Change::Rename {
-                path: path(&format!("rename_env.{from}"), &format!("env.{from}"))?,
+                path: path("rename_env", &format!("env.{from}"))?,
                 to: to.to_owned(),
                 update_references: self.update_references,
             });

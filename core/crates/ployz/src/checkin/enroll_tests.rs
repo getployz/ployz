@@ -501,6 +501,7 @@ async fn an_attempt_cut_short_is_sent_again_so_cloud_serves_it_to_resume() {
                 stage: EnrollStage::Joining,
                 failure: None,
             }),
+            no_cluster: false,
         },
         &fixture.paths,
     );
@@ -672,6 +673,7 @@ fn previous(fixture: &Fixture, answer: Seen, stage: EnrollStage) {
                 stage,
                 failure: None,
             }),
+            no_cluster: false,
         },
         &fixture.paths,
     );
