@@ -212,8 +212,10 @@ pub(super) struct DiscoveryService {
     pub(super) lose_upgrade_reply: Arc<AtomicBool>,
     /// Every operator endpoint this entry took for a peer.
     pub(super) selected_endpoints: Arc<Mutex<Vec<ployz_core::SelectEndpointRequest>>>,
-    /// UpdateMachine fails in transport, as when the target is off the mesh.
+    /// UpdateMachine gets no answer from its target, as when the target is off the mesh.
     pub(super) update_unavailable: bool,
+    /// The target refuses UpdateMachine before changing anything, as one without its Cluster store.
+    pub(super) update_refusal: Option<RpcError>,
     /// SelectEndpoint is unimplemented, as on a daemon older than it.
     pub(super) select_unimplemented: bool,
 }
@@ -278,6 +280,7 @@ impl DiscoveryService {
             lose_upgrade_reply: Arc::default(),
             selected_endpoints: Arc::default(),
             update_unavailable: false,
+            update_refusal: None,
             select_unimplemented: false,
         }
     }
@@ -1265,7 +1268,14 @@ impl FakeMachine for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         if self.update_unavailable {
-            return Err(Status::unavailable("target Machine RPC timed out"));
+            return Err(ployz_core::rpc::target_unanswered_status(
+                &std::io::Error::new(std::io::ErrorKind::TimedOut, "target Machine RPC timed out"),
+            ));
+        }
+        if let Some(error) = &self.update_refusal {
+            return Ok(Response::new(
+                RpcResponse::from(error.clone()).encode().unwrap(),
+            ));
         }
         let target = ployz_core::MachineTarget::parse(
             request.metadata().get("machine").unwrap().to_str().unwrap(),

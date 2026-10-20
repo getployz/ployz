@@ -2,9 +2,9 @@ import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@ployz/sdk";
 import type { JsonObject } from "#/db/tables";
-import { Effect, Schema } from "effect";
-import { asRecord, asString, canonicalJson } from "#/lib/json";
-import { type CommandCall, type Ran, refused } from "#/modules/commands/command.server";
+import { Effect } from "effect";
+import { canonicalJson } from "#/lib/json";
+import { type Called, type CommandCall, inputSchema, jsonSchema } from "#/modules/commands/command.server";
 import { COMMANDS, RUNNABLE } from "#/modules/commands/registry.server";
 import type { Caller } from "#/modules/identity/actor";
 import { PERMISSIONS } from "#/modules/organization/permissions";
@@ -13,35 +13,6 @@ export type Published = (typeof COMMANDS)[number];
 type Runnable = (typeof RUNNABLE)[number];
 export type CommandName = Runnable["name"];
 type OutputOf<N extends string> = Extract<Runnable, { name: N }>["output"]["Type"];
-
-const EMPTY_INPUT: JsonObject = { type: "object", properties: {}, required: [], additionalProperties: false };
-
-/** `{anyOf: [{type: "string"}, {type: "null"}]}` as `{type: ["string", "null"]}`, the one form `ployz` reads. */
-function nullableAsTypes(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(nullableAsTypes);
-  const node = asRecord(value);
-  if (node === null) return value;
-  const walked = Object.fromEntries(Object.entries(node).map(([key, item]) => [key, nullableAsTypes(item)]));
-  const [first, second, ...rest] = Array.isArray(walked["anyOf"]) ? walked["anyOf"] : [];
-  const nonNull = asRecord(first ?? null);
-  const isNull = asRecord(second ?? null);
-  const type = asString(nonNull?.["type"] ?? null);
-  if (rest.length > 0 || nonNull === null || isNull === null || type === null || Object.keys(nonNull).length !== 1) return walked;
-  if (Object.keys(isNull).length !== 1 || isNull["type"] !== "null") return walked;
-  const { anyOf: _anyOf, ...siblings } = walked;
-  return { ...siblings, type: [type, "null"] };
-}
-
-function jsonSchema(schema: Schema.Top): JsonObject {
-  return asRecord(nullableAsTypes(asRecord(Schema.toJsonSchemaDocument(schema).schema))) ?? {};
-}
-
-/** Effect writes an empty struct as "object or array" and drops an empty `required`; `ployz` reads neither. */
-export function inputSchema(command: Published): JsonObject {
-  if (Object.keys(command.input.fields).length === 0) return EMPTY_INPUT;
-  const schema = jsonSchema(command.input);
-  return { ...schema, required: schema["required"] ?? [] };
-}
 
 function entry(command: Published): JsonObject {
   return {
@@ -56,7 +27,7 @@ function entry(command: Published): JsonObject {
     agents: command.agents,
     typed: command.typed,
     positional: [...command.positional],
-    input: inputSchema(command),
+    input: inputSchema(command.input),
     output: jsonSchema(command.output),
     render: command.render,
   };
@@ -82,8 +53,9 @@ export function findCommand(name: string): Runnable | undefined {
 export function runCommand<N extends string>(caller: Caller, name: N, raw: JsonValue, call: CommandCall) {
   const command = findCommand(name);
   if (command === undefined) {
-    return Effect.succeed(refused("unknown_command", `Cloud has no command ${name}. Update ployz to see what it offers.`));
+    const message = `Cloud has no command ${name}. Update ployz to see what it offers.`;
+    return Effect.succeed({ ok: false, refusal: { code: "unknown_command", message, details: null, writes: "none" } } as const);
   }
   // SAFETY: `command.name === name`, so its output is the output the name selects.
-  return command.invoke(caller, raw, call) as Effect.Effect<Ran<OutputOf<N>>, Effect.Error<ReturnType<Runnable["invoke"]>>, Effect.Services<ReturnType<Runnable["invoke"]>>>;
+  return command.invoke(caller, raw, call) as Effect.Effect<Called<OutputOf<N>>, Effect.Error<ReturnType<Runnable["invoke"]>>, Effect.Services<ReturnType<Runnable["invoke"]>>>;
 }

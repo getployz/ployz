@@ -1,4 +1,5 @@
 import { onlineManager } from "@tanstack/react-query";
+import { installEgressGuard } from "#/test/egress-guard";
 
 process.env["NODE_ENV"] ??= "test";
 process.env["DATABASE_URL"] ??= "postgres://postgres:postgres@localhost:5432/ployz_cloud";
@@ -10,9 +11,12 @@ process.env["POLAR_ACCESS_TOKEN"] ??= "test-polar-access-token";
 process.env["POLAR_SERVER"] ??= "sandbox";
 process.env["POLAR_WEBHOOK_SECRET"] ??= "test-polar-webhook-secret";
 process.env["POLAR_PRODUCT_ID"] ??= "22222222-2222-4222-8222-222222222222";
-// Refuses connections, so no test reaches the real Hosted DNS by accident.
-process.env["PLOYZ_HOSTED_DNS_URL"] ??= "http://127.0.0.1:9/";
+// Refuses connections, so no test reaches the real Hosted DNS by accident, whatever the shell exports.
+process.env["PLOYZ_HOSTED_DNS_URL"] = "http://127.0.0.1:9/";
 process.env["APP_ENCRYPTION_SECRET"] ??= "test-app-encryption-secret-1234567890";
+
+// No test reaches a production service, whatever URL a provider names: only loopback answers.
+installEgressGuard();
 
 // isolate: false lets a jsdom file inherit the previous file's rendered tree; node files have no document.
 globalThis.document?.body.replaceChildren();

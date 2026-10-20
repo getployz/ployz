@@ -1,6 +1,5 @@
 import { type ConfigCommand, type ConfigCommitted, type ConfigStore, type MachineId, RpcError } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -19,6 +18,7 @@ import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
 
 type StoreWrites = AppConfig | GithubApi | InngestClient | OrganizationRuntime | SecretEncryption;
 
@@ -47,7 +47,7 @@ describe("volume placement", () => {
   const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore | StoreWrites>) => harness.runEffect(operation.pipe(
     Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))))),
     Effect.provideService(GithubApi, fakeGithubApi().service),
-    Effect.provideService(InngestClient, new Inngest({ id: "volume-placement-test" })),
+    Effect.provideService(InngestClient, sendsNowhere()),
     Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("no Cluster") }),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({

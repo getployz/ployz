@@ -65,6 +65,7 @@ fn shop() -> (ConfigStore, Actor) {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(VOLUME).unwrap(),
                 environment: EnvironmentRef::default(),
@@ -327,6 +328,7 @@ fn a_volume_created_with_its_storage_locked_refuses_other_storage_before_any_dep
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: true,
+                restored_from: None,
                 storage: managed,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -360,6 +362,37 @@ fn a_volume_created_with_its_storage_locked_refuses_other_storage_before_any_dep
     }
     assert_eq!(named("restored").volume.storage, managed);
     assert!(!named("data").storage_locked);
+}
+
+#[test]
+fn a_volume_restores_only_from_a_volume_in_its_environment() {
+    let (store, who) = shop();
+    let restore = |volume: &str| {
+        store.write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: true,
+                restored_from: Some(ployz_core::config::RestoredFrom {
+                    volume: volume.to_owned(),
+                    at: 1_790_000_000,
+                }),
+                storage: VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("restored").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+    };
+    let elsewhere = restore("00000000-0000-4000-8000-0000000000ff").unwrap_err();
+    assert_eq!(elsewhere.code, RpcErrorCode::NotFound, "{elsewhere:?}");
+    assert!(
+        listed(&store, &who)
+            .iter()
+            .all(|listing| listing.volume.name.as_str() != "restored")
+    );
+    restore(VOLUME).unwrap();
 }
 
 #[test]
@@ -431,6 +464,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
         &CreateVolume {
             shared_writes: false,
             storage_locked: false,
+            restored_from: None,
             storage: ployz_core::config::VolumeKind::Docker {},
             id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
             environment: EnvironmentRef::default(),
@@ -1200,6 +1234,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
             &who,
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 shared_writes: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(LOGS).unwrap(),
@@ -1344,6 +1379,7 @@ fn a_new_unmounted_volume_is_not_deployed_by_a_deploy_that_succeeded() {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -1581,6 +1617,7 @@ fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
     let both = |shared_writes| CreateVolume {
         shared_writes,
         storage_locked: false,
+        restored_from: None,
         storage: VolumeKind::Docker {},
         id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
         environment: EnvironmentRef::default(),
@@ -1624,6 +1661,7 @@ fn a_new_volume_on_a_second_replica_is_refused_with_an_add_that_works() {
     let add = |shared_writes| CreateVolume {
         shared_writes,
         storage_locked: true,
+        restored_from: None,
         storage: VolumeKind::Provisioned {
             maximum_bytes: ProvisionedVolumeMaximumBytes::parse_gb("1.5GB").unwrap(),
         },
@@ -1674,6 +1712,7 @@ fn a_new_volume_refused_in_a_batch_that_creates_its_service_has_no_next() {
             BatchCommand::CreateVolume(CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
                 environment: EnvironmentRef::default(),

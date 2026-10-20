@@ -84,7 +84,7 @@ jobs:
         run: |
           runner=ubuntu-24.04
           if [ "$ONLINE" = true ]; then
-            sleep 15
+            sleep 5
             if idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
               echo "Idle ployz-omarchy runners: $idle"
               [ "$idle" -ge 1 ] && runner=ployz-omarchy

@@ -193,7 +193,8 @@ async fn open_and_admit(
                     Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return Err(outcome.with_work(evidence.clone())),
                     _ => return Err(failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence.clone())),
                 },
-                _ => return Err(failed(Stage::Admission, "Build admission was not observed; source was not uploaded").with_work(evidence.clone())),
+                Ok(None) => return Err(failed(Stage::Admission, "Build stream ended before admission; source was not uploaded").with_work(evidence.clone())),
+                Err(status) => return Err(failed(Stage::Admission, format!("{}; source was not uploaded", disconnected(status))).with_work(evidence.clone())),
             },
             () = tokio::time::sleep_until(admission_deadline) => return Err(failed(Stage::Queued, "Build admission deadline expired; source was not uploaded").with_work(evidence.clone())),
         }
@@ -290,7 +291,8 @@ async fn execute_attempt(
                         },
                         _ => return unknown(stage, "invalid Build response; termination was not confirmed").with_work(evidence),
                     },
-                    _ => return unknown(stage, "Build stream disconnected; termination was not confirmed").with_work(evidence),
+                    Ok(None) => return unknown(stage, "Build stream ended without a result; termination was not confirmed").with_work(evidence),
+                    Err(status) => return unknown(stage, format!("{}; termination was not confirmed", disconnected(status))).with_work(evidence),
                 },
                 result = &mut upload, if !uploaded => {
                     uploaded = true;
@@ -393,6 +395,13 @@ fn validate_outcome(
     outcome
 }
 
+fn disconnected(status: tonic::Status) -> String {
+    format!(
+        "Build stream disconnected: {}",
+        crate::ui::row(&crate::connect::TransportError::from(status))
+    )
+}
+
 pub(super) fn failed(stage: Stage, message: impl Into<String>) -> Outcome {
     Outcome::Failed {
         work: Default::default(),
@@ -464,6 +473,35 @@ mod tests {
             ),
             Outcome::Images { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_build_stream_names_its_transport_cause() {
+        let (client, _server) = crate::connect::test_support::rpc_bidi_client(|_| async {
+            let queued = remote::encode(&Event::Progress(Progress::Stage(Stage::Queued))).unwrap();
+            Ok(tonic::Response::new(tokio_stream::iter([
+                Ok(queued),
+                Err(tonic::Status::unavailable("relay connection reset")),
+            ])))
+        })
+        .await;
+        let Err(Outcome::Failed { stage, message, .. }) = open_and_admit(
+            &client,
+            Input::Check(Vec::new()),
+            MachineId::random(),
+            &CancellationToken::new(),
+            &mut |_| {},
+            &Default::default(),
+        )
+        .await
+        else {
+            panic!("a dropped stream was not reported as a failed admission")
+        };
+        assert_eq!(stage, Stage::Admission);
+        assert_eq!(
+            message,
+            "Build stream disconnected: relay connection reset; source was not uploaded"
+        );
     }
 
     #[tokio::test]

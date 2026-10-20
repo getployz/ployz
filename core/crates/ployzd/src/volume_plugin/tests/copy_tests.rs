@@ -780,6 +780,19 @@ async fn landed(socket: &Path, target: &str) -> Value {
     panic!("the pull never settled");
 }
 
+/// Polls the copy until the pull stopped with a failure. A copy the receive leaves writable
+/// still shows the target read-only for a moment before the pull checks its properties.
+async fn failed(socket: &Path) -> String {
+    for _ in 0..300 {
+        let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+        if let Some(failure) = copy.pointer("/Ok/pull/failure").and_then(Value::as_str) {
+            return failure.to_owned();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the pull never failed");
+}
+
 /// Resends the Pull until it finishes the landed receive. Inspect shows the target a
 /// moment before the receive task records its outcome, and a resend in that window
 /// still finds the receive running.
@@ -796,7 +809,8 @@ async fn finished(socket: &Path, target: &str) -> Value {
 
 #[tokio::test]
 async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target() {
-    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let source = Source::start(Some(BOUND), "").await;
+    source.hold("target=", "snapshot w-1-1 77\n");
     let test = TestDir::new();
     let (socket, server) = puller(&test, &["root"], source.port);
 
@@ -810,6 +824,7 @@ async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target
         "{:?}",
         source.requests()
     );
+    source.release();
     let copy = landed(&socket, "w-1-1").await;
     assert_eq!(copy.pointer("/Ok/newest/guid"), Some(&json!("77")));
     assert_eq!(copy.pointer("/Ok/pull/target"), Some(&json!("w-1-1")));
@@ -836,8 +851,7 @@ async fn a_pull_that_leaves_the_copy_writable_fails() {
     let (socket, server) = puller(&test, &["root", "readonly-lost"], source.port);
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
-    let copy = landed(&socket, "w-1-1").await;
-    let failure = copy.pointer("/Ok/pull/failure").unwrap().as_str().unwrap();
+    let failure = failed(&socket).await;
     assert!(failure.contains("readonly=off"), "{failure}");
     server.abort();
 }
