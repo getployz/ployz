@@ -32,7 +32,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "c0416cad-68b4-4d03-98d9-c3daae09f23a",
+      "id": "c662a2b2-1a86-40cc-8677-76e1cc0a2eb6",
       "merged": false,
       "name": "fix-api",
       "parent": "production",
@@ -43,7 +43,7 @@ stdout:
     {
       "branch_setup": [],
       "default": true,
-      "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+      "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
       "merged": false,
       "name": "production",
       "parent": null,
@@ -54,7 +54,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "f575545e-fcaf-4cbb-bea1-0a10d0dd52eb",
+      "id": "3f39a13f-2537-41d1-9e1c-ec162cfff7d2",
       "merged": false,
       "name": "search",
       "parent": "staging",
@@ -65,7 +65,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "0b58b231-d9d7-4fe2-9d91-29b92d4d1895",
+      "id": "5c9b8aa9-79a5-4585-b805-d82447253df5",
       "merged": false,
       "name": "staging",
       "parent": "production",
@@ -75,7 +75,7 @@ stdout:
     }
   ],
   "project": {
-    "id": "2e071d35-63e2-4eb6-829e-a201a9427ffa",
+    "id": "032db7cf-57f6-4328-9189-cc0454a0f26e",
     "name": "shop"
   }
 }
@@ -119,7 +119,7 @@ stdout:
 Made Branch shop/hotfix of production.
 Staged: worker, configs.sentry
 Uses api live from production.
-Uses 764d670a-b933-456c-a077-c731b21a41cd live, but nothing runs it.
+Uses fed4ca23-21b6-4279-a950-6f3465a335b9 live, but nothing runs it.
 ```
 
 stderr:
@@ -136,7 +136,7 @@ $ ployz --json env branch preview --copy postgres --live pg-data
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api","postgres","web","worker","volumes.pg-data","configs.sentry"]},"message":"No node named pg-data"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["api","web","worker","postgres","volumes.pg-data","configs.sentry"]},"message":"No node named pg-data"}}
 ```
 
 ### env branch --json --live of a Volume the Branch copies (refused)
@@ -164,7 +164,7 @@ stdout:
   "branch": {
     "closes_at": null,
     "environment": {
-      "id": "a3a2d577-3a83-48cc-86ef-651d1e8f2949",
+      "id": "de92fbee-d556-472d-8751-85dc726ba8e7",
       "name": "preview",
       "project": "shop",
       "revision": 2
@@ -181,7 +181,7 @@ stdout:
       },
       {
         "data": false,
-        "name": "764d670a-b933-456c-a077-c731b21a41cd",
+        "name": "fed4ca23-21b6-4279-a950-6f3465a335b9",
         "owner": null,
         "used_by": [
           "web"
@@ -300,7 +300,7 @@ stdout:
 ```
 Copied into Branch shop/hotfix of production.
 Staged: api
-Uses 764d670a-b933-456c-a077-c731b21a41cd live, but nothing runs it.
+Uses fed4ca23-21b6-4279-a950-6f3465a335b9 live, but nothing runs it.
 ```
 
 stderr:
@@ -373,13 +373,10 @@ $ ployz deploy --env hotfix
 stderr:
 ```
 Deploying #2 of shop/hotfix
-  api (depth 0): waiting
-  worker (depth 1): waiting
-  Config sentry: pending
-! api-hotfix.ada.ployz.test is not published yet. Ployz Cloud publishes it once it reaches port 80 on 2001:db8::10.
-  api (depth 0): booting 0/1
+  api (depth 0): waiting 0/1
   worker (depth 1): waiting 0/1
-! api's image traefik/whoami:v1.11.0 exposes 80; its domains send to 8080. Set the domain port or PORT.
+  Config sentry: pending
+  api (depth 0): booting 0/1
   api (depth 0): switching 1/1
   api (depth 0): switched 1/1
   worker (depth 1): booting 0/1
@@ -403,8 +400,9 @@ $ ployz env sync --env hotfix --to --plan
 
 stdout:
 ```
-hotfix → production (version 34:76c98ded01f9e498):
-  api.env.LOG_LEVEL: "warn" → "info"
+hotfix → production (version 33:49c5fcaa4815d8a8):
+  api (update)
+    api.env.LOG_LEVEL: "warn" → "info"
 ```
 
 ### env sync --plan --json to the Parent
@@ -418,19 +416,19 @@ stdout:
 ```
 {
   "from": {
-    "id": "920939c0-1f49-40f9-9ea1-77325ac9f8d4",
+    "id": "08c69503-05d4-4b35-81cd-5d874c81d9b7",
     "name": "hotfix",
     "project": "shop",
     "revision": 4
   },
   "into": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
-    "revision": 34
+    "revision": 33
   },
   "never_synced": [],
-  "next": "ployz env sync --to --version 34:76c98ded01f9e498 --env hotfix",
+  "next": "ployz env sync --to --version 33:49c5fcaa4815d8a8 --env hotfix",
   "proposal": null,
   "rows": [
     {
@@ -442,12 +440,12 @@ stdout:
       "name": "env.LOG_LEVEL",
       "node": "api",
       "requires": null,
-      "row": "254b1264-6d96-4e34-86d2-795920ddab60:variables.LOG_LEVEL",
+      "row": "18a96a82-7c6a-4837-9671-36d65236b464:variables.LOG_LEVEL",
       "secret": null,
       "ticked": true
     }
   ],
-  "version": "34:76c98ded01f9e498"
+  "version": "33:49c5fcaa4815d8a8"
 }
 ```
 
@@ -466,7 +464,7 @@ Staged: api
 
 stderr:
 ```
-undo: ployz env sync --undo c608bf28-13f5-4de6-877b-68029da66911
+undo: ployz env sync --undo 7d616c21-76a1-4cc3-a59e-61229ec58c57
 next: ployz deploy --env production
 ```
 
@@ -518,22 +516,22 @@ stdout:
 {
   "closing": false,
   "from": {
-    "id": "920939c0-1f49-40f9-9ea1-77325ac9f8d4",
+    "id": "08c69503-05d4-4b35-81cd-5d874c81d9b7",
     "name": "hotfix",
     "project": "shop",
     "revision": 5
   },
   "into": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
-    "revision": 37
+    "revision": 36
   },
   "next": "ployz deploy --env production",
   "staged": [
     "api"
   ],
-  "sync": "8e77a8cf-6b36-4133-841c-c27b3de25eb8"
+  "sync": "c395f1d2-3014-4711-8833-4292301620ff"
 }
 ```
 
@@ -546,7 +544,7 @@ $ ployz env sync --env fix-api --from production --plan
 
 stdout:
 ```
-production → fix-api (version 12:b580324783b24b95):
+production → fix-api (version 12:0bdd8a6c50f1281e):
   nothing to sync
 ```
 
@@ -559,9 +557,11 @@ $ ployz env sync --env fix-api --to --plan
 
 stdout:
 ```
-fix-api → production (version 38:8ecbfd252e413cdd):
-  api.env.LOG_LEVEL: "warn" → "debug"
-  web.startCommand: null → "npm run serve" (new)
+fix-api → production (version 37:5069a2dc6dfae410):
+  api (update)
+    api.env.LOG_LEVEL: "warn" → "debug"
+  web (update)
+    web.startCommand: null → "npm run serve" (new)
 ```
 
 ## rm
@@ -579,11 +579,16 @@ error: Removing Environment hotfix deletes its configuration, history and every 
 retry: ployz env rm hotfix --confirm shop/hotfix
 ```
 
-### env rm
+### env rm (Ada approves it)
 
 ```console
 $ ployz env rm hotfix --confirm shop/hotfix
-# exit 124
+# exit 0
+```
+
+stdout:
+```
+Removed Environment shop/hotfix.
 ```
 
 stderr:
@@ -592,10 +597,17 @@ Removing shop/hotfix removes Service api, removes Service worker.
 This removal destroys 2 things:
   ✕ removes Service api
   ✕ removes Service worker
-Approve 62f502bd-7ee2-4555-afd0-420cbe8213bf in Ployz Cloud at http://localhost:38265
-next: ployz org approval approve 62f502bd-7ee2-4555-afd0-420cbe8213bf
-Waiting for approval in Ployz Cloud… 
-Timed out after 300s
+Approve a92fe60f-c3b8-4098-bf14-a8a398de205c in Ployz Cloud at http://localhost:46289
+next: ployz org approval approve a92fe60f-c3b8-4098-bf14-a8a398de205c
+Waiting for approval in Ployz Cloud… approved.
+Deploying #3 of shop/hotfix
+  api: starting 0/1
+  worker: waiting to remove 0/1
+  Config sentry: pending
+  api: removing 0/1
+  api: removed 1/1
+  worker: removing 0/1
+  worker: removed 1/1
 ```
 
 ### env rm --json
@@ -610,7 +622,7 @@ stdout:
 {
   "deployments": [],
   "environment": {
-    "id": "a3a2d577-3a83-48cc-86ef-651d1e8f2949",
+    "id": "de92fbee-d556-472d-8751-85dc726ba8e7",
     "name": "preview",
     "project": "shop",
     "revision": 2
@@ -631,7 +643,6 @@ stdout:
 ```
 ENVIRONMENT	DEFAULT	PROTECTED	BRANCH OF	REMOVAL	BRANCH SETUP
 fix-api	-	-	production	-	-
-hotfix	-	-	production	-	-
 production	default	yes	-	-	-
 search	-	-	staging	-	-
 staging	-	-	production	-	-

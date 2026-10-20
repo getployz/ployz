@@ -1,24 +1,24 @@
 === deploy --plan, nothing staged :: $ ployz deploy --plan
 No authored changes to deploy in shop/production.
 Decided by the Servers when it runs: which containers start and stop.
-next: ployz deploy --expect-version 63:38:0.71
+next: ployz deploy --expect-version 14:1:0.1
 
 === deploy --plan --json, nothing staged :: $ ployz --json deploy --plan
 {
   "changes": [],
   "environment": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
-    "revision": 63
+    "revision": 14
   },
   "ingress": [],
   "namespace": "shop-production",
-  "next": "ployz deploy --expect-version 63:38:0.71",
+  "next": "ployz deploy --expect-version 14:1:0.1",
   "unresolved": [
     "operations"
   ],
-  "version": "63:38:0.71"
+  "version": "14:1:0.1"
 }
 
 === diff :: $ ployz diff
@@ -31,7 +31,7 @@ next: ployz deploy
 web (update)
   web.env.GREETING: null → "hello"
 Decided by the Servers when it runs: which containers start and stop.
-next: ployz deploy --expect-version 64:38:0.73
+next: ployz deploy --expect-version 15:1:0.3
 
 === deploy --plan --json with a staged change :: $ ployz --json deploy --plan
 {
@@ -39,11 +39,11 @@ next: ployz deploy --expect-version 64:38:0.73
     {
       "comparison": "head",
       "data": null,
-      "id": "e358ac6a-560a-468f-9f9f-43fc58547dfd",
+      "id": "290cf95f-21a3-4e8b-96e6-8bf4e5bec636",
       "lifecycle": "update",
       "name": "web",
       "restarts": [],
-      "row": "e358ac6a-560a-468f-9f9f-43fc58547dfd:node",
+      "row": "290cf95f-21a3-4e8b-96e6-8bf4e5bec636:node",
       "settings": [
         {
           "after": "hello",
@@ -51,36 +51,36 @@ next: ployz deploy --expect-version 64:38:0.73
           "canRestore": true,
           "kind": "add",
           "path": "web.env.GREETING",
-          "row": "e358ac6a-560a-468f-9f9f-43fc58547dfd:variables.GREETING"
+          "row": "290cf95f-21a3-4e8b-96e6-8bf4e5bec636:variables.GREETING"
         }
       ],
       "type": "service"
     }
   ],
   "environment": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
-    "revision": 64
+    "revision": 15
   },
   "ingress": [],
   "namespace": "shop-production",
-  "next": "ployz deploy --expect-version 64:38:0.73",
+  "next": "ployz deploy --expect-version 15:1:0.3",
   "unresolved": [
     "operations"
   ],
-  "version": "64:38:0.73"
+  "version": "15:1:0.3"
 }
 
 === deploy a staged change (live follower) :: $ ployz deploy
-Deploying #89 of shop/production
+Deploying #4 of shop/production
 ✔ Volume pg-data  unchanged
 ✔ Config sentry  unchanged
 depth 0
   ✔ api  unchanged
   ✔ postgres  unchanged
 depth 1
-  ✔ web  switched 1/1  14.0s
+  ✔ web  switched 1/1  15.0s
   ✔ worker  unchanged
 ! acme.com answers from another server. Point it at 2001:db8::10. A certificate cannot be issued until then.
 ! web's image nginx:1.27-alpine exposes 80; its domains send to 8080. Set the domain port or PORT.
@@ -92,27 +92,27 @@ depth 1
 
 === deployment ls :: $ ployz deployment ls --limit 5
 DEPLOYMENT   STATUS      SAVED REVISION
-#93          ✔ applied   43
-#92          ✔ applied   42
-#91          ✔ applied   41
-#90          ✔ applied   40
-#89          ✔ applied   39
-next: ployz deployment ls --cursor ODk --limit 5
+#8           ✔ applied   6
+#7           ✔ applied   5
+#6           ✔ applied   4
+#5           ✔ applied   3
+#4           ✔ applied   2
+next: ployz deployment ls --cursor NA --limit 5
 
 === deployment ls --json :: $ ployz --json deployment ls --limit 2
 {
   "deployments": [
     {
-      "admitted_at": 1792518418,
+      "admitted_at": 1792529710,
       "admitted_by": "Ada Lovelace",
       "ci": null,
-      "ended_at": 1792518445,
-      "environment_id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+      "ended_at": 1792529740,
+      "environment_id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
       "held": false,
-      "id": "a50825a1-5a3c-4faa-ae8c-174e74ff152a",
+      "id": "211132da-b5f8-4aa6-b0c2-128609292e36",
       "in_flight": false,
       "message": null,
-      "number": 93,
+      "number": 8,
       "outcome": {
         "cause": [],
         "reason": null,
@@ -130,16 +130,16 @@ next: ployz deployment ls --cursor ODk --limit 5
       },
       "push": null,
       "remove": false,
-      "runner": "cloud-01M5D6RVR9D8YYQHFD5VJXTDPR",
-      "saved": 43,
+      "runner": "cloud-01M5DHHFZSBQ9EY61CR5TV7C6G",
+      "saved": 6,
       "services": [],
       "ships": [
         "api",
-        "postgres",
         "web",
-        "worker"
+        "worker",
+        "postgres"
       ],
-      "started_at": 1792518425,
+      "started_at": 1792529718,
       "status": "applied",
       "upload": null,
       "warnings": [
@@ -162,29 +162,29 @@ next: ployz deployment ls --cursor ODk --limit 5
             ],
             "image": "nginx:1.27-alpine",
             "machines": [
-              "c109917d492d460a994dbf4b43162146"
+              "97d7ad4b93fc402d9b5433d23f9e9fef"
             ],
             "routed": [
               8080
             ],
             "service": "web",
-            "service_id": "0bc3883482ba480298f83b694d408c4d",
+            "service_id": "efd64e3b7a174e83bb1752008730a5d8",
             "type": "image_port_mismatch"
           }
         }
       ]
     },
     {
-      "admitted_at": 1792518386,
+      "admitted_at": 1792529678,
       "admitted_by": "Ada Lovelace",
       "ci": null,
-      "ended_at": 1792518412,
-      "environment_id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+      "ended_at": 1792529707,
+      "environment_id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
       "held": false,
-      "id": "0d24bb11-31f5-4ba8-a8a6-637e03674529",
+      "id": "9500df1c-4983-44f3-bb1f-680d351bf08e",
       "in_flight": false,
       "message": null,
-      "number": 92,
+      "number": 7,
       "outcome": {
         "cause": [],
         "reason": null,
@@ -202,16 +202,16 @@ next: ployz deployment ls --cursor ODk --limit 5
       },
       "push": null,
       "remove": false,
-      "runner": "cloud-01M5D6QWKX9WRPJFZAAYMYW5EG",
-      "saved": 42,
+      "runner": "cloud-01M5DHGG4WCNQKTKEB5KXECH2S",
+      "saved": 5,
       "services": [],
       "ships": [
         "api",
-        "postgres",
         "web",
-        "worker"
+        "worker",
+        "postgres"
       ],
-      "started_at": 1792518393,
+      "started_at": 1792529687,
       "status": "applied",
       "upload": null,
       "warnings": [
@@ -234,13 +234,13 @@ next: ployz deployment ls --cursor ODk --limit 5
             ],
             "image": "nginx:1.27-alpine",
             "machines": [
-              "c109917d492d460a994dbf4b43162146"
+              "97d7ad4b93fc402d9b5433d23f9e9fef"
             ],
             "routed": [
               8080
             ],
             "service": "web",
-            "service_id": "0bc3883482ba480298f83b694d408c4d",
+            "service_id": "efd64e3b7a174e83bb1752008730a5d8",
             "type": "image_port_mismatch"
           }
         }
@@ -248,23 +248,23 @@ next: ployz deployment ls --cursor ODk --limit 5
     }
   ],
   "environment": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
-    "revision": 68
+    "revision": 19
   },
   "in_flight": [],
   "latest": {
-    "admitted_at": 1792518418,
+    "admitted_at": 1792529710,
     "admitted_by": "Ada Lovelace",
     "ci": null,
-    "ended_at": 1792518445,
-    "environment_id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "ended_at": 1792529740,
+    "environment_id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "held": false,
-    "id": "a50825a1-5a3c-4faa-ae8c-174e74ff152a",
+    "id": "211132da-b5f8-4aa6-b0c2-128609292e36",
     "in_flight": false,
     "message": null,
-    "number": 93,
+    "number": 8,
     "outcome": {
       "cause": [],
       "reason": null,
@@ -282,16 +282,16 @@ next: ployz deployment ls --cursor ODk --limit 5
     },
     "push": null,
     "remove": false,
-    "runner": "cloud-01M5D6RVR9D8YYQHFD5VJXTDPR",
-    "saved": 43,
+    "runner": "cloud-01M5DHHFZSBQ9EY61CR5TV7C6G",
+    "saved": 6,
     "services": [],
     "ships": [
       "api",
-      "postgres",
       "web",
-      "worker"
+      "worker",
+      "postgres"
     ],
-    "started_at": 1792518425,
+    "started_at": 1792529718,
     "status": "applied",
     "upload": null,
     "warnings": [
@@ -314,24 +314,24 @@ next: ployz deployment ls --cursor ODk --limit 5
           ],
           "image": "nginx:1.27-alpine",
           "machines": [
-            "c109917d492d460a994dbf4b43162146"
+            "97d7ad4b93fc402d9b5433d23f9e9fef"
           ],
           "routed": [
             8080
           ],
           "service": "web",
-          "service_id": "0bc3883482ba480298f83b694d408c4d",
+          "service_id": "efd64e3b7a174e83bb1752008730a5d8",
           "type": "image_port_mismatch"
         }
       }
     ]
   },
-  "next": "ployz deployment ls --cursor OTI --limit 2",
-  "next_cursor": "OTI"
+  "next": "ployz deployment ls --cursor Nw --limit 2",
+  "next_cursor": "Nw"
 }
 
-=== deployment show by id :: $ ployz deployment show a50825a1-5a3c-4faa-ae8c-174e74ff152a
-Deployment #93 of shop/production: applied
+=== deployment show by id :: $ ployz deployment show 211132da-b5f8-4aa6-b0c2-128609292e36
+Deployment #8 of shop/production: applied
   web: serves its new copies
   api: unchanged
   postgres: unchanged
@@ -340,8 +340,8 @@ Deployment #93 of shop/production: applied
   pg-data: unchanged
   sentry: unchanged
 
-=== deployment show by number :: $ ployz deployment show 93
-Deployment #93 of shop/production: applied
+=== deployment show by number :: $ ployz deployment show 8
+Deployment #8 of shop/production: applied
   web: serves its new copies
   api: unchanged
   postgres: unchanged
@@ -350,115 +350,115 @@ Deployment #93 of shop/production: applied
   pg-data: unchanged
   sentry: unchanged
 
-=== deployment show --json :: $ ployz --json deployment show a50825a1-5a3c-4faa-ae8c-174e74ff152a
+=== deployment show --json :: $ ployz --json deployment show 211132da-b5f8-4aa6-b0c2-128609292e36
 {
-  "admitted_at": 1792518418,
+  "admitted_at": 1792529710,
   "admitted_by": "Ada Lovelace",
   "builds": [],
   "ci": null,
-  "ended_at": 1792518445,
+  "ended_at": 1792529740,
   "environment": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
-    "revision": 68
+    "revision": 19
   },
-  "environment_id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+  "environment_id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
   "held": false,
-  "id": "a50825a1-5a3c-4faa-ae8c-174e74ff152a",
+  "id": "211132da-b5f8-4aa6-b0c2-128609292e36",
   "in_flight": false,
   "message": null,
   "namespace": "shop-production",
   "nodes": [
     {
-      "id": "254b1264-6d96-4e34-86d2-795920ddab60",
+      "id": "18a96a82-7c6a-4837-9671-36d65236b464",
       "name": "api",
       "outcome": "unchanged",
       "rows": [],
       "type": "service"
     },
     {
-      "id": "796ce242-5b1d-451d-8804-42de83e14920",
+      "id": "6ed6ed8f-aae7-4380-b69d-bb11cfd4aae9",
       "name": "postgres",
       "outcome": "unchanged",
       "rows": [],
       "type": "service"
     },
     {
-      "id": "e358ac6a-560a-468f-9f9f-43fc58547dfd",
+      "id": "290cf95f-21a3-4e8b-96e6-8bf4e5bec636",
       "name": "web",
       "outcome": "deployed",
       "rows": [
         {
-          "finished_at": 1792518443,
+          "finished_at": 1792529736,
           "history": [
             {
-              "at": 1792518429,
+              "at": 1792529723,
               "state": "pending"
             },
             {
-              "at": 1792518430,
+              "at": 1792529724,
               "phase": "starting",
               "serving": false,
               "state": "running"
             },
             {
-              "at": 1792518430,
+              "at": 1792529724,
               "phase": "creating_container",
               "serving": false,
               "state": "running"
             },
             {
-              "at": 1792518436,
+              "at": 1792529730,
               "phase": "waiting_for_switch",
               "serving": false,
               "state": "running"
             },
             {
-              "at": 1792518443,
+              "at": 1792529736,
               "state": "completed"
             }
           ],
-          "machine_id": "c109917d492d460a994dbf4b43162146",
+          "machine_id": "97d7ad4b93fc402d9b5433d23f9e9fef",
           "server": "machine-1",
-          "started_at": 1792518430,
+          "started_at": 1792529724,
           "state": "completed"
         }
       ],
       "type": "service"
     },
     {
-      "id": "eb6735e8-bf91-4e42-9348-e465eaea151e",
+      "id": "2a6c7e52-cfe4-4879-aafd-a4355c3d519b",
       "name": "worker",
       "outcome": "unchanged",
       "rows": [],
       "type": "service"
     },
     {
-      "id": "2a748c8b-32bc-433a-be41-3420710e6b7c",
+      "id": "a7444939-950d-4b3d-8300-5dafbd10171f",
       "name": "pg-data",
       "outcome": "unchanged",
       "rows": [],
       "type": "volume"
     },
     {
-      "id": "a18f32f9-878e-44e3-9e5d-57af1305969c",
+      "id": "c051d44e-bb3b-4d02-8f92-5a907e8f264a",
       "name": "sentry",
       "outcome": "unchanged",
       "rows": [
         {
-          "finished_at": 1792518443,
+          "finished_at": 1792529736,
           "history": null,
-          "machine_id": "c109917d492d460a994dbf4b43162146",
+          "machine_id": "97d7ad4b93fc402d9b5433d23f9e9fef",
           "server": "machine-1",
-          "started_at": 1792518430,
+          "started_at": 1792529724,
           "state": "completed"
         }
       ],
       "type": "config"
     }
   ],
-  "number": 93,
+  "number": 8,
   "outcome": {
     "cause": [],
     "reason": null,
@@ -494,13 +494,13 @@ Deployment #93 of shop/production: applied
     "namespace": "shop-production",
     "operations": [
       {
-        "display_name": "ployz-create-fe455cc548c3840d5129035d1e8144d49ccaf3974a1ed2487a742c26d0059337",
+        "display_name": "ployz-create-e948ee1289090cb5c3e3dd337524d296faa1bfd22fdcca383b0acab83f029e38",
         "index": 0,
-        "machine_id": "c109917d492d460a994dbf4b43162146",
+        "machine_id": "97d7ad4b93fc402d9b5433d23f9e9fef",
         "machine_name": "machine-1",
         "operation": {
-          "machine_id": "c109917d492d460a994dbf4b43162146",
-          "old_container_id": "e8282ddb21ff0aba6cf0dc75c8612e8ea3948c9bb441beed7a2a3f1d7fbf0817",
+          "machine_id": "97d7ad4b93fc402d9b5433d23f9e9fef",
+          "old_container_id": "5c8c90ea0c54f06572e6eb29213ba3463d507d129083e078edbb53877a7cc9e8",
           "skip_health_monitor": false,
           "spec": {
             "configs": [
@@ -543,7 +543,7 @@ Deployment #93 of shop/production: applied
               "image": "nginx:1.27-alpine",
               "init": null,
               "labels": {
-                "cloud.ployz.service.id": "e358ac6a-560a-468f-9f9f-43fc58547dfd"
+                "cloud.ployz.service.id": "290cf95f-21a3-4e8b-96e6-8bf4e5bec636"
               },
               "open_stdin": false,
               "pid_mode": null,
@@ -586,7 +586,7 @@ Deployment #93 of shop/production: applied
               }
             ],
             "pre_deploy": null,
-            "service_id": "0bc3883482ba480298f83b694d408c4d",
+            "service_id": "efd64e3b7a174e83bb1752008730a5d8",
             "update": {
               "monitor_millis": null,
               "order": "start_first"
@@ -616,22 +616,22 @@ Deployment #93 of shop/production: applied
   "push": null,
   "remove": false,
   "rolls_back": [],
-  "runner": "cloud-01M5D6RVR9D8YYQHFD5VJXTDPR",
+  "runner": "cloud-01M5DHHFZSBQ9EY61CR5TV7C6G",
   "runtime_names": {
     "api": "api",
     "postgres": "postgres",
     "web": "web",
     "worker": "worker"
   },
-  "saved": 43,
+  "saved": 6,
   "services": [],
   "ships": [
     "api",
-    "postgres",
     "web",
-    "worker"
+    "worker",
+    "postgres"
   ],
-  "started_at": 1792518425,
+  "started_at": 1792529718,
   "status": "applied",
   "upload": null,
   "warnings": [
@@ -654,13 +654,13 @@ Deployment #93 of shop/production: applied
         ],
         "image": "nginx:1.27-alpine",
         "machines": [
-          "c109917d492d460a994dbf4b43162146"
+          "97d7ad4b93fc402d9b5433d23f9e9fef"
         ],
         "routed": [
           8080
         ],
         "service": "web",
-        "service_id": "0bc3883482ba480298f83b694d408c4d",
+        "service_id": "efd64e3b7a174e83bb1752008730a5d8",
         "type": "image_port_mismatch"
       }
     }
@@ -668,7 +668,7 @@ Deployment #93 of shop/production: applied
 }
 
 === deploy that fails (live follower) :: $ ployz deploy
-Deploying #95 of shop/production
+Deploying #10 of shop/production
 ✔ Volume pg-data  unchanged
 ✘ Config sentry  failed
 depth 0
@@ -684,11 +684,11 @@ depth 1
 error: worker: pull image failed.
   cause: Docker responded with status code 500: error from registry: denied; denied
 inspect: ployz get worker.image --project shop --env production
-undo: ployz history undo 44 --project shop --env production
+undo: ployz history undo 7 --project shop --env production
 # exit 1
 
-=== deployment show of the failed Deployment :: $ ployz deployment show dbe19366-0aae-4f7b-8cdd-33c4d3a22407
-Deployment #96 of shop/production: failed
+=== deployment show of the failed Deployment :: $ ployz deployment show 7ef95d0f-2897-4cef-9552-8ca17ad458de
+Deployment #11 of shop/production: failed
   worker: pull image failed
     cause: Docker responded with status code 500: error from registry: denied
 denied
@@ -700,49 +700,49 @@ denied
   pg-data: unchanged
   sentry: failed
 
-=== deployment show --json of the failed Deployment :: $ ployz --json deployment show dbe19366-0aae-4f7b-8cdd-33c4d3a22407
+=== deployment show --json of the failed Deployment :: $ ployz --json deployment show 7ef95d0f-2897-4cef-9552-8ca17ad458de
 {
-  "admitted_at": 1792518489,
+  "admitted_at": 1792529778,
   "admitted_by": "Ada Lovelace",
   "builds": [],
   "ci": null,
-  "ended_at": 1792518502,
+  "ended_at": 1792529791,
   "environment": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
-    "revision": 69
+    "revision": 20
   },
-  "environment_id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+  "environment_id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
   "held": false,
-  "id": "dbe19366-0aae-4f7b-8cdd-33c4d3a22407",
+  "id": "7ef95d0f-2897-4cef-9552-8ca17ad458de",
   "in_flight": false,
   "message": null,
   "namespace": "shop-production",
   "nodes": [
     {
-      "id": "254b1264-6d96-4e34-86d2-795920ddab60",
+      "id": "18a96a82-7c6a-4837-9671-36d65236b464",
       "name": "api",
       "outcome": "unchanged",
       "rows": [],
       "type": "service"
     },
     {
-      "id": "796ce242-5b1d-451d-8804-42de83e14920",
+      "id": "6ed6ed8f-aae7-4380-b69d-bb11cfd4aae9",
       "name": "postgres",
       "outcome": "unchanged",
       "rows": [],
       "type": "service"
     },
     {
-      "id": "e358ac6a-560a-468f-9f9f-43fc58547dfd",
+      "id": "290cf95f-21a3-4e8b-96e6-8bf4e5bec636",
       "name": "web",
       "outcome": "unchanged",
       "rows": [],
       "type": "service"
     },
     {
-      "id": "eb6735e8-bf91-4e42-9348-e465eaea151e",
+      "id": "2a6c7e52-cfe4-4879-aafd-a4355c3d519b",
       "name": "worker",
       "outcome": "failed",
       "rows": [
@@ -751,14 +751,14 @@ denied
             "image pull failed",
             "Docker responded with status code 500: error from registry: denied\ndenied"
           ],
-          "finished_at": 1792518500,
+          "finished_at": 1792529789,
           "history": [
             {
-              "at": 1792518499,
+              "at": 1792529788,
               "state": "pending"
             },
             {
-              "at": 1792518500,
+              "at": 1792529789,
               "cause": [
                 "image pull failed",
                 "Docker responded with status code 500: error from registry: denied\ndenied"
@@ -770,10 +770,10 @@ denied
             }
           ],
           "log": null,
-          "machine_id": "c109917d492d460a994dbf4b43162146",
+          "machine_id": "97d7ad4b93fc402d9b5433d23f9e9fef",
           "reason": "pull image failed",
           "server": "machine-1",
-          "started_at": 1792518500,
+          "started_at": 1792529789,
           "state": "failed",
           "step": "pull"
         }
@@ -781,14 +781,14 @@ denied
       "type": "service"
     },
     {
-      "id": "2a748c8b-32bc-433a-be41-3420710e6b7c",
+      "id": "a7444939-950d-4b3d-8300-5dafbd10171f",
       "name": "pg-data",
       "outcome": "unchanged",
       "rows": [],
       "type": "volume"
     },
     {
-      "id": "a18f32f9-878e-44e3-9e5d-57af1305969c",
+      "id": "c051d44e-bb3b-4d02-8f92-5a907e8f264a",
       "name": "sentry",
       "outcome": "failed",
       "rows": [
@@ -797,13 +797,13 @@ denied
             "image pull failed",
             "Docker responded with status code 500: error from registry: denied\ndenied"
           ],
-          "finished_at": 1792518500,
+          "finished_at": 1792529789,
           "history": null,
           "log": null,
-          "machine_id": "c109917d492d460a994dbf4b43162146",
+          "machine_id": "97d7ad4b93fc402d9b5433d23f9e9fef",
           "reason": "pull image failed",
           "server": "machine-1",
-          "started_at": 1792518500,
+          "started_at": 1792529789,
           "state": "failed",
           "step": "pull"
         }
@@ -811,7 +811,7 @@ denied
       "type": "config"
     }
   ],
-  "number": 96,
+  "number": 11,
   "outcome": {
     "cause": [
       "image pull failed",
@@ -852,13 +852,13 @@ denied
     "namespace": "shop-production",
     "operations": [
       {
-        "display_name": "ployz-create-af57ae4c8ee193deb9af715b3ade4e060cb09821ea5c48dfe127555471401bf9",
+        "display_name": "ployz-create-a7ad025362f8c6d729bedcbd3a626a72891bacd1963b7897ec7a96d002dce971",
         "index": 0,
-        "machine_id": "c109917d492d460a994dbf4b43162146",
+        "machine_id": "97d7ad4b93fc402d9b5433d23f9e9fef",
         "machine_name": "machine-1",
         "operation": {
-          "machine_id": "c109917d492d460a994dbf4b43162146",
-          "old_container_id": "c72c2a83b060bfe3b4b903510d2fc6c5a4db5b0e68e28c0a6d11e3ad06d3d29d",
+          "machine_id": "97d7ad4b93fc402d9b5433d23f9e9fef",
+          "old_container_id": "e7d007f09e9e4fa4d48d266b94459a095b4ab8d14dd64777ed6e68658e872dd3",
           "skip_health_monitor": false,
           "spec": {
             "configs": [
@@ -901,7 +901,7 @@ denied
               "image": "ghcr.io/getployz/does-not-exist:nope",
               "init": null,
               "labels": {
-                "cloud.ployz.service.id": "eb6735e8-bf91-4e42-9348-e465eaea151e"
+                "cloud.ployz.service.id": "2a6c7e52-cfe4-4879-aafd-a4355c3d519b"
               },
               "open_stdin": false,
               "pid_mode": null,
@@ -936,7 +936,7 @@ denied
             },
             "ports": [],
             "pre_deploy": null,
-            "service_id": "b3b19a0846b2400d8920ccdb576dc8d0",
+            "service_id": "ac3479473030440d8119a14a083c9707",
             "update": {
               "monitor_millis": null,
               "order": "start_first"
@@ -961,22 +961,22 @@ denied
   "push": null,
   "remove": false,
   "rolls_back": [],
-  "runner": "cloud-01M5D6V1CQSGTRFXPP4KVWM4EA",
+  "runner": "cloud-01M5DHKHWAY2ZGTS4JYB9NB8G3",
   "runtime_names": {
     "api": "api",
     "postgres": "postgres",
     "web": "web",
     "worker": "worker"
   },
-  "saved": 44,
+  "saved": 7,
   "services": [],
   "ships": [
     "api",
-    "postgres",
     "web",
-    "worker"
+    "worker",
+    "postgres"
   ],
-  "started_at": 1792518496,
+  "started_at": 1792529785,
   "status": "failed",
   "upload": null,
   "warnings": [
@@ -997,14 +997,14 @@ denied
 
 === deployment ls with queued Deployments :: $ ployz deployment ls --limit 4
 DEPLOYMENT   STATUS       SAVED REVISION
-#102         queued       47
-#101         superseded   47
-#100         superseded   46
-#99          ✔ applied    45
-next: ployz deployment ls --cursor OTk --limit 4
+#17          queued       10
+#16          superseded   10
+#15          superseded   9
+#14          ✔ applied    8
+next: ployz deployment ls --cursor MTQ --limit 4
 
-=== deployment show of a cancelled Deployment :: $ ployz deployment show 7036cf42-c1d8-48c6-ba0b-a2273b9c9a26
-Deployment #109 of shop/production: cancelled
+=== deployment show of a cancelled Deployment :: $ ployz deployment show 879f7810-61e2-468d-b060-a24be9185c56
+Deployment #24 of shop/production: cancelled
   api: not attempted
   postgres: not attempted
   web: not attempted
@@ -1085,12 +1085,13 @@ depth 0
 ! workspace.ada.ployz.test is not published yet. Ployz Cloud publishes it once it reaches port 80 on 2001:db8::10.
 ────────────────────────────
 1 deployed · across 1 server
+workspace built on machine-1.
 Open https://workspace.ada.ployz.test
-Dashboard: http://localhost:38265/cloud/ada/workspace/production
+Dashboard: http://localhost:46289/cloud/ada/workspace/production
 # exit 0
 
 === status after up (two Projects) :: $ ployz status
-cloud         http://localhost:38265
+cloud         http://localhost:46289
 organization  ada
 signed in as  token
 environment   workspace/production
@@ -1108,31 +1109,33 @@ DEPLOYMENT   STATUS      SAVED REVISION
 #1           ✔ applied   1
 
 === status with the directory still linked to the removed Project :: $ ployz status
-cloud         http://localhost:38265
-organization  ada
-signed in as  token
-environment   workspace/production
-linked from   <run-dir>/workspace
-staged        0 changes
+cloud            http://localhost:46289
+organization     ada
+signed in as     token
+linked from      <run-dir>/workspace
+needs attention  No Project named workspace
+next: ployz link --project PROJECT
 
 === status --json with the directory still linked to the removed Project :: $ ployz --json status
 {
-  "attention": [],
+  "attention": [
+    {
+      "message": "No Project named workspace",
+      "next": "ployz link --project PROJECT",
+      "reason": "not_found"
+    }
+  ],
   "deploying": [],
-  "environment": {
-    "id": "1aaa8244-f347-41cc-bb0c-a6ad33e181e9",
-    "name": "production",
-    "project": "workspace",
-    "revision": 3
-  },
+  "environment": null,
   "identity": {
-    "cloud": "http://localhost:38265",
+    "cloud": "http://localhost:46289",
     "credential": "token",
     "organization": {
-      "id": "c5bb4022-ae5d-439a-b670-d567afb5f40a",
+      "id": "71cdc2f0-4d57-4ff2-a9fe-42212732cd73",
       "slug": "ada"
     }
   },
+  "next": "ployz link --project PROJECT",
   "scope": {
     "environment": {
       "name": "production",
@@ -1144,10 +1147,6 @@ staged        0 changes
       "source": "link"
     }
   },
-  "staged": {
-    "changes": 0,
-    "saved": true,
-    "version": "3:1:0.3"
-  }
+  "staged": null
 }
 

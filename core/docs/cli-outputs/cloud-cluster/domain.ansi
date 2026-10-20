@@ -33,7 +33,7 @@ Add DNS for acme.com: AAAA @ 2001:db8::10
     }
   ],
   "environment": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
     "revision": 26
@@ -84,7 +84,7 @@ Add DNS for acme.com: AAAA @ 2001:db8::10
     "status": "needs_attention"
   },
   "environment": {
-    "id": "e3ff9fdc-d394-4a02-9195-f717984132db",
+    "id": "038d47d9-f28a-4d2a-bf12-1c2cec06e488",
     "name": "production",
     "project": "shop",
     "revision": 26
@@ -113,6 +113,6 @@ api.ada.ployz.test   api       -      ✘ needs attention   Port 80 is closed on
 Add DNS for acme.com: AAAA @ 2001:db8::10
 
 === domain ls with a staged removal :: $ ployz domain ls
-DOMAIN               SERVICE   PORT   STATUS              REASON
-api.ada.ployz.test   api       -      ✘ needs attention   Port 80 is closed on 2001:db8::10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+No domains in shop/production yet.
+next: ployz domain add SERVICE
 
