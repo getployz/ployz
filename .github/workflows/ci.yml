@@ -217,6 +217,8 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
+          # Cargo creates CARGO_TARGET_TMPDIR while building; the archive leaves the empty directory out.
+          mkdir -p target/tmp
           $NEXTEST --no-fail-fast
       # A throwaway server: durability only slows each test's new database.
       - name: Stop the test Postgres syncing to disk
