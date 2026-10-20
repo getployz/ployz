@@ -42,6 +42,18 @@ export class GithubRepositoryCacheBusy extends Data.TaggedError("GithubRepositor
   readonly installationId: number;
 }> {}
 
+/** How long GitHub may take to list one page, so a listing it stops answering fails to a retry. GitHub ends any request it takes over 10 seconds to serve. */
+export const GITHUB_REPOSITORY_PAGE_DEADLINE = "30 seconds";
+
+export class GithubRepositoryListingStalled extends Data.TaggedError("GithubRepositoryListingStalled")<{
+  readonly installationId: number;
+  readonly page: number;
+}> {
+  override get message() {
+    return `GitHub didn't list page ${this.page} of installation ${this.installationId}'s repositories within ${GITHUB_REPOSITORY_PAGE_DEADLINE}.`;
+  }
+}
+
 /** What a sync of an installation GitHub or Cloud forgot reports: it wrote nothing. */
 const FORGOTTEN = { processedPageCount: 0, processedRepoCount: 0, deletedRepositoryCount: 0, forgotten: true } as const;
 
@@ -49,7 +61,8 @@ const FORGOTTEN = { processedPageCount: 0, processedRepoCount: 0, deletedReposit
  * Lists every repository GitHub grants the installation, holding no connection or lock, then caches them and drops the
  * rest in one short transaction under the installation's cache lock. If another writer changed the cache since the
  * listing began, the listing may be older than that write, so it is listed again rather than written. Once the
- * installation is forgotten there is nothing to write, so the sync stops.
+ * installation is forgotten there is nothing to write, so the sync stops. A page GitHub doesn't list within its deadline
+ * fails the sync, writing nothing, and its retry lists again from the first page.
  */
 export const syncGithubRepositories = Effect.fn("Github.syncRepositories")(function* (installationId: number) {
   const database = yield* Database;
@@ -60,9 +73,14 @@ export const syncGithubRepositories = Effect.fn("Github.syncRepositories")(funct
     const repositories: GithubRepository[] = [];
     let processedPageCount = 0;
     for (let pageNumber = 1; ; pageNumber++) {
-      const page = yield* listInstallationReposPage(installationId, pageNumber).pipe(Effect.catch((error) =>
-        readGithubRepositoryCacheVersion(installationId).pipe(
-          Effect.flatMap((version) => version === null ? Effect.succeed(null) : Effect.fail(error)))));
+      const page = yield* listInstallationReposPage(installationId, pageNumber).pipe(
+        Effect.timeoutOrElse({
+          duration: GITHUB_REPOSITORY_PAGE_DEADLINE,
+          orElse: () => Effect.fail(new GithubRepositoryListingStalled({ installationId, page: pageNumber })),
+        }),
+        Effect.catch((error) =>
+          readGithubRepositoryCacheVersion(installationId).pipe(
+            Effect.flatMap((version) => version === null ? Effect.succeed(null) : Effect.fail(error)))));
       if (page === null) return FORGOTTEN;
       repositories.push(...page.repositories);
       processedPageCount += 1;
