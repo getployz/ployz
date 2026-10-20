@@ -57,14 +57,13 @@ async function mintWith(expiresIn?: string) {
 
 const occurrences = (text: string) => text.split(TOKEN).length - 1;
 
-it("puts the token in each tab's line exactly once", async () => {
+it("shows the token exactly once in each tab", async () => {
   await mintWith();
   await screen.findByRole("tab", { name: "Shell" });
 
   for (const tab of ["Shell", "cloud-init", "Terraform"]) {
     await act(async () => fireEvent.click(screen.getByRole("tab", { name: tab })));
-    const panel = screen.getByRole("tabpanel");
-    expect(occurrences(panel.querySelector("code")?.textContent ?? ""), tab).toBe(1);
+    expect(occurrences(screen.getByRole("tabpanel").textContent ?? ""), tab).toBe(1);
   }
 });
 
@@ -83,9 +82,11 @@ it("reads a one-day token's lifetime in hours", async () => {
   expect(await screen.findByText("Shown once. Expires in 24h.")).toBeTruthy();
 });
 
-it("shows a Shell line that installs the Cloud's own release", async () => {
+it("shows a Shell line that installs the Cloud's own release and asks for the token beside it", async () => {
   mintWith();
-  expect(await screen.findByText(`curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=${TOKEN} sudo --preserve-env=PLOYZ_FLEET_TOKEN sh -s -- 1.2.3`)).toBeTruthy();
+  expect(await screen.findByText("curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3 --enroll")).toBeTruthy();
+  expect(screen.getByText("Paste this Fleet Token when it asks. It doesn't show what you paste.")).toBeTruthy();
+  expect(screen.getByText(TOKEN)).toBeTruthy();
 });
 
 it("describes the token it submitted, not the form as it reads after", async () => {

@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect } from "effect";
 import { recordStoreGithubBuildSteps } from "#/modules/config-store/store-github-builds.server";
-import { publicErrorResponse } from "#/server/public-error";
+import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 /** A GitHub runner's Build Steps, authenticated by its OIDC token. */
@@ -15,6 +15,7 @@ export const Route = createFileRoute("/api/builds/$build/steps")({
         return runAppEffect(recordStoreGithubBuildSteps(request, params.build, text).pipe(Effect.map((body) => Response.json(body))), options)
           .catch(publicErrorResponse);
       },
+      ANY: (): Response => methodNotAllowed(Route),
     },
   },
 });

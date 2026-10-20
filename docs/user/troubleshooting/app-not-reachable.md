@@ -167,7 +167,10 @@ ployz deploy
 
 A deploy creates or starts the missing ingress on every server that takes web traffic.
 `ployz deploy --plan` lists it first, as `ingress on web-1: would create`. If it
-still isn't running, the deploy says why. When the ingress keeps crashing and restarting, the
+still isn't running, the deploy says why. When several servers are missing ingress at once, one
+deploy may bring it back on only some of them, and it lists the rest as not running. Deploy
+again until none is listed. Bringing ingress back never stops it on a server where it already
+runs, including one another deploy just brought back. When the ingress keeps crashing and restarting, the
 deploy leaves it alone and warns with the `docker logs` command that shows why. When something else holds port 80 or 443, see
 [above](#something-else-answers-on-port-80).
 

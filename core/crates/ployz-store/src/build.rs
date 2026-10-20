@@ -176,7 +176,7 @@ pub(crate) fn record(
     report: &BuildReport,
 ) -> Result<(), RpcError> {
     let id = &stored.summary.id;
-    if uploads_of(tx, stored)?.contains(&report.service) {
+    if uploads_of(tx, stored)?.contains_key(&report.service) {
         tx.execute(
             "INSERT INTO config_build \
              (deployment_id, service, organization_id, commit_sha, status, message, log) \
@@ -345,14 +345,22 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
 
 /// The Services `stored` targets that have no source of their own: they build from
 /// its upload.
-pub(crate) fn uploads_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<ServiceName>, RpcError> {
+pub(crate) fn uploads_of(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+) -> Result<BTreeMap<ServiceName, Option<ployz_core::UploadDigest>>, RpcError> {
     let saved = deployment::saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     Ok(saved
         .services
         .iter()
         .filter(|service| stored.nodes.iter().any(|node| node.id() == service.id))
         .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
-        .map(|service| service.config.private_dns.clone())
+        .map(|service| {
+            (
+                service.config.private_dns.clone(),
+                deployment::uploads::own(stored, &service.id).cloned(),
+            )
+        })
         .collect())
 }
 

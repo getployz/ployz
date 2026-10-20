@@ -341,8 +341,8 @@ fn container_selector_uses_exact_id_then_display_name_then_prefix() {
         ContainerSelector::parse("missing")
             .unwrap()
             .resolve(containers),
-        Err(ContainerSelectorError::NotFound { selector })
-            if selector.as_str() == "missing"
+        Err(ContainerSelectorError::NotFound { selector, valid })
+            if selector.as_str() == "missing" && !valid.is_empty()
     ));
     assert!(ContainerSelector::parse("").is_err());
 }
