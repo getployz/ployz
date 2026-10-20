@@ -264,9 +264,11 @@ async fn a_pending_copy_older_than_an_in_gen_is_not_the_source() {
     )]);
     client.run_result = Ok(Some(container_id('c')));
     catch_up(&mut client, &joiner).await.unwrap();
-    assert_eq!(client.run_calls.len(), 1);
+    let [new] = client.run_calls.as_slice() else {
+        panic!("one copy starts: {:?}", client.run_calls);
+    };
     assert_eq!(
-        client.run_calls[0].r#gen,
+        new.r#gen,
         Gen::new(2),
         "the newest In copy wins over an older Pending one"
     );
@@ -295,7 +297,9 @@ async fn a_copy_keeps_its_sources_label_and_gen() {
     )]);
     client.run_result = Ok(Some(container_id('b')));
     catch_up(&mut client, &joiner).await.unwrap();
-    let new = &client.run_calls[0];
+    let [new] = client.run_calls.as_slice() else {
+        panic!("one copy starts: {:?}", client.run_calls);
+    };
     assert_eq!(new.r#gen, Gen::new(3));
     assert_eq!(new.deployment_id, Some(deploy));
     assert_eq!(
@@ -377,14 +381,12 @@ async fn own_superseded_copies_retire_after_in() {
         [&container_id('c')]
     );
     let retired = client.retired.clone();
-    assert_eq!(
-        retired.len(),
-        1,
-        "only this Machine's superseded copy retires"
-    );
-    assert_eq!(retired[0].container_id, container_id('a'));
-    assert_eq!(retired[0].machine_id, joiner.id);
-    assert_eq!(retired[0].service, identity);
+    let [retired] = retired.as_slice() else {
+        panic!("only this Machine's superseded copy retires: {retired:?}");
+    };
+    assert_eq!(retired.container_id, container_id('a'));
+    assert_eq!(retired.machine_id, joiner.id);
+    assert_eq!(retired.service, identity);
     assert!(client.removed.is_empty());
 }
 

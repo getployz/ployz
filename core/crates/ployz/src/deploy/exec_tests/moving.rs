@@ -178,8 +178,13 @@ async fn the_moved_copy_keeps_the_source_gen_and_deploy_label() {
         .with_deploy(&container('a'), &deploy);
     assert_eq!(move_with(&client).await.unwrap(), container('b'));
     assert_eq!(
-        client.copies.lock().unwrap()[&container('b')].r#gen,
-        Gen::new(3)
+        client
+            .copies
+            .lock()
+            .unwrap()
+            .get(&container('b'))
+            .map(|copy| copy.r#gen),
+        Some(Gen::new(3))
     );
     assert_eq!(*client.deploys.lock().unwrap(), vec![Some(deploy)]);
     client.assert_done();
