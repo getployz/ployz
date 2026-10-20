@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(out.into_inner()).unwrap(),
             "error: No Setting s1l\n\
-             valid: did you mean s11?\n\
+             did you mean s11?\n\
              valid: s1, s2, s3, s4, s5, s6, s7, s8, and 3 more\n"
         );
     }
