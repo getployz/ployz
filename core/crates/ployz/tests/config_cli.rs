@@ -2024,6 +2024,18 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
             labels(&plan["rows"]),
             ["web.source", "web.env.DEBUG", "web.env.NEW"]
         );
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["env", "sync", "--to", "--plan", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert!(
+            human.contains("\n  web.image: \"web:1\" → \"web:2\"\n"),
+            "{human}"
+        );
         let image = &rows[0];
         assert_eq!(
             (
