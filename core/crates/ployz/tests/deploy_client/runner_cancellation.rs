@@ -112,8 +112,8 @@ async fn cancel_during_image_only_preview_stops_the_rpc_without_admitting_work()
     server.abort();
 }
 
-#[tokio::test]
-async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() {
+/// Runs the Deployment until it creates, then has another runner take the Environment over.
+async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
     let (store, actor, id) = deployment();
     let service = DeployService::new(machine('a', "entry")).hold_health();
     let mutations = service.mutating_rpcs();
@@ -157,8 +157,21 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
         .unwrap()
         .expect("the store takes the interrupted outcome");
     assert_eq!(summary.status, DeploymentStatus::Unknown);
-    let Some(ployz_store::Outcome::Executed { summary, .. }) = summary.outcome else {
-        panic!("expected an executed outcome, got {:?}", summary.outcome);
+    server.abort();
+    (store, actor, id)
+}
+
+#[tokio::test]
+async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() {
+    let (store, actor, id) = taken_over_mid_create().await;
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let Some(ployz_store::Outcome::Executed { summary, .. }) = &view.deployment.outcome else {
+        panic!(
+            "expected an executed outcome, got {:?}",
+            view.deployment.outcome
+        );
     };
     assert_eq!(
         summary.get("reason").and_then(serde_json::Value::as_str),
@@ -175,9 +188,6 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
         Some(&serde_json::json!(1)),
         "{summary}"
     );
-    let view = store
-        .read(&actor, &ployz_store::DeploymentQuery { id: id.clone() })
-        .unwrap();
     assert!(
         view.nodes
             .iter()
@@ -185,7 +195,28 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
         "an interrupted run confirms nothing into Applied State: {:?}",
         view.nodes
     );
-    server.abort();
+}
+
+#[tokio::test]
+async fn a_takeover_nobody_cancelled_records_no_row_or_node_cancelled() {
+    let (store, actor, id) = taken_over_mid_create().await;
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let nodes = serde_json::to_value(&view.nodes).unwrap();
+    let web = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "web")
+        .unwrap();
+    assert_ne!(web["outcome"], "cancelled", "{web}");
+    let rows = web["rows"].as_array().unwrap();
+    assert!(!rows.is_empty(), "{web}");
+    assert!(
+        rows.iter().all(|row| row["state"] != "cancelled"),
+        "only the Deployment's cancel stops work as cancelled: {web}"
+    );
 }
 
 #[tokio::test]

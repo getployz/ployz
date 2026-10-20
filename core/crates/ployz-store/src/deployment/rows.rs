@@ -1,6 +1,6 @@
 //! Per-Server Deployment outcomes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
@@ -250,6 +250,10 @@ pub struct ServerProgress {
     /// The Server's name, or its Machine ID when it has none.
     pub server: String,
     pub state: RowState,
+    /// Only cancelled work stopped it. The Store reads it Cancelled when the
+    /// Deployment's cancel asked for that, and Failed otherwise.
+    #[serde(default)]
+    pub stopped: bool,
 }
 
 /// Why something failed, as users read it: our sentence, then what it came from,
@@ -449,7 +453,8 @@ pub const fn starts_container(operation: &DeployOperation) -> bool {
 pub struct RowTracker {
     last: BTreeMap<Key, RowState>,
     containers: BTreeMap<u32, ContainerId>,
-    failed: BTreeMap<Key, u32>,
+    /// The operation each Server's row failed with, and whether it really failed.
+    failed: BTreeMap<Key, (u32, bool)>,
 }
 
 impl RowTracker {
@@ -467,8 +472,12 @@ impl RowTracker {
             } else {
                 self.containers.remove(&row.index);
             }
-            if matches!(&row.status, OperationStatus::Failed { error } if !error.cancelled()) {
-                self.failed.entry(key.clone()).or_insert(row.index);
+            if let OperationStatus::Failed { error } = &row.status {
+                let real = !error.cancelled();
+                let kept = self.failed.entry(key.clone()).or_insert((row.index, real));
+                if real && !kept.1 {
+                    *kept = (row.index, real);
+                }
             }
             let server = row
                 .machine_name
@@ -488,7 +497,7 @@ impl RowTracker {
             let container = self
                 .failed
                 .get(&key)
-                .is_some_and(|index| self.containers.contains_key(index));
+                .is_some_and(|(index, _)| self.containers.contains_key(index));
             let state = state(
                 snapshot,
                 &statuses,
@@ -500,11 +509,13 @@ impl RowTracker {
                 continue;
             }
             self.last.insert(key.clone(), state.clone());
+            let stopped = self.failed.get(&key).is_some_and(|(_, real)| !real);
             changes.push(ServerProgress {
                 service: key.0,
                 machine: key.1,
                 server,
                 state,
+                stopped,
             });
         }
         changes
@@ -515,7 +526,7 @@ impl RowTracker {
     pub fn container(&self, row: &ServerProgress) -> Option<ContainerId> {
         self.failed
             .get(&(row.service.clone(), row.machine))
-            .and_then(|index| self.containers.get(index))
+            .and_then(|(index, _)| self.containers.get(index))
             .copied()
     }
 }
@@ -567,11 +578,13 @@ fn state(
     container: bool,
     serving: bool,
 ) -> RowState {
-    let (mut failed, mut cancelled, mut running, mut switching) = (None, false, None, None);
+    let (mut failed, mut cancelled, mut running, mut switching) = (None, None, None, None);
     let (mut pending, mut unstarted, mut completed) = (0, 0, 0);
     for (status, starts) in statuses {
         match status {
-            OperationStatus::Failed { error } if error.cancelled() => cancelled = true,
+            OperationStatus::Failed { error } if error.cancelled() => {
+                cancelled = cancelled.or(Some(error));
+            }
             OperationStatus::Failed { error } => failed = failed.or(Some(error)),
             OperationStatus::Running {
                 phase: phase @ OperationPhase::WaitingForSwitch { .. },
@@ -585,7 +598,7 @@ fn state(
             OperationStatus::Unexecuted => {}
         }
     }
-    if let Some(error) = failed {
+    if let Some(error) = failed.or(cancelled) {
         let Failure { reason, cause } = Failure::of(error, operations);
         return RowState::Failed {
             reason,
@@ -603,9 +616,6 @@ fn state(
                 | ExecutionError::Cancelled => None,
             },
         };
-    }
-    if cancelled {
-        return RowState::Cancelled;
     }
     if let Some(phase) = running {
         return RowState::Running {
@@ -649,16 +659,23 @@ pub(super) fn record(
     rows: &[ServerProgress],
 ) -> Result<(), RpcError> {
     let now = now();
+    // Only the Deployment's own cancel makes the work it stopped read Cancelled.
+    let cancelling = stored.summary.status == DeploymentStatus::Cancelling;
     for row in rows {
+        let state = if row.stopped && cancelling {
+            &RowState::Cancelled
+        } else {
+            &row.state
+        };
         let started = matches!(
-            row.state,
+            state,
             RowState::Running { .. }
                 | RowState::Completed
                 | RowState::Failed { .. }
                 | RowState::Cancelled
         )
         .then_some(now);
-        let finished = row.state.finished().then_some(now);
+        let finished = state.finished().then_some(now);
         let machine = row.machine.to_string();
         let kept = tx.query(
             "SELECT history FROM config_deployment_row \
@@ -673,7 +690,7 @@ pub(super) fn record(
             None => Some(Vec::new()),
             Some(kept) => history(kept, 0)?,
         }
-        .map(|history| json_text(&entered(history, now, &row.state)));
+        .map(|history| json_text(&entered(history, now, state)));
         tx.execute(
             "INSERT INTO config_deployment_row \
              (deployment_id, service, machine, organization_id, server, state, started, finished, history) \
@@ -689,7 +706,7 @@ pub(super) fn record(
                 row.service.as_str().into(),
                 machine.as_str().into(),
                 row.server.as_str().into(),
-                json_text(&row.state).as_str().into(),
+                json_text(state).as_str().into(),
                 started.into(),
                 finished.into(),
                 history.as_deref().into(),
@@ -697,6 +714,21 @@ pub(super) fn record(
         )?;
     }
     Ok(())
+}
+
+/// The runtime Services one of whose rows failed on its own.
+pub(super) fn failed(tx: &mut dyn Tx, stored: &Stored) -> Result<BTreeSet<ServiceName>, RpcError> {
+    let found = tx.query(
+        "SELECT service, state FROM config_deployment_row WHERE deployment_id = ?1",
+        &[stored.summary.id.as_str().into()],
+    )?;
+    let mut failed = BTreeSet::new();
+    for row in &found {
+        if matches!(row.json(1, "Deployment row")?, RowState::Failed { .. }) {
+            failed.insert(row.parse(0, "Deployment row")?);
+        }
+    }
+    Ok(failed)
 }
 
 pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
@@ -929,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn work_the_cancel_stopped_reads_cancelled_and_work_that_failed_stays_failed() {
+    fn only_cancelled_work_is_stopped_and_a_real_failure_names_the_row() {
         let container_id = ContainerId::parse("a".repeat(64)).unwrap();
         let failed = |error| OperationStatus::Failed { error };
         let create = || {
@@ -949,36 +981,42 @@ mod tests {
                 failure: HookFailure::Cancelled { stop_error },
             })
         };
-        assert_eq!(
-            server(&[failed(ExecutionError::Cancelled)]),
-            RowState::Cancelled
-        );
-        assert_eq!(server(&[hook(None)]), RowState::Cancelled);
-        assert_eq!(
-            server(&[
-                failed(ExecutionError::Cancelled),
-                OperationStatus::Completed
-            ]),
-            RowState::Cancelled
-        );
-        assert!(matches!(server(&[create()]), RowState::Failed { .. }));
+        let tracked = |statuses: &[OperationStatus]| {
+            let machine_id = "a".repeat(32);
+            let rows: Vec<OperationRow> = serde_json::from_value(serde_json::Value::Array(
+                statuses
+                    .iter()
+                    .enumerate()
+                    .map(|(index, status)| serde_json::json!({
+                        "index": index, "machine_id": machine_id, "service_name": "web",
+                        "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+                        "status": status
+                    }))
+                    .collect(),
+            ))
+            .unwrap();
+            let row = super::RowTracker::default().changes(&rows).remove(0);
+            let RowState::Failed { reason, .. } = row.state else {
+                panic!("expected a failed row, got {:?}", row.state);
+            };
+            (row.stopped, reason)
+        };
+        let cancelled = || failed(ExecutionError::Cancelled);
+        assert_eq!(tracked(&[cancelled()]), (true, "Cancelled".to_owned()));
+        assert!(tracked(&[hook(None)]).0);
+        assert!(tracked(&[cancelled(), OperationStatus::Completed]).0);
+        assert!(!tracked(&[create()]).0);
+        let (stopped, reason) = tracked(&[cancelled(), create()]);
+        assert!(!stopped, "a real failure beside a cancel's is not stopped");
+        assert_ne!(reason, "Cancelled", "the row names its real failure");
         assert!(
-            matches!(
-                server(&[failed(ExecutionError::Cancelled), create()]),
-                RowState::Failed { .. }
-            ),
-            "a real failure beside the cancel's stays failed"
-        );
-        assert!(
-            matches!(
-                server(&[hook(Some(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "stop timed out".into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                }))]),
-                RowState::Failed { .. }
-            ),
+            !tracked(&[hook(Some(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "stop timed out".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            }))])
+            .0,
             "a hook the cancel could not stop may still run"
         );
     }

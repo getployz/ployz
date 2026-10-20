@@ -1105,8 +1105,9 @@ pub enum ExecutionError {
 }
 
 impl ExecutionError {
-    /// Whether the Deploy's cancel stopped the work, rather than the work failing.
-    /// A hook whose stop also failed may still run, so that is a failure.
+    /// Whether a cancel stopped the work, rather than the work failing. The
+    /// cancel may be the Deployment's own, a takeover's or a failure elsewhere in
+    /// the run's. A hook whose stop also failed may still run, so that is a failure.
     #[must_use]
     pub const fn cancelled(&self) -> bool {
         matches!(

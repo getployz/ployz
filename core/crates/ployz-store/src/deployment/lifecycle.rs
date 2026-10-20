@@ -1388,6 +1388,28 @@ pub(crate) fn record(
             let projection =
                 project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
+            super::rows::record(tx, &stored, &progress)?;
+            // The Deployment's cancel stopped the run, and each Service it left
+            // unfinished, unless one of its rows failed on its own.
+            let cancelled = if stored.summary.status == DeploymentStatus::Cancelling
+                && matches!(
+                    &*outcome,
+                    DeployOutcome::Failed {
+                        failed: FailedOperation::Operation { error, .. }
+                            | FailedOperation::Replacement { error, .. },
+                        ..
+                    } if error.cancelled()
+                ) {
+                let failed = super::rows::failed(tx, &stored)?;
+                projection
+                    .failed_services
+                    .iter()
+                    .filter(|service| !failed.contains(*service))
+                    .cloned()
+                    .collect()
+            } else {
+                std::collections::BTreeSet::new()
+            };
             let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             let nodes = node_outcomes(
@@ -1398,6 +1420,7 @@ pub(crate) fn record(
                     preview,
                     projection: &projection,
                     removed: &removed,
+                    cancelled: &cancelled,
                 },
             );
             let nodes = keep_advanced(&stored.run.nodes, nodes);
@@ -1434,7 +1457,6 @@ pub(crate) fn record(
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
             };
-            super::rows::record(tx, &stored, &progress)?;
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;
             stored.run.executed = Some(executed);
@@ -1690,13 +1712,15 @@ pub(super) enum Evidence<'run> {
         preview: &'run DeployPreview,
         projection: &'run RuntimeOutcomeProjection,
         removed: &'run [VolumeRemoval],
+        /// Runtime Services the Deployment's cancel stopped before they finished.
+        cancelled: &'run std::collections::BTreeSet<ServiceName>,
     },
 }
 
 /// Each target node's Node Outcome from `evidence`. A Service the preview plans
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed, or
-/// Cancelled when the Deploy's cancel stopped it, and none ran is Not attempted. A
+/// Cancelled when the Deployment's cancel stopped it, and none ran is Not attempted. A
 /// Service that left Saved State with nothing planned
 /// is Removed when the snapshot saw every Machine, else Not attempted; one with
 /// several runtime Services reads the worst of them. A kept Volume follows the
@@ -1735,21 +1759,17 @@ pub(super) fn node_outcomes(
                 NodeStatus::Unchanged
             }
         }
-        Evidence::Executed { projection, .. } => {
+        Evidence::Executed {
+            projection,
+            cancelled,
+            ..
+        } => {
             if projection.confirmed_services.contains(name) {
                 landed(kept)
+            } else if cancelled.contains(name) {
+                NodeStatus::Cancelled
             } else if projection.failed_services.contains(name) {
-                if matches!(
-                    projection.summary,
-                    ployz_core::config::RuntimeOutcomeSummary::Failed {
-                        reason: ployz_core::config::RuntimeFailureKind::Cancelled,
-                        ..
-                    }
-                ) {
-                    NodeStatus::Cancelled
-                } else {
-                    NodeStatus::Failed
-                }
+                NodeStatus::Failed
             } else if projection.unattempted_services.contains(name) {
                 NodeStatus::NotAttempted
             } else {

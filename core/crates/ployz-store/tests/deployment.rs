@@ -2210,6 +2210,120 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
     );
 }
 
+fn create_error() -> Value {
+    json!({
+        "type": "machine", "action": "CreateContainer",
+        "error": {"code": "internal", "message": "no space left on device", "details": {}}
+    })
+}
+
+#[test]
+fn a_copy_restored_after_another_service_failed_is_not_cancelled() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    let restored_after = |n: u8, failed: &str| {
+        admit(&store, &who, n, &[], None).unwrap();
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        let error = |service: &str| {
+            if service == "api" {
+                create_error()
+            } else {
+                json!({"type": "cancelled"})
+            }
+        };
+        let unexecuted = if failed == "api" { "web" } else { "api" };
+        let executed = RunEvidence::Executed {
+            progress: RowTracker::default().changes(&progress(&[
+                (
+                    "web",
+                    "alpha",
+                    json!({"type": "failed", "error": error("web")}),
+                ),
+                (
+                    "api",
+                    "alpha",
+                    json!({"type": "failed", "error": error("api")}),
+                ),
+            ])),
+            outcome: Box::new(outcome(json!({
+                "type": "failed", "completed": [],
+                "failed": {"type": "operation", "operation": operation(failed), "error": error(failed)},
+                "unexecuted": [operation(unexecuted)]
+            }))),
+            removed: Vec::new(),
+        };
+        store.record(&id(n), &a, executed).unwrap();
+        assert_eq!(status(&store, &who, n), DeploymentStatus::Failed);
+        let web = rows(&store, &who, n).remove(0);
+        assert_eq!(web.0, "web");
+        assert!(
+            matches!(web.1[0].state, RowState::Failed { .. }),
+            "nobody cancelled it: {:?}",
+            web.1[0].state
+        );
+        nodes(&store, &who, n)
+    };
+    for (n, failed) in [(1, "api"), (2, "web")] {
+        assert!(
+            !restored_after(n, failed)
+                .iter()
+                .any(|(_, status)| *status == NodeStatus::Cancelled),
+            "{failed} first"
+        );
+    }
+}
+
+#[test]
+fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and_node() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "web"])))
+        .unwrap();
+    cancel(&store, &who, 1).unwrap();
+    let cancelled = json!({"type": "failed", "error": {"type": "cancelled"}});
+    let mut tracker = RowTracker::default();
+    let first = tracker.changes(&progress(&[
+        ("web", "alpha", cancelled.clone()),
+        ("web", "alpha", waiting(5_000)),
+    ]));
+    store
+        .record(&id(1), &a, RunEvidence::Progress(first))
+        .unwrap();
+    assert_eq!(rows(&store, &who, 1)[0].1[0].state, RowState::Cancelled);
+    let executed = RunEvidence::Executed {
+        progress: tracker.changes(&progress(&[
+            ("web", "alpha", cancelled),
+            (
+                "web",
+                "alpha",
+                json!({"type": "failed", "error": create_error()}),
+            ),
+        ])),
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [],
+            "failed": {"type": "operation", "operation": operation("web"), "error": {"type": "cancelled"}},
+            "unexecuted": [operation("web")]
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, executed).unwrap();
+    let state = &rows(&store, &who, 1)[0].1[0].state;
+    assert!(matches!(state, RowState::Failed { .. }), "{state:?}");
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Failed),
+            ("api".to_owned(), NodeStatus::Unchanged)
+        ]
+    );
+}
+
 #[test]
 fn a_runner_that_loses_track_after_preparing_leaves_the_outcome_unknown() {
     let (store, who) = shop();
@@ -2315,10 +2429,7 @@ fn fail_api(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
         progress: Vec::new(),
         outcome: Box::new(outcome(json!({
             "type": "failed", "completed": [operation("web")],
-            "failed": {"type": "operation", "operation": operation("api"), "error": {
-                "type": "machine", "action": "CreateContainer",
-                "error": {"code": "internal", "message": "no space left on device", "details": {}}
-            }},
+            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
             "unexecuted": []
         }))),
         removed: Vec::new(),
@@ -4515,7 +4626,7 @@ fn a_full_disk_names_itself_at_the_pull_step_and_keeps_dockers_error() {
 #[test]
 fn a_failed_row_records_the_step_it_failed_at() {
     let health = json!({"type": "failed", "error": {
-        "type": "health", "container_id": "c".repeat(64), "failure": {"type": "timed_out"}
+        "type": "health", "container_id": "c".repeat(64), "failure": {"type": "cancelled"}
     }});
     let RowState::Failed { step, log, .. } = failed_row(&[progress(&[("web", "alpha", health)])])
     else {
