@@ -532,7 +532,11 @@ fn prune_exits(dir: &Path, before: i64) -> io::Result<()> {
     file.write_all(&kept_lines)?;
     file.sync_all()?;
     fs::rename(&temp, &path)?;
-    fs::File::open(dir)?.sync_all()
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(DIR_FLAGS.bits())
+        .open(dir)?
+        .sync_all()
 }
 
 fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
@@ -795,7 +799,7 @@ mod tests {
         symlink(&target, &link).unwrap();
 
         let error = prune_exits(&link, 2).unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(Errno::ELOOP as i32));
+        assert_eq!(error.raw_os_error(), Some(Errno::ENOTDIR as i32));
     }
 
     #[test]
