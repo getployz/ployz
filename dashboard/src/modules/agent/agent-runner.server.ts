@@ -7,7 +7,7 @@ import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
 import { gateOperation, onceFor, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
-import { type Called, inputSchema } from "#/modules/commands/command.server";
+import { type Called, type Command, inputSchema } from "#/modules/commands/command.server";
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
@@ -16,7 +16,7 @@ import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/module
 import type { JsonObject } from "#/db/tables";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
-import { projectJsonValue } from "#/lib/json";
+import { asRecord, asString, projectJsonValue } from "#/lib/json";
 
 /** A Caller acting through an agent: the sidebar, or a remote MCP client. */
 export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
@@ -153,11 +153,28 @@ const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: AgentCalle
 });
 
 /**
+ * The call to repeat after `command` refused: the fields it takes, so a key the caller made up is not echoed, and the
+ * approval the call carried, which stays good while the plan it approved does.
+ */
+const repeat = (command: Pick<Command, "input">, call: AgentCall): JsonObject => {
+  const taken = Object.entries(asRecord(call.input) ?? {}).filter(([key]) => Object.hasOwn(command.input.fields, key));
+  return Object.fromEntries(call.approvalId === null ? taken : [...taken, ["approval", call.approvalId]]);
+};
+
+/**
  * A published command's answer as the model hears it, its refusal carrying the call to repeat as a Store tool's does;
  * the line `ployz` prints for a human is not for the model.
  */
-const heard = (call: AgentCall, ran: Called<unknown>): ToolOutcome =>
-  ran.ok ? { ok: true, value: ran.output } : { ok: false, refusal: { ...ran.refusal, retry: { tool: call.tool, input: call.input } } };
+const heard = (command: Pick<Command, "input">, call: AgentCall, ran: Called<unknown>): ToolOutcome =>
+  ran.ok ? { ok: true, value: ran.output } : { ok: false, refusal: { ...ran.refusal, retry: { tool: call.tool, input: repeat(command, call) } } };
+
+/** A gated command's retry names its approval in its input, as `/mcp` and `ployz mcp` take it. */
+const approvalOf = (call: AgentCall): AgentCall => {
+  const fields = asRecord(call.input);
+  if (fields === null || !Object.hasOwn(fields, "approval")) return call;
+  const { approval, ...input } = fields;
+  return { ...call, input, approvalId: call.approvalId ?? asString(approval) };
+};
 
 /** A catalog tool whose input takes a Project: it acts in an Environment, defaulting to the place when a call names none. */
 const ScopedTool = Schema.Struct({ name: Schema.String, input_schema: Schema.Struct({ properties: Schema.Struct({ project: Schema.Struct({}) }) }) });
@@ -198,8 +215,9 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
   const published = findCommand(call.tool);
   if (published !== undefined) {
     if (!published.agents || published.typed !== null) return done(refused("unknown_tool", `No tool is named ${call.tool}.`));
-    const ran = yield* runCommand(caller, published.name, call.input, { approvalId: call.approvalId, key: call.key });
-    return (!ran.ok && ran.refusal.code === "approval_required" ? asking(ran.refusal) : null) ?? done(heard(call, ran));
+    const sent = published.gate === "ask" ? approvalOf(call) : call;
+    const ran = yield* runCommand(caller, published.name, sent.input, { approvalId: sent.approvalId, key: sent.key });
+    return (!ran.ok && ran.refusal.code === "approval_required" ? asking(ran.refusal) : null) ?? done(heard(published, sent, ran));
   }
   if (!COMPILED.has(call.tool)) return done(refused("unknown_tool", `No tool is named ${call.tool}.`));
   const at = placeOf(caller, call.page, call.tool, call.input);

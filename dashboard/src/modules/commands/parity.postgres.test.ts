@@ -8,6 +8,8 @@ import { expect } from "vitest";
 import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat } from "#/modules/agent/agent-chat.server";
+import { runAgentCall } from "#/modules/agent/agent-runner.server";
+import { operationDigest } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
@@ -240,9 +242,44 @@ it.live("refuses a bad input the same way through ployz and the sidebar, naming 
 it.live("refuses an input a command doesn't take and a Service it can't find, saying nothing was written", () =>
   Effect.gen(function* () {
     const { route, sidebar } = yield* parity();
-    const unknown = asRecord(asRecord((yield* route("org_member_rm", { member: "Ada", force: true })).body)?.["error"]);
-    expect(unknown).toMatchObject({ code: "invalid_argument", field: "force", expected: { properties: { member: {} } }, writes: "none" });
+    const secret = "ghp_s3cr3tTokenThatMustNotEcho";
+    const viaRoute = (yield* route("org_member_rm", { member: "Ada", [secret]: true })).body;
+    const unknown = asRecord(asRecord(viaRoute)?.["error"]);
+    expect(unknown).toMatchObject({ code: "invalid_argument", message: "This command takes only member.", expected: { properties: { member: {} }, additionalProperties: false }, writes: "none" });
+    expect(unknown).not.toHaveProperty("field");
+    expect(JSON.stringify(viaRoute)).not.toContain(secret);
+    const viaSidebar = yield* sidebar("org_member_rm", { member: "Ada", [secret]: true });
+    expect(viaSidebar).toMatchObject({ ok: false, refusal: { code: "invalid_argument", writes: "none", retry: { tool: "org_member_rm", input: { member: "Ada" } } } });
+    expect(JSON.stringify(viaSidebar)).not.toContain(secret);
     expect(yield* sidebar("uptime_show", { project: "shop", service: "nope" })).toMatchObject({ ok: false, refusal: { writes: "none", retry: { tool: "uptime_show" } } });
+  }));
+
+it.live("keeps the approval in the retry of an approved call that refused once it ran, so the agent repeats it without asking a human again", () =>
+  Effect.gen(function* () {
+    const { provided, userId } = yield* parity();
+    const email = "ada@example.test";
+    const asked = {
+      verb: "set" as const,
+      preview: { email, from: "owner", to: "member" },
+      effects: [{ kind: "changes_role" as const, name: email, node: userId, path: `members/${userId}` }],
+    };
+    const [approved] = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.insert(operationApprovals).values({
+        organizationId: ORGANIZATION, subject: `member:${userId}`, via: "agent", credentialKind: "session", credentialId: "session-1",
+        command: "set", digest: operationDigest(asked), status: "approved", decidedByUserId: userId, decidedAt: new Date(),
+        review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: asked.effects, operation: { verb: "set", name: email, preview: asked.preview } }),
+      }).returning({ id: operationApprovals.id });
+    }));
+    const id = approved?.id ?? expect.fail("no approval");
+    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
+    const call = (input: JsonValue, approvalId: string | null) =>
+      provided(runAgentCall(agent, { tool: "org_member_role", input, key: `role-${approvalId ?? "retry"}`, approvalId, page: { at: "organization" } }));
+    const first = yield* call({ member: email, role: "member" }, id);
+    expect(first).toMatchObject({ outcome: { ok: false, refusal: { message: "An Organization needs an owner. Make someone else an owner first.", writes: "unknown" } } });
+    const retry = "outcome" in first && "refusal" in first.outcome && "retry" in first.outcome.refusal ? first.outcome.refusal.retry : undefined;
+    expect(retry).toEqual({ tool: "org_member_role", input: { member: email, role: "member", approval: id } });
+    expect(yield* call(retry?.input ?? null, null)).toEqual(first);
   }));
 
 it.live("answers approvals only through ployz, records who decided, and keeps them out of the sidebar, so the agent never approves its own request", () =>

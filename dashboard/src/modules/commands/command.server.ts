@@ -78,14 +78,20 @@ type Problem = { readonly message: string; readonly path?: ReadonlyArray<Propert
 
 /**
  * `invalid_argument` at the first problem's field, `expected` the schema that fits there. An input that isn't an object,
- * or names a field the command doesn't take, names no field it could fix: `expected` is the whole input's schema.
+ * or names a field the command doesn't take, names no field it could fix: `expected` is the whole input's schema, whose
+ * `additionalProperties: false` says only its listed fields are allowed. A field the caller made up is never echoed.
  */
-const invalidInput = (schema: JsonObject, problems: ReadonlyArray<Problem>, fits: "field" | "input" = "field") => {
+const invalidInput = (schema: JsonObject, problems: ReadonlyArray<Problem>) => {
   const path = (problems[0]?.path ?? []).map((segment) => String(asRecord(segment)?.["key"] ?? segment));
   const atField = path.reduce<JsonValue>((at, key) => asRecord(asRecord(at)?.["properties"] ?? null)?.[key] ?? null, schema);
   const message = problems.map((problem) => problem.message).join("; ");
-  const expected = fits === "field" && atField !== null ? atField : schema;
-  return { ok: false, refusal: { code: "invalid_argument", message, details: null, field: path.join("."), expected } } as const;
+  const field = path.length === 0 ? {} : { field: path.join(".") };
+  return { ok: false, refusal: { code: "invalid_argument", message, details: null, ...field, expected: atField ?? schema } } as const;
+};
+
+const takesOnly = (fields: Fields) => {
+  const names = Object.keys(fields);
+  return names.length === 0 ? "This command takes no input." : `This command takes only ${names.join(", ")}.`;
 };
 
 const EMPTY_INPUT: JsonObject = { type: "object", properties: {}, required: [], additionalProperties: false };
@@ -126,9 +132,8 @@ export function defineCommand<const N extends string, F extends Fields, O extend
     // SAFETY: the catchIfs below remove every NotFound and StoreRefused; TypeScript cannot subtract them from a generic `E`.
     return Effect.gen(function* () {
       const fields = asRecord(raw);
-      if (fields === null) return invalidInput(inputSchema(input), [{ message: "Expected the input as an object" }], "input");
-      const unknown = Object.keys(fields).filter((key) => !Object.hasOwn(input.fields, key));
-      if (unknown.length > 0) return invalidInput(inputSchema(input), unknown.map((key) => ({ message: `Unknown input ${key}`, path: [key] })), "input");
+      if (fields === null) return invalidInput(inputSchema(input), [{ message: "Expected the input as an object" }]);
+      if (Object.keys(fields).some((key) => !Object.hasOwn(input.fields, key))) return invalidInput(inputSchema(input), [{ message: takesOnly(input.fields) }]);
       const decoded = yield* decode(fields).pipe(Effect.result);
       if (decoded._tag === "Failure") return invalidInput(inputSchema(input), issues(decoded.failure.issue).issues);
       // Every published write lands in the Organization (none names an Environment), so a token limited to Environments can't make one.

@@ -596,7 +596,10 @@ impl Server {
             .into());
         }
         let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id, tool));
-        let retry = tools::Call::new(tool, Value::Object(input.clone()));
+        let retry = tools::Call::new(
+            tool,
+            Value::Object(repeat(&command, &input, approval.as_deref())),
+        );
         let (ran, revision) = tokio::select! {
             biased;
             ran = published::run_on(&credential, Via::Agent, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
@@ -1222,6 +1225,22 @@ fn approval_required(text: String, id: &str, message: &str, url: &str) -> CallTo
         "approval_required": { "approval_id": id, "message": message, "url": url },
     }));
     result
+}
+
+/// The call to repeat after `command` refused: the fields it takes, so a key the caller
+/// made up is not echoed, and the approval the call carried, which stays good while the
+/// plan it approved does.
+fn repeat(command: &PublishedCommand, input: &JsonObject, approval: Option<&str>) -> JsonObject {
+    let takes = command.input.get("properties").and_then(Value::as_object);
+    let mut asked: JsonObject = input
+        .iter()
+        .filter(|(key, _)| takes.is_some_and(|takes| takes.contains_key(*key)))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if let Some(id) = approval {
+        asked.insert(APPROVAL.to_owned(), Value::String(id.to_owned()));
+    }
+    asked
 }
 
 /// A Cloud command's refusal in the shape a compiled tool refuses, with the call to

@@ -2544,6 +2544,49 @@ mod published {
     }
 
     #[tokio::test]
+    async fn an_approved_call_that_refused_keeps_its_approval_in_the_retry_and_drops_keys_it_does_not_take()
+     {
+        let publisher = publisher();
+        publisher.lock().unwrap().run = (
+            "409 Conflict",
+            json!({ "error": {
+                "code": "conflict",
+                "message": "An Organization needs an owner. Make someone else an owner first.",
+                "details": null,
+                "writes": "unknown",
+            } }),
+        );
+        let fake = fake_publisher(publisher);
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = org_member_role();
+        let mut sent = arguments(&entry);
+        sent["approval"] = json!("apr_7");
+        sent["ghp_s3cr3tTokenThatMustNotEcho"] = json!(true);
+        let refused = at_once(client.call(2, name(&entry), sent)).await;
+        let mut repeated = arguments(&entry);
+        repeated["approval"] = json!("apr_7");
+        assert_eq!(
+            refused["result"]["structuredContent"]["retry"],
+            json!({ "tool": "org_member_role", "input": repeated }),
+            "{refused}"
+        );
+        assert!(
+            !refused
+                .to_string()
+                .contains("ghp_s3cr3tTokenThatMustNotEcho"),
+            "{refused}"
+        );
+        assert!(
+            fake.requests()
+                .iter()
+                .any(|seen| seen.approval.as_deref() == Some("apr_7")),
+            "the call carried its approval"
+        );
+    }
+
+    #[tokio::test]
     async fn a_refusal_from_a_cloud_that_predates_writes_says_writes_are_unknown() {
         let (_fake, refused) = gated_refused_with(json!({
             "code": "not_found",
