@@ -192,12 +192,16 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
   return active.id;
 });
 
-const CLI_END_MESSAGES = {
+const END_MESSAGES = {
   not_started: "The drain never started.",
   cancelled: "The drain was cancelled before it started.",
   interrupted: "The drain was cancelled while it ran; some services may have moved.",
   lost: "Cloud lost track of the drain; some services may have moved.",
 } as const satisfies Record<DrainEndCodeWithoutMessage, string>;
+
+/** Why a Drain ended without a report: the Engine's refusal, or Cloud's words for an end it named. Null otherwise. */
+export const drainEndMessage = (row: Pick<DrainAttemptRow, "endCode" | "refusalMessage">) =>
+  row.endCode === null || row.endCode === "refused" ? row.refusalMessage : END_MESSAGES[row.endCode];
 
 export type CliServerDrain =
   | { readonly state: "pending" | "running" }
@@ -221,7 +225,7 @@ export const readCliServerDrain = Effect.fn("ServerDrain.readCli")(function* (or
       return {
         state: "ended",
         code: drain.endCode,
-        message: drain.endCode === "refused" ? drain.refusalMessage : CLI_END_MESSAGES[drain.endCode],
+        message: drain.endCode === "refused" ? drain.refusalMessage : END_MESSAGES[drain.endCode],
       } satisfies CliServerDrain;
   }
 });

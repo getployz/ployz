@@ -157,8 +157,9 @@ pub struct NodeChange {
     pub comparison: Option<ReviewComparisonRole>,
     /// Its changed Settings, by `SERVICE.SETTING` path.
     pub settings: Vec<ServiceSettingChange>,
-    /// What the change does to Volume data: `deleted` for a deployed Volume it
-    /// removes, `kept` for a Service that stops mounting a Volume that stays.
+    /// What the change does to Volume data: `deleted` for a Volume it removes that is
+    /// deployed or mounted by a Deployment in flight, `kept` for a Service that stops
+    /// mounting a Volume that stays.
     pub data: Option<DataEffect>,
     /// For a Config changed in place, the deployed Services mounting it: they restart
     /// to take its new files.
@@ -219,8 +220,14 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
     let introductions = introductions(tx, environment)?;
-    let mut view = compare(environment, saved.as_ref(), &head, &introductions)?;
     let deployed = approval::deployed(&head);
+    let mut view = compare(
+        environment,
+        saved.as_ref(),
+        &head,
+        &deployed,
+        &introductions,
+    )?;
     let cluster_domains = if crate::domain::has_generated(&deployed) {
         crate::deployment::cluster_domains(tx, id, &head)?
     } else {
@@ -256,6 +263,7 @@ fn compare(
     environment: &Environment,
     saved: Option<&Saved>,
     head: &Head,
+    deployed: &SavedEnvironmentIntent,
     introductions: &SavedEnvironmentIntent,
 ) -> Result<DiffView, RpcError> {
     let id = &environment.summary.id;
@@ -399,7 +407,8 @@ fn compare(
                         row
                     })
                     .collect();
-                let data = data_effect(&group.node, group.lifecycle, &settings, &head.applied);
+                let data =
+                    data_effect(&group.node, group.lifecycle, deployed, &environment.working);
                 let restarts = restarts(
                     &group.node,
                     group.lifecycle,
@@ -631,32 +640,24 @@ fn config_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<Strin
         .map(|config| config.name.to_string())
 }
 
-/// A deployed Volume removed deletes data; a Service removed, or one of its mounts
-/// dropped, keeps the Volume.
+/// A Volume `deployed` holds, removed, deletes data; a Service removed, or one of
+/// its mounts dropped, keeps a Volume `working` still holds.
 fn data_effect(
     node: &ReviewNodeIdentity,
     lifecycle: ReviewLifecycleKind,
-    settings: &[ServiceSettingChange],
-    applied: &SavedEnvironmentIntent,
+    deployed: &SavedEnvironmentIntent,
+    working: &SavedEnvironmentIntent,
 ) -> Option<DataEffect> {
     match node.node_type {
         EnvironmentNodeType::Volume => (lifecycle == ReviewLifecycleKind::Delete
-            && applied
+            && deployed
                 .volumes
                 .iter()
                 .any(|volume| volume.resource_id == node.id))
         .then_some(DataEffect::Deleted),
-        EnvironmentNodeType::Service => {
-            let detached = settings
-                .iter()
-                .any(|row| row.path.contains(".mounts.") && row.after.is_null());
-            let removed_with_mounts = lifecycle == ReviewLifecycleKind::Delete
-                && applied
-                    .services
-                    .iter()
-                    .any(|service| service.id == node.id && !service.volume_attachments.is_empty());
-            (detached || removed_with_mounts).then_some(DataEffect::Kept)
-        }
+        EnvironmentNodeType::Service => approval::detached(deployed, working, &node.id)
+            .next()
+            .map(|_| DataEffect::Kept),
         EnvironmentNodeType::Config => None,
     }
 }

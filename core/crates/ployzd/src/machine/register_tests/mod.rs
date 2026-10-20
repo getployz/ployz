@@ -226,7 +226,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let publisher = tokio::spawn(run_machine_publisher(
         Some((replicated.clone(), view.clone())),
         target_store,
-        tokio::sync::watch::channel(0).1,
+        crate::corrosion::LiveRuntime::unobserved(),
         shutdown.clone(),
     ));
     // The founder publishes the Cluster network; a Machines view change for
@@ -234,7 +234,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let entry_publisher = tokio::spawn(run_machine_publisher(
         Some((replicated.clone(), view.clone())),
         entry_store,
-        tokio::sync::watch::channel(0).1,
+        crate::corrosion::LiveRuntime::unobserved(),
         shutdown.clone(),
     ));
     let network: ipnet::Ipv4Net = "10.210.0.0/16".parse().unwrap();

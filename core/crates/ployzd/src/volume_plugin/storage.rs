@@ -344,7 +344,7 @@ impl VolumeStorage {
                 "list",
                 "-Hp",
                 "-o",
-                "name,refquota,used,usedbydataset,mountpoint,mounted,readonly",
+                "name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly",
                 "-r",
                 pool.name(),
             ])
@@ -461,7 +461,9 @@ impl Held<'_> {
 pub(super) struct Dataset {
     pub(super) name: String,
     pub(super) refquota: u64,
-    pub(super) used_bytes: u64,
+    /// ZFS `referenced`: the copy's data as `refquota` bounds it, shared snapshot
+    /// blocks included.
+    pub(super) referenced_bytes: u64,
     pub(super) active_used_bytes: u64,
     pub(super) mountpoint: String,
     pub(super) mounted: bool,
@@ -477,11 +479,13 @@ impl Dataset {
             Some(refquota),
             Some(used_bytes),
             Some(active_used_bytes),
+            Some(referenced_bytes),
             Some(mountpoint),
             Some(mounted),
             Some(readonly),
             None,
         ) = (
+            fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
@@ -502,7 +506,7 @@ impl Dataset {
         Ok(Self {
             name: name.to_owned(),
             refquota: parse_zfs_bytes(refquota)?,
-            used_bytes,
+            referenced_bytes: referenced_bytes.parse::<u64>().map_err(|_| invalid())?,
             active_used_bytes,
             mountpoint: mountpoint.to_owned(),
             mounted: mounted == "yes",
