@@ -24,7 +24,6 @@ impl LiveRuntime {
         }
     }
 
-    /// No Build runner and no storage observer: nothing ever changes.
     #[cfg(test)]
     pub(crate) fn unobserved() -> Self {
         Self::new(

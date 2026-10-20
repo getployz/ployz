@@ -228,7 +228,6 @@ async fn publication_guard_rechecks_the_local_phase() {
         publication.publishable_machine(&local, RuntimeOverlay::default()),
         Some(machine.clone())
     );
-    // Live values are observations on the published Machine, never in the record.
     let mut observed = machine;
     observed.runtime.running_builds = 2;
     observed.runtime.pool_committable_bytes = Some(7 << 30);

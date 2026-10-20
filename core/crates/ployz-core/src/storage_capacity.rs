@@ -282,24 +282,15 @@ impl StorageCapacity {
             .map(|maximum| maximum.get())
             .try_fold(0u64, u64::checked_add)
             .ok_or_else(|| unknown("requested bounds overflow u64"))?;
-        let (growth, available, reserve) = self.admit(commitment)?;
         Ok(StorageBudget {
             requested_bytes,
             additional_commitment_bytes: additional,
-            required_growth_bytes: growth,
-            available_bytes: available,
-            reserve_bytes: reserve,
+            ..self.admit(commitment)?
         })
     }
 
     /// The largest further Provisioned Volume bound this Machine's Pool admits now, net of
     /// every root and slot bound it already commits, growing its backing where it can.
-    ///
-    /// Bisects the admission [`Self::budget`] runs instead of inverting it. The headroom
-    /// `max(commitment / 10, 1 GiB)` is piecewise with floor division, root-backed growth
-    /// rounds the backing extension up to whole GiB and refills TRIM holes, and the host
-    /// reserve only applies once growth is needed, so a closed form would be a second
-    /// formula to keep in step.
     ///
     /// # Errors
     /// Returns unknown capacity for inconsistent observations.
@@ -335,9 +326,7 @@ impl StorageCapacity {
         Ok(admitted)
     }
 
-    /// Backing growth, available bytes, and host reserve for `commitment` total bound bytes,
-    /// or why the backing refuses it.
-    fn admit(&self, commitment: u64) -> Result<(u64, u64, u64), StorageCapacityError> {
+    fn admit(&self, commitment: u64) -> Result<StorageBudget, StorageCapacityError> {
         let minimum = storage_with_headroom(commitment)?
             .checked_add(self.unmanaged_used_bytes)
             .ok_or_else(|| unknown("Pool occupancy overflows u64"))?;
@@ -412,7 +401,13 @@ impl StorageCapacity {
                 reserve_bytes: reserve,
             });
         }
-        Ok((growth, available, reserve))
+        Ok(StorageBudget {
+            requested_bytes: 0,
+            additional_commitment_bytes: 0,
+            required_growth_bytes: growth,
+            available_bytes: available,
+            reserve_bytes: reserve,
+        })
     }
 }
 
@@ -604,10 +599,9 @@ mod tests {
             volumes: BTreeMap::new(),
             copies: BTreeMap::new(),
         };
-        // Below 10 GiB the headroom is its one GiB floor.
         assert_eq!(
             assert_committable_is_the_admission_edge(&capacity),
-            9 * STORAGE_GIB
+            10 * STORAGE_GIB - STORAGE_GIB
         );
         capacity.backing = StorageBacking::Fixed {
             pool_size_bytes: 100 * STORAGE_GIB,

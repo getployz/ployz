@@ -33,7 +33,6 @@ pub struct ReplicatedStore {
     machine_publication: Arc<tokio::sync::Mutex<()>>,
 }
 
-/// The live values a Machine lays over its record when it publishes.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RuntimeOverlay {
     pub(crate) running_builds: u32,
@@ -69,8 +68,7 @@ impl MachinePublicationGuard<'_> {
         Ok(completed)
     }
 
-    /// This Machine as it publishes: its record with what it observes of itself
-    /// now, observations the record itself never holds.
+    /// This Machine as it publishes: its record with what it observes of itself now.
     pub(crate) fn publishable_machine(
         &self,
         local: &LocalMachineRecord,

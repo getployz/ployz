@@ -245,8 +245,6 @@ async fn batch_preparation_reserves_capacity_before_docker_creates_volumes() {
     server.abort();
 }
 
-/// A snapshot holds blocks the copy no longer references, so ZFS `used` exceeds
-/// `referenced`; only `referenced` is what the copy's `refquota` bounds.
 fn snapshotted(test: &TestDir, dataset: &str) {
     super::inspect_tests::set_property(test, dataset, "used", "3000");
     super::inspect_tests::set_property(test, dataset, "usedbydataset", "1000");
@@ -298,9 +296,16 @@ async fn a_slot_reports_the_bytes_its_copy_references() {
         2000,
         "{capacity}"
     );
+    server.abort();
+}
 
-    // A cut root keeps answering Docker from its slot.
+#[tokio::test]
+async fn a_cut_root_answers_get_with_the_bytes_its_slot_references() {
+    let test = TestDir::new();
+    fs::write(test.0.join("mirror-fs"), "").unwrap();
+    snapshotted(&test, "tank/ployz-mirror/data/fs");
     super::inspect_tests::set_property(&test, "tank/ployz-mirror/data/fs", "ployz:cut", "on");
+    let (socket, server) = super::inspect_tests::start(&test, USABLE_POOL, &["root", "mirror"]);
     let get = post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await;
     assert_eq!(
         get.pointer("/Volume/Status/used_bytes").unwrap(),
@@ -311,8 +316,9 @@ async fn a_slot_reports_the_bytes_its_copy_references() {
 }
 
 const GIB: u64 = 1024 * 1024 * 1024;
+const ROOT_BOUND: u64 = 2 * GIB;
+const SLOT_BOUND: u64 = GIB;
 
-/// A Pool already committed to a 2 GiB root and a 1 GiB mirror slot, served fresh.
 fn committed_pool(
     test: &TestDir,
     fixed: bool,
@@ -350,8 +356,8 @@ fn committed_pool(
     for marker in ["root", "volume", "mirror-root"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
-    fs::write(test.0.join("volume-bound"), (2 * GIB).to_string()).unwrap();
-    fs::write(test.0.join("slot"), GIB.to_string()).unwrap();
+    fs::write(test.0.join("volume-bound"), ROOT_BOUND.to_string()).unwrap();
+    fs::write(test.0.join("slot"), SLOT_BOUND.to_string()).unwrap();
     let socket = test.0.join("plugin.sock");
     let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
     (socket, server)

@@ -145,7 +145,7 @@ impl ContainerRuntime {
     }
 
     /// What this Machine's Pool could still commit, as of the last storage
-    /// observation. Never changes without a replicating observer.
+    /// observation.
     pub(crate) fn pool_committable_bytes(&self) -> tokio::sync::watch::Receiver<Option<u64>> {
         self.sink.as_ref().map_or_else(
             || tokio::sync::watch::channel(None).1,
@@ -1107,8 +1107,7 @@ mod tests {
             }
         };
 
-        // A 10 GiB fixed Pool keeps its one GiB of headroom free.
-        observed(Some(9 * gib)).await;
+        observed(Some(10 * gib - gib)).await;
         fake.replies.lock().unwrap().remove("Storage.Inspect");
         observed(None).await;
 

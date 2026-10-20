@@ -424,10 +424,10 @@ async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
         "4294967296\n"
     );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
-    // The dataset listing reports each copy's referenced bytes; nothing else asks for usage.
+    let is_dataset_listing = |line: &&str| line.contains(" list -Hp -o name,refquota,");
     assert!(
         log.lines()
-            .filter(|line| !line.contains(" list -Hp -o name,refquota,"))
+            .filter(|line| !is_dataset_listing(line))
             .all(|line| !line.contains("referenced") && !line.contains("available")),
         "{log}"
     );
