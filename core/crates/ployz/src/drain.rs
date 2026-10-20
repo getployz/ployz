@@ -2,6 +2,9 @@
 //! Placement convergence for each chosen replicated Service with a Container on it, then
 //! observe what still runs there. One bounded command.
 //!
+//! Each move's old copy retires alongside the moves after it; the report waits for every
+//! retirement and still lists the Services in the order they were handled.
+//!
 //! A preflight that may refuse comes first; nothing has moved when it does. After it the
 //! Drain cannot fail: `execute` returns a [`DrainReport`], not a `Result`, so whatever moved
 //! is always in the report.
@@ -9,10 +12,16 @@
 //! Callers: `ployz server drain` (streams a line per step through `progress`) and
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
+use std::collections::VecDeque;
+use std::pin::pin;
+
+use futures_util::future::BoxFuture;
+use futures_util::stream::FuturesUnordered;
+use futures_util::{FutureExt, StreamExt};
 use ployz_core::{
-    DeploymentLogId, EnvironmentValues, LiveServices, Machine, MachineId, MachineName,
-    MachineTarget, MachineUpdate, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode,
-    ServingPointer, UpdateMachineRequest, op,
+    CopyRotation, EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget,
+    MachineUpdate, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode,
+    UpdateMachineRequest, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -20,14 +29,16 @@ use ts_rs::TS;
 
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
-use crate::deploy::{Converged, OldCopy, Replacement, can_move, converge};
-use crate::serving_publish::{Amendment, Join, PointerClient, Provenance, Rotation, amend_pointer};
+use crate::deploy::cleanup::Copy;
+use crate::deploy::{Converged, LastIn, Moving, can_move, converge, named};
 
 pub(crate) mod retirement;
 
-use retirement::{Retirement, retire_globals};
+use retirement::{Retirement, copies_on, let_go, retire_globals};
 
-pub use crate::deploy::{DrainStop, MachineRef, Move, MoveFailure, StayReason};
+pub use crate::deploy::{
+    DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
+};
 
 /// Which user Services a Drain acts on. Those of reserved Namespaces never are.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -93,20 +104,19 @@ pub struct DrainReport {
 }
 
 impl DrainReport {
-    /// Every chosen Service left the Server or moved, the Drain ran to its end, and what
-    /// remains was observed. A moved Service may still be listed: its old copy is retiring
-    /// through its pointer, and ployzd stops it once every Machine stops routing to it.
+    /// Every chosen Service left the Server, every moved copy's old copy stopped, every
+    /// copy left Out there is gone, the Drain ran to its end, and what remains was
+    /// observed.
     #[must_use]
     pub fn complete(&self) -> bool {
         let Remaining::Observed { services, .. } = &self.remaining else {
             return false;
         };
         self.stopped.is_none()
-            && self.services.iter().all(|service| {
-                service.outcome.complete()
-                    && (matches!(service.outcome, DrainOutcome::Moved { .. })
-                        || !services.contains(&service.service))
-            })
+            && self
+                .services
+                .iter()
+                .all(|service| service.outcome.complete() && !services.contains(&service.service))
     }
 }
 
@@ -124,8 +134,8 @@ struct DrainReportWire {
     stopped: Option<DrainStop>,
     /// What still runs on the Server after the Drain.
     remaining: Remaining,
-    /// Every chosen Service left the Server or moved, the Drain ran to its end, and what
-    /// remains was observed. A moved Service's old copy may still be retiring.
+    /// Every chosen Service left the Server, every old copy stopped, the Drain ran to its
+    /// end, and what remains was observed.
     complete: bool,
 }
 
@@ -185,6 +195,12 @@ pub enum DrainOutcome {
     },
     /// Replicated: nothing moved, and why.
     Stays { reason: StayReason },
+    /// Replicated: a copy the user stopped stays on the Server until they start or remove
+    /// it. The Drain never moves one.
+    Held,
+    /// Replicated: the copies an earlier move left Out on the Server, each waited unlisted
+    /// by every live proxy and then removed. Never empty.
+    OldCopies { ends: Vec<OldCopyEnd> },
     /// Global: its removal from the Server was acknowledged, or none of it was left there.
     Retired,
     /// Global: it may still run on the Server, and why.
@@ -199,9 +215,12 @@ pub enum DrainOutcome {
 impl DrainOutcome {
     fn complete(&self) -> bool {
         match self {
-            Self::Moved { .. } | Self::NothingToMove | Self::Retired => true,
+            Self::Moved { moves } => moves.iter().all(|step| step.old == OldCopyEnd::Stopped),
+            Self::OldCopies { ends } => ends.iter().all(|end| *end == OldCopyEnd::Stopped),
+            Self::NothingToMove | Self::Retired => true,
             Self::Failed { .. }
             | Self::Stays { .. }
+            | Self::Held
             | Self::NotRetired { .. }
             | Self::Interrupted { .. }
             | Self::NotAttempted => false,
@@ -387,22 +406,17 @@ trait DrainClient {
         globals: &[QualifiedService],
         cancellation: &CancellationToken,
     ) -> Vec<(QualifiedService, Retirement)>;
-    async fn pointer(
-        &mut self,
-        service: &QualifiedService,
-    ) -> Result<Option<ServingPointer>, RpcError>;
     async fn converge(
         &mut self,
         service: &QualifiedService,
-        old: OldCopy<'_>,
         cancellation: &CancellationToken,
-    ) -> Converged;
-    async fn repoint(
+    ) -> Converged<Moving>;
+    async fn copies_on(
         &mut self,
+        server: &MachineId,
         service: &QualifiedService,
-        deploy: &DeploymentLogId,
-        replaced: &[Replacement],
-    ) -> Result<Amendment, RpcError>;
+    ) -> Result<Vec<Copy>, RpcError>;
+    async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd;
 }
 
 impl DrainClient for Client {
@@ -428,60 +442,33 @@ impl DrainClient for Client {
         retire_globals(self, server, globals, cancellation).await
     }
 
-    async fn pointer(
-        &mut self,
-        service: &QualifiedService,
-    ) -> Result<Option<ServingPointer>, RpcError> {
-        self.read_pointer(service).await
-    }
-
     async fn converge(
         &mut self,
         service: &QualifiedService,
-        old: OldCopy<'_>,
         cancellation: &CancellationToken,
-    ) -> Converged {
-        converge(self, service, old, cancellation).await
+    ) -> Converged<Moving> {
+        converge(self, service, cancellation).await
     }
 
-    async fn repoint(
+    async fn copies_on(
         &mut self,
+        server: &MachineId,
         service: &QualifiedService,
-        deploy: &DeploymentLogId,
-        replaced: &[Replacement],
-    ) -> Result<Amendment, RpcError> {
-        publish_replacements_past_cancel(self, service, deploy, replaced).await
+    ) -> Result<Vec<Copy>, RpcError> {
+        copies_on(self, server, service).await
     }
-}
 
-async fn publish_replacements_past_cancel<C: PointerClient>(
-    client: &mut C,
-    service: &QualifiedService,
-    deploy: &DeploymentLogId,
-    replaced: &[Replacement],
-) -> Result<Amendment, RpcError> {
-    let rotation = Rotation {
-        joining: replaced
+    async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd {
+        let known: Vec<MachineRef> = self
+            .machines()
+            .await
+            .unwrap_or_default()
             .iter()
-            .map(|step| Join {
-                copy: step.new,
-                provenance: Provenance {
-                    source: step.old,
-                    source_deploy: None,
-                },
-            })
-            .collect(),
-        leaving: replaced.iter().map(|step| step.old).collect(),
-        pruning: Vec::new(),
-    };
-    amend_pointer(
-        client,
-        service,
-        deploy,
-        &CancellationToken::new(),
-        &rotation,
-    )
-    .await
+            .map(|machine| MachineRef::from(&machine.machine))
+            .collect();
+        let name = |id: &MachineId| named(&known, id);
+        let_go(self, copy, &name, cancellation).await
+    }
 }
 
 /// Globals, then each replicated Service, then what remains. Infallible: every problem
@@ -505,6 +492,7 @@ async fn execute<C: DrainClient>(
         stopped: None,
         progress,
     };
+    let mut behind = Behind::default();
     'work: {
         if !globals.is_empty() {
             if cancellation.is_cancelled() {
@@ -543,66 +531,68 @@ async fn execute<C: DrainClient>(
         let mut rest = replicated.as_slice();
         while let Some((service, after)) = rest.split_first() {
             if cancellation.is_cancelled() {
+                behind.finish(&mut record).await;
                 record.stop(DrainStop::Cancelled, rest);
                 break 'work;
             }
-            let pointer = match client.pointer(service).await {
-                Ok(pointer) => pointer,
-                Err(error) => {
-                    record.push(
-                        service.clone(),
-                        DrainOutcome::Stays {
-                            reason: StayReason::PointerUnread {
-                                detail: error.message,
-                            },
-                        },
-                    );
-                    rest = after;
-                    continue;
+            // Listed before the move, so a copy the move itself leaves Out is reported
+            // once, by the move, and not waited on twice. A failed listing leaves the
+            // copies to `remaining`, which still finds the Service there.
+            let left_behind = behind
+                .alongside(&mut record, client.copies_on(&server.id, service))
+                .await
+                .unwrap_or_default();
+            let converged = behind
+                .alongside(&mut record, client.converge(service, cancellation))
+                .await;
+            let (shape, moves) = match converged {
+                Converged::Moved { moves } => (Shape::Moved, moves),
+                Converged::NothingToMove => (Shape::Done(DrainOutcome::NothingToMove), Vec::new()),
+                Converged::Failed { moves, failure } => (Shape::Failed(failure), moves),
+                Converged::Stays { reason } => {
+                    (Shape::Done(DrainOutcome::Stays { reason }), Vec::new())
                 }
-            };
-            let old = match &pointer {
-                None => OldCopy::Remove,
-                Some(pointer) => OldCopy::Keep { pointer },
-            };
-            let outcome = match client.converge(service, old, cancellation).await {
-                Converged::Moved { moves, replaced } => {
-                    match repoint(client, service, &moves, &replaced).await {
-                        Ok(()) => DrainOutcome::Moved { moves },
-                        Err(failure) => DrainOutcome::Failed { moves, failure },
-                    }
-                }
-                Converged::NothingToMove => DrainOutcome::NothingToMove,
-                Converged::Failed {
-                    moves,
-                    replaced,
-                    failure,
-                } => {
-                    let failure = repoint(client, service, &moves, &replaced)
-                        .await
-                        .err()
-                        .unwrap_or(failure);
-                    DrainOutcome::Failed { moves, failure }
-                }
-                Converged::Stays { reason } => DrainOutcome::Stays { reason },
-                Converged::Stopped {
-                    moves,
-                    replaced,
-                    stop,
-                } => {
-                    let outcome = match repoint(client, service, &moves, &replaced).await {
-                        Ok(()) => DrainOutcome::Interrupted { moves },
-                        Err(failure) => DrainOutcome::Failed { moves, failure },
-                    };
-                    record.push(service.clone(), outcome);
+                Converged::Stopped { moves, stop } => {
+                    behind.moved(service.clone(), Shape::Interrupted, moves);
+                    behind.finish(&mut record).await;
                     record.stop(stop, after);
                     break 'work;
                 }
             };
-            record.push(service.clone(), outcome);
+            let held = left_behind
+                .iter()
+                .any(|copy| matches!(copy.rotation, CopyRotation::Held(_)));
+            let out = left_behind
+                .iter()
+                .filter(|copy| copy.rotation == CopyRotation::Out)
+                .collect::<Vec<_>>();
+            let only_leftovers = matches!(shape, Shape::Done(DrainOutcome::NothingToMove))
+                && (held || !out.is_empty());
+            if !only_leftovers {
+                behind.moved(service.clone(), shape, moves);
+            }
+            if held {
+                behind.done(service.clone(), DrainOutcome::Held);
+            }
+            if !out.is_empty() {
+                let mut ends = Vec::with_capacity(out.len());
+                for copy in out {
+                    ends.push(if cancellation.is_cancelled() {
+                        OldCopyEnd::Running {
+                            unconfirmed: Unconfirmed::Cancelled,
+                        }
+                    } else {
+                        behind
+                            .alongside(&mut record, client.let_go(copy, cancellation))
+                            .await
+                    });
+                }
+                behind.done(service.clone(), DrainOutcome::OldCopies { ends });
+            }
             rest = after;
         }
     }
+    behind.finish(&mut record).await;
     let remaining = match client.still_on(&server.id).await {
         Ok(services) => Remaining::Observed {
             unchosen: services
@@ -626,39 +616,155 @@ async fn execute<C: DrainClient>(
     }
 }
 
-async fn repoint<C: DrainClient>(
-    client: &mut C,
-    service: &QualifiedService,
-    moves: &[Move],
-    replaced: &[Replacement],
-) -> Result<(), MoveFailure> {
-    let mut deploys = Vec::new();
-    for step in replaced {
-        if !deploys.contains(&&step.deploy) {
-            deploys.push(&step.deploy);
-        }
+#[derive(Default)]
+struct Behind {
+    entries: VecDeque<Pending>,
+    flushed: usize,
+    retiring: FuturesUnordered<BoxFuture<'static, Ended>>,
+}
+
+struct Pending {
+    service: QualifiedService,
+    shape: Shape,
+    moves: Vec<Step>,
+}
+
+enum Shape {
+    Done(DrainOutcome),
+    Moved,
+    Failed(MoveFailure),
+    Interrupted,
+}
+
+struct Step {
+    from: MachineRef,
+    to: MachineRef,
+    old: Option<Result<OldCopyEnd, LastIn>>,
+}
+
+struct Ended {
+    entry: usize,
+    index: usize,
+    old: Result<OldCopyEnd, LastIn>,
+}
+
+impl Behind {
+    fn done(&mut self, service: QualifiedService, outcome: DrainOutcome) {
+        self.moved(service, Shape::Done(outcome), Vec::new());
     }
-    for deploy in deploys {
-        let group = replaced
-            .iter()
-            .filter(|step| step.deploy == *deploy)
-            .cloned()
-            .collect::<Vec<_>>();
-        let detail = match client.repoint(service, deploy, &group).await {
-            Ok(Amendment::Published { .. } | Amendment::Unchanged) => continue,
-            Ok(Amendment::Outdated) => "a newer deploy replaced it".to_owned(),
-            Ok(Amendment::NoPointer) => "it has none to retire the old copy".to_owned(),
-            Err(error) => crate::ui::row(&error),
-        };
-        let last = moves.last().expect("every kept old copy is a move");
-        return Err(MoveFailure::NotServing {
-            from: last.from.clone(),
-            to: last.to.clone(),
-            detail: format!("publishing its Serving Pointer: {detail}"),
-            replacement_removed: false,
+
+    fn moved(&mut self, service: QualifiedService, shape: Shape, moves: Vec<Moving>) {
+        let entry = self.flushed + self.entries.len();
+        let moves = moves
+            .into_iter()
+            .enumerate()
+            .map(|(index, Moving { from, to, old })| {
+                let ended = old.map(move |old| Ended { entry, index, old });
+                self.retiring.push(ended.boxed());
+                Step {
+                    from,
+                    to,
+                    old: None,
+                }
+            })
+            .collect();
+        self.entries.push_back(Pending {
+            service,
+            shape,
+            moves,
         });
     }
-    Ok(())
+
+    async fn alongside<T>(&mut self, record: &mut Record<'_>, work: impl Future<Output = T>) -> T {
+        let mut work = pin!(work);
+        loop {
+            tokio::select! {
+                done = &mut work => {
+                    self.flush(record);
+                    return done;
+                }
+                Some(ended) = self.retiring.next() => self.end(ended),
+            }
+        }
+    }
+
+    async fn finish(&mut self, record: &mut Record<'_>) {
+        while let Some(ended) = self.retiring.next().await {
+            self.end(ended);
+        }
+        self.flush(record);
+    }
+
+    fn end(&mut self, Ended { entry, index, old }: Ended) {
+        let step = self
+            .entries
+            .get_mut(entry - self.flushed)
+            .and_then(|pending| pending.moves.get_mut(index))
+            .expect("an ended retirement's entry waits for it");
+        step.old = Some(old);
+    }
+
+    fn flush(&mut self, record: &mut Record<'_>) {
+        while self
+            .entries
+            .front()
+            .is_some_and(|pending| pending.moves.iter().all(|step| step.old.is_some()))
+        {
+            let Pending {
+                service,
+                shape,
+                moves,
+            } = self.entries.pop_front().expect("just checked");
+            self.flushed += 1;
+            let mut last_in = false;
+            let moves = moves
+                .into_iter()
+                .map(|Step { from, to, old }| {
+                    let old = match old.expect("flushed once every old copy ended") {
+                        Ok(old) => old,
+                        Err(LastIn) => {
+                            last_in = true;
+                            OldCopyEnd::In {
+                                unconfirmed: Unconfirmed::Failed {
+                                    detail: format!(
+                                        "{} still counted it as the last copy serving",
+                                        from.name
+                                    ),
+                                },
+                            }
+                        }
+                    };
+                    Move { from, to, old }
+                })
+                .collect::<Vec<_>>();
+            let refused = || MoveFailure::Refused {
+                reason: StayReason::LastIn,
+            };
+            let (outcome, stays) = match shape {
+                Shape::Done(outcome) => (outcome, false),
+                Shape::Moved if last_in => (
+                    DrainOutcome::Failed {
+                        moves,
+                        failure: refused(),
+                    },
+                    false,
+                ),
+                Shape::Moved => (DrainOutcome::Moved { moves }, false),
+                Shape::Failed(failure) => (DrainOutcome::Failed { moves, failure }, last_in),
+                Shape::Interrupted => (DrainOutcome::Interrupted { moves }, last_in),
+            };
+            record.push(service.clone(), outcome);
+            if stays {
+                record.push(
+                    service,
+                    DrainOutcome::Failed {
+                        moves: Vec::new(),
+                        failure: refused(),
+                    },
+                );
+            }
+        }
+    }
 }
 
 /// The report's Services as they land, each handed to `progress`.

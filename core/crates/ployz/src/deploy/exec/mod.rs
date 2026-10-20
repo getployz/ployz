@@ -2285,52 +2285,22 @@ async fn gone<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::RemoveContainer, error))
 }
 
-/// Why a Placement convergence move did not complete. Each case leaves a different set of
-/// Containers behind, so the report tells them apart.
 #[derive(Debug, thiserror::Error)]
-pub(in crate::deploy) enum MoveContainerError {
-    /// The new Container did not start or serve, or the move was cancelled first (then the
-    /// error is [`ExecutionError::Cancelled`]). `old` keeps serving. `replacement_removed`
-    /// says no new Container is left on `to`: none was made, or its removal was
-    /// acknowledged.
-    #[error("The new Container did not serve.")]
-    NotServing {
-        #[source]
-        error: ExecutionError,
-        replacement_removed: bool,
-    },
-    /// The new Container serves on `to`, but `old` could not be removed.
-    #[error("The old Container was not removed.")]
-    OldNotRemoved {
-        #[source]
-        error: ExecutionError,
-        old_stopped: bool,
-    },
-}
-
-/// Whether a move may stop or remove its old Container. `move_container` asks
-/// immediately before each destructive request, so a Serving Pointer published
-/// meanwhile keeps the old Container for that pointer's retire path. `old_stopped` says
-/// whether the old Container already stopped when it asks.
-pub(in crate::deploy) trait RemovesOld {
-    async fn removes_old(&mut self, old_stopped: bool) -> bool;
-}
-
-impl RemovesOld for bool {
-    async fn removes_old(&mut self, _old_stopped: bool) -> bool {
-        *self
-    }
+#[error("The new Container did not serve.")]
+pub(in crate::deploy) struct MoveContainerError {
+    #[source]
+    pub(in crate::deploy) error: ExecutionError,
+    pub(in crate::deploy) replacement_removed: bool,
 }
 
 pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
-    (spec, deploy): (&ResolvedServiceSpec, Option<&DeploymentLogId>),
+    spec: &ResolvedServiceSpec,
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
-    gate: &mut impl RemovesOld,
     cancellation: &CancellationToken,
-) -> Result<ContainerId, MoveContainerError> {
+) -> Result<(ContainerId, Option<DeploymentLogId>), MoveContainerError> {
     let client = RestartTolerant {
         inner: client,
         cancellation,
@@ -2343,17 +2313,16 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     };
     let slot = slot_key(namespace, ContainerKind::ServiceContainer, key);
     let adopts = global && adopts_running(&client, to, &slot, spec).await;
-    // The moved copy keeps the source copy's gen: a Move is not a new rollout.
-    let r#gen = match client.inspect_container(from, old).await {
-        Ok(details) => details.container.copy_gen(),
-        Err(error) if error.code == RpcErrorCode::NotFound => Gen::FIRST,
+    let source = match client.inspect_container(from, old).await {
+        Ok(details) => details.container,
         Err(error) => {
-            return Err(MoveContainerError::NotServing {
+            return Err(MoveContainerError {
                 error: machine_error(MachineAction::InspectContainer, error),
                 replacement_removed: !adopts,
             });
         }
     };
+    let deploy = source.deploy_label();
     let progress = Progress::new(Vec::new(), None);
     let started = run_new(
         &client,
@@ -2361,43 +2330,23 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         &progress,
         to,
         slot.clone(),
-        (spec, deploy),
-        r#gen,
+        (spec, deploy.as_ref()),
+        source.copy_gen(),
         AnswerWhen::Settled,
         cancellation,
     )
     .await;
-    let new = match started_container(started, spec, cancellation) {
-        Ok(new) => new,
+    match started_container(started, spec, cancellation) {
+        Ok(new) => Ok((new, deploy)),
         Err(error) => {
             let keep = adopts || (global && !cancellation.is_cancelled());
             let replacement_removed = !keep && discard_attempt(&client, to, slot).await.is_ok();
-            return Err(MoveContainerError::NotServing {
+            Err(MoveContainerError {
                 error,
                 replacement_removed,
-            });
+            })
         }
-    };
-    if !gate.removes_old(false).await {
-        return Ok(new);
     }
-    // Stopped first, so a failed removal can say whether the old Container still serves.
-    stop(&client, from, old, Drain::DEFAULT, None)
-        .await
-        .map_err(|error| MoveContainerError::OldNotRemoved {
-            error,
-            old_stopped: false,
-        })?;
-    if !gate.removes_old(true).await {
-        return Ok(new);
-    }
-    remove(&client, from, old, Drain::NONE)
-        .await
-        .map_err(|error| MoveContainerError::OldNotRemoved {
-            error,
-            old_stopped: true,
-        })?;
-    Ok(new)
 }
 
 /// What a failed Global creation leaves on its Machine. A stop-first replacement
@@ -2571,7 +2520,7 @@ fn out_of_memory(health: &HealthVerdict, spec: &ResolvedServiceSpec) -> Option<O
     })
 }
 
-fn health_error(
+pub(in crate::deploy) fn health_error(
     container_id: ContainerId,
     health: Option<HealthVerdict>,
     spec: &ResolvedServiceSpec,
