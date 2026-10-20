@@ -2,8 +2,60 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore};
+use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay};
 use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
+
+/// What this Machine observes of itself live: published on its row, never held in
+/// its record.
+pub struct LiveRuntime {
+    running_builds: tokio::sync::watch::Receiver<u32>,
+    pool_committable_bytes: tokio::sync::watch::Receiver<Option<u64>>,
+}
+
+impl LiveRuntime {
+    #[must_use]
+    pub fn new(
+        running_builds: tokio::sync::watch::Receiver<u32>,
+        pool_committable_bytes: tokio::sync::watch::Receiver<Option<u64>>,
+    ) -> Self {
+        Self {
+            running_builds,
+            pool_committable_bytes,
+        }
+    }
+
+    /// No Build runner and no storage observer: nothing ever changes.
+    #[cfg(test)]
+    pub(crate) fn unobserved() -> Self {
+        Self::new(
+            tokio::sync::watch::channel(0).1,
+            tokio::sync::watch::channel(None).1,
+        )
+    }
+
+    fn mark_seen(&mut self) -> RuntimeOverlay {
+        RuntimeOverlay {
+            running_builds: *self.running_builds.borrow_and_update(),
+            pool_committable_bytes: *self.pool_committable_bytes.borrow_and_update(),
+        }
+    }
+
+    fn current(&self) -> RuntimeOverlay {
+        RuntimeOverlay {
+            running_builds: *self.running_builds.borrow(),
+            pool_committable_bytes: *self.pool_committable_bytes.borrow(),
+        }
+    }
+
+    async fn changed(&mut self) {
+        // A closed channel (no Build runner, no storage observer) never changes again.
+        tokio::select! {
+            Ok(()) = self.running_builds.changed() => {}
+            Ok(()) = self.pool_committable_bytes.changed() => {}
+            else => std::future::pending().await,
+        }
+    }
+}
 
 /// Waits for replication through the target, retrying store failures.
 ///
@@ -33,14 +85,14 @@ pub async fn wait_for_catch_up(
 }
 
 /// Publish this Machine now and every minute, and whenever its record (a
-/// policy edit) or the number of Builds it runs changes: the one path that
+/// policy edit) or what it observes of itself live changes: the one path that
 /// publishes this Machine. Another writer (an Entry's Register, a Forget) can
 /// replace this Machine's row, so a Machines view change that leaves the row
 /// unlike what this Machine would publish restores the row at once.
 pub async fn run_machine_publisher(
     cluster: Option<(ReplicatedStore, MachineView)>,
     local: RecordOwner,
-    mut running_builds: tokio::sync::watch::Receiver<u32>,
+    mut live: LiveRuntime,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let mut records = local.watch();
@@ -93,9 +145,9 @@ pub async fn run_machine_publisher(
                 );
             }
             let publication = replicated.machine_publication().await;
-            let running = *running_builds.borrow_and_update();
+            let overlay = live.mark_seen();
             let record = Arc::clone(&records.borrow_and_update());
-            let machine = publication.publishable_machine(&record, running);
+            let machine = publication.publishable_machine(&record, overlay);
             if let Some(machine) = machine
                 && let Err(error) = publication.publish(&machine).await
             {
@@ -109,13 +161,12 @@ pub async fn run_machine_publisher(
         loop {
             tokio::select! {
                 () = tokio::time::sleep_until(tick) => break,
-                // A closed channel (no Build runner) never changes again.
-                Ok(()) = running_builds.changed() => break,
+                () = live.changed() => break,
                 Ok(()) = records.changed() => break,
                 Ok(()) = machines.changed() => {
                     let snapshot = machines.borrow_and_update().clone();
                     if let Some(replicated) = &replicated
-                        && row_is_stale(replicated, &snapshot, &records, &running_builds).await
+                        && row_is_stale(replicated, &snapshot, &records, &live).await
                     {
                         break;
                     }
@@ -134,17 +185,16 @@ async fn row_is_stale(
     replicated: &ReplicatedStore,
     snapshot: &MachinesSnapshot,
     records: &tokio::sync::watch::Receiver<Arc<LocalMachineRecord>>,
-    running_builds: &tokio::sync::watch::Receiver<u32>,
+    live: &LiveRuntime,
 ) -> bool {
     let Some(snapshot) = snapshot else {
         return false;
     };
     let record = Arc::clone(&records.borrow());
-    let running = *running_builds.borrow();
     let Some(machine) = replicated
         .machine_publication()
         .await
-        .publishable_machine(&record, running)
+        .publishable_machine(&record, live.current())
     else {
         return false;
     };

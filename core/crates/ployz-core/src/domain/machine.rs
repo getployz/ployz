@@ -134,6 +134,11 @@ pub struct MachineRuntime {
     pub memory_total_bytes: Option<u64>,
     /// Builds this Machine's daemon is running now; live, never persisted.
     pub running_builds: u32,
+    /// Bytes of Provisioned Volume bounds this Machine's Pool could still take on, net
+    /// of the bounds its copies commit, growing its backing where it can; live, never
+    /// persisted. Absent when unobserved and from older daemons.
+    #[ts(optional = nullable)]
+    pub pool_committable_bytes: Option<u64>,
     /// Every capability name the daemon binary serves. Empty from a daemon
     /// that predates the field, and when an older entry relays a newer peer's
     /// record, so empty claims nothing.

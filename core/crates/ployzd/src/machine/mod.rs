@@ -568,8 +568,9 @@ pub fn local_runtime() -> MachineRuntime {
         memory_total_bytes: crate::host_capacity::memory_capacity()
             .ok()
             .map(|(total, _)| total),
-        // Publication overlays the live count; the record never holds one.
+        // Publication overlays the live values; the record never holds them.
         running_builds: 0,
+        pool_committable_bytes: None,
         capabilities: ployz_core::served_capabilities(),
     }
 }
