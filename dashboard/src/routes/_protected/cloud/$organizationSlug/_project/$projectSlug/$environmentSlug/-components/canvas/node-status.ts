@@ -39,7 +39,8 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
   // A Server missing from partial evidence may still serve it.
   if (containers.length === 0) return whole ? line("Server offline", "bad", true) : line("Server offline", "quiet");
   const running = containers.filter((container) => container.runtime?.state === "running");
-  if (running.length === 0) return containers.every((container) => container.runtime?.state === "exited" && container.runtime.code === 0)
+  // A run its Server stopped on request is no crash, whatever code the app exited with.
+  if (running.length === 0) return containers.every((container) => container.runtime?.state === "exited" && (container.runtime.code === 0 || container.runtime.stopped === true))
     ? line("Stopped", "bad", true) : line("Crashed", "crashed", true);
   const serving = running.filter(containerServing).length;
   if (serving === 0) return line("Starting", "quiet");

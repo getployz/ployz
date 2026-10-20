@@ -577,6 +577,156 @@ fn a_save_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
 }
 
 #[test]
+fn the_diff_marks_deleted_a_volume_a_deploy_in_flight_creates() {
+    let (store, who) = volume_in_flight();
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let data = diff
+        .changes
+        .iter()
+        .find(|change| change.name == "data")
+        .unwrap();
+    assert_eq!(
+        data.lifecycle,
+        ployz_core::config::ReviewLifecycleKind::Delete
+    );
+    assert_eq!(data.data, Some(ployz_store::DataEffect::Deleted));
+}
+
+#[test]
+fn the_diff_does_not_say_a_volume_it_deletes_keeps_its_data() {
+    let (store, who) = volume_in_flight();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let data = |name: &str| {
+        diff.changes
+            .iter()
+            .find(|change| change.name == name)
+            .unwrap()
+            .data
+    };
+    assert_eq!(data("data"), Some(ployz_store::DataEffect::Deleted));
+    assert_eq!(data("web"), None);
+}
+
+#[test]
+fn the_diff_does_not_say_a_volume_replaced_by_one_of_its_name_is_kept() {
+    let (store, who) = volume_in_flight();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("data").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let web = diff
+        .changes
+        .iter()
+        .find(|change| change.name == "web")
+        .unwrap();
+    assert_eq!(web.data, None);
+}
+
+#[test]
+fn the_diff_restarts_a_service_a_deploy_in_flight_creates() {
+    let (store, who) = shop();
+    let sentry = || ployz_core::ConfigName::parse("sentry").unwrap();
+    let put = |content: &str| {
+        store
+            .write(
+                &who,
+                &ployz_store::PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: sentry(),
+                    file: ployz_core::ConfigFileName::parse("config.yml").unwrap(),
+                    content: content.into(),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    };
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: sentry(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    put("value: old");
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000007")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::AttachConfig {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("worker").unwrap(),
+                config: sentry(),
+                dir: "/etc/sentry".into(),
+            },
+        )
+        .unwrap();
+    backend::admit(&store, &who, "production", 2);
+    put("value: new");
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let restarts = &diff
+        .changes
+        .iter()
+        .find(|change| change.name == "sentry")
+        .unwrap()
+        .restarts;
+    assert_eq!(
+        restarts.iter().map(ServiceName::as_str).collect::<Vec<_>>(),
+        ["web", "worker"]
+    );
+}
+
+#[test]
 fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
     let (store, who) = volume_in_flight();
     let deploy = |version: Option<String>| {
@@ -1042,6 +1192,7 @@ fn a_push_ships_every_saved_change_and_builds_only_what_it_selects() {
                 status: ployz_store::BuildStatus::Built,
                 message: None,
                 log: String::new(),
+                server: None,
             }),
         )
         .unwrap();

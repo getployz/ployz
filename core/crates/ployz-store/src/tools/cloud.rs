@@ -74,6 +74,12 @@ pub struct ContainerReport {
     pub service: ServiceName,
     pub state: ContainerState,
     pub exit_code: Option<i64>,
+    /// On an `exited` container: its Server stopped it on request, so `exit_code` is
+    /// no crash. A field beside `exited`, not a state, so a reader from before it
+    /// still decodes the answer and reads the exit code as it always did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub stopped: bool,
     pub health: Option<Health>,
     /// Absent when the Server does not report it.
     pub restarts: Option<u32>,

@@ -226,6 +226,20 @@ pub(super) struct DiscoveryService {
     pub(super) update_refusal: Option<RpcError>,
     /// SelectEndpoint is unimplemented, as on a daemon older than it.
     pub(super) select_unimplemented: bool,
+    /// How SetVolumeCopy fails on these targets; every other target leaves it unimplemented.
+    pub(super) set_volume_copy_failures: BTreeMap<MachineId, SwitchFailure>,
+}
+
+#[derive(Clone)]
+pub(super) enum SwitchFailure {
+    /// The target refuses with this status itself.
+    Refused(Status),
+    /// The entry's router heard nothing back from the target.
+    Unanswered,
+    /// No reply ever comes, so the caller's own deadline ends the call.
+    Hangs,
+    /// The target takes the request, signals it, and never replies.
+    Taken(Arc<tokio::sync::Notify>),
 }
 
 impl DiscoveryService {
@@ -293,6 +307,7 @@ impl DiscoveryService {
             update_unavailable: false,
             update_refusal: None,
             select_unimplemented: false,
+            set_volume_copy_failures: BTreeMap::new(),
         }
     }
 
@@ -1462,6 +1477,28 @@ impl FakeMachine for DiscoveryService {
         ))
     }
 
+    async fn set_volume_copy(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        match self.set_volume_copy_failures.get(&machine_id) {
+            Some(SwitchFailure::Refused(status)) => Err(status.clone()),
+            Some(SwitchFailure::Unanswered) => Err(ployz_core::rpc::target_unanswered_status(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset"),
+            )),
+            Some(SwitchFailure::Hangs) => std::future::pending().await,
+            Some(SwitchFailure::Taken(taken)) => {
+                taken.notify_one();
+                std::future::pending().await
+            }
+            None => Err(Status::unimplemented(
+                "SetVolumeCopy is not used by this fixture",
+            )),
+        }
+    }
+
     async fn leave(
         &self,
         request: Request<OpaquePayload>,
@@ -1579,6 +1616,7 @@ fn created_container(
         resolved_spec,
         address: None,
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }
@@ -1591,6 +1629,7 @@ pub(super) fn empty_storage() -> ployz_core::StorageCapacity {
             host_available_bytes: 90 * ployz_core::STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: BTreeMap::new(),
         copies: BTreeMap::new(),
     }

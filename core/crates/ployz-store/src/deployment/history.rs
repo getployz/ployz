@@ -366,6 +366,8 @@ pub(crate) fn view(
         .map(|node| NodeOutcome {
             node: node.shown(),
             rows: rows.remove(node.id()).unwrap_or_default(),
+            cancelled: stored.run.nodes.get(node.id()) == Some(&NodeStatus::Failed)
+                && stored.run.cancelled.contains(node.id()),
             outcome: match (stored.run.nodes.get(node.id()), stored.summary.status) {
                 (Some(status), _) => *status,
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
@@ -537,7 +539,15 @@ pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String
     let mut servers: Vec<String> = super::rows::of_nodes(tx, &stored)?
         .into_values()
         .flatten()
-        .filter(|row| matches!(row.state, super::RowState::Failed { .. }))
+        .filter(|row| {
+            matches!(
+                row.state,
+                super::RowState::Failed {
+                    cancelled: false,
+                    ..
+                }
+            )
+        })
         .map(|row| row.server)
         .collect();
     servers.sort();

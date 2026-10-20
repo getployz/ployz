@@ -1079,6 +1079,7 @@ mod tests {
             resolved_spec: spec,
             address: None,
             labels: Default::default(),
+            stopped: false,
         })
         .unwrap()
     }

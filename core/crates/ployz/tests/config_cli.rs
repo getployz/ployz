@@ -2060,7 +2060,7 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
         assert!(human.status.success());
         let human = String::from_utf8(human.stdout).unwrap();
         assert!(
-            human.contains("\n  web.image: \"web:1\" → \"web:2\"\n"),
+            human.contains("\n  web (update)\n    web.image: \"web:1\" → \"web:2\"\n"),
             "{human}"
         );
         let image = &rows[0];
@@ -2153,6 +2153,213 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
         assert_eq!(closed["closing"], json!(true));
         let listed = ok(store, &["env", "ls"]);
         assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+    }
+}
+
+/// `env sync --plan` reads as `ployz diff` does: each node under its name and what
+/// happens to it, a Config's files by name, and never a node as raw JSON.
+#[test]
+fn a_sync_plan_reads_new_nodes_and_config_files_as_diff_does() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let from = file.path().to_str().unwrap();
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+        ok(store, &["config", "put", "app", "app.yml", "--from", from]);
+        ok(
+            store,
+            &[
+                "env",
+                "branch",
+                "fix-web",
+                "--copy",
+                "web",
+                "--copy",
+                "configs.app",
+            ],
+        );
+        ok(
+            store,
+            &[
+                "config", "put", "app", "new.yml", "--from", from, "--env", "fix-web",
+            ],
+        );
+        ok(
+            store,
+            &[
+                "service", "add", "api", "--image", "api:1", "--env", "fix-web",
+            ],
+        );
+        ok(store, &["volume", "add", "data", "--env", "fix-web"]);
+        ok(store, &["config", "add", "extra", "--env", "fix-web"]);
+
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["env", "sync", "--to", "--plan", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        let (_, rows) = human.split_once('\n').unwrap();
+        for block in [
+            "  app (update)\n    files: added new.yml (new)\n",
+            "  data (create)\n",
+            "  api (create)\n    api.image: null → \"api:1\"\n",
+            "  extra (create)\n",
+        ] {
+            assert!(rows.contains(block), "{rows}");
+        }
+        assert_eq!(rows.lines().count(), 6, "{rows}");
+    }
+}
+
+/// Node `name`'s header and rows in `text`, where headers sit at `indent` and rows
+/// two deeper, with that indent taken off.
+fn node_block(text: &str, name: &str, indent: usize) -> Vec<String> {
+    let header = format!("{:indent$}{name} (", "");
+    let row = format!("{:1$}", "", indent + 2);
+    text.lines()
+        .skip_while(|line| !line.starts_with(&header))
+        .enumerate()
+        .take_while(|(at, line)| *at == 0 || line.starts_with(&row))
+        .map(|(_, line)| line[indent..].to_owned())
+        .collect()
+}
+
+/// `fix-web`'s Sync plan into production, the Sync, and production's diff after it.
+fn plan_then_diff(store: &Target) -> (String, String) {
+    let home = tempfile::tempdir().unwrap();
+    let human = |args: &[&str]| {
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let plan = human(&["env", "sync", "--to", "--plan", "--env", "fix-web"]);
+    let version = ok(
+        store,
+        &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+    )["version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(
+        store,
+        &[
+            "env",
+            "sync",
+            "--to",
+            "--env",
+            "fix-web",
+            "--version",
+            &version,
+        ],
+    );
+    (plan, human(&["diff"]))
+}
+
+/// A Service a Sync creates plans with the rows `diff` shows for it once it lands: its
+/// repository and the branch it carries apart, never its root directory.
+#[test]
+fn a_sync_plan_reads_a_new_repository_service_as_diff_does() {
+    // Only Cloud reads a repository.
+    let store = &Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_alice",
+    };
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+    ok(
+        store,
+        &[
+            "service",
+            "add",
+            "api",
+            "--repo",
+            "acme/web@dev",
+            "--env",
+            "fix-web",
+        ],
+    );
+    let (plan, diff) = plan_then_diff(store);
+    let planned = node_block(&plan, "api", 2);
+    assert_eq!(planned, node_block(&diff, "api", 0), "{plan}\n{diff}");
+    assert!(
+        planned.iter().any(|line| line.contains("api.branch")),
+        "{plan}"
+    );
+}
+
+/// A Config a Sync creates plans as `diff` shows it once it lands: by name alone, its
+/// files part of what it arrives as.
+#[test]
+fn a_sync_plan_reads_a_new_config_with_files_as_diff_does() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let from = file.path().to_str().unwrap();
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(store, &["config", "add", "extra", "--env", "fix-web"]);
+        ok(
+            store,
+            &[
+                "config",
+                "put",
+                "extra",
+                "extra.yml",
+                "--from",
+                from,
+                "--env",
+                "fix-web",
+            ],
+        );
+        let (plan, diff) = plan_then_diff(store);
+        let planned = node_block(&plan, "extra", 2);
+        assert_eq!(planned, node_block(&diff, "extra", 0), "{plan}\n{diff}");
+        assert_eq!(planned, ["extra (create)"], "{plan}");
+    }
+}
+
+/// A Service a Sync creates hides its rows, as `diff` does, but never the warnings they
+/// carry: a secret it arrives without is named under it.
+#[test]
+fn a_sync_plan_warns_of_a_new_services_missing_secret() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(
+            store,
+            &[
+                "service", "add", "api", "--image", "api:1", "--env", "fix-web",
+            ],
+        );
+        let (code, set) = ployz_with_stdin(
+            store,
+            &["set", "api.env.API_KEY", "--secret", "--env", "fix-web"],
+            "test-key\n",
+        );
+        assert_eq!(code, Some(0), "{set}");
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["env", "sync", "--to", "--plan", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert_eq!(
+            node_block(&human, "api", 2),
+            [
+                "api (create)",
+                "  api.image: null → \"api:1\"",
+                "  api.env.API_KEY (production lacks this secret: it arrives Not set)",
+            ],
+            "{human}"
+        );
     }
 }
 
@@ -3022,6 +3229,25 @@ fn a_member_reaching_a_server_is_told_to_ask_an_admin() {
             "{args:?}: {stderr}"
         );
     }
+}
+
+#[test]
+fn a_member_names_a_preferred_builder_for_cloud_to_resolve() {
+    let linus = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_linus",
+    };
+    ok(&linus, &["project", "new", "shop"]);
+    ok(&linus, &["service", "add", "web", "--repo", "acme/web@dev"]);
+    // Cloud resolves a name from the Servers it keeps; this fake Cloud is the bare Store,
+    // which takes only an ID, so its refusal shows the name reached it as typed.
+    let refused = error(&linus, &["set", "web.preferredBuilder=machine-1"]);
+    assert_eq!(refused["code"], json!("invalid_argument"), "{refused}");
+    assert_eq!(
+        refused["message"],
+        json!("preferredBuilder: expected \"github\" or a Server's Machine ID"),
+        "{refused}"
+    );
 }
 
 #[test]

@@ -615,6 +615,7 @@ impl DeployService {
             resolved_spec,
             address: None,
             labels: BTreeMap::new(),
+            stopped: false,
         })
         .unwrap()
     }
@@ -643,6 +644,7 @@ impl FakeMachine for DeployService {
                 host_available_bytes: 90 * ployz_core::STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::new(),
             copies: self.copies.lock().unwrap().clone(),
         }))
@@ -875,6 +877,7 @@ impl FakeMachine for DeployService {
                     resolved_spec: spec,
                     address: None,
                     labels: BTreeMap::new(),
+                    stopped: false,
                 },
             )
             .unwrap(),
@@ -1490,6 +1493,7 @@ pub(super) fn running_container_in(
         resolved_spec: resolved,
         address: None,
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

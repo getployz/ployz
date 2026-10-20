@@ -816,6 +816,7 @@ fn a_merge_that_renames_a_git_service_keeps_it_on_the_commit_it_last_built() {
                 status: ployz_store::BuildStatus::Built,
                 message: None,
                 log: String::new(),
+                server: None,
             }),
         )
         .unwrap();
@@ -882,6 +883,7 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
                 status: ployz_store::BuildStatus::Built,
                 message: None,
                 log: String::new(),
+                server: None,
             }),
         )
         .unwrap();

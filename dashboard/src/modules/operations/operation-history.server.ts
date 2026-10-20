@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import type { MachineId, Operation, RunState, Subject } from "@ployz/sdk";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { machineRemoveAttempt, namespaceCleanup, serverDrainAttempt } from "#/modules/machines/tables";
+import { drainEndMessage } from "#/modules/machines/server-drain.server";
+import { machineEnrollmentToken, machineRemoveAttempt, namespaceCleanup, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { serviceOperations } from "#/modules/service-act/service-act.server";
 import { outlivedObservation } from "#/modules/server-upgrade/server-upgrade";
@@ -47,17 +48,32 @@ export const dashedAttempt = (hex: string) =>
 
 const isUuid = Schema.is(Uuid);
 
-export const serverNames = (organizationId: string) =>
-  firstRuntimeFrame(organizationId).pipe(
-    Effect.map((frame) => new Map((frame?.machines ?? []).map(({ machine }) => [machine.id, machine.name]))),
-    Effect.orElseSucceed(() => new Map()),
+/**
+ * The name of each of `machines`: as the Cluster reports it now, else as Cloud last kept it, else, for a removed Server,
+ * as it last enrolled, so a missed frame or a dropped row still names it.
+ */
+export const serverNames = Effect.fn("OperationHistory.serverNames")(function* (organizationId: string, machines: readonly MachineId[]) {
+  if (machines.length === 0) return new Map<MachineId, string>();
+  const { drizzle } = yield* Database;
+  const claimed = yield* drizzle.select({ machine: machineEnrollmentToken.claimedMachineId, name: machineEnrollmentToken.claimedName })
+    .from(machineEnrollmentToken).where(and(
+      eq(machineEnrollmentToken.organizationId, organizationId),
+      inArray(machineEnrollmentToken.claimedMachineId, [...machines]),
+    )).orderBy(asc(machineEnrollmentToken.claimedAt));
+  const kept = yield* drizzle.select({ machine: organizationMachine.machineId, name: organizationMachine.machineName })
+    .from(organizationMachine).where(and(eq(organizationMachine.organizationId, organizationId), inArray(organizationMachine.machineId, [...machines])));
+  const reported = yield* firstRuntimeFrame(organizationId).pipe(
+    Effect.map((frame) => (frame?.machines ?? []).map(({ machine }) => ({ machine: machine.id, name: machine.name }))),
+    Effect.orElseSucceed(() => []),
   );
+  return new Map([...claimed, ...kept, ...reported].flatMap(({ machine, name }) => machine === null || !name ? [] : [[machine, name] as const]));
+});
 
 const serverOperations = Effect.fn("OperationHistory.server")(function* (
   organizationId: string, machine: MachineId, attempt: string | null, limit: number, known: string | null,
 ) {
   const { drizzle } = yield* Database;
-  const name = (yield* serverNames(organizationId)).get(machine) ?? known ?? machine;
+  const name = known || ((yield* serverNames(organizationId, [machine])).get(machine) ?? machine);
   const uuid = attempt !== null && isUuid(attempt) ? attempt : null;
   const hex = attempt?.replaceAll("-", "").toLowerCase() ?? null;
   const drains = attempt !== null && uuid === null ? [] : yield* drizzle.select().from(serverDrainAttempt).where(and(
@@ -78,7 +94,7 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
   const now = Date.now();
   return [
     ...drains.map((row) => operation({
-      attempt: row.id, run: `drain ${name}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: row.refusalMessage,
+      attempt: row.id, run: `drain ${name}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: drainEndMessage(row),
     })),
     ...removals.map((row) => operation({
       attempt: row.id, run: `remove ${name}`, state: row.state, requestedAt: row.createdAt, endedAt: row.terminalAt, reason: row.failureMessage,
@@ -125,7 +141,7 @@ const leftoverOperations = Effect.fn("OperationHistory.leftover")(function* (org
   }));
 });
 
-/** `serverName` names a Server run when the runtime's frame does not, as when an act already resolved it. */
+/** `serverName`, the name an act already resolved, names a Server run before any name Cloud looks up. */
 export const operationsOn = (organizationId: string, subject: Subject, attempt: string | null, limit: number, serverName: string | null = null) => {
   switch (subject.kind) {
     case "server":

@@ -161,7 +161,10 @@ setup commands. The first one that fails stops the deploy.
 ## My service shows Crashed or Stopped
 
 None of the service's replicas is running. **Crashed** means one exited with an error or keeps
-restarting; **Stopped** means they all exited cleanly and weren't restarted. During a first
+restarting; **Stopped** means they all exited cleanly, or you stopped them, and weren't restarted.
+A replica you stopped reads **Stopped** whatever code your app exited with, and `ployz ps` shows
+it as `stopped`. One that exited on its own before your stop reached it still reads **Crashed**.
+During a first
 deploy a card can read **Not running** or **Crashed** for a few seconds: if the deployment ends
 **Deployed**, there's nothing to fix.
 
@@ -264,6 +267,16 @@ reads, such as one of its variables. Each service keeps its own upload, but one 
 only one of them. Services that don't need a new build reuse their images, so this only stops when
 the service with the older upload must build again. Run the command it shows, and `web` builds
 from its own upload.
+
+## A waiting deploy says its upload is chosen when it starts
+
+`uploaded by nick, sha256 3f2a9c81b0d4 for now; chosen again when it starts`
+
+A deploy without a new upload builds each service from the upload it last ran. If you deploy
+while another deployment is still running, yours waits, and which upload each service ran is
+known only once that one ends. When yours starts, its page and `ployz deployment show` show the
+upload it runs, which can differ from the one it showed while it waited. To ship the code in your
+directory instead, run `ployz up`.
 
 ## Deploy asks me to confirm it deletes data
 

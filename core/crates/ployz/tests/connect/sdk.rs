@@ -520,6 +520,7 @@ async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
             host_available_bytes: 90 * ployz_core::STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: Default::default(),
         copies: Default::default(),
     });
@@ -589,6 +590,7 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
             pool_size_bytes: 10 * ployz_core::STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: [(
             volume.id.name.clone(),
             ployz_core::ProvisionedVolumeMaximumBytes::new(

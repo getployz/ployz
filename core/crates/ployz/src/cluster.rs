@@ -404,6 +404,19 @@ impl Client {
             .map_err(rpc_error)
     }
 
+    /// [`Self::invoke`] on the entry Machine itself, which this client always reaches.
+    pub(crate) async fn invoke_entry<T: Rpc>(
+        &self,
+        request: T::Request,
+        timeout: Option<Duration>,
+    ) -> Result<T::Response, RpcError> {
+        let call = async {
+            let payload = T::into_request(request).encode()?;
+            apply_timeout(timeout, self.call_once::<T>(payload, None)).await
+        };
+        call.await.map_err(rpc_error)
+    }
+
     /// [`Self::invoke`], keeping whether the failure came back from a daemon or no reply came.
     pub(crate) async fn invoke_answered<T: Rpc>(
         &self,
@@ -422,10 +435,8 @@ impl Client {
         path: &'static str,
         target: Option<&MachineTarget>,
         timeout: Option<Duration>,
-    ) -> Result<ployz_core::RpcResponse, RpcError> {
-        let payload = request
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+    ) -> Result<ployz_core::RpcResponse, ConnectError> {
+        let payload = request.encode().map_err(ConnectError::Codec)?;
         apply_timeout(timeout, async {
             let mut grpc = self.grpc();
             grpc.ready().await?;
@@ -441,7 +452,6 @@ impl Client {
                 .decode_response()?)
         })
         .await
-        .map_err(rpc_error)
     }
 
     /// Specs carry Config bytes as JSON number arrays, so a 1 MB Config alone nears

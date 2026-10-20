@@ -123,6 +123,7 @@ pub(super) struct ObservationSink {
     local: RecordOwner,
     plugin: crate::storage::Plugin,
     rescan_interval: Duration,
+    pool_committable_bytes: tokio::sync::watch::Sender<Option<u64>>,
 }
 
 impl ContainerRuntime {
@@ -138,8 +139,18 @@ impl ContainerRuntime {
             local,
             plugin,
             rescan_interval: RESCAN_INTERVAL,
+            pool_committable_bytes: tokio::sync::watch::Sender::new(None),
         });
         self
+    }
+
+    /// What this Machine's Pool could still commit, as of the last storage
+    /// observation.
+    pub(crate) fn pool_committable_bytes(&self) -> tokio::sync::watch::Receiver<Option<u64>> {
+        self.sink.as_ref().map_or_else(
+            || tokio::sync::watch::channel(None).1,
+            |sink| sink.pool_committable_bytes.subscribe(),
+        )
     }
 
     #[cfg(test)]
@@ -374,17 +385,31 @@ impl ContainerRuntime {
         let VolumeInventory {
             mut volumes,
             failures,
-        } = self.list_volumes(&machine_id).await?;
-        match sink
+        } = match self.list_volumes(&machine_id).await {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                sink.pool_committable_bytes
+                    .send_if_modified(|current| current.take().is_some());
+                return Err(error);
+            }
+        };
+        let committable = match sink
             .plugin
             .call::<ployz_core::StorageCapacity>("Storage.Inspect", &())
             .await
         {
-            Ok(capacity) => observe_copies(&machine_id, &mut volumes, &capacity.copies),
-            Err(error) => {
-                eprintln!("Volume copies unobserved, Docker Volumes stay writers: {error}")
+            Ok(capacity) => {
+                observe_copies(&machine_id, &mut volumes, &capacity.copies);
+                // Whole GiB: each Machine row change rebuilds every peer's mesh routes.
+                capacity.committable_hint_bytes().ok()
             }
-        }
+            Err(error) => {
+                eprintln!("Volume copies unobserved, Docker Volumes stay writers: {error}");
+                None
+            }
+        };
+        sink.pool_committable_bytes
+            .send_if_modified(|current| std::mem::replace(current, committable) != committable);
         let mut live = LocalVolumeSnapshot::from_inventory(
             failures.into_iter().map(|failure| failure.id.name),
         );
@@ -797,6 +822,7 @@ mod tests {
                 resolved_spec: spec,
                 address: None,
                 labels: Default::default(),
+                stopped: false,
             })
             .unwrap();
 
@@ -1017,6 +1043,97 @@ mod tests {
         corrosion: tokio::task::JoinHandle<()>,
         container_id: ContainerId,
         data_dir: std::path::PathBuf,
+    }
+
+    #[tokio::test]
+    async fn storage_inspect_sets_what_the_pool_could_still_commit() {
+        use std::time::Duration;
+
+        use ployz_core::{
+            AdvertisedEndpoint, MachineId, MachineName, StorageBacking, StorageCapacity,
+        };
+        use tokio_util::sync::CancellationToken;
+
+        use crate::corrosion::store_tests::{corrosion_db, identity_store};
+        use crate::docker::test_support::runtime_with_running_container;
+        use crate::machine::{LocalMachineStore, RecordOwner};
+        use crate::storage::test_support::FakePlugin;
+
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-committable-{}", MachineId::random()));
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        store
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            })
+            .unwrap();
+        let owner = RecordOwner::spawn(store).unwrap();
+        let fake = FakePlugin::default();
+        let gib = ployz_core::STORAGE_GIB;
+        fake.reply(
+            "Storage.Inspect",
+            serde_json::json!({"Ok": StorageCapacity {
+                backing: StorageBacking::Fixed {
+                    pool_size_bytes: 10 * gib,
+                },
+                unmanaged_used_bytes: 1000,
+                slot_bound_bytes: 0,
+                volumes: BTreeMap::new(),
+                copies: BTreeMap::new(),
+            }}),
+        );
+        let (plugin, plugin_server) = fake.serve(&data_dir);
+        let (replicated, corrosion) = identity_store(corrosion_db()).await;
+        let (runtime, docker, _id) = runtime_with_running_container().await;
+        let runtime = runtime
+            .replicating(replicated, owner, plugin)
+            .with_rescan_interval(Duration::from_millis(50));
+        let committable = runtime.pool_committable_bytes();
+        let shutdown = CancellationToken::new();
+        let publisher = tokio::spawn({
+            let (runtime, shutdown) = (runtime.clone(), shutdown.clone());
+            async move { runtime.publish_observations(shutdown).await }
+        });
+        let observed = |expected: Option<u64>| {
+            let mut committable = committable.clone();
+            async move {
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    committable.wait_for(|value| *value == expected),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("{expected:?} was never observed"))
+                .unwrap();
+            }
+        };
+
+        observed(Some(8 * gib)).await;
+        docker
+            .reject_list
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        observed(None).await;
+        docker
+            .reject_list
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        observed(Some(8 * gib)).await;
+        fake.replies.lock().unwrap().remove("Storage.Inspect");
+        observed(None).await;
+
+        shutdown.cancel();
+        publisher.await.unwrap().unwrap();
+        plugin_server.abort();
+        corrosion.abort();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     async fn replicating(rescan: std::time::Duration) -> Replicating {
