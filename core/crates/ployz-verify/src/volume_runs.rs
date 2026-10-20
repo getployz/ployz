@@ -502,6 +502,8 @@ struct Broken {
     record_before_raise: bool,
     /// A refused `SetVolumeSize` counts as held: the grow goes on and records.
     resize_skips_failures: bool,
+    /// A grow's record step writes nothing, and the grow finishes done all the same.
+    done_without_record: bool,
     /// A pull leaves the slot's bound as it was instead of raising it to the Writer's.
     pull_keeps_bound: bool,
 }
@@ -1106,7 +1108,9 @@ impl VolumeRuns {
                 }
             },
             (ResizeStep::Record, _) => {
-                state.size = TARGET;
+                if !self.broken.done_without_record {
+                    state.size = TARGET;
+                }
                 next(state, self.after(driver.step));
             }
             (ResizeStep::Finish, _) => {
@@ -2056,6 +2060,18 @@ mod tests {
                 ..Broken::default()
             },
             &[STORE_FITS],
+        );
+    }
+
+    #[test]
+    fn a_done_grow_recorded_its_target() {
+        breaks_in(
+            Scenario::Resize,
+            Broken {
+                done_without_record: true,
+                ..Broken::default()
+            },
+            &[RESIZE_DONE_HOLDS],
         );
     }
 

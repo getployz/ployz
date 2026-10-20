@@ -246,7 +246,7 @@ pub(crate) fn set_storage(
         check_storage(
             tx,
             &environment.summary.id,
-            &environment.working,
+            &environment.working.volumes,
             StorageRule::Edit { volume: &edited },
         )?;
         scope::save_working(tx, &mut environment)?;
@@ -286,7 +286,7 @@ pub(crate) fn fix_storage(
         }
         lock_storage(tx, environment, &volume.resource_id, &volume.storage)?;
     }
-    check_storage(tx, environment, intent, StorageRule::Replay)
+    check_storage(tx, environment, &intent.volumes, StorageRule::Replay)
 }
 
 /// Fix `volume`'s storage at `storage`, unless it is already fixed.

@@ -727,7 +727,12 @@ pub(crate) fn publish(
     (message, accepted): (Option<&str>, &[crate::VolumeLoss]),
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
-    crate::volume::check_storage(tx, environment, &intent, crate::volume::StorageRule::Replay)?;
+    crate::volume::check_storage(
+        tx,
+        environment,
+        &intent.volumes,
+        crate::volume::StorageRule::Replay,
+    )?;
     if let Some(latest) = latest
         && latest.intent == intent
     {

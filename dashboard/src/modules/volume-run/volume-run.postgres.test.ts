@@ -3145,6 +3145,18 @@ describe("volume runs", () => {
       }]);
     });
 
+    it("a Store that couldn't be asked fails the record step for Inngest to retry, ending nothing", async () => {
+      storeRefuse = () => new RpcError({ code: "unavailable", message: "the Store is busy", details: null });
+      const run = await requested(grow(20));
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "running" }]);
+    });
+
     it("a Volume the Store no longer deploys ends the run failed after every copy grew", async () => {
       storeRefuse = () => new RpcError({ code: "not_found", message: "no such lock", details: null });
       const run = await requested(grow(20));

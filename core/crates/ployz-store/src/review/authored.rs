@@ -2174,7 +2174,7 @@ impl Prepared {
         crate::volume::check_storage(
             tx,
             &environment.summary.id,
-            &working.environment().working,
+            &working.environment().working.volumes,
             crate::volume::StorageRule::Replay,
         )?;
         let actual = Plan::between(&environment.working, &working.environment().working)?;

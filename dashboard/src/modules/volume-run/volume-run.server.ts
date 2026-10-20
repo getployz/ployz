@@ -11,6 +11,7 @@ import type {
   SnapshotGuid,
   SwitchError,
   VolumeCopy,
+  VolumeKind,
   VolumeSwitchRequest,
   WantedCopy,
 } from "@ployz/sdk";
@@ -358,7 +359,14 @@ export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   };
 });
 
-/** A seed copies the source's dataset as is, so the restored Volume must still ask for the source's storage. */
+/**
+ * The storage a Volume holds: the size the Store recorded for a deployed Managed Volume, which a staged older revision
+ * leaves as it is, else what Working State asks.
+ */
+export const heldStorage = (volume: { readonly storage: VolumeKind; readonly recorded_storage?: number }): VolumeKind =>
+  volume.recorded_storage === undefined ? volume.storage : { kind: "provisioned", maximumBytes: volume.recorded_storage };
+
+/** A seed copies the source's dataset as is, so the restored Volume must still hold the source's storage. */
 const seedLandingRefusal = Effect.fn("VolumeRun.seedLandingRefusal")(function* (
   organizationId: string,
   environment: EnvironmentRef,
@@ -371,7 +379,7 @@ const seedLandingRefusal = Effect.fn("VolumeRun.seedLandingRefusal")(function* (
   if (source === undefined || into === undefined) {
     return { code: "conflict", message: "The restored Volume or its source is gone. Discard the restore.", details: null } satisfies StoreRefusal;
   }
-  if (JSON.stringify(source.storage) === JSON.stringify(into.storage)) return null;
+  if (JSON.stringify(heldStorage(source)) === JSON.stringify(heldStorage(into))) return null;
   return {
     code: "conflict",
     message: `${into.name}'s storage no longer matches ${source.name}'s, so the restore can't land on it. Discard the restore and restore again.`,

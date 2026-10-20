@@ -589,13 +589,19 @@ pub(crate) fn retry(
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::removal::guard_removal(tx, &environment)?;
     } else {
-        // Its revision asks a storage of each Volume it ships; a Volume resized since
-        // may no longer fit it.
+        // Its revision asks a storage of each Volume it ships; one resized since may
+        // no longer fit it. A Volume it never shipped it leaves as it is.
         let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+        let shipped = saved.volumes.iter().filter(|volume| {
+            stored
+                .nodes
+                .iter()
+                .any(|node| node.id() == volume.resource_id)
+        });
         crate::volume::check_storage(
             tx,
             &stored.summary.environment_id,
-            &saved,
+            shipped,
             crate::volume::StorageRule::Replay,
         )?;
     }

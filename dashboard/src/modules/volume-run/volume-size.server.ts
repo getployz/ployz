@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
+import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
 import { sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { type Bytes, gb, type PoolShortfall, type SizeDirection, type SizeOutcome } from "#/modules/volume-run/resize";
@@ -102,7 +103,8 @@ const decodeRecorded = Schema.decodeUnknownOption(Recorded);
 
 /**
  * Tell the Store every copy holds `to`: Cloud's own observation, in-process, so no user, token or agent can claim a
- * size no Machine applied. A record the Store already holds answers ok, so a replayed step converges.
+ * size no Machine applied. A record the Store already holds answers ok, so a replayed step converges. Only the
+ * Store's own answers end the record; a Store that couldn't be asked fails the step, and Inngest asks again.
  */
 export const recordVolumeSize = Effect.fn("VolumeRun.recordVolumeSize")(function* (
   ctx: RunContext,
@@ -112,8 +114,9 @@ export const recordVolumeSize = Effect.fn("VolumeRun.recordVolumeSize")(function
   yield* requireOwner(ctx.id, inngestRunId);
   return yield* storeSystem(ctx.organizationId, { event: "volume_resized", environment: ctx.environmentId, volume: ctx.volumeId, from: record.from, to: record.to }).pipe(
     Effect.map((): RecordAnswer => ({ ok: true })),
-    Effect.catchTag("StoreRefused", (refusal): Effect.Effect<RecordAnswer> => {
+    Effect.catchTag("StoreRefused", (refusal): Effect.Effect<RecordAnswer, StoreRefused> => {
       if (refusal.code === "not_found") return Effect.succeed({ ok: false, reason: "gone", message: `${ctx.volumeName} is no longer deployed, so its size was not recorded` });
+      if (refusal.code !== "conflict") return Effect.fail(refusal);
       const recorded = decodeRecorded(refusal.details);
       const holds = Option.isSome(recorded)
         ? recorded.value.recorded.kind === "provisioned" ? `records ${ctx.volumeName} at ${gb(recorded.value.recorded.maximum_bytes)}, not ${gb(record.from)}` : `records ${ctx.volumeName} as a Docker Volume`

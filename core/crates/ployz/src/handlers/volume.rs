@@ -119,6 +119,7 @@ const NO_MANAGED_HOST: &str = "No Server here can host Managed volumes yet, so a
 
 /// Why `--docker` is not recommended; said when a command asks for one.
 const DOCKER_VOLUME: &str = "Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.";
+const STAGED_NOT_WAITED: &str = "Nothing to wait for: this size is staged for the next Deploy, and only a deployed Volume resizes live.";
 
 /// Best effort, bounded: whether every Server this reaches reports it can't host
 /// managed Volumes. Unreachable or unknown answers `false`; the Deploy still checks.
@@ -217,16 +218,21 @@ enum StorageChange {
     /// A staged `SetVolumeStorage`: before the first Deploy, or a change of kind, which the
     /// Store refuses on a deployed Volume with its own message.
     Stage(VolumeKind),
-    /// A deployed Managed Volume asked for a Managed size: a resize run on Ployz Cloud. Cloud,
-    /// not the CLI, refuses an equal or smaller size.
+    /// A deployed Managed Volume asked for another Managed size: a resize run on Ployz Cloud.
+    /// Cloud, not the CLI, refuses a smaller size. The size it already has stages nothing, on
+    /// any backend.
     Resize(ProvisionedVolumeMaximumBytes),
 }
 
 fn storage_change(listing: &VolumeListing, asked: VolumeKind) -> StorageChange {
     match (listing.storage_locked, listing.volume.storage, asked) {
-        (true, VolumeKind::Provisioned { .. }, VolumeKind::Provisioned { maximum_bytes }) => {
-            StorageChange::Resize(maximum_bytes)
-        }
+        (
+            true,
+            VolumeKind::Provisioned {
+                maximum_bytes: current,
+            },
+            VolumeKind::Provisioned { maximum_bytes },
+        ) if maximum_bytes != current => StorageChange::Resize(maximum_bytes),
         _ => StorageChange::Stage(asked),
     }
 }
@@ -249,6 +255,9 @@ fn set_storage(
             return run::resize(root, store, &view, maximum_bytes);
         }
     };
+    if matches.get_flag("wait") {
+        crate::ui::warn(STAGED_NOT_WAITED);
+    }
     let changed = store.write(&SetVolumeStorage {
         environment,
         volume,
@@ -497,6 +506,7 @@ mod tests {
         for (locked, storage, asked, change) in [
             (false, managed, twenty, StorageChange::Stage(twenty)),
             (true, managed, twenty, StorageChange::Resize(gb("20"))),
+            (true, managed, managed, StorageChange::Stage(managed)),
             (true, managed, docker, StorageChange::Stage(docker)),
             (true, docker, twenty, StorageChange::Stage(twenty)),
         ] {

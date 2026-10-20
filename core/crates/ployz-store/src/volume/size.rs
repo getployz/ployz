@@ -5,7 +5,7 @@
 //! reaches it, so `/api/config/write`, the CLI and the agent can't claim a size the
 //! Machines don't hold.
 
-use ployz_core::config::{SavedEnvironmentIntent, SavedVolumeIntent, VolumeKind};
+use ployz_core::config::{SavedVolumeIntent, VolumeKind};
 use ployz_core::{ProvisionedVolumeMaximumBytes, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -192,19 +192,20 @@ pub(crate) enum StorageRule<'a> {
     Replay,
 }
 
-/// Refuse `intent` when it gives a Volume storage its fixed storage doesn't fit
-/// under `rule`.
-pub(crate) fn check_storage(
+/// Refuse `volumes` when one is given storage its fixed storage doesn't fit under
+/// `rule`.
+pub(crate) fn check_storage<'a>(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    intent: &SavedEnvironmentIntent,
+    volumes: impl IntoIterator<Item = &'a SavedVolumeIntent>,
     rule: StorageRule<'_>,
 ) -> Result<(), RpcError> {
-    if intent.volumes.is_empty() {
+    let volumes: Vec<_> = volumes.into_iter().collect();
+    if volumes.is_empty() {
         return Ok(());
     }
     let locked = super::locked_storage(tx, environment)?;
-    for volume in &intent.volumes {
+    for volume in volumes {
         let Some(fixed) = locked.get(&volume.resource_id) else {
             continue;
         };

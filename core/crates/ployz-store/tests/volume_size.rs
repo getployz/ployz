@@ -82,6 +82,18 @@ fn shop_on(store: ConfigStore, storage: VolumeKind) -> (ConfigStore, Actor) {
 }
 
 fn create_volume(store: &ConfigStore, who: &Actor, id: &str, name: &str, storage: VolumeKind) {
+    create_volume_on(store, who, id, name, storage, "web");
+}
+
+/// Create Volume `name` of `storage`, mounted by Service `service` at `/name`.
+fn create_volume_on(
+    store: &ConfigStore,
+    who: &Actor,
+    id: &str,
+    name: &str,
+    storage: VolumeKind,
+    service: &str,
+) {
     store
         .write(
             who,
@@ -94,9 +106,25 @@ fn create_volume(store: &ConfigStore, who: &Actor, id: &str, name: &str, storage
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse(name).unwrap(),
                 mounts: vec![Mount {
-                    service: ServiceName::parse("web").unwrap(),
+                    service: ServiceName::parse(service).unwrap(),
                     path: format!("/{name}"),
                 }],
+            },
+        )
+        .unwrap();
+}
+
+/// Add Service `api`, so a Deploy limited to `web` can leave a Volume out.
+fn add_api(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("caddy:2".into()),
+                template: None,
             },
         )
         .unwrap();
@@ -107,13 +135,21 @@ fn id(n: u8) -> DeploymentId {
 }
 
 fn admit(store: &ConfigStore, who: &Actor, n: u8) -> Result<(), RpcError> {
+    admit_only(store, who, n, &[])
+}
+
+/// Admit Deployment `n` of `services` alone, or of everything when none are named.
+fn admit_only(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Result<(), RpcError> {
     store
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
                 id: id(n),
                 environment: EnvironmentRef::default(),
-                services: Vec::new(),
+                services: services
+                    .iter()
+                    .map(|name| ServiceName::parse(*name).unwrap())
+                    .collect(),
                 version: None,
                 upload: None,
                 accept_volume_loss: Vec::new(),
@@ -175,8 +211,12 @@ fn resized(volume: &str, from: u64, to: u64) -> SystemEvent {
 
 /// Cloud records `data` moved from `from` to `to` GB.
 fn resize(store: &ConfigStore, from: u64, to: u64) -> Result<(), RpcError> {
+    resize_volume(store, VOLUME, from, to)
+}
+
+fn resize_volume(store: &ConfigStore, volume: &str, from: u64, to: u64) -> Result<(), RpcError> {
     store
-        .system(&org(), &resized(VOLUME, from, to), &Trusted::default())
+        .system(&org(), &resized(volume, from, to), &Trusted::default())
         .map(|_| ())
 }
 
@@ -576,6 +616,22 @@ fn a_replayed_intent_above_the_lock_is_refused() {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(refused.message, message);
     assert_eq!(refused.details, details);
+    assert_eq!(listing(&store, &who, "data").volume.storage, managed(10));
+}
+
+#[test]
+fn a_redeploy_leaves_a_volume_it_never_shipped_out_of_the_check() {
+    let (store, who) = shop(managed(10));
+    add_api(&store, &who);
+    create_volume_on(&store, &who, CACHE, "cache", managed(20), "api");
+    // Deployment 1 ships web and data; its revision holds cache at 20 GB unshipped.
+    admit_only(&store, &who, 1, &["web"]).unwrap();
+    run(&store, 1);
+    deploy(&store, &who, 2);
+    resize_volume(&store, CACHE, 20, 10).unwrap();
+    redeploy(&store, &who, 1, 3).unwrap();
+    run(&store, 3);
+    assert_eq!(listing(&store, &who, "cache").volume.storage, managed(10));
     assert_eq!(listing(&store, &who, "data").volume.storage, managed(10));
 }
 

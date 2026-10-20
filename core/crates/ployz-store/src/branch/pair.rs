@@ -1023,7 +1023,7 @@ pub(crate) fn land(
     crate::volume::check_storage(
         tx,
         &branch.summary.id,
-        &branch.working,
+        &branch.working.volumes,
         crate::volume::StorageRule::Replay,
     )?;
     // What arrives from `from` may bring a rule it already broke; that's not new.
