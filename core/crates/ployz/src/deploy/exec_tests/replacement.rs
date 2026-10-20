@@ -1051,6 +1051,7 @@ async fn a_cancelled_deploy_still_removes_an_old_copy_a_newer_deploy_refuses() {
     let cancellation = CancellationToken::new();
     let client = Scripted {
         cancel_on: Some((run.clone(), cancellation.clone())),
+        read_latency: true,
         ..Scripted::new(vec![
             observed(Call::Inspect(machine, old), running()),
             ok(Call::Stop(machine, old)),
