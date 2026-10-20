@@ -651,6 +651,34 @@ impl TargetNode {
         }
     }
 
+    /// Where views list it: Services, then Volumes, then Configs, each by name, as the
+    /// review does. A node the Deployment takes away, being gone from `saved`, lists before
+    /// one that took its name; the id only settles what nothing else tells apart.
+    pub(crate) fn order(
+        &self,
+        saved: &SavedEnvironmentIntent,
+    ) -> (EnvironmentNodeType, &str, bool, &str) {
+        let id = self.id();
+        let (kind, name, stays) = match self {
+            Self::Service { name, .. } => (
+                EnvironmentNodeType::Service,
+                name.as_str(),
+                !self.retires() && saved.services.iter().any(|service| service.id == id),
+            ),
+            Self::Volume { name, deletes, .. } => (
+                EnvironmentNodeType::Volume,
+                name.as_str(),
+                deletes.is_none() && saved.volumes.iter().any(|volume| volume.resource_id == id),
+            ),
+            Self::Config { name, .. } => (
+                EnvironmentNodeType::Config,
+                name.as_str(),
+                saved.configs.iter().any(|config| config.resource_id == id),
+            ),
+        };
+        (kind, name, stays, id)
+    }
+
     /// The node as views name it.
     fn shown(&self) -> DeployedNode {
         match self {
@@ -706,15 +734,6 @@ impl DeployedNode {
             Self::Service { id, .. } => id.as_str(),
             Self::Volume { id, .. } => id.as_str(),
             Self::Config { id, .. } => id.as_str(),
-        }
-    }
-
-    #[must_use]
-    pub fn node_type(&self) -> EnvironmentNodeType {
-        match self {
-            Self::Service { .. } => EnvironmentNodeType::Service,
-            Self::Volume { .. } => EnvironmentNodeType::Volume,
-            Self::Config { .. } => EnvironmentNodeType::Config,
         }
     }
 }

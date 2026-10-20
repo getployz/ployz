@@ -255,8 +255,23 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     Ok(Review { view, saved, head })
 }
 
+/// Services, then Volumes, then Configs, each by name. A node removed and one recreated
+/// under its name list removal first, then update, then create; the id only settles what
+/// nothing else tells apart.
 fn by_name(changes: &mut [NodeChange]) {
-    changes.sort_by(|a, b| (a.node.node_type, &a.name).cmp(&(b.node.node_type, &b.name)));
+    let step = |lifecycle: ReviewLifecycleKind| match lifecycle {
+        ReviewLifecycleKind::Delete => 0,
+        ReviewLifecycleKind::Update => 1,
+        ReviewLifecycleKind::Create => 2,
+    };
+    changes.sort_by(|a, b| {
+        (a.node.node_type, &a.name, step(a.lifecycle), &a.node.id).cmp(&(
+            b.node.node_type,
+            &b.name,
+            step(b.lifecycle),
+            &b.node.id,
+        ))
+    });
 }
 
 fn saved_comparison(

@@ -360,9 +360,11 @@ pub(crate) fn view(
     let stored = owned(tx, who, id)?;
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
     let mut rows = super::rows::of_nodes(tx, &stored)?;
-    let mut nodes: Vec<NodeOutcome> = stored
-        .nodes
-        .iter()
+    let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    let mut targets: Vec<&TargetNode> = stored.nodes.iter().collect();
+    targets.sort_by(|a, b| a.order(&saved).cmp(&b.order(&saved)));
+    let nodes: Vec<NodeOutcome> = targets
+        .into_iter()
         .map(|node| NodeOutcome {
             node: node.shown(),
             rows: rows.remove(node.id()).unwrap_or_default(),
@@ -388,9 +390,6 @@ pub(crate) fn view(
             },
         })
         .collect();
-    nodes.sort_by(|a, b| {
-        (a.node.node_type(), a.node.name()).cmp(&(b.node.node_type(), b.node.name()))
-    });
     let runtime_names = stored
         .nodes
         .iter()
