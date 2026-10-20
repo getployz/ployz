@@ -27,6 +27,7 @@ use crate::{
 };
 
 const ACTOR: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const LOCAL_ACTOR: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 fn machine(name: &str, octet: u8) -> Machine {
     Machine {
@@ -174,6 +175,7 @@ impl Cluster {
 struct FakeHost {
     local: MachineId,
     targets: watch::Receiver<Option<BTreeMap<String, i64>>>,
+    local_actor: &'static str,
     /// `None` is a store already caught up to any target.
     store: Option<ReplicatedStore>,
     observed: Arc<Mutex<Option<Observed>>>,
@@ -185,6 +187,7 @@ impl FakeHost {
         Self {
             local: local.id,
             targets: watch::channel(Some(BTreeMap::new())).1,
+            local_actor: LOCAL_ACTOR,
             store: None,
             observed: Arc::new(Mutex::new(Some(observed))),
             wants: Arc::default(),
@@ -203,6 +206,10 @@ impl BootHost for FakeHost {
 
     async fn peer_targets(&self) -> Option<BTreeMap<String, i64>> {
         self.targets.borrow().clone()
+    }
+
+    async fn local_actor(&self) -> Result<String, CorrosionError> {
+        Ok(self.local_actor.to_owned())
     }
 
     async fn catch_up(&self, target: &BTreeMap<String, i64>) -> Result<(), CorrosionError> {
@@ -395,6 +402,115 @@ async fn waits_for_peer_targets_and_catch_up() {
         .await
         .unwrap()
         .unwrap();
+
+    assert_eq!(host.wants(), vec![out(&cluster.old)]);
+}
+
+/// Ingress as it runs at boot: each publish renders the routes from the store as
+/// it stood when the render began, and publishing starts before catch-up.
+fn rendered_from(
+    path: std::path::PathBuf,
+    caught_up_at: i64,
+    stale: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
+    fresh: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
+) -> watch::Receiver<PublishedRoutes> {
+    let (publishes, published) = watch::channel(PublishedRoutes::default());
+    tokio::spawn(async move {
+        let db = rusqlite::Connection::open(path).unwrap();
+        while !publishes.is_closed() {
+            let version: i64 = db
+                .query_row("SELECT max(db_version) FROM crsql_db_versions", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let routes = if version >= caught_up_at {
+                &fresh
+            } else {
+                &stale
+            };
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            publishes.send_modify(|published| {
+                published.count += 1;
+                published.routes.clone_from(routes);
+            });
+        }
+    });
+    published
+}
+
+#[tokio::test]
+async fn acks_only_from_a_publish_rendered_after_catch_up() {
+    let dir = TestDir::new("ployzd-boot-pass-render");
+    let (store, db) = store_at_version(&dir, 3).await;
+    let cluster = Cluster::new();
+    // This Machine's row predates the power-off and routes only its old copy.
+    let observed = observed(
+        &cluster.local,
+        &[&cluster.local, &cluster.peer, &cluster.proxy],
+        &[],
+        vec![cluster.old.clone(), cluster.new.clone()],
+        routes(&[
+            (&cluster.local, &[&cluster.old]),
+            (&cluster.peer, &[&cluster.new]),
+            (&cluster.proxy, &[&cluster.new]),
+        ]),
+    );
+    let stale = BTreeMap::from([(api(), BTreeSet::from([cluster.old.container_id]))]);
+    let fresh = BTreeMap::from([(
+        api(),
+        BTreeSet::from([cluster.old.container_id, cluster.new.container_id]),
+    )]);
+    let host = FakeHost {
+        targets: watch::channel(Some(BTreeMap::from([(ACTOR.to_owned(), 5)]))).1,
+        store: Some(store),
+        ..FakeHost::new(&cluster.local, observed)
+    };
+    let published = rendered_from(dir.0.join("corrosion.db"), 5, stale, fresh);
+    let running = tokio::spawn(run(host.clone(), synced(), published));
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(host.wants().is_empty(), "the store is behind the peer");
+    db.execute("UPDATE crsql_db_versions SET db_version = 5", [])
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(host.wants(), vec![out(&cluster.old)]);
+}
+
+#[tokio::test]
+async fn catch_up_skips_this_machines_own_actor() {
+    const PEER_ACTOR: &str = "cccccccccccccccccccccccccccccccc";
+    let dir = TestDir::new("ployzd-boot-pass-own-actor");
+    let (store, db) = store_at_version(&dir, 25).await;
+    db.execute(
+        &format!("INSERT INTO crsql_db_versions VALUES (X'{PEER_ACTOR}', 4)"),
+        [],
+    )
+    .unwrap();
+    let cluster = Cluster::new();
+    let observed = cluster.acked_everywhere();
+    let own = own_acks(&cluster.local, &observed);
+    // A power cut lost this Machine's last two commits, which the peer still holds.
+    let host = FakeHost {
+        targets: watch::channel(Some(BTreeMap::from([
+            (ACTOR.to_owned(), 27),
+            (PEER_ACTOR.to_owned(), 4),
+        ])))
+        .1,
+        local_actor: ACTOR,
+        store: Some(store),
+        ..FakeHost::new(&cluster.local, observed)
+    };
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        run(host.clone(), synced(), published(own)),
+    )
+    .await
+    .expect("catch-up waited for this Machine's own lost writes");
 
     assert_eq!(host.wants(), vec![out(&cluster.old)]);
 }

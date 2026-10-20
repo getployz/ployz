@@ -38,6 +38,7 @@ pub(crate) trait BootHost: Send + Sync {
     fn machine_id(&self) -> MachineId;
     /// One round over the peers. The first answer wins, and `None` means none answered.
     fn peer_targets(&self) -> impl Future<Output = Option<BTreeMap<String, i64>>> + Send;
+    fn local_actor(&self) -> impl Future<Output = Result<String, CorrosionError>> + Send;
     fn catch_up(
         &self,
         target: &BTreeMap<String, i64>,
@@ -158,12 +159,16 @@ async fn pass<H: BootHost>(
     if first_synced.wait_for(|synced| *synced).await.is_err() {
         std::future::pending::<()>().await;
     }
-    let target = loop {
+    let mut target = loop {
         if let Some(target) = host.peer_targets().await {
             break target;
         }
         tokio::time::sleep(PEER_RETRY).await;
     };
+    // A power cut can lose this Machine's last commits, which only its own later
+    // writes would replace, so its own actor is never a target.
+    let local = actor_key(&host.local_actor().await?);
+    target.retain(|actor, _| actor_key(actor) != local);
     host.catch_up(&target).await?;
     tracing::info!("boot pass caught up to the peer's store versions");
     // The publish in flight may have read the store before catch-up, so the one
@@ -178,11 +183,15 @@ async fn pass<H: BootHost>(
     };
     tracing::info!("boot pass saw this Machine's routes published after catch-up");
     let observed = host.observe().await?;
+    let superseded = superseded(&host.machine_id(), &observed, &own);
+    if superseded.is_empty() {
+        tracing::info!("boot pass found no In copy here that a newer one replaces everywhere");
+    }
     for Superseded {
         service,
         container,
         by,
-    } in superseded(&host.machine_id(), &observed, &own)
+    } in superseded
     {
         let want = ContainerWant::Out {
             container: ContainerLocator::Id(container),
@@ -208,6 +217,10 @@ async fn pass<H: BootHost>(
         }
     }
     Ok(())
+}
+
+fn actor_key(actor: &str) -> String {
+    actor.replace('-', "").to_ascii_lowercase()
 }
 
 pub(crate) struct DaemonHost {
@@ -244,6 +257,10 @@ impl BootHost for DaemonHost {
             }
         }
         None
+    }
+
+    async fn local_actor(&self) -> Result<String, CorrosionError> {
+        self.replicated.local_actor().await
     }
 
     async fn catch_up(&self, target: &BTreeMap<String, i64>) -> Result<(), CorrosionError> {
