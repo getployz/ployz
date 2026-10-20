@@ -4972,6 +4972,29 @@ fn a_running_retry_that_applies_a_service_moves_its_queued_deploy_onto_the_retri
 }
 
 #[test]
+fn a_cancelled_queued_deploy_no_longer_chooses_its_upload_as_it_starts() {
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &runner("cli-a")).unwrap();
+    let queued = admit(&store, &who, 4, &["web"], None).unwrap();
+    assert!(queued.chooses_upload_at_start);
+    let cancelled = cancel(&store, &who, 4).unwrap();
+    assert!(
+        !cancelled.chooses_upload_at_start,
+        "a Deployment that will never start chooses nothing as it starts"
+    );
+    assert_eq!(
+        cancelled,
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(4) })
+            .unwrap()
+            .deployment,
+        "the cancel answers what a later read shows"
+    );
+}
+
+#[test]
 fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
     let (store, who) = shop();
     store
