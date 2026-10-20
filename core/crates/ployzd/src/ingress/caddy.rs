@@ -168,6 +168,10 @@ where
 
 /// Render and apply one already-derived projection through Caddy.
 ///
+/// `loaded` holds the config Caddy last acknowledged, without the timestamp line. Every real
+/// reload resets Caddy's passive health counts and re-arms a dead upstream, so an unchanged
+/// config is neither loaded nor rewritten.
+///
 /// # Errors
 ///
 /// Returns a filesystem, validation, or acknowledged-load error.
@@ -175,15 +179,26 @@ pub(crate) async fn reconcile<A: CaddyAdmin>(
     projection: &IngressProjection,
     config_file: &Path,
     admin: Option<&A>,
+    loaded: &mut Option<String>,
 ) -> Result<(), Error> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let caddyfile = render_caddyfile(projection, &timestamp);
+    let config = caddyfile
+        .split_once('\n')
+        .map_or(caddyfile.as_str(), |(_, config)| config);
+    if admin.is_some() && loaded.as_deref() == Some(config) {
+        return Ok(());
+    }
+    *loaded = None;
     tracing::info!(routes = %route_summary(projection), "ingress config");
     if let Some(admin) = admin {
         let json = admin.adapt(&caddyfile).await?;
         admin.load(&json).await?;
     }
     write_caddyfile(config_file, &caddyfile)?;
+    if admin.is_some() {
+        *loaded = Some(config.to_owned());
+    }
     Ok(())
 }
 

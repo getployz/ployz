@@ -399,6 +399,8 @@ where
     DownFuture: Future<Output = Result<BTreeSet<MachineId>, CorrosionError>>,
 {
     let mut last_input = None;
+    let mut loaded = None;
+    let mut loaded_ingress = None;
     let mut acked = BTreeMap::new();
     // Kept while every copy is out of reach.
     let mut routed = ProxyRoutes::new();
@@ -451,9 +453,14 @@ where
             match input {
                 Ok((input, routes)) => {
                     if last_input.as_ref() != Some(&input) {
+                        // A replacement Caddy process has acknowledged nothing yet.
+                        if loaded_ingress != input.1 {
+                            loaded = None;
+                            loaded_ingress.clone_from(&input.1);
+                        }
                         let result = async {
                             let admin = connect().await.map_err(io::Error::other)?;
-                            apply_caddy(&input.0, &config_file, admin.as_ref())
+                            apply_caddy(&input.0, &config_file, admin.as_ref(), &mut loaded)
                                 .await
                                 .map_err(io::Error::other)
                         }
@@ -573,6 +580,7 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
     projection: &IngressProjection,
     config_file: &Path,
     admin: Option<&A>,
+    loaded: &mut Option<String>,
 ) -> Result<(), caddy::Error> {
     write_certificate_files(
         config_file,
@@ -581,7 +589,7 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
         prepare_directory,
         set_ployz_group,
     )?;
-    caddy::reconcile(projection, config_file, admin).await?;
+    caddy::reconcile(projection, config_file, admin, loaded).await?;
     remove_stale_certificate_files(config_file, &projection.sites)?;
     Ok(())
 }
