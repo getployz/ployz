@@ -193,6 +193,22 @@ fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
 }
 
 #[test]
+fn diff_and_a_deployment_list_each_kind_of_node_by_name_not_by_id() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    // web's id sorts before api's.
+    assert_eq!(changed(&store, &who), ["api", "web", "sentry"]);
+    admit(&store, &who, 1, &[], None).unwrap();
+    assert_eq!(
+        nodes(&store, &who, 1)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        ["api", "web", "sentry"]
+    );
+}
+
+#[test]
 fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     let (store, who) = shop();
     let admitted = admit(&store, &who, 1, &[], None).unwrap();
