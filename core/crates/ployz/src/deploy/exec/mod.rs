@@ -763,6 +763,9 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         }
                     }
                     Err(OperationFailure::Ordinary(error)) => {
+                        if lost_to_newer(&error, None) {
+                            schedule.apply(Event::NewerServing(schedule.group_of(index)));
+                        }
                         progress.fail(index, error.clone());
                         stop.get_or_insert(Stop {
                             index,
@@ -775,6 +778,9 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         error,
                         compensation,
                     }) => {
+                        if lost_to_newer(&error, Some(compensation.as_ref())) {
+                            schedule.apply(Event::NewerServing(schedule.group_of(index)));
+                        }
                         progress.fail(index, error.clone());
                         stop.get_or_insert(Stop {
                             index,
@@ -794,6 +800,9 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     .expect("only Service groups publish");
                 let last = schedule.publish_failure_task(group);
                 let mut fail = |task: usize, error: ExecutionError, event: Event| {
+                    if lost_to_newer(&error, None) {
+                        schedule.apply(Event::NewerServing(group));
+                    }
                     progress.fail(task, error.clone());
                     stop.get_or_insert(Stop {
                         index: task,
@@ -897,6 +906,20 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
     progress.outcome(outcome.clone());
     outcome
+}
+
+fn lost_to_newer(
+    error: &ExecutionError,
+    compensation: Option<&ReplacementCompensation<ExecutionError>>,
+) -> bool {
+    matches!(error, ExecutionError::NewerServing { .. })
+        || matches!(
+            compensation,
+            Some(ReplacementCompensation::OldStopped {
+                restore_old_container: RestoreAttempt::NewerServing,
+                ..
+            })
+        )
 }
 
 /// A stop-first copy shares its Volume with the new copy on its Machine, so

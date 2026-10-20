@@ -346,7 +346,8 @@ pub struct ServiceOutcome {
 /// A Service ends a Deploy wholly on one side: every replica new, every
 /// replica old, every replica changed in place, or untouched because the Deploy
 /// stopped before it. `Unconfirmed` means some proxies never confirmed routing its
-/// new copies, so it may serve either side.
+/// new copies, so it may serve either side. `Newer` means a newer Deploy's copies
+/// serve it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceResult {
@@ -356,6 +357,7 @@ pub enum ServiceResult {
     Updated,
     NotStarted,
     Unconfirmed,
+    Newer,
 }
 
 /// Why a Deploy Operation did not complete.

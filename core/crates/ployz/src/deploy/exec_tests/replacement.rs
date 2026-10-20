@@ -1014,6 +1014,11 @@ async fn a_restore_a_newer_deploy_refuses_reads_as_the_newer_deploy_serving() {
         let (outcome, warnings) =
             execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
 
+        assert_eq!(
+            outcome.services(),
+            ended(&[("api", ServiceResult::Newer)]),
+            "removes {removes}"
+        );
         let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, &[], Vec::new()));
         assert!(
             shown.contains(

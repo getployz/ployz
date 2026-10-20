@@ -172,7 +172,7 @@ async fn a_newer_in_copy_fails_the_deploy_naming_its_service_and_removes_the_new
                 error: ExecutionError::NewerServing { service: api() },
             },
             unexecuted: Vec::new(),
-            services: ended(&[("api", ServiceResult::Old)]),
+            services: ended(&[("api", ServiceResult::Newer)]),
         }
     );
     let failure = crate::deploy::report::failure(&outcome, &[], Vec::new());
@@ -226,6 +226,7 @@ async fn a_newer_in_copy_removes_the_stop_first_copy_it_keeps_from_coming_back()
         ),
         "{outcome:?}"
     );
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Newer)]));
     let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, &[], Vec::new()));
     for said in std::iter::once(&shown).chain(&warnings) {
         assert!(!said.contains("start"), "{said}");
@@ -303,7 +304,7 @@ async fn a_rolling_copy_a_newer_deploy_refuses_fails_its_own_step_and_the_next_n
                 error: ExecutionError::NewerServing { service: api() },
             },
             unexecuted: plan.get(1..).unwrap().to_vec(),
-            services: ended(&[("api", ServiceResult::Old)]),
+            services: ended(&[("api", ServiceResult::Newer)]),
         }
     );
     client.assert_done();
