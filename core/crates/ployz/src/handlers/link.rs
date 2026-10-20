@@ -7,6 +7,7 @@
 //! own Project. Links live beside the Ployz config, never in the directory, so
 //! nothing needs ignoring or uploading.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -16,12 +17,13 @@ use clap::{ArgMatches, Command};
 use ployz_core::{LocalMachinePhase, RpcErrorCode};
 use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
-    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, ProjectName,
-    ProjectsQuery,
+    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery,
+    ProjectName, ProjectsQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::status_servers::{Subject, UNCHECKED};
 use super::store::{
     Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
 };
@@ -37,7 +39,8 @@ pub(super) fn link_command(command: Command) -> Command {
 }
 
 pub(super) fn status_command(command: Command) -> Command {
-    scoped(command.about(
+    scoped(crate::cli::base(
+        command,
         "Show who you are, where commands act, and what is staged, deploying or needs attention",
     ))
 }
@@ -577,14 +580,17 @@ struct Staged {
 
 /// Something that needs someone to act, with the command that acts.
 #[derive(Serialize)]
-struct Attention {
-    /// An error code, `deployment_failed` or `deployment_unknown`.
-    reason: String,
-    message: String,
+pub(super) struct Attention {
+    /// An error code, `deployment_failed`, `deployment_unknown`, `broken_reference`,
+    /// `machine_down` or `routes_not_acked`.
+    pub(super) reason: String,
+    pub(super) message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    deployment: Option<DeploymentId>,
+    pub(super) deployment: Option<DeploymentId>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<String>,
+    pub(super) next: Option<String>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub(super) subject: Option<Subject>,
 }
 
 /// This host's check-in record, and whether its Machine left the Cluster since it joined.
@@ -642,6 +648,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     message: crate::ui::row(&error),
                     deployment: None,
                     next,
+                    subject: None,
                 });
                 None
             }
@@ -684,6 +691,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     message: format!("Deployment {} did not complete", ended.label()),
                     deployment: Some(ended.id.clone()),
                     next: Some(super::deploy::hint_for(matches, ended)),
+                    subject: None,
                 });
             }
         }
@@ -695,7 +703,20 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             message: reference.to_string(),
             deployment: None,
             next: Some(super::store::fix_broken(matches, reference)),
+            subject: None,
         });
+    }
+    if let (Some(store), Some(_)) = (&store, &diff) {
+        match store.try_read(&NamespaceQuery {
+            environment: scope.at(),
+        }) {
+            Ok(view) => attention.extend(super::status_servers::attention(
+                root,
+                &view.namespace,
+                &deploying,
+            )),
+            Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),
+        }
     }
     let staged = diff.as_ref().map(|diff| Staged {
         changes: diff.review_count(),
@@ -758,6 +779,31 @@ fn this_server() -> Option<ThisServer> {
                 })
         });
     Some(ThisServer { checkin, left })
+}
+
+#[cfg(test)]
+pub(super) fn rendered(attention: Vec<Attention>) -> String {
+    let status = Status {
+        this_server: None,
+        identity: Some(Identity {
+            credential: "local",
+            cloud: None,
+            account: None,
+            organization: None,
+        }),
+        scope: Scope {
+            project: None,
+            environment: None,
+            link: None,
+        },
+        environment: None,
+        staged: None,
+        deploying: Vec::new(),
+        attention,
+    };
+    let mut out = Vec::new();
+    status_record(&status).write(&mut out, true).unwrap();
+    anstream::adapter::strip_str(&String::from_utf8(out).unwrap()).to_string()
 }
 
 fn status_record(status: &Status) -> Fields {
@@ -844,10 +890,12 @@ fn status_record(status: &Status) -> Fields {
         );
     }
     for attention in &status.attention {
-        record.push(
-            "needs attention",
-            Cell::status(&attention.message, Tone::Bad),
-        );
+        let label = match &attention.subject {
+            Some(Subject::NotPickedUp { service, .. }) => Cow::Owned(service.name.to_string()),
+            Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
+            None => Cow::Borrowed("needs attention"),
+        };
+        record.push(label, Cell::status(&attention.message, Tone::Bad));
     }
     record
 }

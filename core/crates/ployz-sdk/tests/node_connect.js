@@ -18,16 +18,20 @@ fs.writeFileSync(addon, "");
 let session;
 class NativeClient {
   constructor() { this.stops = 0; this.closes = []; }
-  close() { this.stops += 1; return new Promise(resolve => this.closes.push(resolve)); }
-  finishClose() { for (const resolve of this.closes.splice(0)) resolve(); }
+  close() { this.stops += 1; return new Promise((resolve, reject) => this.closes.push({ resolve, reject })); }
+  finishClose() { for (const close of this.closes.splice(0)) close.resolve(); }
+  failClose(error) { for (const close of this.closes.splice(0)) close.reject(error); }
 }
+// Each connect's native session arrives through `connecting`, which a test may hold back.
+const arriveAtOnce = async () => (session = new NativeClient());
+let connecting = arriveAtOnce;
 const native = new Module(addon);
 native.loaded = true;
 native.exports = {
   Client: NativeClient,
   ConfigStore: class {},
   SealedNames: class {},
-  startConnections: () => ({ cancel() {}, wait: async () => (session = new NativeClient()) }),
+  startConnections: () => ({ cancel() {}, wait: () => connecting() }),
 };
 require.cache[addon] = native;
 const sdk = require(dir);
@@ -63,4 +67,67 @@ test("an abort after close has finished does nothing, and the signal holds no li
   abort.abort();
   await tick();
   assert.equal(session.stops, 1, "an abort after close never reached the native session");
+});
+
+test("a native close that fails after an abort reaches the caller's close, and no rejection goes unhandled", async () => {
+  const unhandled = [];
+  const record = reason => unhandled.push(reason);
+  process.on("unhandledRejection", record);
+  try {
+    const abort = new AbortController();
+    const client = await sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }], signal: abort.signal });
+    abort.abort();
+    const closing = client.close();
+    await tick();
+    assert.equal(session.stops, 2, "the abort and the caller each asked the native session to stop");
+    const failure = new Error("native close failed");
+    session.failClose(failure);
+    await assert.rejects(closing, failure, "the caller's close sees its own failure");
+    await tick();
+    await tick();
+    assert.deepEqual(unhandled, [], "the abort's close left no unhandled rejection");
+    assert.equal(abortListeners(abort.signal), 0, "a failed close still lets go of the session");
+  } finally {
+    process.off("unhandledRejection", record);
+  }
+});
+
+async function stopWhileConnectingThenFailClose(signal, timeoutMs, stopConnecting, expected) {
+  const unhandled = [];
+  const record = reason => unhandled.push(reason);
+  process.on("unhandledRejection", record);
+  let arrive;
+  connecting = () => new Promise(resolve => (arrive = resolve));
+  try {
+    const connected = sdk.connect({ connections: [{ tcp: "127.0.0.1:1" }], signal, timeoutMs });
+    await stopConnecting();
+    arrive((session = new NativeClient()));
+    await tick();
+    assert.equal(session.stops, 1, "connect closed the session that arrived after it stopped");
+    session.failClose(new Error("native close failed"));
+    await assert.rejects(connected, expected);
+    await tick();
+    await tick();
+    assert.deepEqual(unhandled, [], "the failed close left no unhandled rejection");
+    assert.equal(abortListeners(signal), 0, "a failed close still lets go of the session");
+  } finally {
+    connecting = arriveAtOnce;
+    process.off("unhandledRejection", record);
+  }
+}
+
+test("an abort while connecting rejects with the abort reason even when the native close fails", async () => {
+  const abort = new AbortController();
+  const reason = new Error("caller gave up");
+  await stopWhileConnectingThenFailClose(abort.signal, undefined, async () => abort.abort(reason), error => error === reason);
+});
+
+test("a deadline while connecting rejects as exceeded even when the native close fails", async () => {
+  const abort = new AbortController();
+  await stopWhileConnectingThenFailClose(
+    abort.signal,
+    1,
+    () => new Promise(resolve => setTimeout(resolve, 20)),
+    { message: "session deadline exceeded" },
+  );
 });
