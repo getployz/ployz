@@ -50,6 +50,14 @@ which projects there are: it names your only project, or says the organization h
 how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
 `ployz link` step.
 
+A link belongs to the organization it was made in. Acting in another one, a command that uses the
+link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names
+`ployz org use ORG` to switch back. When either is the local organization, it names `ployz link`
+to link the directory where you act now. If the organization the link was made in was replaced by
+a new one with the same name, it says the directory `is linked in an
+earlier Organization ORG, which another Organization of that name replaced` and names
+`ployz link` instead: `org use` can't reach the old one, so link the directory again.
+
 ## Set up your coding agent
 
 Paste this into your coding agent, such as Claude Code or Codex:
@@ -351,6 +359,14 @@ a name or the storage choice in `ployz server add`, work the same way. A `deploy
 `--skip-deploy`, that needs an approval asks the same way in a terminal. Without one it waits for the approval in
 Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
+
+Ployz reviews a `ployz env rm` or `ployz project rm` before it runs when it takes a deployed
+service or volume off your servers. The name you confirm with binds that review: the command says
+what goes, such as `Removing shop/qa removes Service web.`, and removes it at the version it
+reviewed. To bind a version yourself, pass `--expect-version`: the removal refuses if anything
+changed since, and names the version it reviewed now. The version binds only a removal that Ployz
+reviews before it runs. Removing an environment with nothing deployed, such as a new empty
+project, doesn't compare it, so it goes ahead even when the version you pass is stale.
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,
