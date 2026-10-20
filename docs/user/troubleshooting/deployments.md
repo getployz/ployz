@@ -28,10 +28,25 @@ records the existing Deployment events as NDJSON. Source builds appear against t
 Service before the Deploy is planned, without a depth. A failure names the Server
 where it happened.
 
-A failed deploy shows the deepest cause, available failed-container log tails, and
-`inspect:` and `retry:` commands, and exits with code 1. A Deployment that applied but
-whose result is missing a Server exits with code 3. A warning that names an incomplete Server observation also makes an
-otherwise successful invocation exit 3 when that Server was relevant to the selected
+A failed deploy shows the deepest cause, available failed-container log tails, and a
+`retry:` command. It adds at most one `inspect:` command per failed Service, chosen from
+every Server where that Service failed, in this order:
+
+1. `ployz logs <service>` when any of them failed while starting, health-checking, running a
+   hook for, stopping or removing a Container, or failed at an unknown step and has a
+   Container log.
+2. Otherwise, `ployz get <service>.image` when any of them failed to pull the image. A Service
+   built from source has no `image` setting, so it gets no `inspect:` line.
+3. Otherwise no `inspect:` line. A failed build, or a failure before any Container exists,
+   such as creating the Container or preparing its Volumes, leaves nothing new to inspect:
+   `ployz logs` would show only the old Container.
+
+So a Service that failed to pull on one Server and to start on another shows only
+`ployz logs <service>`.
+
+A failed deploy exits with code 1. A Deployment that applied but whose result is missing
+a Server exits with code 3. A warning that names an incomplete Server observation also
+makes an otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
