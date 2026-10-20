@@ -636,6 +636,17 @@ mod tests {
     }
 
     #[test]
+    fn an_id_the_servers_dont_list_is_sent_as_typed() {
+        let servers = [server(1, "machine-1")];
+        let unlisted = format!("{:032x}", 7);
+        assert_eq!(
+            resolved("web.preferredBuilder", &unlisted, Some(&servers)).unwrap(),
+            unlisted,
+            "a preference needs no live Server; build selection falls back without it"
+        );
+    }
+
+    #[test]
     fn an_id_shaped_value_resolves_as_server_commands_do_an_exact_id_first() {
         let named_like_an_id = "a".repeat(32);
         let servers = [server(1, &named_like_an_id), server(0xaa, "machine-aa")];
