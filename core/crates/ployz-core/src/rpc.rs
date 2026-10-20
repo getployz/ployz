@@ -1131,6 +1131,10 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         last_check: Option<crate::LastHealthCheck>,
+        /// Docker OOM-killed a process of the Container's run; `false` from older daemons.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        oom_killed: bool,
     },
     TimedOut {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1139,10 +1143,23 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         last_check: Option<crate::LastHealthCheck>,
+        /// Docker OOM-killed a process of the Container's run; `false` from older daemons.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        oom_killed: bool,
     },
 }
 
 impl HealthVerdict {
+    /// Whether Docker OOM-killed a process of the failed Container's run.
+    #[must_use]
+    pub const fn oom_killed(&self) -> bool {
+        match self {
+            Self::Healthy => false,
+            Self::Failed { oom_killed, .. } | Self::TimedOut { oom_killed, .. } => *oom_killed,
+        }
+    }
+
     /// Why the Container is not serving, or `None` when it is.
     #[must_use]
     pub fn into_failure(self) -> Option<crate::HealthFailure> {
@@ -1151,6 +1168,7 @@ impl HealthVerdict {
             Self::Failed {
                 observation,
                 last_check,
+                ..
             } => Some(crate::HealthFailure::Runtime {
                 observation,
                 last_check,
@@ -1158,6 +1176,7 @@ impl HealthVerdict {
             Self::TimedOut {
                 deadline_millis,
                 last_check,
+                ..
             } => Some(crate::HealthFailure::TimedOut {
                 deadline_millis,
                 last_check,

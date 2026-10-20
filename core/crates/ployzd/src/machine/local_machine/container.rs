@@ -25,7 +25,8 @@ use self::rotation::RotationWant;
 use super::super::ingress::admit_ingress_service;
 use super::{Error, LocalMachine};
 use crate::docker::{
-    ContainerCreated, ContainerRequest, ImageIngest, RotationTurn, Withdrawal, same_creation,
+    ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
+    same_creation,
 };
 use crate::docker_image::ImagePull;
 use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
@@ -751,6 +752,7 @@ impl LocalMachine {
                     return Ok(HealthVerdict::Failed {
                         observation,
                         last_check,
+                        oom_killed: oom_killed(containers, container_id).await,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::TimedOut {
@@ -760,12 +762,14 @@ impl LocalMachine {
                     return Ok(HealthVerdict::TimedOut {
                         deadline_millis,
                         last_check,
+                        oom_killed: oom_killed(containers, container_id).await,
                     });
                 }
                 HealthPoll::Failed(HealthFailure::Cancelled) => {
                     return Ok(HealthVerdict::TimedOut {
                         deadline_millis: None,
                         last_check: None,
+                        oom_killed: false,
                     });
                 }
             };
@@ -1040,6 +1044,15 @@ impl LocalMachine {
 
 /// Whether Docker still runs the Container's process. Paused and restarting count as
 /// running: both can write the Volume again without a start.
+/// Whether Docker OOM-killed a process of a Container whose health just failed. The
+/// failure stands as observed when Docker can't say.
+async fn oom_killed(containers: &ContainerRuntime, container_id: &ContainerId) -> bool {
+    containers
+        .oom_killed(container_id)
+        .await
+        .unwrap_or_default()
+}
+
 fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
         runtime,

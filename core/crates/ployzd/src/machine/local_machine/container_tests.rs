@@ -1164,4 +1164,45 @@ mod settled {
             "waited {waited:?}"
         );
     }
+
+    #[tokio::test]
+    async fn ensure_settled_says_docker_killed_the_failed_container_out_of_memory() {
+        for (deadline, state, oom_killed) in [
+            (
+                1_500,
+                json!({"Status":"running", "OOMKilled":true, "Health":{"Status":"starting"}}),
+                true,
+            ),
+            (
+                60_000,
+                json!({"Status":"exited", "ExitCode":137, "OOMKilled":true}),
+                true,
+            ),
+            (
+                60_000,
+                json!({"Status":"exited", "ExitCode":137, "OOMKilled":false}),
+                false,
+            ),
+            (
+                60_000,
+                json!({"Status":"running", "Health":{"Status":"unhealthy"}}),
+                false,
+            ),
+        ] {
+            let (reply, _) = ensure_reporting(settled_run(deadline), state.clone()).await;
+
+            let EnsuredContainer::Ensured {
+                health: Some(health),
+                ..
+            } = reply
+            else {
+                panic!("expected a verdict for {state}, got {reply:?}");
+            };
+            assert!(
+                health.clone().into_failure().is_some(),
+                "{state}: {health:?}"
+            );
+            assert_eq!(health.oom_killed(), oom_killed, "{state}: {health:?}");
+        }
+    }
 }

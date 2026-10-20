@@ -521,6 +521,27 @@ impl ContainerRuntime {
         Ok(runtime_observation(inspected.state.as_ref()))
     }
 
+    /// Whether Docker OOM-killed a process of `container_id`'s current run.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub async fn oom_killed(&self, container_id: &ContainerId) -> Result<bool, Error> {
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
+        Ok(inspected
+            .state
+            .as_ref()
+            .and_then(|state| state.get("OOMKilled"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
+    }
+
     pub async fn inspect_managed(
         &self,
         container_id: &ContainerId,

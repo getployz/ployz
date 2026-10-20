@@ -347,17 +347,20 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         );
         let mut logs = false;
         let mut pulled = false;
+        let mut memory_limit = None;
         for row in &node.rows {
             let RowState::Failed {
                 reason: row_reason,
                 cause: row_cause,
                 step,
                 log,
+                out_of_memory,
                 ..
             } = &row.state
             else {
                 continue;
             };
+            memory_limit = memory_limit.or(out_of_memory.and_then(|oom| oom.memory_bytes));
             if !primary_seen && reason == format!("{name}: {row_reason}") && cause == *row_cause {
                 primary_seen = true;
             } else {
@@ -391,6 +394,14 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             "--env",
             view.environment.name.as_str(),
         ];
+        // Twice the limit the Container ran out of memory under, in the unit it reads in.
+        if let Some(bytes) = memory_limit {
+            let doubled = ployz_store::memory_size(bytes.get() as f64 * 2.0 / 1e9).replace(' ', "");
+            let setting = format!("{name}.memLimit={doubled}");
+            hints.push(Hint::Next(command(
+                &[&["set", setting.as_str()][..], &scope].concat(),
+            )));
+        }
         // One hint per Service, by its config name: it reads every Server's logs, and a
         // token that reads through Cloud can serve it too. Before a Container exists it
         // would show only the old one's lines, so a failed pull names the image instead,
@@ -579,6 +590,96 @@ mod tests {
             *row = None;
         }
         assert!(inspects(&failure(&view, command)).is_empty());
+    }
+
+    #[test]
+    fn a_container_out_of_memory_names_its_limit_and_says_to_raise_it() {
+        let failed = |out_of_memory: Option<ployz_core::OutOfMemory>| {
+            let error = ployz_core::ExecutionError::Health {
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                failure: ployz_core::HealthFailure::TimedOut {
+                    deadline_millis: Some(30_000),
+                    last_check: Some(ployz_core::LastHealthCheck::exited(
+                        1,
+                        "wget: can't connect to remote host (127.0.0.1): Connection refused",
+                    )),
+                },
+                out_of_memory,
+            };
+            let machine_id = "a".repeat(32);
+            let operations: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{
+                "index": 0, "machine_id": machine_id, "service_name": "web",
+                "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+                "status": {"type": "failed", "error": error}
+            }]))
+            .unwrap();
+            let state = ployz_store::RowTracker::default()
+                .changes(&operations)
+                .remove(0)
+                .state;
+            let RowState::Failed { reason, cause, .. } = &state else {
+                panic!("expected a failed row, got {state:?}");
+            };
+            let mut view = view();
+            view.deployment.outcome = Some(ployz_store::Outcome::Executed {
+                summary: Default::default(),
+                reason: Some(format!("web: {reason}")),
+                cause: cause.clone(),
+                services: Vec::new(),
+            });
+            let rows = &mut view.nodes.first_mut().unwrap().rows;
+            rows.truncate(1);
+            rows.first_mut().unwrap().state = state;
+            failure(&view, command)
+        };
+        let next = |failure: &Failure| {
+            failure
+                .hints()
+                .iter()
+                .filter_map(|hint| match hint {
+                    Hint::Next(command) => Some(command.clone()),
+                    Hint::Inspect(_)
+                    | Hint::Retry(_)
+                    | Hint::Undo(_)
+                    | Hint::Closest(_)
+                    | Hint::Valid(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let oom = failed(Some(ployz_core::OutOfMemory {
+            memory_bytes: Some(ployz_core::ByteQuantity::try_from(16 << 20).unwrap()),
+        }));
+        let text = crate::ui::plain(&oom);
+        assert!(
+            text.contains("web: The Container ran out of memory under its 16 MiB memLimit"),
+            "{text}"
+        );
+        assert!(
+            text.contains("did not become healthy within 30s; last check exited 1: wget"),
+            "{text}"
+        );
+        assert_eq!(
+            next(&oom),
+            ["ployz set 'web.memLimit=32MiB' --project shop --env production"]
+        );
+
+        let unlimited = failed(Some(ployz_core::OutOfMemory { memory_bytes: None }));
+        assert!(
+            crate::ui::plain(&unlimited).contains("web: The Container ran out of memory"),
+            "{}",
+            crate::ui::plain(&unlimited)
+        );
+        assert!(next(&unlimited).is_empty());
+
+        let healthy_enough = failed(None);
+        assert!(
+            crate::ui::plain(&healthy_enough)
+                .contains("web: The Container failed its health check"),
+            "{}",
+            crate::ui::plain(&healthy_enough)
+        );
+        assert!(next(&healthy_enough).is_empty());
     }
 
     #[test]
