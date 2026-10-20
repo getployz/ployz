@@ -22,6 +22,7 @@ use ployz_core::{
 use tokio_util::sync::CancellationToken;
 
 use crate::deploy::cleanup::{self, BroughtIn, Copy, Step};
+use crate::drain::retirement::Names;
 use crate::failure::partial_failure_details;
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -47,7 +48,8 @@ impl std::fmt::Display for CatchUpError {
 }
 
 pub(crate) trait CatchUpClient {
-    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure>;
+    /// What every Server runs, with each Server's name.
+    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), Failure>;
     async fn bridge_capacity(
         &mut self,
         machine_id: &MachineId,
@@ -82,10 +84,17 @@ pub(crate) trait CatchUpClient {
 }
 
 impl CatchUpClient for Client {
-    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure> {
-        Client::live_services(self, EnvironmentValues::Included)
+    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), Failure> {
+        let machines = self.machines().await.map_err(Failure::from)?;
+        let live = self
+            .live_services_from(&machines, EnvironmentValues::Included)
             .await
-            .map_err(Into::into)
+            .map_err(Failure::from)?;
+        let names = machines
+            .into_iter()
+            .map(|machine| (machine.machine.id, machine.machine.name))
+            .collect();
+        Ok((live, names))
     }
 
     async fn bridge_capacity(
@@ -532,7 +541,7 @@ async fn observe_complete<C: CatchUpClient>(
 ) -> Result<LiveServices<RpcError>, CatchUpError> {
     let cancelled = || CatchUpError::new(Failure::cancelled(), Vec::new());
     for attempt in 1..=OBSERVATION_ATTEMPTS {
-        let live = tokio::select! {
+        let (live, names) = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancelled()),
             live = client.live_services() => {
@@ -543,7 +552,13 @@ async fn observe_complete<C: CatchUpClient>(
             return Ok(live);
         }
         if attempt == OBSERVATION_ATTEMPTS {
-            let details = partial_failure_details(&live.containers, MachineId::to_string);
+            let server = |id: &MachineId| {
+                names
+                    .iter()
+                    .find(|(named, _)| named == id)
+                    .map_or_else(|| id.to_string(), |(_, name)| name.to_string())
+            };
+            let details = partial_failure_details(&live.containers, server);
             return Err(CatchUpError::new(
                 Failure::unavailable(format!(
                     "Global catch-up cannot plan from partial Service observations: {details}; \
