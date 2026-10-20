@@ -28,8 +28,8 @@ type Place = { organizationSlug: string; projectSlug: string; environmentSlug: s
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
-  // The Project is gone, deleted here or elsewhere: nothing to show, so Projects opens.
-  if (!listing.ok) return <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace />;
+  // A Project deleted here or elsewhere opens Projects; any other refusal leaves the page empty.
+  if (!listing.ok) return listing.refusal.code === "not_found" ? <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace /> : null;
   const { environments } = listing.value;
   const environment = environments.find((row) => row.name === environmentSlug);
   const branches = environments.filter((row) => row.parent === environmentSlug).map((row) => row.name);
@@ -216,8 +216,8 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const writer = useStoreWriter(organizationSlug);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
   const [defaultEnvironment, holdDefault] = useCommitHold(listing.ok ? listing.value.environments.find((row) => row.default)?.name ?? null : null);
-  // The Project is gone, deleted here or elsewhere: nothing to show, so Projects opens.
-  if (!listing.ok) return <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace />;
+  // A Project deleted here or elsewhere opens Projects; any other refusal leaves the page empty.
+  if (!listing.ok) return listing.refusal.code === "not_found" ? <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace /> : null;
   const { environments } = listing.value;
   return (
     <div className="flex flex-col gap-6">
