@@ -2,10 +2,10 @@
 //! a newer In copy every live proxy routes. A Machine powered off during a Deploy
 //! comes back with its old copy In, and proxies would route it again. The pass
 //! decides only after this Machine has caught up with a peer's store and its own
-//! ingress has published, and it never stops a Container.
+//! ingress has published since, and it never stops a Container.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     net::{IpAddr, SocketAddr},
     time::Duration,
@@ -16,7 +16,7 @@ use ployz_core::{
     CopyRotation, EnsuredContainer, Gen, ListMachinesRequest, MACHINE_API_PORT, MachineId,
     MachineRpcClient, QualifiedService, op,
 };
-use tokio::sync::watch;
+use tokio::{sync::watch, time::Instant};
 use tonic::transport::Endpoint;
 
 use crate::{
@@ -24,6 +24,7 @@ use crate::{
         AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedStore,
         wait_for_catch_up,
     },
+    ingress::PublishedRoutes,
     machine::{LocalMachine, LocalMachineError},
     route_acks::{Ackers, Membership, routed, sample_ackers},
 };
@@ -63,7 +64,9 @@ pub(crate) struct Superseded {
 }
 
 /// The local In copies to set Out. A Machine list that is only partly replicated,
-/// or never read, passes nothing, and a copy on a Down Machine serves no one.
+/// or never read, passes nothing, and a copy on a Down Machine serves no one. This
+/// Machine's own acks come from `own`, what its ingress published since it started,
+/// because its row in the store may predate a power-off.
 pub(crate) fn superseded(
     local: &MachineId,
     Observed {
@@ -71,6 +74,7 @@ pub(crate) fn superseded(
         routes,
         membership,
     }: &Observed,
+    own: &BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
 ) -> Vec<Superseded> {
     if !matches!(&membership.ackers, Ackers::Known(proxies) if !proxies.is_empty()) {
         return Vec::new();
@@ -86,7 +90,8 @@ pub(crate) fn superseded(
         .filter(|copy| copy.machine_id == *local)
         .filter_map(|copy| {
             let service = copy.identity();
-            let routes = routed(routes.clone(), &service);
+            let mut routes = routed(routes.clone(), &service);
+            routes.insert(*local, own.get(&service).cloned().unwrap_or_default());
             let acked = |sibling: &ContainerId| {
                 membership
                     .ackers
@@ -117,58 +122,63 @@ pub(crate) fn superseded(
         .collect()
 }
 
-/// Waits at most [`BOOT_PASS_WAIT`] for a peer's store versions, catch-up to them,
-/// and a route publish from this Machine's ingress that read the store after
-/// catch-up, then decides once.
-pub(crate) async fn run<H: BootHost>(host: H, mut route_publishes: watch::Receiver<u64>) {
-    let ready = async {
-        let target = loop {
-            if let Some(target) = host.peer_targets().await {
-                break target;
-            }
-            tokio::time::sleep(PEER_RETRY).await;
-        };
-        host.catch_up(&target).await?;
-        tracing::info!("boot pass caught up to the peer's store versions");
-        // The publish in flight may have read the store before catch-up, so the one
-        // after it is the first that surely read it after.
-        let after = *route_publishes.borrow_and_update() + 2;
-        if route_publishes
-            .wait_for(|publishes| *publishes >= after)
-            .await
-            .is_err()
-        {
-            std::future::pending::<()>().await;
-        }
-        tracing::info!("boot pass saw this Machine's routes published after catch-up");
-        Ok::<_, CorrosionError>(())
-    };
-    match tokio::time::timeout(BOOT_PASS_WAIT, ready).await {
+/// Runs the whole pass under one [`BOOT_PASS_WAIT`] deadline, and stops it there.
+pub(crate) async fn run<H: BootHost>(
+    host: H,
+    first_synced: watch::Receiver<bool>,
+    route_publishes: watch::Receiver<PublishedRoutes>,
+) {
+    let deadline = Instant::now() + BOOT_PASS_WAIT;
+    match tokio::time::timeout_at(deadline, pass(&host, first_synced, route_publishes)).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
-            tracing::warn!(error = %ployz_core::error_chain::inline(&error), "boot pass skipped, catch-up failed");
-            return;
+            tracing::warn!(error = %ployz_core::error_chain::inline(&error), "boot pass skipped, could not read the store");
         }
         Err(_) => {
-            tracing::info!(
-                "boot pass skipped, not caught up after {}s",
+            tracing::warn!(
+                "boot pass stopped, not done after {}s",
                 BOOT_PASS_WAIT.as_secs()
             );
-            return;
         }
     }
-    let observed = match host.observe().await {
-        Ok(observed) => observed,
-        Err(error) => {
-            tracing::warn!(error = %ployz_core::error_chain::inline(&error), "boot pass skipped, could not read the store");
-            return;
+}
+
+/// Waits for this Machine's first container sync, a peer's store versions,
+/// catch-up to them, and a route publish that read the store after catch-up, then
+/// decides once.
+async fn pass<H: BootHost>(
+    host: &H,
+    mut first_synced: watch::Receiver<bool>,
+    mut route_publishes: watch::Receiver<PublishedRoutes>,
+) -> Result<(), CorrosionError> {
+    if first_synced.wait_for(|synced| *synced).await.is_err() {
+        std::future::pending::<()>().await;
+    }
+    let target = loop {
+        if let Some(target) = host.peer_targets().await {
+            break target;
         }
+        tokio::time::sleep(PEER_RETRY).await;
     };
+    host.catch_up(&target).await?;
+    tracing::info!("boot pass caught up to the peer's store versions");
+    // The publish in flight may have read the store before catch-up, so the one
+    // after it is the first that surely read it after.
+    let after = route_publishes.borrow_and_update().count + 2;
+    let own = route_publishes
+        .wait_for(|published| published.count >= after)
+        .await
+        .map(|published| published.routes.clone());
+    let Ok(own) = own else {
+        return std::future::pending().await;
+    };
+    tracing::info!("boot pass saw this Machine's routes published after catch-up");
+    let observed = host.observe().await?;
     for Superseded {
         service,
         container,
         by,
-    } in superseded(&host.machine_id(), &observed)
+    } in superseded(&host.machine_id(), &observed, &own)
     {
         let want = ContainerWant::Out {
             container: ContainerLocator::Id(container),
@@ -192,6 +202,7 @@ pub(crate) async fn run<H: BootHost>(host: H, mut route_publishes: watch::Receiv
             }
         }
     }
+    Ok(())
 }
 
 pub(crate) struct DaemonHost {

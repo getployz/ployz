@@ -339,7 +339,8 @@ impl Daemon {
         let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
-        let (route_publishes, published_routes) = tokio::sync::watch::channel(0);
+        let (route_publishes, published_routes) =
+            tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
         let retire_id = local_id;
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
@@ -481,15 +482,7 @@ impl Daemon {
                 ) else {
                     return Ok(());
                 };
-                let mut synced = runtime.first_synced();
-                tokio::select! {
-                    () = shutdown.cancelled() => return Ok(()),
-                    synced = synced.wait_for(|synced| *synced) => {
-                        if synced.is_err() {
-                            return Ok(());
-                        }
-                    }
-                }
+                let first_synced = runtime.first_synced();
                 let host = crate::boot_pass::DaemonHost {
                     machine_id: retire_id,
                     machine: crate::machine::LocalMachine::new(local.clone())
@@ -502,7 +495,7 @@ impl Daemon {
                 };
                 tokio::select! {
                     () = shutdown.cancelled() => {}
-                    () = crate::boot_pass::run(host, published_routes) => {}
+                    () = crate::boot_pass::run(host, first_synced, published_routes) => {}
                 }
                 Ok(())
             };
