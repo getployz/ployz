@@ -752,8 +752,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     .service
                     .clone()
                     .expect("only Service groups publish");
-                let task = schedule.publish_failure_task(group);
-                let mut fail = |error: ExecutionError, event: Event| {
+                let last = schedule.publish_failure_task(group);
+                let mut fail = |task: usize, error: ExecutionError, event: Event| {
                     progress.fail(task, error.clone());
                     stop.get_or_insert(Stop {
                         index: task,
@@ -774,6 +774,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     Published::Unconfirmed(machines) => {
                         unread.insert(group);
                         fail(
+                            last,
                             machine_error(
                                 MachineAction::ReadRoutes,
                                 unavailable(rows.not_confirmed(&machines)),
@@ -782,9 +783,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         );
                     }
                     Published::Cancelled => {
-                        fail(ExecutionError::Cancelled, Event::PublishFailed(group));
+                        fail(last, ExecutionError::Cancelled, Event::PublishFailed(group));
                     }
-                    Published::Failed(error) => fail(error, Event::PublishFailed(group)),
+                    Published::CopyFailed(task, error) => {
+                        fail(task, error, Event::PublishFailed(group));
+                    }
+                    Published::Failed(error) => fail(last, error, Event::PublishFailed(group)),
                 }
             }
             None => {
@@ -1076,6 +1080,8 @@ enum Published {
     Listed,
     Unconfirmed(cleanup::Unconfirmed),
     Cancelled,
+    /// The copy this task started could not go In.
+    CopyFailed(usize, ExecutionError),
     Failed(ExecutionError),
 }
 
@@ -1247,8 +1253,8 @@ async fn route_new<C: MachineOperations>(
         let spec = operation_at(operations, *task)
             .spec()
             .expect("a started copy has a spec");
-        match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
-            Ok(cleanup::BroughtIn::In) => {}
+        let error = match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
+            Ok(cleanup::BroughtIn::In) => continue,
             Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
                 let failure = health.and_then(HealthVerdict::into_failure).unwrap_or(
                     HealthFailure::TimedOut {
@@ -1256,28 +1262,21 @@ async fn route_new<C: MachineOperations>(
                         last_check: None,
                     },
                 );
-                return Err(Published::Failed(health_error(*container_id, failure)));
+                health_error(*container_id, failure)
             }
             Ok(cleanup::BroughtIn::Refused(refusal))
                 if refusal.reason == ContainerRefusalReason::OlderThanIn =>
             {
-                return Err(Published::Failed(ExecutionError::NewerServing {
+                ExecutionError::NewerServing {
                     service: service.clone(),
-                }));
+                }
             }
             Ok(cleanup::BroughtIn::Refused(refusal)) => {
-                return Err(Published::Failed(machine_error(
-                    MachineAction::StartContainer,
-                    refusal.into_error(),
-                )));
+                machine_error(MachineAction::StartContainer, refusal.into_error())
             }
-            Err(error) => {
-                return Err(Published::Failed(machine_error(
-                    MachineAction::StartContainer,
-                    error,
-                )));
-            }
-        }
+            Err(error) => machine_error(MachineAction::StartContainer, error),
+        };
+        return Err(Published::CopyFailed(*task, error));
     }
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     match cleanup::wait_listed(client, first_machine, service, &ids, cancellation, |_| {}).await {
