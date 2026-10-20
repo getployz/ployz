@@ -270,12 +270,14 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     (verb.run)(matches)
 }
 
-/// Whether the compiled command at `words` takes a value for `id`. Read from the
-/// command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
+/// Whether the compiled command at `words` takes a value for the option `id`; a
+/// positional of the same name is not the option. Read from the command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
 /// unbuilt, so a global argument still sits on the ancestor that declares it.
 fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
     let root = crate::cli::compiled();
-    let takes = |arg: &clap::Arg| arg.get_id() == id && arg.get_action().takes_values();
+    let takes = |arg: &clap::Arg| {
+        arg.get_id() == id && arg.get_long().is_some() && arg.get_action().takes_values()
+    };
     let mut command = &root;
     let mut inherited = false;
     for word in words {
@@ -641,6 +643,11 @@ mod tests {
                 "ployz config ls doesn't use a context; it takes --project and --env",
             ),
             (&["org", "ls"], "ployz org ls doesn't use a context"),
+            // A positional named `project` is not the --project option.
+            (
+                &["project", "rename", "old", "new"],
+                "ployz project rename doesn't use a context",
+            ),
             // `history` hands its global --project and --env down to its actions.
             (
                 &["history", "restore", "1"],
