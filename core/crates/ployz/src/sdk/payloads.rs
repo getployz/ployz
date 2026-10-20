@@ -140,6 +140,7 @@ fn typescript_declarations() -> String {
     declarations.add::<super::MetricHistory>();
     declarations.add::<super::MetricHistoryInput>();
     declarations.add::<super::CopyObservation>();
+    declarations.add::<super::RetireOutcome>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
     declarations.add::<ployz_core::SeedVolumeRequest>();
     declarations.add::<ployz_core::VolumeCopyView>();

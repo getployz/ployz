@@ -218,7 +218,8 @@ async function connect(options) {
   try {
     client = new Client(await withRpcError(attempt.wait()));
     const close = client.close.bind(client);
-    client.close = () => { cleanup(); return close(); };
+    // Keep listening until the close finishes, so an abort during it still reaches the session.
+    client.close = async () => { try { return await close(); } finally { cleanup(); } };
     if (stopped) { await client.close(); signal?.throwIfAborted(); throw new Error("session deadline exceeded"); }
     return client;
   } catch (error) { cleanup(); throw error; }

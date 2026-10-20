@@ -17,7 +17,7 @@ const RunEnvironment = Schema.Struct({ project: Schema.String, environment: Sche
 const Destination = Schema.String.check(Schema.isNonEmpty());
 
 /** A byte count the CLI sends: a positive whole number JSON carries exactly. */
-const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER));
+export const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER));
 
 /**
  * `volume mirror|sync|mirror rm|move|release|restore` and `volume set --size` on a deployed Volume, each one kind of

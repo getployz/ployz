@@ -375,7 +375,7 @@ async function sizeSettle({ step, runEffect, run, runId }: RunSteps, id: string,
 
 /**
  * The refusal, then what the Store says, which copies already hold the size and which were not asked, then what to
- * do: "db-1 has no room to grow data to 20 GB (it lacks 4 GB). data stays 10 GB. db-2, db-3 already hold 20 GB;
+ * do: "db-1 has no room to grow data to 20 GB. data stays 10 GB. db-2, db-3 already hold 20 GB;
  * db-4 was not asked. Free space on db-1, then run ployz volume set data --size 20 again."
  */
 function refusedMessage(

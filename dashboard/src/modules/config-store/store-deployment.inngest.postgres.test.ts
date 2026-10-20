@@ -34,6 +34,9 @@ const UNCLAIMED = "00000000-0000-4000-8000-00000000a105";
 const UNSTORED = "00000000-0000-4000-8000-00000000a106";
 const SECRET = "s3cr3t-never-in-a-step";
 const here = { project: null, environment: null };
+// A run that ran asks for its cleanup, and the test engine stops at a send nothing answers. Each engine gets its own
+// mock, since an engine keeps state in the mocks it is given.
+const sentRetire = () => [{ id: "retire-old", handler: () => ({ ids: [] }) }];
 
 const admitted = (deploymentId: string, trigger?: DeploymentTrigger) => ({
   name: configDeploymentAdmittedEvent,
@@ -65,7 +68,7 @@ it.live(
       const inngest = new Inngest({ id: "store-deployment-test" });
       const worker = createRunStoreDeployment(inngest, runner);
       const run = (deploymentId: string) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)] }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)], steps: sentRetire() }).execute());
       const claim = (deploymentId: string) => Effect.gen(function* () {
         const { drizzle } = yield* Database;
         yield* drizzle.insert(volumePlacement).values({ volumeId: `vol-${deploymentId}`, organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId });
@@ -221,7 +224,7 @@ it.live(
         makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))),
       );
       const run = (deploymentId: string) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)] }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)], steps: sentRetire() }).execute());
       const view = (deploymentId: string) =>
         Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: deploymentId }));
 
@@ -276,7 +279,7 @@ it.live(
       }));
       const worker = createRunStoreDeployment(inngest, makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))));
       const run = (deploymentId: string, trigger?: DeploymentTrigger) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId, trigger)] }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId, trigger)], steps: sentRetire() }).execute());
       const mails = () => send.mock.calls.flatMap(([payload]) => [payload].flat())
         .filter((event) => event.name === mailSendRequestedEvent)
         .map((event) => ({ id: event.id, ...(event.data as { to: string; subject: string; html: string; text: string }) }));
