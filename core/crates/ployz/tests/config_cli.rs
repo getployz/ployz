@@ -2188,6 +2188,114 @@ fn a_sync_plan_reads_new_nodes_and_config_files_as_diff_does() {
     }
 }
 
+/// Node `name`'s header and rows in `text`, where headers sit at `indent` and rows
+/// two deeper, with that indent taken off.
+fn node_block(text: &str, name: &str, indent: usize) -> Vec<String> {
+    let header = format!("{:indent$}{name} (", "");
+    let row = format!("{:1$}", "", indent + 2);
+    text.lines()
+        .skip_while(|line| !line.starts_with(&header))
+        .enumerate()
+        .take_while(|(at, line)| *at == 0 || line.starts_with(&row))
+        .map(|(_, line)| line[indent..].to_owned())
+        .collect()
+}
+
+/// `fix-web`'s Sync plan into production, the Sync, and production's diff after it.
+fn plan_then_diff(store: &Target) -> (String, String) {
+    let home = tempfile::tempdir().unwrap();
+    let human = |args: &[&str]| {
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let plan = human(&["env", "sync", "--to", "--plan", "--env", "fix-web"]);
+    let version = ok(
+        store,
+        &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+    )["version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(
+        store,
+        &[
+            "env",
+            "sync",
+            "--to",
+            "--env",
+            "fix-web",
+            "--version",
+            &version,
+        ],
+    );
+    (plan, human(&["diff"]))
+}
+
+/// A Service a Sync creates plans with the rows `diff` shows for it once it lands: its
+/// repository and the branch it carries apart, never its root directory.
+#[test]
+fn a_sync_plan_reads_a_new_repository_service_as_diff_does() {
+    // Only Cloud reads a repository.
+    let store = &Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_alice",
+    };
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+    ok(
+        store,
+        &[
+            "service",
+            "add",
+            "api",
+            "--repo",
+            "acme/web@dev",
+            "--env",
+            "fix-web",
+        ],
+    );
+    let (plan, diff) = plan_then_diff(store);
+    let planned = node_block(&plan, "api", 2);
+    assert_eq!(planned, node_block(&diff, "api", 0), "{plan}\n{diff}");
+    assert!(
+        planned.iter().any(|line| line.contains("api.branch")),
+        "{plan}"
+    );
+}
+
+/// A Config a Sync creates plans as `diff` shows it once it lands: by name alone, its
+/// files part of what it arrives as.
+#[test]
+fn a_sync_plan_reads_a_new_config_with_files_as_diff_does() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let from = file.path().to_str().unwrap();
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(store, &["config", "add", "extra", "--env", "fix-web"]);
+        ok(
+            store,
+            &[
+                "config",
+                "put",
+                "extra",
+                "extra.yml",
+                "--from",
+                from,
+                "--env",
+                "fix-web",
+            ],
+        );
+        let (plan, diff) = plan_then_diff(store);
+        let planned = node_block(&plan, "extra", 2);
+        assert_eq!(planned, node_block(&diff, "extra", 0), "{plan}\n{diff}");
+        assert_eq!(planned, ["extra (create)"], "{plan}");
+    }
+}
+
 #[test]
 fn an_agent_syncs_between_any_two_environments_of_a_project() {
     for store in &targets() {
