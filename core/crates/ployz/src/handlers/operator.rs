@@ -4,6 +4,7 @@ use std::{
 };
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 
 use chrono::{DateTime, Local, SecondsFormat, Utc};
 use clap::{Arg, ArgAction, Command};
@@ -100,9 +101,11 @@ const CONTAINER_COLUMN_ASKS: [&str; 11] = [
 ];
 
 /// `error` for `ployz ps` asked for a CONTAINER column, rewritten to say where the IDs are.
-pub(super) fn container_column_asked(error: clap::Error, path: &str) -> clap::Error {
+/// clap's partial parse of `args` names the command that rejected the flag, and keeps
+/// clap's error when the flag stood where an option's value was due (`--sort --wide`).
+pub(super) fn container_column_asked(error: clap::Error, args: &[OsString]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
-    if path != "ps" || error.kind() != ErrorKind::UnknownArgument {
+    if error.kind() != ErrorKind::UnknownArgument {
         return error;
     }
     let Some(ContextValue::String(invalid)) = error.get(ContextKind::InvalidArg) else {
@@ -110,6 +113,24 @@ pub(super) fn container_column_asked(error: clap::Error, path: &str) -> clap::Er
     };
     let flag = invalid.split('=').next().unwrap_or_default();
     if !CONTAINER_COLUMN_ASKS.contains(&flag) {
+        return error;
+    }
+    let Ok(parsed) = crate::cli::compiled()
+        .ignore_errors(true)
+        .try_get_matches_from(std::iter::once(OsString::from("ployz")).chain(args.iter().cloned()))
+    else {
+        return error;
+    };
+    let Some(("ps", ps)) = parsed.subcommand() else {
+        return error;
+    };
+    let value_missing = ps.ids().any(|id| {
+        ps.value_source(id.as_str()) == Some(ValueSource::CommandLine)
+            && ps
+                .get_raw(id.as_str())
+                .is_some_and(|values| values.len() == 0)
+    });
+    if value_missing {
         return error;
     }
     clap::Error::raw(

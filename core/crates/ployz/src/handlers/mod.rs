@@ -144,7 +144,7 @@ fn usage_failure(error: clap::Error) -> Error {
         std::process::exit(0);
     }
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let error = operator::container_column_asked(error, &reached(&crate::cli::compiled(), &args));
+    let error = operator::container_column_asked(error, &args);
     if !wants_json {
         error.exit();
     }

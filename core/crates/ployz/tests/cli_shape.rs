@@ -465,6 +465,7 @@ fn asking_ps_for_a_container_column_says_where_the_ids_are() {
     for args in [
         &["ps", "--container"][..],
         &["ps", "--wide"],
+        &["ps", "--sort", "service", "--wide"],
         &["ps", "-o", "wide"],
         &["ps", "--format={{.ID}}"],
         &["ps", "-q"],
@@ -484,6 +485,31 @@ fn asking_ps_for_a_container_column_says_where_the_ids_are() {
     assert!(message(&json).contains("ployz ps --json"), "{json}");
 
     let (_, stderr) = run_human(&["ps", "--bogus"]);
+    assert!(!stderr.contains("container_id"), "{stderr}");
+}
+
+#[test]
+fn a_column_flag_given_as_the_sort_value_keeps_claps_error() {
+    for (args, says) in [
+        (
+            &["ps", "--sort", "--wide"][..],
+            "unexpected argument '--wide'",
+        ),
+        (&["ps", "--sort", "-w"], "unexpected argument '-w'"),
+        (&["ps", "--sort=--wide"], "invalid value '--wide'"),
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains(says), "{args:?}: {stderr}");
+        assert!(!stderr.contains("container_id"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn a_column_flag_on_another_command_keeps_its_error_when_a_global_took_ps_as_its_value() {
+    let (code, stderr) = run_human(&["--connect", "ps", "server", "ls", "--wide"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("Usage: ployz server ls"), "{stderr}");
     assert!(!stderr.contains("container_id"), "{stderr}");
 }
 
