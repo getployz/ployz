@@ -211,11 +211,15 @@ impl<'a> Builder<'a> {
             ..*self.docker
         }
         .run_started("the build", &borrowed, Streams::Inherited, started);
-        parser
+        let mut parser = parser
             .lock()
-            .expect("parsing never panics while holding the parser")
-            .finish(progress);
-        result.map(|_| ())
+            .expect("parsing never panics while holding the parser");
+        parser.finish(progress);
+        match result {
+            Ok(_) => Ok(()),
+            Err(error @ BuildError::Docker { .. }) => Err(parser.failure().unwrap_or(error)),
+            Err(error) => Err(error),
+        }
     }
 
     /// Fence the running worker's own traffic, or refuse to solve.
@@ -886,5 +890,47 @@ esac
             Some(format!("buildx rm --keep-state {name}").as_str())
         );
         fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_failed_build_reports_the_failing_step_and_its_exit_code() {
+        let directory = std::env::temp_dir().join(format!("ployz-step-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let program = directory.join("docker");
+        crate::tests::executable(
+            &program,
+            r#"#!/bin/sh
+case "$1" in --ready) exit 0 ;; esac
+echo '{"vertexes":[{"digest":"sha256:a","name":"npm run build","started":"2026-10-18T15:09:30Z","completed":"2026-10-18T15:09:31Z","error":"process \"npm run build\" did not complete successfully: exit code: 3"}]}'
+echo '{"vertexes":[{"digest":"sha256:b","name":"copy /mise/installs","started":"2026-10-18T15:09:30Z","completed":"2026-10-18T15:09:31Z","error":"context canceled: context canceled"}]}'
+echo 'ERROR: failed to solve: process "npm run build" did not complete successfully: exit code: 3' >&2
+exit 1
+"#,
+        );
+        let environment = BTreeMap::new();
+        let progress = |_| {};
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: &directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: Some(&progress),
+        };
+        let builder = Builder {
+            docker: &docker,
+            name: builder_name(),
+            lock: None,
+            bridge: None,
+            fence: None,
+        };
+        let error = builder.run(&[], || {}).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            r#"npm run build: process "npm run build" did not complete successfully: exit code: 3"#
+        );
+        assert_eq!(error.stage(), crate::Stage::Building);
+        drop(builder);
+        fs::remove_dir_all(directory).unwrap();
     }
 }
