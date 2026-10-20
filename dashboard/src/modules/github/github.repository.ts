@@ -134,28 +134,34 @@ export const listAllGithubInstallationIds = Effect.fn(
   return records.map((record) => record.installationId);
 });
 
-/** Forget the installation. Its repository cache and every Organization's link cascade with it. */
+/** Forget the installation. Its repository cache and every Organization's link cascade with it, under the cache lock. */
 export const deleteGithubInstallation = Effect.fn(
   "Github.deleteInstallation",
 )(function* (installationId: number) {
   const database = yield* Database;
-  yield* database.drizzle
-    .delete(schemaGithubInstallation)
-    .where(eq(schemaGithubInstallation.installationId, installationId));
+  yield* database.transaction(Effect.gen(function* () {
+    yield* lockGithubRepositoryCache(installationId);
+    yield* database.drizzle
+      .delete(schemaGithubInstallation)
+      .where(eq(schemaGithubInstallation.installationId, installationId));
+  }));
 });
 
 /** The advisory lock class of {@link lockGithubRepositoryCache}; the two-key form keeps it apart from every one-key lock. */
 const GITHUB_REPOSITORY_CACHE_LOCK = 1_349_602;
 
 /**
- * Serializes the writers of one installation's cached repositories until their transaction ends: a sync's write and the
- * installation webhooks. Returns the cache's version, or null once the installation is forgotten. Nothing that holds it
- * waits on GitHub.
+ * Serializes the writers of one installation's cached repositories until their transaction ends: a sync's write, the
+ * installation webhooks and forgetting the installation. It takes the advisory lock, then the installation's row, so
+ * every writer locks the installation before its cached rows. Returns the cache's version, or null once the
+ * installation is forgotten. Nothing that holds it waits on GitHub.
  */
 export const lockGithubRepositoryCache = Effect.fn("Github.lockRepositoryCache")(function* (installationId: number) {
   const { drizzle } = yield* Database;
   yield* drizzle.execute(sql`select pg_advisory_xact_lock(${GITHUB_REPOSITORY_CACHE_LOCK}, ${installationId})`);
-  return yield* readGithubRepositoryCacheVersion(installationId);
+  const rows = yield* drizzle.select({ version: schemaGithubInstallation.repositoriesVersion }).from(schemaGithubInstallation)
+    .where(eq(schemaGithubInstallation.installationId, installationId)).for("no key update");
+  return rows[0]?.version ?? null;
 });
 
 export const readGithubRepositoryCacheVersion = Effect.fn("Github.readRepositoryCacheVersion")(function* (installationId: number) {

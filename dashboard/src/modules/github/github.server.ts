@@ -89,9 +89,9 @@ export const processGithubInstallationEvent = Effect.fn(
 
   const stopBuildsFor = yield* listLinkedOrganizationIds(payload.installation.id);
   if (payload.action === "suspend") {
-    yield* suspendGithubInstallation(payload.installation.id);
     yield* (yield* Database).transaction(Effect.gen(function* () {
       yield* lockGithubRepositoryCache(payload.installation.id);
+      yield* suspendGithubInstallation(payload.installation.id);
       yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
       yield* bumpGithubRepositoryCacheVersion(payload.installation.id);
     }));

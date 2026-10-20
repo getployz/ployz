@@ -42,34 +42,42 @@ export class GithubRepositoryCacheBusy extends Data.TaggedError("GithubRepositor
   readonly installationId: number;
 }> {}
 
+/** What a sync of an installation GitHub or Cloud forgot reports: it wrote nothing. */
+const FORGOTTEN = { processedPageCount: 0, processedRepoCount: 0, deletedRepositoryCount: 0, forgotten: true } as const;
+
 /**
  * Lists every repository GitHub grants the installation, holding no connection or lock, then caches them and drops the
  * rest in one short transaction under the installation's cache lock. If another writer changed the cache since the
- * listing began, the listing may be older than that write, so it is listed again rather than written.
+ * listing began, the listing may be older than that write, so it is listed again rather than written. Once the
+ * installation is forgotten there is nothing to write, so the sync stops.
  */
 export const syncGithubRepositories = Effect.fn("Github.syncRepositories")(function* (installationId: number) {
   const database = yield* Database;
   for (let attempt = 1; attempt <= SYNC_LISTING_ATTEMPTS; attempt++) {
     const listedVersion = yield* readGithubRepositoryCacheVersion(installationId);
+    if (listedVersion === null) return FORGOTTEN;
     const syncedAt = new Date();
     const repositories: GithubRepository[] = [];
     let processedPageCount = 0;
     for (let pageNumber = 1; ; pageNumber++) {
-      const page = yield* listInstallationReposPage(installationId, pageNumber);
+      const page = yield* listInstallationReposPage(installationId, pageNumber).pipe(Effect.catch((error) =>
+        readGithubRepositoryCacheVersion(installationId).pipe(
+          Effect.flatMap((version) => version === null ? Effect.succeed(null) : Effect.fail(error)))));
+      if (page === null) return FORGOTTEN;
       repositories.push(...page.repositories);
       processedPageCount += 1;
       if (!page.hasNextPage) break;
     }
-    const deletedRepositoryCount = yield* database.transaction(Effect.gen(function* () {
-      if ((yield* lockGithubRepositoryCache(installationId)) !== listedVersion) return null;
+    const written = yield* database.transaction(Effect.gen(function* () {
+      const version = yield* lockGithubRepositoryCache(installationId);
+      if (version === null) return FORGOTTEN;
+      if (version !== listedVersion) return null;
       yield* upsertCachedGithubRepositories({ installationId, repositories, syncedAt });
-      const deleted = yield* pruneCachedGithubRepositories(installationId, repositories.map((repository) => repository.id));
+      const deletedRepositoryCount = yield* pruneCachedGithubRepositories(installationId, repositories.map((repository) => repository.id));
       yield* markGithubRepositoriesSynced(installationId, syncedAt);
-      return deleted;
+      return { processedPageCount, processedRepoCount: repositories.length, deletedRepositoryCount, forgotten: false };
     }));
-    if (deletedRepositoryCount !== null) {
-      return { processedPageCount, processedRepoCount: repositories.length, deletedRepositoryCount };
-    }
+    if (written !== null) return written;
   }
   return yield* new GithubRepositoryCacheBusy({ installationId });
 });

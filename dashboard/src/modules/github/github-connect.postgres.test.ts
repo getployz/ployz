@@ -10,7 +10,7 @@ import {
   deleteCachedGithubRepositoriesById, findGithubRepositoryByNameForOrganization, listGithubInstallationsForOrganization,
   pruneCachedGithubRepositories, upsertCachedGithubRepositories, upsertGithubInstallation,
 } from "./github.repository";
-import { processGithubInstallationRepositoriesEvent } from "./github.server";
+import { processGithubInstallationEvent, processGithubInstallationRepositoriesEvent } from "./github.server";
 import { githubRepositoryCache } from "./tables";
 import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApi, type GithubApiService } from "./github-observation.api";
 import { executeSyncGithubRepositories } from "./inngest-sync/sync";
@@ -356,7 +356,7 @@ it.live("writes what GitHub lists and drops the rest, whatever stamps another wr
     }));
     renamed.set(9000, "secret");
 
-    expect(yield* sync).toEqual({ installationId: 9, processedPageCount: 2, processedRepoCount: 150, deletedRepositoryCount: 1 });
+    expect(yield* sync).toEqual({ installationId: 9, processedPageCount: 2, processedRepoCount: 150, deletedRepositoryCount: 1, forgotten: false });
     expect(yield* run(findGithubRepositoryByNameForOrganization({ organizationId: SHOP, fullName: "owner/secret" })))
       .toEqual({ fullName: "owner/secret", repositoryId: 9000, installationId: 9, defaultBranch: "trunk" });
     expect((yield* cached).has(9999)).toBe(false);
@@ -375,5 +375,68 @@ it.live("caches and prunes in one call past the 65,535 parameters Postgres binds
     const listed = Array.from({ length: 70_000 }, (_, index) => 9000 + index).filter((id) => id !== 9001);
     expect(yield* run(pruneCachedGithubRepositories(9, listed))).toBe(1);
     yield* run(deleteCachedGithubRepositoriesById(9, listed));
+    expect((yield* cached).size).toBe(0);
+  }), 60_000);
+
+const hopperForgotten = processGithubInstallationEvent({
+  deliveryId: "delivery-deleted-9", action: "deleted", sender: { id: 1, login: "carol" },
+  installation: { id: 9, account: { login: "hopper", type: "Organization", avatar_url: "https://avatars.githubusercontent.com/u/9" } },
+});
+
+it.live("forgets an installation while a sync writes its repositories, and neither waits on the other in a cycle", () =>
+  Effect.gen(function* () {
+    const { run, connectHopper, sync, cached, elsewhere } = yield* hopperCloud();
+    yield* connectHopper;
+    yield* sync;
+
+    // A gate the next sync's write stops at, after its upsert has locked every cached row it rewrote.
+    const execute = (statement: ReturnType<typeof sql>) => run(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(statement);
+    }));
+    yield* execute(sql`create function hold_github_repository_write() returns trigger language plpgsql as $$
+      begin perform pg_advisory_xact_lock_shared(4242, 1); return null; end $$`);
+    yield* execute(sql`create trigger hold_github_repository_write after insert on github_repository_cache
+      for each statement execute function hold_github_repository_write()`);
+    const held = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const gate = yield* elsewhere(Effect.gen(function* () {
+      const database = yield* Database;
+      yield* database.transaction(Effect.gen(function* () {
+        yield* database.drizzle.execute(sql`select pg_advisory_xact_lock(4242, 1)`);
+        yield* Deferred.succeed(held, undefined);
+        yield* Deferred.await(release);
+      }));
+    }));
+    yield* Deferred.await(held);
+
+    const waitingLocks = (gated: boolean) => run(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [row] = yield* drizzle.select({ count: sql<number>`count(*)::int` }).from(sql`pg_locks`)
+        .where(gated ? sql`not granted and locktype = 'advisory' and objid = 1 and classid = 4242`
+          : sql`not granted and not (locktype = 'advisory' and objid = 1 and classid = 4242)`);
+      if ((row?.count ?? 0) === 0) return yield* Effect.fail("not waiting");
+    }).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis") }), Effect.orDie));
+
+    const syncing = yield* elsewhere(Effect.promise(() => Effect.runPromise(sync)));
+    yield* waitingLocks(true);
+    const forgetting = yield* elsewhere(run(hopperForgotten));
+    yield* waitingLocks(false);
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(gate);
+
+    const [synced, forgotten] = yield* Effect.all([Fiber.await(syncing), Fiber.await(forgetting)]);
+    expect(synced._tag).toBe("Success");
+    expect(forgotten._tag).toBe("Success");
+    expect((yield* cached).size).toBe(0);
+    expect(yield* sync).toMatchObject({ processedRepoCount: 0, forgotten: true });
+  }), 60_000);
+
+it.live("stops cleanly when the installation is forgotten while the sync lists GitHub", () =>
+  Effect.gen(function* () {
+    const { run, connectHopper, sync, cached } = yield* hopperCloud();
+    yield* connectHopper;
+    afterSecondPage = run(hopperForgotten).pipe(Effect.asVoid, Effect.orDie);
+    expect(yield* sync).toMatchObject({ processedRepoCount: 0, forgotten: true });
     expect((yield* cached).size).toBe(0);
   }), 60_000);
