@@ -290,6 +290,7 @@ fn each_connect_failure_names_one_retry_class() {
         (ConnectError::EntryNotReady, Retry::AfterRestart),
         (remote(RpcErrorCode::Unavailable), Retry::Never),
         (ConnectError::ClientRefused, Retry::Never),
+        (ConnectError::OlderMachine, Retry::Never),
         (ConnectError::SshClientMissing, Retry::Never),
     ] {
         assert_eq!(error.retry(), retry, "{error}");

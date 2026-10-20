@@ -112,6 +112,40 @@ async fn two_holders_of_one_capability_stay_independent_through_the_relay() {
 /// A proof binds to the connection it was made on: replayed on another connection, even
 /// by a peer that saw it, it admits nothing.
 #[tokio::test(flavor = "multi_thread")]
+async fn a_machine_on_the_previous_management_protocol_is_named_as_older() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let machine = SecretKey::generate();
+    let capability = ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes(*machine.public().as_bytes()),
+        SecretKey::generate().to_bytes(),
+    );
+    let older = Endpoint::builder(presets::Minimal)
+        .secret_key(machine)
+        .alpns(vec![b"ployz/rpc/1".to_vec()])
+        .relay_mode(RelayMode::custom([relay_url.clone()]))
+        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
+        .clear_ip_transports()
+        .bind()
+        .await
+        .unwrap();
+    let accepting = older.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = accepting.accept().await {
+            drop(incoming.await);
+        }
+    });
+    let connector = SystemConnector::default().with_management_relay(
+        ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify()).relay_only(),
+    );
+    match connector.connect(&connection(&capability)).await {
+        Err(ConnectError::OlderMachine) => {}
+        Err(error) => panic!("expected OlderMachine, got: {error} ({error:?})"),
+        Ok(_) => panic!("expected OlderMachine, got a channel"),
+    }
+    older.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_management_proof_admits_only_the_connection_it_was_made_on() {
     let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
     let (_dir, owner, local) = participating().await;

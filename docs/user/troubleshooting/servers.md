@@ -330,6 +330,18 @@ reached`.
 3. If your servers' outgoing traffic is filtered, allow https to `relay.ployz.dev`.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
+5. If the servers run Ployz 0.3.0-beta.6 or earlier, Cloud can't reach them through the relay.
+   Upgrade each one over SSH, as in
+   [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
+
+## The CLI says a server runs 0.3.0-beta.6 or earlier
+
+```text
+This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+```
+
+Upgrade that server over SSH, as in
+[Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
 
 ## A server shows Offline
 

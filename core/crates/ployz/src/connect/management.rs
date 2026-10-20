@@ -4,7 +4,7 @@ use super::{BoxProxyStream, ConnectError, connect_stream};
 use crate::context::ConnectionError;
 use iroh::{
     Endpoint as IrohEndpoint, EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey,
-    endpoint::{VarInt, presets},
+    endpoint::{TransportErrorCode, VarInt, presets},
     tls::CaTlsConfig,
 };
 use ployz_core::{
@@ -127,6 +127,27 @@ async fn management_endpoint(
     Ok(endpoint)
 }
 
+/// TLS `no_application_protocol`: the Machine offers none of this release's ALPNs, which
+/// only a daemon from before the management proof does.
+const NO_APPLICATION_PROTOCOL: u8 = 120;
+
+fn dial_error(stage: &str, error: &iroh::endpoint::ConnectError) -> ConnectError {
+    let older = std::iter::successors(Some(error as &dyn std::error::Error), |error| {
+        error.source()
+    })
+    .any(|error| {
+        matches!(
+            error.downcast_ref(),
+            Some(iroh::endpoint::ConnectionError::ConnectionClosed(close))
+                if close.error_code == TransportErrorCode::crypto(NO_APPLICATION_PROTOCOL)
+        )
+    });
+    if older {
+        return ConnectError::OlderMachine;
+    }
+    ConnectError::Attempt(format!("{stage}: {error}").into())
+}
+
 /// This process's proof that it holds `capability`'s client key on `connection`. It signs
 /// keying material only this connection exports, so it cannot be replayed on another.
 ///
@@ -173,7 +194,7 @@ pub(super) async fn connect_management(
         .endpoint
         .connect(address, MANAGEMENT_ALPN)
         .await
-        .map_err(|error| ConnectError::Attempt(format!("management dial: {error}").into()))?;
+        .map_err(|error| dial_error("management dial", &error))?;
     let session = Arc::new(ManagementConnection {
         connection,
         _endpoint: endpoint,
@@ -238,7 +259,7 @@ pub(super) async fn dial_tunnel(
             TUNNEL_ALPN,
         )
         .await
-        .map_err(|error| ConnectError::Attempt(format!("tunnel dial: {error}").into()))?;
+        .map_err(|error| dial_error("tunnel dial", &error))?;
     let session = Arc::new(ManagementConnection {
         connection,
         _endpoint: endpoint,

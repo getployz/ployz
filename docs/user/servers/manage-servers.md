@@ -354,9 +354,10 @@ the command follows the upgrade that's running.
 
 ## Servers on different versions
 
-Ployz Cloud and the CLI keep working with servers that run an older Ployz release. The
-**Servers** page shows each one and offers its upgrade, as in
-[Upgrade Ployz on a server](#upgrade-ployz-on-a-server).
+Ployz Cloud and the CLI keep working with servers that run an older Ployz release, back to the
+first release after 0.3.0-beta.6. The **Servers** page shows each one and offers its upgrade, as in
+[Upgrade Ployz on a server](#upgrade-ployz-on-a-server). A server on 0.3.0-beta.6 or earlier is the
+exception: see [Servers on 0.3.0-beta.6 or earlier](#servers-on-030-beta6-or-earlier).
 
 When a server's release can't serve a feature, the feature names that server:
 
@@ -408,6 +409,32 @@ Server web-2 needs a newer Ployz. It cannot serve ployz.container.ensure.v1.
 
 Upgrade the server and run `ployz drain` again. The rerun finds services already off and carries
 on.
+
+### Servers on 0.3.0-beta.6 or earlier
+
+Starting with the first release after 0.3.0-beta.6, Ployz Cloud and the CLI prove their access in a
+new way on every connection, and servers on 0.3.0-beta.6 or earlier don't understand it. Through
+Ployz's relay, Cloud and a newer CLI can't manage such a server at all, and that includes starting
+its upgrade from the **Servers** page or with `ployz server upgrade`. The server keeps running your
+apps. The CLI stops with:
+
+```text
+This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+```
+
+Upgrade each such server over SSH from your computer, one at a time. Run the newer CLI with
+`--connect` and the server's SSH address:
+
+```sh
+ployz server upgrade beta web-1 --connect ssh://root@203.0.113.10
+```
+
+The server installs the newest release on the channel you name. Then Cloud and the CLI reach it
+through the relay again. If the upgrade fails, the server goes back to the release it ran before
+and keeps running; run the command again.
+
+The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
+later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
 
 ## Remove a server
 

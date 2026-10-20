@@ -421,7 +421,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             ..
         } if matches!(
             *error,
-            ConnectError::ClientRefused | ConnectError::ClientCleared
+            ConnectError::ClientRefused | ConnectError::ClientCleared | ConnectError::OlderMachine
         ) =>
         {
             rpc_error(*error)
@@ -434,6 +434,12 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         },
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
+        error @ ConnectError::OlderMachine => RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: error.to_string(),
+            details: json!({ "management_protocol": "older" }),
+            cause: Vec::new(),
+        },
         error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClientRefused) => RpcError {
             code: RpcErrorCode::Unauthenticated,
             message: error.to_string(),
@@ -670,6 +676,14 @@ pub enum ConnectError {
     ClientRefused,
     #[error("Machine confirmed this Management Client was cleared")]
     ClientCleared,
+    /// The Machine speaks the management protocol of Ployz 0.3.0-beta.6 or earlier, which
+    /// this release does not; only its own upgrade reaches it, over SSH.
+    #[error(
+        "This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay. \
+         Upgrade it over SSH: ployz server upgrade beta SERVER --connect ssh://USER@HOST. \
+         Docs: ployz docs servers/manage-servers.md"
+    )]
+    OlderMachine,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing,
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}{}", failure.hint())]
@@ -754,6 +768,7 @@ impl ConnectError {
             | Self::Remote(_)
             | Self::IdentityMismatch { .. }
             | Self::ClientRefused
+            | Self::OlderMachine
             | Self::ClientCleared
             | Self::MissingMachineDetails
             | Self::SshClientMissing
@@ -810,6 +825,7 @@ impl ConnectError {
             Self::IdentityMismatch { .. }
             | Self::MissingMachineDetails
             | Self::ClientRefused
+            | Self::OlderMachine
             | Self::ClientCleared
             | Self::Routing(_)
             | Self::Join(_)
