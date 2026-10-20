@@ -143,7 +143,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 "{} deployed {} = {}, not staged here; use it: {}",
                 hint.from,
                 hint.at,
-                hint.value,
+                super::store::shown(&hint.value),
                 next(
                     matches,
                     &[
