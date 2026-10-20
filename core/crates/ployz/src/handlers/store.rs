@@ -840,7 +840,7 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
     let Some(domains) = ployz_store::DomainChange::of(row) else {
         return vec![format!(
             "{}: {} → {}",
-            row.path,
+            crate::ui::escaped(&row.path),
             shown(&row.before),
             shown(&row.after)
         )];

@@ -130,8 +130,24 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
         }
-        for line in followed(matches, &view.follow_hints) {
-            crate::ui::stream(line);
+        for hint in &view.follow_hints {
+            crate::ui::stream(format_args!(
+                "{} deployed {} = {}, not staged here; use it: {}",
+                hint.from,
+                hint.at,
+                super::store::shown(&hint.value),
+                next(
+                    matches,
+                    &[
+                        "env",
+                        "sync",
+                        "--take",
+                        hint.from.as_str(),
+                        "--only",
+                        &hint.at.to_string()
+                    ]
+                )
+            ));
         }
         for reference in &view.broken {
             crate::ui::stream(format_args!(
@@ -149,32 +165,6 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             crate::ui::hint(&crate::ui::Hint::Next(hint.clone()));
         }
     })
-}
-
-/// Each Parent's deployed value the Branch didn't stage, and the command that takes it.
-fn followed(matches: &ArgMatches, hints: &[ployz_store::FollowHint]) -> Vec<String> {
-    hints
-        .iter()
-        .map(|hint| {
-            format!(
-                "{} deployed {} = {}, not staged here; use it: {}",
-                hint.from,
-                hint.at,
-                super::store::shown(&hint.value),
-                next(
-                    matches,
-                    &[
-                        "env",
-                        "sync",
-                        "--take",
-                        hint.from.as_str(),
-                        "--only",
-                        &hint.at.to_string()
-                    ]
-                )
-            )
-        })
-        .collect()
 }
 
 /// The Services a Config change restarts, under its rows.
@@ -427,31 +417,4 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    #[test]
-    fn a_follow_hint_escapes_what_would_steer_the_terminal() {
-        let root = crate::cli::command()
-            .try_get_matches_from(["ployz", "diff", "--env", "fix-web"])
-            .unwrap();
-        let hints: Vec<ployz_store::FollowHint> = serde_json::from_value(json!([{
-            "from": "production",
-            "row": "00000000-0000-4000-8000-000000000020:variables.MSG",
-            "node": "web",
-            "kind": "service",
-            "name": "env.MSG",
-            "value": "hi\u{202E}evil",
-        }]))
-        .unwrap();
-        assert_eq!(
-            super::followed(super::leaf_matches(&root), &hints),
-            [
-                r#"production deployed web.env.MSG = "hi\u{202e}evil", not staged here; use it: ployz env sync --take production --only web.env.MSG --env fix-web"#
-            ]
-        );
-    }
 }

@@ -4046,6 +4046,66 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
     }
 }
 
+#[test]
+fn diff_escapes_what_would_steer_the_terminal_in_follow_hints_and_file_names() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let from = file.path().to_str().unwrap();
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["set", "web.env.MSG=one"]);
+        applied(store, "production");
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(store, &["set", "web.env.MSG=mine", "--env", "fix-web"]);
+        ok(store, &["set", "web.env.MSG=hi\u{202E}evil"]);
+        applied(store, "production");
+        ok(store, &["config", "add", "cfg", "--env", "fix-web"]);
+        for name in ["safe\u{202E}evil.txt", "line\u{2028}break.txt"] {
+            ok(
+                store,
+                &[
+                    "config", "put", "cfg", name, "--from", from, "--env", "fix-web",
+                ],
+            );
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let output = store
+            .command(home.path())
+            .args(["diff", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let human = String::from_utf8(output.stdout).unwrap();
+        assert!(!human.contains(['\u{202E}', '\u{2028}']), "{human}");
+        assert!(
+            human
+                .contains(r#"production deployed web.env.MSG = "hi\u{202e}evil", not staged here"#),
+            "{human}"
+        );
+        assert!(
+            human.contains(r"files.safe\u{202e}evil.txt: null → "),
+            "{human}"
+        );
+        assert!(
+            human.contains(r"files.line\u{2028}break.txt: null → "),
+            "{human}"
+        );
+    }
+}
+
 /// A local Store whose Project shop has PR Environments on for acme/web, and ada's
 /// pull request #5 open at head 1111111, with `members` the Organization's GitHub
 /// accounts. Cloud reports the pull request, which this does through the Store itself.
