@@ -168,6 +168,21 @@ pub struct NodeChange {
     pub restarts: Vec<ployz_core::ServiceName>,
 }
 
+impl NodeChange {
+    /// `setting`'s path as people read it: a Config and its mounts by name, by the id
+    /// the path keeps only when no name is known.
+    #[must_use]
+    pub fn shown_path(&self, setting: &ServiceSettingChange) -> String {
+        let by_id = format!("configs.@{}", self.node.id);
+        match setting.path.strip_prefix(&by_id) {
+            Some(rest) if self.node.node_type == EnvironmentNodeType::Config => {
+                format!("configs.{}{rest}", self.name)
+            }
+            _ => setting.shown_path(),
+        }
+    }
+}
+
 /// What a staged change does to data on the Servers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]

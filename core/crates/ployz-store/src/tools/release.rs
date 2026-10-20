@@ -140,11 +140,7 @@ fn lines(change: &NodeChange) -> Vec<String> {
             );
             continue;
         }
-        let by_id = format!("configs.@{}", change.node.id);
-        let path = &match setting.path.strip_prefix(&by_id) {
-            Some(rest) => format!("configs.{}{rest}", change.name),
-            None => setting.shown_path(),
-        };
+        let path = change.shown_path(setting);
         lines.push(match setting.kind {
             ChangeKind::Add => format!("  set {path} = {}", shown(&setting.after)),
             ChangeKind::Remove => format!("  unset {path}"),
