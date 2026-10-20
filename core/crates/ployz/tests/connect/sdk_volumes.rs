@@ -9,7 +9,7 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
-use super::support::{DiscoveryService, machine, machine_id};
+use super::support::{DiscoveryService, SwitchFailure, machine, machine_id};
 use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
@@ -248,11 +248,48 @@ async fn remove_volumes_after_close_is_unavailable() {
 }
 
 #[tokio::test]
+async fn a_volume_switch_the_target_never_answered_may_have_reached_it() {
+    let (client, _session, _machine) =
+        switch_session(machine_id('b'), SwitchFailure::Unanswered).await;
+    let failure = client
+        .volume_switch(machine_id('b').as_str(), set_volume_copy())
+        .await
+        .unwrap_err();
+    assert!(failure.unanswered, "{failure}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_volume_switch_that_outlives_its_deadline_may_have_reached_it() {
+    let (client, _session, _machine) = switch_session(machine_id('b'), SwitchFailure::Hangs).await;
+    let failure = client
+        .volume_switch(machine_id('b').as_str(), set_volume_copy())
+        .await
+        .unwrap_err();
+    assert_eq!(failure.error.message, "target Machine RPC timed out");
+    assert!(failure.unanswered, "{failure}");
+}
+
+#[tokio::test]
+async fn a_volume_switch_the_target_refused_unavailable_is_answered() {
+    let refusal = SwitchFailure::Refused(tonic::Status::unavailable("not participating"));
+    let (client, _session, _machine) = switch_session(machine_id('b'), refusal).await;
+    let failure = client
+        .volume_switch(machine_id('b').as_str(), set_volume_copy())
+        .await
+        .unwrap_err();
+    assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
+    assert!(!failure.unanswered, "{failure}");
+}
+
+#[tokio::test]
 async fn node_smoke_covers_successful_and_partial_volume_removal() {
     let description = advertised_description();
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![machine('a', "one"), machine('b', "two")];
+    service
+        .set_volume_copy_failures
+        .insert(machine_id('a'), SwitchFailure::Unanswered);
     let _machine = session.spawn_machine(description.machine_id, service).await;
     session
         .assert_sdk_script(
@@ -276,6 +313,29 @@ async fn volume_session() -> (sdk::Session, UnixSession, super::unix_session::Fa
         .await
         .unwrap();
     (client, session, machine)
+}
+
+async fn switch_session(
+    target: MachineId,
+    failure: SwitchFailure,
+) -> (sdk::Session, UnixSession, super::unix_session::FakeMachine) {
+    let description = advertised_description();
+    let session = UnixSession::start().await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.machines = vec![machine('a', "one"), machine('b', "two")];
+    service.set_volume_copy_failures.insert(target, failure);
+    let machine = session.spawn_machine(description.machine_id, service).await;
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
+    (client, session, machine)
+}
+
+fn set_volume_copy() -> serde_json::Value {
+    serde_json::json!({
+        "command": "set_volume_copy",
+        "payload": { "name": "data", "expect": { "kind": "none" }, "want": { "kind": "forget" } },
+    })
 }
 
 fn advertised_description() -> ployz_core::ContractDescription {
