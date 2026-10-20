@@ -1285,6 +1285,42 @@ fn a_new_services_diff_and_plan_say_the_image_it_runs() {
 }
 
 #[test]
+fn discarding_a_new_services_image_points_at_discarding_the_service() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(
+        &store,
+        &["service", "add", "web", "--image", "traefik/whoami:v1.10.0"],
+    );
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
+    };
+    let row = "web.image: null → \"traefik/whoami:v1.10.0\"";
+
+    let refused = human(&["discard", "web.image"]);
+    assert!(
+        refused.contains(
+            "web.image is what the new service web runs; it has no Discard of its own. Discard the service: ployz discard web"
+        ),
+        "{refused}"
+    );
+    assert!(human(&["diff"]).contains(row));
+    let nothing = human(&["discard", "web.env.PORT"]);
+    assert!(
+        nothing.contains("Nothing staged at web.env.PORT in shop/production; nothing to discard."),
+        "{nothing}"
+    );
+
+    human(&["discard", "web"]);
+    let diff = human(&["diff"]);
+    assert!(!diff.contains(row), "{diff}");
+    assert_eq!(ok(&store, &["diff"]).get("changes"), Some(&json!([])));
+}
+
+#[test]
 fn removing_a_referenced_service_stages_and_prints_the_broken_reference() {
     let store = Target::Local(tempfile::tempdir().unwrap());
     ok(&store, &["project", "new", "shop"]);
