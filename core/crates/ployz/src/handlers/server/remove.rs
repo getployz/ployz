@@ -14,7 +14,7 @@ use crate::cluster::{
 };
 use crate::connect::{Remover, TARGET_RPC_TIMEOUT};
 use crate::context::ConnectionSource;
-use crate::drain::{replicated_services_on, services_on};
+use crate::drain::{movable_services_on, replicated_services_on, services_on};
 use crate::handlers::{
     Error,
     data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
@@ -101,7 +101,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         )
         .into());
     }
-    let (cloud, observed, services, replicated_services) = runtime.block_on(async {
+    let (cloud, observed, services, movable, replicated_services) = runtime.block_on(async {
         let selected_target = MachineTarget::from(&selected.id);
         let entry = machines
             .iter()
@@ -152,10 +152,15 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         }
         let last = machines.len() == 1;
         let services = services_on(&selected.id, &live);
-        let replicated_services = left_behind(replicated_services_on(&selected.id, &live), last);
-        Ok::<_, Error>((cloud, observed, services, replicated_services))
+        let movable = if last {
+            Vec::new()
+        } else {
+            movable_services_on(&selected.id, &live)
+        };
+        let replicated_services =
+            under_replicated(replicated_services_on(&selected.id, &live), last);
+        Ok::<_, Error>((cloud, observed, services, movable, replicated_services))
     })?;
-    let movable = left_behind(services.clone(), machines.len() == 1);
     if !movable.is_empty() {
         crate::ui::warn(format!(
             "Server {} is running Services: {}.",
@@ -419,9 +424,9 @@ async fn cloud_manages(
 /// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
 /// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
 /// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
-/// The Services a Drain could still move off the Server: none from the last one, and never
-/// Ployz's own, which run on every Server.
-fn left_behind(services: Vec<QualifiedService>, last: bool) -> Vec<QualifiedService> {
+/// The replicated user Services the removal leaves a replica short: none on the last
+/// Server, whose removal stops everything.
+fn under_replicated(services: Vec<QualifiedService>, last: bool) -> Vec<QualifiedService> {
     if last {
         return Vec::new();
     }
@@ -551,8 +556,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, left_behind, machine_removal_refusal, qualified_labels,
-        replicated_services_on, reset_removal_refusal, services_on,
+        VolumeOwner, machine_removal_refusal, movable_services_on, qualified_labels,
+        replicated_services_on, reset_removal_refusal, services_on, under_replicated,
     };
     use crate::ui::Hint;
 
@@ -673,15 +678,57 @@ mod tests {
     }
 
     #[test]
-    fn only_services_a_drain_can_move_are_left_behind() {
-        let services = ["app/api", "ployz-system/ingress"]
-            .map(|service| QualifiedService::parse(service).unwrap())
-            .to_vec();
+    fn rm_suggests_a_drain_only_for_services_a_drain_can_move() {
+        let ordinary = json!({
+            "volumes": [{"reference": "data", "source": {"kind": "ordinary", "name": "app_data", "scope": {"namespace": "app", "logical_name": "data"}, "driver": {"name": "local", "options": {}}}}],
+            "mounts": [{"volume": "data", "target": "/var/lib/postgresql"}]
+        });
+        let bind = json!({
+            "volumes": [{"reference": "host", "source": {"kind": "bind", "machine_path": "/srv/files"}}],
+            "mounts": [{"volume": "host", "target": "/files"}]
+        });
+        let mut ingress = observation('5', 'a', "ingress", ContainerKind::ServiceContainer, 'e');
+        ingress
+            .try_update(|parts| {
+                parts.namespace = ployz_core::Namespace::parse("ployz-system").unwrap();
+            })
+            .unwrap();
+        let live: LiveServices<RpcError> = derive_live_services(PartialResult {
+            successes: vec![
+                MachineSuccess {
+                    machine_id: machine_id('a'),
+                    value: vec![
+                        observation('1', 'a', "api", ContainerKind::ServiceContainer, 'a'),
+                        pinned('2', 'a', "db", 'b', &ordinary),
+                        pinned('3', 'a', "files", 'c', &bind),
+                        ingress,
+                    ],
+                },
+                MachineSuccess {
+                    machine_id: machine_id('b'),
+                    value: vec![observation(
+                        '4',
+                        'b',
+                        "api",
+                        ContainerKind::ServiceContainer,
+                        'a',
+                    )],
+                },
+            ],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
         assert_eq!(
-            left_behind(services.clone(), false),
+            movable_services_on(&machine_id('a'), &live),
             [QualifiedService::parse("app/api").unwrap()]
         );
-        assert!(left_behind(services, true).is_empty());
+    }
+
+    #[test]
+    fn the_last_server_leaves_nothing_under_replicated() {
+        let services = vec![QualifiedService::parse("app/api").unwrap()];
+        assert_eq!(under_replicated(services.clone(), false), services);
+        assert!(under_replicated(services, true).is_empty());
     }
 
     #[test]
@@ -717,6 +764,35 @@ mod tests {
         kind: ContainerKind,
         service: char,
     ) -> ContainerObservation {
+        observation_with(id, machine, name, kind, service, &json!({}))
+    }
+
+    /// A Service Container whose spec mounts `storage`'s Volumes.
+    fn pinned(
+        id: char,
+        machine: char,
+        name: &str,
+        service: char,
+        storage: &serde_json::Value,
+    ) -> ContainerObservation {
+        observation_with(
+            id,
+            machine,
+            name,
+            ContainerKind::ServiceContainer,
+            service,
+            storage,
+        )
+    }
+
+    fn observation_with(
+        id: char,
+        machine: char,
+        name: &str,
+        kind: ContainerKind,
+        service: char,
+        storage: &serde_json::Value,
+    ) -> ContainerObservation {
         let service_id = ServiceId::parse(service.to_string().repeat(32)).unwrap();
         let service_name = ServiceName::parse(name).unwrap();
         ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
@@ -732,13 +808,18 @@ mod tests {
                 health: HealthObservation::Healthy,
             },
             effective_healthcheck: None,
-            resolved_spec: serde_json::from_value(json!({
-                "service_id": service_id,
-                "name": service_name,
-                "mode": { "mode": "replicated", "replicas": 1 },
-                "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
-            }))
-            .unwrap(),
+            resolved_spec: {
+                let mut spec = json!({
+                    "service_id": service_id,
+                    "name": service_name,
+                    "mode": { "mode": "replicated", "replicas": 1 },
+                    "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
+                });
+                if let (Some(spec), Some(storage)) = (spec.as_object_mut(), storage.as_object()) {
+                    spec.extend(storage.clone());
+                }
+                serde_json::from_value(spec).unwrap()
+            },
             address: None,
             labels: Default::default(),
         })

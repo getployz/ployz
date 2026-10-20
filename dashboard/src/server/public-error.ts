@@ -285,13 +285,14 @@ export function publicErrorResponse(
 }
 
 /**
- * The `ANY` handler of a route that takes only `methods`. Without it, another method falls through to the page and
- * answers an API client with the app's HTML shell.
+ * The `ANY` answer of a route, for a method none of its handlers takes. Without it, that method falls through to the
+ * page and answers an API client with the app's HTML shell. `Allow` names the route's own handlers.
  */
-export const onlyMethods = (...methods: readonly [string, ...string[]]) => () => {
+export function methodNotAllowed(route: { options: { server?: { handlers?: object } } }): Response {
+  const methods = Object.keys(route.options.server?.handlers ?? {}).filter((method) => method !== "ANY");
   const allow = methods.includes("GET") && !methods.includes("HEAD") ? [...methods, "HEAD"] : methods;
   return publicErrorResponse(new NotFound({ message: `This path takes ${allow.join(", ")}.` }), {
     status: 405,
     headers: { Allow: allow.join(", ") },
   });
-};
+}

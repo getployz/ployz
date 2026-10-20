@@ -4,7 +4,7 @@ import { Option, Schema } from "effect";
 import { logHistorySchema, logSearchSchema, openContainerLogs } from "#/modules/runtime/container-logs.server";
 import { containerLogResponse, hiddenLogResponse, offlineLogResponse, whileLogsShown } from "#/modules/runtime/container-log-events.server";
 import { runAppEffect } from "#/server/run.server";
-import { publicErrorResponse, Validation, onlyMethods } from "#/server/public-error";
+import { publicErrorResponse, Validation, methodNotAllowed } from "#/server/public-error";
 
 export const Route = createFileRoute("/api/runtime/logs")({
   server: { handlers: {
@@ -33,6 +33,6 @@ export const Route = createFileRoute("/api/runtime/logs")({
         return Response.json({ rows: [...records.map(projectContainerLog), ...gaps.map(projectLogGap), ...exits.map(projectLogExit)], failures, cursor }, { headers: { "Cache-Control": "private, no-store" } });
       } catch (cause) { return publicErrorResponse(cause); }
     },
-    ANY: onlyMethods("GET", "POST"),
+    ANY: (): Response => methodNotAllowed(Route),
   } },
 });

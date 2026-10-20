@@ -1624,16 +1624,21 @@ async fn data_loss_on_machine(
             ..failure.error
         })?;
     Ok(ObservedDataLoss {
-        data_loss: volumes
-            .value
-            .volumes
-            .into_iter()
-            .map(|volume| volume.id)
-            .chain(volumes.value.failures.into_iter().map(|failure| failure.id))
-            .filter(|id| !ployz_build::is_builder_cache(id.name.as_str()))
-            .map(|id| DataLoss::DockerVolume { id })
-            .collect(),
+        data_loss: volumes_lost(volumes.value),
     })
+}
+
+/// The Docker Volumes a reset loses: every one listed or failing to list, but the
+/// builder's cache, which is no one's data.
+fn volumes_lost(inventory: VolumeInventory) -> Vec<DataLoss> {
+    inventory
+        .volumes
+        .into_iter()
+        .map(|volume| volume.id)
+        .chain(inventory.failures.into_iter().map(|failure| failure.id))
+        .filter(|id| !ployz_build::is_builder_cache(id.name.as_str()))
+        .map(|id| DataLoss::DockerVolume { id })
+        .collect()
 }
 
 fn server_did_not_respond(name: &MachineName) -> RpcError {

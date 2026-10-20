@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect } from "effect";
 import { checkInStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
-import { publicErrorResponse, onlyMethods } from "#/server/public-error";
+import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 /** A GitHub runner's one check-in, authenticated by its OIDC token. */
@@ -14,7 +14,7 @@ export const Route = createFileRoute("/api/builds/$build/check-in")({
         return runAppEffect(checkInStoreGithubBuild(request, params.build).pipe(Effect.map((body) => Response.json(body))), options)
           .catch(publicErrorResponse);
       },
-      ANY: onlyMethods("POST"),
+      ANY: (): Response => methodNotAllowed(Route),
     },
   },
 });
