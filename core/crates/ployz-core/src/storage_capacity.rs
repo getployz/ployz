@@ -280,6 +280,57 @@ impl StorageCapacity {
             .map(|maximum| maximum.get())
             .try_fold(0u64, u64::checked_add)
             .ok_or_else(|| unknown("requested bounds overflow u64"))?;
+        let (growth, available, reserve) = self.admit(commitment)?;
+        Ok(StorageBudget {
+            requested_bytes,
+            additional_commitment_bytes: additional,
+            required_growth_bytes: growth,
+            available_bytes: available,
+            reserve_bytes: reserve,
+        })
+    }
+
+    /// The largest further Provisioned Volume bound this Machine's Pool admits now, net of
+    /// every root and slot bound it already commits, growing its backing where it can.
+    ///
+    /// # Errors
+    /// Returns unknown capacity for inconsistent observations.
+    pub fn committable_bytes(&self) -> Result<u64, StorageCapacityError> {
+        let committed = self
+            .volumes
+            .values()
+            .map(|maximum| maximum.get())
+            .chain(
+                self.copies
+                    .values()
+                    .filter(|copy| copy.role == CopyRole::Slot)
+                    .map(|copy| copy.maximum_bytes.get()),
+            )
+            .try_fold(0u64, u64::checked_add)
+            .ok_or_else(|| unknown("existing commitments overflow u64"))?;
+        match self.admit(committed) {
+            Ok(_) => {}
+            Err(error @ StorageCapacityError::StorageCapacityUnknown { .. }) => return Err(error),
+            Err(_) => return Ok(0),
+        }
+        // Admission only gets harder as the commitment grows, on every backing, so the
+        // last admitted extra bound is a bisection away. A commitment of u64::MAX
+        // overflows its headroom, so the top of the range starts refused.
+        let (mut admitted, mut refused) = (0u64, u64::MAX - committed);
+        while refused - admitted > 1 {
+            let extra = admitted + (refused - admitted) / 2;
+            if self.admit(committed + extra).is_ok() {
+                admitted = extra;
+            } else {
+                refused = extra;
+            }
+        }
+        Ok(admitted)
+    }
+
+    /// Backing growth, available bytes, and host reserve for `commitment` total bound bytes,
+    /// or why the backing refuses it.
+    fn admit(&self, commitment: u64) -> Result<(u64, u64, u64), StorageCapacityError> {
         let minimum = storage_with_headroom(commitment)?
             .checked_add(self.unmanaged_used_bytes)
             .ok_or_else(|| unknown("Pool occupancy overflows u64"))?;
@@ -295,7 +346,7 @@ impl StorageCapacity {
                     ));
                 }
                 (
-                    if additional == 0 {
+                    if commitment == 0 {
                         0
                     } else {
                         minimum
@@ -354,13 +405,7 @@ impl StorageCapacity {
                 reserve_bytes: reserve,
             });
         }
-        Ok(StorageBudget {
-            requested_bytes,
-            additional_commitment_bytes: additional,
-            required_growth_bytes: growth,
-            available_bytes: available,
-            reserve_bytes: reserve,
-        })
+        Ok((growth, available, reserve))
     }
 }
 
@@ -520,6 +565,140 @@ mod tests {
         assert!(matches!(
             capacity.budget(&volumes),
             Err(StorageCapacityError::InsufficientStorage { .. })
+        ));
+    }
+
+    fn bound(bytes: u64) -> ProvisionedVolumeMaximumBytes {
+        ProvisionedVolumeMaximumBytes::new(std::num::NonZeroU64::new(bytes).unwrap())
+    }
+
+    fn admits_new_volume(capacity: &StorageCapacity, bytes: u64) -> bool {
+        let next = DockerVolumeName::parse("next").unwrap();
+        capacity
+            .budget(&BTreeMap::from([(next, bound(bytes))]))
+            .is_ok()
+    }
+
+    fn assert_committable_is_the_admission_edge(capacity: &StorageCapacity) -> u64 {
+        let committable = capacity.committable_bytes().unwrap();
+        assert!(committable > 0);
+        assert!(admits_new_volume(capacity, committable));
+        assert!(!admits_new_volume(capacity, committable + 1));
+        committable
+    }
+
+    #[test]
+    fn committable_bytes_is_the_largest_bound_a_fixed_pool_admits() {
+        let mut capacity = StorageCapacity {
+            backing: StorageBacking::Fixed {
+                pool_size_bytes: 10 * STORAGE_GIB,
+            },
+            unmanaged_used_bytes: 0,
+            volumes: BTreeMap::new(),
+            copies: BTreeMap::new(),
+        };
+        // Below 10 GiB the headroom is its one GiB floor.
+        assert_eq!(
+            assert_committable_is_the_admission_edge(&capacity),
+            9 * STORAGE_GIB
+        );
+        capacity.backing = StorageBacking::Fixed {
+            pool_size_bytes: 100 * STORAGE_GIB,
+        };
+        capacity.unmanaged_used_bytes = 7 * STORAGE_GIB;
+        capacity.volumes.insert(
+            DockerVolumeName::parse("data").unwrap(),
+            bound(40 * STORAGE_GIB),
+        );
+        assert_committable_is_the_admission_edge(&capacity);
+    }
+
+    #[test]
+    fn committable_bytes_counts_backing_growth_in_whole_gib_against_the_host_reserve() {
+        let capacity = StorageCapacity {
+            backing: StorageBacking::RootBacked {
+                pool_size_bytes: 12 * STORAGE_GIB,
+                backing_length_bytes: 13 * STORAGE_GIB,
+                backing_allocated_bytes: 13 * STORAGE_GIB,
+                host_total_bytes: 100 * STORAGE_GIB,
+                host_available_bytes: 30 * STORAGE_GIB + 123,
+            },
+            unmanaged_used_bytes: STORAGE_GIB / 3,
+            volumes: BTreeMap::from([(
+                DockerVolumeName::parse("data").unwrap(),
+                bound(5 * STORAGE_GIB),
+            )]),
+            copies: BTreeMap::new(),
+        };
+        let committable = assert_committable_is_the_admission_edge(&capacity);
+        let next = DockerVolumeName::parse("next").unwrap();
+        let growth = capacity
+            .budget(&BTreeMap::from([(next.clone(), bound(committable))]))
+            .unwrap()
+            .required_growth_bytes;
+        assert!(growth > 0);
+        assert_eq!(growth % STORAGE_GIB, 0);
+        assert!(matches!(
+            capacity.budget(&BTreeMap::from([(next, bound(committable + 1))])),
+            Err(StorageCapacityError::InsufficientStorage { .. })
+        ));
+    }
+
+    #[test]
+    fn committable_bytes_on_an_unallocated_host_covers_the_initial_pool() {
+        let capacity = StorageCapacity {
+            backing: StorageBacking::Unallocated {
+                host_total_bytes: 100 * STORAGE_GIB,
+                host_available_bytes: 40 * STORAGE_GIB,
+            },
+            unmanaged_used_bytes: 0,
+            volumes: BTreeMap::new(),
+            copies: BTreeMap::new(),
+        };
+        assert_committable_is_the_admission_edge(&capacity);
+    }
+
+    #[test]
+    fn slot_bounds_count_against_committable_bytes() {
+        let mut capacity = StorageCapacity {
+            backing: StorageBacking::Fixed {
+                pool_size_bytes: 10 * STORAGE_GIB,
+            },
+            unmanaged_used_bytes: 0,
+            volumes: BTreeMap::new(),
+            copies: BTreeMap::new(),
+        };
+        capacity.copies.insert(
+            DockerVolumeName::parse("mirror").unwrap(),
+            ProvisionedCopy {
+                role: CopyRole::Slot,
+                maximum_bytes: bound(2 * STORAGE_GIB),
+                used_bytes: 0,
+                slot_role: None,
+            },
+        );
+        assert_eq!(capacity.committable_bytes().unwrap(), 7 * STORAGE_GIB);
+    }
+
+    #[test]
+    fn a_pool_already_over_its_commitment_can_take_nothing_more() {
+        let mut capacity = StorageCapacity {
+            backing: StorageBacking::Fixed {
+                pool_size_bytes: 10 * STORAGE_GIB,
+            },
+            unmanaged_used_bytes: 0,
+            volumes: BTreeMap::from([(
+                DockerVolumeName::parse("data").unwrap(),
+                bound(10 * STORAGE_GIB),
+            )]),
+            copies: BTreeMap::new(),
+        };
+        assert_eq!(capacity.committable_bytes().unwrap(), 0);
+        assert!(!admits_new_volume(&capacity, 1));
+        capacity.unmanaged_used_bytes = 11 * STORAGE_GIB;
+        assert!(matches!(
+            capacity.committable_bytes(),
+            Err(StorageCapacityError::StorageCapacityUnknown { .. })
         ));
     }
 
