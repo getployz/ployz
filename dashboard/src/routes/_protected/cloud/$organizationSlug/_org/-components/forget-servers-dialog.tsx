@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { forgetServersServerFn, previewForgetServersServerFn } from "#/modules/machines/forget-servers.functions";
 import { useRoleGate } from "#/modules/organization/members.queries";
+import { useClusterReleased } from "#/providers/runtime-provider";
 
 /** Whether you may forget the Servers, and why not. */
 export function useForgetServersGate(organizationSlug: string) {
@@ -22,6 +23,7 @@ export function ForgetServersDialog({ organizationSlug, open, onOpenChange }: {
 }) {
   const preview = useServerFn(previewForgetServersServerFn);
   const forget = useServerFn(forgetServersServerFn);
+  const clusterReleased = useClusterReleased();
 
   async function load() {
     const checked = await preview({ data: { organizationSlug } });
@@ -41,12 +43,13 @@ export function ForgetServersDialog({ organizationSlug, open, onOpenChange }: {
   async function confirm() {
     const forgotten = await forget({ data: { organizationSlug } });
     if (!forgotten.ok) throw new Error(forgotten.refusal.message);
+    clusterReleased();
     toast.success("Your servers are forgotten. Add a server to deploy again.");
   }
 
   return (
     <DeletionDialog open={open} onOpenChange={onOpenChange} title="Forget all servers?" place={organizationSlug}
-      confirmLabel="Forget servers"
+      confirmLabel="Forget servers" pendingLabel="Forgetting"
       sentence={<>Use this when your servers were deleted. Your projects and settings stay. Volume data on these servers
         can't be recovered.</>}
       callbacks={{ load, confirm }} />

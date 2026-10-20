@@ -359,6 +359,7 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ),
     ("set", CliNext::Fix(FixRow::Open(DashboardPage::Variables))),
     ("project new", CliNext::Tool("project_create", Some("name"))),
+    ("project ls", CliNext::Tool("environment_show", None)),
     (
         "env new",
         CliNext::Fix(FixRow::Open(DashboardPage::Environments)),

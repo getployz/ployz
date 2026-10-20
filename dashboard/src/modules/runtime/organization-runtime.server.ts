@@ -344,8 +344,8 @@ export const operationRuntimeFrame = Effect.fn("OrganizationRuntime.operationFra
 
 /**
  * One Runtime Watch frame of the Organization's Cluster, for a read that looks once: null when no Cluster is paired.
- * Fails when the Cluster doesn't answer within 5 seconds, so a slow one never holds up what asked.
+ * Fails when the Cluster doesn't answer within 5 seconds of Cluster time, so a slow one never holds up what asked.
  */
 export const firstRuntimeFrame = Effect.fn("OrganizationRuntime.firstFrame")(function* (organizationId: string) {
   return yield* operationRuntimeFrame(organizationId);
-}, Effect.timeout("5 seconds"));
+}, withClusterBudget(5_000));

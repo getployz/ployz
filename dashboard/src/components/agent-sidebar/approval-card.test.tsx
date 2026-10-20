@@ -53,6 +53,19 @@ it("leads with what the plan destroys and folds the rest to a count", () => {
   expect(within(card).getByText(/web .*1 → 2/)).toBeTruthy();
 });
 
+it("says which changes a restore's detach leaves behind, in the approver's time", () => {
+  const at = Date.UTC(2026, 9, 8, 9, 27) / 1000;
+  const restore = { ...approval, review: { ...approval.review, effects: [{
+    kind: "detaches_volume" as const, name: "pg-data", node: "s1", path: "postgres.mounts.pg-data",
+    lost_after: { at, restored: "pg-data-0927" },
+  }] } };
+  const card = show(restore).card();
+  const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" }).format(new Date(at * 1000));
+  const destroys = within(card).getByRole("list", { name: "Destroys" });
+  expect(within(destroys).getByText("from postgres", { exact: false })).toBeTruthy();
+  expect(within(destroys).getByText(`Changes after ${time} are not in pg-data-0927`)).toBeTruthy();
+});
+
 it("names the Project, so two Deploys to production read apart", () => {
   const blog = { ...approval, id: "a2", review: {
     effects: [],

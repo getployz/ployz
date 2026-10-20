@@ -20,7 +20,7 @@ use ts_rs::TS;
 
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
-use crate::deploy::{Converged, OldCopy, Replacement, converge};
+use crate::deploy::{Converged, OldCopy, Replacement, can_move, converge};
 use crate::serving_publish::{Amendment, Join, PointerClient, Provenance, Rotation, amend_pointer};
 
 pub(crate) mod retirement;
@@ -725,6 +725,25 @@ pub(crate) fn services_on(
                 .containers
                 .iter()
                 .any(|container| container.as_observation().machine_id == *machine_id)
+        })
+        .map(|service| service.identity)
+        .collect()
+}
+
+/// The Services a Drain would move off `machine_id`: user Services whose Container there
+/// the planner may move. Global, Volume and Bind Mount pinned Services stay put.
+pub(crate) fn movable_services_on(
+    machine_id: &MachineId,
+    live: &LiveServices<RpcError>,
+) -> Vec<QualifiedService> {
+    live.services()
+        .into_iter()
+        .filter(|service| {
+            DrainScope::EveryNamespace.includes(&service.identity)
+                && service.containers.iter().any(|container| {
+                    let observation = container.as_observation();
+                    observation.machine_id == *machine_id && can_move(&observation.resolved_spec)
+                })
         })
         .map(|service| service.identity)
         .collect()

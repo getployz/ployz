@@ -19,6 +19,7 @@ import { liveStream } from "#/lib/live.stream";
 
 const orgChangesEventSchema = Schema.Struct({ collections: Schema.Array(changeNameSchema) });
 const decodeOrgChangesEvent = Schema.decodeUnknownOption(Schema.fromJsonString(orgChangesEventSchema));
+const decodeOrganizationEvent = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ id: Schema.String })));
 
 function buildOrgChangesUrl(organizationSlug: string) {
   const link = linkOptions({ to: "/api/org/changes", search: { organizationSlug } });
@@ -55,21 +56,34 @@ export function applyOrganizationChanges(names: readonly ChangeName[], organizat
   for (const name of names) if (!isStoreView(name)) refetches[name](organizationSlug, scope);
 }
 
-/** One change stream per Organization tab. Each named collection refetches only rows changed since its cursor. */
-export function useOrganizationChanges(organizationSlug: string) {
+/**
+ * One change stream per Organization tab. Each named collection refetches only rows changed since its cursor. Every
+ * cache of the tab is keyed by slug, so once the slug names another Organization, as after a delete and a new one taking
+ * it, the page reloads: nothing the old Organization left in memory survives.
+ */
+export function useOrganizationChanges(organizationSlug: string, organizationId: string) {
   const { queryClient, sessionId, userId } = useCollectionScope();
   useEffect(
-    () => watchOrganizationChanges(organizationSlug, { queryClient, sessionId, userId }),
-    [organizationSlug, queryClient, sessionId, userId],
+    () => watchOrganizationChanges(organizationSlug, organizationId, { queryClient, sessionId, userId }),
+    [organizationSlug, organizationId, queryClient, sessionId, userId],
   );
 }
 
-export function watchOrganizationChanges(organizationSlug: string, scope: CollectionScope) {
+export function watchOrganizationChanges(
+  organizationSlug: string,
+  organizationId: string,
+  scope: CollectionScope,
+  replaced: () => void = () => window.location.reload(),
+) {
   // The stream never resumes: each connect starts at the server's current horizon. `open` fires on every
   // connect and reconnect, and refetching each collection since its own cursor is the only gap recovery.
   return liveStream(buildOrgChangesUrl(organizationSlug), {
     onOpen: () => applyOrganizationChanges([...EffectRecord.keys(refetches), ...storeViewNames], organizationSlug, scope),
     on: {
+      organization: (event) => {
+        const named = decodeOrganizationEvent(event.data);
+        if (Option.isSome(named) && named.value.id !== organizationId) replaced();
+      },
       changes: (event) => {
         const changes = decodeOrgChangesEvent(event.data);
         if (Option.isSome(changes)) applyOrganizationChanges(changes.value.collections, organizationSlug, scope);

@@ -17,6 +17,7 @@ import {
 import { OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { namedMachines } from "#/modules/volume-run/volume-run.server";
 
 const connections: Connection[] = [
@@ -540,6 +541,63 @@ it.effect("coalesces the frames a slow write outlasts, writing only the latest n
       }
       assert.strictEqual(yield* Queue.size(started), 0);
     })).pipe(Effect.provide(runtime));
+  }),
+);
+
+/** A Cluster whose connections query waits for the test to answer it, and whose first frame comes once `framed` resolves. */
+const slowQuery = Effect.gen(function* () {
+  const queries = yield* Queue.unbounded<() => void>();
+  let interrupted = 0;
+  let finished = 0;
+  const layer = (framed: Promise<void>) => makeOrganizationRuntimeLayer(
+    () => Effect.callback<void>((resume) => { Queue.offerUnsafe(queries, () => resume(Effect.void)); }).pipe(
+      Effect.tap(() => Effect.sync(() => { finished += 1; })),
+      Effect.onInterrupt(() => Effect.sync(() => { interrupted += 1; })),
+      Effect.as({ kind: "ready" as const, generation: "current", connections }),
+    ),
+    noPairingChanges,
+  ).pipe(Layer.provide(makePloyzLayer({
+    connect: async () => asTestDouble<Client>()({
+      close: async () => {},
+      runtime: {
+        watch: async function* (): AsyncGenerator<RuntimeWatchView> {
+          await framed;
+          yield runtimeWatchFrameFixture();
+        },
+      },
+    }),
+  })));
+  return { layer, queries, interrupted: () => interrupted, finished: () => finished };
+});
+
+it.effect("a look-once frame whose connections query takes 8 seconds lets the query finish and reads the frame", () =>
+  Effect.gen(function* () {
+    const cluster = yield* slowQuery;
+    const looking = yield* firstRuntimeFrame("org-1").pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
+    const query = yield* Queue.take(cluster.queries);
+    yield* TestClock.adjust("8 seconds");
+    query();
+    assert.deepStrictEqual(yield* Fiber.join(looking), runtimeWatchFrameFixture());
+    assert.strictEqual(cluster.finished(), 1);
+    assert.strictEqual(cluster.interrupted(), 0);
+  }),
+);
+
+it.effect("a look-once frame that never comes fails after 5 seconds of Cluster time, however long the query took", () =>
+  Effect.gen(function* () {
+    const cluster = yield* slowQuery;
+    const looking = yield* firstRuntimeFrame("org-1").pipe(
+      Effect.provide(cluster.layer(new Promise<void>(() => {}))),
+      Effect.flip,
+      Effect.forkChild,
+    );
+    const query = yield* Queue.take(cluster.queries);
+    yield* TestClock.adjust("8 seconds");
+    query();
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    yield* TestClock.adjust("5 seconds");
+    assert.isTrue((yield* Fiber.join(looking)) instanceof ClusterOutOfTime);
+    assert.strictEqual(cluster.interrupted(), 0);
   }),
 );
 

@@ -15,6 +15,9 @@ import {
 type PositionRow = { id: string; resourceId: string; x: number; organizationId: string };
 type Organization = { id: string; slug: string; userId: string; environmentId: string };
 
+/** The change log horizon in a collection cursor, which also names its Organization. */
+const horizonOf = (cursor: string) => cursor.slice(cursor.indexOf(".") + 1);
+
 describe("incremental canvas position reads from the Organization change log", () => {
   let harness: PostgresTestHarness;
   let alpha: Organization;
@@ -66,17 +69,18 @@ describe("incremental canvas position reads from the Organization change log", (
     const [alphaNode = ""] = await createPositions(alpha, 1);
     await createPositions(beta, 1);
     const since = await cursorNow(alpha);
+    const betaSince = await cursorNow(beta);
 
     await moveTo(alphaNode, 7);
 
     const alphaChanges = await read(alpha, since);
     expect(alphaChanges).toMatchObject({ full: false, deleted: [], rows: [{ resourceId: alphaNode, x: 7 }] });
-    const betaChanges = await read(beta, since);
+    const betaChanges = await read(beta, betaSince);
     expect(betaChanges).toMatchObject({ full: false, deleted: [], rows: [] });
     // Nothing changed, yet the cursor still moves forward.
-    expect(BigInt(betaChanges.cursor)).toBeGreaterThan(BigInt(since));
+    expect(BigInt(horizonOf(betaChanges.cursor))).toBeGreaterThan(BigInt(horizonOf(betaSince)));
     // The change stream's reader sees no tables for the other Organization.
-    expect(await harness.runEffect(readChangeWindow({ organizationId: beta.id, since })))
+    expect(await harness.runEffect(readChangeWindow({ organizationId: beta.id, since: horizonOf(since) })))
       .toMatchObject({ kind: "delta", sourceTables: [], changed: [], deleted: [] });
     const quiet = await read(alpha, alphaChanges.cursor);
     expect(quiet).toMatchObject({ full: false, deleted: [], rows: [] });
@@ -85,11 +89,14 @@ describe("incremental canvas position reads from the Organization change log", (
   it("returns a deleted row by its key", async () => {
     const [node] = await createPositions(alpha, 1);
     const since = await cursorNow(alpha);
+    const betaSince = await cursorNow(beta);
 
     await sql("delete from environment_canvas_node_position where resource_id = $1", [node]);
 
     expect(await read(alpha, since)).toMatchObject({ full: false, rows: [], deleted: [`service:${node}`] });
-    expect(await read(beta, since)).toMatchObject({ full: false, rows: [], deleted: [] });
+    expect(await read(beta, betaSince)).toMatchObject({ full: false, rows: [], deleted: [] });
+    // A cursor read against another Organization reads that one in full.
+    expect(await read(beta, since)).toMatchObject({ full: true });
   });
 
   it("falls back to a full read when one statement touches more than 100 rows", async () => {
@@ -100,7 +107,7 @@ describe("incremental canvas position reads from the Organization change log", (
     const changes = await read(alpha, since);
     expect(changes.full).toBe(true);
     // The window still names its tables, so the change stream refetches their collections.
-    expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since })))
+    expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since: horizonOf(since) })))
       .toMatchObject({ kind: "full", sourceTables: expect.arrayContaining(["environment_canvas_node_position"]) });
     expect(changes.rows.map((row) => row.resourceId)).toEqual(expect.arrayContaining(created));
     expect(changes.rows.every((row) => row.organizationId === alpha.id)).toBe(true);
@@ -203,7 +210,7 @@ describe("incremental canvas position reads from the Organization change log", (
 
       // An empty log has no fence: nothing was pruned after `since`, so nothing is missing.
       expect(await read(alpha, since)).toMatchObject({ full: false, rows: [], deleted: [] });
-      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since })))
+      expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since: horizonOf(since) })))
         .toEqual({ kind: "delta", cursor: expect.any(String), sourceTables: [], changed: [], deleted: [] });
       expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since: undefined }))).toMatchObject({ kind: "full" });
     });
@@ -253,7 +260,7 @@ describe("every Org Store collection reads its changes from the Organization cha
       // A no-op update logs every key of the table, so the incremental read must find every row by that key.
       await sql(`update ${source} set organization_id = organization_id where organization_id = $1`, [organizationId]);
       // The client keys its rows exactly as the log names them, so deletes and merges hit the right row.
-      const window = await harness.runEffect(readChangeWindow({ organizationId, since: full.cursor, sourceTables: [source] }));
+      const window = await harness.runEffect(readChangeWindow({ organizationId, since: horizonOf(full.cursor), sourceTables: [source] }));
       expect(window.kind === "delta" ? window.changed : [], source).toEqual(expect.arrayContaining(clientKeys));
       const changes = await read(table, full.cursor);
       expect(changes, source).toMatchObject({ full: false, deleted: [] });
