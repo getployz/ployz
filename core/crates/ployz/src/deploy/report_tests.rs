@@ -228,7 +228,7 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
-            cancelled: false,
+            stopped_by: ployz_store::StoppedBy::NOTHING,
         },
         "cancelled" => RowState::Failed {
             reason: "Cancelled".into(),
@@ -237,7 +237,16 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
-            cancelled: true,
+            stopped_by: ployz_store::StoppedBy::CANCEL,
+        },
+        "interrupted" => RowState::Failed {
+            reason: "Cancelled".into(),
+            cause: Vec::new(),
+            step: Some(ployz_store::FailedAt::Create),
+            log: None,
+            unanswered: false,
+            out_of_memory: None,
+            stopped_by: ployz_store::StoppedBy::LOST_RUNNER,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),
@@ -487,6 +496,26 @@ fn a_cancel_reads_cancelled_where_it_stopped_work_and_failed_where_work_failed()
             "depth 1",
             "  ⊘ api  cancelled (1/2 ready)",
             "  ✘ web  failed (0/2 ready)",
+        ]
+    );
+}
+
+#[test]
+fn work_a_lost_runner_stopped_reads_interrupted_not_failed() {
+    let frame = graph_frame(
+        &[group("db", &[]), group("web", &["db"])],
+        &[
+            ("db", &["completed"]),
+            ("web", &["interrupted", "completed"]),
+        ],
+    );
+    assert_eq!(
+        lines(&frame),
+        [
+            "depth 0",
+            "  ✔ db  switched 1/1",
+            "depth 1",
+            "  ⊘ web  interrupted (1/2 ready)",
         ]
     );
 }

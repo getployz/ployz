@@ -391,6 +391,8 @@ export function warnedService(deployment: Pick<DeploymentView, "nodes" | "runtim
 export function outcomeReason(outcome: Outcome | null) {
   if (outcome?.type === "forgotten") return "No server was enrolled any more, so whatever ran on the old ones is still there.";
   if (!outcome || !("reason" in outcome)) return undefined;
+  // Work the Deployment's cancel stopped: the reason would only repeat its Cancelled status.
+  if (outcome.type === "executed" && outcome.cancelled) return undefined;
   const reason = outcome.reason ?? undefined;
   const cause = outcome.cause?.at(-1);
   return reason && cause ? `${reason}: ${cause}` : reason;

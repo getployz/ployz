@@ -291,7 +291,7 @@ it("keeps the deepest preparation failure cause in the Deployment banner", () =>
 });
 
 it("drops the header's reason when the Deployment's cancel stopped the work it names, and keeps a real failure's", () => {
-  const stopped = { type: "executed", summary: null, reason: "web: Cancelled", cause: [], services: [] } as const;
+  const stopped: Outcome = { type: "executed", summary: null, reason: "web: Cancelled", cause: [], services: [] };
   expect(outcomeReason({ ...stopped, cancelled: true })).toBeUndefined();
   // A Store from before the marker sends none, so the line reads as it did.
   expect(outcomeReason(stopped)).toBe("web: Cancelled");

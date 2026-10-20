@@ -23,7 +23,7 @@ pub(crate) use lowering::*;
 pub(crate) use rows::servers;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
-    starts_container,
+    StoppedBy, starts_container,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -449,6 +449,11 @@ pub enum Outcome {
         /// Containers, one sentence each; users read it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         compensation: Vec<String>,
+        /// The Deployment's cancel stopped the operation `reason` names, so the
+        /// reason only repeats that it was cancelled.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        cancelled: bool,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.

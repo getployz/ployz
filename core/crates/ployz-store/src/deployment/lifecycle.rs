@@ -1412,9 +1412,9 @@ pub(crate) fn record(
                 project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
             super::rows::record(tx, &stored, &progress)?;
-            // The Deployment's cancel stopped the run, and each Service it left
-            // unfinished, unless one of its rows failed on its own.
-            let cancelled = if stored.summary.status == DeploymentStatus::Cancelling
+            let cancelling = stored.summary.status == DeploymentStatus::Cancelling;
+            // The Deployment's cancel stopped the operation the run failed on.
+            let stopped_by_cancel = cancelling
                 && matches!(
                     &*outcome,
                     DeployOutcome::Failed {
@@ -1422,12 +1422,19 @@ pub(crate) fn record(
                             | FailedOperation::Replacement { error, .. },
                         ..
                     } if error.cancelled()
-                ) {
-                let failed = super::rows::failed(tx, &stored)?;
+                );
+            // Each Service it left unfinished that the cancel stopped: every one when
+            // it stopped the run, else those whose rows it stopped, and never one with
+            // a row that failed on its own.
+            let cancelled = if cancelling {
+                let (failed, stopped) = super::rows::failed_or_cancelled(tx, &stored)?;
                 projection
                     .failed_services
                     .iter()
-                    .filter(|service| !failed.contains(*service))
+                    .filter(|service| {
+                        !failed.contains(*service)
+                            && (stopped_by_cancel || stopped.contains(*service))
+                    })
                     .cloned()
                     .collect()
             } else {
@@ -1496,6 +1503,7 @@ pub(crate) fn record(
                     | DeployOutcome::Superseded { .. }
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
+                cancelled: stopped_by_cancel,
             };
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;

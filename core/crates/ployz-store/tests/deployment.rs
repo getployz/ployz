@@ -20,7 +20,8 @@ use ployz_store::{
     NodeStatus, OrganizationId, Permission, PlanQuery, Principal, ProjectId, ProjectName, Publish,
     PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision, RowPhase,
     RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId, ServiceQuery,
-    ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View, Written,
+    ServicesQuery, SettingPath, Start, StoppedBy, Trusted, UploadBase, UploadedSource, View,
+    Written,
 };
 use serde_json::{Value, json};
 
@@ -192,6 +193,19 @@ fn cancelled_nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<String> {
         .filter(|node| node.cancelled)
         .map(|node| node.node.name().to_owned())
         .collect()
+}
+
+/// Whether Deployment `n`'s outcome says its cancel stopped the operation it names.
+fn outcome_cancelled(store: &ConfigStore, who: &Actor, n: u8) -> bool {
+    let outcome = store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .deployment
+        .outcome;
+    let Some(ployz_store::Outcome::Executed { cancelled, .. }) = outcome else {
+        panic!("expected an executed outcome, got {outcome:?}");
+    };
+    cancelled
 }
 
 fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
@@ -1804,7 +1818,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     }),
                     unanswered: false,
                     out_of_memory: None,
-                    cancelled: false,
+                    stopped_by: StoppedBy::NOTHING,
                 }
             ),
         ]
@@ -2285,9 +2299,16 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
                 ("web".to_owned(), NodeStatus::Deployed)
             ]
         );
-        cancelled_nodes(&store, &who, n)
+        (
+            cancelled_nodes(&store, &who, n),
+            outcome_cancelled(&store, &who, n),
+        )
     };
-    assert_eq!(stopped_by(1, json!({"type": "cancelled"})), ["api"]);
+    assert_eq!(
+        stopped_by(1, json!({"type": "cancelled"})),
+        (vec!["api".to_owned()], true),
+        "the reason only repeats the cancel"
+    );
     assert_eq!(changed(&store, &who), ["api"]);
     assert_eq!(
         stopped_by(
@@ -2297,7 +2318,7 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
                 "error": {"code": "internal", "message": "no space left on device", "details": {}}
             })
         ),
-        Vec::<String>::new(),
+        (Vec::<String>::new(), false),
         "work that failed on its own stays failed, even once cancelled"
     );
 }
@@ -2357,7 +2378,7 @@ fn a_copy_restored_after_another_service_failed_is_not_cancelled() {
             matches!(
                 web.1[0].state,
                 RowState::Failed {
-                    cancelled: false,
+                    stopped_by: StoppedBy::NOTHING,
                     ..
                 }
             ),
@@ -2404,7 +2425,7 @@ fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and
         matches!(
             state,
             RowState::Failed {
-                cancelled: true,
+                stopped_by: StoppedBy::CANCEL,
                 ..
             }
         ),
@@ -2432,7 +2453,7 @@ fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and
         matches!(
             state,
             RowState::Failed {
-                cancelled: false,
+                stopped_by: StoppedBy::NOTHING,
                 ..
             }
         ),
@@ -2490,7 +2511,7 @@ fn a_service_the_cancel_stopped_reads_cancelled_at_its_node_beside_a_real_failur
         matches!(
             state,
             RowState::Failed {
-                cancelled: true,
+                stopped_by: StoppedBy::CANCEL,
                 ..
             }
         ),
@@ -2507,6 +2528,10 @@ fn a_service_the_cancel_stopped_reads_cancelled_at_its_node_beside_a_real_failur
         cancelled_nodes(&store, &who, 1),
         ["web"],
         "the cancel, not api's failure, stopped web, so its node reads as its row does"
+    );
+    assert!(
+        !outcome_cancelled(&store, &who, 1),
+        "the reason names api's real failure"
     );
 }
 
@@ -2619,7 +2644,7 @@ fn a_store_from_before_cancelled_reads_the_work_a_cancel_stopped_as_failed() {
         matches!(
             api.1[0].state,
             RowState::Failed {
-                cancelled: true,
+                stopped_by: StoppedBy::CANCEL,
                 ..
             }
         ),
@@ -5030,7 +5055,7 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
             }),
             unanswered: false,
             out_of_memory: None,
-            cancelled: false,
+            stopped_by: StoppedBy::NOTHING,
         }
     );
     let reserialized = serde_json::to_string(&state).unwrap();
