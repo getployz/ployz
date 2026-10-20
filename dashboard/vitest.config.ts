@@ -26,6 +26,11 @@ class SizeBalancedSequencer extends BaseSequencer {
   }
 }
 
+// Sharded runs (CI) balance by size. Any other run keeps Vitest's own sequencer, since setting one would replace
+// the RandomSequencer that `--sequence.shuffle` selects.
+const sizeBalancedShards =
+  process.argv.some((arg) => arg.startsWith("--shard")) && !process.argv.some((arg) => arg.startsWith("--sequence.shuffle"));
+
 const sharedTestConfig = {
   setupFiles: ["./src/test/setup-env.ts", "./vitest.setup.ts"],
   server: {
@@ -42,8 +47,7 @@ export default defineConfig({
     },
   },
   test: {
-    // Only sharded runs (CI) take it: a set sequencer replaces the RandomSequencer that `--sequence.shuffle` selects.
-    ...(process.argv.some((arg) => arg.startsWith("--shard")) && { sequence: { sequencer: SizeBalancedSequencer } }),
+    ...(sizeBalancedShards && { sequence: { sequencer: SizeBalancedSequencer } }),
     projects: [
       {
         test: {
