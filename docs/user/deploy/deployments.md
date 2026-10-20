@@ -50,6 +50,8 @@ behind. Saving again with no changes creates no new version. The CLI calls this
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
 Discarding a service or volume you never deployed deletes it. Discard does not save a version.
+A new service's change starts with what it runs, its image or its repository and branch, such as
+`web.image: null → "nginx:1"`. Those rows have no Discard of their own: discard the service.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
 In the CLI, `ployz discard` names each saved change it took out and the command that brings it

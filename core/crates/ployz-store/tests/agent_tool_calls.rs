@@ -749,6 +749,10 @@ fn a_deploy_with_no_servers_says_nothing_deployed_and_leaves_the_change_staged()
     assert_eq!(review.get("saved"), Some(&Value::Null), "nothing was saved");
     // The new Service and the image it runs.
     assert_eq!(review["staged"], 2, "the change stays Staged");
+    assert_eq!(
+        review["lines"],
+        json!(["create service web", "  set web.image = \"traefik/whoami\""])
+    );
 }
 
 #[test]
