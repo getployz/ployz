@@ -1,3 +1,4 @@
+import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { stepAt, steps, type TimeWindow } from "#/modules/uptime/uptime";
 import type { Sample } from "./metrics-model";
 
@@ -42,9 +43,10 @@ export const cpuText = (vcpus: number) => {
   return `${Number(percent.toFixed(percent >= 10 ? 0 : percent >= 1 ? 1 : 2))}%`;
 };
 
-/** Says every CPU tick with the decimals the axis's step needs, so a quiet Service's axis never reads 0%, 0%, 0%. */
+/** Says every CPU tick with the decimals the chart's tick step needs, so a quiet Service's axis never reads 0%, 0%, 0%. */
 export function cpuIn(top: number) {
-  const step = (top * 100) / 3;
-  const decimals = Math.min(2, Math.max(0, -Math.floor(Math.log10(step))));
+  const [first = 0, second = top] = scaleLinear().domain([0, top]).ticks(3);
+  const step = (second - first) * 100;
+  const decimals = step > 0 ? Math.max(0, -Math.floor(Math.log10(step) + 1e-9)) : 0;
   return (vcpus: number) => `${Number((vcpus * 100).toFixed(decimals))}%`;
 }

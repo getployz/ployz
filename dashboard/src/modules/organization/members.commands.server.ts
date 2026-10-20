@@ -248,13 +248,16 @@ export const orgInviteRevoke = defineCommand({
   removes: true,
   gate: {
     gate: "ask",
-    asked: (caller, input) => pendingInvite(caller, input.invite).pipe(Effect.map((invite) => ({
-      subject: `invite:${invite.id}`,
-      verb: "remove",
-      name: invite.email ?? invite.id,
-      preview: { id: invite.id, email: invite.email, role: invite.role },
-      effects: [{ kind: "revokes_invite", name: invite.email ?? invite.id, node: invite.id, path: `invites/${invite.id}` }],
-    }))),
+    asked: (caller, input) => pendingInvite(caller, input.invite).pipe(Effect.map((invite) => {
+      const name = invite.email ?? `${invite.role} link`;
+      return {
+        subject: `invite:${invite.id}`,
+        verb: "remove",
+        name,
+        preview: { id: invite.id, email: invite.email, role: invite.role },
+        effects: [{ kind: "revokes_invite", name, node: invite.id, path: `invites/${invite.id}` }],
+      };
+    })),
   },
   agents: true,
   typed: null,

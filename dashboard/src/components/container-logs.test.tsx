@@ -8,7 +8,7 @@ import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import { ContainerLogs } from "./container-logs";
+import { ContainerLogs, sourceTag } from "./container-logs";
 
 const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body)) as { cursor?: string; before?: string };
 const cursorOf = (init: RequestInit | undefined) => bodyOf(init).cursor;
@@ -69,19 +69,28 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     const opened = sources.length;
     firstView.unmount();
     await waitFor(() => expect(stream.collection.subscriberCount).toBe(0));
-    expect(source.closed).toBe(false);
+    // Leaving frees the connection; the lines stay for the return.
+    await waitFor(() => expect(source.closed).toBe(true));
     expect(stream.collection.size).toBe(3);
     mount();
+    expect(sources).toHaveLength(opened + 1);
+    const reopened = sources.at(-1);
+    if (!reopened) throw new Error("Viewer did not reopen its log stream");
     await act(async () => { await stream.loadOlder(); });
     expect(fetchHistory).toHaveBeenCalledTimes(3);
-    expect(sources).toHaveLength(opened);
+    expect(stream.collection.size).toBe(3);
+    // Lines written while it was closed aren't replayed past the tail, so the reopened tail replaces the log.
+    await act(async () => reopened.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: { ...line, id: "m/c/300/0", timestamp: "300", message: "later" } }) })));
+    await act(async () => reopened.dispatchEvent(new Event("live")));
+    await waitFor(() => expect([...stream.collection.values()].map(row => row.id)).toContain("m/c/300/0"));
+    expect([...stream.collection.values()].map(row => row.id)).not.toContain("m/c/100/0");
+    await waitFor(() => expect(stream.getSnapshot().historyPending).toBe(false));
     // Only an offline organization is said; the stream stays open and the lines stay.
-    await act(async () => source.dispatchEvent(new Event("offline")));
+    await act(async () => reopened.dispatchEvent(new Event("offline")));
     expect(screen.getByText(/Your servers are offline/)).toBeTruthy();
-    await act(async () => source.dispatchEvent(new Event("live")));
+    await act(async () => reopened.dispatchEvent(new Event("live")));
     expect(screen.queryByText(/Your servers are offline/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
-    expect(stream.collection.size).toBe(3);
     expect(sources.filter(source => !source.closed)).toHaveLength(1);
     expect(getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" })).toBe(stream);
   } finally {
@@ -141,6 +150,43 @@ it("says a refused log stream failed instead of loading forever, and keeps retry
     cleanup();
     await stream.collection.cleanup();
     await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals(); vi.useRealTimers();
+  }
+});
+
+it("says it is retrying, not that the servers are offline, while the Runtime Watch still sees them", async () => {
+  const sources: FakeEventSource[] = [];
+  class FakeEventSource extends EventTarget {
+    close() {}
+    constructor() { super(); sources.push(this); }
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  vi.stubGlobal("fetch", async () => Response.json({ rows: [], failures: [], cursor: null }));
+  const client = new QueryClient();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  await router.load();
+  const scope = { queryClient: client, sessionId: "session", userId: "user" };
+  const selection = { organizationSlug: "acme", deploymentId: "00000000-0000-4000-8000-000000000001", serviceId: "00000000-0000-4000-8000-000000000002" };
+  const stream = getContainerLogStream(selection, scope);
+  const watch = getRuntimeCollections("acme", scope).status;
+  try {
+    render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+      <ContainerLogs selection={selection} />
+    </RouterContextProvider></DbProvider></QueryClientProvider>);
+    const source = sources.at(-1);
+    if (!source) throw new Error("Viewer did not open its log stream");
+    await act(async () => { watch.update("runtime", draft => { draft.status = "observed"; }); });
+    await act(async () => source.dispatchEvent(new Event("offline")));
+    expect(screen.getByText("Couldn’t load logs")).toBeTruthy();
+    expect(screen.queryByText("Your servers are offline")).toBeNull();
+    await act(async () => { watch.update("runtime", draft => { draft.status = "unreachable"; }); });
+    expect(screen.getByText("Your servers are offline")).toBeTruthy();
+  } finally {
+    cleanup();
+    await stream.collection.cleanup();
+    await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals();
   }
 });
 
@@ -223,6 +269,17 @@ it("offers a service or server filter only once there is more than one to pick",
     await stream.collection.cleanup();
     await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals();
   }
+});
+
+it("tags a line with its container only when a service has more than one, as a Deploy that replaces it leaves", () => {
+  const old = { ...line, containerId: "0ld5a1e9c2b4", message: "signal 3 (SIGQUIT) received, shutting down" };
+  const next = { ...line, id: "m/n/200/0", timestamp: "200", containerId: "9e3f7d10ab42", message: "start worker process 29" };
+  expect(sourceTag([next], {})(next)).toBe("");
+  expect([old, next].map(sourceTag([old, next], { serviceId: "api" }))).toEqual(["0ld5a1e", "9e3f7d1"]);
+  const elsewhere = { ...next, machineId: "m2", machineName: "Server 2" };
+  expect([old, elsewhere].map(sourceTag([old, elsewhere], {}))).toEqual(["Server", "Server 2"]);
+  const worker = { ...next, serviceName: "worker" };
+  expect([old, worker].map(sourceTag([old, worker], {}))).toEqual(["api", "worker"]);
 });
 
 it("shows an old Deployment's stored lines with their gaps and missing servers, pages on scroll up, and filters by level", async () => {

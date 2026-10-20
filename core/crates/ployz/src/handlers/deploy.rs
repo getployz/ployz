@@ -129,7 +129,10 @@ pub(super) fn redeploy_command(command: Command) -> Command {
     )))
     .arg(id())
     .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
-    .arg(crate::cli::volume_acceptance())
+    .arg(crate::cli::volume_acceptance().help(format!(
+        "{}; --yes cannot bypass this",
+        crate::cli::VOLUME_ACCEPTANCE
+    )))
     .arg(crate::cli::reviewed_version())
 }
 
@@ -295,11 +298,29 @@ pub(super) fn refuse_local_detach(matches: &ArgMatches, store: &Store) -> Result
 pub(super) fn open_events(
     matches: &ArgMatches,
 ) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
-    Ok(matches
-        .get_one::<String>("events")
-        .map(std::fs::File::create)
-        .transpose()?
-        .map(std::io::BufWriter::new))
+    let Some(path) = matches.get_one::<String>("events") else {
+        return Ok(None);
+    };
+    let file = std::fs::File::create(path).map_err(|error| {
+        use std::io::ErrorKind;
+        let kind = error.kind();
+        let reason = if kind == ErrorKind::NotFound {
+            "no such directory"
+        } else if kind == ErrorKind::IsADirectory {
+            "it is a directory"
+        } else if kind == ErrorKind::PermissionDenied {
+            "permission denied"
+        } else {
+            "it can't be created"
+        };
+        Error::detailed_caused(
+            RpcErrorCode::InvalidArgument,
+            format!("Can't write --events file {path}: {reason}"),
+            serde_json::Value::Null,
+            Some(error),
+        )
+    })?;
+    Ok(Some(std::io::BufWriter::new(file)))
 }
 
 /// Run or follow a queued Deployment and report it. Exits 3 unless it applied.
@@ -590,12 +611,14 @@ struct Followed {
 
 fn finish_progress(followed: &mut Followed, disposition: Disposition) {
     let frame = progress::frame(&followed.view);
+    let up_to_date = matches!(disposition, Disposition::UpToDate);
     if let Some(progress) = followed.progress.take() {
         progress.finish(frame, disposition);
-    } else if matches!(disposition, Disposition::UpToDate) {
-        ui::note("Everything is up to date.");
-    } else {
+    } else if !up_to_date {
         Progress::start(frame.clone()).finish(frame, disposition);
+    }
+    if up_to_date {
+        ui::note(progress::up_to_date(&followed.view));
     }
 }
 
@@ -1234,8 +1257,33 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{Tone, service_outcome_lines, ships_all, status_tone, status_word};
-    use ployz_core::ServiceName;
+    use super::{Tone, open_events, service_outcome_lines, ships_all, status_tone, status_word};
+    use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn an_events_path_that_cannot_be_written_names_the_flag_and_the_path() {
+        let refused = |path: &str| {
+            let root = crate::cli::command()
+                .try_get_matches_from(["ployz", "deploy", "--events", path])
+                .unwrap();
+            open_events(super::leaf_matches(&root))
+                .unwrap_err()
+                .report()
+        };
+        let missing = refused("/nonexistent/dir/ev.ndjson");
+        assert_eq!(missing.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(missing.cause.len(), 1, "{missing:?}");
+        assert_eq!(
+            missing.message,
+            "Can't write --events file /nonexistent/dir/ev.ndjson: no such directory"
+        );
+        let directory = std::env::temp_dir();
+        let directory = directory.to_str().unwrap();
+        assert_eq!(
+            refused(directory).message,
+            format!("Can't write --events file {directory}: it is a directory")
+        );
+    }
 
     #[test]
     fn each_service_reads_where_it_ended() {

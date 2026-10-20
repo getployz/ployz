@@ -354,8 +354,8 @@ $ ployz status
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
-next: ployz token new
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+next: unset PLOYZ_TOKEN && ployz login
 ```
 
 ### bogus PLOYZ_TOKEN: status --json
@@ -367,7 +367,7 @@ $ ployz status --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 
 ### bogus PLOYZ_TOKEN: token ls
@@ -379,8 +379,8 @@ $ ployz token ls
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
-next: ployz token new
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+next: unset PLOYZ_TOKEN && ployz login
 ```
 
 ### bogus PLOYZ_TOKEN: token ls --json
@@ -392,7 +392,7 @@ $ ployz token ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 
 ### bogus PLOYZ_TOKEN: org ls
@@ -404,8 +404,8 @@ $ ployz org ls
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
-next: ployz token new
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+next: unset PLOYZ_TOKEN && ployz login
 ```
 
 ### bogus PLOYZ_TOKEN: org ls --json
@@ -417,7 +417,7 @@ $ ployz org ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 
 ### bogus PLOYZ_TOKEN: deployment ls
@@ -429,8 +429,8 @@ $ ployz deployment ls
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
-next: ployz token new
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+next: unset PLOYZ_TOKEN && ployz login
 ```
 
 ### bogus PLOYZ_TOKEN: deployment ls --json
@@ -442,7 +442,7 @@ $ ployz deployment ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 
 ## Usage errors (clap)

@@ -49,13 +49,17 @@ const askingAgent = Effect.fn("Connect.askingAgent")(function* (mcp: RemoteMcpAu
   return client === undefined ? null : { name: client.name, host: redirect.host };
 });
 
-/** Who is connecting, the Organizations they may pick, and the agent the page's signed query names; null when signed out. */
+/**
+ * Who is connecting, the Organizations they may pick with the one the session acts in selected, and the agent the
+ * page's signed query names; null when signed out.
+ */
 export const connectChoices = Effect.fn("Connect.choices")(function* (headers: Headers, pageQuery: string) {
   const { auth, mcp } = yield* hostedMcp;
   const signedIn = yield* auth.getSession(headers);
   if (signedIn === null) return null;
   const [organizations, agent] = yield* Effect.all([memberships(signedIn.user.id), askingAgent(mcp, pageQuery)], { concurrency: 2 });
-  return { email: signedIn.user.email, organizations, agent };
+  const active = organizations.find((choice) => choice.id === signedIn.session.activeOrganizationId);
+  return { email: signedIn.user.email, organizations, selected: (active ?? organizations[0])?.id ?? null, agent };
 });
 
 /**
