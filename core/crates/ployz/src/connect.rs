@@ -829,8 +829,15 @@ impl ConnectError {
 
     /// A daemon sent this status itself, so the target was not silent.
     pub(crate) fn target_replied(&self) -> bool {
+        matches!(self, Self::Rpc(_)) && !self.unreplied()
+    }
+
+    /// The call went out and no status came back: the client's connection dropped, its
+    /// deadline elapsed, or the entry's router heard nothing from the target. Whether the
+    /// target acted on it is unknown.
+    pub(crate) fn unreplied(&self) -> bool {
         matches!(self, Self::Rpc(error)
-            if !error.unanswered && !error.budget_expired && !error.routed_unanswered)
+            if error.unanswered || error.budget_expired || error.routed_unanswered)
     }
 }
 

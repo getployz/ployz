@@ -7,7 +7,7 @@ use serde_json::Value;
 use ts_rs::TS;
 
 pub use crate::config_item::query::{
-    ConfigItemQuery, ConfigItemView, ConfigListing, ConfigsQuery, ConfigsView,
+    ConfigItemQuery, ConfigItemView, ConfigListing, ConfigMountChange, ConfigsQuery, ConfigsView,
 };
 pub use crate::deployment::query::{
     DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView,

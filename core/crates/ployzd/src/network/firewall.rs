@@ -52,6 +52,15 @@ pub fn apply_firewall_rules(
     if !nat_moves.is_empty() {
         ipv4_document.push_str(&format!("*nat\n{nat_moves}COMMIT\n"));
     }
+    let forward_moves = move_to_top(
+        "iptables",
+        "filter",
+        "DOCKER-USER",
+        &format!("-i {WIREGUARD_INTERFACE_NAME} -o {DOCKER_NETWORK_NAME} -j ACCEPT"),
+    )?;
+    if !forward_moves.is_empty() {
+        ipv4_document.push_str(&format!("*filter\n{forward_moves}COMMIT\n"));
+    }
     ipv4_document.push_str(&build_forward_document(
         "iptables",
         &ipv4_build_forwarding(),
@@ -65,21 +74,7 @@ pub fn apply_firewall_rules(
         "ip6tables",
         &ipv6_build_forwarding(),
     )?);
-    restore("ip6tables", &ipv6_document)?;
-    ensure_rule(
-        "iptables",
-        "filter",
-        "DOCKER-USER",
-        &[
-            "-i",
-            WIREGUARD_INTERFACE_NAME,
-            "-o",
-            DOCKER_NETWORK_NAME,
-            "-j",
-            "ACCEPT",
-        ],
-    )?;
-    Ok(())
+    restore("ip6tables", &ipv6_document)
 }
 
 /// Build steps route to the internet, never into the Machine's services, across
@@ -509,17 +504,6 @@ fn build_fence_hooks(listing: &str) -> BuildFenceHooks {
     hooks
 }
 
-fn ensure_rule(program: &str, table: &str, chain: &str, rule: &[&str]) -> Result<(), NetworkError> {
-    let mut check = vec!["-t", table, "-C", chain];
-    check.extend_from_slice(rule);
-    if !command_succeeds(program, &check) {
-        let mut insert = vec!["-t", table, "-I", chain, "1"];
-        insert.extend_from_slice(rule);
-        checked_command(program, &insert)?;
-    }
-    Ok(())
-}
-
 fn delete_rule(program: &str, table: &str, chain: &str, rule: &[&str]) -> Result<(), NetworkError> {
     let mut check = vec!["-t", table, "-C", chain];
     check.extend_from_slice(rule);
@@ -646,7 +630,9 @@ mod tests {
     fn teardown_removes_the_chain_and_loose_rules_from_earlier_daemons() {
         if std::env::var_os("PLOYZ_TEARDOWN_CHILD").is_some() {
             for rule in LOOSE_BUILD_FORWARDING {
-                ensure_rule("iptables", "mangle", "FORWARD", rule).unwrap();
+                let mut insert = vec!["-t", "mangle", "-I", "FORWARD", "1"];
+                insert.extend_from_slice(rule);
+                checked_command("iptables", &insert).unwrap();
             }
             restore(
                 "iptables",

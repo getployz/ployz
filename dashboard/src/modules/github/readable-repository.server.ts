@@ -49,7 +49,7 @@ export const githubBranchExists = Effect.fn("Github.branchExists")(function* (re
   const head = yield* resolveGithubBranchHead(accessFor(repository.organizationId, repository.installationId),
     { id: repository.repositoryId, fullName: repository.fullName }, `refs/heads/${branch}`).pipe(
     // A name GitHub can't hold as a branch ref simply isn't one.
-    Effect.catchIf((error) => error instanceof GithubObservationError && error.code === "invalid_input", () => Effect.succeed({ state: "absent" as const })),
+    Effect.catchIf((error) => error instanceof GithubObservationError && error.code === "invalid_argument", () => Effect.succeed({ state: "absent" as const })),
   );
   return head.state === "present";
 });
