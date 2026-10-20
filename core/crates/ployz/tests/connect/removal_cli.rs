@@ -79,6 +79,52 @@ async fn machine_removal_reports_complete_and_partial_results() {
 }
 
 #[tokio::test]
+async fn a_reset_warning_and_the_volume_note_read_as_sentences() {
+    for (warning, read) in [
+        (
+            "Docker reset failed: busy volume",
+            "Server one was not fully cleaned up or reset: Docker reset failed: busy volume. Reset does not erase volume data.",
+        ),
+        (
+            "Docker reset failed: busy volume.",
+            "Server one was not fully cleaned up or reset: Docker reset failed: busy volume. Reset does not erase volume data.",
+        ),
+        (
+            "",
+            "Server one was not fully cleaned up or reset. Reset does not erase volume data.",
+        ),
+    ] {
+        let service = DiscoveryService::new(test_description());
+        *service.reset_warning.lock().unwrap() = Some(warning.to_owned());
+        let (address, server) = serve_discovery(service).await;
+        let config = std::env::temp_dir().join(format!(
+            "ployz-removal-warning-{}.yaml",
+            MachineId::random()
+        ));
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args([
+                "--connect",
+                &format!("tcp://{address}"),
+                "--ployz-config",
+                config.to_str().unwrap(),
+                "server",
+                "rm",
+                "one",
+                "--confirm",
+                "one",
+                "--accept-volume-loss",
+                "data",
+            ])
+            .output()
+            .await
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&format!("! {read}\n")), "{warning:?}: {stderr}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn machine_reset_refuses_failed_service_observation_before_mutation() {
     let service = DiscoveryService::new(test_description());
     service.container_list_outcomes.lock().unwrap().insert(
