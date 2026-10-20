@@ -16,9 +16,9 @@ use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, ready};
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerObservation, ContainerRefusalReason,
-    CopyRotation, ExecutionError, HealthFailure, HealthVerdict, InspectContainerRequest, Machine,
-    MachineId, MachineName, MachineTarget, Namespace, PullPolicy, QualifiedService,
-    RawVolumeSource, ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, op,
+    CopyRotation, ExecutionError, InspectContainerRequest, Machine, MachineId, MachineName,
+    MachineTarget, Namespace, PullPolicy, QualifiedService, RawVolumeSource, ResolvedServiceSpec,
+    ServiceMode, ServicePlacementEligibility, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -543,19 +543,11 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     let not_in = match cleanup::bring_in(client, &new, spec, deploy).await {
         Ok(BroughtIn::In) => None,
         Ok(BroughtIn::Refused(refusal)) => Some(refusal.message),
-        Ok(BroughtIn::NotIn { health }) => {
-            let failure =
-                health
-                    .and_then(HealthVerdict::into_failure)
-                    .unwrap_or(HealthFailure::TimedOut {
-                        deadline_millis: None,
-                        last_check: None,
-                    });
-            Some(crate::ui::row(&ExecutionError::Health {
-                container_id: new.container_id,
-                failure,
-            }))
-        }
+        Ok(BroughtIn::NotIn { health }) => Some(crate::ui::row(&super::exec::health_error(
+            new.container_id,
+            health,
+            spec,
+        ))),
         Err(error) => Some(crate::ui::row(&error)),
     };
     if let Some(detail) = not_in {

@@ -2520,7 +2520,7 @@ fn out_of_memory(health: &HealthVerdict, spec: &ResolvedServiceSpec) -> Option<O
     })
 }
 
-fn health_error(
+pub(in crate::deploy) fn health_error(
     container_id: ContainerId,
     health: Option<HealthVerdict>,
     spec: &ResolvedServiceSpec,
