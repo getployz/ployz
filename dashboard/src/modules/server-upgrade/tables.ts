@@ -26,7 +26,7 @@ export const serverUpgradeAttempt = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
-    /** The Server's name when the run started, so the run keeps it after a rename or removal; null on older rows. */
+    /** The name the run's caller showed for the Server, kept after a rename or removal; null when it showed none, and on older rows. */
     serverName: text("server_name").$type<MachineName>(),
     /** The Server's attempt ID, minted by Cloud; repeating a request with it returns the same attempt. */
     attemptId: text("attempt_id").notNull(),

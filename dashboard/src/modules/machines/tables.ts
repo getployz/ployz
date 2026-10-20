@@ -37,7 +37,7 @@ export const machineRemoveAttempt = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
-    /** The Server's name when the run started, so the run keeps it after a rename or removal; null on older rows. */
+    /** The name the run's caller showed for the Server, kept after a rename or removal; null when it showed none, and on older rows. */
     serverName: text("server_name").$type<MachineName>(),
     /** Take the Server out of the Cluster without resetting it (`ployz server rm --no-reset`). */
     noReset: boolean("no_reset").default(false).notNull(),
@@ -158,7 +158,7 @@ export const serverDrainAttempt = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
-    /** The Server's name when the run started, so the run keeps it after a rename or removal; null on older rows. */
+    /** The name the run's caller showed for the Server, kept after a rename or removal; null when it showed none, and on older rows. */
     serverName: text("server_name").$type<MachineName>(),
     /** Who clicked Drain; kept when the user is deleted. */
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),

@@ -1129,7 +1129,7 @@ it.live(
         const userId = (yield* resolveCaller(signedIn(alice))).userId;
         let runs = 0;
         const removeServer = (server: MachineId, noReset: boolean) => Effect.gen(function* () {
-          const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
+          const removal = { organizationId, machineId: server, serverName: null, confirmDataLoss: [], noReset };
           const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: userId });
           const inngestRunId = `run-${++runs}`;
           yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1216,7 +1216,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const removal = { organizationId, machineId, confirmDataLoss: [], noReset: false };
+        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
         const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
         const inngestRunId = "run-retry";
         yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
@@ -1281,7 +1281,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const removal = { organizationId, machineId, confirmDataLoss: [], noReset: false };
+        const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
         const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
         const inngestRunId = "run-left";
         yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });

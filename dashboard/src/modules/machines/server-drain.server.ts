@@ -7,7 +7,6 @@ import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
-import { startingMachineName } from "#/modules/machines/machine-names.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import {
@@ -137,7 +136,7 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
       id: input.requestId,
       organizationId,
       machineId: input.machineId,
-      serverName: startingMachineName(organizationId, input.machineId, null),
+      serverName: plan.name || null,
       requestedByUserId: caller.userId,
       targets: [...plan.targets],
       approvalId: gated.approvalId,
@@ -165,7 +164,8 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     readonly targets: readonly QualifiedService[];
     readonly approvalId: string | null;
     readonly planDigest: string;
-    readonly serverName?: MachineName | null;
+    /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
+    readonly serverName: MachineName | null;
   },
 ) {
   const { drizzle } = yield* Database;
@@ -173,7 +173,7 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     id: input.attemptId,
     organizationId: caller.organizationId,
     machineId: input.machineId,
-    serverName: startingMachineName(caller.organizationId, input.machineId, input.serverName),
+    serverName: input.serverName || null,
     requestedByUserId: caller.userId,
     targets: [...input.targets],
     approvalId: input.approvalId,

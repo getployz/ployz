@@ -260,6 +260,7 @@ describe("drain-server", () => {
       targets: ["shop-production/api", "shop-production/db"],
       approvalId: null,
       planDigest: "",
+      serverName: null,
     }));
     await drain(attemptId);
 
@@ -309,7 +310,7 @@ describe("drain-server", () => {
   it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
     const approvalId = "00000000-0000-4000-8000-0000000000b1";
     const cli = (attemptId: string) => runEffect(requestCliServerDrain({ organizationId, userId }, {
-      attemptId, machineId, targets: ["shop-production/api"], approvalId, planDigest: "",
+      attemptId, machineId, targets: ["shop-production/api"], approvalId, planDigest: "", serverName: null,
     }));
     const attemptId = await cli(requestId);
     await drain(attemptId);

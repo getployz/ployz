@@ -334,7 +334,7 @@ describe("callCloud", () => {
         const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
         yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
         const { drizzle } = yield* Database.pipe(Effect.provide(services));
-        const keep = (name: string) => drizzle.update(organizationMachine).set({ machineName: name as MachineName });
+        const keep = (name: MachineName) => drizzle.update(organizationMachine).set({ machineName: name });
         const caller: Caller = { ...member, userId };
         const poll = () => callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
           .pipe(runtime(framed("web-2"), []), Effect.provide(services));

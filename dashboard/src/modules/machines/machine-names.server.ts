@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, MachineName, RuntimeWatchView } from "@ployz/sdk";
+import type { RuntimeWatchView } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { organizationMachine } from "#/modules/machines/tables";
@@ -23,11 +23,3 @@ export const recordMachineNames = Effect.fn("Machines.recordNames")(function* (
     ));
   }
 });
-
-/**
- * The name a run's row is written with, so the run keeps the name it started under: the one its act `resolved`, which
- * its reply names it by, else the one Cloud keeps for the Server, which a rename may not have reached yet.
- */
-export const startingMachineName = (organizationId: string, machineId: MachineId, resolved: MachineName | null | undefined) =>
-  resolved || sql<MachineName | null>`(select ${organizationMachine.machineName} from ${organizationMachine}
-    where ${organizationMachine.organizationId} = ${organizationId} and ${organizationMachine.machineId} = ${machineId})`;
