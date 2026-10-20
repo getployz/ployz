@@ -5,7 +5,7 @@ description: Model-check Volume Runs (resize, Move, Release, late steps from a d
 
 # Verify Volume Runs
 
-The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interleaving of one grow of the Volume, one Move after it, the Release that takes the Move over, and every `SetVolumeSize` and `SetVolumeCopy` a dead run already sent landing late. Once its row ends, the Move sends nothing new: each step checks ownership first. It calls the real `ployz_core::plan`, so a planner change is checked as written. Everything else (the Machine's lock and floor steps, `set_size_admitted` and the pull's bound raise, the Inngest drivers, `requireOwner` and the `commitMove` gate) is a hand copy of the code, and drifts unless you keep it in step.
+The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interleaving of one resize of the Volume, a grow or a shrink, one Move after it, the Release that takes the Move over, and every `SetVolumeSize` and `SetVolumeCopy` a dead run already sent landing late. Once its row ends, the Move sends nothing new: each step checks ownership first. It calls the real `ployz_core::plan`, so a planner change is checked as written. Everything else (the Machine's lock and floor steps, `set_size_admitted` with its shrink floor and the pull's bound raise, the Inngest drivers with `RESIZE_ORDER` and `undoOnRefusal`, `requireOwner` and the `commitMove` gate) is a hand copy of the code, and drifts unless you keep it in step.
 
 ## Run it
 
@@ -13,24 +13,26 @@ The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interl
 cd core && cargo test -p ployz-verify
 ```
 
-A few minutes on a cold build, about 20 s warm. CI runs it in the workspace nextest, so a red model blocks the PR.
+A few minutes on a cold build, about 30 s warm. CI runs it in the workspace nextest, so a red model blocks the PR.
 
-The run is green when all eight tests pass:
+The run is green when all thirteen tests pass:
 
-- `volume_runs_hold`: the code as it is, in each of the three scenarios (below). It prints each scenario's state count. Every property holds and every `sometimes` is reached. A `sometimes` that is never reached also fails here: it means the model can no longer reach that outcome, so a property passing beside it proves nothing.
-- The seven `breaks` tests each remove one guard (a `Broken` flag) and expect the named properties to fail. One of these going green-to-red means a guard no longer earns its keep, or the model lost the path that shows it. Three are the resize's: `a_grow_records_only_after_every_copy_holds_it`, `a_refused_grow_records_nothing`, and `a_move_needs_no_raise_of_its_own`, which shows that the pull's raise is what makes a Move to a Machine the grow never asked safe without a raise step of its own.
+- `volume_runs_hold`: the code as it is, in each of the three scenarios (below), in both directions. It prints each scenario's state count. Every property holds and every `sometimes` is reached. A `sometimes` that is never reached also fails here: it means the model can no longer reach that outcome, so a property passing beside it proves nothing.
+- The twelve `breaks` tests each remove one guard (a `Broken` flag) and expect the named properties to fail. One of these going green-to-red means a guard no longer earns its keep, or the model lost the path that shows it. Seven are the resize's. For the grow: `a_grow_records_only_after_every_copy_holds_it`, `a_refused_grow_records_nothing`, and `a_move_needs_no_raise_of_its_own`, which shows that the pull's raise is what makes a Move to a Machine the grow never asked safe without a raise step of its own. For the shrink: `a_shrink_records_before_any_copy_lowers`, `a_shrink_lowers_the_primary_before_its_mirrors`, `a_shrink_refused_before_any_copy_changed_undoes_its_record`, and `a_refused_shrink_stops`. `a_done_resize_recorded_its_target` runs in both directions.
+
+Each start names a direction. A grow starts with every copy and the Store at the small size and asks the large one; a shrink starts at the large size and asks the small one. The one Machine that can't take the target, if any, is `cramped`: a Pool with no room for the grow, or a copy that references too much for the shrink, whose `shrink_floor` then sits above it.
 
 The full product of the resize and the Move is millions of states, so `Scenario` splits it into slices, each checked whole:
 
 - `Resize`: the resize alone from every start, its row ended at any moment, with its resend and late requests.
 - `ResizeThenMove`: a resize that runs to its own end, then the Move and its Release. The `breaks` tests run here unless they name another.
-- `LateResize`: a grow whose row ends while a `SetVolumeSize` is on the wire. The Move starts at once, and the late request lands anywhere in it.
+- `LateResize`: a resize whose row ends while a `SetVolumeSize` is on the wire. The Move starts at once, and the late request lands anywhere in it.
 
 ## Read a counterexample
 
 A failure prints the property name and a `Path[n]` of actions:
 
-- `Resize`, `Move`, `Release`: the driver takes its next step, sending a request when the step talks to a Machine.
+- `Resize`, `Move`, `Release`: the driver takes its next step, sending a request when the step talks to a Machine. The resize's steps are `Set(A)`, `Set(B)`, `Record`, `Unrecord` and `Finish`; the state's `direction` says which way a `Set` goes.
 - `ResizeResend`, `MoveResend`, `ReleaseResend`: the driver resends its outstanding request; the earlier copy may still land later.
 - `EndResize`: Cloud ends the resize's row. Its `SetVolumeSize` still lands later, unfenced.
 - `EndMove`: Cloud ends the Move's row, which spawns the Release.
@@ -68,6 +70,6 @@ When a change intentionally alters the protocol (a new guard, a new step, a reor
 
 ## Bounds and blind spots
 
-Bounds: Machines A and B, one resize, one target, before the Move, one Move and one takeover, one resend per run, one daemon crash, one Busy retry. The resize resends only in the `Resize` scenario. One Machine at most lacks room for the target. A bug that needs more of any of these is invisible.
+Bounds: Machines A and B, one resize in one direction, between two sizes, before the Move, one Move and one takeover, one resend per run, one daemon crash, one Busy retry. The resize resends only in the `Resize` scenario. One Machine at most can't take the target, and a shrink floor never moves. A bug that needs more of any of these is invisible.
 
-Out of scope: Deploy lanes, operator collisions, Machines that never answer, warm rounds beyond the one pull that brings in a B the grow never asked, a second takeover, real Pool capacities, ZFS, the Store's record transaction, a shrink, a resize during or after a Move, Restore, and anything inside `plan`'s callers that the model does not copy. A green model says nothing about them; cover them with tests or `verify-server`.
+Out of scope: Deploy lanes, operator collisions, Machines that never answer, warm rounds beyond the one pull that brings in a B the resize never asked, a second takeover, real Pool capacities and floors, ZFS, the Store's record transaction, a second resize, a resize during or after a Move, Restore, and anything inside `plan`'s callers that the model does not copy. A green model says nothing about them; cover them with tests or `verify-server`.
