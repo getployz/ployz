@@ -1040,6 +1040,13 @@ class Reset(unittest.TestCase):
         self.assertEqual(self.tree(), files)
         self.assertEqual(boat.differences(bake, self.fingerprint(env)), [])
 
+    def test_the_firewall_matches_across_clones_whose_boat_rules_differ(self):
+        _, _, bake = self.baked()
+        self.setUp()
+        self.write("etc/ufw/user.rules", BAKE_RULES + "### tuple ### allow udp 20376:20379 0.0.0.0/0 any 0.0.0.0/0 in\n")
+        env, _, clone = self.baked()
+        self.assertEqual((bake["firewall"], clone["firewall"]), ([], []))
+
     def test_reset_removes_a_ployz_volume_whether_or_not_its_plugin_was_listening(self):
         for listening in (True, False):
             with self.subTest(listening=listening):

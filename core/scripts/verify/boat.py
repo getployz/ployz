@@ -150,6 +150,7 @@ if [ ! -e {STASH} ]; then
 fi
 """
 # What a run can leave behind, as a fresh clone of the bake shows it; reset must bring every section back.
+# Boat writes each sandbox's own UFW port ranges at its first boot, so firewall lists only rules that differ from its stash.
 FINGERPRINT = SETTLE + HOLDS + r"""
 section() { printf '== %s\n' "$1"; }
 section containers; docker ps -a --format '{{.Names}}|{{.Image}}|{{.State}}|{{.Label "ployz.verify.hold"}}' 2>&1
@@ -171,7 +172,9 @@ section enabled; systemctl list-unit-files --no-legend --state=enabled | awk '{p
 section listening; ss -Hlntup | awk '{print $1, $5, $7}'
 section authorized; sha256sum /root/.ssh/authorized_keys
 section replaced; sha256sum /usr/bin/runc 2>&1; find /usr/bin -maxdepth 1 -name 'runc.*' 2>/dev/null
-section firewall; grep -h '^### tuple' /etc/ufw/user.rules /etc/ufw/user6.rules 2>/dev/null
+section firewall; for rules in user.rules user6.rules; do
+    tar -xOf """ + STASH + r""" "etc/ufw/$rules" 2>/dev/null | diff - /etc/ufw/$rules | grep '^[<>] ### tuple'
+done
 section scratch; cd / && """ + scratch("-maxdepth 2 ") + r""" -printf '%p %y\n' 2>/dev/null
 true
 """
