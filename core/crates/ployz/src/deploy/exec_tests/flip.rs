@@ -2550,3 +2550,63 @@ async fn an_answered_error_after_the_old_copy_returns_keeps_the_new_copy_stopped
         "{warnings:?}"
     );
 }
+
+/// Machine-3 is cut off, and this client's own deadline ends each call to it: the
+/// error is unavailable but carries no unanswered mark from a router. Machine-3 is
+/// still the copy's owner that did not answer, so it alone is named away.
+#[tokio::test(start_paused = true)]
+async fn an_owner_whose_calls_time_out_on_this_client_is_named_away() {
+    let [first, second, third] = [machine('1'), machine('2'), machine('3')];
+    let olds = [container('a'), container('b'), container('e')];
+    let news = [container('c'), container('d'), container('f')];
+    let [one, two, three] = olds;
+    let plan = [first, second, third]
+        .iter()
+        .zip(&olds)
+        .map(|(owner, old)| global_replacement(owner, old, UpdateOrder::StartFirst))
+        .collect::<Vec<_>>();
+    let mut steps = [first, second, third]
+        .iter()
+        .zip(&news)
+        .map(|(owner, new)| created(Call::Run(*owner, ContainerKind::ServiceContainer), new))
+        .collect::<Vec<_>>();
+    steps.extend([
+        observed(Call::Inspect(first, one), running()),
+        observed(Call::Inspect(second, two), running()),
+    ]);
+    steps.extend(
+        std::iter::repeat_with(|| {
+            failed_unavailable(Call::Inspect(third, three), "target Machine RPC timed out")
+        })
+        .take(1000),
+    );
+    let client = Scripted {
+        reads_fail_after: Some(Move::To(one, CopyRotation::Out)),
+        ..Scripted::new(steps)
+    }
+    .with_copy(&first, &one, CopyRotation::In)
+    .with_copy(&second, &two, CopyRotation::In)
+    .with_copy(&third, &three, CopyRotation::In);
+
+    let (outcome, warnings) = execute_reported(
+        &plan,
+        &[first, second, third],
+        &client,
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert_eq!(
+        warnings,
+        [
+            left_running("machine-3", "machine-3 did not answer"),
+            mixed_after_return("machine-3"),
+            left_running("machine-1", "the route read failed"),
+            left_running("machine-2", "the route read failed"),
+        ]
+    );
+    assert!(
+        !matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+}

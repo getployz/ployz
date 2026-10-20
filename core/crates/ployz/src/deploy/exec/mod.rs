@@ -1911,8 +1911,11 @@ impl<'a> Rows<'a> {
                 Vec::new(),
             ),
             Left::Refused(refusal) => (refusal.message, Vec::new()),
-            Left::Failed(error) => self.failed_on(copy.machine_id, error),
-            Left::FailedOn(machine_id, error) => self.failed_on(machine_id, error),
+            Left::Failed(error) => {
+                let unanswered = error.code == RpcErrorCode::Unavailable;
+                self.failed_on(copy.machine_id, error, unanswered)
+            }
+            Left::FailedOn(machine_id, error) => self.failed_on(machine_id, error, false),
             Left::NotRestored(left, why) => {
                 let (reason, away) = self.explain(copy, *left);
                 (
@@ -1923,10 +1926,16 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// Only a call the client saw go unanswered names its target as away; an
-    /// error a Machine answered with says nothing about which one is cut off.
-    fn failed_on(&self, machine_id: MachineId, error: RpcError) -> (String, Vec<MachineId>) {
-        if error.target_unanswered() {
+    /// A call the client saw go unanswered names its target as away. So does an
+    /// unavailable call to the copy's own owner, which covers this client's own
+    /// deadline. Any other error says nothing about which Machine is cut off.
+    fn failed_on(
+        &self,
+        machine_id: MachineId,
+        error: RpcError,
+        unanswered: bool,
+    ) -> (String, Vec<MachineId>) {
+        if unanswered || error.target_unanswered() {
             (
                 format!("{} did not answer", self.machine_name(&machine_id)),
                 vec![machine_id],
