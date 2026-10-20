@@ -44,11 +44,6 @@ pub(crate) mod caddy;
 
 use caddy::CaddyAdmin;
 
-/// Acks name the Containers routed, not a deploy.
-fn rotation_ack_deploy() -> DeploymentLogId {
-    DeploymentLogId::parse("rotation").expect("rotation is a valid deploy id")
-}
-
 /// What this process's ingress has published since it started: how many writes
 /// succeeded, and the Containers the last one acked per Service. A row already in
 /// Corrosion may predate a power-off, so only these count as this Machine's acks.
@@ -518,7 +513,6 @@ fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAc
         .iter()
         .map(|(service, route)| {
             let ack = IngressRouteAck {
-                deploy: rotation_ack_deploy(),
                 containers: route
                     .iter()
                     .map(|serving| serving.as_observation().container_id)

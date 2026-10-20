@@ -316,11 +316,6 @@ fn failure(outcome: &Outcome) -> Option<IngressFailure> {
             FailedOperation::Operation { error, .. }
             | FailedOperation::Replacement { error, .. } => error.to_string(),
         })),
-        DeployOutcome::Superseded { .. } => Some(IngressFailure::Failed {
-            cause: "another Server's repair published the Ingress Proxy first, \
-                    so this one was rolled back"
-                .into(),
-        }),
         DeployOutcome::Success { .. } | DeployOutcome::Interrupted { .. } => None,
     }
 }
@@ -536,21 +531,29 @@ mod tests {
         assert!(cause.contains("exited with code 1"), "{cause}");
     }
 
-    /// A create that lost the Serving Pointer race had its Ingress Proxy removed again,
+    /// A create a newer repair already serves past had its Ingress Proxy removed again,
     /// so that Server is still without ingress and the repair must say so.
     #[test]
-    fn a_superseded_create_is_a_failed_repair() {
-        let superseded = DeployOutcome::Superseded {
+    fn a_create_a_newer_repair_serves_past_is_a_failed_repair() {
+        let lost = DeployOutcome::Failed {
             completed: Vec::new(),
-            service: QualifiedService::system_ingress(),
+            failed: FailedOperation::Operation {
+                operation: ployz_core::DeployOperation::RemoveContainer {
+                    machine_id: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
+                    container_id: ContainerId::parse("c".repeat(64)).unwrap(),
+                    purpose: ployz_core::RemoveContainerPurpose::Retire,
+                },
+                error: ployz_core::ExecutionError::NewerServing {
+                    service: QualifiedService::system_ingress(),
+                },
+            },
             unexecuted: Vec::new(),
             services: Vec::new(),
         };
-        assert!(
-            matches!(failure(&superseded), Some(IngressFailure::Failed { .. })),
-            "{:?}",
-            failure(&superseded)
-        );
+        let Some(IngressFailure::Failed { cause }) = failure(&lost) else {
+            panic!("a lost race is a failed repair: {:?}", failure(&lost));
+        };
+        assert!(cause.contains("newer deploy is already serving"), "{cause}");
     }
 
     #[tokio::test]
