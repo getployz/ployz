@@ -9,7 +9,7 @@ The Canvas draws an Environment's services, volumes, configs and domains as node
 - Volume drawer: Mounts (Mount on a service; row menu has Edit directory and Unmount), Storage, Danger
 - Inspector tabs: Deployments, Variables, Logs, Settings
 - Settings sections: Source (image, credentials), Networking (domains, private address), Storage (only a database without a volume warning), Scale (Replicas, CPU limit, Memory limit), Deploy (Start command, Pre-deploy command, Healthcheck, Restart policy), Danger (Delete service)
-- Variables: "N Service Variables", Raw editor, New Variable, and per row Show value, Copy value and Variable actions; then "Ployz reference defaults"
+- Variables: "N Service Variables", Raw editor, New Variable, and per row Show KEY, Copy KEY and Actions for KEY (a sealed row has an image "Sealed" instead of Show and Copy); then "Ployz reference defaults"
 - Find (`/`) and Create (adds a service, volume, config or domain)
 
 ## How to get to it (user POV)
