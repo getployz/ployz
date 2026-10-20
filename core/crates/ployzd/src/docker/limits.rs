@@ -324,12 +324,9 @@ mod tests {
             matches!(stopped, Error::StoppedAfterLimitsUpdate(id) if id == container_id),
             "{stopped}"
         );
-        assert!(
-            ployz_core::RpcError::from(&stopped)
-                .details
-                .get("reason")
-                .is_none()
-        );
+        let rpc = ployz_core::RpcError::from(&stopped);
+        assert_eq!(rpc.code, ployz_core::RpcErrorCode::Internal);
+        assert!(rpc.details.get("reason").is_none());
     }
 
     #[test]

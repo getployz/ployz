@@ -584,8 +584,7 @@ pub enum DeployOperation {
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),
     /// Apply the spec's CPU and memory limits to `container_id` in place. The
-    /// Container keeps serving under the same id, whether the Machine applies
-    /// the limits or refuses.
+    /// Container keeps its id whether the Machine applies the limits or not.
     UpdateContainer(LimitsUpdateOperation),
     /// Stop a pre-deploy hook container that is still running, before [`Self::RunHook`]
     /// starts the next one.

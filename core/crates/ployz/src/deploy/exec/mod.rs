@@ -2235,8 +2235,7 @@ async fn execute_operation<C: MachineOperations>(
             .map(Ran::started)
             .map_err(Into::into)
         }
-        // The copy stays In under its own id either way: with the new limits, or
-        // with its old ones when the Machine refuses or fails.
+        // The copy stays In under its own id whether the update succeeds or fails.
         DeployOperation::UpdateContainer(update) => client
             .update_container_limits(&update.machine_id, &update.container_id, &update.spec)
             .await
@@ -3172,14 +3171,11 @@ fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
 
 /// The Machine that answered `error`, for a failure sentence that names the Server.
 fn naming_machine(mut error: RpcError, machine_id: &MachineId) -> RpcError {
-    if !error.details.is_object() {
-        error.details = serde_json::json!({});
+    if let serde_json::Value::Object(details) = &mut error.details {
+        details.insert("machine_id".into(), serde_json::json!(machine_id));
+    } else {
+        error.details = serde_json::json!({ "machine_id": machine_id });
     }
-    error
-        .details
-        .as_object_mut()
-        .expect("details normalized to object")
-        .insert("machine_id".into(), serde_json::json!(machine_id));
     error
 }
 
