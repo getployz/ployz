@@ -338,6 +338,7 @@ impl Daemon {
         let socket_path = config.socket.clone();
         let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let (first_publish, _first_published) = tokio::sync::watch::channel(false);
         let retire_id = local_id;
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
@@ -411,6 +412,7 @@ impl Daemon {
                             admin,
                             ingress_data_dir,
                             ingress_runtime_dir,
+                            first_publish,
                             shutdown.clone(),
                         )
                         .await
