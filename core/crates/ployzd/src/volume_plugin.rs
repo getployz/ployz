@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     fmt, fs, io,
     os::unix::{
-        fs::{FileTypeExt, PermissionsExt},
+        fs::{FileTypeExt, MetadataExt, PermissionsExt},
         net::UnixListener as StdUnixListener,
     },
     path::Path,
@@ -138,35 +138,65 @@ struct MountResponse {
     error: String,
 }
 
-/// Takes the listener `ployz-volume-plugin.socket` passed, or else binds `path`
-/// here (the local testkit runs without systemd), replacing a socket a previous
-/// run left behind.
+/// The listener the plugin serves and, when it bound the path itself, its claim on it.
+#[derive(Debug)]
+pub(super) struct PluginSocket {
+    pub(super) claim: Option<fs::File>,
+    pub(super) listener: StdUnixListener,
+}
+
+/// Takes the listener `ployz-volume-plugin.socket` passed, or else claims and binds
+/// `path` here (the local testkit runs without systemd). A socket left at `path` is
+/// replaced only when nothing serves it and this user owns it.
 ///
 /// # Errors
 ///
-/// Returns an error when the inherited socket is invalid, `path` holds something
-/// other than a socket, or binding `path` fails.
-pub(super) fn listener(path: &Path) -> io::Result<StdUnixListener> {
+/// Returns [`io::ErrorKind::AddrInUse`] when another process holds the claim or
+/// serves `path`, and an error when the inherited socket is invalid, `path` holds
+/// something this plugin must not replace, or binding fails.
+pub(super) fn listener(path: &Path) -> io::Result<PluginSocket> {
     if let Some(listener) = ployzd::socket_activation::inherited_unix_listener()? {
-        return Ok(listener);
-    }
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("refusing to replace non-socket {}", path.display()),
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+        return Ok(PluginSocket {
+            claim: None,
+            listener,
+        });
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let claim = ployzd::socket_activation::claim_socket_path(path)?;
+    remove_stale_socket(path)?;
     let listener = StdUnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
-    Ok(listener)
+    Ok(PluginSocket {
+        claim: Some(claim),
+        listener,
+    })
+}
+
+fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_socket() || metadata.uid() != fs::metadata("/proc/self")?.uid() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "refusing to replace {}: not a socket this user owns",
+                path.display()
+            ),
+        ));
+    }
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("another process serves {}", path.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path),
+        Err(error) => Err(error),
+    }
 }
 
 /// Serves the Docker Volume plugin on its Unix listener.
@@ -452,7 +482,10 @@ mod tests {
         let test = TestDir::new();
         let socket = test.0.join("plugins/ployz.sock");
         drop(listener(&socket).unwrap());
-        let listener = listener(&socket).unwrap();
+        let PluginSocket {
+            claim: _claim,
+            listener,
+        } = listener(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let storage = VolumeStorage::with_programs(test.0.join("no-zpool"), test.0.join("no-zfs"));
         let server = tokio::spawn(serve(UnixListener::from_std(listener).unwrap(), storage));
@@ -475,7 +508,20 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
         let _client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
         live.set_nonblocking(true).unwrap();
-        live.accept().expect("the live listener still owns the path");
+        live.accept()
+            .expect("the live listener still owns the path");
+    }
+
+    #[test]
+    fn a_second_plugin_refuses_the_path_the_first_has_claimed() {
+        let test = TestDir::new();
+        let socket = test.0.join("ployz.sock");
+        let _first = listener(&socket).unwrap();
+
+        let error = listener(&socket).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
+        std::os::unix::net::UnixStream::connect(&socket).expect("the first plugin still serves");
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! The Machine API Unix socket: its claim lock and its listener.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io,
     os::unix::{
-        fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
+        fs::{FileTypeExt, PermissionsExt},
         net::UnixListener,
     },
     path::Path,
@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, set_ployz_group},
-    socket_activation::inherited_unix_listener,
+    socket_activation::{claim_socket_path, inherited_unix_listener},
 };
 
 /// The claim lock on the Machine API socket path and the listener it serves.
@@ -53,25 +53,7 @@ fn claim_socket(path: &Path) -> io::Result<File> {
         set_ployz_group(parent)?;
     }
 
-    let mut lock_path = path.as_os_str().to_owned();
-    lock_path.push(".lock");
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
-        .open(lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock).map_err(|error| {
-        if error.kind() == io::ErrorKind::WouldBlock {
-            io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "socket is owned by another daemon",
-            )
-        } else {
-            error
-        }
-    })?;
-    Ok(lock)
+    claim_socket_path(path)
 }
 
 /// Inherited `ployz.socket` listener bound to `path`, else a fresh bind.
