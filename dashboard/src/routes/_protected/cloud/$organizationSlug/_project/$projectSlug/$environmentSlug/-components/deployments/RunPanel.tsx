@@ -125,7 +125,6 @@ const cleanupEmpty = {
   failed: "Cloud could not retire the old copies",
 } satisfies Record<DeploymentCleanupView["state"], string>;
 
-/** Each old copy Cloud could not retire yet: its Service, its Machine and why. */
 function CleanupDetail({ cleanup }: { cleanup: DeploymentCleanupView }) {
   return (
     <>

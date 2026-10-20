@@ -16,7 +16,6 @@ async function stepsOf(remove: boolean, status: "applied" | "failed" | "unknown"
 
 type Ran = { ran: { id: string; status: "applied" | "failed" | "unknown"; remove: boolean } } | { nothingToRun: string };
 
-/** Runs the worker whose runner answers `ran`; resolves to its steps in order and the events it sent. */
 async function runOf(ran: Ran) {
   const order: string[] = [];
   const results = new Map<string, unknown>([

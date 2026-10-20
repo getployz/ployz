@@ -49,7 +49,6 @@ export function RunTime({ timing }: { timing: RunTiming | undefined }) {
   );
 }
 
-/** Under the card's name: its kind, and how many Servers it ran on; the cleanup, how it went. */
 function caption(node: RunNode) {
   if (node.type === "cleanup") return cleanupLabel(node.cleanup);
   if (node.type === "build" || !node.node.rows.length) return runNodeKinds[node.type];

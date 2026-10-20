@@ -294,7 +294,6 @@ impl ConfigStore {
         let who = actor(organization, None)?;
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
         let connections = crate::parse_connections(connections)?;
-        // Reading the Deployment as the Organization is the ownership check.
         to_json(ployz::sdk::retire_old(Arc::clone(&self.store), who, deployment, connections).await)
     }
 

@@ -77,7 +77,6 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
   const deployWarnings = warnings.filter((warning) => "warning" in warning);
   const variableWarnings = warnings.filter((warning) => !("ingress" in warning) && !("cause" in warning) && !("warning" in warning));
   const services = deployment.nodes.filter((node) => node.type === "service");
-  // A selected Volume, Config or cleanup falls back to the Service that failed, so the fix stays one click away.
   const service = selected?.type === "build" ? services.find((node) => node.name === selected.name)
     : selected && "node" in selected && selected.node.type === "service" ? selected.node
     : services.find((node) => shownNodeStatus(node) === "failed") ?? services.find((node) => !nodeApplied(node.outcome));

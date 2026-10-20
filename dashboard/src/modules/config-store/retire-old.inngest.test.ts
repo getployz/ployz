@@ -28,14 +28,12 @@ const requested = {
   data: { organizationId: "org", environmentId: "env", deploymentId: "dep" },
 };
 
-/** Runs a cleanup whose attempts leave `left` in turn. */
 async function cleanup(left: CleanupLeft[][]) {
   answers = left;
   const { result, ctx } = await new InngestTestEngine({
     function: createRetireOld(new Inngest({ id: "retire-old-test" })),
     events: [requested],
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId: "run-1" }),
-    // Each pause ends at once.
     steps: left.map((_, index) => ({ id: `pause-${index + 1}`, handler: () => undefined })),
   }).execute();
   return { result, sleeps: vi.mocked(ctx.step.sleep).mock.calls };
