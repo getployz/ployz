@@ -2,7 +2,7 @@ mod build_grant;
 mod management;
 
 pub use build_grant::{GrantRegistry, open_grant_registry};
-pub use management::ManagementRelay;
+pub use management::{ManagementRelay, management_proof};
 use management::{connect_management, dial_tunnel};
 
 use std::{
