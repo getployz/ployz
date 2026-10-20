@@ -876,7 +876,7 @@ const SOURCE_PARTS: [(&str, &str); 4] = [
 /// A source row as the Settings it holds, `web.image: "nginx:1.26" → "nginx:1.27"`,
 /// or `None` when no part `set` names changed.
 fn source_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
-    let service = row.path.strip_suffix(".source")?;
+    let service = crate::ui::escaped(row.path.strip_suffix(".source")?);
     // No registry credential reads as unset, so a removed Service doesn't list one.
     let part = |value: &serde_json::Value, field: &str| {
         value
@@ -912,9 +912,14 @@ fn config_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<
                 (_, true) => "removed",
                 _ => "changed",
             };
-            format!("files: {edit} {file}")
+            format!("files: {edit} {}", crate::ui::escaped(file))
         }
-        None => format!("{field}: {} → {}", shown(&row.before), shown(&row.after)),
+        None => format!(
+            "{}: {} → {}",
+            crate::ui::escaped(field),
+            shown(&row.before),
+            shown(&row.after)
+        ),
     };
     Some(vec![line])
 }
@@ -1139,6 +1144,14 @@ mod tests {
         assert_eq!(
             row(&format!("{at}.files.run.sh"), json!(null), file),
             ["files: added run.sh"]
+        );
+        assert_eq!(
+            row(
+                &format!("{at}.files.a\u{202E}b.txt"),
+                json!(null),
+                json!({})
+            ),
+            [r"files: added a\u{202e}b.txt"]
         );
     }
 
