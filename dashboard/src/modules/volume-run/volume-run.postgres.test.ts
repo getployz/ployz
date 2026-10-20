@@ -105,7 +105,7 @@ type FakeMachine = {
 type FakeContainer = { machine: string; id: string; running: boolean; created?: number; rotation?: CopyRotation; gen?: number };
 
 /**
- * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail to answer, or
+ * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail with its own error, or
  * hold it in flight until the test lands it.
  */
 type Fault = CopyRefusal | "lost" | "down" | "held" | RawFault;
@@ -114,6 +114,9 @@ type Fault = CopyRefusal | "lost" | "down" | "held" | RawFault;
 class RawFault {
   constructor(readonly cause: { code: string; message: string; details: unknown }) {}
 }
+
+/** A reply that never came back, as the SDK rejects it: its own timeout on a target Machine's RPC, which no Machine sent. */
+const NO_REPLY = new RpcError({ code: "unavailable", message: "target Machine RPC timed out", details: null, unanswered: true });
 
 /** An RPC error shaped as the SDK's RpcError. */
 type RpcFault = Error & { code: string };
@@ -379,6 +382,7 @@ describe("volume runs", () => {
       if (fake.silent === true) return Effect.never;
       if (fake.lacks !== undefined) return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeMove.capability }));
       const fail = (fault: Fault) => Effect.fail(new PloyzProviderError({ operation: "volume switch", cause: failure(fault, fake.copy) }));
+      const unanswered = Effect.fail(new PloyzProviderError({ operation: "volume switch", cause: NO_REPLY }));
       if (request.command === "inspect_volume_copy") {
         const fault = failNext.get(`inspect@${fake.name}`);
         if (fault !== undefined) {
@@ -403,11 +407,11 @@ describe("volume runs", () => {
         failNext.delete(key);
         if (fault === "lost") {
           transition(fake, expected, want);
-          return fail("down");
+          return unanswered;
         }
         if (fault === "held") {
           held.set(key, () => transition(fake, expected, want));
-          return fail("down");
+          return unanswered;
         }
         if (fault !== undefined) return fail(fault);
         const gen = request.payload.gen ?? 0;
@@ -2381,7 +2385,7 @@ describe("volume runs", () => {
 
       const lost = await execute(run.id);
 
-      expect(lost.error).toMatchObject({ name: "Error", message: "set_volume_copy on fsn-1: internal: dataset is busy" });
+      expect(lost.error).toMatchObject({ name: "Error", message: "set_volume_copy on fsn-1: unavailable: target Machine RPC timed out" });
       expect(await rows()).toMatchObject([{ state: "running" }]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "slot", readonly: true });
       verbs = [];
