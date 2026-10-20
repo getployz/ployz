@@ -1019,7 +1019,6 @@ pub(crate) fn land(
     next: SavedEnvironmentIntent,
     picks: &BTreeSet<RowId>,
 ) -> Result<Vec<NodeName>, RpcError> {
-    crate::names::refuse_new_reserved(&branch.working, &next)?;
     let before = std::mem::replace(&mut branch.working, next);
     crate::volume::check_storage(tx, &branch.summary.id, &branch.working)?;
     // What arrives from `from` may bring a rule it already broke; that's not new.

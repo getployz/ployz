@@ -130,8 +130,8 @@ fn refuse_reserved(name: &str) -> Result<(), RpcError> {
 }
 
 /// Refuse a reserved Service name `target` gives a Service that doesn't have it
-/// as its name in `now`. History, a Branch and a sync can't bring one in, but a
-/// Service named so from before keeps its name.
+/// as its name in `now`. No write of Working State brings one in, but a Service
+/// named so from before keeps its name.
 pub(crate) fn refuse_new_reserved(
     now: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
@@ -156,7 +156,6 @@ pub(crate) fn refuse_new_taken(
     target: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
     let now = &environment.working;
-    refuse_new_reserved(now, target)?;
     let mut claims: Vec<(&str, Name<'_>)> = Vec::new();
     for service in &target.services {
         let held = now.services.iter().find(|held| held.id == service.id);

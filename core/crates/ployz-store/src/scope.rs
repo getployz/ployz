@@ -874,6 +874,8 @@ pub(crate) fn validate_and_refresh_working_from(
         .first()
         .ok_or_else(|| error::corrupt("Environment"))?
         .intent(0, "Working State")?;
+    // Every write of Working State, whole or not, comes through here.
+    crate::names::refuse_new_reserved(&before, &environment.working)?;
     let (working, live) = checked(
         tx,
         &environment.summary,
