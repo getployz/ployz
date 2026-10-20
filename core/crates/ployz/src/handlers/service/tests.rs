@@ -80,7 +80,7 @@ fn stop_options_are_only_read_for_stop_actions() {
 }
 
 #[test]
-fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
+fn ps_names_servers_and_shows_container_ids_on_every_row_once_two_rows_read_the_same() {
     let running = || ContainerRuntimeObservation::Running {
         health: HealthObservation::NotConfigured,
     };
@@ -104,7 +104,7 @@ fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
             "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\n\
              web\tservice\tmachine-1\trunning\taaaaaaaaaaaa\n\
              web\tservice\tmachine-1\trunning\tcccccccccccc\n\
-             api\tservice\t{}\trunning\t-\n",
+             api\tservice\t{}\trunning\tdddddddddddd\n",
             "e".repeat(12)
         )
     );

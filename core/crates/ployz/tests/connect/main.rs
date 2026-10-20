@@ -453,7 +453,9 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let human_cases = [(
         &["ps"][..],
         format!(
-            "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\napp/api\tservice\tone\trunning, healthy\t-\napp/worker\tpre-deploy hook\tone\texited with code 0\t-\napp/worker\tservice\tone\trunning, unhealthy\t{}\napp/worker\tservice\tone\trunning, starting\t{}\napp/worker\tservice\tone\texited with code 1\t{}\n",
+            "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\napp/api\tservice\tone\trunning, healthy\t{}\napp/worker\tpre-deploy hook\tone\texited with code 0\t{}\napp/worker\tservice\tone\trunning, unhealthy\t{}\napp/worker\tservice\tone\trunning, starting\t{}\napp/worker\tservice\tone\texited with code 1\t{}\n",
+            "c".repeat(12),
+            "0".repeat(12),
             "d".repeat(12),
             "e".repeat(12),
             "f".repeat(12)

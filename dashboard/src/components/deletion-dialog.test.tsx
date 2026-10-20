@@ -114,19 +114,43 @@ describe("DeletionDialog", () => {
     expect(screen.queryByText("New")).toBeNull();
   });
 
+  it("ends no sentence on a colon while there is nothing to list yet", () => {
+    render(<DeletionDialog open onOpenChange={vi.fn()} title="Delete empty?" place="empty" confirmLabel="Delete" items={[]}
+      callbacks={{ load: () => new Promise<ReturnType<typeof check>>(() => {}), confirm: vi.fn() }} />);
+    expect(screen.getByRole("alertdialog").textContent).toContain("You're deleting empty.");
+  });
+
   it("says what failed and retries the servers", async () => {
     const load = vi.fn()
       .mockRejectedValueOnce(new Error("Can't reach your servers. Check they're online, then try again."))
       .mockResolvedValue(check([service("web")]));
     renderDialog({ load, confirm: vi.fn() });
 
-    await screen.findByText(/Can't reach your servers/);
+    expect((await screen.findByRole("alert")).textContent).toContain("Can't reach your servers");
     fireEvent.change(screen.getByRole("textbox", { name: /to confirm/ }), { target: { value: "shop/staging" } });
     expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(false));
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps Delete for another try when the deletion fails, and says why", async () => {
+    const confirm = vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(undefined);
+    const load = vi.fn().mockResolvedValue(check([service("web")]));
+    const onOpenChange = renderDialog({ load, confirm });
+    fireEvent.change(screen.getByRole("textbox", { name: /to confirm/ }), { target: { value: "shop/staging" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(false));
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Couldn't reach Ployz Cloud. Check your connection and try again.");
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(false));
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it("marks what appeared since it opened and asks again, typed afresh, with the new evidence", async () => {

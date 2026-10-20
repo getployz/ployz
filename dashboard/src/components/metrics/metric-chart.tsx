@@ -29,7 +29,7 @@ type Row = { readonly at: Date; readonly values: readonly (number | null)[] };
 const MARGIN = { top: 10, right: 8, bottom: 20, left: 62 } as const;
 
 export const atFormat = (timeZone: string) =>
-  new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone });
+  new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone });
 
 /**
  * One cursor for a page of charts, released on Escape or a tap outside every chart and tooltip, since the library leaves a
@@ -99,7 +99,7 @@ export function MetricChart({
   const timeZone = useTimeZone();
   const at = atFormat(timeZone);
   const tick = new Intl.DateTimeFormat("en-US", to - from <= 86_400_000
-    ? { hour: "numeric", minute: "2-digit", timeZone }
+    ? { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone }
     : { month: "short", day: "numeric", timeZone });
   const legend = series.filter((line, index) => series.findIndex((other) => other.label === line.label) === index);
   const rows: Row[] = times.map((at, index) => ({ at: new Date(at), values: series.map((line) => line.values[index] ?? null) }));
