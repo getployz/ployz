@@ -134,6 +134,14 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
     client.target_services = Some(Vec::new());
     let error = catch_up(&mut client, &joiner).await.unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
+    let message = message(error, &joiner);
+    assert!(
+        message.contains(&format!(
+            "app/api: copy {} is not running on this Machine after catch-up",
+            container_id('a').as_str()
+        )),
+        "{message}"
+    );
 }
 
 #[tokio::test]

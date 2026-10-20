@@ -665,6 +665,13 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 && is_running(observed)
         });
         if !runs || !shape_runs {
+            failures.push((
+                identity.clone(),
+                format!(
+                    "copy {} is not running on this Machine after catch-up",
+                    copy.container_id.as_str()
+                ),
+            ));
             observe(CatchUpFact::Failed(identity));
             continue;
         }
