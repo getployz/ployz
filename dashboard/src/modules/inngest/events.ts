@@ -100,6 +100,7 @@ export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
 export const observeCrashReceivedEvent = "observe/crash.received";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
+export const configDeploymentRetireRequestedEvent = "config/deployment.retire-requested";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
 export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
 export const observePushTargetRequestedEvent = "observe/push-target.requested";
@@ -238,6 +239,13 @@ export type ConfigDeploymentAdmittedEventData = {
   trigger?: DeploymentTrigger;
 };
 
+/** A Cloud Deploy ran: Cloud retires the old copies its run replaced. */
+export type ConfigDeploymentRetireRequestedEventData = {
+  organizationId: string;
+  environmentId: string;
+  deploymentId: string;
+};
+
 export type DeploymentTrigger = "github" | "user";
 
 export type InngestFunctionCancelledEventData = {
@@ -287,6 +295,10 @@ export const serverAccessRetireRequestedEventType = eventType(
 export const configDeploymentAdmittedEventType = eventType(
   configDeploymentAdmittedEvent,
   { schema: staticSchema<ConfigDeploymentAdmittedEventData>() },
+);
+export const configDeploymentRetireRequestedEventType = eventType(
+  configDeploymentRetireRequestedEvent,
+  { schema: staticSchema<ConfigDeploymentRetireRequestedEventData>() },
 );
 export const githubPushReceivedEventType = eventType(
   githubPushReceivedEvent,
@@ -567,6 +579,10 @@ export function createConfigDeploymentAdmittedEvent(data: ConfigDeploymentAdmitt
   return { id: `config-deployment-admitted-${data.deploymentId}`, name: configDeploymentAdmittedEvent, data } as const;
 }
 
+export function createConfigDeploymentRetireRequestedEvent(data: ConfigDeploymentRetireRequestedEventData) {
+  return { id: `config-deployment-retire-requested-${data.deploymentId}`, name: configDeploymentRetireRequestedEvent, data } as const;
+}
+
 /** Deploy now: unkeyed, so it asks again for a queued Deployment its admission's event never ran. */
 export function createConfigDeploymentStartedEvent(data: ConfigDeploymentAdmittedEventData) {
   return { name: configDeploymentAdmittedEvent, data } as const;
@@ -714,6 +730,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createConfigPrCheckRequestedEvent>
   | ReturnType<typeof createConfigSweepRequestedEvent>
   | ReturnType<typeof createConfigDeploymentStartedEvent>
+  | ReturnType<typeof createConfigDeploymentRetireRequestedEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
   | ReturnType<typeof createGithubPullRequestReceivedEvent>
