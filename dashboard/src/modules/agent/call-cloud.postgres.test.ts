@@ -269,6 +269,53 @@ describe("callCloud", () => {
       expect(heard).toEqual(serverRuns("machine-1"));
     }));
 
+  /** A Cluster whose frame names `MACHINE` `name`, online and idle, and whose removal loses nothing. */
+  const framed = (name: string): ScopedRuntimeClientSession => ({
+    status: "connected",
+    connected: asTestDouble<PloyzSession>()({
+      watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        machines: [{ membership: "up", machine: { id: MACHINE, name, accepts_ingress: true, public_ip: "203.0.113.2", runtime: { running_builds: 0, daemon_version: "0.1.0" } } }],
+        services: [],
+      })),
+      dataLossIfMachineRemoved: () => Effect.succeed({ data_loss: [] }),
+    }),
+  });
+
+  const freshRuns = [
+    ["drain", { action: "drain", server: { machine: MACHINE, name: "new" } }],
+    ["upgrade", { action: "upgrade", server: { machine: MACHINE, name: "new" } }],
+    ["remove", { action: "remove_server", server: { machine: MACHINE, name: "new" }, loss: null }],
+  ] as const satisfies ReadonlyArray<readonly [string, Act["action"]]>;
+  for (const [verb, action] of freshRuns) {
+    // Catches a fresh run stored under the stale name Cloud kept, so its reply and its poll name the Server's old name.
+    it.live(`names a fresh ${verb} by the name its act resolved when Cloud kept a stale one`, () =>
+      Effect.gen(function* () {
+        const inngest = new Inngest({ id: "call-cloud-test" });
+        vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+        const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+        const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+        yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+        const { drizzle } = yield* Database.pipe(Effect.provide(services));
+        yield* drizzle.update(organizationMachine).set({ machineName: "old" as MachineName });
+        const caller: Caller = { ...member, userId };
+
+        const act = (approvalId: string | null) => callCloud(caller, { act: { attempt: "c".repeat(32), digest: "d".repeat(64), action } }, approvalId)
+          .pipe(runtime(framed("new"), []), Effect.provide(services));
+        const asked = yield* act(null);
+        // A removal waits on a human; approving it lets the same act start the run.
+        const started = asked.ok || asked.refusal.code !== "approval_required" ? asked : yield* Effect.gen(function* () {
+          const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.refusal.details);
+          yield* decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services));
+          return yield* act(approval_id);
+        });
+        const polled = yield* callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
+          .pipe(runtime(framed("new"), []), Effect.provide(services));
+
+        expect(started).toEqual({ ok: true, value: expect.objectContaining({ run: `${verb} new` }) });
+        expect(polled).toEqual({ ok: true, value: { operations: [expect.objectContaining({ run: `${verb} new` })] } });
+      }));
+  }
+
   // Catches a replayed act naming its run by the Server's newer name while a poll of the same run names the one it started with.
   it.live("names a replayed upgrade by the name it started with after the Server is renamed", () =>
     Effect.gen(function* () {
@@ -278,24 +325,16 @@ describe("callCloud", () => {
       const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
-      const named = (name: string): ScopedRuntimeClientSession => ({
-        status: "connected",
-        connected: asTestDouble<PloyzSession>()({
-          watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
-            machines: [{ membership: "up", machine: { id: MACHINE, name, accepts_ingress: true, public_ip: "203.0.113.2", runtime: { running_builds: 0, daemon_version: "0.1.0" } } }],
-          })),
-        }),
-      });
       const upgrade = (name: string): Act => ({ attempt: "c".repeat(32), digest: "d".repeat(64), action: { action: "upgrade", server: { machine: MACHINE, name } } });
       const caller: Caller = { ...member, userId };
       yield* drizzle.update(organizationMachine).set({ machineName: "old" as MachineName });
-      const started = yield* callCloud(caller, { act: upgrade("old") }).pipe(runtime(named("old"), []), Effect.provide(services));
+      const started = yield* callCloud(caller, { act: upgrade("old") }).pipe(runtime(framed("old"), []), Effect.provide(services));
       expect(started).toEqual({ ok: true, value: expect.objectContaining({ run: "upgrade old" }) });
 
       yield* drizzle.update(organizationMachine).set({ machineName: "new" as MachineName });
-      const replayed = yield* callCloud(caller, { act: upgrade("new") }).pipe(runtime(named("new"), []), Effect.provide(services));
+      const replayed = yield* callCloud(caller, { act: upgrade("new") }).pipe(runtime(framed("new"), []), Effect.provide(services));
       const polled = yield* callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
-        .pipe(runtime(named("new"), []), Effect.provide(services));
+        .pipe(runtime(framed("new"), []), Effect.provide(services));
 
       expect(replayed).toEqual(started);
       expect(polled).toEqual({ ok: true, value: { operations: [expect.objectContaining({ run: "upgrade old" })] } });
