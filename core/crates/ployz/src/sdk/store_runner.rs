@@ -848,13 +848,7 @@ fn interrupted(outcome: DeployOutcome<ExecutionError>) -> DeployOutcome<Executio
                 services,
             }
         }
-        DeployOutcome::Superseded {
-            completed,
-            unexecuted,
-            services,
-            ..
-        }
-        | DeployOutcome::Interrupted {
+        DeployOutcome::Interrupted {
             completed,
             unexecuted,
             services,

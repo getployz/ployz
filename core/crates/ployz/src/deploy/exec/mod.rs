@@ -47,14 +47,10 @@ const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
 
-#[allow(clippy::large_enum_variant)]
-enum Stop {
-    Failed {
-        index: usize,
-        error: ExecutionError,
-        compensation: Option<ReplacementCompensation<ExecutionError>>,
-    },
-    Superseded(QualifiedService),
+struct Stop {
+    index: usize,
+    error: ExecutionError,
+    compensation: Option<ReplacementCompensation<ExecutionError>>,
 }
 
 fn operation_at(operations: &[DeployOperation], index: usize) -> &DeployOperation {
@@ -96,7 +92,7 @@ fn outcome_from(
                 services,
             }
         }
-        Some(Stop::Failed {
+        Some(Stop {
             index,
             error,
             compensation,
@@ -121,12 +117,6 @@ fn outcome_from(
                 services,
             }
         }
-        Some(Stop::Superseded(service)) => DeployOutcome::Superseded {
-            completed: done(None, true),
-            service,
-            unexecuted: done(None, false),
-            services,
-        },
     }
 }
 
@@ -735,7 +725,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     }
                     Err(OperationFailure::Ordinary(error)) => {
                         progress.fail(index, error.clone());
-                        stop.get_or_insert(Stop::Failed {
+                        stop.get_or_insert(Stop {
                             index,
                             error,
                             compensation: None,
@@ -747,7 +737,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         compensation,
                     }) => {
                         progress.fail(index, error.clone());
-                        stop.get_or_insert(Stop::Failed {
+                        stop.get_or_insert(Stop {
                             index,
                             error,
                             compensation: Some(*compensation),
@@ -763,11 +753,10 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     .service
                     .clone()
                     .expect("only Service groups publish");
-                let qualified = QualifiedService::new(plan.namespace.clone(), service.clone());
                 let task = schedule.publish_failure_task(group);
                 let mut fail = |error: ExecutionError, event: Event| {
                     progress.fail(task, error.clone());
-                    stop.get_or_insert(Stop::Failed {
+                    stop.get_or_insert(Stop {
                         index: task,
                         error,
                         compensation: None,
@@ -792,10 +781,6 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             ),
                             Event::PublishUnconfirmed(group),
                         );
-                    }
-                    Published::Superseded => {
-                        stop.get_or_insert(Stop::Superseded(qualified));
-                        schedule.apply(Event::PublishFailed(group));
                     }
                     Published::Cancelled => {
                         fail(ExecutionError::Cancelled, Event::PublishFailed(group));
@@ -825,7 +810,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             }
                         };
                         progress.fail(task, error.clone());
-                        stop.get_or_insert(Stop::Failed {
+                        stop.get_or_insert(Stop {
                             index: task,
                             error,
                             compensation: None,
@@ -1039,6 +1024,7 @@ fn left_by(error: ExecutionError) -> Left {
         error @ (ExecutionError::Health { .. }
         | ExecutionError::DependencyHealth { .. }
         | ExecutionError::Hook { .. }
+        | ExecutionError::NewerServing { .. }
         | ExecutionError::Cancelled) => {
             Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error))
         }
@@ -1058,7 +1044,7 @@ fn untouched(
     let outcome = outcome_from(
         operations,
         &BTreeSet::new(),
-        Some(Stop::Failed {
+        Some(Stop {
             index,
             error,
             compensation: None,
@@ -1090,8 +1076,6 @@ enum Done {
 enum Published {
     Listed,
     Unconfirmed(cleanup::Unconfirmed),
-    /// A newer gen already serves: the new copies are discarded.
-    Superseded,
     Cancelled,
     Failed(ExecutionError),
 }
@@ -1146,6 +1130,7 @@ async fn publish_group<C: MachineOperations>(
                     error @ (ExecutionError::Health { .. }
                     | ExecutionError::DependencyHealth { .. }
                     | ExecutionError::Hook { .. }
+                    | ExecutionError::NewerServing { .. }
                     | ExecutionError::Cancelled) => {
                         Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error))
                     }
@@ -1277,7 +1262,9 @@ async fn route_new<C: MachineOperations>(
             Ok(cleanup::BroughtIn::Refused(refusal))
                 if refusal.reason == ContainerRefusalReason::OlderThanIn =>
             {
-                return Err(Published::Superseded);
+                return Err(Published::Failed(ExecutionError::NewerServing {
+                    service: service.clone(),
+                }));
             }
             Ok(cleanup::BroughtIn::Refused(refusal)) => {
                 return Err(Published::Failed(machine_error(
