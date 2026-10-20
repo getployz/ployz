@@ -119,6 +119,24 @@ pub(crate) async fn wait_listed<C: MachineOperations>(
     .await
 }
 
+pub(crate) async fn wait_none_listed<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    service: &QualifiedService,
+    copies: &BTreeSet<ContainerId>,
+    cancellation: &CancellationToken,
+) -> Result<Wait, RpcError> {
+    wait_routes(
+        client,
+        machine_id,
+        service,
+        |routed| routed.is_disjoint(copies),
+        cancellation,
+        |_| {},
+    )
+    .await
+}
+
 pub(crate) async fn wait_unlisted<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -247,6 +265,26 @@ pub(crate) async fn take_out<C: MachineOperations>(
     allow_empty: bool,
     cancellation: &CancellationToken,
 ) -> Result<Step, RpcError> {
+    if let refused @ Step::Refused(_) = send_out(client, copy, allow_empty).await? {
+        return Ok(refused);
+    }
+    wait_unlisted(
+        client,
+        &copy.machine_id,
+        &copy.service,
+        &copy.container_id,
+        cancellation,
+    )
+    .await
+    .map(Step::from)
+}
+
+/// Asks the copy Out without waiting for proxies to drop it.
+pub(crate) async fn send_out<C: MachineOperations>(
+    client: &C,
+    copy: &Copy,
+    allow_empty: bool,
+) -> Result<Step, RpcError> {
     if matches!(copy.rotation, CopyRotation::In | CopyRotation::Held(_)) {
         let want = ContainerWant::Out {
             container: copy.locator(),
@@ -260,15 +298,7 @@ pub(crate) async fn take_out<C: MachineOperations>(
             return Ok(Step::Refused(refusal));
         }
     }
-    wait_unlisted(
-        client,
-        &copy.machine_id,
-        &copy.service,
-        &copy.container_id,
-        cancellation,
-    )
-    .await
-    .map(Step::from)
+    Ok(Step::Done)
 }
 
 pub(crate) async fn retire<C: MachineOperations>(

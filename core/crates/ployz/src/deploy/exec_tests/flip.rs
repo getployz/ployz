@@ -1432,7 +1432,7 @@ async fn a_cancel_mid_cleanup_reports_each_copy_left_running() {
         ]
     );
     assert_eq!(client.rotation(&one), Some(CopyRotation::Out));
-    assert_eq!(client.rotation(&two), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&two), Some(CopyRotation::Out));
     client.assert_done();
 }
 
@@ -1534,7 +1534,7 @@ async fn a_refused_restore_after_an_interrupted_hold_is_reported() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn outs_wait_for_previous_unlisted() {
+async fn a_groups_outs_go_together_and_its_gones_follow_one_unlisting() {
     let (first, second, proxy) = (machine('1'), machine('2'), machine('3'));
     let (one, two) = (container('a'), container('b'));
     let (new_one, new_two) = (container('c'), container('d'));
@@ -1549,8 +1549,8 @@ async fn outs_wait_for_previous_unlisted() {
             created(Call::Run(first, ContainerKind::ServiceContainer), &new_one),
             created(Call::Run(second, ContainerKind::ServiceContainer), &new_two),
             observed(Call::Inspect(first, one), running()),
-            ok(Call::Remove(first, one)),
             observed(Call::Inspect(second, two), running()),
+            ok(Call::Remove(first, one)),
             ok(Call::Remove(second, two)),
         ])
     }
@@ -1569,8 +1569,8 @@ async fn outs_wait_for_previous_unlisted() {
             Move::To(new_one, CopyRotation::In),
             Move::To(new_two, CopyRotation::In),
             Move::To(one, CopyRotation::Out),
-            Move::Gone(one),
             Move::To(two, CopyRotation::Out),
+            Move::Gone(one),
             Move::Gone(two),
         ]
     );
@@ -1587,13 +1587,9 @@ async fn outs_wait_for_previous_unlisted() {
         "old copies retire only once every proxy lists every new copy"
     );
     assert!(
-        every(Move::Gone(one), &|route| !route.contains(&one)),
-        "a copy is removed only once no proxy lists it"
-    );
-    assert!(
-        every(Move::To(two, CopyRotation::Out), &|route| !route
-            .contains(&one)),
-        "the next Out waits until no proxy lists the previous copy"
+        every(Move::Gone(one), &|route| !route.contains(&one)
+            && !route.contains(&two)),
+        "the group's copies are removed only once no proxy lists any of them"
     );
     client.assert_done();
 }
@@ -1958,7 +1954,7 @@ async fn new_copies_carry_the_run_label_the_dependency_wait_selects_by() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_unconfirmed_out_leaves_the_services_other_old_copies_in() {
+async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
     let (first, second) = (machine('1'), machine('2'));
     let (one, two) = (container('a'), container('b'));
     let (new_one, new_two) = (container('c'), container('d'));
@@ -1984,8 +1980,8 @@ async fn an_unconfirmed_out_leaves_the_services_other_old_copies_in() {
     assert_eq!(client.rotation(&one), Some(CopyRotation::Out));
     assert_eq!(
         client.rotation(&two),
-        Some(CopyRotation::In),
-        "no Out follows one whose unlisting was not confirmed"
+        Some(CopyRotation::Out),
+        "the group's Outs go together"
     );
     assert_eq!(
         warnings,
@@ -1993,14 +1989,16 @@ async fn an_unconfirmed_out_leaves_the_services_other_old_copies_in() {
             left_running("machine-1", "proxy on machine-1, machine-2 did not confirm"),
             mixed_after_return("machine-1"),
             mixed_after_return("machine-2"),
-            left_running("machine-2", "an earlier copy's Out was not confirmed"),
+            left_running("machine-2", "proxy on machine-1, machine-2 did not confirm"),
+            mixed_after_return("machine-1"),
+            mixed_after_return("machine-2"),
         ]
     );
     client.assert_done();
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_failed_route_read_after_an_out_leaves_the_services_other_old_copies_in() {
+async fn a_failed_route_read_after_the_outs_leaves_every_old_copy_of_the_group_running() {
     let (first, second) = (machine('1'), machine('2'));
     let (one, two) = (container('a'), container('b'));
     let (new_one, new_two) = (container('c'), container('d'));
@@ -2025,8 +2023,8 @@ async fn a_failed_route_read_after_an_out_leaves_the_services_other_old_copies_i
     assert_eq!(client.rotation(&one), Some(CopyRotation::Out));
     assert_eq!(
         client.rotation(&two),
-        Some(CopyRotation::In),
-        "an Out whose unlisting could not be read stops the Service's cleanup"
+        Some(CopyRotation::Out),
+        "no copy is removed while its unlisting could not be read"
     );
     client.assert_done();
 }
@@ -2046,8 +2044,8 @@ async fn an_old_copys_owner_sees_the_new_copies_listed_before_its_out() {
             created(Call::Run(first, ContainerKind::ServiceContainer), &new_one),
             created(Call::Run(second, ContainerKind::ServiceContainer), &new_two),
             observed(Call::Inspect(first, one), running()),
-            ok(Call::Remove(first, one)),
             observed(Call::Inspect(second, two), running()),
+            ok(Call::Remove(first, one)),
             ok(Call::Remove(second, two)),
         ])
     }
