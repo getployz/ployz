@@ -25,7 +25,8 @@ export type EnvironmentChangesReviewProps = {
   /** Working State differs from Saved State: Save only saves it without deploying. */
   canSave: boolean;
   onSave: () => void;
-  onDiscardAll: () => void;
+  /** None when nothing is left to discard: the footer leaves Discard all out. */
+  onDiscardAll?: (() => void) | undefined;
   onClose: () => void;
   onDeploy: () => void;
   /** What the next Deploy ships, in the user's words; shown on its Deployment. */
@@ -297,7 +298,7 @@ export function Value({ kind, before, after }: { kind: ChangeKind; before: strin
 function Footer({ groups, canDeploy, asks = false, canSave, onSave, onDiscardAll, onDeploy, busy = new Set() }: EnvironmentChangesReviewProps) {
   return (
     <DialogFooter>
-      {groups.some((group) => group.canDiscard) ? (
+      {onDiscardAll && groups.some((group) => group.canDiscard) ? (
         <Button variant="ghost" className="text-muted-foreground sm:mr-auto" disabled={busy.has("discarding")} onClick={onDiscardAll}>{busy.has("discarding") ? "Discarding…" : "Discard all"}</Button>
       ) : null}
       <Button variant={canDeploy ? "outline" : "default"} disabled={!canSave || busy.has("deploying")} onClick={onSave}>

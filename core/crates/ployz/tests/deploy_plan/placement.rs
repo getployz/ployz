@@ -566,6 +566,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                     bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
                     used_bytes: 0,
                     role: None,
+                    slot_role: None,
                 };
                 target_machine.storage = Some(MachineStorageObservation::Ready);
                 snapshot.machines = vec![target_machine.clone()];

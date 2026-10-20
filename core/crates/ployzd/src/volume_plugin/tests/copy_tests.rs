@@ -170,6 +170,7 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
             "zfs unmount tank/ployz/data",
             "zfs create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror",
             "zfs create -o canmount=off -o readonly=on -o refquota=1073741824 tank/ployz-mirror/data",
+            "zfs set ployz:role=old_copy tank/ployz-mirror/data",
             "zfs rename tank/ployz/data tank/ployz-mirror/data/fs",
         ]
     );
@@ -183,6 +184,94 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
     let before = commands(&test);
     assert_eq!(post(&socket, "/Volume.Copy.Cut", request).await, reply);
     assert!(effects(&commands(&test)[before.len()..]).is_empty());
+    server.abort();
+}
+
+/// What the Machine reports a slot as, to a run and to the Runtime Watch alike.
+async fn slot_roles(socket: &Path) -> (Value, Value) {
+    let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    let capacity = post(socket, "/Storage.Inspect", json!(null)).await;
+    (
+        copy.pointer("/Ok/role").cloned().unwrap_or(Value::Null),
+        capacity
+            .pointer("/Ok/copies/data/slot_role")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn the_cut_leaves_the_root_as_an_old_copy() {
+    let test = TestDir::new();
+    let (socket, server) = writer(&test, &[("w-1-1", 11)]);
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert_eq!(
+        reply.pointer("/Ok/role"),
+        Some(&json!("old_copy")),
+        "{reply}"
+    );
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("old_copy"), json!("old_copy"))
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_into_an_old_copy_makes_it_a_mirror() {
+    let source = Source::start(Some(BOUND), "snapshot w-2-1 78\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
+    set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
+    post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("old_copy"), json!("old_copy"))
+    );
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-2-1")).await;
+    landed(&socket, "w-2-1").await;
+    let reply = finished(&socket, "w-2-1").await;
+    assert_eq!(reply.pointer("/Ok/role"), Some(&json!("mirror")), "{reply}");
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("mirror"), json!("mirror"))
+    );
+    server.abort();
+}
+
+/// The old primary re-added as the mirror before any further write already holds the
+/// target, so the pull sends nothing, and still makes it the mirror.
+#[tokio::test]
+async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
+    let source = Source::start(Some(BOUND), "").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
+    set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
+    post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("f-1")).await;
+    assert_eq!(reply.pointer("/Ok/role"), Some(&json!("mirror")), "{reply}");
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("mirror"), json!("mirror"))
+    );
     server.abort();
 }
 
