@@ -143,6 +143,12 @@ describe("callCloud", () => {
       yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.update(organizationMachine).set({ machineName: "old-name" as MachineName });
+      // Asked for from this session, for exactly this forget, and already spent on the removal below.
+      yield* drizzle.insert(operationApprovals).values({
+        id: APPROVAL, organizationId: ORGANIZATION, subject: `server:${MACHINE}`, requestedByUserId: userId, via: "agent", credentialKind: "session", credentialId: "session-1",
+        command: "forget", digest: `forget:server:${MACHINE}`, status: "approved", decidedByUserId: userId, decidedAt: new Date(), usedAt: new Date(),
+        review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: [], operation: { verb: "forget", name: MACHINE, preview: null } }),
+      });
       const [removal] = yield* drizzle.insert(machineRemoveAttempt).values({
         organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [], noReset: true, approvalId: APPROVAL,
       }).returning();
