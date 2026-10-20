@@ -505,8 +505,8 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
   Effect.gen(function* () {
     const { provided, caller, cli } = yield* shopRemovingWeb();
 
-    // A write that never publishes ignores the header, whatever it names.
-    expect(yield* cli(addService(1), UNKNOWN_APPROVAL)).toMatchObject({ status: 200 });
+    // Even a write that never asks checks the approval it carries.
+    expect(yield* cli(addService(1), UNKNOWN_APPROVAL)).toMatchObject({ status: 404, json: { error: { code: "not_found" } } });
 
     const first = yield* cli(publish);
     expect(first.status).toBe(409);
@@ -702,6 +702,27 @@ it.live("an approval carried into another Environment is refused there, even for
     } } });
     expect(writes).not.toHaveBeenCalled();
     expect(yield* cli(publish, id)).toMatchObject({ status: 200, json: { written: "published" } });
+  }));
+
+// Catches an approval carried into a write that is already in the state it asks for, which never reaches the gate.
+it.live("an unprotect approval carried into an Environment that is already unprotected, or into a write that never asks, is refused", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, write, store } = yield* shopRemovingWeb();
+    yield* write({ command: "create_environment", id: STAGING, project: "shop", name: "staging" });
+    yield* write({ command: "set_environment_protected", environment: here, protected: true });
+    const unprotect: ConfigCommand = { command: "set_environment_protected", environment: here, protected: false };
+    const details = (yield* cli(unprotect)).json.error?.details;
+    const id = details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval({ ...caller, via: "dashboard" }, id, { approve: { digest: details?.approval ?? expect.fail("no digest") } }));
+    const writes = vi.spyOn(store, "write");
+    const covers = "This approval covers only the request to unprotect shop/production. Run the command again without it to ask for one.";
+    const refused = { status: 403, json: { error: { code: "forbidden", message: covers, details: { approval_id: id } } } };
+
+    expect(yield* cli({ ...unprotect, environment: { project: "shop", environment: "staging" } }, id)).toMatchObject(refused);
+    expect(yield* cli({ ...unprotect, protected: true }, id)).toMatchObject(refused);
+    expect(yield* cli(addService(2), id)).toMatchObject(refused);
+    expect(writes).not.toHaveBeenCalled();
+    expect(yield* cli(unprotect, id)).toMatchObject({ status: 200 });
   }));
 
 const removeShop =(version: string | null = null): ConfigCommand => ({ command: "remove", project: "shop", version });

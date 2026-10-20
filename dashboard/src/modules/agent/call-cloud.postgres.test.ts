@@ -505,6 +505,11 @@ describe("callCloud", () => {
       expect(fresh.approval_id).not.toBe(approval_id);
       expect((yield* drizzle.select().from(serviceAct)).map((row) => row.state)).toEqual(["done"]);
 
+      // A start asks no one, and still refuses the stop's approval carried into it.
+      const start: Act = { ...stop("5"), action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb: "start" } };
+      const carried = yield* callCloud(caller, { act: start }, fresh.approval_id).pipe(Effect.provide(services));
+      expect(carried).toEqual({ ok: false, refusal: expect.objectContaining({ code: "forbidden", details: { approval_id: fresh.approval_id } }) });
+
       const clicked = yield* callCloud({ ...caller, via: "dashboard" }, { act: stop("4") }).pipe(Effect.provide(services));
       expect(clicked).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
     }));

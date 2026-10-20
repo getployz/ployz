@@ -318,6 +318,18 @@ it.live("an approved role change runs once: repeating it after the role was rest
     expect(yield* roleOf).toBe("owner");
   }));
 
+// Catches an approval carried into a command that never asks, which skipped the gate and so every check of it.
+it.live("a command that never asks refuses an approval carried into it, and changes nothing", () =>
+  Effect.gen(function* () {
+    const { provided, rows, userId } = yield* parity();
+    const { id } = yield* approvedDemotion(provided, userId, "session-1");
+    const before = yield* rows;
+    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
+    const ran = yield* provided(runAgentCall(agent, { tool: "server_upgrade_policy_set", input: { channel: "beta" }, key: "carried", approvalId: id, page: { at: "organization" } }));
+    expect(ran).toMatchObject({ outcome: { ok: false, refusal: { code: "forbidden", details: { approval_id: id } } } });
+    expect(yield* rows).toEqual(before);
+  }));
+
 it.live("a sidebar call that names an approval in its input does not pass the gate, even one approved for the same plan", () =>
   Effect.gen(function* () {
     const { provided, sidebar, userId } = yield* parity();
