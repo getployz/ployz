@@ -247,12 +247,16 @@ export const closeStaleCleanups = Effect.fn("NamespaceCleanup.closeStale")(funct
   return { failed: failed.length, unknown: unknown.length };
 });
 
-const CLI_END_MESSAGES = {
+const END_MESSAGES = {
   not_started: "The clean never started.",
   cancelled: "The clean was cancelled before it started.",
   interrupted: "The clean was cancelled while it ran; some Volumes may be gone.",
   lost: "Cloud lost track of the clean; some Volumes may be gone.",
 } as const satisfies Record<CleanupEndCodeWithoutMessage, string>;
+
+/** Why a clean ended without finishing: the Engine's words when it gave some, else Cloud's. */
+export const cleanupEndMessage = (row: Pick<typeof namespaceCleanup.$inferSelect, "endCode" | "endMessage">) =>
+  row.endCode === null || row.endCode === "refused" || row.endCode === "incomplete" ? row.endMessage : END_MESSAGES[row.endCode];
 
 export type CliNamespaceCleanup =
   | { readonly state: "pending" | "running" }
@@ -273,7 +277,7 @@ export const readCliNamespaceCleanup = Effect.fn("NamespaceCleanup.readCli")(fun
       return { state: "finished", volumes: row.volumes ?? [] } satisfies CliNamespaceCleanup;
     default: {
       const code = row.endCode ?? "lost";
-      const message = code === "refused" || code === "incomplete" ? row.endMessage ?? "" : CLI_END_MESSAGES[code];
+      const message = cleanupEndMessage({ endCode: code, endMessage: row.endMessage }) ?? "";
       return { state: "ended", code, message } satisfies CliNamespaceCleanup;
     }
   }
