@@ -34,9 +34,6 @@ pub(super) enum Subject {
     },
 }
 
-/// The rows for Machines in the Cluster of `namespace` that need someone to act. While
-/// a Deployment is `rolling_out`, acks trail the copies it just turned In, so only Down
-/// Machines show.
 pub(super) fn attention(
     root: &ArgMatches,
     namespace: &Namespace,
@@ -51,8 +48,6 @@ pub(super) fn attention(
                 Some(Reach::Dial(mut client)) => {
                     observe(&mut client, namespace, rolling_out).await.map(Some)
                 }
-                // Only Cloud answers a credential it refuses Server Access, and Cloud
-                // keeps no acks. With no Server at all there is nothing to check.
                 Some(Reach::Ask(_)) | None => Ok(None),
             }
         })
@@ -72,8 +67,6 @@ pub(super) fn attention(
     }
 }
 
-/// Whether `error` says nothing is set up here: no Ployz config and no local daemon,
-/// which a signed-out CLI reports as signed out.
 fn nothing_set_up(error: &Error) -> bool {
     let Some(source) = std::error::Error::source(error) else {
         return false;
@@ -159,15 +152,12 @@ async fn observe(
 
 struct Check {
     attention: Vec<Attention>,
-    gaps: Vec<Gap>,
+    unseen: Vec<Unseen>,
     names: HashMap<MachineId, MachineName>,
 }
 
-/// What the check could not see, so its rows may miss a Machine.
-enum Gap {
+enum Unseen {
     Unlisted(Error),
-    /// Live Machines whose copies did not list, so the copies each Service expects
-    /// may be short.
     Unanswered(Vec<MachineId>),
     Unread {
         service: QualifiedService,
@@ -181,8 +171,6 @@ enum Gap {
     },
 }
 
-/// The Down set comes from the entry's Machine list alone, so a Machine is either a
-/// Down row or judged by its acks, never both and never neither.
 fn judge(observed: Observed) -> Check {
     let Observed { machines, copies } = observed;
     let down: BTreeSet<MachineId> = machines
@@ -204,7 +192,7 @@ fn judge(observed: Observed) -> Check {
                 }),
             })
             .collect(),
-        gaps: Vec::new(),
+        unseen: Vec::new(),
         names: machines
             .iter()
             .map(|observed| (observed.machine.id, observed.machine.name.clone()))
@@ -213,7 +201,7 @@ fn judge(observed: Observed) -> Check {
     let (live, reads) = match copies {
         Copies::RollingOut => return check,
         Copies::Unlisted(error) => {
-            check.gaps.push(Gap::Unlisted(error));
+            check.unseen.push(Unseen::Unlisted(error));
             return check;
         }
         Copies::Listed { live, reads } => (live, reads),
@@ -227,13 +215,13 @@ fn judge(observed: Observed) -> Check {
         .filter(|machine| !down.contains(machine))
         .collect();
     if !unanswered.is_empty() {
-        check.gaps.push(Gap::Unanswered(unanswered));
+        check.unseen.push(Unseen::Unanswered(unanswered));
     }
     for (service, read) in reads {
         let read = match read {
             Ok(read) => read,
             Err(error) => {
-                check.gaps.push(Gap::Unread {
+                check.unseen.push(Unseen::Unread {
                     service: service.identity,
                     error,
                 });
@@ -259,7 +247,7 @@ fn judge(observed: Observed) -> Check {
             .filter(|machine| !down.contains(machine) && !read.routes.contains_key(machine))
             .collect();
         if !read.complete || !missing.is_empty() {
-            check.gaps.push(Gap::Unjudged {
+            check.unseen.push(Unseen::Unjudged {
                 service: service.identity.clone(),
                 machines: read.complete.then_some(missing),
             });
@@ -306,17 +294,17 @@ impl Check {
     }
 
     fn warn(&self) {
-        for gap in &self.gaps {
-            match gap {
-                Gap::Unlisted(error) => crate::ui::warn_cause(UNCHECKED, error),
-                Gap::Unanswered(machines) => crate::ui::warn(format!(
+        for unseen in &self.unseen {
+            match unseen {
+                Unseen::Unlisted(error) => crate::ui::warn_cause(UNCHECKED, error),
+                Unseen::Unanswered(machines) => crate::ui::warn(format!(
                     "{} did not answer, so status may miss Servers that have not picked up the new copies.",
                     self.names(machines)
                 )),
-                Gap::Unread { service, error } => {
+                Unseen::Unread { service, error } => {
                     crate::ui::warn_cause(format_args!("{UNCHECKED} of {}", service.name), error)
                 }
-                Gap::Unjudged { service, machines } => crate::ui::warn(format!(
+                Unseen::Unjudged { service, machines } => crate::ui::warn(format!(
                     "Could not check whether {} picked up the new copies of {}.",
                     machines.as_deref().map_or_else(
                         || "every Server".to_owned(),

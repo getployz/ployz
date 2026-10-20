@@ -755,7 +755,6 @@ fn this_server() -> Option<LocalCheckin> {
         .flatten()
 }
 
-/// `attention` as `ployz status` prints it for a local identity with nothing else to show.
 #[cfg(test)]
 pub(super) fn rendered(attention: Vec<Attention>) -> String {
     let status = Status {
