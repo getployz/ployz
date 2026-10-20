@@ -63,7 +63,10 @@ export const countOrganizationMachines = Effect.fn("MachineConnections.count")(f
   return row?.servers ?? 0;
 });
 
-/** Protected candidates are scoped to the current pairing and never browser projections. */
+/**
+ * Protected candidates are scoped to the current pairing and never browser projections. Each carries its Server's
+ * name where Cloud holds one, so a failed connection names the Server.
+ */
 export const loadOrganizationConnections = Effect.fn("MachineConnections.load")(
   function* (organizationId: string) {
     const { drizzle } = yield* Database;
@@ -75,7 +78,9 @@ export const loadOrganizationConnections = Effect.fn("MachineConnections.load")(
     )).orderBy(desc(organizationMachine.isDialEntry), asc(organizationMachine.createdAt), asc(organizationMachine.machineId));
     const connections: Connection[] = yield* Effect.forEach(candidates, (candidate) => Effect.gen(function* () {
       const management = yield* decryptPairingSecret(candidate.encryptedCapability);
-      return { management, machine_id: candidate.machineId };
+      return candidate.machineName === null
+        ? { management, machine_id: candidate.machineId }
+        : { management, machine_id: candidate.machineId, name: candidate.machineName };
     }));
     return { kind: "ready" as const, generation, connections };
   },
