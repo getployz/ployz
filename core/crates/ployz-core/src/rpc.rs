@@ -1344,32 +1344,15 @@ impl Unacked {
 }
 
 impl RoutesRead {
-    /// Whether the reader's membership sample keeps `machine`'s copies in its proxy's
-    /// routes; each proxy drops those its own sample calls Down.
-    #[must_use]
-    pub fn sampled_up(&self, machine: &MachineId) -> bool {
-        !self.down.contains(machine)
-    }
-
     /// Each listed Machine outside this read's `down` whose proxy acks no copies
     /// `satisfied` accepts.
     pub fn unacked<'read>(
         &'read self,
         satisfied: impl Fn(&BTreeSet<ContainerId>) -> bool + 'read,
     ) -> impl Iterator<Item = Unacked> + 'read {
-        self.unacked_outside(&self.down, satisfied)
-    }
-
-    /// As [`Self::unacked`], but outside the Machines the caller's own Machine list
-    /// reports Down rather than the reader's sample.
-    pub fn unacked_outside<'read>(
-        &'read self,
-        listed_down: &'read BTreeSet<MachineId>,
-        satisfied: impl Fn(&BTreeSet<ContainerId>) -> bool + 'read,
-    ) -> impl Iterator<Item = Unacked> + 'read {
         self.routes
             .iter()
-            .filter(|(machine, _)| !listed_down.contains(*machine))
+            .filter(|(machine, _)| !self.down.contains(*machine))
             .filter_map(move |(machine, routed)| match routed {
                 None => Some(Unacked::Unanswered(*machine)),
                 Some(routed) if !satisfied(routed) => Some(Unacked::Stale(*machine)),

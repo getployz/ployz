@@ -190,6 +190,10 @@ enum Unseen {
         services: Vec<QualifiedService>,
         machines: Option<BTreeSet<MachineId>>,
     },
+    DownToReader {
+        services: Vec<QualifiedService>,
+        machines: BTreeSet<MachineId>,
+    },
 }
 
 struct ServicesByFact<Fact>(Vec<(Fact, Vec<QualifiedService>)>);
@@ -255,6 +259,7 @@ fn judge(observed: Observed) -> Check {
     let mut unreported = BTreeSet::new();
     let mut unread = ServicesByFact(Vec::new());
     let mut unjudged = ServicesByFact(Vec::new());
+    let mut down_to_reader = ServicesByFact(Vec::new());
     for (service, read) in reads {
         let read = match read {
             Ok(read) => read,
@@ -263,25 +268,39 @@ fn judge(observed: Observed) -> Check {
                 continue;
             }
         };
-        let missing: BTreeSet<MachineId> = machines
+        let up_copies: Vec<(MachineId, ContainerId)> = serving_containers(&service.containers)
+            .iter()
+            .map(|serving| serving.as_observation())
+            .filter(|copy| !down.contains(&copy.machine_id))
+            .map(|copy| (copy.machine_id, copy.container_id))
+            .collect();
+        if up_copies.is_empty() {
+            continue;
+        }
+        let (reader_down, missing): (BTreeSet<MachineId>, BTreeSet<MachineId>) = machines
             .iter()
             .map(|observed| observed.machine.id)
             .filter(|machine| !down.contains(machine) && !read.routes.contains_key(machine))
-            .collect();
+            .partition(|machine| read.down.contains(machine));
+        if !reader_down.is_empty() {
+            down_to_reader.add(reader_down, service.identity.clone());
+        }
         if !read.complete || !missing.is_empty() {
             unjudged.add(read.complete.then_some(missing), service.identity.clone());
         }
-        let serving: BTreeSet<ContainerId> = serving_containers(&service.containers)
-            .iter()
-            .map(|serving| serving.as_observation())
-            .filter(|copy| !down.contains(&copy.machine_id) && read.sampled_up(&copy.machine_id))
-            .map(|copy| copy.container_id)
+        let serving: BTreeSet<ContainerId> = up_copies
+            .into_iter()
+            .filter(|(machine, _)| !read.down.contains(machine))
+            .map(|(_, container)| container)
             .collect();
         if serving.is_empty() {
             continue;
         }
         let mut waiting = Vec::new();
-        for unacked in read.unacked_outside(&down, |routed| serving.is_subset(routed)) {
+        for unacked in read
+            .unacked(|routed| serving.is_subset(routed))
+            .filter(|unacked| !down.contains(&unacked.machine()))
+        {
             match unacked {
                 Unacked::Stale(machine) => waiting.push(check.name(&machine)),
                 Unacked::Unanswered(machine) => {
@@ -309,6 +328,12 @@ fn judge(observed: Observed) -> Check {
             .0
             .into_iter()
             .map(|(machines, services)| Unseen::Unjudged { services, machines }),
+    );
+    check.unseen.extend(
+        down_to_reader
+            .0
+            .into_iter()
+            .map(|(machines, services)| Unseen::DownToReader { services, machines }),
     );
     check
 }
@@ -357,7 +382,7 @@ impl Check {
         for unseen in &self.unseen {
             match unseen {
                 Unseen::RollingOut(deployment) => crate::ui::warn(format!(
-                    "Not checking which Servers picked up the new copies while deployment {deployment} rolls out."
+                    "Not checking which Servers picked up the new copies while deployment {deployment} is in progress."
                 )),
                 Unseen::Unlisted(error) => crate::ui::warn_cause(UNCHECKED, error),
                 Unseen::Unanswered(machines) => crate::ui::warn(format!(
@@ -370,7 +395,7 @@ impl Check {
                         _ => ("have", "they", "route"),
                     };
                     crate::ui::warn(format!(
-                        "{} {has} not reported which copies {it} {routes} yet.",
+                        "{} {has} not reported which copies {it} {routes}.",
                         self.names(machines)
                     ));
                 }
@@ -386,6 +411,17 @@ impl Check {
                     ),
                     service_names(services)
                 )),
+                Unseen::DownToReader { services, machines } => {
+                    let (it, routes, its) = match machines.len() {
+                        1 => ("it", "routes", "its"),
+                        _ => ("they", "route", "their"),
+                    };
+                    crate::ui::warn(format!(
+                        "The Server status asked sees {} Down, so status is not checking what {it} {routes} or who routes {its} copies of {}.",
+                        self.names(machines),
+                        service_names(services)
+                    ));
+                }
             }
         }
     }
@@ -613,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn status_judges_a_machine_the_reader_calls_down_but_the_entry_does_not() {
+    fn status_warns_it_skips_a_machine_only_the_reader_calls_down() {
         let [one, two, three] = machines();
         let check = checked(
             listed(&[&one, &two, &three], &[]),
@@ -629,8 +665,27 @@ mod tests {
         assert!(check.attention.is_empty(), "no routes_not_acked row");
         assert_eq!(
             warned(&check),
-            ["Could not check whether machine-3 picked up the new copies of web."]
+            [
+                "The Server status asked sees machine-3 Down, so status is not checking what it routes or who routes its copies of web."
+            ]
         );
+    }
+
+    #[test]
+    fn a_service_whose_copies_are_all_on_down_machines_warns_nothing() {
+        let [one, two, three] = machines();
+        let mut read = routes_as_ployzd_answers(&[(&one, &[])], &[&two, &three]);
+        read.complete = false;
+        let check = checked(
+            listed(&[&one, &two], &[&three]),
+            vec![(
+                web([routed_on(&three, '3'), routed_on(&three, '4')]),
+                Ok(read),
+            )],
+        );
+
+        assert_eq!(check.attention.len(), 1, "only machine-3's Down row");
+        assert!(warned(&check).is_empty());
     }
 
     #[test]
@@ -724,7 +779,7 @@ mod tests {
         assert!(check.attention.is_empty(), "no routes_not_acked row");
         assert_eq!(
             warned(&check),
-            ["machine-3 has not reported which copies it routes yet."]
+            ["machine-3 has not reported which copies it routes."]
         );
     }
 
@@ -809,7 +864,9 @@ mod tests {
         );
         assert_eq!(
             warned(&check),
-            ["Not checking which Servers picked up the new copies while deployment #12 rolls out."]
+            [
+                "Not checking which Servers picked up the new copies while deployment #12 is in progress."
+            ]
         );
     }
 
