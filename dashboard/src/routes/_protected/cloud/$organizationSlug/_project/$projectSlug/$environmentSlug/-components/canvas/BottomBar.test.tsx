@@ -208,11 +208,23 @@ it("names a Save the Servers don't run apart from staged changes, with Deploy", 
   expect(onDeploy).toHaveBeenCalledOnce();
 });
 
+it("offers no Discard all while only a Save the Servers don't run is left", async () => {
+  stagedChanges = 0;
+  notRunning = 4;
+  open(canvasUrl, [replicas], 1);
+  await act(async () => { fireEvent.click((await bar()).getByRole("button", { name: "More change actions" })); });
+  expect(await screen.findByRole("menuitem", { name: "Save only" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Discard all changes" })).toBeNull();
+});
+
 it("counts only staged changes when a Save isn't running too", async () => {
   stagedChanges = 2;
   notRunning = 4;
   open(canvasUrl, [replicas, cache], 3);
-  expect((await bar()).getAllByText("2 changes")).toHaveLength(2);
+  const staged = await bar();
+  expect(staged.getAllByText("2 changes")).toHaveLength(2);
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
+  expect(await screen.findByRole("menuitem", { name: "Discard all changes" })).toBeTruthy();
 });
 
 it("closes Discard all's confirm on a double click, discarding once", async () => {

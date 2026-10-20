@@ -236,9 +236,12 @@ export function BottomBar({
           <DropdownMenuItem disabled={!saveable} onClick={save}>
             {busy.has("saving") ? <><Spinner />Saving…</> : "Save only"}
           </DropdownMenuItem>
-          <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
-            Discard all changes
-          </DropdownMenuItem>
+          {/* With only a Save left to deploy, Discard all returns to that Save: nothing would change. */}
+          {stagedChanges > 0 || notRunning === null ? (
+            <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
+              Discard all changes
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
