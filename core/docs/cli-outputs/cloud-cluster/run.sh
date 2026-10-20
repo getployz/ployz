@@ -55,6 +55,9 @@ CAPTURES=$("$DOCS/capture-dir.sh" "${1:-}") || exit 1
 # same environment and working directory that `cli` sets, so TTY captures
 # (cap.sh's `script` runs) show the real terminal rendering.
 # PLOYZ_CLOUD_TIMEOUT=N stops a streaming command after N seconds either way.
+# PLOYZ_CLOUD_DIRECT=1 takes the direct path when piped too, for an approval-gated
+# capture whose approval id must be read while it waits: `cli` replays output
+# only once the command ends.
 WRAPPER=$(mktemp /tmp/ployz-cloud.XXXXXX) || exit 1
 readonly SECTIONS RUN_DIR WORKSPACE CAPTURES WRAPPER
 # up_section records here what it changed, so a run that stops early puts it back.
@@ -84,7 +87,7 @@ echo "raw captures in $CAPTURES"
   echo 'set -euo pipefail'
   printf 'vc=%q manifest=%q run=%q url=%q\n' "$CORE/scripts/verify-cluster" "$MANIFEST" "$RUN_DIR" "$(jq -r .cloud.url "$MANIFEST")"
   cat <<'WRAP'
-if [ ! -t 1 ]; then
+if [ ! -t 1 ] && [ -z "${PLOYZ_CLOUD_DIRECT:-}" ]; then
   exec "$vc" cli ${PLOYZ_CLOUD_TIMEOUT:+--timeout "$PLOYZ_CLOUD_TIMEOUT"} "$manifest" -- "$@"
 fi
 t=${PLOYZ_CLOUD_TIMEOUT:-}
@@ -113,27 +116,8 @@ h() { echo "## $2" >>"$CAPTURES/$1"; echo >>"$CAPTURES/$1"; }
 start() { : >"$CAPTURES/$1.ansi"; echo "# $2" >"$CAPTURES/$1.md"; echo >>"$CAPTURES/$1.md"; }
 latest() { "$P" --json deployment ls --limit 1 | jq -r '.deployments[0].id'; }
 latest_number() { "$P" --json deployment ls --limit 1 | jq -r '.deployments[0].number'; }
-pending() { "$P" --json org approval ls | jq -r '.. | objects | select(.status? == "pending") | .id' | sort; }
-# approved FILE TITLE -- CMD...   a pipe capture of a command Cloud asks a human
-# to approve, with Ada approving the one approval it asks for on a terminal
-# (`org approval approve` reads the Organization's name), as a person would.
-approved() {
-  local before id='' cap_pid
-  before=$(pending)
-  m "$@" &
-  cap_pid=$!
-  for _ in $(seq 60); do
-    id=$(comm -13 <(echo "$before") <(pending) | head -n1)
-    [ -z "$id" ] || break
-    sleep 2
-  done
-  if [ -z "$id" ] || ! printf 'ada\n' | script -qec "$(printf '%q ' "$P" org approval approve "$id")" /dev/null >/dev/null 2>&1; then
-    kill "$cap_pid" 2>/dev/null
-    echo "could not approve ${id:-the approval} for: $2" >&2
-    exit 1
-  fi
-  wait "$cap_pid"
-}
+# shellcheck source=approve.sh
+source "$DOCS/cloud-cluster/approve.sh"
 settle() { # wait until no Deployment of production is queued or running
   for _ in $(seq 60); do
     "$P" --json deployment ls --limit 5 | jq -e '[.deployments[] | select(.status == "queued" or .status == "running")] | length == 0' >/dev/null && return

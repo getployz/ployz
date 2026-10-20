@@ -23,7 +23,7 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 - [store/run.sh](store/run.sh): needs only the debug binary `core/target/debug/ployz`; it runs against the hidden SQLite Store (`PLOYZ_STORE=sqlite:…`) under an isolated HOME.
 - [cloud/run.sh](cloud/run.sh): starts its own seeded local Cloud with `dashboard/scripts/verify/up.sh` and stops only that one at the end (`KEEP=1` leaves it running). It refuses to run while this checkout already has a verify Cloud (`dashboard/.verify/run`), because `up.sh` would wipe it, including the one `verify-cluster up --cloud` uses.
 - [cluster/run.sh](cluster/run.sh): needs privileged Docker, `cargo build -p ployz -p ployzd`, and `docker pull ghcr.io/getployz/ployz-testkit:main`; it builds alpha, beta, gamma plus a lone `solo`, then tears them down. Its Cluster, image and HOME carry a random per-run id, so runs from two checkouts never collide. It stops when a setup capture that later captures depend on fails, such as `server add`.
-- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. Cloud asks a person to approve a removal from `ployz`, so for env rm, project rm and the deploy that removes a domain the driver approves as the seed's owner Ada with `ployz org approval approve`, run on a terminal because it asks for the Organization's name. It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
+- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. Cloud asks a person to approve a removal from `ployz`, so for env rm, project rm and the deploy that removes a domain the driver approves, as the seed's owner Ada, the approval id the command itself prints, with `ployz org approval approve` on a terminal because it asks for the Organization's name ([cloud-cluster/approve.sh](cloud-cluster/approve.sh)). If no single id appears, the approver stalls, or the command then fails, the run stops without `.ok`; `bash cloud-cluster/approve.test.sh` checks that against a stub `ployz`. It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
 
 - [record.py](record.py): runs one command in a PTY and writes an asciicast, a GIF (`agg`) and a last-frame PNG (`ffmpeg`), as in `record.py --gif out.gif --png out.png -- 'ployz deploy'`. It writes nothing unless the command exits with `--expect-exit` (default 0), and replaces each output through a temp file and a rename. [prototype-media/make.sh](prototype-media/make.sh) uses it to re-record the prototype GIFs.
 - [cap.sh](cap.sh): appends one command's capture to a `.md` and its terminal rendering to the matching `.ansi`. Every driver captures through it.
@@ -269,7 +269,7 @@ Dominant: one pretty-printed object on stdout (124 of 128 success outputs). The 
 
 ## Likely bugs
 
-Each item reproduces in a capture on main, at the line it cites. The earlier list's other items no longer reproduce and were dropped; git history keeps them.
+Each item reproduces in a capture on main, at the line it cites.
 
 1. `exec` of a missing binary prints `OCI runtime exec failed: …` on stdout, exit 127. [cloud-cluster/errors.md:31](cloud-cluster/errors.md) **Kept: `exec` passes the remote command's output and exit code through.**
 2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md)
@@ -277,6 +277,46 @@ Each item reproduces in a capture on main, at the line it cites. The earlier lis
 4. `server rm gamma --confirm gamma` removes the Server, then warns `! Server gamma is running Services: shop-production/web.` with `next: ployz server drain gamma`, which names the Server it just removed. [cluster/server.md:1004](cluster/server.md)
 5. env rm's removal Deployment prints `  api: starting 0/1` before `  api: removing 0/1` for a Service it only removes. [cloud-cluster/env.md:604](cloud-cluster/env.md)
 6. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
+
+The earlier list's 32 items, rechecked against the same captures. Old items 15, 23 and 29 are items 4, 1 and 2 above.
+
+Fixed, each at the capture that shows it:
+
+- 1, `unset web.env.MISSING` claimed `already set`: now `Nothing changed in shop/production; web.env.MISSING is already unset.` [store/settings.md:978](store/settings.md)
+- 2, an empty save claimed it published: `deploy --skip-deploy`, the save today, says `Nothing staged in empty/production.` [store/staging.md:621](store/staging.md)
+- 3, an empty discard claimed it discarded: now `Nothing staged in empty/production; nothing to discard.` [store/staging.md:585](store/staging.md)
+- 6, local `deploy --detach` left a queued Deployment: it refuses, and `deployment ls` shows none queued. [cluster/deploy.md:528](cluster/deploy.md), [cluster/deploy.md:540](cluster/deploy.md)
+- 7, server ls with gamma down said nothing: it warns `! gamma did not answer; its rows are missing.` [cluster/errors.md:55](cluster/errors.md)
+- 8, a missing `--confirm` exited 1: both a missing and a wrong one exit 2. [store/project.md:224](store/project.md), [store/project.md:249](store/project.md)
+- 9, server upgrade printed its failure twice, then the cause again: one `error:` line and one `inspect:` line. [cluster/server.md:852](cluster/server.md)
+- 10, `domain add` of an existing domain claimed it staged: now `Nothing changed in shop/production; acme.com is already on web.` [cloud-cluster/domain.md:516](cloud-cluster/domain.md)
+- 11, `env shutdown` of a never-deployed Environment printed a bare `applied: `: now `Deployment #1 of shop/qa: applied`. [store/env.md:988](store/env.md)
+- 12, `cannot Select a context…`: now `Choosing a context needs a terminal; name one instead.` [store/context.md:514](store/context.md)
+- 13, signed-out ps and logs reported a socket error: now `Not signed in to Cloud.` with `next: ployz login`. [cloud/errors.md:198](cloud/errors.md), [cloud/errors.md:223](cloud/errors.md)
+- 14, the server rm retry quoted `~`: now `retry: ployz server rm gamma --context default --confirm gamma`. [cluster/errors.md:40](cluster/errors.md)
+- 16, service restart warned twice: one warning. [cluster/errors.md:644](cluster/errors.md)
+- 17, logs exited 0 with a Machine down: exit 3 and a warning. [cluster/errors.md:609](cluster/errors.md)
+- 18, server drain `--json` printed `public_key` as bytes: a base64 string. [cluster/server.md:892](cluster/server.md)
+- 19, `server show nope --json` said `invalid_argument`: now `not_found`. [cloud-cluster/errors.md:483](cloud-cluster/errors.md)
+- 20, a registry error's newline broke the result: the cause is one line, `error from registry: denied; denied`. [cloud-cluster/deploy.md:1453](cloud-cluster/deploy.md)
+- 21, up printed `built ` with no detail: now `workspace built on machine-1.` [cloud-cluster/deploy.md:2979](cloud-cluster/deploy.md)
+- 22, clap Usage showed `--ployz-config`: now `Usage: ployz service add --image <REF> --project <project> <name>`. [store/service.md:162](store/service.md)
+- 24, status for a deleted Project gave no repair step: now `needs attention = No Project named workspace` with `next: ployz link --project PROJECT`. [cloud-cluster/deploy.md:3213](cloud-cluster/deploy.md)
+- 25, the empty `--secret` error carried a postgres `example`: its details are `null`. [store/settings.md:105](store/settings.md)
+- 26, `env branch --live` had two colons: now `db can't be used live: the Branch copies it, so nothing running can lend it`. [store/env.md:936](store/env.md)
+- 28, server add over SSH ended on its wait line: it follows the ingress and ends `Server beta is ready.` [cluster/server.md:27](cluster/server.md)
+- 30, human service add omitted `next`: it prints `next: ployz deploy --project shop`. [store/service.md:43](store/service.md)
+- 32, bare `ployz org` printed help on stderr with exit 2: stdout, exit 0. [cloud/org.md:48](cloud/org.md)
+
+Intentional, per a rule the captures state:
+
+- 5, a Managed volume can't switch storage after a Deploy was requested: `Volume cache keeps its storage once a Deploy has been requested; add a new Volume for other storage`. [cluster/volume.md:229](cluster/volume.md)
+- 27, a malformed `--expect-version 1` exits 2 and a stale well-formed one exits 1. Exit 2 means the command line is wrong; a stale version is a conflict with the current state, which exits 1. [cloud/deploy.md:768](cloud/deploy.md), [cloud-cluster/errors.md:107](cloud-cluster/errors.md)
+
+Not rechecked, because no capture reaches them now:
+
+- 4, `org ls` after removing the acting Organization: the cloud/ capture of that `org rm` still waits on an approval nobody gives, so the removal never happens. [cloud/org.md:264](cloud/org.md)
+- 31, the `Docker only` prompt's warning placement: no capture shows that prompt.
 
 ## Open design questions
 

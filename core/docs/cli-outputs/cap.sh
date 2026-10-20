@@ -9,6 +9,8 @@
 #                        whose live rendering matters.
 #   CAP_MUST=1           exit with CMD's status when it fails, for a step later
 #                        captures depend on. Otherwise the status is only recorded.
+#   CAP_STDERR=FILE      write the pipe run's stderr to FILE as it happens, for a
+#                        caller that reads a line from it while CMD still runs.
 # Ctrl-C is fatal: `script` and ployz both swallow SIGINT, so cap.sh exits 130
 # when it sees the interrupt, an exit of 130 or script's "Session terminated".
 # Env vars set by the caller (HOME, PLOYZ_STORE, ...) pass through.
@@ -35,11 +37,12 @@ if [ "${CAP_TTY:-1}" = only ]; then
     echo '```'; echo
   } >>"$md"
 else
-  "$@" </dev/null >"$tmp/stdout" 2>"$tmp/stderr" || code=$?
+  err=${CAP_STDERR:-$tmp/stderr}
+  "$@" </dev/null >"$tmp/stdout" 2>"$err" || code=$?
   {
     echo "### $title"; echo; echo '```console'; echo "\$ ${cmdline% }"; echo "# exit $code"; echo '```'
     if [ -s "$tmp/stdout" ]; then echo; echo 'stdout:'; echo '```'; cat "$tmp/stdout"; [ -z "$(tail -c1 "$tmp/stdout")" ] || echo; echo '```'; fi
-    if [ -s "$tmp/stderr" ]; then echo; echo 'stderr:'; echo '```'; cat "$tmp/stderr"; [ -z "$(tail -c1 "$tmp/stderr")" ] || echo; echo '```'; fi
+    if [ -s "$err" ]; then echo; echo 'stderr:'; echo '```'; cat "$err"; [ -z "$(tail -c1 "$err")" ] || echo; echo '```'; fi
     echo
   } >>"$md"
   if [ "${CAP_TTY:-1}" = 1 ]; then
