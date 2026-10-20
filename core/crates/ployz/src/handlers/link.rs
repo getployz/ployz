@@ -1084,12 +1084,11 @@ mod tests {
     /// The check-in record a Fleet Token host kept after `ployz server rm` reset it.
     const JOINED: &str = r#"{
         "answer": "joined",
-        "token_fingerprint": "32e8dfa6b195171a",
         "at": "2026-10-20T22:29:15.665202151Z",
         "prep": {"docker": "ready", "zfs": "ready"},
         "blockers": [],
         "prepare_retries": 0,
-        "attempt": {"attemptId": "166be583-83bf-4e66-b1fd-5164630fff37", "stage": "publishing"}
+        "attempt": {"attemptId": "attempt-1", "stage": "publishing"}
     }"#;
 
     fn status_on(left: bool) -> String {
