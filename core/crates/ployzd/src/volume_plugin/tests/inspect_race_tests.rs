@@ -1,10 +1,18 @@
 //! Volume.Copy.Inspect while a pull's receive task finishes between Inspect's reads.
 
-use std::{os::unix::fs::PermissionsExt as _, sync::Arc, time::Duration};
+use std::{
+    os::unix::fs::PermissionsExt as _,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::{body::Body, extract::Request, response::IntoResponse};
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{net::TcpListener, process::Command, sync::Semaphore};
 
+use super::super::transfer::ZfsChild;
 use super::*;
 
 const BOUND: u64 = 1_073_741_824;
@@ -102,6 +110,84 @@ async fn an_inspect_a_breaking_receive_lands_between_answers_the_copy_before_or_
         after
             .pointer("/Ok/pull/failure")
             .is_some_and(Value::is_string),
+        "{after}"
+    );
+    assert!(
+        during == before || during == after,
+        "during: {during}\nbefore: {before}\nafter: {after}"
+    );
+    server.abort();
+}
+
+/// A receive task that panics publishes its failure before the `zfs` child it dropped has
+/// exited, and that child can still write the slot.
+#[tokio::test]
+async fn an_inspect_a_panicked_receive_child_writes_under_answers_the_copy_before_or_after_it() {
+    let (port, stream) = held_source("break\n").await;
+    stream.add_permits(1);
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let mut storage = VolumeStorage::with_programs(zpool, gated(&test, &zfs));
+    storage.send_port = port;
+    let receives = storage.receives.clone();
+    let socket = test.0.join("plugin.sock");
+    let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let inspect = || post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"}));
+
+    let pull = json!({"name": "data", "from": "::1", "target": "w-1-1"});
+    post(&socket, "/Volume.Copy.Pull", pull).await;
+    until(|| test.0.join("props/receive-ready").exists()).await;
+    until(|| !receives.running(&name)).await;
+    let before = inspect().await;
+
+    let (held, token) = (
+        test.0.join("child-gate"),
+        test.0
+            .join("props/tank/ployz-mirror/data/fs/receive_resume_token"),
+    );
+    fs::write(&held, "").unwrap();
+    let panicked = Arc::new(AtomicBool::new(false));
+    receives.spawn(&name, |stop| {
+        let mut child = ZfsChild::spawn(
+            Command::new("sh").args([
+                "-c",
+                &format!(
+                    "while [ -e '{held}' ]; do sleep 0.01; done; echo token-2 > '{token}.new'; mv '{token}.new' '{token}'",
+                    held = held.display(),
+                    token = token.display(),
+                ),
+            ]),
+            &stop,
+        )
+        .unwrap();
+        child.spare_from_kill();
+        let panicked = Arc::clone(&panicked);
+        async move {
+            let _child = child;
+            panicked.store(true, Ordering::SeqCst);
+            panic!("the receive task broke");
+        }
+    });
+    until(|| panicked.load(Ordering::SeqCst)).await;
+
+    fs::write(test.0.join("gate"), "").unwrap();
+    let during = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await }
+    });
+    until(|| during.is_finished() || test.0.join("gate-reached").exists()).await;
+    fs::remove_file(&held).unwrap();
+    until(|| !receives.running(&name)).await;
+    fs::remove_file(test.0.join("gate")).unwrap();
+    let during = during.await.unwrap();
+    let after = inspect().await;
+
+    assert_eq!(after.pointer("/Ok/resume_token"), Some(&json!("token-2")));
+    assert_eq!(
+        after.pointer("/Ok/pull/failure"),
+        Some(&json!("the receive task panicked")),
         "{after}"
     );
     assert!(

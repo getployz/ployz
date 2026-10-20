@@ -102,24 +102,16 @@ impl Receives {
             .is_some_and(ReceiveTask::running)
     }
 
+    /// The failure of `name`'s task once it has finished. A task that answered still runs
+    /// until the children it dropped exit, and those can still change the slot.
     pub(super) fn failure(&self, name: &DockerVolumeName) -> Option<String> {
         self.0
             .lock()
             .expect("receive registry is not poisoned")
             .get(&name.0)
+            .filter(|task| !task.running())
             .and_then(|task| task.outcome.lock().expect("outcome lock").clone())
             .and_then(Result::err)
-    }
-
-    /// Whether a task of `name` may still change its slot: it runs and has no outcome.
-    pub(super) fn settling(&self, name: &DockerVolumeName) -> bool {
-        self.0
-            .lock()
-            .expect("receive registry is not poisoned")
-            .get(&name.0)
-            .is_some_and(|task| {
-                task.running() && task.outcome.lock().expect("outcome lock").is_none()
-            })
     }
 
     /// Drops `name`'s outcome, and its entry once no task of it has a child alive.
