@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { AppliedVolume, MachineId } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
-import { Effect, type Exit, Fiber, Option, Schema, Scope } from "effect";
+import { Effect, Option, Schema } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
 import type { Gate, OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
@@ -76,12 +76,6 @@ const NAME_TIMEOUT_MS = 2_000;
  */
 export const FORGET_CLUSTER_BUDGET_MS = 15_000;
 
-/** Closes a tried Server's session while Cluster time is left; one that outlasts it goes on closing in the background. */
-const closeTried = (scope: Scope.Closeable, exit: Exit.Exit<unknown, unknown>) => Effect.forkDetach(Scope.close(scope, exit)).pipe(
-  Effect.flatMap((closing) => clusterRead(Fiber.join(closing))),
-  Effect.catchTag("ClusterOutOfTime", () => Effect.logWarning("A tried Server's session didn't close within Forget Servers' Cluster time.")),
-);
-
 /** One connection attempt to each known Server, all at once, each bounded by the timeout. One that answers says its name. */
 const reachServers = Effect.fn("ForgetServers.reach")(function* (known: ReadonlyArray<{ id: MachineId; name: string; management: string | null }>) {
   const ployz = yield* Ployz;
@@ -89,11 +83,12 @@ const reachServers = Effect.fn("ForgetServers.reach")(function* (known: Readonly
   return yield* Effect.forEach(known, ({ id, name, management }): Effect.Effect<{ id: MachineId; name: string; reach: Reach }> => {
     if (management === null) return Effect.succeed({ id, name, reach: "no_connection" as const });
     const connection = { machine_id: id, management };
-    return Effect.acquireUseRelease(Scope.make(), (scope) => Effect.gen(function* () {
-      const session = yield* ployz.connect({ connections: [connection], timeoutMs: SERVER_REACH_TIMEOUT_MS }).pipe(clusterRead);
+    return Effect.scoped(Effect.gen(function* () {
+      const reach = { connections: [connection], timeoutMs: SERVER_REACH_TIMEOUT_MS };
+      const session = yield* ployz.connect(reach, { closeWithin: clusterRead }).pipe(clusterRead);
       const details = yield* session.inspect().pipe(Effect.timeout(NAME_TIMEOUT_MS), clusterRead, Effect.option);
       return Option.match(details, { onNone: () => name, onSome: ({ machine }) => machine?.name ?? name });
-    }).pipe(Scope.provide(scope)), closeTried).pipe(
+    })).pipe(
       Effect.map((answered) => ({ id, name: answered, reach: "answered" as const })),
       Effect.orElseSucceed(() => ({ id, name, reach: "didnt_answer" as const })),
     );

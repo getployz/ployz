@@ -80,16 +80,20 @@ it.live("Forget Servers refuses while a Server answers, and forgets nothing", ()
   }).pipe(Effect.provide(services));
 }), 60_000);
 
-it.live("Forget Servers answers within its Cluster time while a Server that answered never closes its session", () => Effect.gen(function* () {
+it.live("Forget Servers answers within its Cluster time, and aborts the connection, while a Server that answered never closes its session", () => Effect.gen(function* () {
   const closing = yield* Deferred.make<void>();
+  const signals: AbortSignal[] = [];
   const services = yield* Layer.build(Layer.merge(yield* storeTestCloud(), makePloyzLayer({
-    connect: async () => asTestDouble<Client>()({
-      close: () => {
-        Effect.runSync(Deferred.succeed(closing, undefined));
-        return new Promise<void>(() => {});
-      },
-      inspect: async () => ({ machine: { name: "machine-1" } }),
-    }),
+    connect: async ({ signal }) => {
+      if (signal) signals.push(signal);
+      return asTestDouble<Client>()({
+        close: () => {
+          Effect.runSync(Deferred.succeed(closing, undefined));
+          return new Promise<void>(() => {});
+        },
+        inspect: async () => ({ machine: { name: "machine-1" } }),
+      });
+    },
   })));
   yield* Effect.gen(function* () {
     const { userId } = yield* seeded();
@@ -101,6 +105,7 @@ it.live("Forget Servers answers within its Cluster time while a Server that answ
       return yield* Effect.raceFirst(Fiber.join(fiber), held);
     }).pipe(Effect.provide(TestClock.layer()));
     expect(answer).toMatchObject({ ok: false, refusal: { code: "conflict", details: { answered: ["machine-1"] } } });
+    expect(signals.map((signal) => signal.aborted)).toEqual([true]);
   }).pipe(Effect.provide(services));
 }), 60_000);
 
