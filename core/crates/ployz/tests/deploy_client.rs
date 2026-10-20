@@ -1377,6 +1377,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
                 environment: EnvironmentRef::default(),

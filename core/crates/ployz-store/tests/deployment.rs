@@ -1740,6 +1740,7 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
                         storage: ployz_core::config::VolumeKind::Docker {},
                         shared_writes: true,
                         storage_locked: false,
+                        restored_from: None,
                         mounts: ["web", "api"]
                             .into_iter()
                             .map(|service| ployz_store::Mount {
@@ -3197,7 +3198,7 @@ fn deploying_a_service_with_nothing_to_run_is_refused_naming_it() {
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
     assert_eq!(
         refused.message,
-        "blank has nothing to run yet: add an image or connect a repository"
+        "blank has nothing to run yet: add an image, connect a repository, or run ployz up in its directory"
     );
     assert_eq!(refused.details["service"], "blank");
     // Deploying other Services leaves it out.
@@ -4085,6 +4086,7 @@ fn removing_a_volume_no_service_mounts_asks_nothing_while_its_deployment_runs() 
                 shared_writes: false,
                 mounts: Vec::new(),
                 storage_locked: false,
+                restored_from: None,
             },
         )
         .unwrap();

@@ -39,6 +39,9 @@ If Cloud can't be reached, `ployz logout` still forgets the sign-in here and war
 still honour it until you remove it with `ployz token rm`. An unreadable sign-in is forgotten too,
 and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
+The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when you set
+`XDG_CONFIG_HOME`. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
+
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
@@ -230,7 +233,8 @@ ployz up
 ```
 
 The first time, Ployz creates a project named after the directory, adds a service with an https
-address, builds your app, deploys it and prints the address.
+address, builds your app, deploys it and prints the address. In an empty directory it stops
+before it creates anything, with `Nothing to deploy` and exit code 2.
 
 An upload can be at most 95 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
@@ -244,7 +248,7 @@ CI jobs and scripts sign in with a token instead of a browser. Set it as `PLOYZ_
 
 ```sh
 # On your computer: make a token that can deploy only to staging. It's shown once, so copy it.
-ployz token new ci --preset deploy --environment staging
+ployz token new ci --preset deploy --env staging
 
 # In CI, with the token stored as the secret PLOYZ_TOKEN
 ployz up --project my-app --env staging
@@ -258,7 +262,7 @@ A token acts as you in this organization, narrowed by its preset:
 | ------ | -------------- |
 | `full` (the default) | Everything you can, and it follows your role if it changes. |
 | `read` | Read what you can read. It can't change anything. |
-| `deploy` | Read what you can, and stage and deploy changes to the one Environment `--environment` names, in any project. That Environment must already exist in one of your projects. If it's Protected, only an owner or admin can make one. |
+| `deploy` | Read what you can, and stage and deploy changes to the one Environment `--env` names, in any project. That Environment must already exist in one of your projects. If it's Protected, only an owner or admin can make one. |
 
 A deploy token that tries to change another Environment is refused and nothing changes. With the token above, `ployz up --project my-app --env production`
 fails with `This token can deploy only to staging.` A token refused for its preset names what it lacks, such as

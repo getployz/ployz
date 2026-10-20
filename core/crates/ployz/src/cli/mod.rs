@@ -82,7 +82,7 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             .global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
-            .default_value("~/.config/ployz/config.yaml")
+            .default_value(crate::context::default_config_path())
             .value_hint(ValueHint::FilePath)
             // PLOYZ_CONFIG is the way to point elsewhere; the flag stays for tests.
             .hide(true)

@@ -6,9 +6,10 @@ import type { Prep, StoredReport } from "#/modules/machines/waiting/checkin-wire
 import type { WaitingServerStatus, WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
-import { PROBE_RETRY_MS, PROBE_SETTLE_MS } from "./use-waiting";
+import { ENROLL_REFUSED, PROBE_RETRY_MS, PROBE_SETTLE_MS } from "./use-waiting";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { clientWithRole, expectGate, ROLE_STATES, seedRole } from "#/test/your-role";
 import { EnrollSheet } from "./enroll-sheet";
 import { IntakeTray, ROW_PX, VISIBLE_ROWS, WaitingList } from "./waiting-list";
 
@@ -64,7 +65,7 @@ function host(hostname: string, options: { status?: WaitingServerStatus; prep?: 
 }
 
 function renderList(servers: readonly WaitingServerView[], token?: string) {
-  const queryClient = new QueryClient();
+  const queryClient = seedRole(new QueryClient(), "ada", "owner");
   const ui = (rows: readonly WaitingServerView[]) => (
     <QueryClientProvider client={queryClient}>
       <WaitingList organizationSlug="ada" servers={rows} now={NOW} token={token} />
@@ -280,7 +281,7 @@ function deferred<T>() {
 }
 // React Query tells its observers on a setTimeout(0), which act does not wait for.
 const notified = () => new Promise((done) => setTimeout(done, 0));
-const flowClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const flowClient = () => seedRole(new QueryClient({ defaultOptions: { queries: { retry: false } } }), "ada", "owner");
 function flow(servers: readonly WaitingServerView[], hasFirst: boolean) {
   const client = flowClient();
   const ui = (rows: readonly WaitingServerView[], founded: boolean) => <QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={rows} now={NOW} hasFirst={founded} /></QueryClientProvider>;
@@ -452,6 +453,64 @@ it("enrolls the server its detail sheet shows", async () => {
   const sheet = await screen.findByRole("dialog");
   fireEvent.click(await within(sheet).findByRole("button", { name: "Enroll" }));
   await vi.waitFor(() => expect(preview.mock.calls.at(-1)?.[0]?.data.ids).toEqual([one.id]));
+});
+
+async function listAs(state: (typeof ROLE_STATES)[number], servers: readonly WaitingServerView[], firstRun = false) {
+  const client = await clientWithRole("ada", state);
+  render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={servers} now={NOW} firstRun={firstRun} /></QueryClientProvider>);
+}
+
+it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject the first arrival (%s)", async (state) => {
+  await listAs(state, [host("web")], true);
+  await expectGate(screen.getByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(screen.getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
+});
+
+it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject the picked servers (%s)", async (state) => {
+  await listAs(state, [host("one"), host("two")]);
+  fireEvent.click(pick("one"));
+  await expectGate(screen.getByRole("button", { name: "Enroll 1" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(screen.getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
+});
+
+it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject from the detail sheet (%s)", async (state) => {
+  const one = host("one");
+  vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...one, report, probe: null } as never);
+  await listAs(state, [one, host("two")]);
+  fireEvent.click(screen.getByRole("button", { name: "one" }));
+  const sheet = await screen.findByRole("dialog");
+  await expectGate(await within(sheet).findByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(within(sheet).getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
+});
+
+it.each(ROLE_STATES)("probes a picked or opened row only for a role that may add servers (%s)", async (state) => {
+  vi.useFakeTimers();
+  vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...host("two"), report, probe: null } as never);
+  await listAs(state, [host("one"), host("two")]);
+  const probes = state === "owner" || state === "admin" || state === "support" ? 1 : 0;
+
+  fireEvent.click(pick("one"));
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).toHaveBeenCalledTimes(probes);
+
+  fireEvent.click(screen.getByRole("button", { name: "two" }));
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).toHaveBeenCalledTimes(probes * 2);
+});
+
+it("probes a picked row only once a role still loading turns out to be allowed", async () => {
+  vi.useFakeTimers();
+  const client = await clientWithRole("ada", "loading");
+  render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={[host("one")]} now={NOW} /></QueryClientProvider>);
+
+  fireEvent.click(pick("one"));
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).not.toHaveBeenCalled();
+
+  await act(async () => { seedRole(client, "ada", "owner"); });
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).toHaveBeenCalledOnce();
+  expect(probe.mock.calls[0]?.[0]).toEqual({ data: { organizationSlug: "ada", ids: ["id-one"] } });
 });
 
 it.each([["failed", "Failed at Setting up ZFS"], ["cancelled", "Cancelled"]] as const)("shows how a %s attempt ended and its message in the detail sheet", async (state, reason) => {
