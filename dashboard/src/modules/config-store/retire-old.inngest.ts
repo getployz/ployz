@@ -21,7 +21,8 @@ export const createRetireOld = (inngest: PloyzInngest, runEffect: StoreEffectRun
       triggers: [{ event: configDeploymentRetireRequestedEventType }],
       concurrency: [{ key: "event.data.environmentId", limit: 1 }],
       cancelOn: [{
-        event: configDeploymentAdmittedEventType, match: "data.environmentId", if: "async.data.deploymentId != event.data.deploymentId",
+        event: configDeploymentAdmittedEventType,
+        if: "async.data.environmentId == event.data.environmentId && async.data.deploymentId != event.data.deploymentId",
       }],
       onFailure: async ({ event, error }) => runEffect(endCleanup(event.data.run_id, { state: "failed", message: error.message })),
     },

@@ -59,14 +59,6 @@ describe("retiring a Deploy's old copies", () => {
     expect(answers).toEqual([[]]);
   });
 
-  it("is taken over by a newer Deployment of the same Environment", () => {
-    expect(createRetireOld(new Inngest({ id: "test" })).opts.cancelOn).toEqual([{
-      event: expect.objectContaining({ name: "config/deployment.admitted" }),
-      match: "data.environmentId",
-      if: "async.data.deploymentId != event.data.deploymentId",
-    }]);
-  });
-
   it("marks the row cancelled when Inngest cancels a cleanup, under either function id, and skips any other", async () => {
     const cancel = (functionId: string) => new InngestTestEngine({
       function: createCancelRetireOld(new Inngest({ id: "ployz-cloud" })),
