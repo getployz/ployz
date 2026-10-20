@@ -368,6 +368,8 @@ running and private DNS keeps answering (with the exceptions in
 the release it ran before.
 The command prints one line per server it tried, the failed one included. The error after it, on
 stderr, says why that server failed.
+With `--json`, each entry in `attempts` names its server's id under `server`, and `unattempted`
+lists the ids of the servers the command never reached.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
 

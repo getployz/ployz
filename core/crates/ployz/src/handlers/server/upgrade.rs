@@ -4,8 +4,8 @@ use std::{collections::BTreeSet, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
-    Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt, MachineUpgradeAttemptId,
-    MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
+    Machine, MachineId, MachineRelease, MachineTarget, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -371,6 +371,14 @@ fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
     Some(Error::coded(RpcErrorCode::Internal, message))
 }
 
+/// An upgrade attempt and the Server it ran on, as `--json` prints it.
+#[derive(Serialize)]
+struct Attempted {
+    server: MachineId,
+    #[serde(flatten)]
+    attempt: MachineUpgradeAttempt,
+}
+
 /// Upgrade each Server's daemon in order, stopping at the first failure; once all succeed,
 /// move the Ingress Proxy when any of them holds the ingress role. The result is `None`
 /// when nothing was committed.
@@ -388,7 +396,10 @@ async fn run_all(
         let stopped = match run_one(client, machine, release.clone(), attempt_id, &mut seen).await {
             Err(error) => {
                 // An accepted attempt is committed evidence: keep it in the result.
-                attempts.extend(seen);
+                attempts.extend(seen.map(|attempt| Attempted {
+                    server: machine.id,
+                    attempt,
+                }));
                 error
             }
             Ok(attempt) => {
@@ -426,7 +437,10 @@ async fn run_all(
                         unreachable!("run_one returns only terminal evidence")
                     }
                 };
-                attempts.push(attempt);
+                attempts.push(Attempted {
+                    server: machine.id,
+                    attempt,
+                });
                 match stopped {
                     Some(error) => error,
                     None => continue,
