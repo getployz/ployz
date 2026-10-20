@@ -111,7 +111,7 @@ ployz server show hz-fsn1-001                     # status, machine, disks, dock
 ployz server reject 'ip-10-0-9-*'                 # confirms; "3 rejected. They won't come back under the same Fleet Token."
 
 ployz server enroll hz-fsn1-001                   # empty Organization: the plan lists it with ROLE "Founder"
-ployz server enroll 'hz-fsn1-*' --name 'web-{n}'  # plan table with skipped rows and their reasons, confirms, then one line per stage change
+ployz server enroll 'hz-fsn1-*' --name 'web-{n}' --status  # plan table with skipped rows and their reasons, confirms, then one line per stage change
 ployz server enroll --all                         # adds a count per provider, Unknown included, then confirms
 ployz server enroll --status
 ```

@@ -14,7 +14,7 @@ your other servers on a private network.
   runs apps, but its builds fail.
 - **Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 on a VM or bare metal** for managed volumes.
   Anything else works [without them](#start-without-zfs).
-- **A main disk of 30 GiB or more.** Ployz keeps a quarter of the disk, at least 10 GB, free for
+- **A main disk of 30 GiB or more.** Ployz keeps a quarter of the disk, at least 10 GiB, free for
   the system. On EC2, raise the root volume from its 8 GB default when you launch the instance.
 - **Root**, or a user that can run `sudo`.
 - **Outbound internet access**, and a **public IP address** on at least one server so visitors
