@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
-import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Navigate, useNavigate } from "@tanstack/react-router";
 import { CodeIcon, EllipsisIcon } from "lucide-react";
 import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
@@ -17,8 +16,7 @@ import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config
 import { useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
-import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { can } from "#/modules/organization/permissions";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
@@ -28,8 +26,8 @@ type Place = { organizationSlug: string; projectSlug: string; environmentSlug: s
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
-  // Deleted (here, or elsewhere) while open: nothing to show while the page moves on.
-  if (!listing.ok) return null;
+  // A Project deleted here or elsewhere opens Projects; any other refusal leaves the page empty.
+  if (!listing.ok) return listing.refusal.code === "not_found" ? <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace /> : null;
   const { environments } = listing.value;
   const environment = environments.find((row) => row.name === environmentSlug);
   const branches = environments.filter((row) => row.parent === environmentSlug).map((row) => row.name);
@@ -68,19 +66,16 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
 function StoreProtection({ organizationSlug, projectSlug, environmentSlug, saved }: Place & { saved: boolean }) {
   const writer = useStoreWriter(organizationSlug);
   const [checked, hold] = useCommitHold(saved);
-  // Support has no row here; Cloud still checks it. Until the members load, the role is unknown, so it waits.
-  const members = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members;
-  const yourRole = members?.find((row) => row.you)?.role;
-  const refused = yourRole !== undefined && !can(yourRole, "environments:protect");
+  const gate = useRoleGate(organizationSlug, "environments:protect", "Only an owner or admin can change this.");
   return (
     <SettingsSection id="protected" title="Protected"
       description="Only an owner or admin can change its repository, deploy branch or protection, and it can't be deleted.">
       <SettingsRow
         label="Protect this environment"
-        hint={refused ? "Only an owner or admin can change this." : undefined}
+        hint={gate.reason}
         commit="change"
         control={(
-          <Switch id="environment-protected" aria-label="Protected" checked={checked} disabled={refused}
+          <Switch id="environment-protected" aria-label="Protected" checked={checked} disabled={!gate.allowed}
             onCheckedChange={(next) => {
               if (next !== checked) {
                 hold(next, writer.commit({ command: "set_environment_protected",
@@ -222,8 +217,8 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const writer = useStoreWriter(organizationSlug);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
   const [defaultEnvironment, holdDefault] = useCommitHold(listing.ok ? listing.value.environments.find((row) => row.default)?.name ?? null : null);
-  // Deleted while open: nothing to show while the page moves on.
-  if (!listing.ok) return null;
+  // A Project deleted here or elsewhere opens Projects; any other refusal leaves the page empty.
+  if (!listing.ok) return listing.refusal.code === "not_found" ? <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace /> : null;
   const { environments } = listing.value;
   return (
     <div className="flex flex-col gap-6">

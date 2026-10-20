@@ -16,7 +16,7 @@ mod review;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{MachineId, RpcError, ServiceName};
+use ployz_core::{MachineId, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -140,9 +140,31 @@ pub enum LeftStatus {
 /// A Server a removal waits on, and what fixes that.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Waiting {
+    /// The Server's name, or its Machine ID when no Deployment here named it.
     pub server: String,
+    /// None from a Store older than this field, whose `server` is the Machine ID.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub server_id: Option<MachineId>,
     pub why: String,
     pub fix: Fix,
+}
+
+impl Waiting {
+    /// Waiting on `machine`, by the name `names` has for it, because of `why`.
+    pub(crate) fn on(names: &BTreeMap<MachineId, String>, machine: MachineId, why: String) -> Self {
+        Self {
+            server: names
+                .get(&machine)
+                .cloned()
+                .unwrap_or_else(|| machine.to_string()),
+            server_id: Some(machine),
+            why,
+            fix: Fix::ServerRemove {
+                server: machine.to_string(),
+            },
+        }
+    }
 }
 
 /// What a caller does about a refusal or a wait.
@@ -263,7 +285,12 @@ pub(crate) fn remove(
     remove: &Remove,
     trusted: &Trusted,
 ) -> Result<Removal, RpcError> {
-    let project = scope::project(tx, who, Some(&remove.project))?;
+    let project = scope::project(tx, who, Some(&remove.project)).map_err(|refused| {
+        match refused.code == RpcErrorCode::NotFound {
+            true => error::not_found(refused.message, json!({ "next": "ployz project ls" })),
+            false => refused,
+        }
+    })?;
     lock_project(tx, &project.id)?;
     let (target, target_name, members) = match &remove.environment {
         Some(name) => {
@@ -334,7 +361,7 @@ pub(crate) fn remove(
             trusted,
         )?);
     }
-    refuse_unanswered(who, remove, &reviews, &target)?;
+    refuse_unanswered(tx, who, remove, &reviews, &target)?;
     // A removal under way holds its remover's consent, and nothing deploys
     // meanwhile: running it again needs no new version unless it now deletes
     // more or gives up more copies. Each run still waits on a human's approval
@@ -398,7 +425,27 @@ pub(crate) fn remove(
         }
     };
     mark::save(tx, who, &mark)?;
-    let waiting_on = reviews
+    let waiting_on = waiting_on(tx, who, &reviews, trusted, &mark.target_name)?;
+    due::go_on(tx, who, &mut mark, trusted, waiting_on)
+}
+
+/// The Servers a removal waits on: each one that didn't answer whether it holds a
+/// Volume it deletes, then, while any of it is still on the Servers, each one that
+/// didn't answer Cloud, since a removal Deployment fails while one is silent.
+fn waiting_on(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    reviews: &[Reviewed],
+    trusted: &Trusted,
+    target: &str,
+) -> Result<Vec<Waiting>, RpcError> {
+    let silent = match reviews.is_empty() {
+        true => &[][..],
+        false => trusted.unanswered.as_deref().unwrap_or_default(),
+    };
+    let unanswered = reviews.iter().flat_map(|reviewed| &reviewed.unanswered);
+    let names = &deployment::server_names(tx, who, unanswered.chain(silent).copied())?;
+    let mut waiting: Vec<Waiting> = reviews
         .iter()
         .flat_map(|reviewed| {
             let holds = reviewed
@@ -407,16 +454,28 @@ pub(crate) fn remove(
                 .map(|loss| loss.volume.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            reviewed.unanswered.iter().map(move |machine| Waiting {
-                server: machine.to_string(),
-                why: format!("It didn't answer whether it holds {holds}"),
-                fix: Fix::ServerRemove {
-                    server: machine.to_string(),
-                },
+            reviewed.unanswered.iter().map(move |machine| {
+                Waiting::on(
+                    names,
+                    *machine,
+                    format!("It didn't answer whether it holds {holds}"),
+                )
             })
         })
         .collect();
-    due::go_on(tx, who, &mut mark, trusted, waiting_on)
+    for machine in silent {
+        if waiting
+            .iter()
+            .all(|waiting| waiting.server_id != Some(*machine))
+        {
+            waiting.push(Waiting::on(
+                names,
+                *machine,
+                format!("It didn't answer, so {target} can't come off it yet"),
+            ));
+        }
+    }
+    Ok(waiting)
 }
 
 fn review_member(
@@ -468,6 +527,7 @@ fn review_member(
 /// Refuse, writing nothing, while a Server that didn't answer may hold a Volume
 /// the caller didn't give up every copy of.
 fn refuse_unanswered(
+    tx: &mut dyn Tx,
     who: &Actor,
     remove: &Remove,
     reviews: &[Reviewed],
@@ -481,6 +541,10 @@ fn refuse_unanswered(
     if uncovered.is_empty() {
         return Ok(());
     }
+    let unanswered = uncovered
+        .iter()
+        .flat_map(|(reviewed, _)| &reviewed.unanswered);
+    let names = &deployment::server_names(tx, who, unanswered.copied())?;
     let waiting_on: Vec<Waiting> = uncovered
         .iter()
         .flat_map(|(reviewed, volumes)| {
@@ -489,15 +553,15 @@ fn refuse_unanswered(
                 .map(VolumeName::as_str)
                 .collect::<Vec<_>>()
                 .join(", ");
-            reviewed.unanswered.iter().map(move |machine| Waiting {
-                server: machine.to_string(),
-                why: format!(
-                    "It didn't answer whether it holds {volumes} of {}",
-                    reviewed.environment.summary.name
-                ),
-                fix: Fix::ServerRemove {
-                    server: machine.to_string(),
-                },
+            reviewed.unanswered.iter().map(move |machine| {
+                Waiting::on(
+                    names,
+                    *machine,
+                    format!(
+                        "It didn't answer whether it holds {volumes} of {}",
+                        reviewed.environment.summary.name
+                    ),
+                )
             })
         })
         .collect();

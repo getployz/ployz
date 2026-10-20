@@ -55,7 +55,7 @@ pub fn run() -> Result<(), Error> {
         Err(error) => {
             // A word the tree lacks may be a command Cloud published since the
             // cache was written, or one never cached: one refresh, then parse again.
-            let Some(published) = published_after_miss(&error, &command, &args) else {
+            let Some(published) = published_after_miss(&error, &command, &args)? else {
                 return Err(usage_failure(error));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
@@ -89,23 +89,31 @@ fn follow_cloud_revision() {
 
 /// A word no command has may be one Cloud published since; a flag a published command
 /// lacks may be one Cloud added since. A flag a compiled command lacks is a typo, and
-/// costs no round trip.
+/// costs no round trip. A bad `PLOYZ_PROJECT` or `PLOYZ_ENV` is refused before the
+/// round trip.
 fn published_after_miss(
     error: &clap::Error,
     tree: &Command,
     args: &[std::ffi::OsString],
-) -> Option<crate::published::Published> {
+) -> Result<Option<crate::published::Published>, Error> {
     use clap::error::ErrorKind;
     let setup = crate::published::Setup::from_env();
     if !setup.configured {
-        return None;
+        return Ok(None);
     }
     let stale = error.kind() == ErrorKind::InvalidSubcommand
         || error.kind() == ErrorKind::UnknownArgument
             && setup
                 .cached()
                 .is_some_and(|published| published.find(&reached(tree, args)).is_some());
-    stale.then(|| setup.refresh_now().ok()).flatten()
+    if !stale {
+        return Ok(None);
+    }
+    if let Err(failure) = crate::published::check_scope_env(args) {
+        crate::ui::init(wants_json(args), crate::ui::Color::requested(tree, args));
+        return Err(failure);
+    }
+    Ok(setup.refresh_now().ok())
 }
 
 /// The subcommand path `args` reach in `tree`, `server ls`: the command that rejected
@@ -126,23 +134,30 @@ fn reached(tree: &Command, args: &[std::ffi::OsString]) -> String {
     path.join(" ")
 }
 
+fn wants_json(args: &[std::ffi::OsString]) -> bool {
+    args.iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--json")
+}
+
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
 fn usage_failure(error: clap::Error) -> Error {
     use clap::error::ErrorKind;
     use std::io::Write as _;
-    let wants_json = std::env::args_os()
-        .take_while(|arg| arg != "--")
-        .any(|arg| arg == "--json");
+    let wants_json = wants_json(&std::env::args_os().collect::<Vec<_>>());
     if matches!(
         error.kind(),
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
     ) {
-        // clap's own `exit` swallows a closed stdout instead of dying of it.
+        // clap's own `exit` swallows a closed stdout instead of dying of it, and
+        // a full one: `ui::exit` fails a write stdout could not take.
         let mut stdout = crate::ui::stdout();
         let _ = write!(stdout, "{}", error.render().ansi());
         let _ = stdout.flush();
-        std::process::exit(0);
+        return Error::exit(0);
     }
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let error = operator::container_column_asked(error, &args);
     if !wants_json {
         error.exit();
     }
@@ -654,6 +669,7 @@ mod tests {
                 failed_machine: Some(failed),
                 logs: vec![LogTail {
                     service: QualifiedService::system_ingress(),
+                    name: QualifiedService::system_ingress().name,
                     machine: failed,
                     server: "same-name".into(),
                     log: None,

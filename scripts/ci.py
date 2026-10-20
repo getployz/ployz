@@ -79,6 +79,10 @@ def select_normal(paths):
         if path.startswith("dashboard/uptime/"):
             selected.add("uptime")
             continue
+        # The verify-dashboard harness: Cloud typechecks its TypeScript, but lint skips scripts/,
+        # the tests read only src/, and the image copies none of it.
+        if path.startswith("dashboard/scripts/verify/") and not path.endswith((".ts", ".tsx")):
+            continue
         if path.startswith(".github/") or Path(path).name in {"Cargo.toml", "Cargo.lock"}:
             return NORMAL.copy()
         if path.startswith("dashboard/"):
@@ -107,6 +111,12 @@ def select_normal(paths):
             continue
         elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-wasm.sh", "core/scripts/check-sdk-types.sh"}:
             selected.add("cloud")
+        # A ployz integration test embeds this script.
+        elif path == "core/scripts/verify/dns-soak.sh":
+            selected |= RUST | {"macos-cli"}
+        # The verify-cluster harness runs on developer machines; contracts runs its Python tests.
+        elif path == "core/scripts/verify-cluster" or path.startswith("core/scripts/verify/"):
+            continue
         elif path == "core/scripts/test-missing-ssh-client.sh":
             selected |= RUST
         elif path.startswith(("scripts/", "core/scripts/")) and Path(path).name in CONTRACT_SCRIPTS:
