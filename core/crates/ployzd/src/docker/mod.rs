@@ -157,15 +157,22 @@ impl LocalDocker {
 
     pub(crate) async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
         Ok(self
-            .labelled(vec![
-                LABEL_MANAGED.to_owned(),
-                LABEL_NAMESPACE.to_owned(),
-                LABEL_SERVICE_ID.to_owned(),
-            ])
+            .managed_containers()
             .await?
             .into_iter()
             .map(|(id, _)| id)
             .collect())
+    }
+
+    async fn managed_containers(
+        &self,
+    ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
+        self.labelled(vec![
+            LABEL_MANAGED.to_owned(),
+            LABEL_NAMESPACE.to_owned(),
+            LABEL_SERVICE_ID.to_owned(),
+        ])
+        .await
     }
 
     async fn service_containers(
@@ -453,7 +460,7 @@ impl ContainerRuntime {
         machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Error> {
         let mut observations = Vec::new();
-        let mut inspected = futures_util::stream::iter(self.docker.managed_container_ids().await?)
+        let mut inspected = futures_util::stream::iter(self.managed_inventory().await?)
             .map(|container_id| async move {
                 (
                     container_id,
@@ -474,6 +481,37 @@ impl ContainerRuntime {
             }
         }
         Ok(observations)
+    }
+
+    /// Every managed Container's ID. A Container a container-level restore recreated
+    /// under a new ID first takes over the records its slot's old ID left, so it is
+    /// observed as it was before the restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker or the Machine database cannot be read.
+    pub(crate) async fn managed_inventory(&self) -> Result<Vec<ContainerId>, Error> {
+        let listed = self
+            .docker
+            .managed_containers()
+            .await?
+            .into_iter()
+            .map(|(id, labels)| (id, creation_slot(&labels)))
+            .collect::<Vec<_>>();
+        if self.specs.record_creations(listed.clone()).await? {
+            // A create holds this lock from Docker's create to the spec write, so no
+            // Container still waiting for its spec looks restored under it.
+            let adopted = self
+                .specs
+                .config_operation()
+                .await
+                .adopt_restored(listed.clone())
+                .await?;
+            for (old, new) in adopted {
+                eprintln!("adopted restored container {new}, which replaces {old}");
+            }
+        }
+        Ok(listed.into_iter().map(|(id, _)| id).collect())
     }
 
     /// This Machine's Service Containers of `service`, each with the gen its labels
@@ -981,6 +1019,16 @@ impl ManagedLabels {
             },
         })
     }
+}
+
+fn creation_slot(labels: &HashMap<String, String>) -> Option<spec_store::CreationSlot> {
+    let ManagedLabels { identity, kind } = ManagedLabels::parse(labels).ok()?;
+    let key = labels.get(ployz_core::labels::CREATION_KEY)?;
+    Some(spec_store::CreationSlot::new(
+        &identity.namespace,
+        kind,
+        key,
+    ))
 }
 
 fn label_gen(labels: &HashMap<String, String>) -> Gen {

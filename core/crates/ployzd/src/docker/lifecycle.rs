@@ -289,7 +289,12 @@ impl ContainerRuntime {
                     field: "container ID",
                     source,
                 })?;
-            if let Err(error) = config_operation.put(&container_id, spec).await {
+            let slot =
+                creation_key.map(|key| super::spec_store::CreationSlot::new(namespace, kind, key));
+            if let Err(error) = config_operation
+                .put(&container_id, slot.as_ref(), spec)
+                .await
+            {
                 self.force_remove_container(&container_id).await?;
                 return Err(error.into());
             }
