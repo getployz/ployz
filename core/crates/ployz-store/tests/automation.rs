@@ -1079,6 +1079,113 @@ fn a_push_removes_a_config_a_save_deleted_while_a_deploy_shipped_it() {
 }
 
 #[test]
+fn a_push_ships_a_config_a_save_restored_while_a_deploy_removed_it() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    let extra = || ployz_core::ConfigName::parse("extra").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000025").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: extra(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    let with_extra = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000101")
+                    .unwrap(),
+            },
+        )
+        .unwrap()
+        .deployment
+        .saved;
+    for admitted in system(&store, &push(None, Some(H1), None)).admitted {
+        backend::run(&store, &admitted.deployment.id);
+    }
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: extra(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let removing = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    let removing = removing.admitted[0].deployment.id.clone();
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&removing, &runner).unwrap();
+    // While the removal runs, a Save brings the Config back.
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: with_extra,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: with_extra,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let restoring = system(
+        &store,
+        &push(Some(H2), Some(H3), Some(&["web/src/main.rs"])),
+    );
+    let restoring = restoring.admitted[0].deployment.id.clone();
+    backend::finish(&store, &removing, claimed);
+    backend::run(&store, &restoring);
+
+    let nodes: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: restoring.clone(),
+            },
+        )
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    assert!(nodes.contains(&"extra".to_owned()), "{nodes:?}");
+    let configs = store
+        .read(&who, &ployz_store::ConfigsQuery::default())
+        .unwrap()
+        .configs;
+    let listed = configs
+        .iter()
+        .find(|listed| listed.config.name == extra())
+        .expect("Saved holds extra");
+    assert!(listed.deployed, "{listed:?}");
+    assert_eq!(listed.change, None, "{listed:?}");
+}
+
+#[test]
 fn policy_settings_apply_at_once_and_select_by_watch_paths() {
     let (store, who) = shop();
     publish(&store, &who);
