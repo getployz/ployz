@@ -9,7 +9,7 @@ import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { firstRuntimeFrame, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, operationRuntimeFrame, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
 import { Conflict } from "#/server/public-error";
 
@@ -185,7 +185,7 @@ export function removePlan(
   };
 }
 
-const observe = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
+const observe = (organizationId: string) => operationRuntimeFrame(organizationId).pipe(
   Effect.mapError(unreachable),
   Effect.flatMap((frame) => frame === null ? Effect.fail(unreachable()) : Effect.succeed(frame)),
 );
@@ -213,10 +213,7 @@ export const planClean = Effect.fn("ServerOperations.planClean")(function* (orga
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") return yield* unreachable();
   const lost = yield* session.connected.dataLossIfNamespaceDestroyed(namespace).pipe(Effect.mapError(unreachable));
-  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
-    Effect.timeout("5 seconds"),
-    Effect.mapError(unreachable),
-  );
+  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(Effect.mapError(unreachable));
   return cleanPlan(frame, namespace, lost.data_loss);
 }, Effect.scoped);
 
@@ -258,7 +255,7 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
 
 /**
  * An operation approval's preview recomputed on read, so a changed Cluster supersedes it. A Server no longer observed,
- * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read, the stored preview stands.
+ * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read within 5 seconds, the stored preview stands.
  */
 export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored, preview) => {
   const separator = subject.indexOf(":");
@@ -293,7 +290,7 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
         return stored;
     }
   });
-  return fresh.pipe(Effect.orElseSucceed(() => stored));
+  return fresh.pipe(Effect.timeout("5 seconds"), Effect.orElseSucceed(() => stored));
 };
 
 /** Every approval still waiting in the Organization, each operation's preview recomputed against the Cluster first. */
