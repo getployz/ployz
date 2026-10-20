@@ -115,6 +115,7 @@ pub use teardown::{
 pub use trusted::{
     Approval, Asks, ObservationFailure, ObservationStage, Trusted, VolumeObservation,
 };
+pub use volume::size::VolumeResized;
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]

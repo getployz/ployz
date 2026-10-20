@@ -3076,6 +3076,30 @@ fn server_enroll_takes_waiting_selection_and_storage_flags() {
 }
 
 #[test]
+fn volume_set_waits_only_for_a_size() {
+    let parse = |args: &[&str]| {
+        ployz::cli::command()
+            .try_get_matches_from(["ployz", "volume", "set", "data"].iter().chain(args))
+    };
+    for args in [
+        &["--size", "20"][..],
+        &["--size", "20", "--wait"],
+        &["--docker"],
+        &["--shared-writes"],
+    ] {
+        parse(args).unwrap();
+    }
+    for args in [
+        &["--wait"][..],
+        &["--docker", "--wait"],
+        &["--shared-writes", "--wait"],
+        &["--size", "20", "--docker"],
+    ] {
+        assert!(parse(args).is_err(), "{args:?}");
+    }
+}
+
+#[test]
 fn server_enroll_reviews_before_start_and_returns_attempts_as_one_json_object() {
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let cloud = waiting_cloud(routes.clone(), WaitingCloud::six());

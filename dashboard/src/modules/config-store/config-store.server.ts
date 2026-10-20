@@ -205,7 +205,7 @@ const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (organiza
 
 /** Which events can admit a Deployment, and so need to know which Servers hold the data a Save accepted losing. */
 const deploys = {
-  branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false,
+  branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false, volume_resized: false,
 } satisfies Record<SystemEvent["event"], boolean>;
 
 /**

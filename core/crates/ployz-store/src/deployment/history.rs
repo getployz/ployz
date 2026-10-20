@@ -120,6 +120,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                 .collect(),
             removes: BTreeSet::new(),
         };
+        crate::volume::size::held(tx, id, &mut target.volumes)?;
         target.removes = nodes
             .iter()
             .map(TargetNode::id)

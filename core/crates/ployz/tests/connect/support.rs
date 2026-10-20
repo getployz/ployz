@@ -236,6 +236,8 @@ pub(super) enum SwitchFailure {
     Refused(Status),
     /// The entry's router heard nothing back from the target.
     Unanswered,
+    /// The entry's router could not dial the target, so the target never got the call.
+    Undialed,
     /// No reply ever comes, so the caller's own deadline ends the call.
     Hangs,
     /// The target takes the request, signals it, and never replies.
@@ -1487,6 +1489,9 @@ impl FakeMachine for DiscoveryService {
             Some(SwitchFailure::Refused(status)) => Err(status.clone()),
             Some(SwitchFailure::Unanswered) => Err(ployz_core::rpc::target_unanswered_status(
                 &std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset"),
+            )),
+            Some(SwitchFailure::Undialed) => Err(ployz_core::rpc::target_unreached_status(
+                &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "tcp connect error"),
             )),
             Some(SwitchFailure::Hangs) => std::future::pending().await,
             Some(SwitchFailure::Taken(taken)) => {

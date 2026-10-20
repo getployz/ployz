@@ -70,7 +70,7 @@ it.effect("a Cluster that never sends a frame fails as one to wait out once the 
   }),
 );
 
-const volume = { environmentId: "e1", volumeName: "data", dockerVolume: "production_data", refquotaBytes: 0 };
+const volume = { environmentId: "e1", volumeName: "data", dockerVolume: "production_data", refquotaBytes: 0, recordedBytes: 0 };
 const release = { volumeId: "v1", environment: { project: "web", environment: "production" }, kind: "release", args: {} } as const;
 const unanswered = { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } as const;
 

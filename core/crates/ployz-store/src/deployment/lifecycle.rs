@@ -588,6 +588,22 @@ pub(crate) fn retry(
         }
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::removal::guard_removal(tx, &environment)?;
+    } else {
+        // Its revision asks a storage of each Volume it ships; one resized since may
+        // no longer fit it. A Volume it never shipped it leaves as it is.
+        let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+        let shipped = saved.volumes.iter().filter(|volume| {
+            stored
+                .nodes
+                .iter()
+                .any(|node| node.id() == volume.resource_id)
+        });
+        crate::volume::check_storage(
+            tx,
+            &stored.summary.environment_id,
+            shipped,
+            crate::volume::StorageRule::Replay,
+        )?;
     }
     // What a rollback retires is frozen against Applied State now, which a newer
     // running Deployment may yet change. A queued one is superseded, as by a Deploy,
@@ -2029,7 +2045,8 @@ fn end(
 }
 
 /// Put each node `stored` confirmed into Applied State as its Saved revision has
-/// it, by [`NodeStatus::applied`]. Applying one again changes nothing. The Environment's Branches then follow it.
+/// it, by [`NodeStatus::applied`], a Volume at the size its Servers hold. Applying
+/// one again changes nothing. The Environment's Branches then follow it.
 fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcError> {
     let advanced: Vec<&TargetNode> = stored
         .nodes
@@ -2044,6 +2061,8 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
         .collect();
     if !advanced.is_empty() {
         let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+        let mut volumes = saved.volumes.clone();
+        crate::volume::size::held(tx, &stored.summary.environment_id, &mut volumes)?;
         let mut deployed = std::collections::BTreeSet::new();
         for node in advanced {
             let applied = match node {
@@ -2052,8 +2071,7 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
                     .iter()
                     .find(|service| service.id == node.id())
                     .map(scope::Node::Service),
-                TargetNode::Volume { .. } => saved
-                    .volumes
+                TargetNode::Volume { .. } => volumes
                     .iter()
                     .find(|volume| volume.resource_id == node.id())
                     .map(scope::Node::Volume),
