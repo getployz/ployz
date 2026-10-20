@@ -214,6 +214,8 @@ pub struct RunningDeploy {
 pub struct CallError {
     pub error: RpcError,
     pub unanswered: bool,
+    /// The entry Machine says it could not dial the call's target.
+    pub target_unreached: bool,
 }
 
 impl std::fmt::Display for CallError {
@@ -232,6 +234,7 @@ impl From<ConnectError> for CallError {
     fn from(error: ConnectError) -> Self {
         Self {
             unanswered: (error.unreached() || error.unreplied()) && !error.target_unreached(),
+            target_unreached: error.target_unreached(),
             error: error.into(),
         }
     }
@@ -242,6 +245,7 @@ impl From<RpcError> for CallError {
         Self {
             error,
             unanswered: false,
+            target_unreached: false,
         }
     }
 }
@@ -333,6 +337,7 @@ impl Session {
             () = self.inner.cancel.cancelled() => Err(CallError {
                 error: closed(),
                 unanswered: started.load(Ordering::Relaxed),
+                target_unreached: false,
             }),
             result = async {
                 started.store(true, Ordering::Relaxed);

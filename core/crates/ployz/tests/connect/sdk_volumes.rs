@@ -329,10 +329,17 @@ async fn node_smoke_covers_successful_and_partial_volume_removal() {
     let description = advertised_description();
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
-    service.machines = vec![machine('a', "one"), machine('b', "two")];
+    service.machines = vec![
+        machine('a', "one"),
+        machine('b', "two"),
+        machine('c', "three"),
+    ];
     service
         .set_volume_copy_failures
         .insert(machine_id('a'), SwitchFailure::Unanswered);
+    service
+        .set_volume_copy_failures
+        .insert(machine_id('c'), SwitchFailure::Undialed);
     let _machine = session.spawn_machine(description.machine_id, service).await;
     session
         .assert_sdk_script(
@@ -341,6 +348,7 @@ async fn node_smoke_covers_successful_and_partial_volume_removal() {
             &[
                 ("PLOYZ_MACHINE_A", machine_id('a').as_str()),
                 ("PLOYZ_MACHINE_B", machine_id('b').as_str()),
+                ("PLOYZ_MACHINE_C", machine_id('c').as_str()),
             ],
         )
         .await;
