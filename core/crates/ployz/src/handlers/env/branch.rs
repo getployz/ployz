@@ -3,6 +3,7 @@
 
 use clap::ArgMatches;
 use ployz_core::ServiceName;
+use ployz_core::config::{ChangeKind, ServiceSettingChange};
 use ployz_store::{
     Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
     EnvironmentRef, HintSource, KeepBranch, RowRef, ServicesQuery, SetupCommand, SourceKind,
@@ -297,12 +298,9 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 true => String::new(),
                 false => format!(" ({})", notes.join(", ")),
             };
-            crate::ui::stream(format_args!(
-                "  {}: {} → {}{notes}",
-                row.at,
-                store::shown(&row.into),
-                store::shown(&row.from)
-            ));
+            for line in store::changed(&setting_change(row)) {
+                crate::ui::stream(format_args!("  {line}{notes}"));
+            }
         }
         for row in &view.never_synced {
             let sides: std::collections::BTreeSet<_> = row
@@ -317,6 +315,25 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             ));
         }
     })
+}
+
+/// A Sync row as the change it stages in the receiver, so it reads as a diff does.
+fn setting_change(row: &ployz_store::SyncRow) -> ServiceSettingChange {
+    let kind = match (row.into.is_null(), row.from.is_null()) {
+        (true, _) => ChangeKind::Add,
+        (_, true) => ChangeKind::Remove,
+        _ => ChangeKind::Update,
+    };
+    ServiceSettingChange {
+        path: row.at.to_string(),
+        config_name: None,
+        hostnames: None,
+        kind,
+        before: row.into.clone(),
+        after: row.from.clone(),
+        can_restore: false,
+        row: None,
+    }
 }
 
 /// What a Sync did, and `deploy` of where it landed when it staged something.
