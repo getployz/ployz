@@ -386,6 +386,12 @@ struct CaddyInput {
     through_admin: bool,
 }
 
+impl CaddyInput {
+    fn loaded(&self, projection: &IngressProjection, caddy: Option<&ContainerId>) -> bool {
+        self.through_admin && self.projection == *projection && self.caddy.as_ref() == caddy
+    }
+}
+
 /// Watch replicated ingress inputs and concretely apply changed projections to Caddy.
 ///
 /// # Errors
@@ -454,7 +460,13 @@ where
             };
             match input {
                 Ok((projection, caddy, routes)) => {
+                    let loaded = last_input
+                        .as_ref()
+                        .is_some_and(|last: &CaddyInput| last.loaded(&projection, caddy.as_ref()));
                     let result = async {
+                        if loaded {
+                            return Ok(());
+                        }
                         let admin = connect().await.map_err(io::Error::other)?;
                         let input = CaddyInput {
                             projection,

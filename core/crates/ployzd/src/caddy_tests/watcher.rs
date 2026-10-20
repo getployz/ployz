@@ -430,6 +430,64 @@ async fn a_store_read_error_does_not_reload_an_unchanged_projection() {
 }
 
 #[tokio::test]
+async fn a_failed_admin_probe_on_a_loaded_input_neither_reloads_nor_holds_back_acks() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let probes = Arc::new(AtomicUsize::new(0));
+    state
+        .lose_next_transaction_response
+        .store(true, Ordering::SeqCst);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        {
+            let probes = Arc::clone(&probes);
+            move || {
+                std::future::ready(if probes.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(Some(admin.clone()))
+                } else {
+                    Err(CaddyError::Admin("admin probe timed out".into()))
+                })
+            }
+        },
+    ));
+
+    next_load(&mut load_rx).await;
+    state.wait_for_ack_transactions(1).await;
+    state.mutate(|container| {
+        container
+            .labels
+            .insert("unrelated.example/changed".into(), "true".into());
+    });
+    state.send(b"{\"change\":{}}\n");
+
+    state.wait_for_ack_transactions(2).await;
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
+    assert!(
+        load_rx.try_recv().is_err(),
+        "an unchanged, loaded input was posted to /load again"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn periodic_resnapshot_recovers_a_missed_change_notification() {
     let WatcherFixture {
         machine,
