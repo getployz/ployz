@@ -500,14 +500,17 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
             ExecutionError::Cancelled => RelocateError::Cancelled {
                 replacement_removed,
             },
-            error => RelocateError::NotServing {
+            error @ (ExecutionError::Machine { .. }
+            | ExecutionError::Health { .. }
+            | ExecutionError::DependencyHealth { .. }
+            | ExecutionError::Hook { .. }) => RelocateError::NotServing {
                 detail: crate::ui::row(&error),
                 replacement_removed,
             },
         },
     )?;
     let new = Copy {
-        machine_id: to.clone(),
+        machine_id: *to,
         service: old.service.clone(),
         container_id: new,
         rotation: CopyRotation::Pending,
@@ -657,7 +660,7 @@ fn named(snapshot: &DeploySnapshot, id: &MachineId) -> MachineRef {
         .find(|machine| machine.machine.id == *id)
         .map_or_else(
             || MachineRef {
-                id: id.clone(),
+                id: *id,
                 name: MachineName::parse(id.to_string())
                     .or_else(|_| MachineName::parse(format!("m{id}")))
                     .expect("a lowercase hex id is a DNS label"),
