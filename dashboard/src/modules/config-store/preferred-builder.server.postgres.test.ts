@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { Cause, Effect, Exit, Layer } from "effect";
 import { runAgentCall } from "#/modules/agent/agent-runner.server";
 import { callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/config-store.server";
+import { resolvePreferredBuilders } from "#/modules/config-store/preferred-builder.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { member, session as sessionTable } from "#/modules/identity/tables";
@@ -61,6 +62,9 @@ const namedLikeTwo = machineId("5");
 const unlisted = machineId("7");
 /** A Server of a pairing the Organization no longer has. */
 const old = machineId("8");
+/** Another Organization's Servers. */
+const foreignOne = machineId("a");
+const foreignTwo = machineId("b");
 
 /**
  * Alice owns Project shop, running `web` from acme/web, in an Organization paired with machine-1, machine-2, two
@@ -203,6 +207,97 @@ it.live(
         });
         const values = read.ok && read.value.view === "environment" ? read.value.values : assert.fail("no Settings");
         assert.deepInclude(values?.["env"], { PREFERREDBUILDER: "machine-1", PREFERRED: "machine-2" });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a Preferred Builder that can't be a Machine Target is refused as the CLI's MachineTarget::parse refuses it, before any Server is read",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { session, preferred } = yield* shop();
+        assert.deepStrictEqual(yield* cli(session, set("machine-1")), { status: 200, error: null });
+        const refusals: Array<[string, string]> = [["", '""'], ["  ", '""'], ["*", '"*"'], [" * ", '"*"']];
+        for (const [typed, shown] of refusals) {
+          assert.deepStrictEqual(yield* cli(session, set(typed)), {
+            status: 422,
+            error: ["invalid_argument", `invalid Machine Target ${shown}: a non-empty Machine identity that is not a wildcard`],
+          }, JSON.stringify(typed));
+        }
+        assert.strictEqual(yield* preferred(), one, "a refused value writes nothing");
+
+        // With no database at all, reading a Server would die: these are refused without one.
+        const noDatabase = Layer.succeed(Database, undefined as never);
+        for (const typed of ["", "*", " * "]) {
+          const refused = yield* Effect.flip(resolvePreferredBuilders("org-1", set(typed)).pipe(Effect.provide(noDatabase)));
+          assert.deepInclude(refused, { _tag: "StoreRefused", code: "invalid_argument" }, JSON.stringify(typed));
+        }
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a refusal shows the typed Server as the CLI does, trimmed and escaped by Rust's str::trim and escape_debug",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { session } = yield* shop();
+        // Each expected message is the CLI's own, printed by `format!("Server {} was not found", typed.trim().escape_debug())`.
+        const shown: Array<[string, string]> = [
+          ["absent\nname", "absent\\nname"],
+          ["\u0301x\u0301", "\\u{301}x\u0301"],
+          ["a\"b'c\\d", "a\\\"b\\'c\\\\d"],
+          ["a\u200bb\u007f\u0000", "a\\u{200b}b\\u{7f}\\0"],
+          ["café\tbar", "café\\tbar"],
+          [" \ufeffmachine-1", "\\u{feff}machine-1"],
+        ];
+        for (const [typed, message] of shown) {
+          assert.deepStrictEqual(yield* cli(session, set(typed)), {
+            status: 404, error: ["not_found", `Server ${message} was not found`],
+          }, JSON.stringify(typed));
+        }
+        // U+0085 is Unicode white space, which Rust trims and JavaScript's trim keeps.
+        assert.deepStrictEqual(yield* cli(session, set("\u0085machine-2")), { status: 200, error: null });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "another Organization's Servers are never matched, even under the same pairing",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { session, preferred } = yield* shop();
+        const carol = yield* resolveCaller(signedIn(yield* signUp("carol")));
+        const { drizzle } = yield* Database;
+        const encryption = yield* SecretEncryption;
+        const secret = "ppair_fixture_names";
+        yield* drizzle.insert(organizationPairing).values({
+          organizationId: carol.organization.id, encryptedPairingSecret: encryption.encrypt(secret),
+          founderPublicKey: "founder-key", founderClaimMachineId: foreignOne,
+        });
+        const foreign: Array<[MachineId, string]> = [[foreignOne, "machine-1"], [foreignTwo, "elsewhere"]];
+        for (const [server, name] of foreign) {
+          yield* drizzle.insert(organizationMachine).values({
+            organizationId: carol.organization.id, machineId: server, machineName: name,
+            clusterKey: createHash("sha256").update(secret).digest("hex"),
+            encryptedCapability: encryption.encrypt(`ployz1:cloud:${server}`), isDialEntry: server === foreignOne,
+          });
+        }
+
+        assert.deepStrictEqual(yield* cli(session, set("machine-1")), { status: 200, error: null }, "not ambiguous with carol's");
+        assert.strictEqual(yield* preferred(), one);
+        assert.deepStrictEqual(yield* cli(session, set("elsewhere")), {
+          status: 404, error: ["not_found", "Server elsewhere was not found"],
+        });
+        assert.strictEqual(yield* preferred(), one);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
