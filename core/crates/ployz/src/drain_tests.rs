@@ -3,7 +3,8 @@
 use std::collections::VecDeque;
 
 use ployz_core::{
-    Machine, MachineId, MachineName, Namespace, QualifiedService, RpcError, WireGuardPublicKey,
+    CopyRotation, DeploymentLogId, Machine, MachineId, MachineName, Namespace, QualifiedService,
+    RpcError, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -13,8 +14,9 @@ use super::{
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
 };
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Converged, OldCopyEnd};
+use crate::deploy::{Converged, OldCopyEnd, Unconfirmed};
 use crate::drain::retirement::Retirement;
+use crate::global_fixtures::container_id;
 
 fn namespace(value: &str) -> Namespace {
     Namespace::parse(value).unwrap()
@@ -259,6 +261,203 @@ fn entry(name: &str, outcome: DrainOutcome) -> (String, DrainOutcome) {
 
 fn nothing_left() -> Result<Vec<QualifiedService>, Lost> {
     Ok(Vec::new())
+}
+
+/// A copy of app/web on the drained Server in `rotation`.
+fn left_on_server(rotation: CopyRotation) -> Copy {
+    Copy {
+        machine_id: drained().id,
+        service: qualified("web"),
+        container_id: container_id('c'),
+        rotation,
+    }
+}
+
+fn running(unconfirmed: Unconfirmed) -> OldCopyEnd {
+    OldCopyEnd::Running { unconfirmed }
+}
+
+#[tokio::test]
+async fn a_copy_held_by_the_user_stays_and_leaves_the_drain_incomplete() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::NothingToMove].into(),
+        copies: [Ok(vec![left_on_server(CopyRotation::Held(
+            DeploymentLogId::parse("you").unwrap(),
+        ))])]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(outcomes(&report), [entry("web", DrainOutcome::Held)]);
+    assert!(
+        client.let_go.is_empty(),
+        "a Held copy is neither moved nor let go"
+    );
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn an_out_copy_left_on_the_server_is_let_go_and_never_moved() {
+    let out = left_on_server(CopyRotation::Out);
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::NothingToMove].into(),
+        copies: [Ok(vec![out.clone()])].into(),
+        ends: [OldCopyEnd::Stopped].into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry(
+            "web",
+            DrainOutcome::OldCopies {
+                ends: vec![OldCopyEnd::Stopped],
+            },
+        )]
+    );
+    assert_eq!(client.let_go, [out]);
+    assert!(report.complete());
+}
+
+#[tokio::test]
+async fn a_move_beside_an_out_copy_reports_the_move_then_the_old_copy() {
+    let proxies = Unconfirmed::Proxies {
+        servers: vec![MachineRef {
+            id: MachineId::parse("c".repeat(32)).unwrap(),
+            name: MachineName::parse("web-3").unwrap(),
+        }],
+    };
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
+        copies: [Ok(vec![left_on_server(CopyRotation::Out)])].into(),
+        ends: [running(proxies.clone())].into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [
+            entry("web", moved()),
+            entry(
+                "web",
+                DrainOutcome::OldCopies {
+                    ends: vec![running(proxies)],
+                },
+            ),
+        ]
+    );
+    assert!(
+        !report.complete(),
+        "an old copy left running keeps the drain open"
+    );
+}
+
+#[tokio::test]
+async fn a_move_whose_old_copy_is_still_in_leaves_the_drain_incomplete() {
+    let moves = vec![Move {
+        old: OldCopyEnd::In {
+            unconfirmed: Unconfirmed::Failed {
+                detail: "the Server did not answer".into(),
+            },
+        },
+        ..one_move().remove(0)
+    }];
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved {
+            moves: moves.clone(),
+        }]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry("web", DrainOutcome::Moved { moves })]
+    );
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn the_last_copy_in_rotation_stays_and_leaves_the_drain_incomplete() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Stays {
+            reason: StayReason::LastIn,
+        }]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry(
+            "web",
+            DrainOutcome::Stays {
+                reason: StayReason::LastIn,
+            },
+        )]
+    );
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn cancelled_after_the_move_leaves_the_out_copy_running_without_asking() {
+    let cancellation = CancellationToken::new();
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
+        copies: [Ok(vec![left_on_server(CopyRotation::Out)])].into(),
+        cancel_after_converge: Some(cancellation.clone()),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &cancellation).await;
+    assert_eq!(
+        outcomes(&report),
+        [
+            entry("web", moved()),
+            entry(
+                "web",
+                DrainOutcome::OldCopies {
+                    ends: vec![running(Unconfirmed::Cancelled)],
+                },
+            ),
+        ]
+    );
+    assert!(client.let_go.is_empty(), "a cancelled drain sends no Gone");
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn a_failed_copy_listing_leaves_the_leftovers_to_remaining() {
+    let mut client = Scripted {
+        observations: [Ok(vec![qualified("web")])].into(),
+        convergences: [Converged::NothingToMove].into(),
+        copies: [Err(RpcError {
+            code: ployz_core::RpcErrorCode::Unavailable,
+            message: "the Server did not answer".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        })]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry("web", DrainOutcome::NothingToMove)]
+    );
+    assert!(client.let_go.is_empty());
+    assert_eq!(
+        report.remaining,
+        Remaining::Observed {
+            services: vec![qualified("web")],
+            unchosen: Vec::new(),
+        }
+    );
 }
 
 #[tokio::test]
