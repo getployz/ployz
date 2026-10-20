@@ -16,6 +16,7 @@ import {
   placementTargets,
   placementForm,
   mirroredVolumes,
+  oldCopies,
   mirrorResourceId,
   parseMirrorResourceId,
   mergeRestoreGroups,
@@ -173,6 +174,26 @@ describe("placementChanges", () => {
       { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: id("web-2") } },
       { kind: "move", args: { to: "web-3" } },
     ]);
+  });
+});
+
+describe("a slot's role, as its Machine records it", () => {
+  const form = (members: Member[], placement: PlacementRow | null) => {
+    const groups = placementForm(volume, members, placement);
+    if (groups === null) throw new Error("no form");
+    return { mirrors: groups.mirrors.map(({ server }) => server.name), detached: groups.detached.map(({ server }) => server.name) };
+  };
+
+  it("reads a CLI mirror on a restored Volume as a Mirror", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    expect(form(members, row([]))).toEqual({ mirrors: ["web-2"], detached: [] });
+    expect(oldCopies(observePlacement(members), row([]))).toEqual([]);
+  });
+
+  it("still reads the old primary a move left as an Old copy", () => {
+    const members = [member("web-2", "writer"), member("web-1", "old")];
+    expect(form(members, null)).toEqual({ mirrors: [], detached: ["web-1"] });
+    expect(oldCopies(observePlacement(members), null).map(({ server }) => server.name)).toEqual(["web-1"]);
   });
 });
 
