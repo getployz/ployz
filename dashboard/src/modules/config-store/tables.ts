@@ -60,3 +60,6 @@ export const deploymentCleanup = pgTable(
     check("deployment_cleanup_state_check", sql`${table.state} in (${sqlStringLiterals(DEPLOYMENT_CLEANUP_STATES)})`),
   ],
 );
+
+/** What the Run page shows of a Deployment's cleanup. */
+export type DeploymentCleanupView = Pick<typeof deploymentCleanup.$inferSelect, "state" | "left" | "message">;

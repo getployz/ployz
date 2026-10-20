@@ -5,12 +5,12 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Link } from "@tanstack/react-router";
-import { BoxIcon, DatabaseIcon, FolderIcon, HammerIcon, type LucideIcon } from "lucide-react";
+import { BoxIcon, BrushCleaningIcon, DatabaseIcon, FolderIcon, HammerIcon, type LucideIcon } from "lucide-react";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { RunningTime } from "#/components/relative-time";
 import { Card, CardHeader, CardTitle, CardDescription } from "#/components/ui/card";
 import { formatDuration } from "#/utils/relative-time";
-import type { RunGraph, RunNode, RunTiming } from "./run-graph";
+import { cleanupLabel, type RunGraph, type RunNode, type RunTiming } from "./run-graph";
 import { DEPLOYMENT_ROUTE_TO } from "./run-search";
 
 const NODE_WIDTH = 224;
@@ -22,9 +22,10 @@ const FIT_PADDING = { top: "160px", left: "40px", right: "40px", bottom: "40px" 
 
 type RunFlowNode = Node<{ node: RunNode; selected: boolean }, "run">;
 
-export const runNodeIcons = { build: HammerIcon, service: BoxIcon, volume: DatabaseIcon, config: FolderIcon } satisfies
+export const runNodeIcons = { build: HammerIcon, service: BoxIcon, volume: DatabaseIcon, config: FolderIcon, cleanup: BrushCleaningIcon } satisfies
   Record<RunNode["type"], LucideIcon>;
-export const runNodeKinds = { build: "Build", service: "Service", volume: "Volume", config: "Config" } satisfies Record<RunNode["type"], string>;
+export const runNodeKinds = { build: "Build", service: "Service", volume: "Volume", config: "Config", cleanup: "Cleanup" } satisfies
+  Record<RunNode["type"], string>;
 
 function placed(graph: RunGraph, selectedId: string | undefined): RunFlowNode[] {
   return graph.nodes.map((node) => ({
@@ -48,15 +49,16 @@ export function RunTime({ timing }: { timing: RunTiming | undefined }) {
   );
 }
 
-function servers(node: RunNode) {
-  if (node.type === "build" || !node.node.rows.length) return null;
+/** Under the card's name: its kind, and how many Servers it ran on; the cleanup, how it went. */
+function caption(node: RunNode) {
+  if (node.type === "cleanup") return cleanupLabel(node.cleanup);
+  if (node.type === "build" || !node.node.rows.length) return runNodeKinds[node.type];
   const count = node.node.rows.length;
-  return `${count} ${count === 1 ? "server" : "servers"}`;
+  return `${runNodeKinds[node.type]} · ${count} ${count === 1 ? "server" : "servers"}`;
 }
 
 function RunNodeCard({ data: { node, selected } }: NodeProps<RunFlowNode>) {
   const Icon = runNodeIcons[node.type];
-  const on = servers(node);
   return (
     <Link from={DEPLOYMENT_ROUTE_TO} to="." search={(previous) => ({ ...previous, job: node.id })} replace
       data-canvas-node={node.id} aria-current={selected ? "true" : undefined} draggable={false} className="block size-full rounded-xl">
@@ -68,7 +70,7 @@ function RunNodeCard({ data: { node, selected } }: NodeProps<RunFlowNode>) {
             <RunTime timing={node.timing} />
           </div>
           <CardDescription className="flex items-center gap-1.5 [&_svg]:size-3">
-            <Icon aria-hidden />{runNodeKinds[node.type]}{on ? ` · ${on}` : null}
+            <Icon aria-hidden />{caption(node)}
           </CardDescription>
         </CardHeader>
       </Card>
