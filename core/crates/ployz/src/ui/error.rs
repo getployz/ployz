@@ -199,6 +199,14 @@ pub(crate) fn rpc_error(code: ployz_core::RpcErrorCode, error: Chain<'_>) -> plo
     }
 }
 
+/// `text` as a failure's first line: a sentence, ending with a period.
+pub(crate) fn sentence(mut text: String) -> String {
+    if !text.ends_with(['.', '!', '?']) {
+        text.push('.');
+    }
+    text
+}
+
 #[cfg(test)]
 pub(crate) fn chain_text(error: Chain<'_>) -> String {
     inline(error)

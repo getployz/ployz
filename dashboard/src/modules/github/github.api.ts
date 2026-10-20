@@ -54,7 +54,7 @@ export const listGithubRepositoryBranches = Effect.fn(
     Effect.mapError(
       () =>
         new GithubObservationError({
-          code: "invalid_input",
+          code: "invalid_argument",
           operation: "list_branches",
           retriable: false,
           message: "GitHub list branches failed.",

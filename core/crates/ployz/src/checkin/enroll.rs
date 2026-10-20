@@ -13,8 +13,6 @@ use super::{
 };
 use crate::cloud_enroll::EnrollStage;
 
-pub(super) const LOOP_ENROLLS: &str =
-    "Cloud is ready to enroll this server. The check-in loop runs it.";
 const HEARTBEAT: Duration = Duration::from_secs(15);
 const ROOT_CONFIG: &str = "/root/.config/ployz/config.yaml";
 
@@ -170,7 +168,6 @@ pub(super) async fn attempt<H: Host>(
             record(&status, paths);
             Next::Wait {
                 after: Duration::ZERO,
-                log: None,
             }
         }
     }

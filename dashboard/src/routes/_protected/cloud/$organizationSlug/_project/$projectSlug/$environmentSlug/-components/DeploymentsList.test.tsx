@@ -12,9 +12,10 @@ import { asTestDouble } from "#/lib/test-double";
 import * as storeViews from "#/modules/config-store/store-view.queries";
 vi.spyOn(storeViews, "useStoreDeployments").mockReturnValue(asTestDouble<ReturnType<typeof storeViews.useStoreDeployments>>()({
   data: { pages: [{ next_cursor: null, deployments: [
-    { id: "d3", number: 3, status: "running", services: ["worker"], upload: null, admitted_by: "ada", admitted_at: 1_790_000_000, started_at: null, ended_at: null },
-    { id: "d2", number: 2, status: "applied", services: [], upload: null, admitted_by: null, admitted_at: 1_790_000_000, started_at: null, ended_at: null },
-    { id: "d1", number: 1, status: "failed", services: ["api"], upload: { digest: "x", base: { commit: "abc1234ff", changed: false }, uploader: "nick" }, admitted_by: "nick", admitted_at: 1_790_000_000, started_at: null, ended_at: null },
+    { id: "d4", number: 4, status: "queued", services: ["worker"], ships: ["worker", "api"], upload: null, admitted_by: "ada", admitted_at: 1_790_000_000, started_at: null, ended_at: null },
+    { id: "d3", number: 3, status: "running", services: ["worker"], ships: ["worker"], upload: null, admitted_by: "ada", admitted_at: 1_790_000_000, started_at: null, ended_at: null },
+    { id: "d2", number: 2, status: "applied", services: [], ships: ["api", "worker"], upload: null, admitted_by: null, admitted_at: 1_790_000_000, started_at: null, ended_at: null },
+    { id: "d1", number: 1, status: "failed", services: ["api"], ships: ["api"], upload: { digest: "x", base: { commit: "abc1234ff", changed: false }, uploader: "nick" }, admitted_by: "nick", admitted_at: 1_790_000_000, started_at: null, ended_at: null },
   ] }] },
   hasNextPage: false, isFetchingNextPage: false, fetchNextPage: vi.fn(),
 }));
@@ -47,10 +48,11 @@ function open(url: string) {
   return router;
 }
 
-it("lists the CLI's and the dashboard's Deployments, narrowed to those that deployed a Service", async () => {
+it("lists the CLI's and the dashboard's Deployments, narrowed to those that shipped a Service", async () => {
   open("/cloud/acme/shop/production/deployments");
   const all = within(await screen.findByRole("navigation", { name: "Deployments" })).getAllByRole("link");
   expect(all.map((row) => row.textContent)).toEqual([
+    expect.stringMatching(/^Deployment #4Queued · Deploys worker · by ada.+ ago$/u),
     expect.stringMatching(/^Deployment #3Deploying · Deploys worker · by ada.+ ago$/u),
     expect.stringMatching(/^Deployment #2Deployed · Deploys every service.+ ago$/u),
     expect.stringMatching(/^Deployment #1Failed · Uploaded by nick · abc1234.+ ago$/u),
@@ -59,6 +61,8 @@ it("lists the CLI's and the dashboard's Deployments, narrowed to those that depl
 
   open("/cloud/acme/shop/production/deployments?service=api-id");
   const api = within(await screen.findByRole("navigation", { name: "Deployments" })).getAllByRole("link");
-  expect(api.map((row) => row.textContent)).toEqual([expect.stringMatching(/^Deployment #2/), expect.stringMatching(/^Deployment #1/)]);
-  expect(api[1]?.getAttribute("href")).toBe("/cloud/acme/shop/production/deployments/d1?job=api-id");
+  expect(api.map((row) => row.textContent)).toEqual([
+    expect.stringMatching(/^Deployment #4/), expect.stringMatching(/^Deployment #2/), expect.stringMatching(/^Deployment #1/),
+  ]);
+  expect(api[2]?.getAttribute("href")).toBe("/cloud/acme/shop/production/deployments/d1?job=api-id");
 });

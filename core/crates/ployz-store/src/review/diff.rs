@@ -32,5 +32,8 @@ pub(crate) fn diff(
     view.incoming = crate::branch::incoming(tx, &environment)?;
     view.follow_hints = crate::branch::hints(tx, &environment)?;
     view.included = crate::branch::included(tx, &environment.summary.id)?;
+    view.setup = crate::branch::Own::of(tx, &environment)?
+        .map(|own| own.pending(&environment.working))
+        .unwrap_or_default();
     Ok(view)
 }

@@ -1,7 +1,7 @@
 import type { ConfigWritten, ToolResult } from "@ployz/sdk";
 import { defineInterrupt } from "@tanstack/ai/client";
 import { Schema } from "effect";
-import type { StoreRefusal } from "#/modules/config-store/store.contract.ts";
+import type { CommandRefusal, StoreRefusal } from "#/modules/config-store/store.contract.ts";
 
 type JsonObjectSchema = { type: "object"; properties: Record<string, { type: "string" }>; required?: string[]; additionalProperties: false };
 
@@ -36,7 +36,7 @@ export const approvalInterrupt = defineInterrupt({
  */
 export type ToolOutcome<T = unknown> =
   | { ok: true; value: T; nothing_destroyed?: true }
-  | { ok: false; refusal: StoreRefusal }
+  | { ok: false; refusal: StoreRefusal | CommandRefusal }
   | { ok: false; cancelled: true }
   | ToolResult;
 
