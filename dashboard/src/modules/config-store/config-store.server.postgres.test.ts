@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
 import { type ConfigCommand, type ConfigQuery, type MachineId, RpcError } from "@ployz/sdk";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -1503,14 +1503,16 @@ it.live(
 );
 
 /** A gzipped tar of a source directory, as `ployz deploy --upload` sends it: everything under `source/`. */
-const sourceArchive = Effect.promise(async () => {
+const archiveOf = (dockerfile: string) => Effect.promise(async () => {
   const root = await mkdtemp(path.join(tmpdir(), "upload-test-"));
   await mkdir(path.join(root, "source"));
-  await writeFile(path.join(root, "source", "Dockerfile"), "FROM scratch\n");
+  await writeFile(path.join(root, "source", "Dockerfile"), dockerfile);
   const chunks: Buffer[] = [];
   for await (const chunk of tar.c({ gzip: true, cwd: root, portable: true }, ["source"])) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 });
+
+const sourceArchive = archiveOf("FROM scratch\n");
 
 const upload = Effect.fn(function* (deploymentId: string, session: string, body: Buffer) {
   const headers = signedIn(session);
@@ -1716,6 +1718,70 @@ it.live(
         assert.strictEqual(selects, 2);
         assert.strictEqual(extracted, undefined);
         assert.strictEqual(yield* extractUpload(organizationId, raced), undefined);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped),
+  60_000,
+);
+
+it.live(
+  "a queued Deploy runs from the upload it claims once the Deployment ahead of it settled",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "config-store-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cloudLayer({}, inngest);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const { id: organizationId } = (yield* resolveCaller(signedIn(alice))).organization;
+        yield* enrollStoreServer(organizationId);
+        yield* request("write", alice, shop);
+        yield* request("write", alice, { command: "create_service", id: SERVICE, environment: here, name: "app", image: null });
+        const store = yield* cloudStore;
+        const { drizzle } = yield* Database;
+        const servers = yield* drizzle.select().from(organizationMachine);
+        // Admitted while its Server is there, run once it left, so nothing runs.
+        yield* drizzle.delete(organizationMachine);
+        const write = (command: ConfigCommand) => Effect.gen(function* () {
+          yield* drizzle.insert(organizationMachine).values(servers);
+          const written = yield* request("write", alice, command);
+          yield* drizzle.delete(organizationMachine);
+          assert.strictEqual(written.status, 200);
+        });
+        const run = (deploymentId: string) =>
+          runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId, trigger: "user" }, "cloud-test");
+        const deployment = (n: number) => `00000000-0000-4000-8000-000000000${n}`;
+        const [first, second, retried, settingsOnly] = [deployment(301), deployment(302), deployment(303), deployment(304)];
+        for (const [id, c] of [[first, "a"], [second, "b"]] as const) {
+          assert.strictEqual((yield* upload(id, alice, yield* archiveOf(`FROM scratch\nLABEL upload=${c}\n`))).status, 200);
+          yield* write({
+            command: "admit", admit: "deploy", id, environment: here, services: [], version: null, accept_volume_loss: [],
+            upload: { digest: c.repeat(64), base: null, uploader: null },
+          });
+          yield* run(id);
+        }
+        // A retry of the first runs, and a settings-only Deploy queues behind it, following it for now.
+        yield* write({ command: "admit", admit: "retry", id: retried, deployment: first });
+        yield* Effect.promise(() => store.claimDeployment(organizationId, retried, "cloud-retry"));
+        yield* write({
+          command: "admit", admit: "deploy", id: settingsOnly, environment: here, services: [], version: null, accept_volume_loss: [],
+        });
+        const queued = yield* Effect.promise(() => store.read(organizationId, { query: "deployment", id: settingsOnly }));
+        expect(queued).toMatchObject({ upload: { digest: "a".repeat(64) }, chooses_upload_at_start: true });
+        // The retry stops before it applies anything, so app stays on the second upload.
+        yield* Effect.promise(() => store.abandonDeployment(retried, "cloud-retry"));
+        let extracted: string | undefined;
+        const runDeployment = store.runDeployment.bind(store);
+        const handed = vi.spyOn(store, "runDeployment").mockImplementation(async (...args: Parameters<typeof runDeployment>) => {
+          const upload = args[4]?.upload;
+          extracted = upload === undefined ? undefined : await readFile(path.join(upload, "Dockerfile"), "utf8");
+          return runDeployment(...args);
+        });
+        yield* run(settingsOnly);
+        handed.mockRestore();
+        assert.strictEqual(extracted, "FROM scratch\nLABEL upload=b\n", "Cloud extracts the upload the Deployment claimed");
+        const ran = yield* Effect.promise(() => store.read(organizationId, { query: "deployment", id: settingsOnly }));
+        assert.strictEqual(ran.upload?.digest, "b".repeat(64));
+        assert.isUndefined(ran.chooses_upload_at_start);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped),
   60_000,
