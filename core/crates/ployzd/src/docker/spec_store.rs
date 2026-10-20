@@ -229,7 +229,9 @@ impl ConfigOperation<'_> {
     }
 
     /// Record that this Machine stopped `run` for a `Stopped` want, and republish
-    /// observations as [`Self::set_rotation`] does.
+    /// observations as [`Self::set_rotation`] does. Records nothing once the
+    /// Container's spec is gone: a removal that won the race already took its row,
+    /// and the stop must not bring one back.
     pub async fn set_stopped(
         &mut self,
         container_id: &ContainerId,
@@ -240,7 +242,7 @@ impl ConfigOperation<'_> {
         let run = serde_json::to_string(run)?;
         blocking(move || {
             connect(&path)?.execute(
-                "INSERT INTO stops (id, run) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET run = excluded.run",
+                "INSERT INTO stops (id, run) SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM containers WHERE id = ?1) ON CONFLICT (id) DO UPDATE SET run = excluded.run",
                 params![container_id, run],
             )?;
             Ok(())

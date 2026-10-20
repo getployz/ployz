@@ -542,6 +542,33 @@ impl ContainerRuntime {
         Ok(runtime_observation(inspected.state.as_ref()))
     }
 
+    /// The run of `container_id` that exited at or after `since`: what a stop issued
+    /// at `since` ended. Docker stamps the exit on this host's clock. `None` while it
+    /// runs, and for a run that exited before `since`, which the stop found over.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub async fn run_ended_since(
+        &self,
+        container_id: &ContainerId,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<ployz_core::ContainerRun>, Error> {
+        let inspected = decode_raw_inspect(
+            self.docker
+                .client
+                .inspect_container(container_id.as_str(), None)
+                .await,
+            container_id,
+        )?;
+        let ended = matches!(
+            runtime_observation(inspected.state.as_ref()),
+            ContainerRuntimeObservation::Exited { .. }
+        ) && finished_at(inspected.state.as_ref())
+            .is_some_and(|finished| finished >= since);
+        Ok(ended.then(|| container_run(&inspected)).flatten())
+    }
+
     pub async fn inspect_managed(
         &self,
         container_id: &ContainerId,
@@ -900,6 +927,12 @@ fn container_run(inspected: &RawContainerInspect) -> Option<ployz_core::Containe
 
 fn started_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(state?.get("StartedAt")?.as_str()?)
+        .ok()
+        .map(Into::into)
+}
+
+fn finished_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(state?.get("FinishedAt")?.as_str()?)
         .ok()
         .map(Into::into)
 }

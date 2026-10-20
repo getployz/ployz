@@ -1283,17 +1283,160 @@ mod settled {
 }
 
 mod stopped_on_request {
-    use std::{collections::BTreeMap, sync::Mutex};
+    use std::{collections::BTreeMap, path::PathBuf, sync::Mutex, time::Duration};
 
     use ployz_core::{
-        ContainerLocator, ContainerNow, ContainerObservation, ContainerRuntimeObservation,
-        ContainerWant, Drain, EnsuredContainer, MachineName, NewContainer, RunRotation, RunTarget,
-        StopOptions,
+        ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerRun,
+        ContainerRuntimeObservation, ContainerWant, Drain, EnsuredContainer, MachineName,
+        NewContainer, RunRotation, RunTarget, StopOptions,
     };
     use serde_json::json;
 
     use super::*;
-    use crate::docker::test_support::{FakeDocker, fake_runtime_with, spec_with_sources};
+    use crate::docker::{
+        ContainerRuntime,
+        test_support::{FakeDocker, fake_runtime_with, spec_with_sources},
+    };
+
+    struct Fixture {
+        data_dir: PathBuf,
+        local: LocalMachine,
+        runtime: ContainerRuntime,
+        fake: FakeDocker,
+        id: ContainerId,
+    }
+
+    impl Fixture {
+        /// One running Container whose app exits 1 when stopped, as one that exits
+        /// non-zero on SIGTERM does.
+        async fn start() -> Self {
+            let data_dir =
+                std::env::temp_dir().join(format!("ployzd-stopped-mark-{}", MachineId::random()));
+            let mut store = LocalMachineStore::open(&data_dir).unwrap();
+            store
+                .enroll(ployz_core::EnrollRequest {
+                    role: ployz_core::EnrollAs::Founder {
+                        initial_policy: Default::default(),
+                        name: MachineName::parse("local").unwrap(),
+                        cluster_network: "10.210.0.0/16".parse().unwrap(),
+                        public_ip: None,
+                        advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                            "192.0.2.1:51820".parse().unwrap(),
+                        )],
+                    },
+                    wireguard_mtu: None,
+                    pinned: Default::default(),
+                })
+                .unwrap();
+            let owner = RecordOwner::spawn(store).unwrap();
+            let (runtime, fake) = fake_runtime_with(FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                stamp_starts: true,
+                stop_exit_code: 1,
+                ..Default::default()
+            })
+            .await;
+            let local = LocalMachine::new(owner)
+                .with_containers(Some(runtime.clone()))
+                .with_zpool("true");
+            let new: NewContainer = serde_json::from_value(json!({
+                "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
+                "resolved_spec": spec_with_sources(vec![]),
+                "gen": 1,
+            }))
+            .unwrap();
+            let id = ensure(
+                &local,
+                ContainerWant::Running {
+                    container: RunTarget::New(new),
+                    rotation: RunRotation::Pending,
+                },
+            )
+            .await
+            .container_id;
+            Self {
+                data_dir,
+                local,
+                runtime,
+                fake,
+                id,
+            }
+        }
+
+        fn start_want(&self) -> ContainerWant {
+            ContainerWant::Running {
+                container: RunTarget::Existing(ContainerLocator::Id(self.id)),
+                rotation: RunRotation::Pending,
+            }
+        }
+
+        fn stop_want(&self) -> ContainerWant {
+            ContainerWant::Stopped {
+                container: ContainerLocator::Id(self.id),
+                drain: Drain::NONE,
+                stop: StopOptions::default(),
+            }
+        }
+
+        /// Set each field, named by its JSON pointer, of the Container's Docker
+        /// inspect behind the daemon's back.
+        fn docker_sets(&self, fields: &[(&str, serde_json::Value)]) {
+            for container in self
+                .fake
+                .named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .values_mut()
+            {
+                for (pointer, value) in fields {
+                    let (parent, key) = pointer.rsplit_once('/').unwrap();
+                    container
+                        .pointer_mut(parent)
+                        .and_then(serde_json::Value::as_object_mut)
+                        .unwrap()
+                        .insert(key.into(), value.clone());
+                }
+            }
+        }
+
+        /// Stop the Container with a drain, and let `meanwhile` change Docker once the
+        /// drain has begun, well before the stop is issued.
+        async fn stop_while_draining(
+            &self,
+            meanwhile: &[(&str, serde_json::Value)],
+        ) -> ContainerObservation {
+            let mut stopping = self.runtime.subscribe_stopping_for_test();
+            let local = self.local.clone();
+            let want = ContainerWant::Stopped {
+                container: ContainerLocator::Id(self.id),
+                drain: Drain::try_from(500).unwrap(),
+                stop: StopOptions::default(),
+            };
+            let ensuring = tokio::spawn(async move { ensure(&local, want).await });
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                stopping.wait_for(|stopping| stopping.contains_key(&self.id)),
+            )
+            .await
+            .expect("the drain began")
+            .unwrap();
+            self.docker_sets(meanwhile);
+            ensuring.await.unwrap()
+        }
+
+        fn stop_rows(&self) -> i64 {
+            rusqlite::Connection::open(self.runtime.spec_store_path_for_test())
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM stops", [], |row| row.get(0))
+                .unwrap()
+        }
+
+        fn finish(self) {
+            std::fs::remove_dir_all(self.data_dir).unwrap();
+        }
+    }
 
     async fn ensure(local: &LocalMachine, want: ContainerWant) -> ContainerObservation {
         let EnsuredContainer::Ensured {
@@ -1308,71 +1451,16 @@ mod stopped_on_request {
 
     #[tokio::test]
     async fn a_stopped_want_marks_only_the_run_it_stopped() {
-        let data_dir =
-            std::env::temp_dir().join(format!("ployzd-stopped-mark-{}", MachineId::random()));
-        let mut store = LocalMachineStore::open(&data_dir).unwrap();
-        store
-            .enroll(ployz_core::EnrollRequest {
-                role: ployz_core::EnrollAs::Founder {
-                    initial_policy: Default::default(),
-                    name: MachineName::parse("local").unwrap(),
-                    cluster_network: "10.210.0.0/16".parse().unwrap(),
-                    public_ip: None,
-                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                        "192.0.2.1:51820".parse().unwrap(),
-                    )],
-                },
-                wireguard_mtu: None,
-                pinned: Default::default(),
-            })
-            .unwrap();
-        let owner = RecordOwner::spawn(store).unwrap();
-        let (runtime, fake) = fake_runtime_with(FakeDocker {
-            named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
-            stamp_starts: true,
-            stop_exit_code: 1,
-            ..Default::default()
-        })
-        .await;
-        let local = LocalMachine::new(owner)
-            .with_containers(Some(runtime.clone()))
-            .with_zpool("true");
-        let new: NewContainer = serde_json::from_value(json!({
-            "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
-            "resolved_spec": spec_with_sources(vec![]),
-            "gen": 1,
-        }))
-        .unwrap();
-        let id = ensure(
-            &local,
-            ContainerWant::Running {
-                container: RunTarget::New(new),
-                rotation: RunRotation::Pending,
-            },
-        )
-        .await
-        .container_id;
-        let start = || ContainerWant::Running {
-            container: RunTarget::Existing(ContainerLocator::Id(id)),
-            rotation: RunRotation::Pending,
-        };
+        let fixture = Fixture::start().await;
 
-        let stopped = ensure(
-            &local,
-            ContainerWant::Stopped {
-                container: ContainerLocator::Id(id),
-                drain: Drain::NONE,
-                stop: StopOptions::default(),
-            },
-        )
-        .await;
+        let stopped = ensure(&fixture.local, fixture.stop_want()).await;
         assert_eq!(
             stopped.runtime,
             ContainerRuntimeObservation::Exited { code: 1 }
         );
         assert!(stopped.stopped, "the Machine stopped this run");
 
-        let started = ensure(&local, start()).await;
+        let started = ensure(&fixture.local, fixture.start_want()).await;
         assert!(
             matches!(started.runtime, ContainerRuntimeObservation::Running { .. }),
             "{:?}",
@@ -1380,23 +1468,13 @@ mod stopped_on_request {
         );
         assert!(!started.stopped, "a start begins a run nobody stopped");
 
-        for container in fake
-            .named_containers
-            .as_ref()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .values_mut()
-        {
-            let state = container
-                .get_mut("State")
-                .and_then(serde_json::Value::as_object_mut)
-                .unwrap();
-            state.insert("Status".into(), "exited".into());
-            state.insert("ExitCode".into(), 1.into());
-        }
-        let crashed = runtime
-            .inspect_managed(&id, &local.record().id())
+        fixture.docker_sets(&[
+            ("/State/Status", json!("exited")),
+            ("/State/ExitCode", json!(1)),
+        ]);
+        let crashed = fixture
+            .runtime
+            .inspect_managed(&fixture.id, &fixture.local.record().id())
             .await
             .unwrap();
         assert_eq!(
@@ -1404,6 +1482,95 @@ mod stopped_on_request {
             ContainerRuntimeObservation::Exited { code: 1 }
         );
         assert!(!crashed.stopped, "a run that exits on its own crashed");
-        std::fs::remove_dir_all(data_dir).unwrap();
+        fixture.finish();
+    }
+
+    #[tokio::test]
+    async fn a_run_that_exits_on_its_own_during_the_drain_stays_crashed() {
+        let fixture = Fixture::start().await;
+
+        let crashed = fixture
+            .stop_while_draining(&[
+                ("/State/Status", json!("exited")),
+                ("/State/ExitCode", json!(1)),
+                ("/State/FinishedAt", json!(chrono::Utc::now().to_rfc3339())),
+            ])
+            .await;
+
+        assert_eq!(
+            crashed.runtime,
+            ContainerRuntimeObservation::Exited { code: 1 }
+        );
+        assert!(
+            !crashed.stopped,
+            "the run ended before the stop was issued, so the stop ended nothing"
+        );
+        assert_eq!(fixture.stop_rows(), 0);
+        fixture.finish();
+    }
+
+    #[tokio::test]
+    async fn a_run_restarted_during_the_drain_reads_stopped_once_the_stop_ends_it() {
+        let fixture = Fixture::start().await;
+
+        let stopped = fixture
+            .stop_while_draining(&[
+                ("/RestartCount", json!(1)),
+                (
+                    "/State/StartedAt",
+                    json!((chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339()),
+                ),
+            ])
+            .await;
+
+        assert_eq!(
+            stopped.runtime,
+            ContainerRuntimeObservation::Exited { code: 1 }
+        );
+        assert!(
+            stopped.stopped,
+            "the stop ended the restarted run, the one Docker reports"
+        );
+        fixture.finish();
+    }
+
+    #[tokio::test]
+    async fn a_stop_recorded_after_its_container_went_leaves_no_row() {
+        let fixture = Fixture::start().await;
+        assert!(
+            ensure(&fixture.local, fixture.stop_want()).await.stopped,
+            "the stop is recorded"
+        );
+        assert_eq!(fixture.stop_rows(), 1);
+
+        fixture
+            .runtime
+            .remove(&fixture.id, true, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.stop_rows(),
+            0,
+            "a removal takes the stop row with it"
+        );
+
+        // A stop that lost the race to that removal records only afterwards.
+        fixture
+            .runtime
+            .record_stop(
+                &fixture.id,
+                &ContainerRun {
+                    restart_count: 0,
+                    started_at_unix_nanos: 1,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.stop_rows(),
+            0,
+            "no row outlives its Container's spec"
+        );
+        fixture.finish();
     }
 }

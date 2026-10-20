@@ -163,7 +163,8 @@ setup commands. The first one that fails stops the deploy.
 None of the service's replicas is running. **Crashed** means one exited with an error or keeps
 restarting; **Stopped** means they all exited cleanly, or you stopped them, and weren't restarted.
 A replica you stopped reads **Stopped** whatever code your app exited with, and `ployz ps` shows
-it as `stopped`. During a first
+it as `stopped`. One that exited on its own before your stop reached it still reads **Crashed**.
+During a first
 deploy a card can read **Not running** or **Crashed** for a few seconds: if the deployment ends
 **Deployed**, there's nothing to fix.
 

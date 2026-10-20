@@ -76,6 +76,7 @@ fn copy(suffix: u8, machine: &Machine, r#gen: u64) -> ContainerObservation {
         resolved_spec,
         address: Some(ContainerAddress([10, 210, suffix, 2].into())),
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

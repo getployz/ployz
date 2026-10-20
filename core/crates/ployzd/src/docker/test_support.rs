@@ -54,7 +54,7 @@ pub(crate) struct FakeDocker {
     pub(crate) exit_on_start: Arc<AtomicBool>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
     /// Named mode: each start of a stopped Container stamps a new `StartedAt`, and a
-    /// stop keeps it, as Docker does.
+    /// stop keeps it and stamps `FinishedAt`, as Docker does.
     pub(crate) stamp_starts: bool,
     /// Named mode: the code a stopped process exits with, as an app that exits non-zero
     /// on SIGTERM leaves it.
@@ -229,6 +229,13 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     )
                         .into_response();
                 }
+                // Docker leaves a Container whose process already exited as it was, and
+                // answers 304, which the client reads as success.
+                if path.ends_with("/stop")
+                    && container.pointer("/State/Status") != Some(&"running".into())
+                {
+                    return StatusCode::NOT_MODIFIED.into_response();
+                }
                 let status = if path.ends_with("/start") {
                     "running"
                 } else {
@@ -260,6 +267,12 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         .as_object_mut()
                         .expect("a literal object")
                         .insert("StartedAt".into(), started_at);
+                }
+                if fake.stamp_starts && path.ends_with("/stop") {
+                    state
+                        .as_object_mut()
+                        .expect("a literal object")
+                        .insert("FinishedAt".into(), chrono::Utc::now().to_rfc3339().into());
                 }
                 container["State"] = state;
                 return StatusCode::NO_CONTENT.into_response();

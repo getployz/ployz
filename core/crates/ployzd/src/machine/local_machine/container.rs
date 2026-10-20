@@ -382,8 +382,12 @@ impl LocalMachine {
     }
 
     /// Drains before the exclusive turn, then stops under it while holding what
-    /// `check` returned. A refusal from `withdraw` or `check` stops nothing. With
-    /// `record`, the run it stopped is recorded, so its exit reads as a stop.
+    /// `check` returned. A refusal from `withdraw` or `check` stops nothing.
+    ///
+    /// With `record`, a stop that ended a run records it, so its exit reads as a stop.
+    /// The run is read after the stop, under the turn, so it is the one the stop ended
+    /// even when the Container restarted during the drain. A run that exited before
+    /// the stop was issued ended on its own, so its exit stays a crash.
     #[expect(
         clippy::too_many_arguments,
         reason = "one stop's facts and its two guards, shared by every stop path"
@@ -407,11 +411,9 @@ impl LocalMachine {
         let _ = installation;
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
-        let observed = containers
-            .inspect_managed_details(container, &machine_id)
-            .await?;
-        if !is_running(&observed.container.runtime) {
-            return Ok(Ok(observed.container));
+        let observed = containers.inspect_managed(container, &machine_id).await?;
+        if !is_running(&observed.runtime) {
+            return Ok(Ok(observed));
         }
         let _withdrawal = match withdraw().await? {
             Ok(withdrawal) => withdrawal,
@@ -423,19 +425,24 @@ impl LocalMachine {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
         };
-        let stopped = containers
+        let issued = chrono::Utc::now();
+        containers
             .stop(
                 container,
                 stop.signal.as_deref(),
                 stop.grace_period_seconds.map(i32::from),
             )
-            .await;
+            .await?;
+        let ended = if record {
+            containers.run_ended_since(container, issued).await?
+        } else {
+            None
+        };
         drop(held);
-        drop(turn);
-        stopped?;
-        if record && let Some(run) = &observed.run {
-            containers.record_stop(container, run).await?;
+        if let Some(run) = ended {
+            containers.record_stop(container, &run).await?;
         }
+        drop(turn);
         Ok(Ok(containers
             .inspect_managed(container, &machine_id)
             .await?))
