@@ -545,8 +545,39 @@ fn prepare_debian_zfs(
             None,
         )
         .map_err(failed(step))?;
-        Ok(())
+        install_packaged_build(kernel, ["dpkg", "-L"])
     })
+}
+
+/// Installs the installed `zfs-dkms`'s own build for `kernel`, which its package manager skips
+/// when the package is already installed. The package's build is installed, never claimed.
+fn install_packaged_build(kernel: &str, list: [&str; 2]) -> Result<(), BuildFailure> {
+    if zfs_installed(kernel) {
+        return Ok(());
+    }
+    let Some(version) = zfs_dkms_package_version(list) else {
+        return Ok(());
+    };
+    run_step(
+        "installing the zfs-dkms build",
+        Command::new("dkms").args(["install", "-m", "zfs", "-v", &version, "-k", kernel]),
+    )
+}
+
+/// The DKMS version of the installed `zfs-dkms`, read from the source directory it ships.
+fn zfs_dkms_package_version([command, flag]: [&str; 2]) -> Option<String> {
+    let output = Command::new(command)
+        .args([flag, "zfs-dkms"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("/usr/src/zfs-")
+                .filter(|version| !version.is_empty() && !version.contains('/'))
+                .map(str::to_owned)
+        })
 }
 
 pub(super) fn debian_contrib_source(apt_dir: &Path) -> PathBuf {
@@ -672,6 +703,7 @@ fn prepare_amazon_zfs(
         let mut install = Command::new("dnf");
         install.args(["install", "-y"]).args(rpms);
         run_step("installing the ZFS RPMs", &mut install)?;
+        install_packaged_build(kernel, ["rpm", "-ql"])?;
         // The RPMs enable zfs-import-cache, zfs-mount and zfs.target, but those skip unless the
         // module is loaded, and upstream leaves loading it at boot commented out. Debian's
         // zfs-load-module.service does this there.
