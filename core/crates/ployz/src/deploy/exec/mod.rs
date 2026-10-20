@@ -1679,8 +1679,8 @@ impl<'a> Rows<'a> {
         mut old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
         cancellation: &CancellationToken,
     ) -> Inspected {
-        // A Pending sibling keeps every proxy routing a Held copy, so when the
-        // step withdraws one, its own Pending copies, never routed, go first.
+        // A dead run's Pending copies were never routed, so when the step
+        // withdraws a routed copy, they go first with no proxy wait.
         let withdraws = old
             .values()
             .filter_map(|observed| observed.as_ref().ok()?.as_ref())
