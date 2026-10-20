@@ -274,10 +274,9 @@ Each item reproduces in a capture on main, at the line it cites.
 1. `exec` of a missing binary prints `OCI runtime exec failed: …` on stdout, exit 127. [cloud-cluster/errors.md:31](cloud-cluster/errors.md) **Kept: `exec` passes the remote command's output and exit code through.**
 2. `deployment start 1` with no Server follows until the capture's timeout kills it (exit 124), and prints nothing at all. [cloud/deploy.md:310](cloud/deploy.md)
 3. `server upgrade 0.2.3 gamma` exits 3, the partial code, though nothing printed on stdout and its only Server failed. The handler's `emit_committed` counts the result as printed in human mode too. [cluster/server.md:852](cluster/server.md)
-4. `server rm gamma --confirm gamma` removes the Server, then warns `! Server gamma is running Services: shop-production/web.` with `next: ployz server drain gamma`, which names the Server it just removed. [cluster/server.md:1004](cluster/server.md)
-5. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
+4. project rm help leaves the `<name>` argument with an empty description. [store/help.md:403](store/help.md)
 
-The earlier list's 32 items, rechecked against the same captures. Old items 15, 23 and 29 are items 4, 1 and 2 above.
+The earlier list's 32 items, rechecked against the same captures. Old items 23 and 29 are items 1 and 2 above.
 
 Fixed, each at the capture that shows it:
 
@@ -293,6 +292,7 @@ Fixed, each at the capture that shows it:
 - 12, `cannot Select a context…`: now `Choosing a context needs a terminal; name one instead.` [store/context.md:514](store/context.md)
 - 13, signed-out ps and logs reported a socket error: now `Not signed in to Cloud.` with `next: ployz login`. [cloud/errors.md:198](cloud/errors.md), [cloud/errors.md:223](cloud/errors.md)
 - 14, the server rm retry quoted `~`: now `retry: ployz server rm gamma --context default --confirm gamma`. [cluster/errors.md:40](cluster/errors.md)
+- 15, server rm removed first, then warned, and printed an empty `Volumes the Cluster loses (0)` list: it warns before it removes (`handlers/server/remove.rs`), and no empty list prints. The capture shows stdout and stderr apart, so their order on the page is not the order they ran in. [cluster/server.md:1004](cluster/server.md)
 - 16, service restart warned twice: one warning. [cluster/errors.md:644](cluster/errors.md)
 - 17, logs exited 0 with a Machine down: exit 3 and a warning. [cluster/errors.md:609](cluster/errors.md)
 - 18, server drain `--json` printed `public_key` as bytes: a base64 string. [cluster/server.md:892](cluster/server.md)
