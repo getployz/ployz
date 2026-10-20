@@ -201,6 +201,19 @@ doesn't exist and for a private image you have no access to.
 - If the image is private, add **Registry credentials**, or replace a token that expired. See
   [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
+## My server's disk is full
+
+**Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
+
+The server ran out of disk space while it downloaded the image, so the deploy stopped before it
+changed anything. A version that was already running keeps running. The cause line under it is
+Docker's own error.
+
+- Free space on that server: remove files you don't need, or remove old images with
+  `docker image prune`.
+- Give the server a bigger disk if it fills up again.
+- Run the deploy again.
+
 ## Deploy says a service has nothing to run
 
 `api has nothing to run yet: add an image, connect a repository, or run ployz up in its directory`

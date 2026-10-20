@@ -4463,6 +4463,35 @@ fn a_missing_image_reads_as_one_sentence_at_the_pull_step() {
 }
 
 #[test]
+fn a_full_disk_names_itself_at_the_pull_step_and_keeps_dockers_error() {
+    let docker = "Docker stream error: failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/usr/share/locale/zh_CN/LC_MESSAGES/shadow.mo\" for UID 0, GID 0: no such file or directory";
+    let pull = json!({"type": "failed", "error": {
+        "type": "machine", "action": "PullImage",
+        "error": {
+            "code": "internal",
+            "message": "The Server's disk is full: 48 MB free under /var/lib/docker",
+            "details": {"disk_full": {"docker_root": "/var/lib/docker", "free_bytes": 48_000_000}},
+            "cause": [docker],
+        }
+    }});
+    let RowState::Failed {
+        reason,
+        cause,
+        step,
+        ..
+    } = failed_row(&[progress(&[("web", "alpha", pull)])])
+    else {
+        panic!("expected a failed row");
+    };
+    assert_eq!(
+        reason,
+        "The Server's disk is full: 48 MB free under /var/lib/docker"
+    );
+    assert_eq!(cause, vec![docker.to_owned()]);
+    assert_eq!(step, Some(FailedAt::Pull));
+}
+
+#[test]
 fn a_failed_row_records_the_step_it_failed_at() {
     let health = json!({"type": "failed", "error": {
         "type": "health", "container_id": "c".repeat(64), "failure": {"type": "cancelled"}
