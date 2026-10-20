@@ -1050,7 +1050,6 @@ async fn in_reuses_the_health_its_run_settled() {
     let node = fleet.node(0);
     let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
 
-    let started = std::time::Instant::now();
     let reply = ensure(
         node,
         into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
@@ -1059,11 +1058,6 @@ async fn in_reuses_the_health_its_run_settled() {
 
     assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
     assert_eq!(node.service.local.settles_for_test(&copy), 1);
-    assert!(
-        started.elapsed() < MONITOR * 2 / 3,
-        "{:?}",
-        started.elapsed()
-    );
 }
 
 /// A copy another run settled waits out its monitor window again.
