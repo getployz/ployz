@@ -279,7 +279,8 @@ commands! {
         needs ChangesStage
         agent [VolumeAdd]
         => crate::volume::create_volume(tx, who, c);
-    /// Change a Volume's storage before its first Deployment is requested.
+    /// Change a draft Volume's storage; a deployed Managed Volume resizes through
+    /// `ployz volume set --size` instead.
     SetVolumeStorage(SetVolumeStorage) -> Volume(VolumeStaged)
         needs ChangesStage
         agent [VolumeUpdate]

@@ -34,10 +34,20 @@ your entered directory if a write fails.
 The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fail. The whole
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
 
-Choose with care. You can change the limit under **Storage** in the volume's panel until you
-deploy the volume; after that it's fixed, even if that deploy failed. Ployz can't resize a
-volume yet. To get more room, add a bigger volume, mount it in the same service at another
-path, copy the files across with `ployz exec`, then swap the mount paths.
+You can change the limit under **Storage** in the volume's panel until you deploy the volume.
+After that, even if that deploy failed, the panel can't change it. On Ployz Cloud you can grow
+a deployed volume from the CLI while its service keeps running:
+
+```sh
+# Grow the data volume to 20 GB on every server that holds a copy
+ployz volume set data --size 20 --wait
+```
+
+Ployz grows each mirror first and the copy your service writes to last. If one server holding
+a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its
+old limit. `ployz volume runs data` shows how a resize went. The new limit isn't a staged
+change: `ployz diff` shows nothing, and your next deploy leaves the service's container alone.
+Shrinking a volume isn't supported yet.
 
 The dashboard doesn't show how full a volume is yet:
 

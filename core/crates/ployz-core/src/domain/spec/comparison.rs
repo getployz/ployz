@@ -92,4 +92,28 @@ mod tests {
             SpecChange::NeedsRecreate
         );
     }
+
+    #[test]
+    fn a_grown_provisioned_bound_is_up_to_date() {
+        let mounting = |maximum_bytes: u64| -> ResolvedServiceSpec {
+            serde_json::from_value(json!({
+                "service_id": "a".repeat(32), "name": "db",
+                "mode": {"mode": "replicated", "replicas": 1},
+                "container": {"image": "postgres:17", "pull_policy": "missing"},
+                "volumes": [{"reference": "data", "source": {
+                    "kind": "provisioned", "name": "app_data", "maximum_bytes": maximum_bytes,
+                    "scope": {"namespace": "app", "logical_name": "data"}
+                }}],
+                "mounts": [{"volume": "data", "target": "/data"}],
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            compare_specs(
+                &mounting(5_000_000_000),
+                &mounting(8_000_000_000).to_requested()
+            ),
+            SpecChange::UpToDate
+        );
+    }
 }

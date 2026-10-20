@@ -16,7 +16,7 @@ import {
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { admitRun, ClusterNotConnected, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, unreachable } from "#/modules/volume-run/volume-run.server";
+import { admitRun, ClusterNotConnected, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, unreachable } from "#/modules/volume-run/volume-run.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -162,7 +162,8 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     ...listed.mounts.map((mount): BatchCommand => ({ command: "edit", environment: input.environment, expect: null, changes: [mountChange(mount.service, listed.name, null)] })),
     {
       command: "create_volume", id, environment: input.environment, name,
-      storage: listed.storage, storage_locked: true, shared_writes: listed.shared_writes, mounts: listed.mounts,
+      storage: heldStorage(listed),
+      storage_locked: true, shared_writes: listed.shared_writes, mounts: listed.mounts,
       restored_from: { volume: input.volumeId, at: input.at },
     },
   ];

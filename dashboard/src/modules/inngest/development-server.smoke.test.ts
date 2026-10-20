@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer as createHttpServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type WorkerConnection } from "inngest/connect";
@@ -26,7 +25,7 @@ class SmokeStore {
   constructor(private readonly path: string) {}
 
   async initialize(rows: ReadonlyArray<SmokeRow>) {
-    await writeFile(this.path, JSON.stringify(rows), "utf8");
+    await this.write(rows);
   }
 
   async read(operationId: string) {
@@ -41,44 +40,56 @@ class SmokeStore {
     operationId: string,
     change: (current: SmokeRow) => SmokeRow,
   ): Promise<void> {
+    return this.rewrite((rows) =>
+      rows.map((row) => (row.operationId === operationId ? change(row) : row)),
+    );
+  }
+
+  updateByRunId(
+    runId: string,
+    change: (current: SmokeRow) => SmokeRow,
+  ): Promise<void> {
+    return this.rewrite((rows) => {
+      const owned = rows.find((row) => row.runId === runId);
+      return rows.map((row) => (row === owned ? change(row) : row));
+    });
+  }
+
+  private rewrite(
+    next: (rows: ReadonlyArray<SmokeRow>) => ReadonlyArray<SmokeRow>,
+  ): Promise<void> {
     this.pending = this.pending.then(async () => {
       const rows: ReadonlyArray<SmokeRow> = JSON.parse(
         await readFile(this.path, "utf8"),
       );
-      const next = rows.map((row) =>
-        row.operationId === operationId ? change(row) : row,
-      );
-      await writeFile(this.path, JSON.stringify(next), "utf8");
+      await this.write(next(rows));
     });
     return this.pending;
   }
 
-  async updateByRunId(
-    runId: string,
-    change: (current: SmokeRow) => SmokeRow,
-  ) {
-    const rows: ReadonlyArray<SmokeRow> = JSON.parse(
-      await readFile(this.path, "utf8"),
-    );
-    const owned = rows.find((row) => row.runId === runId);
-    if (owned) await this.update(owned.operationId, change);
+  // A read can overlap a write, so a write lands whole by rename: writeFile truncates first, and a read in between
+  // would parse an empty file.
+  private async write(rows: ReadonlyArray<SmokeRow>) {
+    await writeFile(`${this.path}.next`, JSON.stringify(rows), "utf8");
+    await rename(`${this.path}.next`, this.path);
   }
 }
 
-async function availablePort() {
-  const server = createHttpServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as AddressInfo | null;
-  if (address === null) {
-    throw new Error("Could not allocate an Inngest smoke-test port.");
+// A free port below the ephemeral range (32768 and up on Linux, 49152 on macOS). The kernel hands ephemeral ports to
+// listen(0) and to outgoing connections, the development server's own internal listeners among them, so a port
+// listen(0) found free could be handed out again before the server binds it.
+async function availablePort(): Promise<number> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const port = 20_000 + Math.floor(Math.random() * 12_000);
+    const server = createServer();
+    const free = await new Promise<boolean>((resolve) => {
+      server.once("error", () => resolve(false));
+      // No host, so it checks every address, as the server binds them.
+      server.listen(port, () => server.close(() => resolve(true)));
+    });
+    if (free) return port;
   }
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return address.port;
+  throw new Error("No free port in 20000-31999 after 100 tries.");
 }
 
 async function stopProcess(process: ChildProcess | undefined) {
@@ -397,49 +408,93 @@ describe("Inngest development server durable smoke", () => {
   }, 60_000);
 });
 
+type DevServerPorts = {
+  readonly devPort: number;
+  readonly gatewayPort: number;
+  readonly gatewayGrpcPort: number;
+  readonly executorGrpcPort: number;
+};
+
+// The part of the development server's GET /dev answer that names the ports it runs on.
+type DevServerInfo = {
+  readonly startOpts?: {
+    readonly connectGatewayPort?: number;
+    readonly connectGRPCConfig?: {
+      readonly Gateway?: { readonly Port?: number };
+      readonly Executor?: { readonly Port?: number };
+    };
+  };
+};
+
 async function startDevServer() {
-  const devPort = await availablePort();
-  const gatewayPort = await availablePort();
-  const gatewayGrpcPort = await availablePort();
-  const executorGrpcPort = await availablePort();
-  const devServer = spawn(
-    join(process.cwd(), "node_modules/inngest-cli/bin/inngest"),
-    [
-      "dev",
-      "--no-discovery",
-      "--no-poll",
-      "--port",
-      String(devPort),
-      "--connect-gateway-port",
-      String(gatewayPort),
-      "--connect-gateway-grpc-port",
-      String(gatewayGrpcPort),
-      "--connect-executor-grpc-port",
-      String(executorGrpcPort),
-      "--retry-interval",
-      "1",
-      "--tick",
-      "50",
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  await waitForDevServer(devPort, devServer);
-  return { process: devServer, devPort, gatewayPort };
+  for (let attempt = 1; ; attempt++) {
+    const ports: DevServerPorts = {
+      devPort: await availablePort(),
+      gatewayPort: await availablePort(),
+      gatewayGrpcPort: await availablePort(),
+      executorGrpcPort: await availablePort(),
+    };
+    const devServer = spawn(
+      join(process.cwd(), "node_modules/inngest-cli/bin/inngest"),
+      [
+        "dev",
+        "--no-discovery",
+        "--no-poll",
+        "--port",
+        String(ports.devPort),
+        "--connect-gateway-port",
+        String(ports.gatewayPort),
+        "--connect-gateway-grpc-port",
+        String(ports.gatewayGrpcPort),
+        "--connect-executor-grpc-port",
+        String(ports.executorGrpcPort),
+        "--retry-interval",
+        "1",
+        "--tick",
+        "50",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let output = "";
+    const record = (chunk: Buffer) => { output += chunk.toString(); };
+    devServer.stdout?.on("data", record);
+    devServer.stderr?.on("data", record);
+    const outcome = await waitForDevServer(ports, devServer, () => output);
+    if (outcome === "ready") return { process: devServer, devPort: ports.devPort, gatewayPort: ports.gatewayPort };
+    await stopProcess(devServer);
+    // Another process can still take a picked port, such as a second run of this file on the same machine.
+    if (outcome !== "port taken" || attempt === 3) {
+      // Its last lines, cut short: an error line carries a long encoded stack after the message.
+      const log = output.trim().split("\n").slice(-20).map((line) => line.slice(0, 300)).join("\n");
+      throw new Error(`Inngest development server ${outcome}:\n${log}`);
+    }
+  }
 }
 
-async function waitForDevServer(port: number, process: ChildProcess) {
+async function waitForDevServer(ports: DevServerPorts, process: ChildProcess, output: () => string) {
+  // The server moves off a port it finds taken, and exits when one is taken between that check and its bind.
+  const portTaken = () => /Port conflict|address already in use/.test(output());
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    if (process.exitCode !== null) {
-      throw new Error(`Inngest development server exited with ${process.exitCode}.`);
-    }
+    if (portTaken()) return "port taken";
+    if (process.exitCode !== null) return `exited with ${process.exitCode}`;
     try {
-      const response = await fetch(`http://127.0.0.1:${port}`);
-      if (response.ok) return;
+      // Bounded, so a listener that took the port and never answers can't hold the loop.
+      const response = await fetch(`http://127.0.0.1:${ports.devPort}/dev`, { signal: AbortSignal.timeout(1_000) });
+      // Any listener on devPort can answer. Only the server we started reports the gateway ports we gave it, and it
+      // reports the ports it moved to instead when it found ours taken.
+      const { startOpts }: DevServerInfo = await response.json();
+      if (
+        startOpts?.connectGatewayPort === ports.gatewayPort &&
+        startOpts.connectGRPCConfig?.Gateway?.Port === ports.gatewayGrpcPort &&
+        startOpts.connectGRPCConfig.Executor?.Port === ports.executorGrpcPort
+      ) {
+        return "ready";
+      }
     } catch {
-      // The development server has not opened its HTTP listener yet.
+      // Nothing answers on devPort yet, or what answers is not an Inngest development server.
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("Inngest development server did not become ready.");
+  return "did not become ready";
 }

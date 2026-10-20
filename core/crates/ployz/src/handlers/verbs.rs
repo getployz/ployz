@@ -760,7 +760,9 @@ pub(crate) const VOLUME_RUNS: Verb = Verb::cloud(
 )
 .docs("services/move-a-volume.md");
 pub(crate) const VOLUME_SET: Verb =
-    Verb::cloud("volume set", Never, volume::set_command, volume::set).docs("services/volumes.md");
+    Verb::cloud("volume set", Never, volume::set_command, volume::set)
+        .keeps_running(KeepsRunning::With("--wait"))
+        .docs("services/volumes.md");
 pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
     "volume sync",
     Never,

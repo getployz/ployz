@@ -35,6 +35,8 @@ describe("deploying a Volume placement", () => {
   const statuses = new Map<string, string>();
   let members: Member[];
   let restoredStorage: VolumeKind;
+  /** What the Store recorded for `data` once deployed; none before its first Deploy. */
+  let recordedStorage: number | undefined;
   /** Volumes discarded from the Store. */
   const discarded = new Set<string>();
   const inspect: MemberInspector = () => Effect.succeed(members);
@@ -52,7 +54,7 @@ describe("deploying a Volume placement", () => {
           }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
-            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }, { id: "vol2", name: "data-1430", storage: restoredStorage }]
+            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 }, recorded_storage: recordedStorage }, { id: "vol2", name: "data-1430", storage: restoredStorage }]
               .filter((volume) => !discarded.has(volume.id)),
           };
         },
@@ -86,6 +88,7 @@ describe("deploying a Volume placement", () => {
     statuses.clear();
     discarded.clear();
     restoredStorage = { kind: "provisioned", maximumBytes: 1 };
+    recordedStorage = undefined;
     send.mockClear();
     await harness.pool.query(`
       truncate table organization cascade;
@@ -616,6 +619,20 @@ describe("deploying a Volume placement", () => {
       restore: { volumeId: "vol2", environment },
     });
     expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
+  });
+
+  it("seeds a restored Volume at the size its source's copies hold while an older revision is staged", async () => {
+    members = [member("web-1", "writer")];
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: {
+      primary: web("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
+    } }));
+    await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
+    recordedStorage = 2;
+    restoredStorage = { kind: "provisioned", maximumBytes: 2 };
+
+    expect(await run(advancePlacement(organizationId, "dep-1", null, (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : members), answered))).toMatchObject({ kind: "wait" });
+    expect((await harness.pool.query(`select kind from volume_run`)).rows).toEqual([{ kind: "seed" }]);
   });
 
   describe("refreshing mirrors", () => {
