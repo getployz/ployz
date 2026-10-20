@@ -355,7 +355,8 @@ from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Un
 `removal: removing`, with the removal's `id` and the removal deployments it ran in `deployments`.
 When one of them didn't apply, it also reports that deployment in full under `deployment` (its
 `status`, `outcome` and `nodes`) and `next`: the command that finishes it, with the same
-`--ployz-config` when you passed one.
+`--ployz-config` when you passed one. Each server it waits on is under `waiting_on`, by its name
+in `server` and its machine ID in `server_id`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it
