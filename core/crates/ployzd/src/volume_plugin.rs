@@ -370,6 +370,9 @@ mod tests {
     #[path = "inspect_tests.rs"]
     mod inspect_tests;
 
+    #[path = "inspect_race_tests.rs"]
+    mod inspect_race_tests;
+
     #[path = "slot_tests.rs"]
     mod slot_tests;
 

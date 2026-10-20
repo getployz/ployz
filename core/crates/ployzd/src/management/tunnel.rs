@@ -1,7 +1,8 @@
 //! Port-forward tunnels: one TCP stream from an admitted Management Client to an
 //! address inside the Cluster network, relayed over its own [`TUNNEL_ALPN`] connection.
 //!
-//! A tunnel is Machine RPC power, not more: only a slot's accepted key opens one, the
+//! A tunnel is Machine RPC power, not more: only a slot's accepted key, proven on the
+//! tunnel's first stream, opens one, the
 //! target must be an IPv4 address in this Machine's Cluster network (never loopback or
 //! the internet), and revoking the key or stopping the daemon ends it at once.
 
@@ -29,7 +30,12 @@ pub(super) async fn serve(
     mut records: watch::Receiver<Arc<LocalMachineRecord>>,
     shutdown: CancellationToken,
 ) {
-    let remote = *connection.remote_id().as_bytes();
+    let Some((remote, (send, recv))) = (tokio::select! {
+        () = shutdown.cancelled() => return connection.close(VarInt::from_u32(0), b"shutdown"),
+        proven = super::authenticate(&connection) => proven,
+    }) else {
+        return connection.close(super::CLIENT_REFUSED, b"management access refused");
+    };
     let record = records.borrow_and_update().clone();
     // A pending candidate may only negotiate; tunnels are operational.
     if !record.accepts_management_client(&remote) {
@@ -42,7 +48,7 @@ pub(super) async fn serve(
     let opened = tokio::select! {
         () = &mut revoked => return connection.close(REVOKED, b"revoked"),
         () = shutdown.cancelled() => return connection.close(VarInt::from_u32(0), b"shutdown"),
-        opened = tokio::time::timeout(OPEN_TIMEOUT, open(&connection, &record)) => opened
+        opened = tokio::time::timeout(OPEN_TIMEOUT, open(send, recv, &record)) => opened
             .unwrap_or(Err(TunnelError::Timeout)),
     };
     let (mut tcp, mut stream) = match opened {
@@ -73,8 +79,6 @@ type TunnelStream = tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint::
 enum TunnelError {
     #[error("the tunnel did not open in time")]
     Timeout,
-    #[error("no tunnel stream")]
-    Stream(#[from] iroh::endpoint::ConnectionError),
     #[error("tunnel header: {0}")]
     Header(std::io::Error),
     #[error("the tunnel target is not an ip:port address")]
@@ -94,10 +98,10 @@ enum TunnelError {
 
 /// Read the target, check it is in the Cluster network, dial it and acknowledge.
 async fn open(
-    connection: &Connection,
+    mut send: iroh::endpoint::SendStream,
+    mut recv: iroh::endpoint::RecvStream,
     record: &LocalMachineRecord,
 ) -> Result<(TcpStream, TunnelStream), TunnelError> {
-    let (mut send, mut recv) = connection.accept_bi().await?;
     let length = recv.read_u8().await.map_err(TunnelError::Header)?;
     let mut target = vec![0; usize::from(length)];
     recv.read_exact(&mut target)

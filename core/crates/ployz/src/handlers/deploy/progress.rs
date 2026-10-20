@@ -6,7 +6,7 @@ use crate::ui::{
     Hint,
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
-use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
+use ployz_core::{QualifiedService, RpcError, RpcErrorCode, config::MEM_LIMIT_MAX};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeStatus, RowState,
@@ -409,17 +409,20 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         let mut build_failed = built.is_some_and(|build| build.status == BuildStatus::Failed);
         let mut logs = false;
         let mut pulled = false;
+        let mut memory_limit = None;
         for row in &node.rows {
             let RowState::Failed {
                 reason: row_reason,
                 cause: row_cause,
                 step,
                 log,
+                out_of_memory,
                 ..
             } = &row.state
             else {
                 continue;
             };
+            memory_limit = memory_limit.or(out_of_memory.and_then(|oom| oom.memory_bytes));
             if !primary_seen && reason == format!("{name}: {row_reason}") && cause == *row_cause {
                 primary_seen = true;
             } else {
@@ -447,6 +450,26 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 Some(FailedAt::Build) => build_failed = true,
                 Some(FailedAt::Create | FailedAt::Volume) => {}
                 None => logs |= log.is_some(),
+            }
+        }
+        // Twice the limit the Container ran out of memory under, in the unit it reads in,
+        // up to the most memLimit allows. At the most, only using less memory fixes it.
+        if let Some(bytes) = memory_limit {
+            let gb = bytes.get() as f64 / 1e9;
+            if gb < MEM_LIMIT_MAX {
+                let raised = ployz_store::memory_size((gb * 2.0).min(MEM_LIMIT_MAX));
+                let setting = format!("{name}.memLimit={}", raised.replace(' ', ""));
+                hints.push(Hint::Next(command(
+                    &[&["set", setting.as_str()][..], &scope].concat(),
+                )));
+            } else {
+                diagnostic.failures.push(Detail {
+                    message: format!(
+                        "{name} already has the most memory memLimit allows, {}: it needs to use less.",
+                        ployz_store::memory_size(MEM_LIMIT_MAX)
+                    ),
+                    causes: Vec::new(),
+                });
             }
         }
         // One hint per Service, by its config name: it reads every Server's logs, and a
@@ -701,6 +724,186 @@ mod tests {
             *row = None;
         }
         assert!(inspects(&failure(&view, command)).is_empty());
+    }
+
+    #[test]
+    fn a_container_out_of_memory_names_its_limit_and_says_to_raise_it() {
+        let failed = |out_of_memory: Option<ployz_core::OutOfMemory>| {
+            let error = ployz_core::ExecutionError::Health {
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                failure: ployz_core::HealthFailure::TimedOut {
+                    deadline_millis: Some(30_000),
+                    last_check: Some(ployz_core::LastHealthCheck::exited(
+                        1,
+                        "wget: can't connect to remote host (127.0.0.1): Connection refused",
+                    )),
+                },
+                out_of_memory,
+            };
+            let machine_id = "a".repeat(32);
+            let operations: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{
+                "index": 0, "machine_id": machine_id, "service_name": "web",
+                "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+                "status": {"type": "failed", "error": error}
+            }]))
+            .unwrap();
+            let state = ployz_store::RowTracker::default()
+                .changes(&operations)
+                .remove(0)
+                .state;
+            let RowState::Failed { reason, cause, .. } = &state else {
+                panic!("expected a failed row, got {state:?}");
+            };
+            let mut view = view();
+            view.deployment.outcome = Some(ployz_store::Outcome::Executed {
+                summary: Default::default(),
+                reason: Some(format!("web: {reason}")),
+                cause: cause.clone(),
+                services: Vec::new(),
+            });
+            let rows = &mut view.nodes.first_mut().unwrap().rows;
+            rows.truncate(1);
+            rows.first_mut().unwrap().state = state;
+            failure(&view, command)
+        };
+        let next = |failure: &Failure| {
+            failure
+                .hints()
+                .iter()
+                .filter_map(|hint| match hint {
+                    Hint::Next(command) => Some(command.clone()),
+                    Hint::Inspect(_)
+                    | Hint::Retry(_)
+                    | Hint::Undo(_)
+                    | Hint::Closest(_)
+                    | Hint::Valid(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let oom = failed(Some(ployz_core::OutOfMemory {
+            memory_bytes: Some(ployz_core::ByteQuantity::try_from(16 << 20).unwrap()),
+        }));
+        let text = crate::ui::plain(&oom);
+        assert!(
+            text.contains("web: The Container ran out of memory under its 16 MiB memLimit"),
+            "{text}"
+        );
+        assert!(
+            text.contains("did not become healthy within 30s; last check exited 1: wget"),
+            "{text}"
+        );
+        assert_eq!(
+            next(&oom),
+            ["ployz set 'web.memLimit=32MiB' --project shop --env production"]
+        );
+
+        let unlimited = failed(Some(ployz_core::OutOfMemory { memory_bytes: None }));
+        assert!(
+            crate::ui::plain(&unlimited).contains("web: The Container ran out of memory"),
+            "{}",
+            crate::ui::plain(&unlimited)
+        );
+        assert!(next(&unlimited).is_empty());
+
+        let healthy_enough = failed(None);
+        assert!(
+            crate::ui::plain(&healthy_enough)
+                .contains("web: The Container failed its health check"),
+            "{}",
+            crate::ui::plain(&healthy_enough)
+        );
+        assert!(next(&healthy_enough).is_empty());
+
+        let limit_gb = |gb: i64| {
+            Some(ployz_core::OutOfMemory {
+                memory_bytes: Some(ployz_core::ByteQuantity::try_from(gb * 1_000_000_000).unwrap()),
+            })
+        };
+        let at_most = failed(limit_gb(1024));
+        assert!(next(&at_most).is_empty(), "{:?}", next(&at_most));
+        let text = crate::ui::plain(&at_most);
+        assert!(
+            text.contains(
+                "web already has the most memory memLimit allows, 1024 GB: it needs to use less."
+            ),
+            "{text}"
+        );
+        let large = failed(limit_gb(600));
+        assert_eq!(
+            next(&large),
+            ["ployz set 'web.memLimit=1024GB' --project shop --env production"]
+        );
+        for proposal in [next(&oom), next(&large)].concat() {
+            admits(&proposal);
+        }
+    }
+
+    /// `proposal` parses as `ployz set` and the Config Store admits what it sets.
+    fn admits(proposal: &str) {
+        use ployz_store::{
+            Actor, Change, ConfigStore, CreateProject, CreateService, Edit, EnvironmentId,
+            EnvironmentRef, OrganizationId, ProjectId, ProjectName, SealingKey, ServiceLineageId,
+            SettingPath,
+        };
+
+        let words = shell_words::split(proposal).unwrap();
+        let matches = crate::cli::command()
+            .try_get_matches_from(&words)
+            .unwrap_or_else(|error| panic!("{proposal}: {error}"));
+        let Some(("set", set)) = matches.subcommand() else {
+            panic!("{proposal} is not a set");
+        };
+        // As `ployz set` reads its assignments.
+        let changes = set
+            .get_many::<String>("assignment")
+            .unwrap()
+            .map(|assignment| {
+                let (path, value) = assignment.split_once('=').unwrap();
+                Change::Set {
+                    path: SettingPath::parse(path).unwrap(),
+                    value: serde_json::Value::String(value.to_owned()),
+                }
+            })
+            .collect();
+        let store =
+            ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap();
+        let who = Actor::system(OrganizationId::parse("org").unwrap());
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(
+                        "00000000-0000-4000-8000-000000000002",
+                    )
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_core::ServiceName::parse("web").unwrap(),
+                    image: Some("nginx".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{proposal}: {error:?}"));
     }
 
     #[test]
