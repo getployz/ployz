@@ -1981,18 +1981,18 @@ fn end(
     Ok(stored.summary)
 }
 
-/// Put each node `stored` confirmed (Deployed or Removed) into Applied State as
-/// its Saved revision has it; once it `succeeded`, every Unchanged node too: the
-/// Deploy covered it even when the runtime had nothing to do (a rename, a tag).
-/// Applying one again changes nothing. The Environment's Branches then follow it.
+/// Put each node `stored` confirmed into Applied State as its Saved revision has
+/// it, by [`NodeStatus::applied`]. Applying one again changes nothing. The Environment's Branches then follow it.
 fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcError> {
     let advanced: Vec<&TargetNode> = stored
         .nodes
         .iter()
         .filter(|node| {
-            stored.run.nodes.get(node.id()).is_some_and(|status| {
-                status.advances() || (succeeded && *status == NodeStatus::Unchanged)
-            })
+            stored
+                .run
+                .nodes
+                .get(node.id())
+                .is_some_and(|status| status.applied(succeeded))
         })
         .collect();
     if !advanced.is_empty() {
