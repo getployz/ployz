@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::LineCap;
 use super::act::{Run, latest, operate, operations, resolve, roster, server_show, servers};
-use super::cloud::{LogsAnswer, OperationsAnswer, ServersAnswer};
+use super::cloud::{LogsAnswer, Operation, OperationsAnswer, RunState, ServersAnswer};
 use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
@@ -31,6 +31,26 @@ const SETTABLE: [&str; 4] = [
     "accepts_ingress",
     "build_concurrency",
 ];
+
+/// How many of a Server's runs `server_show` reads to find its newest Drain under later ones.
+const RUNS_READ: u8 = 20;
+
+/// The Server's newest Drain, by the `drain <server>` Cloud names it, that ended done or failed,
+/// when it failed and a later run took `latest`. A Drain with no verdict yet or ever (accepted,
+/// running, unknown, superseded) neither clears nor replaces an older failure.
+fn failed_drain(operations: &[Operation]) -> Option<&Operation> {
+    let (at, drain) = operations.iter().enumerate().find(|(_, operation)| {
+        operation.run.starts_with("drain ")
+            && match operation.state {
+                RunState::Done | RunState::Failed => true,
+                RunState::Accepted
+                | RunState::Running
+                | RunState::Unknown
+                | RunState::Superseded => false,
+            }
+    })?;
+    (at > 0 && drain.state == RunState::Failed).then_some(drain)
+}
 
 /// Every Namespace the Servers run with the Environment that owns it, if one does.
 fn owners(view: &NamespacesView) -> BTreeMap<&Namespace, &OwnedNamespace> {
@@ -51,7 +71,7 @@ pub(crate) struct ServerShow {
 
 impl Tool for ServerShow {
     const NAME: &'static str = "server_show";
-    const DESCRIPTION: &'static str = "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation.";
+    const DESCRIPTION: &'static str = "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation, and a failed drain a later one hides.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -80,7 +100,7 @@ impl Tool for ServerShow {
                     Subject::Server {
                         machine: server.machine,
                     },
-                    1,
+                    RUNS_READ,
                 )
             })
             .collect::<Vec<_>>();
@@ -117,6 +137,10 @@ impl Tool for ServerShow {
                     "latest": page
                         .as_ref()
                         .and_then(|page| page.operations.first())
+                        .map(latest),
+                    "failed_drain": page
+                        .as_ref()
+                        .and_then(|page| failed_drain(&page.operations))
                         .map(latest),
                 }))
             })

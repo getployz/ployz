@@ -1366,6 +1366,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
                 ployz_core::ServiceResult::Unconfirmed => {
                     "may serve its new copies: the switch was not confirmed"
                 }
+                ployz_core::ServiceResult::Newer => "a newer deploy serves it",
             };
             format!("  {service}: {words}")
         })
@@ -1425,6 +1426,7 @@ mod tests {
             {"service": "cache", "result": "updated"},
             {"service": "db", "result": "not_started"},
             {"service": "worker", "result": "unconfirmed"},
+            {"service": "cron", "result": "newer"},
         ]))
         .unwrap();
         assert_eq!(
@@ -1435,6 +1437,7 @@ mod tests {
                 "  cache: serves its copies with their new limits",
                 "  db: not started",
                 "  worker: may serve its new copies: the switch was not confirmed",
+                "  cron: a newer deploy serves it",
             ]
         );
     }
