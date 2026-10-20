@@ -49,6 +49,7 @@ export function rowLabel(row: ServerRow): string {
     case "running": return rowPhaseLabel(row.phase);
     case "completed": return "Done";
     case "failed": return row.step ? `Failed at ${failedAtLabels[row.step]}` : "Failed";
+    case "cancelled": return "Cancelled";
     case "not_attempted": return "Not attempted";
     case "unknown": return "Unknown";
     default:
@@ -62,7 +63,7 @@ export function rowLight(row: ServerRow): NodeLight {
     case "running": return "deploying";
     case "completed": return "deployed";
     case "failed": return "failed";
-    case "not_attempted": return "not_applied";
+    case "cancelled": case "not_attempted": return "not_applied";
     case "unknown": return "unknown";
     default:
       return row satisfies never;

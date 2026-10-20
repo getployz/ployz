@@ -2,7 +2,7 @@ import type { BuildView, DeploymentView, NodeOutcome, RowPhase, ServerRow } from
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { machineId } from "#/test/ids";
-import { makeRunGraph, orderRows, rowLabel, rowPhaseLabel, selectRunNode } from "./run-graph";
+import { makeRunGraph, orderRows, rowLabel, rowLight, rowPhaseLabel, selectRunNode } from "./run-graph";
 
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
   id: "d1", status: "running", in_flight: true, builds: [], nodes: [], runtime_names: {}, preview: null, ...fields,
@@ -62,6 +62,14 @@ describe("run graph", () => {
     expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: "pull", log: null })).toBe("Failed at pull");
     expect(rowLabel({ ...at, state: "failed", reason: "r", cause: [], step: null, log: null })).toBe("Failed");
     expect(rowLabel(completed())).toBe("Done");
+  });
+
+  it("reads work a cancel stopped as Cancelled with a grey light, on its row and its node", () => {
+    const stopped: ServerRow = { ...at, state: "cancelled", finished_at: 20 };
+    expect(rowLabel(stopped)).toBe("Cancelled");
+    expect(rowLight(stopped)).toBe("not_applied");
+    const view = deployment({ status: "cancelled", in_flight: false, nodes: [service("web", [stopped], "cancelled")] });
+    expect(makeRunGraph(view).nodes[0]?.light).toBe("not_applied");
   });
 
   it("opens the picked node, then the origin's, then the first failed, running, or Service", () => {

@@ -187,6 +187,7 @@ pub fn project_runtime_outcome(
                 } => (DeployOperation::ReplaceContainer(operation), error),
             };
             let reason = match error {
+                error if error.cancelled() => RuntimeFailureKind::Cancelled,
                 ExecutionError::Machine { .. } => RuntimeFailureKind::Machine,
                 ExecutionError::Health { .. } => RuntimeFailureKind::Health,
                 ExecutionError::DependencyHealth { .. } => RuntimeFailureKind::DependencyHealth,

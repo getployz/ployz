@@ -50,6 +50,8 @@ pub enum RowState {
         #[ts(optional)]
         out_of_memory: Option<OutOfMemory>,
     },
+    /// The Deployment's cancel stopped this work while it ran.
+    Cancelled,
     /// The Deployment stopped before this work finished.
     NotAttempted,
     /// Reporting stopped before this row's outcome was confirmed.
@@ -60,7 +62,11 @@ impl RowState {
     pub(crate) const fn finished(&self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Failed { .. } | Self::NotAttempted | Self::Unknown
+            Self::Completed
+                | Self::Failed { .. }
+                | Self::Cancelled
+                | Self::NotAttempted
+                | Self::Unknown
         )
     }
 }
@@ -88,6 +94,7 @@ impl FailedAt {
             Some(
                 RowState::Pending
                 | RowState::Completed
+                | RowState::Cancelled
                 | RowState::NotAttempted
                 | RowState::Unknown,
             )
@@ -460,7 +467,7 @@ impl RowTracker {
             } else {
                 self.containers.remove(&row.index);
             }
-            if matches!(row.status, OperationStatus::Failed { .. }) {
+            if matches!(&row.status, OperationStatus::Failed { error } if !error.cancelled()) {
                 self.failed.entry(key.clone()).or_insert(row.index);
             }
             let server = row
@@ -560,10 +567,11 @@ fn state(
     container: bool,
     serving: bool,
 ) -> RowState {
-    let (mut failed, mut running, mut switching, mut pending, mut unstarted, mut completed) =
-        (None, None, None, 0, 0, 0);
+    let (mut failed, mut cancelled, mut running, mut switching) = (None, false, None, None);
+    let (mut pending, mut unstarted, mut completed) = (0, 0, 0);
     for (status, starts) in statuses {
         match status {
+            OperationStatus::Failed { error } if error.cancelled() => cancelled = true,
             OperationStatus::Failed { error } => failed = failed.or(Some(error)),
             OperationStatus::Running {
                 phase: phase @ OperationPhase::WaitingForSwitch { .. },
@@ -595,6 +603,9 @@ fn state(
                 | ExecutionError::Cancelled => None,
             },
         };
+    }
+    if cancelled {
+        return RowState::Cancelled;
     }
     if let Some(phase) = running {
         return RowState::Running {
@@ -641,7 +652,10 @@ pub(super) fn record(
     for row in rows {
         let started = matches!(
             row.state,
-            RowState::Running { .. } | RowState::Completed | RowState::Failed { .. }
+            RowState::Running { .. }
+                | RowState::Completed
+                | RowState::Failed { .. }
+                | RowState::Cancelled
         )
         .then_some(now);
         let finished = row.state.finished().then_some(now);
@@ -843,10 +857,11 @@ pub(super) fn of_nodes(
 
 fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
     let priority = |state: &RowState| match state {
-        RowState::Failed { .. } => 6,
-        RowState::Unknown => 5,
-        RowState::Running { .. } => 4,
-        RowState::Pending => 3,
+        RowState::Failed { .. } => 7,
+        RowState::Unknown => 6,
+        RowState::Running { .. } => 5,
+        RowState::Pending => 4,
+        RowState::Cancelled => 3,
         RowState::NotAttempted => 2,
         RowState::Completed => 1,
     };
@@ -910,6 +925,61 @@ mod tests {
             ),
             running(RowPhase::WaitingForSwitch),
             "the old copy's removal waits for the switch, not the Server"
+        );
+    }
+
+    #[test]
+    fn work_the_cancel_stopped_reads_cancelled_and_work_that_failed_stays_failed() {
+        let container_id = ContainerId::parse("a".repeat(64)).unwrap();
+        let failed = |error| OperationStatus::Failed { error };
+        let create = || {
+            failed(ExecutionError::Machine {
+                action: MachineAction::CreateContainer,
+                error: RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "no space left on device".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                },
+            })
+        };
+        let hook = |stop_error| {
+            failed(ExecutionError::Hook {
+                container_id,
+                failure: HookFailure::Cancelled { stop_error },
+            })
+        };
+        assert_eq!(
+            server(&[failed(ExecutionError::Cancelled)]),
+            RowState::Cancelled
+        );
+        assert_eq!(server(&[hook(None)]), RowState::Cancelled);
+        assert_eq!(
+            server(&[
+                failed(ExecutionError::Cancelled),
+                OperationStatus::Completed
+            ]),
+            RowState::Cancelled
+        );
+        assert!(matches!(server(&[create()]), RowState::Failed { .. }));
+        assert!(
+            matches!(
+                server(&[failed(ExecutionError::Cancelled), create()]),
+                RowState::Failed { .. }
+            ),
+            "a real failure beside the cancel's stays failed"
+        );
+        assert!(
+            matches!(
+                server(&[hook(Some(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "stop timed out".into(),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                }))]),
+                RowState::Failed { .. }
+            ),
+            "a hook the cancel could not stop may still run"
         );
     }
 

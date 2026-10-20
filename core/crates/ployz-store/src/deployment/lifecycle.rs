@@ -1695,8 +1695,9 @@ pub(super) enum Evidence<'run> {
 
 /// Each target node's Node Outcome from `evidence`. A Service the preview plans
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
-/// completed is Deployed (Removed once it left Saved State), some ran is Failed and
-/// none ran is Not attempted. A Service that left Saved State with nothing planned
+/// completed is Deployed (Removed once it left Saved State), some ran is Failed, or
+/// Cancelled when the Deploy's cancel stopped it, and none ran is Not attempted. A
+/// Service that left Saved State with nothing planned
 /// is Removed when the snapshot saw every Machine, else Not attempted; one with
 /// several runtime Services reads the worst of them. A kept Volume follows the
 /// targeted Services mounting it: Deployed once one of them is, whatever the others do. It is Unchanged when Applied State already
@@ -1738,7 +1739,17 @@ pub(super) fn node_outcomes(
             if projection.confirmed_services.contains(name) {
                 landed(kept)
             } else if projection.failed_services.contains(name) {
-                NodeStatus::Failed
+                if matches!(
+                    projection.summary,
+                    ployz_core::config::RuntimeOutcomeSummary::Failed {
+                        reason: ployz_core::config::RuntimeFailureKind::Cancelled,
+                        ..
+                    }
+                ) {
+                    NodeStatus::Cancelled
+                } else {
+                    NodeStatus::Failed
+                }
             } else if projection.unattempted_services.contains(name) {
                 NodeStatus::NotAttempted
             } else {
@@ -1766,12 +1777,14 @@ pub(super) fn node_outcomes(
                 | NodeStatus::Deployed
                 | NodeStatus::Removed
                 | NodeStatus::Failed
+                | NodeStatus::Cancelled
                 | NodeStatus::NotAttempted
                 | NodeStatus::Unknown) => status,
             })
             .collect();
         [
             NodeStatus::Failed,
+            NodeStatus::Cancelled,
             NodeStatus::NotAttempted,
             NodeStatus::Pending,
         ]
@@ -1821,6 +1834,8 @@ pub(super) fn node_outcomes(
             NodeStatus::Deployed
         } else if mounting.contains(&NodeStatus::Failed) {
             NodeStatus::Failed
+        } else if mounting.contains(&NodeStatus::Cancelled) {
+            NodeStatus::Cancelled
         } else if mounting.contains(&NodeStatus::NotAttempted) {
             NodeStatus::NotAttempted
         } else if mounting.contains(&NodeStatus::Pending) {
@@ -1869,6 +1884,8 @@ pub(super) fn node_outcomes(
             NodeStatus::Deployed
         } else if mounting.contains(&NodeStatus::Failed) {
             NodeStatus::Failed
+        } else if mounting.contains(&NodeStatus::Cancelled) {
+            NodeStatus::Cancelled
         } else if mounting.contains(&NodeStatus::NotAttempted) {
             NodeStatus::NotAttempted
         } else if mounting.contains(&NodeStatus::Pending) {

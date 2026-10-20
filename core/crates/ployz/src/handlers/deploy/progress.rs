@@ -138,6 +138,7 @@ fn node_state(outcome: NodeStatus, build_failed: bool) -> State {
         NodeStatus::Pending => State::Pending,
         NodeStatus::Deployed | NodeStatus::Removed => State::Completed,
         NodeStatus::Failed => State::Failed,
+        NodeStatus::Cancelled => State::Cancelled,
         NodeStatus::NotAttempted => State::NotAttempted,
         NodeStatus::Unchanged => State::Unchanged,
         NodeStatus::Unknown => State::Unknown,

@@ -65,6 +65,7 @@ fn node(node: &NodeOutcome) -> Value {
         RowState::Pending
         | RowState::Running { .. }
         | RowState::Completed
+        | RowState::Cancelled
         | RowState::NotAttempted
         | RowState::Unknown => None,
     });
@@ -87,6 +88,7 @@ fn progress(view: &DeploymentView) -> Value {
         RowState::Pending
         | RowState::Completed
         | RowState::Failed { .. }
+        | RowState::Cancelled
         | RowState::NotAttempted
         | RowState::Unknown => None,
     });

@@ -2161,36 +2161,53 @@ fn a_cancelled_queued_deployment_never_runs() {
 #[test]
 fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
     let (store, who) = shop();
-    admit(&store, &who, 1, &[], None).unwrap();
     let a = runner("runner-a");
-    store.claim(&id(1), &a).unwrap();
-    store
-        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
-        .unwrap();
-    assert_eq!(
-        cancel(&store, &who, 1).unwrap().status,
-        DeploymentStatus::Cancelling
-    );
-    // Its runner stops it partway and records what ran.
-    let stopped = RunEvidence::Executed {
-        progress: Vec::new(),
-        outcome: Box::new(outcome(json!({
-            "type": "failed", "completed": [operation("web")],
-            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
-            "unexecuted": []
-        }))),
-        removed: Vec::new(),
+    let stopped_by = |n: u8, error: serde_json::Value| {
+        admit(&store, &who, n, &[], None).unwrap();
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        assert_eq!(
+            cancel(&store, &who, n).unwrap().status,
+            DeploymentStatus::Cancelling
+        );
+        // Its runner stops it partway and records what ran.
+        let stopped = RunEvidence::Executed {
+            progress: Vec::new(),
+            outcome: Box::new(outcome(json!({
+                "type": "failed", "completed": [operation("web")],
+                "failed": {"type": "operation", "operation": operation("api"), "error": error},
+                "unexecuted": []
+            }))),
+            removed: Vec::new(),
+        };
+        store.record(&id(n), &a, stopped).unwrap();
+        assert_eq!(status(&store, &who, n), DeploymentStatus::Cancelled);
+        nodes(&store, &who, n)
     };
-    store.record(&id(1), &a, stopped).unwrap();
-    assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
     assert_eq!(
-        nodes(&store, &who, 1),
+        stopped_by(1, json!({"type": "cancelled"})),
         [
             ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            ("api".to_owned(), NodeStatus::Cancelled)
         ]
     );
     assert_eq!(changed(&store, &who), ["api"]);
+    assert_eq!(
+        stopped_by(
+            2,
+            json!({
+                "type": "machine", "action": "CreateContainer",
+                "error": {"code": "internal", "message": "no space left on device", "details": {}}
+            })
+        ),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Failed)
+        ],
+        "work that failed on its own stays failed, even once cancelled"
+    );
 }
 
 #[test]
@@ -2298,7 +2315,10 @@ fn fail_api(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
         progress: Vec::new(),
         outcome: Box::new(outcome(json!({
             "type": "failed", "completed": [operation("web")],
-            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "failed": {"type": "operation", "operation": operation("api"), "error": {
+                "type": "machine", "action": "CreateContainer",
+                "error": {"code": "internal", "message": "no space left on device", "details": {}}
+            }},
             "unexecuted": []
         }))),
         removed: Vec::new(),
@@ -4495,7 +4515,7 @@ fn a_full_disk_names_itself_at_the_pull_step_and_keeps_dockers_error() {
 #[test]
 fn a_failed_row_records_the_step_it_failed_at() {
     let health = json!({"type": "failed", "error": {
-        "type": "health", "container_id": "c".repeat(64), "failure": {"type": "cancelled"}
+        "type": "health", "container_id": "c".repeat(64), "failure": {"type": "timed_out"}
     }});
     let RowState::Failed { step, log, .. } = failed_row(&[progress(&[("web", "alpha", health)])])
     else {

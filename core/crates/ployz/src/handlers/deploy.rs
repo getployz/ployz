@@ -832,6 +832,7 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Replacemen
                         NodeStatus::Pending
                         | NodeStatus::Deployed
                         | NodeStatus::Failed
+                        | NodeStatus::Cancelled
                         | NodeStatus::Unknown,
                     ) => Some(name),
                     (

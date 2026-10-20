@@ -238,8 +238,8 @@ export const deploymentLight = ({ status, ci }: Pick<DeploymentSummary, "status"
   ci === "failed" ? "failed" : deploymentStatusIcons[status];
 
 export const nodeStatusLabels = {
-  pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", not_attempted: "Not attempted",
-  unchanged: "Unchanged", unknown: "Unknown",
+  pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", cancelled: "Cancelled",
+  not_attempted: "Not attempted", unchanged: "Unchanged", unknown: "Unknown",
 } satisfies Record<NodeStatus, string>;
 
 /** Whether the Deployment left the node as intended: deployed, removed, or nothing it had to change. */
