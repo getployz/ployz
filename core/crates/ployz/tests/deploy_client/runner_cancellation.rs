@@ -189,6 +189,66 @@ async fn a_run_another_runner_takes_over_mid_execution_records_it_interrupted() 
 }
 
 #[tokio::test]
+async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed() {
+    let (store, actor, id) = deployment();
+    let service = DeployService::new(machine('a', "entry")).hold_health();
+    let mutations = service.mutating_rpcs();
+    let (address, server) = listening(service).await;
+    let running = tokio::spawn(ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        id.clone(),
+        RunnerId::parse("cancelled").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while mutations.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the run starts creating");
+    store
+        .write(
+            &actor,
+            &ployz_store::Cancel {
+                deployment: id.clone(),
+            },
+        )
+        .unwrap();
+    let summary = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("cancel must stop the create")
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.status, DeploymentStatus::Cancelled);
+
+    let view = store
+        .read(&actor, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let nodes = serde_json::to_value(&view.nodes).unwrap();
+    let web = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "web")
+        .unwrap();
+    assert_eq!(web["outcome"], "cancelled", "{web}");
+    let states: Vec<_> = web["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (row["server"].clone(), row["state"].clone()))
+        .collect();
+    assert_eq!(
+        states,
+        [(serde_json::json!("entry"), serde_json::json!("cancelled"))],
+        "{web}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() {
     let (store, actor, id) = deployment();
     let (entry, edge) = (machine('a', "entry"), machine('b', "edge"));
