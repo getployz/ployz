@@ -82,7 +82,7 @@ async fn reconcile<A: CaddyAdmin>(
         &service_containers(observations.iter().cloned()),
         certificates,
     );
-    apply_caddy(&projection, config_file, admin, &mut None).await
+    apply_caddy(&projection, None, config_file, admin, &mut None).await
 }
 
 #[test]
@@ -1089,14 +1089,14 @@ async fn reconcile_loads_only_a_changed_config() {
     };
     let mut loaded = None;
 
-    apply_caddy(&first, &path, Some(&failing), &mut loaded)
+    apply_caddy(&first, None, &path, Some(&failing), &mut loaded)
         .await
         .unwrap_err();
-    apply_caddy(&first, &path, Some(&admin), &mut loaded)
+    apply_caddy(&first, None, &path, Some(&admin), &mut loaded)
         .await
         .unwrap();
     assert_eq!(*admin.loads.lock().unwrap(), 1, "a failed load is retried");
-    apply_caddy(&first, &path, Some(&admin), &mut loaded)
+    apply_caddy(&first, None, &path, Some(&admin), &mut loaded)
         .await
         .unwrap();
     assert_eq!(
@@ -1104,9 +1104,15 @@ async fn reconcile_loads_only_a_changed_config() {
         1,
         "unchanged config is not loaded"
     );
-    apply_caddy(&render([10, 210, 1, 3]), &path, Some(&admin), &mut loaded)
-        .await
-        .unwrap();
+    apply_caddy(
+        &render([10, 210, 1, 3]),
+        None,
+        &path,
+        Some(&admin),
+        &mut loaded,
+    )
+    .await
+    .unwrap();
     assert_eq!(*admin.loads.lock().unwrap(), 2, "changed config is loaded");
     assert!(
         std::fs::read_to_string(&path)

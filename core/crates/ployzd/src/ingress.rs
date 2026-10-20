@@ -400,7 +400,6 @@ where
 {
     let mut last_input = None;
     let mut loaded = None;
-    let mut loaded_ingress = None;
     let mut acked = BTreeMap::new();
     // Kept while every copy is out of reach.
     let mut routed = ProxyRoutes::new();
@@ -453,16 +452,17 @@ where
             match input {
                 Ok((input, routes)) => {
                     if last_input.as_ref() != Some(&input) {
-                        // A replacement Caddy process has acknowledged nothing yet.
-                        if loaded_ingress != input.1 {
-                            loaded = None;
-                            loaded_ingress.clone_from(&input.1);
-                        }
                         let result = async {
                             let admin = connect().await.map_err(io::Error::other)?;
-                            apply_caddy(&input.0, &config_file, admin.as_ref(), &mut loaded)
-                                .await
-                                .map_err(io::Error::other)
+                            apply_caddy(
+                                &input.0,
+                                input.1.as_ref(),
+                                &config_file,
+                                admin.as_ref(),
+                                &mut loaded,
+                            )
+                            .await
+                            .map_err(io::Error::other)
                         }
                         .await;
                         if let Err(error) = result {
@@ -578,9 +578,10 @@ async fn publish_route_acks(
 /// Returns when certificate filesystem operations or Caddy reconciliation fail.
 pub(crate) async fn apply_caddy<A: CaddyAdmin>(
     projection: &IngressProjection,
+    caddy: Option<&ContainerId>,
     config_file: &Path,
     admin: Option<&A>,
-    loaded: &mut Option<String>,
+    loaded: &mut Option<caddy::LoadedConfig>,
 ) -> Result<(), caddy::Error> {
     write_certificate_files(
         config_file,
@@ -589,7 +590,7 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
         prepare_directory,
         set_ployz_group,
     )?;
-    caddy::reconcile(projection, config_file, admin, loaded).await?;
+    caddy::reconcile(projection, caddy, config_file, admin, loaded).await?;
     remove_stale_certificate_files(config_file, &projection.sites)?;
     Ok(())
 }
