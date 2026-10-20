@@ -963,10 +963,7 @@ async fn restore_group<C: MachineOperations>(
                     restored = true;
                     None
                 }
-                RestoreAttempt::NotServing
-                | RestoreAttempt::Failed {
-                    error: ExecutionError::NewerServing { .. },
-                } => None,
+                RestoreAttempt::NotServing | RestoreAttempt::NewerServing => None,
                 RestoreAttempt::LeftHeld => Some("another Deploy holds it".to_owned()),
                 RestoreAttempt::Failed { error } => Some(error.to_string()),
             }
@@ -2998,12 +2995,7 @@ async fn restore_old<C: MachineOperations>(
             if refusal.reason == ContainerRefusalReason::OlderThanIn =>
         {
             retire_older(client, progress, old, rows, cancellation).await;
-            return ended(
-                failed(ExecutionError::NewerServing {
-                    service: old.service.clone(),
-                }),
-                false,
-            );
+            return ended(RestoreAttempt::NewerServing, false);
         }
         Ok(cleanup::BroughtIn::Refused(refusal)) => {
             return ended(

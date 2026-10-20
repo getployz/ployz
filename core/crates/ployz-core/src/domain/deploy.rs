@@ -455,6 +455,8 @@ pub enum RestoreAttempt<E> {
     LeftHeld,
     /// The old container was not serving before this Deploy; nothing to restore.
     NotServing,
+    /// A newer Deploy's copy is In, so the old container can never be In again.
+    NewerServing,
     /// The restore, or the wait for the proxies to route the old container, returned `error`.
     Failed { error: E },
 }
@@ -468,6 +470,9 @@ impl<E> RestoreAttempt<E> {
             Self::LeftHeld => "The old Container is left Held by another Deploy.",
             Self::NotServing => {
                 "The old Container was not serving before this Deploy; nothing to restore."
+            }
+            Self::NewerServing => {
+                "A newer deploy is already serving; the old Container will not serve again."
             }
             Self::Failed { .. } => "Could not restore the old Container.",
         }

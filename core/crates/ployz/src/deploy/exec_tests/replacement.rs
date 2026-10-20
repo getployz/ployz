@@ -988,6 +988,60 @@ async fn a_refused_or_failed_restore_leaves_the_service_empty() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_restore_a_newer_deploy_refuses_reads_as_the_newer_deploy_serving() {
+    for removes in [true, false] {
+        let machine = machine('1');
+        let (old, newer) = (container('a'), container('c'));
+        let plan = vec![swap(&machine, &old, UpdateOrder::StopFirst)];
+        let client = Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            failed(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                "start failed",
+            ),
+            ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+            if removes {
+                ok(Call::Remove(machine, old))
+            } else {
+                failed(Call::Remove(machine, old), "the disk is busy")
+            },
+        ])
+        .with_copy(&machine, &old, CopyRotation::In)
+        .with_copy_at(&api(), &machine, &newer, CopyRotation::In, Gen::new(100));
+
+        let (outcome, warnings) =
+            execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+        let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, &[], Vec::new()));
+        assert!(
+            shown.contains(
+                "  A newer deploy is already serving; the old Container will not serve again.\n"
+            ),
+            "removes {removes}: {shown}"
+        );
+        assert!(
+            !shown.contains("Could not restore"),
+            "removes {removes}: {shown}"
+        );
+        assert!(!shown.contains("newer deploy is already serving app/api"));
+        if removes {
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(client.rotation(&old), None);
+        } else {
+            assert_eq!(
+                warnings,
+                [left_running(
+                    "machine-1",
+                    "a newer deploy is already serving app/api, and removing it failed: the disk is busy"
+                )]
+            );
+        }
+        client.assert_done();
+    }
+}
+
 #[tokio::test]
 async fn a_removed_service_retires_every_copy_through_out_and_ends_empty() {
     let (first, second) = (machine('1'), machine('2'));

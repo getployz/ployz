@@ -487,7 +487,8 @@ pub(super) fn failure(
                         RestoreAttempt::Failed { error } => failure_causes(error),
                         RestoreAttempt::Restored
                         | RestoreAttempt::LeftHeld
-                        | RestoreAttempt::NotServing => Vec::new(),
+                        | RestoreAttempt::NotServing
+                        | RestoreAttempt::NewerServing => Vec::new(),
                     },
                 });
             }
