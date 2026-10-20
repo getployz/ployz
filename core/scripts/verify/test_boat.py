@@ -804,6 +804,7 @@ class Pool(unittest.TestCase):
         self.assertEqual([(row["id"], row["reason"]) for row in rows], [("bx_c", "retired bake")])
 
 # Docker as far as the image reset reaches it, backed by a JSON file of tags, image ids and build cache entries.
+# A `ployz` Volume needs the volume plugin, which answers only while ployz-volume-plugin.socket listens.
 FAKE_GUEST = r"""#!/usr/bin/env python3
 import json, os, sys
 path = os.environ["FAKE_GUEST_STATE"]
@@ -812,6 +813,8 @@ tags, ids, args = state["tags"], state["ids"], sys.argv[1:]
 containers, volumes = state.setdefault("containers", []), state.setdefault("volumes", [])
 networks, zpools = state.setdefault("networks", ["bridge", "host", "none"]), state.setdefault("zpools", [])
 links = state.setdefault("links", ["lo"])
+drivers, units = state.get("drivers", {}), state.get("units", ["ployz.service"])
+refused = []
 def drop(image):
     for tag in [t for t, i in tags.items() if i == image]:
         del tags[tag]
@@ -846,9 +849,13 @@ def docker():
     elif args[:3] == ["volume", "ls", "-q"]:
         print("\n".join(volumes))
     elif args[:3] == ["volume", "ls", "--format"]:
-        print("\n".join(f"local {v}" for v in volumes))
+        print("\n".join(f"{drivers.get(v, 'local')} {v}" for v in volumes))
     elif args[:3] == ["volume", "rm", "-f"]:
-        volumes[:] = [v for v in volumes if v not in args[3:]]
+        refused[:] = [v for v in args[3:] if drivers.get(v) == "ployz" and not state.get("plugin")]
+        volumes[:] = [v for v in volumes if v not in args[3:] or v in refused]
+        for v in refused:
+            print(f'Error response from daemon: get {v}: error while checking if volume "{v}" exists in driver "ployz": '
+                  'dial unix /run/docker/plugins/ployz.sock: connect: connection refused', file=sys.stderr)
     elif args[:3] == ["network", "ls", "--format"]:
         print("\n".join(n + (" bridge" if "Driver" in args[3] else "") for n in networks))
     elif args[:2] == ["network", "rm"]:
@@ -877,10 +884,16 @@ def ip():
         sys.exit(f"unexpected ip {args}")
 def systemctl():
     if args[0] == "list-units":
-        print("ployz.service loaded active running Ployz")
+        print("\n".join(f"{unit} loaded active running Ployz" for unit in units))
+    elif args[0] in ("stop", "start"):
+        for unit in args[1:]:
+            if not unit.startswith(("docker", "containerd")) and unit not in units:
+                sys.exit(f"Failed to {args[0]} {unit}: Unit {unit} not loaded.")
+            if unit == "ployz-volume-plugin.socket":
+                state["plugin"] = args[0] == "start"
     elif args[0] == "list-unit-files":
         print("docker.service enabled enabled" if "--state=enabled" in args else "ployz.service enabled enabled")
-    elif args[0] not in ("list-jobs", "unmask", "stop", "start"):
+    elif args[0] not in ("list-jobs", "unmask"):
         sys.exit(f"unexpected systemctl {args}")
 command = os.path.basename(sys.argv[0])
 if command == "journalctl":
@@ -891,6 +904,8 @@ elif command not in ("ss", "sleep"):
 if state != json.load(open(path)):
     json.dump(state, open(path + ".next", "w"))
     os.replace(path + ".next", path)
+if refused:
+    sys.exit(1)
 """
 GUEST_COMMANDS = ["docker", "zpool", "ip", "systemctl", "ss", "sleep", "journalctl"]
 
@@ -981,6 +996,29 @@ class Reset(unittest.TestCase):
         self.assertEqual(self.tree(), files)
         self.assertEqual(json.loads(state.read_text()), docker)
         self.assertFalse(Path(env["FAKE_DOCKER_ROOT"]).exists() and any(Path(env["FAKE_DOCKER_ROOT"]).iterdir()))
+        self.assertEqual(boat.differences(bake, self.fingerprint(env)), [])
+
+    def test_reset_removes_a_ployz_volume_whether_or_not_its_plugin_was_listening(self):
+        for listening in (True, False):
+            with self.subTest(listening=listening):
+                self.setUp()
+                env, state, bake = self.baked()
+                self.write("etc/systemd/system/ployz-volume-plugin.socket", "unit")
+                used = json.loads(state.read_text())
+                used.update(volumes=["pgdata"], drivers={"pgdata": "ployz"}, plugin=listening,
+                            units=["ployz.service", "ployz.socket", "ployz-volume-plugin.socket", "ployz-volume-plugin.service"])
+                state.write_text(json.dumps(used))
+                self.guest(boat.RESET, env, str(self.stash), "key")
+                self.assertEqual(json.loads(state.read_text())["volumes"], [])
+                self.assertEqual(boat.differences(bake, self.fingerprint(env)), [])
+
+    def test_reset_cleans_a_guest_whose_install_has_no_volume_plugin(self):
+        env, state, bake = self.baked()
+        used = json.loads(state.read_text())
+        used.update(volumes=["data"], units=["ployz.service", "ployz.socket"])
+        state.write_text(json.dumps(used))
+        self.guest(boat.RESET, env, str(self.stash), "key")
+        self.assertEqual(json.loads(state.read_text())["volumes"], [])
         self.assertEqual(boat.differences(bake, self.fingerprint(env)), [])
 
     def test_the_fingerprint_tells_a_moved_tag_a_build_cache_and_a_replaced_runc_from_the_bake(self):
