@@ -271,7 +271,7 @@ it("selects at most the cap, says so, and rejects no more than that", async () =
 const planFor = (ids: readonly string[]) => ({
   rows: ids.map((id) => ({ waitingServerId: id, fleetTokenId: "fleet", hostname: id.replace("id-", ""), role: "joiner" as const,
     instruction: { name: id.replace("id-", ""), storage: { kind: "zfs" as const }, policy: { labels: {}, acceptsBuilds: true, acceptsServices: true, acceptsIngress: true } } })),
-  skipped: [], spread: { providers: 1, networks: 1 },
+  skipped: [], spread: { providers: 1, networks: 1 }, serversOffline: false,
 });
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};

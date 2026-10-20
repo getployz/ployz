@@ -141,6 +141,17 @@ impl From<ployz_store::NamespaceView> for Scoped {
 }
 
 impl Scoped {
+    /// The name a Service has now, for the runtime name its Containers carry.
+    pub(super) fn service_name<'a>(
+        &'a self,
+        runtime: &'a ployz_core::ServiceName,
+    ) -> &'a ployz_core::ServiceName {
+        self.services
+            .iter()
+            .find_map(|(name, other)| (other == runtime).then_some(name))
+            .unwrap_or(runtime)
+    }
+
     /// The bare Service Name in `selector` this Environment has neither deployed nor
     /// authored. A removed Service is one, and may still have retained logs.
     pub(super) fn unknown(&self, selector: &ServiceSelector) -> Option<ployz_core::ServiceName> {

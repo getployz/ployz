@@ -6,7 +6,7 @@ use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
     ExecutionError, HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase,
-    OperationRow, OperationStatus, RpcError, ServiceName,
+    OperationRow, OperationStatus, PullPolicy, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -296,8 +296,17 @@ impl Failure {
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
                 error,
-            } if let Some(image) = error.missing_image() => (
-                format!("Image {image} not found, or its registry needs credentials"),
+            } if let Some(missing) = error.missing_image() => (
+                match missing.policy {
+                    Some(PullPolicy::Never) => format!(
+                        "Image {} is not on this Server, and the pull policy is Never",
+                        missing.image
+                    ),
+                    _ => format!(
+                        "Image {} not found, or its registry needs credentials",
+                        missing.image
+                    ),
+                },
                 ployz_core::error_chain::causes(error),
             ),
             ExecutionError::Machine { action, error } => {
