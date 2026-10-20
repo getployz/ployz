@@ -11,8 +11,8 @@ on:
 concurrency:
   # Main pushes share one group, so a newer one cancels older ones. Kache's main builds come mostly from the
   # latest main run, though a cancelled run keeps what it wrote first, and an older main commit may have no
-  # finished run. A manual run of main groups by commit and runs to the end; it neither cancels nor is
-  # cancelled by a push.
+  # finished run. A manual run of main groups by commit and is never cancelled once it runs; a newer manual
+  # run of the same commit can still replace it while it waits. Manual runs and pushes never cancel each other.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/main' }}
 

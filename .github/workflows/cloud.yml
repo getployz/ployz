@@ -23,8 +23,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Main groups by commit, so one main run never cancels another here. Fast CI calls this workflow and
-  # cancels a superseded main run, this job with it, so not every main commit leaves builds behind.
+  # Main groups by commit and never cancels a running main run here, though a newer run of the same commit can
+  # replace one still waiting. Fast CI calls this workflow and cancels a superseded main run, this job with it,
+  # so not every main commit leaves builds behind.
   group: cloud-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 

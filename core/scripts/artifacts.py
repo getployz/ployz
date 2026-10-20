@@ -263,9 +263,9 @@ def from_main(artifact):
             and run.get("head_repository_id") == run.get("repository_id"))
 
 
-def download(found):
-    """Put found's CI upload into the local cache. Returns whether CI had one."""
-    artifact = lookup(found)
+def download(found, artifact=None):
+    """Put found's CI upload, or else the given one, into the local cache. Returns whether CI had one."""
+    artifact = artifact or lookup(found)
     if artifact is None:
         return False
     with tempfile.TemporaryDirectory() as scratch:
@@ -286,11 +286,14 @@ def download(found):
     return True
 
 
-def fetch(found, destination, *, announce=True):
-    """Copy an artifact's files into destination, from the local cache or else from CI. Returns its metadata, or None on a miss."""
+def fetch(found, destination, *, announce=True, artifact=None):
+    """Copy an artifact's files into destination, from the local cache or else from CI. Returns its metadata, or None on a miss.
+
+    artifact names the CI upload to download, in place of found's newest one.
+    """
     entry = CACHE / found.kind / found.value
     downloaded = not (entry / "meta.json").exists()
-    if downloaded and not download(found):
+    if downloaded and not download(found, artifact):
         return None
     meta = json.loads((entry / "meta.json").read_text())
     origin = f"github run {meta.get('run')}" if downloaded else f"local {found.value[:8]}"
@@ -308,7 +311,9 @@ def fetch(found, destination, *, announce=True):
 
 
 def nearest_main(found, depth=20, *, deep=False):
-    """The newest main commit, at or before this checkout's fork point, with a build of found's kind: (commit, key).
+    """The newest main commit, at or before this checkout's fork point, with a build of found's kind: (commit, key, upload).
+
+    upload is the CI upload deep chose, or None when any build under the key will do.
 
     deep looks past depth at every live CI upload from main.
     """
@@ -323,12 +328,12 @@ def nearest_main(found, depth=20, *, deep=False):
             continue
         seen.add(candidate.value)
         if (CACHE / found.kind / candidate.value / "meta.json").exists() or lookup(candidate):
-            return rev, candidate
+            return rev, candidate, None
     return newest_upload_before(found, base) if deep else None
 
 
 def newest_upload_before(found, base):
-    """The commit and key of the newest live CI upload from main of found's kind, built at or before base.
+    """The commit, key and upload of the newest live CI upload from main of found's kind, built at or before base.
 
     Main runs cancel superseded ones, so a long run of quick merges can leave no build in the last depth commits.
     """
@@ -355,7 +360,7 @@ def newest_upload_before(found, base):
                 keys[rev] = key(found.kind, found.extra, rev) if ancestor.returncode == 0 else None
             # Another platform or other build options name a different key.
             if keys[rev] and keys[rev].artifact == artifact["name"]:
-                return rev, keys[rev]
+                return rev, keys[rev], artifact
         page += 1
 
 
@@ -370,14 +375,15 @@ def fetch_main(found, destination, hint, *, same_surface=False, deep=False):
         where = "at or before this checkout's fork point" if deep else "in its last 20 commits"
         print(f"{found.kind}: main has no build {where}", file=sys.stderr)
         return None
-    rev, candidate = nearest
+    rev, candidate, upload = nearest
     if same_surface and surface(found.kind) != surface(found.kind, rev):
         print(f"{found.kind}: interface differs from main@{rev[:9]}, so building", file=sys.stderr)
         return None
     if same_surface and any(key(kind).value != key(kind, rev=rev).value for kind in KINDS[found.kind].embeds):
         print(f"{found.kind}: {', '.join(KINDS[found.kind].embeds)} differs from main@{rev[:9]}, so building", file=sys.stderr)
         return None
-    meta = fetch(candidate, destination, announce=False)
+    # A later main commit past the fork point can upload under the same key, so take the upload deep chose.
+    meta = fetch(candidate, destination, announce=False, artifact=upload)
     if meta is None:
         return None
     differ = sorted(name for name in found.crates.keys() | candidate.crates.keys()

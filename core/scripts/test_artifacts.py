@@ -385,6 +385,25 @@ class Main(Scratch):
         self.assertRestored(b"main")
         self.assertTrue(said.startswith(f"sdk: stale main@{self.built[:9]} (ployz-store differs)"))
 
+    def test_deep_restores_the_upload_it_chose_though_a_later_main_commit_uploaded_the_same_key(self):
+        """A main commit past the fork point that reverts to the chosen build's sources uploads under its key too."""
+        shutil.rmtree(self.root / "cache")
+        chosen = artifacts.key("sdk", rev=self.built)
+        self.upload(chosen, b"main", run=1, head_sha=self.built)
+        for index in range(25):
+            self.write("crates/ployz-store/src/lib.rs", f"// cancelled {index}\n")
+            self.commit(f"cancelled {index}")
+        self.write("crates/ployz-store/src/lib.rs", "// one\n")
+        later = self.commit("revert to the built sources")
+        self.assertEqual(artifacts.key("sdk").artifact, chosen.artifact)
+        self.upload(chosen, b"later", run=2, head_sha=later)
+        artifacts.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        artifacts.git("checkout", "-q", "-b", "branch", "HEAD~1")
+        meta, said = self.stale(deep=True)
+        self.assertEqual((meta["run"], meta["revision"]), (1, self.built))
+        self.assertRestored(b"main")
+        self.assertTrue(said.startswith(f"sdk: stale main@{self.built[:9]} "))
+
     def test_deep_with_no_upload_at_or_before_the_fork_point_builds(self):
         shutil.rmtree(self.root / "cache")
         meta, said = self.stale(deep=True)
