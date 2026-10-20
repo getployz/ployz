@@ -398,10 +398,6 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let requests = requests.clone();
             async move {
-                #[expect(
-                    clippy::wildcard_enum_match_arm,
-                    reason = "fixture answers only the inspect and ensure a removal sends"
-                )]
                 let response = match rpc.into_inner().decode_request().unwrap().body {
                     RpcRequestBody::InspectContainer(_) => {
                         ployz_core::RpcResponse::from(ContainerDetails {
