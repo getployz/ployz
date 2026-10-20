@@ -1,12 +1,26 @@
 import { STORE_UNMOUNT_DELAY } from "nanostores";
-import { afterAll } from "vitest";
+import { afterAll, afterEach } from "vitest";
 
 /** Vitest removes `window` when a jsdom file ends, so a store unmount still pending then throws in whatever runs next. */
 export function failOnStoreUnmountAfterWindow() {
   afterAll(async () => {
-    const jsdomWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-    Reflect.deleteProperty(globalThis, "window");
-    await new Promise((resolve) => setTimeout(resolve, STORE_UNMOUNT_DELAY + 100));
-    if (jsdomWindow) Object.defineProperty(globalThis, "window", jsdomWindow);
+    await withoutWindow(STORE_UNMOUNT_DELAY + 100);
   });
+}
+
+/**
+ * A render still in flight when a test ends flushes on a later task, after cleanup and possibly after `window` is gone.
+ * Register it after the file's cleanup hook, so it runs first.
+ */
+export function failOnRenderAfterTest() {
+  afterEach(async () => {
+    await withoutWindow(50);
+  });
+}
+
+async function withoutWindow(ms: number) {
+  const jsdomWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Reflect.deleteProperty(globalThis, "window");
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  if (jsdomWindow) Object.defineProperty(globalThis, "window", jsdomWindow);
 }
