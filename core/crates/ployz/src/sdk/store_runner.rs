@@ -207,16 +207,19 @@ pub async fn observe_volumes(
             return Ok(VolumeObservation::failed(sought, servers, failure));
         }
     };
-    let answering = session
-        .client()
-        .ok()
-        .and_then(|client| client.connection().machine_id().copied());
-    let observed = session.observe_volumes(sought.clone()).await;
+    let observed = match session.observe_volumes(sought.clone()).await {
+        Ok(observed) => observed,
+        Err(error) => {
+            let server = match session.client() {
+                Ok(client) => client.entry_machine().await,
+                Err(_) => None,
+            };
+            let failure = ObservationFailure::answered(server, error);
+            VolumeObservation::failed(sought, servers, failure)
+        }
+    };
     session.close().await;
-    Ok(observed.unwrap_or_else(|error| {
-        let failure = ObservationFailure::answered(answering, error);
-        VolumeObservation::failed(sought, servers, failure)
-    }))
+    Ok(observed)
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep

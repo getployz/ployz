@@ -634,9 +634,13 @@ async fn a_removal_deployed_while_its_server_fails_the_check_names_the_error() {
     assert_eq!(refused["code"], "unavailable", "{refused}");
     assert_eq!(
         refused["message"],
-        "This removes deployed Volumes, and the Server Ployz reached returned an error when \
-         Ployz checked for their data, so it refuses. Fix the error the Server Ployz reached \
-         returned, then try again",
+        "This removes deployed Volumes, and Server one returned an error when Ployz checked \
+         for their data, so it refuses. Fix the error Server one returned, then try again",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["details"],
+        serde_json::json!({ "volumes": ["data"], "server": "one" }),
         "{refused}"
     );
     assert_eq!(

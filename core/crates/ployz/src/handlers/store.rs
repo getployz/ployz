@@ -334,14 +334,14 @@ impl<'m> Store<'m> {
                     return VolumeObservation::failed(sought, Vec::new(), failure);
                 }
             };
-            let server = client.connection().machine_id().copied();
-            client
-                .observe_volumes(sought.clone())
-                .await
-                .unwrap_or_else(|error| {
+            match client.observe_volumes(sought.clone()).await {
+                Ok(observed) => observed,
+                Err(error) => {
+                    let server = client.entry_machine().await;
                     let failure = ObservationFailure::answered(server, error);
                     VolumeObservation::failed(sought, server.into_iter().collect(), failure)
-                })
+                }
+            }
         })))
     }
 

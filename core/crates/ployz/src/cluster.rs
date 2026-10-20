@@ -95,6 +95,21 @@ impl Client {
         &self.source
     }
 
+    /// The entry Machine this client reaches: its connection's, else as the daemon
+    /// describes itself. None when it no longer answers.
+    pub(crate) async fn entry_machine(&self) -> Option<MachineId> {
+        if let Some(machine) = self.connection.machine_id() {
+            return Some(*machine);
+        }
+        let payload = op::DescribeContract::into_request(DescribeContractRequest {})
+            .encode()
+            .ok()?;
+        self.call_once::<op::DescribeContract>(payload, None)
+            .await
+            .ok()
+            .map(|description| description.machine_id)
+    }
+
     /// One-shot check that this channel reaches a daemon. No unary retry — a
     /// down daemon must not stall the connection walk.
     ///
