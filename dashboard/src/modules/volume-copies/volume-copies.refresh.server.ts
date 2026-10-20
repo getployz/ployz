@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { Effect, Result } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { type CopyAsk, mayHaveReached, type MemberObserver, ReplyLost, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
+import { type CopyAsk, type MemberObserver, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import { type BlockerReader, placementRefusal, readPlacementBlockers, UNANSWERED } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { volumeMirrorStatus } from "#/modules/volume-run/tables";
 import type { MirrorStatusView } from "#/modules/volume-copies/volume-copies.placement";
@@ -49,13 +49,11 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   const volume = yield* resolveVolume(caller.organizationId, environment, volumeId);
   const answer = yield* syncMirrors(caller.organizationId, { volumeId, name: volume.volumeName, dockerVolume: volume.dockerVolume, environment }, observe, ask)
     .pipe(Effect.result);
-  if (Result.isFailure(answer)) {
-    if (!(answer.failure instanceof ReplyLost)) return yield* named(UNANSWERED);
-    return { ok: false, refusal: { code: "unanswered", message: mayHaveReached(volume.volumeName, answer.failure.server), details: null } satisfies StoreRefusal } as const;
-  }
+  if (Result.isFailure(answer)) return yield* named(UNANSWERED);
   const { sync, lines } = answer.success;
   const refused = sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "refused");
-  const unknown = sync.kind === "unknown" || (sync.kind === "synced" && sync.mirrors.some((step) => step.kind === "unknown"));
+  const unfinished = (kind: string) => kind === "unknown" || kind === "unasked";
+  const unknown = unfinished(sync.kind) || (sync.kind === "synced" && sync.mirrors.some((step) => unfinished(step.kind)));
   if (!refused && !unknown && (sync.kind === "synced" || sync.kind === "demoting")) return { ok: true, lines } as const;
   if (sync.kind === "unanswered") return { ok: false, refusal: silent(sync.servers) } as const;
   if (!refused && unknown) return { ok: false, refusal: { code: "unanswered", message: lines.join("; "), details: null } satisfies StoreRefusal } as const;

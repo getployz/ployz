@@ -47,8 +47,8 @@ type ClusterTime = { readonly budgetMs: number; spentMs: number; reading: number
 
 export const ClusterBudget = Context.Reference<ClusterTime | null>("ployz/ClusterBudget", { defaultValue: () => null });
 
-/** A read found the Cluster budget spent, or the budget ran out while it waited. */
-export class ClusterOutOfTime extends Data.TaggedError("ClusterOutOfTime") {}
+/** A read found the Cluster budget spent, or the budget ran out while it waited: `inFlight`, so what it asked may have landed. */
+export class ClusterOutOfTime extends Data.TaggedError("ClusterOutOfTime")<{ readonly inFlight: boolean }> {}
 
 /** `self` with `budgetMs` of Cluster time across all its Cluster reads. */
 export const withClusterBudget = (budgetMs: number) => <A, E, R>(self: Effect.Effect<A, E, R>) =>
@@ -65,11 +65,11 @@ export const clusterRead = <A, E, R>(read: Effect.Effect<A, E, R>): Effect.Effec
     if (time === null) return yield* read;
     const now = yield* Clock.currentTimeMillis;
     const left = time.budgetMs - time.spentMs - (time.reading > 0 ? now - time.since : 0);
-    if (left <= 0) return yield* new ClusterOutOfTime();
+    if (left <= 0) return yield* new ClusterOutOfTime({ inFlight: false });
     if (time.reading === 0) time.since = now;
     time.reading += 1;
     return yield* read.pipe(
-      Effect.timeoutOrElse({ duration: left, orElse: () => Effect.fail(new ClusterOutOfTime()) }),
+      Effect.timeoutOrElse({ duration: left, orElse: () => Effect.fail(new ClusterOutOfTime({ inFlight: true })) }),
       Effect.ensuring(Effect.map(Clock.currentTimeMillis, (end) => {
         time.reading -= 1;
         if (time.reading === 0) time.spentMs += end - time.since;

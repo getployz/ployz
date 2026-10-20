@@ -206,7 +206,11 @@ describe("Refresh now", () => {
 
     expect(answer).toEqual({
       ok: false,
-      refusal: { code: "unanswered", message: "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to", details: null },
+      refusal: {
+        code: "unanswered",
+        message: "data-web-2 could not receive w-1-4: no space; web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to",
+        details: null,
+      },
     });
     expect(await run(mirrorStatuses(organizationId, volumeId))).toMatchObject([{ machine: web("web-2"), failure: "no space" }]);
   }, 30_000);
@@ -238,6 +242,37 @@ describe("Refresh now", () => {
     expect(answer).toEqual({
       ok: false,
       refusal: { code: "unanswered", message: "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to", details: null },
+    });
+    expect(switched).toEqual(["snapshot", "mirror"]);
+  }, 30_000);
+
+  it("answers with the round's pull failures once its Cluster time runs out, and never says a pull it didn't send may have reached a mirror", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed"), member("web-3", "mirror")];
+    const switched: string[] = [];
+    const cluster = await pairedCluster((want) => {
+      switched.push(want.kind);
+      return want.kind === "mirror" ? new Promise<never>(() => {}) : Promise.resolve(SNAPSHOT);
+    });
+    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
+
+    const answer = await run(Effect.gen(function* () {
+      const fiber = yield* Effect.forkDetach(refreshOn(cluster));
+      yield* Effect.promise(() => vi.waitFor(() => expect(switched).toContain("mirror"), { timeout: 10_000 }));
+      yield* TestClock.adjust(SYNC_CLUSTER_BUDGET_MS);
+      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+    }).pipe(Effect.provide(TestClock.layer())));
+
+    expect(answer).toEqual({
+      ok: false,
+      refusal: {
+        code: "unanswered",
+        message: [
+          "data-web-2 could not receive w-1-4: no space",
+          "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to",
+          "didn't ask web-3 to pull data, the sync ran out of time",
+        ].join("; "),
+        details: null,
+      },
     });
     expect(switched).toEqual(["snapshot", "mirror"]);
   }, 30_000);

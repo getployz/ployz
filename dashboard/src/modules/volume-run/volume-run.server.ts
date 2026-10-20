@@ -1047,10 +1047,12 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
 
 /**
  * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
- * so a run's step retries.
+ * so a run's step retries. Out of Cluster time is `inFlight` only when the SetVolumeCopy itself was cut.
  */
 export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
-  const session = yield* openSession(asker.organizationId);
+  const session = yield* openSession(asker.organizationId).pipe(
+    Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ClusterOutOfTime({ inFlight: false }))),
+  );
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
     clusterRead,
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),

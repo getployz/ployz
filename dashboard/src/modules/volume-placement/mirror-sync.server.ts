@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
-import { Data, Effect, Option, Semaphore } from "effect";
+import { Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
@@ -26,7 +26,8 @@ export type MirrorStep =
   | { readonly kind: "pulling"; readonly mirror: string; readonly target: string }
   | { readonly kind: "current"; readonly mirror: string; readonly snapshot: string }
   | { readonly kind: "refused"; readonly mirror: string; readonly message: string }
-  | { readonly kind: "unknown"; readonly server: string };
+  | { readonly kind: "unknown"; readonly server: string }
+  | { readonly kind: "unasked"; readonly server: string };
 
 /** What one sync of one Volume did. A sync never opens a lane except to demote a primary that came back. */
 export type MirrorSync =
@@ -40,14 +41,12 @@ export type MirrorSync =
   | { readonly kind: "demoting"; readonly run: string }
   | { readonly kind: "refused"; readonly message: string }
   | { readonly kind: "unknown"; readonly server: string }
+  | { readonly kind: "unasked"; readonly server: string }
   | { readonly kind: "synced"; readonly mirrors: readonly MirrorStep[] };
 
 export type PullFailure = { readonly mirror: string; readonly target: string; readonly failure: string };
 
 export type MirrorSyncAnswer = { readonly reported: readonly PullFailure[]; readonly sync: MirrorSync; readonly lines: readonly string[] };
-
-/** A SetVolumeCopy cut when the sync's Cluster time ran out: `server` may still have taken it. */
-export class ReplyLost extends Data.TaggedError("ReplyLost")<{ readonly server: string }> {}
 
 export type MemberObserver = (organizationId: string, dockerVolume: string) => ReturnType<typeof observeVolumeMembers>;
 export type CopyAsk = typeof askCopy;
@@ -57,9 +56,10 @@ type SlotMember = AnsweredMember & { readonly view: { readonly copy: Slot } };
 
 /**
  * A Server's answer, or why it couldn't be asked: a mirror skips the round and the others still get theirs. A request
- * whose reply never came back is `unanswered`: the Server may have taken it.
+ * whose reply never came back is `unanswered`: the Server may have taken it. One the sync's Cluster time ran out before
+ * is `unasked`; once that time is spent, every later request is.
  */
-type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached" | "unanswered"; readonly copy: null; readonly message: string };
+type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached" | "unanswered" | "unasked"; readonly copy: null; readonly message: string };
 
 const isSlot = (member: Member): member is SlotMember => member.answered && member.view.copy?.kind === "slot";
 const pullingTo = (copy: Slot) => copy.pull !== null && copy.pull.failure === null ? copy.pull.target : null;
@@ -70,7 +70,7 @@ export function syncLines(name: string, { reported, sync }: Omit<MirrorSyncAnswe
   return [...failures, ...outcomeLines(name, sync)];
 }
 
-export const mayHaveReached = (name: string, server: string) =>
+const mayHaveReached = (name: string, server: string) =>
   `${server} didn't answer in time, so ${name}'s sync may have reached it; volume sync ${name} again says where its mirrors got to`;
 
 function outcomeLines(name: string, sync: MirrorSync): string[] {
@@ -97,6 +97,8 @@ function outcomeLines(name: string, sync: MirrorSync): string[] {
       return [`skipped ${name}: ${sync.message}`];
     case "unknown":
       return [mayHaveReached(name, sync.server)];
+    case "unasked":
+      return [`skipped ${name}, the sync ran out of time before asking ${sync.server} for a snapshot`];
     case "synced":
       return sync.mirrors.map((step) => {
         switch (step.kind) {
@@ -110,6 +112,8 @@ function outcomeLines(name: string, sync: MirrorSync): string[] {
             return `${step.mirror} refused the pull: ${step.message}`;
           case "unknown":
             return mayHaveReached(name, step.server);
+          case "unasked":
+            return `didn't ask ${step.server} to pull ${name}, the sync ran out of time`;
         }
       });
   }
@@ -236,7 +240,10 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
   const steps: MirrorStep[] = [];
   const named = (member: Member) => copyName(volume.name, member.machine.name);
   const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) => ask(asker, machine, expect, want).pipe(
-    Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ReplyLost({ server: machine.name }))),
+    Effect.catchIf(
+      (error) => error instanceof ClusterOutOfTime,
+      (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.inFlight ? "unanswered" : "unasked", copy: null, message: "out of Cluster time" }),
+    ),
     Effect.catchIf(
       (error) => error instanceof SwitchAttemptError,
       (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.unanswered ? "unanswered" : "unreached", copy: null, message: error.message }),
@@ -259,6 +266,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     if (resent.ok && resent.copy?.kind === "slot" && resent.copy.pull === null) idle.push({ member, copy: resent.copy });
     else if (resent.ok || resent.reason === "busy") busy.push({ kind: "pulling", mirror: named(member), target });
     else if (resent.reason === "unanswered") busy.push({ kind: "unknown", server: member.machine.name });
+    else if (resent.reason === "unasked") busy.push({ kind: "unasked", server: member.machine.name });
     else busy.push({ kind: "refused", mirror: named(member), message: resent.message });
   }
   // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
@@ -266,7 +274,10 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
 
   const snapshot = yield* setCopy(writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
   if (!snapshot.ok) {
-    return yield* answer(reported, snapshot.reason === "unanswered" ? { kind: "unknown", server: writer.machine.name } : { kind: "refused", message: snapshot.message });
+    const server = writer.machine.name;
+    if (snapshot.reason === "unanswered") return yield* answer(reported, { kind: "unknown", server });
+    if (snapshot.reason === "unasked") return yield* answer(reported, { kind: "unasked", server });
+    return yield* answer(reported, { kind: "refused", message: snapshot.message });
   }
   const target: Snapshot | null = snapshot.copy?.newest ?? null;
   if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
@@ -289,6 +300,8 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
       steps.push({ kind: "pulling", mirror: named(member), target: pulling ?? target.name });
     } else if (handed.reason === "unanswered") {
       steps.push({ kind: "unknown", server: member.machine.name });
+    } else if (handed.reason === "unasked") {
+      steps.push({ kind: "unasked", server: member.machine.name });
     } else {
       // A refused hand-off starts no pull, so no pull failure would ever say why this mirror skipped. A stale or mismatch
       // refusal is a newer run moving the copy since this one observed it, not the mirror skipping.
