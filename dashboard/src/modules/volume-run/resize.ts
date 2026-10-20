@@ -8,8 +8,8 @@ export type Bytes = number;
 
 export const gb = (bytes: Bytes) => `${gigabytes(bytes)} GB`;
 
-/** Which way a resize moves the Volume's bound. A shrink is its own direction once a daemon can refuse one below a copy's floor. */
-export type SizeDirection = "grow";
+/** Which way a resize moves the Volume's bound. */
+export type SizeDirection = "grow" | "shrink";
 
 /**
  * How one direction keeps the Store's size at or below every copy's while the Machines change: `holders` orders
@@ -25,10 +25,10 @@ type Order = {
 export const RESIZE_ORDER = {
   // Mirrors first, the primary last, then the record: until every copy holds the size, the Store still says the old one.
   grow: { holders: (writer, mirrors) => [...mirrors, writer], record: "last", requires: [requirements.volumeSize] },
+  // The record first, then the primary, whose floor decides, then the same size on each mirror. A mirror's floor reads
+  // its own copy, which can lag the writer's, so a mirror never shrinks on its own.
+  shrink: { holders: (writer, mirrors) => [writer, ...mirrors], record: "first", requires: [requirements.volumeSize, requirements.volumeShrink] },
 } as const satisfies Record<SizeDirection, Order>;
-
-/** What a Server holding a copy must serve before any direction asks it. */
-export const RESIZE_REQUIREMENTS: readonly Requirement[] = [...new Set(Object.values(RESIZE_ORDER).flatMap((order) => order.requires))];
 
 /** One thing the run does, in order: ask one Machine for the size, or tell the Store every copy holds it. */
 export type ResizeStep =
@@ -47,11 +47,13 @@ export type ResizePhase = {
 
 const refuse = (code: Refusal["code"], message: string): Refusal => ({ code, message });
 
-/** The direction from the recorded size to the asked one, or why there is none. An equal size is settled. */
-export function directionOf(volumeName: string, from: Bytes, to: Bytes): SizeDirection | Refusal {
-  if (to > from) return "grow";
-  if (to === from) return refuse("already_sized", `${volumeName} already has ${gb(to)}`);
-  return refuse("invalid", `${volumeName} has ${gb(from)}; shrinking a deployed Volume isn't supported yet`);
+/** The direction from the recorded size to the asked one, or null for an equal size, which is settled. */
+export const sizeDirection = (from: Bytes, to: Bytes): SizeDirection | null => (to > from ? "grow" : to < from ? "shrink" : null);
+
+/** What every Server holding a copy must serve for a resize from `from` to `to`, or the run is refused before it asks any. */
+export function resizeRequirements(from: Bytes, to: Bytes): readonly Requirement[] {
+  const direction = sizeDirection(from, to);
+  return direction === null ? [] : RESIZE_ORDER[direction].requires;
 }
 
 /**
@@ -76,8 +78,8 @@ export function planResize(
       ? refuse("invalid", `${volumeName} uses Docker storage, which has no size to change; add a Managed Volume for a sized one`)
       : refuse("invalid", `${volumeName} has no deployed size to change yet; deploy it first`) };
   }
-  const direction = directionOf(volumeName, size.recorded, args.maximum_bytes);
-  if (direction !== "grow") return { ok: false, refusal: direction };
+  const direction = sizeDirection(size.recorded, args.maximum_bytes);
+  if (direction === null) return { ok: false, refusal: refuse("already_sized", `${volumeName} already has ${gb(args.maximum_bytes)}`) };
   const order: Order = RESIZE_ORDER[direction];
   const sets = order.holders(writer, mirrors).map((member): ResizeStep => ({ kind: "set", member, role: member === writer ? "primary" : "mirror" }));
   const steps = order.record === "first" ? [{ kind: "record" } as const, ...sets] : [...sets, { kind: "record" } as const];
@@ -89,7 +91,7 @@ export function planResize(
  * `read_only` for one that kept the copy switching past the run's patience. A reason this Cloud doesn't know is kept
  * as the Machine sent it, so a newer daemon's refusal is final rather than retried.
  */
-export type SizeRefusalReason = "switching" | "no_capacity" | "not_found" | "not_provisioned" | "shrink" | "lacks" | "read_only" | (string & {});
+export type SizeRefusalReason = "switching" | "no_capacity" | "not_found" | "not_provisioned" | "shrink" | "below_floor" | "lacks" | "read_only" | (string & {});
 
 /**
  * What one Machine's answer means for the run. `holds` lets the walk go on; `retry` asks again with the same request;
@@ -98,7 +100,15 @@ export type SizeRefusalReason = "switching" | "no_capacity" | "not_found" | "not
 export type SizeOutcome =
   | { readonly kind: "holds"; readonly boundBytes: Bytes }
   | { readonly kind: "retry" }
-  | { readonly kind: "refused"; readonly reason: SizeRefusalReason; readonly message: string; readonly boundBytes: Bytes | null; readonly capacity: PoolShortfall | null };
+  | {
+    readonly kind: "refused";
+    readonly reason: SizeRefusalReason;
+    readonly message: string;
+    readonly boundBytes: Bytes | null;
+    readonly capacity: PoolShortfall | null;
+    /** The smallest size the copy accepts, on a `below_floor` refusal. */
+    readonly floorBytes: Bytes | null;
+  };
 
 /** What a Pool lacked on a `no_capacity` refusal, as `StorageCapacityError` names it; only an `insufficient_storage` one sizes it. */
 export type PoolShortfall = { readonly code: string; readonly required_growth_bytes?: number };

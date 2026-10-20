@@ -47,7 +47,7 @@ export type VolumeRunArgs = {
     readonly name: string;
   };
   /**
-   * The size every copy is asked to hold, in whole bytes, as `SetVolumeSizeRequest` names it. The size it grows from
+   * The size every copy is asked to hold, in whole bytes, as `SetVolumeSizeRequest` names it. The size it moves from
    * is the row's `recordedBytes`, read from the Store when the run was requested.
    */
   resize: { readonly maximum_bytes: number };

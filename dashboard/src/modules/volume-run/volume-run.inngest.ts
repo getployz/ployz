@@ -323,14 +323,24 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
 }
 
-const SIZING = { grow: "Growing" } satisfies Record<SizeDirection, string>;
+const SIZING = { grow: "Growing", shrink: "Shrinking" } satisfies Record<SizeDirection, string>;
+
+/**
+ * What the run says when the Store refused its record. A grow records after every copy holds the size; a shrink
+ * records before any Machine is asked, so no copy changed.
+ */
+const UNRECORDED = {
+  grow: (name: string, phase: ResizePhase, on: string) => `${name} grew to ${gb(phase.to)} on ${on}, but`,
+  shrink: (name: string, phase: ResizePhase, on: string) => `${name} stays ${gb(phase.from)} on ${on}, because`,
+} satisfies Record<SizeDirection, (name: string, phase: ResizePhase, on: string) => string>;
 
 const names = (machines: readonly MachineRef[]) => machines.map((machine) => machine.name).join(", ");
 
 /**
- * A resize walks the planner's steps in order and takes no epoch: SetVolumeSize is unfenced, which is safe only
- * because a grow never lowers a bound. A refusal ends the run failed, naming the Server, and undoes the record only
- * while no copy holds the size yet, so the Store never says more than every copy holds.
+ * A resize walks the planner's steps in order and takes no epoch: SetVolumeSize is unfenced. A grow is safe because
+ * it never lowers a bound. A shrink is safe because the Store records the smaller size before any Machine lowers, so
+ * whenever the run dies every live bound is at or above the Store's size. A refusal ends the run failed, naming the
+ * Server, and undoes the record only while no copy holds the size yet, so the Store never says more than every copy holds.
  */
 async function resizeVolume(steps: RunSteps, phase: ResizePhase) {
   const { step, runEffect, run, runId } = steps;
@@ -339,7 +349,7 @@ async function resizeVolume(steps: RunSteps, phase: ResizePhase) {
   for (const [index, each] of phase.steps.entries()) {
     if (each.kind === "record") {
       const recorded: RecordAnswer = await step.run(`03-${index}-record`, () => runEffect(recordVolumeSize(run, runId, { from: phase.from, to: phase.to })));
-      if (!recorded.ok) return fail(steps, "05-failed", `${run.volumeName} grew to ${gb(phase.to)} on ${names(sets)}, but ${recorded.message}`);
+      if (!recorded.ok) return fail(steps, "05-failed", `${UNRECORDED[phase.direction](run.volumeName, phase, names(sets))} ${recorded.message}`);
       done.push("recorded");
       continue;
     }
@@ -371,14 +381,16 @@ async function sizeSettle({ step, runEffect, run, runId }: RunSteps, id: string,
     const outcome: SizeOutcome = await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(resizeCopy(run, runId, machine, phase.to, phase.direction)));
     if (outcome.kind !== "retry") return outcome;
   }
-  const kept: SizeOutcome = { kind: "refused", reason: "read_only", message: `${machine.name} kept ${run.volumeName} read-only for ${BUSY_CHECKS} checks`, boundBytes: null, capacity: null };
+  const kept: SizeOutcome = { kind: "refused", reason: "read_only", message: `${machine.name} kept ${run.volumeName} read-only for ${BUSY_CHECKS} checks`, boundBytes: null, capacity: null, floorBytes: null };
   return kept;
 }
 
 /**
  * The refusal, then what the Store says, which copies already hold the size and which were not asked, then what to
  * do: "db-1 has no room to grow data to 20 GB. data stays 10 GB. db-2, db-3 already hold 20 GB;
- * db-4 was not asked. Free space on db-1, then run ployz volume set data --size 20 again."
+ * db-4 was not asked. Free space on db-1, then run ployz volume set data --size 20 again." A copy below its floor
+ * names the floor: "Shrink data to at least 12 GB instead, or free space in it on db-1, then run ployz volume set
+ * data --size 10 again."
  */
 function refusedMessage(
   name: string, phase: ResizePhase, sets: readonly MachineRef[], refusedBy: MachineRef, outcome: Extract<SizeOutcome, { kind: "refused" }>, recorded: boolean,
@@ -395,7 +407,11 @@ function refusedMessage(
     `${outcome.message}.`,
     recorded ? `${name} is ${gb(phase.to)}.` : `${name} stays ${gb(phase.from)}.`,
     ...(copies.length > 0 ? [`${copies.join("; ")}.`] : []),
-    outcome.reason === "no_capacity" ? `Free space on ${refusedBy.name}, then ${again}.` : `Run ${again.slice("run ".length)}.`,
+    outcome.reason === "no_capacity"
+      ? `Free space on ${refusedBy.name}, then ${again}.`
+      : outcome.reason === "below_floor" && outcome.floorBytes !== null
+      ? `Shrink ${name} to at least ${gb(outcome.floorBytes)} instead, or free space in it on ${refusedBy.name}, then ${again}.`
+      : `Run ${again.slice("run ".length)}.`,
   ].join(" ");
 }
 

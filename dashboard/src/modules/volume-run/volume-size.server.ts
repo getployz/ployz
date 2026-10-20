@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import type { SetVolumeSizeRequest } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import type { StoreRefused } from "#/modules/config-store/store.contract";
@@ -17,24 +18,29 @@ const SizeRefusedDetails = Schema.Struct({
     reason: Schema.String,
     bound_bytes: Schema.optional(Schema.Number),
     capacity: Schema.optional(Shortfall),
+    floor_bytes: Schema.optional(Schema.Number),
   }),
 });
 const decodeSizeRefused = Schema.decodeUnknownOption(SizeRefusedDetails);
 
 /**
- * What a SetVolumeSize rejection means for a run that wants `machine`'s copy to hold at least `bytes`, or null when
- * the error carries no refusal, so the ask itself failed. `shrink` with a bound at or above `bytes` holds: the copy is
- * already bigger, which is all a grow needs. `switching` retries, as a copy step waits on `busy`. Every other reason
- * is final and names the Server.
+ * What a SetVolumeSize rejection means for a run that wants `machine`'s copy to hold `bytes`, or null when the error
+ * carries no refusal, so the ask itself failed. In a grow, `shrink` with a bound at or above `bytes` holds: the copy
+ * is already bigger, which is all a grow needs. In a shrink, `shrink` means the daemon ignored `allow_shrink`.
+ * `switching` retries, as a copy step waits on `busy`. Every other reason is final and names the Server.
  */
-export function sizeRefusalOf(volumeName: string, machine: MachineRef, bytes: Bytes, cause: unknown): SizeOutcome | null {
+export function sizeRefusalOf(volumeName: string, machine: MachineRef, bytes: Bytes, direction: SizeDirection, cause: unknown): SizeOutcome | null {
   const decoded = decodeSizeRefused(cause);
   if (Option.isNone(decoded)) return null;
-  const { reason, bound_bytes: boundBytes, capacity } = decoded.value.details;
-  const refused = (message: string): SizeOutcome => ({ kind: "refused", reason, message, boundBytes: boundBytes ?? null, capacity: capacity ?? null });
+  const { reason, bound_bytes: boundBytes, capacity, floor_bytes: floorBytes } = decoded.value.details;
+  const refused = (message: string): SizeOutcome =>
+    ({ kind: "refused", reason, message, boundBytes: boundBytes ?? null, capacity: capacity ?? null, floorBytes: floorBytes ?? null });
   switch (reason) {
     case "shrink":
+      if (direction === "shrink") return refused(`${machine.name} needs a newer Ployz to shrink ${volumeName}`);
       return boundBytes !== undefined && boundBytes >= bytes ? { kind: "holds", boundBytes } : refused(`${machine.name} refused to resize ${volumeName} (${reason})`);
+    case "below_floor":
+      return refused(`${machine.name} can't shrink ${volumeName} to ${gb(bytes)}${floorBytes === undefined ? "" : `; its data needs at least ${gb(floorBytes)}`}`);
     case "switching":
       return { kind: "retry" };
     case "no_capacity":
@@ -51,24 +57,26 @@ export function sizeRefusalOf(volumeName: string, machine: MachineRef, bytes: By
 /**
  * One SetVolumeSize to `machine`. An equal size answers Ok with no write, so a copy already at `bytes` costs one
  * round trip and is never skipped on a read of its own. Only a failure to ask fails the Effect, so the step's own
- * retries cover the network. `direction` is what a shrink will read `holds` by; a grow sends nothing for it.
+ * retries cover the network. Only a shrink sends `allow_shrink`, so a grow's request is the one older daemons know.
  */
 export const setVolumeSize = Effect.fn("VolumeRun.setVolumeSize")(function* (
   ctx: Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName">,
   machine: MachineRef,
   bytes: Bytes,
-  _direction: SizeDirection,
+  direction: SizeDirection,
 ) {
   const session = yield* openSession(ctx.organizationId);
-  return yield* session.volumeSwitch(machine.id, { command: "set_volume_size", payload: { name: ctx.dockerVolume, maximum_bytes: bytes } }).pipe(
+  const payload: SetVolumeSizeRequest = { name: ctx.dockerVolume, maximum_bytes: bytes };
+  if (direction === "shrink") payload.allow_shrink = true;
+  return yield* session.volumeSwitch(machine.id, { command: "set_volume_size", payload }).pipe(
     clusterRead,
     Effect.map((reply): SizeOutcome => ({ kind: "holds", boundBytes: reply.bound_bytes })),
     Effect.catch((error): Effect.Effect<SizeOutcome, ClusterOutOfTime | SwitchAttemptError> => {
       if (error instanceof ClusterOutOfTime) return Effect.fail(error);
       if (error._tag === "ServerLacks") {
-        return Effect.succeed<SizeOutcome>({ kind: "refused", reason: "lacks", message: `Volume resize needs a newer Ployz on ${machine.name}`, boundBytes: null, capacity: null });
+        return Effect.succeed<SizeOutcome>({ kind: "refused", reason: "lacks", message: `Volume resize needs a newer Ployz on ${machine.name}`, boundBytes: null, capacity: null, floorBytes: null });
       }
-      const outcome = sizeRefusalOf(ctx.volumeName, machine, bytes, "cause" in error ? error.cause : undefined);
+      const outcome = sizeRefusalOf(ctx.volumeName, machine, bytes, direction, "cause" in error ? error.cause : undefined);
       if (outcome === null) return Effect.fail(new SwitchAttemptError(null, `set_volume_size on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
       return Effect.succeed(outcome);
     }),

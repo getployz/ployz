@@ -10,6 +10,7 @@ import type {
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
   SetVolumeSizeReply,
+  SetVolumeSizeRequest,
   SlotRole,
   Snapshot,
   SystemEvent,
@@ -102,7 +103,7 @@ type FakeMachine = {
   stopped?: boolean;
   /** The gen floor every admitted set raises, as the daemon does; a set with a lower gen is stale. */
   floor?: number;
-  /** The size its copy holds; a set never lowers it. */
+  /** The size its copy holds; only a set that allows a shrink lowers it, as a daemon serving the shrink does. */
   bound?: number;
   /** Size requests it answers `switching` to before it holds the size. */
   switching?: number;
@@ -190,6 +191,9 @@ describe("volume runs", () => {
   let openFault: ((open: number) => Error | "unreachable" | null) | null;
   let opens: number;
   let sent: SetVolumeCopyRequest[];
+  let sizes: SetVolumeSizeRequest[];
+  /** The running row's message each time a Machine was asked for a size. */
+  let sizing: (string | null)[];
   let held: Map<string, () => CopyRefusal | null>;
   /** The Project's name in the Store; a read of its Environment by another name is not found. */
   let storeProject: string;
@@ -402,8 +406,10 @@ describe("volume runs", () => {
         return Effect.succeed(inspect(fake));
       }
       if (request.command === "set_volume_size") {
-        const asked = request.payload.maximum_bytes;
+        const { payload } = request;
+        const asked = payload.maximum_bytes;
         verbs.push(`size@${fake.name}(${asked / GB})`);
+        sizes.push(payload);
         if (fake.capabilities?.includes(requirements.volumeSize.capability) === false) {
           return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeSize.capability }));
         }
@@ -411,11 +417,19 @@ describe("volume runs", () => {
           fake.switching = (fake.switching ?? 0) - 1;
           return fail(new RawFault({ code: "failed_precondition", message: "switching", details: { reason: "switching" } }));
         }
-        const fault = failNext.get(`size@${fake.name}`);
-        failNext.delete(`size@${fake.name}`);
-        if (fault !== undefined) return fail(fault);
-        fake.bound = Math.max(fake.bound ?? 0, asked);
-        return Effect.succeed({ bound_bytes: fake.bound });
+        return Effect.promise(() => harness.pool.query<{ message: string | null }>("select message from volume_run where state = 'running'")).pipe(
+          Effect.flatMap(({ rows: running }) => {
+            sizing.push(...running.map((row) => row.message));
+            const fault = failNext.get(`size@${fake.name}`);
+            failNext.delete(`size@${fake.name}`);
+            if (fault !== undefined) return fail(fault);
+            const bound = fake.bound ?? 0;
+            const shrinks = payload.allow_shrink === true && fake.capabilities?.includes(requirements.volumeShrink.capability) !== false;
+            if (asked < bound && !shrinks) return fail(new RawFault({ code: "failed_precondition", message: "shrink", details: { reason: "shrink", bound_bytes: bound } }));
+            fake.bound = asked;
+            return Effect.succeed({ bound_bytes: asked });
+          }),
+        );
       }
       if (request.command !== "set_volume_copy") return Effect.die(new Error(`the run sent ${request.command}`));
       const { expect: expected, want } = request.payload;
@@ -575,6 +589,8 @@ describe("volume runs", () => {
     openFault = null;
     opens = 0;
     sent = [];
+    sizes = [];
+    sizing = [];
     held = new Map();
     guids = 0;
     slotIds = 0;
@@ -3027,11 +3043,11 @@ describe("volume runs", () => {
   const admit = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
 
   describe("resize", () => {
-    const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
+    const serves = [requirements.volumeFloor.capability, requirements.volumeSize.capability, requirements.volumeShrink.capability];
     const sized = (name: string, copy: VolumeCopy | null): FakeMachine => ({ name, pool: true, copy, capabilities: serves, bound: 10 * GB });
     const grow = (gigabytes: number): VolumeRunInput => ({ kind: "resize", args: { maximum_bytes: gigabytes * GB } });
     const bounds = () => Object.fromEntries(machines.map((fake) => [fake.name, (fake.bound ?? 0) / GB]));
-    const refusal = (details: { reason: string; bound_bytes?: number; capacity?: { code: string; required_growth_bytes?: number } }) =>
+    const refusal = (details: { reason: string; bound_bytes?: number; capacity?: { code: string; required_growth_bytes?: number }; floor_bytes?: number }) =>
       new RawFault({ code: "failed_precondition", message: details.reason, details });
     const recorded = { event: "volume_resized", environment: "env-1", volume: volumeId, from: 10 * GB, to: 20 * GB };
 
@@ -3047,6 +3063,8 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, resized: 20 * GB });
       expect(verbs).toEqual(["size@fsn-2(20)", "size@fsn-3(20)", "size@fsn-1(20)"]);
+      expect(sizing).toEqual(["Growing data to 20 GB on fsn-2", "Growing data to 20 GB on fsn-3", "Growing data to 20 GB on fsn-1"]);
+      expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 20 * GB })));
       expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
       expect(storeEvents).toEqual([recorded]);
       expect(await rows()).toMatchObject([{ kind: "resize", state: "done", epoch: null, message: "data is 20 GB on fsn-2, fsn-3, fsn-1" }]);
@@ -3205,6 +3223,102 @@ describe("volume runs", () => {
       await harness.pool.query("update volume_run set state = 'cancelled', phase = 'committed', current = $2, finished_at = now() where id = $1", [move.id, idOf("fsn-2")]);
       expect(await request(grow(20))).toMatchObject({ ok: false, refusal: { code: "conflict", message: "data finishes on fsn-2; ployz volume release data finishes it now" } });
       expect((await rows()).map((row) => row.kind)).toEqual(["move"]);
+    });
+
+    describe("to a smaller size", () => {
+      const shrink = (gigabytes: number): VolumeRunInput => ({ kind: "resize", args: { maximum_bytes: gigabytes * GB } });
+      const shrunk = { event: "volume_resized", environment: "env-1", volume: volumeId, from: 20 * GB, to: 10 * GB };
+      const floor = refusal({ reason: "below_floor", bound_bytes: 20 * GB, floor_bytes: 12 * GB });
+
+      beforeEach(() => {
+        storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 20 * GB }, recorded_storage: 20 * GB }];
+        for (const fake of machines) fake.bound = 20 * GB;
+      });
+
+      it("records the smaller size before any Machine is asked, then shrinks the primary, then each mirror", async () => {
+        let askedAtRecord: string[] | null = null;
+        storeRefuse = () => {
+          askedAtRecord ??= [...verbs];
+          return null;
+        };
+        const run = await requested(shrink(10));
+
+        const output = await execute(run.id);
+
+        expect(output.result).toEqual({ runId: run.id, resized: 10 * GB });
+        expect(askedAtRecord).toEqual([]);
+        expect(storeEvents).toEqual([shrunk]);
+        expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
+        expect(sizing).toEqual(["Shrinking data to 10 GB on fsn-1", "Shrinking data to 10 GB on fsn-2", "Shrinking data to 10 GB on fsn-3"]);
+        expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true })));
+        expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+        expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
+      });
+
+      it("the primary below its floor undoes the record and names the floor, asking no mirror", async () => {
+        failNext.set("size@fsn-1", floor);
+        const run = await requested(shrink(10));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual(["size@fsn-1(10)"]);
+        expect(storeEvents).toEqual([shrunk, { ...shrunk, from: 10 * GB, to: 20 * GB }]);
+        expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "fsn-1 can't shrink data to 10 GB; its data needs at least 12 GB. data stays 20 GB. fsn-2, fsn-3 were not asked. Shrink data to at least 12 GB instead, or free space in it on fsn-1, then run ployz volume set data --size 10 again.",
+        }]);
+      });
+
+      it("a mirror below its floor after the primary shrank keeps the record and says the primary holds it", async () => {
+        failNext.set("size@fsn-2", floor);
+        const run = await requested(shrink(10));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)"]);
+        expect(storeEvents).toEqual([shrunk]);
+        expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 20, "fsn-3": 20 });
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "fsn-2 can't shrink data to 10 GB; its data needs at least 12 GB. data is 10 GB. fsn-1 already holds 10 GB; fsn-3 was not asked. Shrink data to at least 12 GB instead, or free space in it on fsn-2, then run ployz volume set data --size 10 again.",
+        }]);
+      });
+
+      it("a Store that recorded another size since the run read it ends the run before any Machine is asked", async () => {
+        storeRefuse = () => new RpcError({ code: "conflict", message: "size changed", details: { reason: "size_changed", volume: volumeId, recorded: { kind: "provisioned", maximumBytes: 30 * GB } } });
+        const run = await requested(shrink(10));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "data stays 20 GB on fsn-1, fsn-2, fsn-3, because the Store records data at 30 GB, not 20 GB; read its size again",
+        }]);
+      });
+
+      it("a holder without the shrink refuses it at admission, naming the Server, and still admits a grow", async () => {
+        named("fsn-2").capabilities = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
+
+        expect(await admit(shrink(10))).toEqual({ ok: false, refusal: { code: "unsupported", message: "Volume shrink needs a newer Ployz on fsn-2.", details: null } });
+        expect(verbs).toEqual([]);
+        expect(await rows()).toEqual([]);
+
+        expect(await admit(grow(30))).toMatchObject({ ok: true });
+      });
+
+      it("a holder that lost the shrink since admission fails the run at its first look, asking no Server for a size", async () => {
+        const run = await requested(shrink(10));
+        named("fsn-3").capabilities = [requirements.volumeFloor.capability, requirements.volumeSize.capability];
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(storeEvents).toEqual([]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume shrink needs a newer Ployz on fsn-3." }]);
+      });
     });
 
     it("a release takes a warm resize over", async () => {

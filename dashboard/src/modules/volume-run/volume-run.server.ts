@@ -45,7 +45,7 @@ import {
   alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
-import { RESIZE_REQUIREMENTS } from "#/modules/volume-run/resize";
+import { resizeRequirements } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -515,7 +515,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   input: PlanRequest,
   pending: Owed | null,
 ) {
-  const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input));
+  const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input.kind === "resize" ? { ...input, recordedBytes: volume.recordedBytes } : input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
@@ -1316,12 +1316,15 @@ export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* 
 const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; readonly name: MachineName | null }) =>
   (run.kind === "move" || run.kind === "mirror") && (run.args.machine === undefined ? run.args.to === machine.name : run.args.machine === machine.id);
 
+/** A run as the observe step reads it: a resize carries the size the Store records, which decides its direction. */
+type ObservedRun = Exclude<VolumeLaneInput, { kind: "resize" }> | (Extract<VolumeLaneInput, { kind: "resize" }> & { readonly recordedBytes: number });
+
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
  * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone.
  * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
  */
-export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
+export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: ObservedRun) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
@@ -1330,20 +1333,23 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const listed = yield* Effect.forEach(managed, ({ machine }) => {
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
-    const lacks = (capability: string) => lackSentence(organizationId, capability, server, run?.kind).pipe(
+    const lacks = (capability: string, kind: VolumeRunKind | undefined) => lackSentence(organizationId, capability, server, kind).pipe(
       Effect.map((lack): Member => ({ machine: ref, answered: false, lack })),
     );
     const capabilities = { capabilities: machine.runtime.capabilities ?? [] };
     const floorless = run !== undefined && serverSupports(capabilities, requirements.volumeFloor) === false;
-    // A resize asks every holder, so a holder that may not serve the verb, a Server listing no capabilities included, lacks it.
-    const unsized = run?.kind === "resize" ? RESIZE_REQUIREMENTS.find((requirement) => serverSupports(capabilities, requirement) !== true) : undefined;
+    // A resize asks every holder, so a holder that may not serve its direction, a Server listing no capabilities included, lacks it.
+    const unsized = run?.kind === "resize"
+      ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
+      : undefined;
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
       Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
-        ? lacks(requirements.volumeFloor.capability)
+        ? lacks(requirements.volumeFloor.capability, run?.kind)
         : unsized !== undefined && view.copy !== null
-        ? lacks(unsized.capability)
+        // No run kind, so the requirement's own feature names the direction: "Volume shrink needs a newer Ployz on db-1."
+        ? lacks(unsized.capability, undefined)
         : Effect.succeed<Member>({
           machine: ref,
           address: managementAddress(machine.public_key),
@@ -1351,7 +1357,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           view,
           floorless,
         })),
-      Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability)),
+      Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
   }, { concurrency: "unbounded" });
