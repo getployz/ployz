@@ -438,7 +438,7 @@ pub(crate) async fn sync_mirror(
 ) -> Result<Synced, StoreCallError> {
     let body = serde_json::to_value(request)
         .map_err(|error| crate::cloud_login::LoginError::Reply(error.to_string()))?;
-    cloud_account::refusable(
+    cloud_account::refusable_operation(
         credential,
         Method::POST,
         &format!("volumes/{volume}/sync"),
