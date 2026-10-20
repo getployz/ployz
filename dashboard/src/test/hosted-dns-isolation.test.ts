@@ -34,4 +34,13 @@ describe("Hosted DNS in tests", () => {
       assert.include(String(failure.cause), "Tests must not reach the real Hosted DNS");
     }),
   );
+
+  it.effect.each(["https://dns.ployz.app./", "https://DNS.Ployz.App/", "https://api.dns.ployz.app/"])(
+    "the guard also refuses %s",
+    (endpoint) =>
+      Effect.gen(function* () {
+        const failure = yield* Effect.flip(Effect.tryPromise(() => fetch(new URL("v1/names", endpoint), { method: "POST" })));
+        assert.include(String(failure.cause), "Tests must not reach the real Hosted DNS");
+      }),
+  );
 });

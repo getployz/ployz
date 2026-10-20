@@ -20,7 +20,8 @@ if (!(REAL_HOSTED_DNS in globalThis.fetch)) {
   const realFetch = globalThis.fetch;
   globalThis.fetch = Object.assign((input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
-    return url.hostname === REAL_HOSTED_DNS
+    const host = url.hostname.toLowerCase().replace(/\.$/, "");
+    return host === REAL_HOSTED_DNS || host.endsWith(`.${REAL_HOSTED_DNS}`)
       ? Promise.reject(new Error(`Tests must not reach the real Hosted DNS: ${url.href}`))
       : realFetch(input, init);
   }, { [REAL_HOSTED_DNS]: true });
