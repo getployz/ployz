@@ -30,6 +30,8 @@ fn ingress_on(hex: char, machine: &ployz_core::Machine) -> ContainerObservation 
             .expect("Caddy mounts are scoped"),
         address: None,
         labels: Default::default(),
+        rotation: None,
+        r#gen: None,
     })
     .unwrap()
 }
