@@ -85,7 +85,8 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 ## Choose the build order
 
 1. Go to **Organization → Builds**.
-2. Pick an order under **Where builds run**.
+2. Pick an order under **Where builds run**. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it. For a
+   member it is disabled and says so.
 
 ![Organization → Builds: Where builds run, and the servers that run builds](../images/organization-builds.png)
 

@@ -150,7 +150,7 @@ function walk(dir: string): string[] {
 
 const sources = walk(SRC)
   .map((path) => relative(SRC, path))
-  .filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) && path !== "routeTree.gen.ts")
+  .filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) && !path.startsWith("test/") && path !== "routeTree.gen.ts")
   .map((path) => ({ path, text: readFileSync(join(SRC, path), "utf8") }));
 
 function filesMatching(pattern: RegExp) {

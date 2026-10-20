@@ -323,7 +323,8 @@ No other server can join until the first one finishes.
 
 The **Servers** page shows **Can't reach your servers right now**, with what your servers last
 reported or nothing at all. Adding a server can fail with `This Organization's Servers can't be
-reached`.
+reached`. A CLI command says `Server web-1 isn't answering`, naming each server it couldn't reach.
+A server that just joined or restarted answers within a minute; try again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with
@@ -331,6 +332,10 @@ reached`.
 3. If your servers' outgoing traffic is filtered, allow https to `relay.ployz.dev`.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
+
+A server that answers but refuses says so instead, with its own reason:
+`Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so
+don't forget it. Read why in its logs with `sudo journalctl -u ployz -n 200`.
 
 ## A server shows Offline
 
@@ -389,8 +394,8 @@ web-1 now dials web-2 at 203.0.113.20:51820.
 Updated Server web-2.
 ```
 
-If `web-2` still can't be reached, the second line reads `! web-2 unreachable; its record is
-unchanged.` and the command still succeeds. Run it again once both servers show up in `ployz server
+If `web-2` still can't be reached, the second line reads `! web-2 didn't answer, so its record may
+or may not have changed.` and the command still succeeds. Run it again once both servers show up in `ployz server
 ls` to save the address on `web-2` too. With more than two servers, repeat the command for any
 server that still shows as not answering.
 

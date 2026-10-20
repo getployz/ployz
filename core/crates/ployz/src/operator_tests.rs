@@ -320,10 +320,12 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         vec![
             LogInput {
                 identity: "quiet".into(),
+                machine: machine_id('c'),
                 stream: Box::pin(stream::pending()),
             },
             LogInput {
                 identity: "buffered".into(),
+                machine: machine_id('b'),
                 stream: Box::pin(stream::once(async {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                     Ok(log(metadata("buffered"), 7, b"released"))
@@ -334,7 +336,10 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         Duration::from_millis(15),
         Duration::from_millis(2),
     );
-    assert!(stalled.recv().await.unwrap().unwrap_err().contains("quiet"));
+    assert_eq!(
+        stalled.recv().await.unwrap().unwrap_err(),
+        LogFault::Stalled(machine_id('c'))
+    );
     assert_eq!(
         output_bytes(&stalled.recv().await.unwrap().unwrap()),
         b"released"
@@ -345,6 +350,7 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         vec![
             LogInput {
                 identity: "quiet".into(),
+                machine: machine_id('c'),
                 stream: Box::pin(stream::unfold((), |()| async {
                     tokio::time::sleep(Duration::from_millis(40)).await;
                     None::<(Result<LogEntry, LogError>, ())>
@@ -356,13 +362,9 @@ async fn log_merger_orders_after_watermarks_and_surfaces_zero_errors_and_stalls(
         Duration::from_millis(15),
         Duration::from_millis(2),
     );
-    assert!(
-        stalled_then_closed
-            .recv()
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("quiet")
+    assert_eq!(
+        stalled_then_closed.recv().await.unwrap().unwrap_err(),
+        LogFault::Stalled(machine_id('c'))
     );
     assert_eq!(
         output_bytes(&stalled_then_closed.recv().await.unwrap().unwrap()),
@@ -386,22 +388,14 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
         )],
         CancellationToken::new(),
     );
-    assert!(
-        errors
-            .recv()
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("transport failed")
-    );
-    assert!(
-        errors
-            .recv()
-            .await
-            .unwrap()
-            .unwrap_err()
-            .contains("remote failed")
-    );
+    let Err(LogFault::Error(transport)) = errors.recv().await.unwrap() else {
+        panic!("expected the transport error")
+    };
+    assert!(transport.contains("transport failed"));
+    let Err(LogFault::Error(remote)) = errors.recv().await.unwrap() else {
+        panic!("expected the remote error")
+    };
+    assert!(remote.contains("remote failed"));
 
     let mut empty_error = merge_logs(
         vec![input(
@@ -410,7 +404,10 @@ async fn log_merger_closes_empty_flushes_and_surfaces_stream_errors() {
         )],
         CancellationToken::new(),
     );
-    assert_eq!(empty_error.recv().await.unwrap().unwrap_err(), "broken: ");
+    assert_eq!(
+        empty_error.recv().await.unwrap().unwrap_err(),
+        LogFault::Error("broken: ".into())
+    );
 
     let mut closing = merge_logs(
         vec![
@@ -435,6 +432,7 @@ async fn partial_open_streams_survive_until_parent_cancellation() {
         open_log_input(&mut inputs, &cancellation, async {
             Ok(LogInput {
                 identity: boundary.into(),
+                machine: machine_id('a'),
                 stream: Box::pin(TrackedPending(dropped.clone())),
             })
         })
@@ -484,8 +482,13 @@ impl Drop for TrackedPending {
 fn input(identity: &str, entries: Vec<Result<LogEntry, LogError>>) -> LogInput {
     LogInput {
         identity: identity.into(),
+        machine: machine_id('a'),
         stream: Box::pin(stream::iter(entries)),
     }
+}
+
+fn machine_id(seed: char) -> MachineId {
+    MachineId::parse(seed.to_string().repeat(32)).unwrap()
 }
 
 fn log(metadata: LogMetadata, timestamp: i64, message: &[u8]) -> LogEntry {
