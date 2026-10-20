@@ -81,8 +81,8 @@ async fn report_names_left_running() {
     let (outcome, warnings) = replace_with_a_sticky_proxy(false).await;
 
     assert!(
-        matches!(outcome, DeployOutcome::Success { .. }),
-        "{outcome:?}"
+        !matches!(outcome, DeployOutcome::Success { .. }),
+        "an Out no proxy confirms is no success: {outcome:?}"
     );
     assert_eq!(
         left_running(&warnings),

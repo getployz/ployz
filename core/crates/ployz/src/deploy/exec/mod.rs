@@ -793,6 +793,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             Event::PublishUnconfirmed(group),
                         );
                     }
+                    // The new copies serve and the old ones went Out: none
+                    // is removed or brought back.
+                    Published::OutUnconfirmed(error) => {
+                        unread.insert(group);
+                        stopped.remove(&group);
+                        fail(error, Event::PublishUnconfirmed(group));
+                    }
                     Published::Superseded => {
                         stop.get_or_insert(Stop::Superseded(qualified));
                         schedule.apply(Event::PublishFailed(group));
@@ -1105,6 +1112,8 @@ enum Done {
 enum Published {
     Listed,
     Unconfirmed(cleanup::Unconfirmed),
+    /// The new copies are listed, but an old copy's Out was not seen through.
+    OutUnconfirmed(ExecutionError),
     /// A newer gen already serves: the new copies are discarded.
     Superseded,
     Cancelled,
@@ -1205,24 +1214,55 @@ async fn publish_group<C: MachineOperations>(
             .map(|copy| cleanup::send_out(client, copy, false)),
     )
     .await;
+    // An Out that may have landed but was never seen unlisted admits no
+    // later rotation change, so the group does not publish.
+    let mut unconfirmed = None;
     let mut unlisting = Vec::new();
     for (copy, sent) in outs.into_iter().zip(sent) {
-        match left_unless_done(sent) {
-            None => unlisting.push(copy),
-            Some(left) => rows.leave_running(progress, &copy, left),
+        match sent {
+            Ok(cleanup::Step::Done) => unlisting.push(copy),
+            Ok(step) => {
+                if let Some(left) = step.into() {
+                    rows.leave_running(progress, &copy, left);
+                }
+            }
+            Err(error) => {
+                unconfirmed.get_or_insert_with(|| {
+                    machine_error(MachineAction::StopContainer, error.clone())
+                });
+                rows.leave_running(progress, &copy, Left::Failed(error));
+            }
         }
     }
     if let Some(first) = unlisting.first() {
         let ids: BTreeSet<ContainerId> = unlisting.iter().map(|copy| copy.container_id).collect();
         let unlisted =
             cleanup::wait_none_listed(client, &first.machine_id, service, &ids, cancellation).await;
-        match left_unless_done(unlisted.map(cleanup::Step::from)) {
+        let (left, error) = match unlisted {
+            Ok(cleanup::Wait::Done) => (None, None),
+            Ok(cleanup::Wait::TimedOut(machines)) => {
+                let error = machine_error(
+                    MachineAction::ReadRoutes,
+                    unavailable(rows.not_confirmed(&machines)),
+                );
+                (Some(Left::NotConfirmed(machines)), Some(error))
+            }
+            Ok(cleanup::Wait::Cancelled) => (Some(Left::Interrupted), None),
+            Err(error) => (
+                Some(Left::Failed(error.clone())),
+                Some(machine_error(MachineAction::ReadRoutes, error)),
+            ),
+        };
+        match left {
             None => gone.append(&mut unlisting),
             Some(left) => {
                 for copy in &unlisting {
                     rows.leave_running(progress, copy, left.clone());
                 }
             }
+        }
+        if let Some(error) = error {
+            unconfirmed.get_or_insert(error);
         }
     }
     // Each Gone drains on its own Machine; they overlap and are all reported.
@@ -1236,7 +1276,10 @@ async fn publish_group<C: MachineOperations>(
             rows.leave_running(progress, copy, left);
         }
     }
-    Published::Listed
+    match unconfirmed {
+        None => Published::Listed,
+        Some(error) => Published::OutUnconfirmed(error),
+    }
 }
 
 fn left_unless_done(step: Result<cleanup::Step, RpcError>) -> Option<Left> {
@@ -2015,15 +2058,23 @@ async fn execute_operation<C: MachineOperations>(
                     rows.leave_running(progress, &copy, Left::Refused(refusal.clone()));
                     Err(machine_error(MachineAction::RemoveContainer, refusal.into_error()).into())
                 }
+                // The next removal waits on this Out being seen through.
                 Ok(cleanup::Step::NotConfirmed(machines)) => {
+                    let error = machine_error(
+                        MachineAction::RemoveContainer,
+                        unavailable(rows.not_confirmed(&machines)),
+                    );
                     rows.leave_running(progress, &copy, Left::NotConfirmed(machines));
-                    Ok(Ran::default())
+                    Err(error.into())
                 }
                 Ok(cleanup::Step::Cancelled) => {
                     rows.leave_running(progress, &copy, Left::Interrupted);
                     Err(ExecutionError::Cancelled.into())
                 }
-                Err(error) => Err(machine_error(MachineAction::RemoveContainer, error).into()),
+                Err(error) => {
+                    rows.leave_running(progress, &copy, Left::Failed(error.clone()));
+                    Err(machine_error(MachineAction::RemoveContainer, error).into())
+                }
             }
         }
         DeployOperation::ReplaceContainer(replacement) => {

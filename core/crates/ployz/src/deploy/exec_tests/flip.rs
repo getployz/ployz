@@ -313,6 +313,41 @@ async fn a_scale_down_retires_the_copy_it_removes_before_removing_it() {
     client.assert_done();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_removal_whose_out_no_proxy_confirms_fails_the_deploy() {
+    let machine = machine('1');
+    let kept = container('a');
+    let removed = container('b');
+    let plan = vec![DeployOperation::RemoveContainer {
+        machine_id: machine,
+        container_id: removed,
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
+    }];
+    let client = Scripted {
+        withheld: BTreeMap::from([(api(), usize::MAX)]),
+        ..Scripted::new(vec![observed(Call::Inspect(machine, removed), running())])
+    }
+    .with_copy(&machine, &kept, CopyRotation::In)
+    .with_copy(&machine, &removed, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_groups_reported(&plan, scale_down_groups(&[kept]), &[machine], &client).await;
+
+    assert!(
+        !matches!(outcome, DeployOutcome::Success { .. }),
+        "the next rotation change waits on this Out: {outcome:?}"
+    );
+    assert_eq!(client.moves(), [Move::To(removed, CopyRotation::Out)]);
+    assert_eq!(
+        warnings,
+        [left_running(
+            "machine-1",
+            "proxy on machine-1 did not confirm"
+        )]
+    );
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn a_removal_of_the_last_in_copy_is_refused() {
     let machine = machine('1');
@@ -1181,9 +1216,32 @@ pub(super) async fn execute_reported<C: MachineOperations>(
 ) -> (DeployOutcome<ExecutionError>, Vec<String>) {
     let plan = crate::deploy::DeployPlan::for_execution_test(plan.to_vec(), test_namespace())
         .with_machine_names(named);
+    reported(&plan, client, cancellation).await
+}
+
+async fn execute_groups_reported<C: MachineOperations>(
+    plan: &[DeployOperation],
+    groups: Vec<crate::deploy::schedule::ServiceGroup>,
+    named: &[MachineId],
+    client: &C,
+) -> (DeployOutcome<ExecutionError>, Vec<String>) {
+    let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
+        plan.to_vec(),
+        test_namespace(),
+        groups,
+    )
+    .with_machine_names(named);
+    reported(&plan, client, &CancellationToken::new()).await
+}
+
+async fn reported<C: MachineOperations>(
+    plan: &crate::deploy::DeployPlan,
+    client: &C,
+    cancellation: &CancellationToken,
+) -> (DeployOutcome<ExecutionError>, Vec<String>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let outcome =
-        super::super::execute_operation_sequence(&plan, &run_id(), client, cancellation, Some(tx))
+        super::super::execute_operation_sequence(plan, &run_id(), client, cancellation, Some(tx))
             .await;
     let mut warnings = Vec::new();
     while let Ok(event) = rx.try_recv() {
@@ -1300,8 +1358,8 @@ async fn a_retirement_no_proxy_confirms_leaves_the_old_copy_running() {
         execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
 
     assert!(
-        matches!(outcome, DeployOutcome::Success { .. }),
-        "{outcome:?}"
+        !matches!(outcome, DeployOutcome::Success { .. }),
+        "an unconfirmed Out is no success: {outcome:?}"
     );
     assert_eq!(
         client.moves(),
@@ -1660,9 +1718,13 @@ async fn a_slow_retirement_does_not_hold_up_another_services_flip() {
         web_in
     );
 
-    assert!(
-        matches!(outcome, DeployOutcome::Success { .. }),
-        "{outcome:?}"
+    assert_eq!(
+        outcome.services(),
+        ended(&[
+            ("api", ServiceResult::Unconfirmed),
+            ("web", ServiceResult::New)
+        ]),
+        "api's Out was never seen through"
     );
     assert!(
         web_in < ACK_WAIT && started.elapsed() >= ACK_WAIT,
@@ -2056,9 +2118,13 @@ async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
     .with_copy(&first, &one, CopyRotation::In)
     .with_copy(&second, &two, CopyRotation::In);
 
-    let (_, warnings) =
+    let (outcome, warnings) =
         execute_reported(&plan, &[first, second], &client, &CancellationToken::new()).await;
 
+    assert!(
+        !matches!(outcome, DeployOutcome::Success { .. }),
+        "an unconfirmed Out is no success: {outcome:?}"
+    );
     assert_eq!(client.rotation(&one), Some(CopyRotation::Out));
     assert_eq!(
         client.rotation(&two),
@@ -2096,14 +2162,27 @@ async fn a_failed_route_read_after_the_outs_leaves_every_old_copy_of_the_group_r
     .with_copy(&first, &one, CopyRotation::In)
     .with_copy(&second, &two, CopyRotation::In);
 
-    execute_with(&plan, &client, &CancellationToken::new()).await;
+    let (outcome, warnings) =
+        execute_reported(&plan, &[first, second], &client, &CancellationToken::new()).await;
 
+    assert!(
+        !matches!(outcome, DeployOutcome::Success { .. }),
+        "an unconfirmed Out is no success: {outcome:?}"
+    );
     assert_eq!(client.rotation(&one), Some(CopyRotation::Out));
     assert_eq!(
         client.rotation(&two),
         Some(CopyRotation::Out),
         "no copy is removed while its unlisting could not be read"
     );
+    for machine in ["machine-1", "machine-2"] {
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.starts_with(&format!("app/api left running on {machine} "))),
+            "{warnings:?}"
+        );
+    }
     client.assert_done();
 }
 
