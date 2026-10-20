@@ -2880,6 +2880,310 @@ fn an_environments_namespace_is_the_one_its_deployments_use() {
 }
 
 #[test]
+fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
+    let (store, who) = shop();
+    for (n, name) in [(6, "front"), (7, "back")] {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    let upload = |c: char| UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    };
+    let deploy = |n: u8, services: &[&str], upload: Option<UploadedSource>| {
+        store.write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: services
+                    .iter()
+                    .map(|name| ServiceName::parse(*name).unwrap())
+                    .collect(),
+                version: None,
+                upload,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+    };
+    let a = runner("cli-a");
+    let end = |n: u8| {
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+            .unwrap();
+    };
+    let kept = |deployments: &[u8]| -> Vec<bool> {
+        store
+            .read(
+                &who,
+                &ployz_store::UploadsQuery {
+                    deployments: deployments.iter().map(|n| id(*n)).collect(),
+                },
+            )
+            .unwrap()
+            .uploads
+            .iter()
+            .map(|held| held.kept)
+            .collect()
+    };
+    deploy(1, &[], Some(upload('a'))).unwrap();
+    end(1);
+    // An upload for back alone leaves front's.
+    deploy(2, &["back"], Some(upload('b'))).unwrap();
+    end(2);
+    assert_eq!(kept(&[1, 2]), [true, true]);
+    // Without a new upload, front builds from its own.
+    assert_eq!(
+        deploy(3, &["front"], None).unwrap().upload,
+        Some(upload('a'))
+    );
+    end(3);
+    // A full Deploy builds each from its own upload, and carries the newer for Cloud to
+    // extract: back's, sent after front's. #3 failed, so it moved front onto nothing.
+    assert_eq!(deploy(4, &[], None).unwrap().upload, Some(upload('b')));
+    let own = |name: &str, c: char| (ServiceName::parse(name).unwrap(), Some(upload(c).digest));
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([own("back", 'b'), own("front", 'a')])
+    );
+    store
+        .record(&id(4), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    // It doesn't make back's upload front's: back alone still builds from b.
+    assert_eq!(
+        deploy(40, &["back"], None).unwrap().upload,
+        Some(upload('b'))
+    );
+    end(40);
+    assert_eq!(kept(&[1, 2]), [true, true]);
+    // A retry of an older Deployment ships its upload, and back's latest upload stays.
+    assert_eq!(retry(&store, &who, 5, 1).unwrap().upload, Some(upload('a')));
+    end(5);
+    assert_eq!(kept(&[1, 2]), [true, true]);
+    // A Deployment that may still run keeps its upload, however many come after it.
+    deploy(6, &["back"], Some(upload('c'))).unwrap();
+    store.claim(&id(6), &a).unwrap();
+    for n in 7..=30 {
+        deploy(n, &["front"], None).unwrap();
+    }
+    deploy(31, &["back"], Some(upload('d'))).unwrap();
+    // A newer upload replaced back's b; Deployment 99 was never admitted.
+    assert_eq!(kept(&[1, 2, 6, 31, 99]), [true, false, true, true]);
+}
+
+/// The Store with an uploaded `app` Service.
+fn uploaded_app() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    (store, who)
+}
+
+/// Deploy `n` of every Service, sending `upload` if any.
+fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) -> DeploymentSummary {
+    store
+        .write_trusted(
+            who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: upload.map(digested),
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap()
+}
+
+fn digested(c: char) -> UploadedSource {
+    UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    }
+}
+
+fn fail(store: &ConfigStore, n: u8) {
+    let a = runner("cli-a");
+    store.claim(&id(n), &a).unwrap();
+    store
+        .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+}
+
+fn kept_of(store: &ConfigStore, who: &Actor, deployments: &[u8]) -> Vec<bool> {
+    store
+        .read(
+            who,
+            &ployz_store::UploadsQuery {
+                deployments: deployments.iter().map(|n| id(*n)).collect(),
+            },
+        )
+        .unwrap()
+        .uploads
+        .iter()
+        .map(|held| held.kept)
+        .collect()
+}
+
+#[test]
+fn a_failed_retry_of_a_released_upload_leaves_the_service_on_its_latest_upload() {
+    let (store, who) = uploaded_app();
+    let deploy = |n: u8, upload: Option<char>| deploy_sent(&store, &who, n, upload);
+    deploy(1, Some('a'));
+    fail(&store, 1);
+    deploy(2, Some('b'));
+    fail(&store, 2);
+    deploy(3, Some('a'));
+    fail(&store, 3);
+    // a sent again replaced b: Cloud releases b's chunks.
+    assert_eq!(kept_of(&store, &who, &[2, 3]), [false, true]);
+    // The retry of b finds no upload and fails.
+    retry(&store, &who, 4, 2).unwrap();
+    fail(&store, 4);
+    // The next settings-only Deploy builds from a, which Cloud still holds.
+    let next = deploy(5, None);
+    assert_eq!(next.upload, Some(digested('a')));
+    let claimed = store.claim(&id(5), &runner("cli-a")).unwrap();
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("app").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+    assert_eq!(kept_of(&store, &who, &[3]), [true]);
+}
+
+#[test]
+fn the_same_upload_sent_again_keeps_one_copy() {
+    let (store, who) = uploaded_app();
+    let deploy = |n: u8, upload: Option<char>| deploy_sent(&store, &who, n, upload);
+    // `ployz up` twice with unchanged source: two Deployments send the same content.
+    deploy(1, Some('a'));
+    fail(&store, 1);
+    deploy(2, Some('a'));
+    fail(&store, 2);
+    assert_eq!(kept_of(&store, &who, &[1, 2]), [false, true]);
+    // A settings-only Deploy builds from it, and the one copy stays.
+    assert_eq!(deploy(3, None).upload, Some(digested('a')));
+    assert_eq!(kept_of(&store, &who, &[2]), [true]);
+}
+
+#[test]
+fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_after_it() {
+    let upload = |c: char| UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    };
+    // Cloud holds chunks only for the Deployments that sent an upload, and asks about those.
+    for retry_first in [false, true] {
+        let (store, who) = shop();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("app").unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+        let deploy = |n: u8, upload: Option<UploadedSource>| {
+            store
+                .write_trusted(
+                    &who,
+                    &Admit::Deploy(Deploy {
+                        id: id(n),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload,
+                        accept_volume_loss: Vec::new(),
+                        message: None,
+                    }),
+                    &Trusted::default(),
+                )
+                .unwrap()
+        };
+        let a = runner("cli-a");
+        let end = |n: u8| {
+            store.claim(&id(n), &a).unwrap();
+            store
+                .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+                .unwrap();
+        };
+        let kept = |deployments: &[u8]| -> Vec<bool> {
+            store
+                .read(
+                    &who,
+                    &ployz_store::UploadsQuery {
+                        deployments: deployments.iter().map(|n| id(*n)).collect(),
+                    },
+                )
+                .unwrap()
+                .uploads
+                .iter()
+                .map(|held| held.kept)
+                .collect()
+        };
+        deploy(1, Some(upload('a')));
+        end(1);
+        // A second upload fails.
+        deploy(2, Some(upload('b')));
+        end(2);
+        if retry_first {
+            // Its retry builds b again, then the user uploads a again: the newest upload wins.
+            retry(&store, &who, 3, 2).unwrap();
+            end(3);
+            deploy(4, Some(upload('a')));
+            end(4);
+            // #4 sent a again: one copy of a stays.
+            assert_eq!(kept(&[1, 2, 4]), [false, false, true]);
+        } else {
+            // The user uploads a again, then retries the failed one: a is still the newest
+            // upload, kept once. The failed retry moved the Service onto nothing, so b goes.
+            deploy(3, Some(upload('a')));
+            end(3);
+            retry(&store, &who, 4, 2).unwrap();
+            end(4);
+            assert_eq!(kept(&[1, 2, 3]), [false, false, true]);
+        }
+    }
+}
+
+#[test]
 fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back() {
     let (store, who) = shop();
     store
@@ -2990,6 +3294,17 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         retry(&store, &who, 4, 1).unwrap().upload,
         Some(upload.clone())
     );
+    // Once no Service builds from an upload, a Deployment carries none.
+    store
+        .write(
+            &who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("app").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(with(6, None).unwrap().upload, None);
     // Another Environment of the Project without its own receipt borrows this one;
     // preparation reuses it only if its fingerprint matches.
     let staging = EnvironmentRef {
@@ -3095,7 +3410,10 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     assert_eq!(admit(2, &who).upload, Some(upload(None)));
     let a = runner("cloud-a");
     let claimed = store.claim(&id(2), &a).unwrap();
-    assert_eq!(claimed.uploads, vec![app.clone()]);
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(app.clone(), Some(upload(None).digest))])
+    );
     assert!(claimed.sources.is_empty());
     let report = |status| {
         RunEvidence::Build(ployz_store::BuildReport {
