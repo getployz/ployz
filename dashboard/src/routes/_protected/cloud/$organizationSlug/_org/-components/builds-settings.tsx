@@ -35,6 +35,8 @@ const BUILD_ORDER_LABELS = {
 } satisfies Record<BuildOrder, string>;
 const BUILD_ORDERS: BuildOrder[] = ["github-then-servers", "servers-then-github", "servers-only", "github-only"];
 
+export const BUILD_ORDER_REFUSED = "Only an owner or admin can change where builds run.";
+
 /** The Organization's Build Order, which the settings page prefetches. */
 export const BUILD_ORDER_QUERY = { query: "build_order" } as const;
 
@@ -47,12 +49,13 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
   const writer = useStoreWriter(organizationSlug);
   // Shown at once; a refusal toasts and the saved order shows again.
   const [buildOrder, hold] = useCommitHold(view.build_order ?? "github-then-servers");
-  // The Store refuses set_build_order without changes:stage; the control says so first.
-  const may = useYouMay(organizationSlug, "changes:stage");
+  // The Store refuses set_build_order without org:settings; the control says so first.
+  const may = useYouMay(organizationSlug, "org:settings");
   return (
     <SettingsSection id="build-order" title="Where builds run">
       <SettingsRow
         label="Order"
+        hint={may === false ? BUILD_ORDER_REFUSED : undefined}
         commit="change"
         control={(
           <Select value={buildOrder} disabled={may !== true} onValueChange={(next) => {

@@ -20,7 +20,8 @@ export function SupportAccessSection({ organizationSlug }: { organizationSlug: s
   const { row, change } = useSupportAccess(organizationSlug);
   // Only an owner or admin decides what Ployz support may do. Everyone else, support included, sees the switches but can't move them.
   const { access } = organizationRoute.useLoaderData();
-  const locked = access === "support" || useYouMay(organizationSlug, "org:settings") !== true;
+  const may = useYouMay(organizationSlug, "org:settings");
+  const locked = access === "support" || may !== true;
   return (
     <SettingsSection id="support-access" title="Support">
       <SettingsGroup

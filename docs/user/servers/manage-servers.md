@@ -280,7 +280,7 @@ upgrading reads **Upgrading**.
 ### Turn on automatic upgrades
 
 Automatic upgrades are off until you turn them on. Click the **Upgrade settings** icon at the top
-of the **Servers** page and turn on **Upgrade automatically**. Only an owner or admin can change it. Ployz
+of the **Servers** page and turn on **Upgrade automatically**. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it. Ployz
 starts upgrading right away, then checks every hour. Turn the switch off to go back to upgrading by
 hand.
 
@@ -299,7 +299,7 @@ whether it went back to the release it ran before. Members who set **Failed auto
 ### Upgrade one server
 
 To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**.
-Only an owner or admin can upgrade servers, and only while they're online and not building. For a
+Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can upgrade servers, and only while they're online and not building. For a
 member, **Upgrade** and **Try again** are disabled and say so. One upgrade runs at a time
 per organization, so **Upgrade** and **Try again** wait while one is running.
 
@@ -307,7 +307,7 @@ per organization, so **Upgrade** and **Try again** wait while one is running.
 
 Click the **Upgrade settings** icon at the top of the **Servers** page and set **Releases** to
 **Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Only an
-owner or admin can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
+owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
 and each server's page then show the newest release on that channel.
 
 Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as

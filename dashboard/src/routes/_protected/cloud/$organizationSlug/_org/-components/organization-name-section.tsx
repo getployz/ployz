@@ -30,7 +30,8 @@ function OrganizationNameRow({ organizationSlug, name }: { organizationSlug: str
   const queryClient = useQueryClient();
   // A support visit may not rename a customer's Organization; the settings loader has the members, so a member's role is known.
   const { access } = organizationRoute.useLoaderData();
-  const locked = access === "support" || useYouMay(organizationSlug, "org:settings") !== true;
+  const may = useYouMay(organizationSlug, "org:settings");
+  const locked = access === "support" || may !== true;
   const rename = useMutation({
     mutationFn: useServerFn(renameOrganizationServerFn),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: organizationKeys.all }),

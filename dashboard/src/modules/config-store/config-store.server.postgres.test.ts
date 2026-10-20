@@ -290,7 +290,7 @@ it.live(
 );
 
 it.live(
-  "a member stages but can't delete an Environment or a Project; an admin can",
+  "a member stages but can't delete an Environment or a Project or set the Build Order; an admin can",
   () =>
     Effect.gen(function* () {
       const layer = yield* cloudLayer();
@@ -311,7 +311,8 @@ it.live(
 
         const deleteStaging: ConfigCommand = { command: "remove", project: "shop", environment: "staging" };
         const deleteShop: ConfigCommand = { command: "remove", project: "shop" };
-        for (const command of [deleteStaging, deleteShop]) {
+        const buildOrder: ConfigCommand = { command: "set_build_order", build_order: "servers-only" };
+        for (const command of [deleteStaging, deleteShop, buildOrder]) {
           const refused = yield* Effect.exit(writeStoreAsMember(bob, slug, command));
           const error = Exit.isFailure(refused) ? Cause.squash(refused.cause) : null;
           assert.deepInclude(error, { _tag: "Forbidden", message: "Only an owner or admin of this Organization can do this." });
@@ -320,6 +321,7 @@ it.live(
         yield* drizzle.update(member).set({ role: "admin" }).where(eq(member.userId, bobUser));
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteStaging)).ok, "an admin deletes the Environment");
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteShop)).ok, "an admin deletes the Project");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, buildOrder)).ok, "an admin sets the Build Order");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -7,15 +7,16 @@ import * as writes from "#/modules/config-store/store-write";
 import * as github from "#/modules/github/github.queries";
 import * as servers from "#/modules/machines/use-servers";
 import { asTestDouble } from "#/lib/test-double";
+import { can } from "#/modules/organization/permissions";
 import { clientWithRole, ROLE_STATES } from "#/test/your-role";
-import { BuildsSettings } from "./builds-settings";
+import { BUILD_ORDER_REFUSED, BuildsSettings } from "./builds-settings";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
 
-it.each(ROLE_STATES)("lets anyone who may stage changes choose where builds run, as Cloud does (%s)", async (state) => {
+it.each(ROLE_STATES)("lets only a role that may change the Organization's settings choose where builds run, as the Store does (%s)", async (state) => {
   const client = await clientWithRole("ada", state);
   vi.spyOn(views, "useStoreView").mockReturnValue(asTestDouble<ReturnType<typeof views.useStoreView>>()({ ok: true, value: { build_order: "github-then-servers" } }));
   vi.spyOn(writes, "useStoreWriter").mockReturnValue(asTestDouble<ReturnType<typeof writes.useStoreWriter>>()({ commit: vi.fn() }));
@@ -24,5 +25,7 @@ it.each(ROLE_STATES)("lets anyone who may stage changes choose where builds run,
   vi.spyOn(servers, "useServerList").mockReturnValue(asTestDouble<ReturnType<typeof servers.useServerList>>()({ servers: [] }));
   render(<QueryClientProvider client={client}><BuildsSettings organizationSlug="ada" /></QueryClientProvider>);
   const known = state === "owner" || state === "admin" || state === "member" || state === "support";
-  expect(screen.getByRole("combobox", { name: "Where builds run" })).toHaveProperty("disabled", !known);
+  const open = known && can(state, "org:settings");
+  expect(screen.getByRole("combobox", { name: "Where builds run" })).toHaveProperty("disabled", !open);
+  expect(screen.queryByText(BUILD_ORDER_REFUSED) !== null).toBe(known && !open);
 });
