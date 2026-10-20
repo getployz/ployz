@@ -4299,6 +4299,87 @@ fn a_config_lists_as_new_until_deployed_and_its_change_names_the_services_it_res
 }
 
 #[test]
+fn a_verb_that_changes_nothing_says_so_and_keeps_the_revision() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let revision = || ok(store, &["config", "ls"])["environment"]["revision"].clone();
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    ok(store, &["volume", "add", "data", "--docker"]);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "port: 80\n").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(store, &["config", "put", "app", "app.yml", "--from", from]);
+    applied(store, "production");
+
+    let unchanged = [
+        (
+            vec!["volume", "rename", "data", "data"],
+            "Nothing changed in shop/production; Volume data already has that name.\n",
+        ),
+        (
+            vec!["volume", "set", "data", "--docker"],
+            "Nothing changed in shop/production; Volume data already has that storage.\n",
+        ),
+        (
+            vec!["config", "put", "app", "app.yml", "--from", from],
+            "Nothing changed in shop/production; Config app already holds app.yml as given.\n",
+        ),
+        (
+            vec!["config", "rename", "app", "app"],
+            "Nothing changed in shop/production; Config app already has that name.\n",
+        ),
+        (
+            vec!["config", "mount", "web", "app", "/etc/app"],
+            "Nothing changed in shop/production; web already mounts Config app there.\n",
+        ),
+    ];
+    for (args, said) in &unchanged {
+        let before = revision();
+        let result = ok(store, args);
+        assert_eq!(result["staged"], json!([]), "{args:?}");
+        assert_eq!(result.get("next"), None, "{args:?}");
+        assert_eq!(result["environment"]["revision"], before, "{args:?}");
+        assert_eq!(&human(args), said, "{args:?}");
+        assert_eq!(revision(), before, "{args:?}");
+    }
+
+    let unmounted = ok(store, &["config", "unmount", "web", "app"]);
+    assert_eq!(unmounted["staged"], json!(["web.configs.app"]));
+    let before = revision();
+    assert_eq!(
+        human(&["config", "unmount", "web", "app"]),
+        "Nothing changed in shop/production; web does not mount Config app.\n"
+    );
+    assert_eq!(revision(), before);
+
+    let listing = human(&["config", "ls"]);
+    let row = listing
+        .lines()
+        .find(|line| line.starts_with("app"))
+        .unwrap();
+    assert!(row.ends_with("unmount from web"), "{listing}");
+    assert_eq!(
+        ok(store, &["config", "ls"])["configs"][0]["mount_changes"],
+        json!([{ "service": "web", "before": "/etc/app", "after": null }])
+    );
+
+    assert_eq!(
+        human(&["project", "rename", "shop", "shop"]),
+        "Nothing changed; Project shop already has that name.\n"
+    );
+    let renamed = ok(store, &["project", "rename", "shop", "shop"]);
+    assert_eq!(renamed["project"]["name"], json!("shop"));
+    assert_eq!(renamed["links"], json!(0));
+}
+
+#[test]
 fn history_scope_flags_work_before_or_after_the_action() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
