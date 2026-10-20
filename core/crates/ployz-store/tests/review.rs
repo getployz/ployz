@@ -4091,6 +4091,66 @@ fn deleting_a_deployed_volume_is_destructive() {
     );
 }
 
+/// Delete Volume `data`, then create a different, unmounted Volume named `data`.
+fn replace_data_unmounted(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                restored_from: None,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+fn data_of(changes: &[ployz_store::NodeChange], name: &str) -> Option<DataEffect> {
+    changes
+        .iter()
+        .find(|change| change.name == name)
+        .unwrap()
+        .data
+}
+
+#[test]
+fn a_deployed_volume_replaced_by_one_of_its_name_is_not_kept() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    apply_all(&store, &who, &Trusted::default());
+    replace_data_unmounted(&store, &who);
+    let view = diff(&store, &who);
+    assert_eq!(data_of(&view.changes, "web"), None);
+    assert!(
+        view.effects
+            .iter()
+            .all(|effect| effect.kind != DestructiveKind::DetachesVolume)
+    );
+}
+
+#[test]
+fn a_saved_volume_replaced_by_one_of_its_name_is_not_kept_in_the_draft() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    publish(&store, &who, None).unwrap();
+    replace_data_unmounted(&store, &who);
+    assert_eq!(data_of(&diff(&store, &who).draft_changes, "web"), None);
+}
+
 #[test]
 fn removing_a_deployed_service_keeps_the_data_of_a_volume_that_stays() {
     let (store, who) = shop();
