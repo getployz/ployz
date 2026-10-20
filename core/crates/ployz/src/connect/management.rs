@@ -30,19 +30,28 @@ const TUNNEL_CLOSE_GRACE: Duration = Duration::from_secs(2);
 
 /// The relay the management transport dials through. Production uses the compiled
 /// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
+///
+/// A relay also owns the endpoints dialed through it. Every default relay in a process
+/// shares one set; each [`ManagementRelay::custom`] relay has its own, as a separate
+/// process would.
 #[derive(Clone, Debug)]
 pub struct ManagementRelay {
     pub(super) url: RelayUrl,
     pub(super) tls: CaTlsConfig,
+    endpoints: Arc<Endpoints>,
 }
+
+type Endpoints = tokio::sync::Mutex<HashMap<[u8; 32], Weak<ManagementEndpoint>>>;
 
 impl Default for ManagementRelay {
     fn default() -> Self {
+        static ENDPOINTS: OnceLock<Arc<Endpoints>> = OnceLock::new();
         Self {
             url: DEFAULT_RELAY_URL
                 .parse()
                 .expect("the compiled relay URL is valid"),
             tls: CaTlsConfig::default(),
+            endpoints: Arc::clone(ENDPOINTS.get_or_init(Arc::default)),
         }
     }
 }
@@ -53,13 +62,23 @@ impl ManagementRelay {
     /// (that constructor needs iroh's `test-utils` feature, so it stays in test crates).
     #[must_use]
     pub fn custom(url: RelayUrl, tls: CaTlsConfig) -> Self {
-        Self { url, tls }
+        Self {
+            url,
+            tls,
+            endpoints: Arc::default(),
+        }
     }
 }
 
 struct ManagementEndpoint {
     endpoint: IrohEndpoint,
     runtime: tokio::runtime::Handle,
+}
+
+impl std::fmt::Debug for ManagementEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ManagementEndpoint")
+    }
 }
 
 impl Drop for ManagementEndpoint {
@@ -69,20 +88,15 @@ impl Drop for ManagementEndpoint {
     }
 }
 
-type EndpointKey = ([u8; 32], RelayUrl);
-
 async fn management_endpoint(
     secret: &[u8; 32],
     relay: &ManagementRelay,
 ) -> Result<Arc<ManagementEndpoint>, ConnectError> {
-    static ENDPOINTS: OnceLock<tokio::sync::Mutex<HashMap<EndpointKey, Weak<ManagementEndpoint>>>> =
-        OnceLock::new();
     // ponytail: serialize endpoint binds to prevent duplicate relay identities;
     // use per-key locks if concurrent first-dial throughput becomes a bottleneck.
-    let mut endpoints = ENDPOINTS.get_or_init(Default::default).lock().await;
+    let mut endpoints = relay.endpoints.lock().await;
     endpoints.retain(|_, endpoint| endpoint.strong_count() > 0);
-    let key = (*secret, relay.url.clone());
-    if let Some(endpoint) = endpoints.get(&key).and_then(Weak::upgrade) {
+    if let Some(endpoint) = endpoints.get(secret).and_then(Weak::upgrade) {
         return Ok(endpoint);
     }
     let endpoint = IrohEndpoint::builder(presets::Minimal)
@@ -96,7 +110,7 @@ async fn management_endpoint(
         endpoint,
         runtime: tokio::runtime::Handle::current(),
     });
-    endpoints.insert(key, Arc::downgrade(&endpoint));
+    endpoints.insert(*secret, Arc::downgrade(&endpoint));
     Ok(endpoint)
 }
 
