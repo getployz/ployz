@@ -385,7 +385,14 @@ impl ContainerRuntime {
         let VolumeInventory {
             mut volumes,
             failures,
-        } = self.list_volumes(&machine_id).await?;
+        } = match self.list_volumes(&machine_id).await {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                sink.pool_committable_bytes
+                    .send_if_modified(|current| current.take().is_some());
+                return Err(error);
+            }
+        };
         let committable = match sink
             .plugin
             .call::<ployz_core::StorageCapacity>("Storage.Inspect", &())
@@ -1086,7 +1093,7 @@ mod tests {
         );
         let (plugin, plugin_server) = fake.serve(&data_dir);
         let (replicated, corrosion) = identity_store(corrosion_db()).await;
-        let (runtime, _docker, _id) = runtime_with_running_container().await;
+        let (runtime, docker, _id) = runtime_with_running_container().await;
         let runtime = runtime
             .replicating(replicated, owner, plugin)
             .with_rescan_interval(Duration::from_millis(50));
@@ -1109,6 +1116,14 @@ mod tests {
             }
         };
 
+        observed(Some(8 * gib)).await;
+        docker
+            .reject_list
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        observed(None).await;
+        docker
+            .reject_list
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         observed(Some(8 * gib)).await;
         fake.replies.lock().unwrap().remove("Storage.Inspect");
         observed(None).await;
