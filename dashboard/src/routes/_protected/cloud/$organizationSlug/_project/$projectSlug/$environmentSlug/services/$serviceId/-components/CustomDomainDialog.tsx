@@ -17,12 +17,11 @@ import {
   validateOnChangeOrBlur,
 } from "#/form";
 import { strictParseOptions } from "#/lib/schema";
+import { NOT_A_HOSTNAME, storedHostname } from "#/modules/config-store/store-hostname";
 import { domainPortSchema } from "./domain-port";
 
 /** A public DNS name with a dot: labels of letters, digits and inner hyphens. The Store checks the rest. */
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/u;
-
-const NOT_A_HOSTNAME = /[\p{Cc}\s/\\?#@:%]/u;
 
 const isAscii = (hostname: string) => /^\p{ASCII}*$/u.test(hostname);
 
@@ -36,12 +35,17 @@ const isHostname = (hostname: string) =>
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
 
-const customDomainFormSchema = Schema.toStandardSchemaV1(
+/** ASCII lowercase; the Store turns the rest to punycode itself. */
+const submittedHostname = (hostname: string) => isAscii(hostname) ? hostname.toLowerCase() : hostname;
+
+const customDomainFormSchema = (taken: ReadonlySet<string>) => Schema.toStandardSchemaV1(
   Schema.Struct({
     hostname: Schema.Trim.check(
       Schema.isNonEmpty({ message: "Enter a hostname." }),
       Schema.makeFilter<string>((hostname) => isHostname(hostname)
         ? undefined : "Enter a domain you own, like api.example.com."),
+      Schema.makeFilter<string>((hostname) => taken.has(storedHostname(hostname))
+        ? "Already on this service." : undefined),
     ),
     port: domainPortSchema,
   }).pipe(
@@ -54,8 +58,7 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
       }),
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
-          // The Store keeps hostnames lowercase; the staged row should match it.
-          hostname: isAscii(hostname) ? hostname.toLowerCase() : hostname,
+          hostname: submittedHostname(hostname),
           targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({
@@ -68,17 +71,12 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
   { parseOptions: strictParseOptions }
 );
 
-const customDomainFormOptions = appFormOptions.strictSchema({
-  defaultValues: { hostname: "", port: "" },
-  errorVisibility: showErrorsAfterBlurOrSubmit,
-  validators: [validateOnChangeOrBlur(customDomainFormSchema)],
-});
-
 export function CustomDomainDialog({
   route,
   initial,
   refusal,
   hostnameFixed = false,
+  takenHostnames = [],
   defaultTargetPort,
   onClose,
   onSubmit,
@@ -90,16 +88,21 @@ export function CustomDomainDialog({
   refusal?: string;
   /** Editing changes only the port: a Store domain is addressed by its hostname. */
   hostnameFixed?: boolean;
+  /** The service's other custom domains, listed or still being added: adding one again would change nothing. */
+  takenHostnames?: readonly string[];
   defaultTargetPort: number | null;
   onClose: () => void;
   onSubmit: (next: CustomDomain) => void;
 }) {
   const form = useAppForm({
-    ...customDomainFormOptions,
-    defaultValues: {
-      hostname: (route ?? initial)?.hostname ?? "",
-      port: (route ?? initial)?.targetPort == null ? "" : String((route ?? initial)?.targetPort),
-    },
+    ...appFormOptions.strictSchema({
+      defaultValues: {
+        hostname: (route ?? initial)?.hostname ?? "",
+        port: (route ?? initial)?.targetPort == null ? "" : String((route ?? initial)?.targetPort),
+      },
+      errorVisibility: showErrorsAfterBlurOrSubmit,
+      validators: [validateOnChangeOrBlur(customDomainFormSchema(new Set(takenHostnames.map(storedHostname))))],
+    }),
     onSubmit: ({ schemaOutputs }) => {
       onSubmit(schemaOutputs[0]);
       onClose();
@@ -149,8 +152,8 @@ export function CustomDomainDialog({
                     }
                     description={
                       defaultTargetPort === null
-                        ? "Leave blank to use PORT, 8080 unless set."
-                        : "Leave blank to use PORT."
+                        ? "Leave blank to use this service's PORT variable."
+                        : `Leave blank to use this service's PORT variable, ${defaultTargetPort}.`
                     }
                   />
                 )}

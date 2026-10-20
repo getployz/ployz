@@ -172,15 +172,19 @@ pub(crate) async fn org(admin: &Client) -> Uuid {
 }
 
 pub(crate) async fn check(admin: &Client, org: Uuid, url: &str) -> Uuid {
+    check_with_id(admin, org, url, Uuid::new_v4()).await
+}
+
+pub(crate) async fn check_with_id(admin: &Client, org: Uuid, url: &str, id: Uuid) -> Uuid {
     admin
-        .query_one(
-            "INSERT INTO uptime_check (organization_id, name, url, environment_id, service_id) \
-             VALUES ($1, 'Check', $2, gen_random_uuid()::text, gen_random_uuid()::text) RETURNING id",
-            &[&org, &url],
+        .execute(
+            "INSERT INTO uptime_check (id, organization_id, name, url, environment_id, service_id) \
+             VALUES ($1, $2, 'Check', $3, gen_random_uuid()::text, gen_random_uuid()::text)",
+            &[&id, &org, &url],
         )
         .await
-        .unwrap()
-        .get(0)
+        .unwrap();
+    id
 }
 
 /// A TCP proxy in front of a test database that, once armed, lets one `COMMIT` reach the server

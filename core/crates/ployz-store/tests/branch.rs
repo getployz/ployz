@@ -43,7 +43,11 @@ fn at(environment: &str) -> EnvironmentRef {
 /// production: `web` (a secret, a reference to `db`, a private image with a
 /// registry credential) uses `db`, which mounts Volume `data`. Nothing deployed.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_on(backend::open())
+}
+
+/// [`shop`] on `store`.
+fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -413,6 +417,33 @@ fn a_branch_is_refused_before_anything_is_written() {
 }
 
 #[test]
+fn an_empty_parent_says_there_is_nothing_to_branch() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    for copy in [&[][..], &["web"][..]] {
+        let refused = store
+            .write(&who, &branch("fix", "production", copy))
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+        assert_eq!(
+            refused.message,
+            "production is empty, so there is nothing to branch"
+        );
+        assert_eq!(refused.details["next"], "ployz env new fix --project shop");
+    }
+}
+
+#[test]
 fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
@@ -759,6 +790,82 @@ fn a_branch_is_planned_by_name_before_it_is_created() {
 }
 
 #[test]
+fn a_branch_of_nothing_offers_no_preset_that_copies_the_same() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("empty").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+        from: at("production"),
+        ..Default::default()
+    });
+    let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
+        panic!("a branch plan");
+    };
+    // Every preset copies nothing, so "Everything" would be a choice that changes nothing.
+    assert_eq!(json!(plan.presets), json!(["only"]));
+}
+
+#[test]
+fn a_branch_plan_presses_the_offered_preset_its_preset_copies_the_same_as() {
+    // Nothing deployed: Only web already copies db, so Uses is no choice and All copies the same.
+    let (store, who) = shop();
+    let plan = |preset: &str| {
+        let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+            from: at("production"),
+            focus: vec![node("web")],
+            preset: Some(serde_json::from_value(json!(preset)).unwrap()),
+            ..Default::default()
+        });
+        let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
+            panic!("a branch plan");
+        };
+        (json!(plan.preset), json!(plan.presets))
+    };
+    for preset in ["only", "uses", "all"] {
+        let (pressed, offered) = plan(preset);
+        assert_eq!(offered, json!(["only"]), "{preset}");
+        assert_eq!(pressed, json!("only"), "{preset}");
+    }
+}
+
+#[test]
+fn a_branch_plan_presses_uses_for_all_when_everything_is_what_web_uses() {
+    // Deployed: Only web leaves db live, and web uses everything else, so All copies the same as Uses.
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, true);
+    let plan = |preset: Option<&str>, copy: &[&str]| {
+        let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+            from: at("production"),
+            focus: vec![node("web")],
+            copy: copy.iter().map(|name| node(name)).collect(),
+            preset: preset.map(|preset| serde_json::from_value(json!(preset)).unwrap()),
+        });
+        let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
+            panic!("a branch plan");
+        };
+        (json!(plan.preset), json!(plan.presets))
+    };
+    for (preset, pressed) in [("only", "only"), ("uses", "uses"), ("all", "uses")] {
+        assert_eq!(
+            plan(Some(preset), &[]),
+            (json!(pressed), json!(["only", "uses"])),
+            "{preset}"
+        );
+    }
+    // Picks that match no preset press none.
+    assert_eq!(plan(None, &["db"]), (Value::Null, json!(["only", "uses"])));
+}
+
+#[test]
 fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
     let (store, who) = shop();
     let setup = |service: &str, command: &str| SetupCommand {
@@ -812,6 +919,416 @@ fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
     own.setup = vec![setup("db", "seed")];
     let made = store.write(&who, &own).unwrap();
     assert_eq!(made.branch.setup, [setup("db", "seed")]);
+}
+
+#[test]
+fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_renamed() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    let reserved = "setup is reserved: paths name a Branch's Setup Commands as setup.SERVICE";
+
+    let created = store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("setup").unwrap(),
+                image: Some("busybox".into()),
+                template: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(created.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(created.message, reserved);
+
+    let renamed = store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: at("production"),
+                service: ServiceName::parse("db").unwrap(),
+                name: ServiceName::parse("setup").unwrap(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(renamed.message, reserved);
+
+    // A Service named setup from before the name was reserved.
+    backend::execute(
+        &url,
+        r#"UPDATE config_environment SET working = replace(replace(working, '"slug":"db"', '"slug":"setup"'), '"privateDns":"db"', '"privateDns":"setup"')"#,
+    );
+    let saved = store
+        .write_trusted(
+            &who,
+            &ployz_store::Publish {
+                id: None,
+                environment: at("production"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                approval: ployz_store::Approval::NotRequired,
+                ..Trusted::default()
+            },
+        )
+        .unwrap()
+        .saved
+        .unwrap();
+
+    // A Branch or a Sync never brings the name into another Environment.
+    let copied = store
+        .write(&who, &branch("fix-setup", "production", &["setup"]))
+        .unwrap_err();
+    assert_eq!(copied.message, reserved);
+    store
+        .write(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse(uuid(20)).unwrap(),
+                project: None,
+                name: EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let offered = store
+        .read(
+            &who,
+            &ployz_store::SyncQuery {
+                from: at("production"),
+                into: Some(at("staging")),
+            },
+        )
+        .unwrap();
+    let synced = store
+        .write(
+            &who,
+            &ployz_store::SyncChanges {
+                from: at("production"),
+                into: Some(at("staging")),
+                close_after: false,
+                version: offered.version,
+                picks: None,
+                skip: Vec::new(),
+                values: std::collections::BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(synced.message, reserved);
+
+    let rename_first = "A Service in production is named setup, and setup.SERVICE now means \
+        a Branch's Setup Command; rename it first: \
+        ployz service rename setup NAME --env production --project shop";
+    let read = store
+        .read(
+            &who,
+            &ployz_store::EnvironmentQuery {
+                environment: at("production"),
+                path: Some(SettingPath::parse("setup.image").unwrap()),
+                all: false,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(read.message, rename_first);
+    let set = store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("setup.web").unwrap(),
+                    value: json!("pnpm db:seed"),
+                }],
+            },
+        )
+        .unwrap_err();
+    assert_eq!(set.message, rename_first);
+
+    // Renaming it away is allowed, and setup.SERVICE paths work again.
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: at("production"),
+                service: ServiceName::parse("setup").unwrap(),
+                name: ServiceName::parse("db").unwrap(),
+            },
+        )
+        .unwrap();
+    let read = store
+        .read(
+            &who,
+            &ployz_store::EnvironmentQuery {
+                environment: at("production"),
+                path: Some(SettingPath::parse("setup.web").unwrap()),
+                all: false,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(read.message, "production is not a Branch");
+
+    // Restoring the saved Service name setup is refused, though db still holds
+    // setup as its Private DNS name.
+    let restore = |accept_overwrite, version| ployz_store::StageHistory {
+        environment: at("production"),
+        revision: saved,
+        action: ployz_store::HistoryAction::Restore,
+        change: None,
+        version,
+        accept_overwrite,
+    };
+    let preview = store.read(
+        &who,
+        &ployz_store::HistoryPreviewQuery {
+            environment: at("production"),
+            revision: saved,
+            action: ployz_store::HistoryAction::Restore,
+            change: None,
+        },
+    );
+    let restored = match preview {
+        Ok(preview) => store
+            .write(&who, &restore(true, preview.version))
+            .unwrap_err(),
+        Err(refused) => refused,
+    };
+    assert_eq!(restored.message, reserved);
+
+    // Nor is discarding back to it.
+    let discarded = store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("production"),
+                target: Some(ployz_store::DiscardTarget::Saved),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        discarded.message.contains(reserved),
+        "{}",
+        discarded.message
+    );
+    let names = store
+        .read(
+            &who,
+            &ployz_store::ServicesQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .services
+        .into_iter()
+        .map(|listing| listing.service.name.to_string())
+        .collect::<Vec<_>>();
+    assert!(!names.contains(&"setup".to_owned()), "{names:?}");
+}
+
+#[test]
+fn a_branchs_own_setup_command_is_read_set_and_unset_at_setup_service() {
+    let (store, who) = shop();
+    let path = |path: &str| SettingPath::parse(path).unwrap();
+    let edit = |environment: &str, change: Change| {
+        store.write(
+            &who,
+            &Edit {
+                environment: at(environment),
+                expect: None,
+                changes: vec![change],
+            },
+        )
+    };
+    let get = |environment: &str, at_path: Option<&str>| {
+        store.read(
+            &who,
+            &ployz_store::EnvironmentQuery {
+                environment: at(environment),
+                path: at_path.map(path),
+                all: false,
+            },
+        )
+    };
+    let pending = || {
+        store
+            .read(
+                &who,
+                &DiffQuery {
+                    environment: at("fix-web"),
+                },
+            )
+            .unwrap()
+            .setup
+    };
+    let setup = |command: &str| SetupCommand {
+        service: ServiceName::parse("web").unwrap(),
+        command: command.into(),
+    };
+    assert_eq!(path("setup.WEB").to_string(), "setup.web");
+
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.setup = vec![setup("exit 7")];
+    store.write(&who, &create).unwrap();
+    let web_id = id_of(&store, &who, "fix-web", "web");
+
+    // get and diff show it before it runs.
+    let read = get("fix-web", Some("setup.web")).unwrap();
+    assert_eq!(
+        texts(
+            &read
+                .settings
+                .iter()
+                .map(|row| &row.path)
+                .collect::<Vec<_>>()
+        ),
+        ["setup.web"]
+    );
+    assert_eq!(read.settings[0].value, json!("exit 7"));
+    assert_eq!(read.settings[0].apply, ployz_store::Apply::Immediate);
+    let whole = get("fix-web", None).unwrap();
+    assert!(
+        whole
+            .settings
+            .iter()
+            .any(|row| row.path == path("setup.web"))
+    );
+    assert!(
+        !whole
+            .settings
+            .iter()
+            .any(|row| row.path == path("setup.db"))
+    );
+    assert_eq!(pending(), [setup("exit 7")]);
+
+    // A failed Deploy runs it again, so fixing it takes effect at once, unstaged.
+    let input = deploy(&store, &who, "fix-web", 1, false);
+    assert_eq!(
+        snapshot(&input, &web_id)["setupCommands"],
+        json!(["exit 7"])
+    );
+    let edited = edit(
+        "fix-web",
+        Change::Set {
+            path: path("setup.web"),
+            value: json!(" pnpm db:seed "),
+        },
+    )
+    .unwrap();
+    assert_eq!(texts(&edited.immediate), ["setup.web"]);
+    assert!(edited.staged.is_empty());
+    assert_eq!(pending(), [setup("pnpm db:seed")]);
+    let input = deploy(&store, &who, "fix-web", 2, false);
+    assert_eq!(
+        snapshot(&input, &web_id)["setupCommands"],
+        json!(["pnpm db:seed"])
+    );
+
+    // Unset drops it; a second unset changes nothing.
+    let unset = || {
+        edit(
+            "fix-web",
+            Change::Unset {
+                path: path("setup.web"),
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(texts(&unset().immediate), ["setup.web"]);
+    assert!(unset().immediate.is_empty());
+    assert!(pending().is_empty());
+    assert_eq!(
+        get("fix-web", Some("setup.web")).unwrap().settings[0].value,
+        Value::Null
+    );
+    let input = deploy(&store, &who, "fix-web", 3, false);
+    assert_eq!(snapshot(&input, &web_id)["setupCommands"], json!([]));
+
+    // Once web deploys, a new one won't run, and get says so.
+    edit(
+        "fix-web",
+        Change::Set {
+            path: path("setup.web"),
+            value: json!("true"),
+        },
+    )
+    .unwrap();
+    deploy(&store, &who, "fix-web", 4, true);
+    assert!(pending().is_empty());
+    let note = get("fix-web", Some("setup.web")).unwrap().settings[0]
+        .note
+        .clone();
+    assert_eq!(
+        note.as_deref(),
+        Some("web has deployed in fix-web, so setup.web won't run")
+    );
+
+    // Only a Branch has one, of a Service it has; it isn't staged, so there is no discard.
+    let refused = |result: Result<_, ployz_core::RpcError>| {
+        let error = result.map(|_: ployz_store::Edited| ()).unwrap_err();
+        (error.code, error.message)
+    };
+    assert_eq!(
+        refused(edit(
+            "production",
+            Change::Set {
+                path: path("setup.web"),
+                value: json!("true"),
+            },
+        )),
+        (
+            RpcErrorCode::InvalidArgument,
+            "production is not a Branch".into()
+        )
+    );
+    assert_eq!(
+        code(get("production", Some("setup.web"))),
+        RpcErrorCode::InvalidArgument
+    );
+    assert!(
+        !get("production", None)
+            .unwrap()
+            .settings
+            .iter()
+            .any(|row| row.path.to_string().starts_with("setup."))
+    );
+    assert_eq!(
+        code(edit(
+            "fix-web",
+            Change::Set {
+                path: path("setup.nosuch"),
+                value: json!("true"),
+            },
+        )),
+        RpcErrorCode::NotFound
+    );
+    assert_eq!(
+        code(edit(
+            "fix-web",
+            Change::Set {
+                path: path("setup.web"),
+                value: json!(3),
+            },
+        )),
+        RpcErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        code(store.write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("fix-web"),
+                target: None,
+                path: Some(path("setup.web")),
+                version: None,
+            },
+        )),
+        RpcErrorCode::InvalidArgument
+    );
 }
 
 #[test]

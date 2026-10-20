@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { it } from "@effect/vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { sql, type Table } from "drizzle-orm";
+import { eq, sql, type Table } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
 import { Effect, Fiber, Layer, Option, Schema } from "effect";
@@ -13,9 +13,10 @@ import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
 import { oauthConsent, oauthRefreshToken } from "#/modules/identity/oauth-tables";
-import { member, verification } from "#/modules/identity/tables";
+import { member, session, verification } from "#/modules/identity/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { removeMembership } from "#/modules/organization/membership.server";
+import { organization } from "#/modules/organization/tables";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -23,6 +24,7 @@ import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization,
 const origin = "http://localhost:3000";
 const REDIRECT = "http://127.0.0.1:9999/callback";
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a801";
+const OTHER_ORGANIZATION = "00000000-0000-4000-8000-00000000a806";
 const PROJECT = "00000000-0000-4000-8000-00000000a802";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000a803";
 const SERVICE = "00000000-0000-4000-8000-00000000a804";
@@ -56,7 +58,7 @@ const Structured = Schema.Struct({
   request_key: Schema.String,
   approval_required: Schema.optional(Schema.Struct({ approval_id: Schema.String, url: Schema.String })),
   claim_required: Schema.optional(Schema.Struct({ message: Schema.String, url: Schema.String })),
-  refusal: Schema.optional(Schema.Struct({ code: Schema.String })),
+  refusal: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   value: Schema.optional(Schema.Unknown),
 });
 
@@ -337,6 +339,43 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
     expect(yield* agent.call("environment_show", SHOP)).toMatchObject({ isError: false, body: { ok: true } });
   }).pipe(Effect.scoped), 30_000);
 
+it.live("a Cloud command refuses a remote agent as a Store tool does: the field, what fits it, that nothing was written and the call to repeat", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const input = { service: "web", from: "yesterday" };
+    const refused = yield* agent.call("uptime_show", input);
+    expect(refused).toMatchObject({
+      isError: true,
+      body: {
+        ok: false,
+        refusal: { code: "invalid_argument", field: "from", expected: { type: "string" }, writes: "none", retry: { tool: "uptime_show", input } },
+      },
+    });
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a call missing an argument is refused in the tools' own shape, not the transport's", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    for (const name of ["project_create", "docs"]) {
+      const refused = yield* Effect.promise(() => agent.client.callTool({ name, arguments: {} }));
+      expect(refused).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument", writes: "none" } } });
+    }
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("an approval its schema doesn't take is refused before anything is written", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const writes = vi.spyOn(shop.store, "write");
+    for (const tool of ["discard", "deploy"]) {
+      const refused = yield* Effect.promise(() => agent.client.callTool({ name: tool, arguments: { ...SHOP, approval: 42 } }));
+      expect(refused).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument", writes: "none" } } });
+    }
+    expect(writes).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
@@ -374,6 +413,28 @@ it.live("a destroying Deploy waits on a person; an early retry only asks again, 
     const approved = yield* agent.call("deploy", { ...SHOP, approval: approvalId });
     expect(approved).toMatchObject({ isError: false, body: { ok: true } });
     expect(admitted(writes)).toEqual([{ approved: approval?.digest }]);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("an approved Cloud command that refused once it ran hands back a retry naming its approval, which repeats without asking again", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update member set role = 'member' where user_id = ${shop.ada.userId}`);
+    }));
+    const demote = { member: "bo@example.test", role: "member" };
+    const asked = yield* agent.call("org_member_role", demote);
+    const approvalId = asked.body.approval_required?.approval_id ?? expect.fail("the role change did not ask for approval");
+    const [approval] = yield* shop.provided(pendingApprovals(ORGANIZATION));
+    const bo: Caller = { ...shop.ada, userId: shop.boId, credential: { kind: "session", id: "session-bo" } };
+    yield* shop.provided(decideApproval(bo, approvalId, { approve: { digest: approval?.digest ?? "" } }));
+
+    const refused = yield* agent.call("org_member_role", { ...demote, approval: approvalId });
+    const retry = { tool: "org_member_role", input: { ...demote, approval: approvalId } };
+    expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { writes: "unknown", retry } } });
+    expect(yield* agent.call("org_member_role", retry.input)).toMatchObject({ isError: true, body: { ok: false, refusal: { retry } } });
+    expect(yield* shop.provided(pendingApprovals(ORGANIZATION))).toEqual([]);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a keyed create replays under the same request key, which the result and the response header name", () =>
@@ -415,6 +476,16 @@ it.live("revoking the grant turns its token away, and connecting again issues on
     const renewed = yield* connect(shop, clientId);
     expect((yield* raw(shop, renewed)).status).toBe(200);
     expect((yield* raw(shop, old)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a Ployz token on /mcp is turned away with what to use instead", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const refused = yield* raw(shop, `ployz_${"a".repeat(40)}`);
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get("www-authenticate")).toMatch(/^Bearer /);
+    const body = yield* Effect.promise(() => refused.json());
+    expect(body).toMatchObject({ error: { message: "/mcp takes a Connect sign-in, not a Ployz token. For a token, run ployz mcp with PLOYZ_TOKEN." } });
   }).pipe(Effect.scoped), 30_000);
 
 it.live("leaving Shop ends the grant, and neither rejoining nor connecting again revives its credentials", () =>
@@ -476,6 +547,22 @@ it.live("/connect names the agent asking and the host its code returns to, and n
     const tampered = new URLSearchParams(signed);
     tampered.set("redirect_uri", "https://attacker.example/callback");
     expect((yield* choices(tampered.toString()))?.agent).toBeNull();
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("/connect picks the Organization the session acts in, not the first one listed", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const { toConnect } = yield* authorize(shop, yield* registerAgent(shop));
+    const choices = shop.provided(connectChoices(new Headers({ cookie: shop.cookie }), toConnect.search.slice(1)));
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.insert(organization).values({ id: OTHER_ORGANIZATION, name: "Another", slug: "another" });
+      yield* drizzle.insert(member).values({ userId: shop.boId, organizationId: OTHER_ORGANIZATION, role: "owner" });
+      yield* drizzle.update(session).set({ activeOrganizationId: ORGANIZATION }).where(eq(session.userId, shop.boId));
+    }));
+    const picked = yield* choices;
+    expect(picked?.organizations.map((choice) => choice.slug)[0]).toBe("another");
+    expect(picked?.selected).toBe(ORGANIZATION);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a parameter the browser adds to /connect leaves the consent standing", () =>

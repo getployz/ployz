@@ -6,11 +6,12 @@ description: Fix builds that fail, wait, run out of memory or disk, or can't run
 Start on the deployment's page. Why the build failed sits under the header, in red:
 
 ```text
-Build failed. web: Build failed: the build failed: exited with exit status: 1. No Service, hook, or volume change was attempted.
+Build failed. web: npm run build: process "npm run build" did not complete successfully: exit code: 1
 ```
 
-The cause is in the [build log](../builds/overview.md#read-the-build-log): open the service's
-tab, then **Build**, and find the line that starts with `ERROR`. A build on GitHub Actions
+It names the step that failed and its exit code. The step's output is in the
+[build log](../builds/overview.md#read-the-build-log): open the service's tab, then **Build**,
+and read the lines above the one that starts with `ERROR`. A build on GitHub Actions
 fails with `Build failed. web: a build step failed`; the run on GitHub, linked at the top of
 the log, has the full output. Your current version keeps running.
 
@@ -73,14 +74,15 @@ The build ran out of memory.
   [Build resources and cache](../builds/build-resources-and-cache.md#cap-cpu-memory-and-cache).
 - For Node, add a variable like `NODE_OPTIONS=--max-old-space-size=2048`.
 
-## My build shows "No output yet." for a long time
+## My build waits with no output
 
 The build is waiting its turn.
 
+- If the log shows `Waiting for a build slot`, the server named above it is already running as
+  many builds as it allows, maybe for another project. Raise its **Builds at once** on the
+  server's page, or let more servers run builds.
 - If the log shows `Building on GitHub Actions:`, follow its link: the run is waiting for a
   runner.
-- If the server's page shows **Building N now**, raise its **Builds at once**, or let more
-  servers run builds.
 - Another deployment in the environment may still be rolling out.
 
 To stop waiting, click **Cancel** on the deployment's page.

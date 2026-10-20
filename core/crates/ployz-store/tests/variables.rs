@@ -207,6 +207,124 @@ fn null_environment_values_are_refused_before_any_setting_changes() {
 }
 
 #[test]
+fn a_value_too_long_for_the_environment_is_refused_when_set() {
+    let store = backend::open();
+    shop(&store);
+    // Linux passes each `KEY=value` string, with its NUL, in at most 128 KiB.
+    let fits = "x".repeat(128 * 1024 - "BIG=".len() - 1);
+    set(&store, &[("web.env.BIG", json!(fits))]).unwrap();
+    let before = get(&store, None);
+    let over = format!("{fits}x");
+    for value in [json!(over), json!({ "secret": over })] {
+        let error = set(&store, &[("web.env.BIG", value)]).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            error.message,
+            "BIG: too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
+        );
+        assert_eq!(get(&store, None), before);
+    }
+}
+
+#[test]
+fn a_reference_that_resolves_too_long_refuses_the_deploy() {
+    let store = backend::open();
+    shop(&store);
+    let half = "x".repeat(70 * 1024);
+    set(
+        &store,
+        &[
+            ("api.env.HALF", json!(half)),
+            ("web.env.BOTH", json!("${{ api.HALF }}${{ api.HALF }}")),
+        ],
+    )
+    .unwrap();
+    let error = admit(&store, 1).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.message,
+        "web.env.BOTH is too long for a Container's environment: Linux passes at most 128 KiB per variable, name included"
+    );
+}
+
+#[test]
+fn a_secret_that_resolves_too_long_fails_the_deployment_at_claim() {
+    let store = backend::open();
+    shop(&store);
+    let half = "x".repeat(70 * 1024);
+    set(
+        &store,
+        &[
+            ("api.env.HALF", json!({ "secret": half })),
+            ("web.env.BOTH", json!("${{ api.HALF }}${{ api.HALF }}")),
+        ],
+    )
+    .unwrap();
+    // Admission can't open the secret, so only the claim sees the value.
+    let id = admit(&store, 1).unwrap();
+    let message = "web.env.BOTH is too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
+    for refused in [message, "This Deployment already ended"] {
+        let error = store
+            .claim(&id, &RunnerId::parse("runner").unwrap())
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Conflict);
+        assert_eq!(error.message, refused);
+    }
+    let read = store
+        .read(&who(), &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    assert_eq!(
+        read.deployment.status,
+        ployz_store::DeploymentStatus::Failed
+    );
+    assert_eq!(
+        read.deployment.outcome,
+        Some(ployz_store::Outcome::NotExecuted {
+            reason: message.into(),
+            cause: Vec::new(),
+            needs_upload: Vec::new(),
+        })
+    );
+}
+
+#[test]
+fn a_claim_that_resolves_too_long_leaves_the_running_deployment_running() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("api.env.HALF", json!({ "secret": "short" })),
+            ("web.env.BOTH", json!("${{ api.HALF }}${{ api.HALF }}")),
+        ],
+    )
+    .unwrap();
+    let healthy = admit(&store, 1).unwrap();
+    store
+        .claim(&healthy, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    set(
+        &store,
+        &[("api.env.HALF", json!({ "secret": "x".repeat(70 * 1024) }))],
+    )
+    .unwrap();
+    let newer = admit(&store, 2).unwrap();
+    let error = store
+        .claim(&newer, &RunnerId::parse("other").unwrap())
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    let status = |id: &DeploymentId| {
+        store
+            .read(&who(), &ployz_store::DeploymentQuery { id: id.clone() })
+            .unwrap()
+            .deployment
+            .status
+    };
+    assert_eq!(status(&healthy), ployz_store::DeploymentStatus::Running);
+    assert_eq!(status(&newer), ployz_store::DeploymentStatus::Failed);
+}
+
+#[test]
 fn a_typed_private_address_answers_with_its_reference() {
     let store = backend::open();
     shop(&store);

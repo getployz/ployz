@@ -328,6 +328,16 @@ it("adds a nested filename and submits its contents", async () => {
 });
 
 
+// A segment the Store measures in UTF-8 bytes: 256 of "a", and 128 of the 2 byte "é".
+it.each(["../etc/passwd", "/etc/passwd", "a//b", "a/b/c/d/e", "a".repeat(256), `conf/${"é".repeat(128)}`])("refuses %s as a file name before Save", async (name) => {
+  await openDrawer();
+  fireEvent.click(screen.getByRole("button", { name: "Add file" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "File name" }), { target: { value: name } });
+  fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+  expect(await screen.findByText("Use a relative path, like nginx/site.conf.")).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: `${name} contents` })).toBeNull();
+});
+
 it("restores a refused mount form without losing its directory", async () => {
   const test = await openDrawer();
   test.write.mockResolvedValueOnce(refused);
