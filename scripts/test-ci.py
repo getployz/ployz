@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Rung 1: check routing and prevent an incomplete CI result from passing."""
+import fnmatch
 import json
 import os
 import re
@@ -82,19 +83,22 @@ class CiTest(unittest.TestCase):
         cli = {"ployz", "ployz-sdk", "ployz-testkit", "ployzd"}
         store = cli | {"ployz-store"}
         cases = [
-            (["core/crates/ployzd/src/main.rs"], {"ployzd"}),
-            (["core/crates/ployz-verify/src/lib.rs"], {"ployz-verify"}),
-            (["core/crates/ployz-config-wasm/src/lib.rs"], {"ployz-config-wasm"}),
+            (["core/crates/ployzd/tests/dial_stdio.rs"], {"ployzd"}),
+            (["core/crates/ployz-verify/tests/model.rs"], {"ployz-verify"}),
+            (["core/crates/ployz-config-wasm/tests/lower.rs"], {"ployz-config-wasm"}),
+            # ployz's cli_shape test parses every crate's source.
+            (["core/crates/ployzd/src/main.rs"], cli),
+            (["core/crates/ployz-verify/src/lib.rs"], cli | {"ployz-verify"}),
             (["core/crates/ployz/src/main.rs"], cli),
             # A dev-dependency's dependents run their tests, but their own dependents keep their builds.
-            (["core/crates/ployz-testkit/src/lib.rs"], {"ployz-testkit", "ployz", "ployzd"}),
+            (["core/crates/ployz-testkit/tests/cluster.rs"], {"ployz-testkit", "ployz", "ployzd"}),
             (["core/crates/ployz-store/src/lib.rs"], store),
             (["core/crates/ployz-build/src/lib.rs"], cli | {"ployz-build"}),
             (["core/crates/ployz-sdk/tests/node_logs.js"], cli),
             (["docs/user/services/domains.md"], store),
             (["core/crates/ployz/tests/fixtures/published-manifest.json"], store),
             (["dashboard/evals/agent/machines.json"], {"ployz-testkit", "ployz", "ployzd"}),
-            (["core/crates/ployzd/src/main.rs", "dashboard/src/app.tsx", "core/DESIGN.md"], {"ployzd"}),
+            (["core/crates/ployzd/tests/dial_stdio.rs", "dashboard/src/app.tsx", "core/DESIGN.md"], {"ployzd"}),
         ]
         for paths, expected in cases:
             with self.subTest(paths=paths):
@@ -126,26 +130,31 @@ class CiTest(unittest.TestCase):
                     found.add(dep)
                     pending.append(dep)
             return found
+        # Literals that resolve outside their crate but are not inputs.
+        not_inputs = {("crates/ployz/tests/connect/unix_session.rs", "../..")}  # the workspace's target directory
+        reads = re.compile(r'(include_str!|include_bytes!|#\[path\s*=|\.join|concat!\(env!\("CARGO_MANIFEST_DIR"\),)\(?\s*"([^"]*\.\.[^"]*)"')
         for crate, package in crates.items():
             readable = {Path(other["manifest_path"]).parent for other in packages if other["name"] in dependencies(package["name"])}
+            patterns = [pattern for pattern, name in ci["CRATE_INPUTS"] if name == package["name"]]
             for source in crate.rglob("*.rs"):
                 if "target" in source.relative_to(crate).parts:
                     continue
-                for literal in re.findall(r'"((?:\.\./)+[^"]*)"', source.read_text()):
-                    target = next(((base / literal).resolve() for base in (source.parent, crate) if (base / literal).exists()), None)
-                    if target is None or target.is_relative_to(crate) or crate.is_relative_to(target):
+                for context, literal in reads.findall(source.read_text()):
+                    bases = (crate,) if context.startswith("concat!") else (source.parent, crate)
+                    target = next(((base / literal.lstrip("/")).resolve() for base in bases if (base / literal.lstrip("/")).exists()), None)
+                    if target is None or target.is_relative_to(crate) or (str(source.relative_to(core)), literal) in not_inputs:
                         continue
                     if any(target.is_relative_to(other) for other in readable):
                         continue
-                    relative = target.relative_to(core.parent).as_posix() + ("/" if target.is_dir() else "")
+                    relative = target.relative_to(core.parent).as_posix()
+                    covered = any(pattern.startswith(relative + "/*") for pattern in patterns) if target.is_dir() else any(
+                        fnmatch.fnmatchcase(relative, pattern) for pattern in patterns
+                    )
                     with self.subTest(source=str(source.relative_to(core)), literal=literal):
-                        self.assertTrue(
-                            any(relative.startswith(prefix) and name == package["name"] for prefix, name in ci["CRATE_INPUTS"]),
-                            f"add ({relative!r}, {package['name']!r}) to CRATE_INPUTS",
-                        )
-        for prefix, name in ci["CRATE_INPUTS"]:
-            with self.subTest(prefix=prefix):
-                self.assertTrue((core.parent / prefix).exists())
+                        self.assertTrue(covered, f"add a CRATE_INPUTS pattern for {relative!r} read by {package['name']!r}")
+        for pattern, name in ci["CRATE_INPUTS"]:
+            with self.subTest(pattern=pattern):
+                self.assertTrue(any(core.parent.glob(pattern.removesuffix("/*")) ), pattern)
                 self.assertIn(name, normal_deps)
 
     def test_agent_tool_changes_run_the_tool_tests(self):
@@ -186,9 +195,9 @@ class CiTest(unittest.TestCase):
             git("init", "--quiet")
             git("commit", "--quiet", "--allow-empty", "-m", "base")
             base = git("rev-parse", "HEAD")
-            source = root / "core/crates/ployzd/src/main.rs"
+            source = root / "core/crates/ployzd/tests/dial_stdio.rs"
             source.parent.mkdir(parents=True)
-            source.write_text("fn main() {}\n")
+            source.write_text("#[test]\nfn dial() {}\n")
             git("add", ".")
             git("commit", "--quiet", "-m", "daemon")
             def outputs(event, *args):
@@ -203,6 +212,45 @@ class CiTest(unittest.TestCase):
                 with self.subTest(event=event, args=args):
                     full = outputs(event, *args)
                     self.assertEqual((full["nextest_filter"], full["postgres"]), ("all()", "true"))
+
+    def test_required_missing_failed_or_cancelled_checks_do_not_pass(self):
+        selected = ["contracts", "rust-lint", "rust-tests"]
+        needs = {job: {"result": "success" if job in selected else "skipped"} for job in ci["JOBS"]}
+        needs["changes"] = {"result": "success", "outputs": {"jobs": json.dumps(selected)}}
+        ci["check_result"](needs)
+        for status in ["failure", "cancelled", "skipped"]:
+            with self.subTest(status=status):
+                needs["rust-tests"]["result"] = status
+                with self.assertRaises(ValueError):
+                    ci["check_result"](needs)
+        needs["rust-tests"]["result"] = "success"
+        del needs["rust-tests"]
+        with self.assertRaises(KeyError):
+            ci["check_result"](needs)
+        needs["rust-tests"] = {"result": "success"}
+        needs["changes"]["result"] = "failure"
+        with self.assertRaises(ValueError):
+            ci["check_result"](needs)
+        needs["changes"]["result"] = "success"
+        for jobs in [[], ["contracts", "unknown"], None]:
+            needs["changes"]["outputs"]["jobs"] = json.dumps(jobs)
+            with self.assertRaises(ValueError):
+                ci["check_result"](needs)
+
+    def test_cloud_stage_runs_alone_and_preserves_failure(self):
+        script = SCRIPT.parent.parent / "dashboard/scripts/pr-check.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            pnpm = Path(directory) / "pnpm"
+            pnpm.write_text('#!/bin/sh\nprintf "%s\\n" "$*"\nexit "${CHECK_EXIT:-0}"\n')
+            pnpm.chmod(0o755)
+            for status in [0, 7]:
+                env = {**os.environ, "PATH": f"{directory}:{os.environ['PATH']}", "CHECK_EXIT": str(status)}
+                result = subprocess.run(["bash", str(script), "typecheck"], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if status == 0 else 1)
+                self.assertIn("\ntypecheck\n", result.stdout)
+                self.assertEqual(result.stdout.count("Starting "), 1)
+            result = subprocess.run(["bash", str(script), "unknown"], capture_output=True)
+            self.assertEqual(result.returncode, 2)
 
 
 if __name__ == "__main__":

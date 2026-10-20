@@ -215,8 +215,10 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          # A PR touching only ployz-config-wasm selects a package with no Rust tests.
-          cargo nextest run --workspace --all-features --locked --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"
+          # A PR's subset can be crates with no Rust tests, such as ployz-config-wasm's tests/ alone.
+          no_tests=()
+          [ "$NEXTEST_FILTER" = "all()" ] || no_tests=(--no-tests=warn)
+          cargo nextest run --workspace --all-features --locked --no-fail-fast "${no_tests[@]}" -E "$NEXTEST_FILTER"
           cargo test --doc --workspace --all-features --locked
       # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres

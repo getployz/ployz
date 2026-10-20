@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Select PR checks and verify their aggregate result without optional failures going green."""
 import argparse
+import fnmatch
 import functools
 import json
 import os
@@ -55,12 +56,14 @@ def store_postgres(paths, pull_request=False):
     )
 
 
-# Files outside a crate that its build script or tests read, where no crate it depends on owns them.
+# Files outside a crate that its build script or tests read, where no crate it depends on owns them, as fnmatch patterns.
 CRATE_INPUTS = (
-    ("docs/user/", "ployz-store"),
+    ("docs/user/*", "ployz-store"),
     ("core/crates/ployz/tests/fixtures/published-manifest.json", "ployz-store"),
     # ployz's connect tests run the SDK's Node scripts against its native addon.
-    ("core/crates/ployz-sdk/", "ployz"),
+    ("core/crates/ployz-sdk/*", "ployz"),
+    # ployz's cli_shape test parses every crate's source for error derives.
+    ("core/crates/*/src/*", "ployz"),
     ("core/site/skill.md", "ployz"),
     ("core/scripts/verify/dns-soak.sh", "ployz"),
     ("core/scripts/test-missing-ssh-client.sh", "ployz"),
@@ -82,11 +85,12 @@ def rust_packages(paths, pull_request=False):
         if Path(path).name in {"Cargo.toml", "Cargo.lock"}:
             return None
         owners = {name for name, directory in crate_dirs.items() if path.startswith(directory)}
-        owners |= {crate for prefix, crate in CRATE_INPUTS if path.startswith(prefix)}
-        # A path no crate owns that the routing still sends to rust-tests could change any crate's build.
-        if not owners and "rust-tests" in select_normal([path]):
+        inputs = {crate for pattern, crate in CRATE_INPUTS if fnmatch.fnmatchcase(path, pattern)}
+        # A crate outside the workspace, or a path no crate owns or reads that the routing still sends to
+        # rust-tests, could change any crate's build.
+        if not owners and (path.startswith("core/crates/") or (not inputs and "rust-tests" in select_normal([path]))):
             return None
-        changed |= owners
+        changed |= owners | inputs
     # Building a dependency changes its dependents' builds; a dev-dependency changes only the dependent's tests.
     affected, pending = set(), list(changed)
     while pending:
