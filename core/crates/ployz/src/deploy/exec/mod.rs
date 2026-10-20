@@ -1192,34 +1192,16 @@ async fn publish_group<C: MachineOperations>(
     .await;
     let mut unlisting = Vec::new();
     for (copy, sent) in outs.into_iter().zip(sent) {
-        let left = match sent {
-            Ok(cleanup::Step::Done) => {
-                unlisting.push(copy);
-                continue;
-            }
-            Ok(
-                step @ (cleanup::Step::Refused(_)
-                | cleanup::Step::NotConfirmed(_)
-                | cleanup::Step::Cancelled),
-            ) => Option::<Left>::from(step),
-            Err(error) => Some(Left::Failed(error)),
-        };
-        if let Some(left) = left {
-            rows.leave_running(progress, &copy, left);
+        match left_unless_done(sent) {
+            None => unlisting.push(copy),
+            Some(left) => rows.leave_running(progress, &copy, left),
         }
     }
     if let Some(first) = unlisting.first() {
         let ids: BTreeSet<ContainerId> = unlisting.iter().map(|copy| copy.container_id).collect();
-        let left =
-            match cleanup::wait_none_listed(client, &first.machine_id, service, &ids, cancellation)
-                .await
-            {
-                Ok(cleanup::Wait::Done) => None,
-                Ok(cleanup::Wait::TimedOut(machines)) => Some(Left::NotConfirmed(machines)),
-                Ok(cleanup::Wait::Cancelled) => Some(Left::Interrupted),
-                Err(error) => Some(Left::Failed(error)),
-            };
-        match left {
+        let unlisted =
+            cleanup::wait_none_listed(client, &first.machine_id, service, &ids, cancellation).await;
+        match left_unless_done(unlisted.map(cleanup::Step::from)) {
             None => gone.append(&mut unlisting),
             Some(left) => {
                 for copy in &unlisting {
@@ -1235,15 +1217,15 @@ async fn publish_group<C: MachineOperations>(
     )
     .await;
     for (copy, removed) in gone.iter().zip(removed) {
-        if let Some(left) = retired(removed) {
+        if let Some(left) = left_unless_done(removed) {
             rows.leave_running(progress, copy, left);
         }
     }
     Published::Listed
 }
 
-fn retired(removed: Result<cleanup::Step, RpcError>) -> Option<Left> {
-    match removed {
+fn left_unless_done(step: Result<cleanup::Step, RpcError>) -> Option<Left> {
+    match step {
         Ok(step) => step.into(),
         Err(error) => Some(Left::Failed(error)),
     }
