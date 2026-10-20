@@ -424,8 +424,13 @@ async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
         "4294967296\n"
     );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
-    assert!(!log.contains("referenced"));
-    assert!(!log.contains("available"));
+    // The dataset listing reports each copy's referenced bytes; nothing else asks for usage.
+    assert!(
+        log.lines()
+            .filter(|line| !line.contains(" list -Hp -o name,refquota,"))
+            .all(|line| !line.contains("referenced") && !line.contains("available")),
+        "{log}"
+    );
     assert_eq!(log.matches("fallocate -l 4294967296 ").count(), 1);
     assert_eq!(log.matches("zpool online -e ployz ").count(), 1);
     assert_eq!(
@@ -924,13 +929,13 @@ case "$name" in
     ;;
   zfs)
     case "$*" in
-      'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r ployz')
-        printf 'ployz\t0\t0\t0\t/ployz\tyes\toff\n'
-        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
-        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
-        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
-        [ ! -e '{mirror_root}' ] || printf 'ployz/ployz-mirror\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
-        [ ! -e '{slot}' ] || printf 'ployz/ployz-mirror/data\t%s\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(cat '{slot}')"
+      'list -Hp -o name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly -r ployz')
+        printf 'ployz\t0\t0\t0\t0\t/ployz\tyes\toff\n'
+        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
+        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t0\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
+        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t0\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
+        [ ! -e '{mirror_root}' ] || printf 'ployz/ployz-mirror\t0\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
+        [ ! -e '{slot}' ] || printf 'ployz/ployz-mirror/data\t%s\t0\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(cat '{slot}')"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')

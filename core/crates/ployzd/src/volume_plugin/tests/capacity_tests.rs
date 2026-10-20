@@ -244,3 +244,68 @@ async fn batch_preparation_reserves_capacity_before_docker_creates_volumes() {
     );
     server.abort();
 }
+
+/// A snapshot holds blocks the copy no longer references, so ZFS `used` exceeds
+/// `referenced`; only `referenced` is what the copy's `refquota` bounds.
+fn snapshotted(test: &TestDir, dataset: &str) {
+    super::inspect_tests::set_property(test, dataset, "used", "3000");
+    super::inspect_tests::set_property(test, dataset, "usedbydataset", "1000");
+    super::inspect_tests::set_property(test, dataset, "referenced", "2000");
+}
+
+#[tokio::test]
+async fn a_root_reports_the_bytes_it_references_not_what_its_snapshots_hold() {
+    let test = TestDir::new();
+    snapshotted(&test, "tank/ployz/data");
+    let (socket, server) = super::inspect_tests::start(&test, USABLE_POOL, &["root", "volume"]);
+
+    let get = post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await;
+    assert_eq!(
+        get.pointer("/Volume/Status/used_bytes").unwrap(),
+        2000,
+        "{get}"
+    );
+    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+    assert_eq!(
+        capacity.pointer("/Ok/copies/data/used_bytes").unwrap(),
+        2000,
+        "{capacity}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_slot_reports_the_bytes_its_copy_references() {
+    let test = TestDir::new();
+    let (socket, server) = super::inspect_tests::start(&test, USABLE_POOL, &["root", "mirror"]);
+    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+    assert_eq!(
+        capacity.pointer("/Ok/copies/data/used_bytes").unwrap(),
+        0,
+        "an empty slot holds no copy yet: {capacity}"
+    );
+
+    fs::write(test.0.join("mirror-fs"), "").unwrap();
+    snapshotted(&test, "tank/ployz-mirror/data/fs");
+    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+    assert_eq!(
+        capacity.pointer("/Ok/copies/data/role").unwrap(),
+        "slot",
+        "{capacity}"
+    );
+    assert_eq!(
+        capacity.pointer("/Ok/copies/data/used_bytes").unwrap(),
+        2000,
+        "{capacity}"
+    );
+
+    // A cut root keeps answering Docker from its slot.
+    super::inspect_tests::set_property(&test, "tank/ployz-mirror/data/fs", "ployz:cut", "on");
+    let get = post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await;
+    assert_eq!(
+        get.pointer("/Volume/Status/used_bytes").unwrap(),
+        2000,
+        "{get}"
+    );
+    server.abort();
+}

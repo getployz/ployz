@@ -59,6 +59,8 @@ pub enum CopyRole {
 pub struct ProvisionedCopy {
     pub role: CopyRole,
     pub maximum_bytes: ProvisionedVolumeMaximumBytes,
+    /// ZFS `referenced` bytes of the copy's data: a root's, or its slot `fs`'s, zero
+    /// until a slot holds a copy.
     pub used_bytes: u64,
     /// What a slot's Machine recorded it as; unset on every other role and from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]

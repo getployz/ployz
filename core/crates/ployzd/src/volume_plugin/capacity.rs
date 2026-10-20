@@ -61,7 +61,7 @@ impl VolumeStorage {
                 };
                 let name = ployz_core::DockerVolumeName::parse(name)
                     .map_err(|error| ployz_core::error_chain::inline(&error))?;
-                let (role, maximum_bytes, slot_role) = match place {
+                let (role, maximum_bytes, used_bytes, slot_role) = match place {
                     super::Place::Root(_) => (
                         if dataset.switching() {
                             CopyRole::Switching
@@ -69,14 +69,17 @@ impl VolumeStorage {
                             CopyRole::Writer
                         },
                         dataset.refquota,
+                        dataset.referenced_bytes,
                         None,
                     ),
                     super::Place::Slot(_) => {
                         let bound = super::storage::committed_bytes(dataset, pool.name());
                         if bound == 0 {
-                            if let Some(copy) = copies.get_mut(&name) {
-                                copy.used_bytes =
-                                    copy.used_bytes.saturating_add(dataset.active_used_bytes);
+                            if dataset.name
+                                == format!("{}/{}/{name}/fs", pool.name(), super::MIRROR_ROOT)
+                                && let Some(copy) = copies.get_mut(&name)
+                            {
+                                copy.used_bytes = dataset.referenced_bytes;
                             }
                             continue;
                         }
@@ -86,6 +89,7 @@ impl VolumeStorage {
                         (
                             CopyRole::Slot,
                             bound,
+                            0,
                             Some(self.slot_role(&dataset.name).await?),
                         )
                     }
@@ -102,7 +106,7 @@ impl VolumeStorage {
                     ProvisionedCopy {
                         role,
                         maximum_bytes: maximum,
-                        used_bytes: dataset.active_used_bytes,
+                        used_bytes,
                         slot_role,
                     },
                 );
