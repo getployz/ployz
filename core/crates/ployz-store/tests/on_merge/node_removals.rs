@@ -1142,13 +1142,13 @@ fn a_removal_supersedes_a_queued_deploy_that_would_run_the_service() {
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
 
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    // Production never ran web or worker, so the push ships them too.
+    // Production never ran web, worker or the data Volume, so the push ships them too.
     assert_eq!(
         teardown(&store, &who, &pushed),
         [
             vec!["web".to_owned(), "worker".to_owned(), "db".to_owned()],
             vec!["db".to_owned()],
-            vec!["cache".to_owned()]
+            vec!["data".to_owned(), "cache".to_owned()]
         ]
     );
     assert!(store.claim(&queued, &runner()).is_err());
@@ -1164,13 +1164,13 @@ fn a_removal_tears_down_what_a_deploy_claimed_before_its_push() {
     store.claim(&queued, &runner()).unwrap();
 
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    // Production never ran web or worker, so the push ships them too.
+    // Production never ran web, worker or the data Volume, so the push ships them too.
     assert_eq!(
         teardown(&store, &who, &pushed),
         [
             vec!["web".to_owned(), "worker".to_owned(), "db".to_owned()],
             vec!["db".to_owned()],
-            vec!["cache".to_owned()]
+            vec!["data".to_owned(), "cache".to_owned()]
         ]
     );
 }

@@ -283,10 +283,19 @@ pub(crate) fn freeze(
                     .any(|mount| mount.volume_resource_id == volume.resource_id)
         })
     };
+    // Shipping every Saved change, it also ships a changed one nothing mounts.
     let kept: Vec<TargetNode> = saved
         .volumes
         .iter()
-        .filter(|volume| full || mounted(volume))
+        .filter(|volume| {
+            full || mounted(volume)
+                || every_saved
+                    && applied
+                        .volumes
+                        .iter()
+                        .find(|old| old.resource_id == volume.resource_id)
+                        != Some(*volume)
+        })
         .map(|volume| TargetNode::volume(volume, None))
         .collect::<Result<_, _>>()?;
     nodes.extend(kept);
@@ -311,12 +320,27 @@ pub(crate) fn freeze(
     let configs: Vec<TargetNode> = saved
         .configs
         .iter()
-        .filter(|config| full || applies(config))
+        .filter(|config| {
+            full || applies(config)
+                || every_saved
+                    && !saved.services.iter().any(|service| {
+                        service
+                            .config_attachments
+                            .iter()
+                            .any(|mount| mount.config_resource_id == config.resource_id)
+                    })
+                    && applied
+                        .configs
+                        .iter()
+                        .find(|old| old.resource_id == config.resource_id)
+                        != Some(*config)
+        })
         .chain(applied.configs.iter().filter(|old| {
-            full && !saved
-                .configs
-                .iter()
-                .any(|new| new.resource_id == old.resource_id)
+            (full || every_saved)
+                && !saved
+                    .configs
+                    .iter()
+                    .any(|new| new.resource_id == old.resource_id)
         }))
         .map(TargetNode::config)
         .collect::<Result<_, _>>()?;

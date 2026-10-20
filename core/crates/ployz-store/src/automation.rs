@@ -712,8 +712,15 @@ fn admit(
     let retire = match shut_down {
         true => Vec::new(),
         false => {
+            // What runs or is on its way: Applied State and every Deployment in flight.
+            let head = deployment::head(tx, &environment)?;
             let mut removed = landed.removals.clone();
-            for service in deployment::applied_state(tx, id, &saved.intent)?.services {
+            for service in head
+                .applied
+                .services
+                .iter()
+                .chain(head.in_flight.iter().flat_map(|target| &target.services))
+            {
                 if !saved
                     .intent
                     .services
