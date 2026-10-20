@@ -10,7 +10,7 @@ Keep the token secret. Anyone with it can register hosts for you to review.
 ## Enroll on arrival
 
 To join hosts automatically, turn on **Enroll on arrival** in **Add servers** and set
-**Up to** to a maximum of 1 to 1000 servers. The CLI equivalent is
+**Maximum servers** to a number from 1 to 1000. The CLI equivalent is
 `ployz server token create --auto --max 3 --expires 7d`.
 Anyone with this token can join servers up to that limit until it expires or you revoke it.
 
@@ -44,7 +44,9 @@ count past N. Revoke stops new arrivals while open enrollments finish.
    For user data, use the cloud-init or Terraform example instead; it has no terminal to ask at.
    The line returns once check-in is running.
 5. Return to **Servers**. Hosts appear under **Waiting to join** in arrival order. **Installing Docker**
-   and **Building ZFS** show preparation. **Ready** means preparation has finished.
+   shows preparation. **Ready** means Docker is installed. Where the
+   host builds its own ZFS module, **Building ZFS** shows under **Ready** until the build finishes.
+   An enrollment with ZFS volumes, and Enroll on arrival, wait for that build.
 
 Preparation installs Docker before you enroll. It builds ZFS ahead where needed, without
 creating a pool. A blocked host stays in Waiting with the reason. Fix the host and its next
@@ -96,7 +98,8 @@ a stage, **Failed**, or **Cancelled**) and its reason, when there is one. Both s
 **Reject** turns away an unrecognized host. The same installation cannot come back with the
 same Fleet Token. Reimaging a host creates a new identity, so review arrivals even when you
 have rejected that hardware before. Once Cloud has heard a host report that it is joining,
-rejecting it no longer stops the join, and the host stays in the Enrolling list until it ends.
+rejecting it no longer stops the join. The host stays in the Enrolling list like any other row,
+up to an hour after it ends.
 A reject that lands after the server commits to joining but before Cloud hears so still cancels
 it. Revoke a leaked Fleet Token from **Tokens**. This drops
 its waiting hosts; servers that already joined stay.

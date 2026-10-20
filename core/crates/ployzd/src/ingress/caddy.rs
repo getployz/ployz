@@ -139,6 +139,7 @@ pub async fn run<LoadDown, DownFuture>(
     load_down: LoadDown,
     config_file: PathBuf,
     admin_socket: PathBuf,
+    route_publishes: tokio::sync::watch::Sender<super::PublishedRoutes>,
     shutdown: CancellationToken,
 ) -> io::Result<()>
 where
@@ -155,6 +156,7 @@ where
         replicated,
         load_down,
         config_file,
+        route_publishes,
         shutdown,
         move || {
             let admin_socket = admin_socket.clone();

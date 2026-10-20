@@ -671,7 +671,7 @@ pub enum ConnectError {
     Exhausted(Box<dyn std::error::Error + Send + Sync>),
     /// Not retried: a starting daemon costs one confirm timeout, not one per retry.
     #[error(
-        "connection attempt failed: entry Machine daemon did not answer within {:?}; it may still be starting, retry shortly",
+        "the Server's daemon accepted the connection but didn't answer within {:?}; it may still be starting",
         CONNECT_CONFIRM_TIMEOUT
     )]
     EntryNotReady,

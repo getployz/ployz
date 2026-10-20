@@ -70,7 +70,9 @@ pub type ProxyRoutes = BTreeMap<QualifiedService, Vec<ServingContainer>>;
 /// A Service routes its Serving Containers on Machines that are not Down. With
 /// none, it keeps its `current` route while a copy that route lists is out of
 /// view or some copy is In or Pending, so lag, Down owners and health blips
-/// never empty it. It empties once every copy in view is Held or Out. A Service
+/// never empty it. Keeping it never keeps a copy its owner Held, so a
+/// stop-first stop withdraws its copy while new copies are still Pending. It
+/// empties once every copy in view is Held or Out. A Service
 /// missing from `current` has never been routed by this proxy, as after a
 /// restart, and routes its Serving Containers on any Machine instead. A Service
 /// with no observed copy has no route, and the Ingress Proxy Service never has one.
@@ -121,11 +123,19 @@ fn next_route(
             sibling.as_observation().container_id == routed.as_observation().container_id
         })
     });
-    if entering || routed_out_of_view {
-        current.clone()
-    } else {
-        Vec::new()
+    if !(entering || routed_out_of_view) {
+        return Vec::new();
     }
+    current
+        .iter()
+        .filter(|routed| {
+            !siblings.iter().any(|sibling| {
+                sibling.as_observation().container_id == routed.as_observation().container_id
+                    && matches!(sibling.as_observation().rotation(), CopyRotation::Held(_))
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 /// Machine-local occupancy of one wanted Serving Shape.

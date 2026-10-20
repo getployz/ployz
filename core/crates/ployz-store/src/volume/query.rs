@@ -162,18 +162,25 @@ pub(crate) fn removals(
     }
     let environment = scope::environment(tx, who, &query.environment)?;
     let review = review::review(tx, &environment)?;
-    let volumes = if review.head.applied.volumes.is_empty() {
+    // Removing the Environment reviews Applied State alone.
+    let (held, target) = if query.remove {
+        (
+            review.head.applied.clone(),
+            crate::scope::empty(&environment.working.environment_slug),
+        )
+    } else {
+        (
+            review::approval::deployed(&review.head),
+            environment.working.clone(),
+        )
+    };
+    let volumes = if held.volumes.is_empty() {
         Vec::new()
     } else {
-        // Applied Volumes mean a Deployment was admitted, which fixed the Namespace.
+        // Deployed Volumes mean a Deployment was admitted, which fixed the Namespace.
         let namespace: Namespace =
             crate::deployment::namespace(tx, who, &environment.summary, false)?;
-        let target = if query.remove {
-            crate::scope::empty(&environment.working.environment_slug)
-        } else {
-            environment.working.clone()
-        };
-        removal::removed(&review.head.applied, &target, &namespace)?
+        removal::removed(&held, &target, &namespace)?
     };
     Ok(RemovalsView {
         environment: environment.summary,
