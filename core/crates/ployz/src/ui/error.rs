@@ -208,9 +208,9 @@ pub(crate) fn sentence(mut text: String) -> String {
 }
 
 /// `next` follows `message` as its own sentence, with one break however
-/// `message` ended.
+/// `message` ended. A dangling colon introduces nothing, so it becomes the break.
 pub(crate) fn then_sentence(message: &str, next: &str) -> String {
-    match message.trim_end() {
+    match message.trim_end().trim_end_matches(':').trim_end() {
         "" => next.to_owned(),
         message => format!("{} {next}", sentence(message.to_owned())),
     }

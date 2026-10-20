@@ -279,7 +279,7 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
 pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
     let unchecked = ingress_unchecked(view).map(|cause| {
         crate::ui::then_sentence(
-            &format!("Couldn't check ingress: {cause}"),
+            &crate::ui::with_reason("Couldn't check ingress", cause),
             "Deploy again to retry.",
         )
     });
@@ -295,7 +295,10 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
                      Ployz starts ingress on its own once the port is free."
                 ),
                 IngressFailure::Failed { cause } => crate::ui::then_sentence(
-                    &format!("Ingress isn't running on {server}: {cause}"),
+                    &crate::ui::with_reason(
+                        format_args!("Ingress isn't running on {server}"),
+                        cause,
+                    ),
                     "Deploy again to retry.",
                 ),
             })
