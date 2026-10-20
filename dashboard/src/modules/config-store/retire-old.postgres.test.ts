@@ -84,6 +84,12 @@ it("keeps a cleanup cancelled when the cancel lands while its first waiting writ
   }
   expect(await harness.runEffect(readDeploymentCleanup(ORGANIZATION, "race"))).toMatchObject({ state: "cancelled" });
 }, 30_000);
+
+it("keeps the copies a cleanup last named when a newer Deployment takes it over", async () => {
+  const machine3 = { machine: "machine-3", service: "web", reason: "machine-3 did not answer" };
+  await harness.runEffect(recordCleanupWaiting("taken", requested("taken"), [machine3]));
+  await cancel("taken", "taken");
+  expect(await harness.runEffect(readDeploymentCleanup(ORGANIZATION, "taken"))).toEqual({ state: "cancelled", left: [machine3], message: null });
 });
 
 it("fails only a waiting cleanup whose Inngest run is gone, keeping what it left, and never a live or unknown one", async () => {
