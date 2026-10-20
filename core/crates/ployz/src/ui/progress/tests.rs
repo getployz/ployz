@@ -102,6 +102,40 @@ fn completion_at_deadline_wins_over_stale_heartbeat() {
 }
 
 #[test]
+fn a_removed_service_counts_as_removed_in_the_summary() {
+    let removal = |state| {
+        crate::deploy::service_row(
+            QualifiedService::parse("shop/web").unwrap(),
+            None,
+            [crate::deploy::Replica {
+                machine: MachineId::random(),
+                state,
+                timing: Timing::Unavailable,
+                starts: false,
+            }],
+        )
+    };
+    let frame = |row| Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![row],
+        notices: Vec::new(),
+    };
+    let text = plain(
+        frame(removal(&ployz_store::RowState::Pending)),
+        vec![(
+            1,
+            Message::Finish(
+                frame(removal(&ployz_store::RowState::Completed)),
+                Disposition::Settled,
+            ),
+        )],
+    );
+    assert!(text.contains("1 removed · across 1 server"), "{text}");
+    assert!(!text.contains("deployed"), "{text}");
+}
+
+#[test]
 fn phase_and_detail_changes_are_preserved_and_restart_quiet_period() {
     let initial = frame(State::Pending);
     let mut starting = initial.clone();
@@ -625,6 +659,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         cause: Vec::new(),
         step: None,
         log: None,
+        unanswered: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -658,6 +693,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         cause: Vec::new(),
         step: None,
         log: None,
+        unanswered: false,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {
@@ -729,4 +765,40 @@ fn a_retained_row_fits_the_terminal_with_its_count_whole() {
     assert!(row.ends_with("switched 10/10  5.0s"), "{visible}");
     assert!(row.contains('…'), "{visible}");
     assert!(row.width() < 80, "{visible}");
+}
+
+#[test]
+fn a_notice_raised_mid_deploy_shows_under_the_live_rows_and_in_plain_output() {
+    let warning = DeployWarning::ImagePortMismatch {
+        service: ployz_core::ServiceName::parse("web").unwrap(),
+        service_id: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+        image: "nginx".into(),
+        machines: vec![ployz_core::MachineId::parse("a".repeat(32)).unwrap()],
+        exposed: vec![80],
+        routed: vec![8080],
+    };
+    let line =
+        "! web's image nginx exposes 80; its domains send to 8080. Set the domain port or PORT.";
+    let initial = frame(State::Running(RowPhase::Starting));
+    let mut warned = initial.clone();
+    warned.notices.push(warning);
+
+    let lines = live_lines(&warned, 0, 200, 10, false);
+    assert_eq!(lines.last().map(String::as_str), Some(line), "{lines:?}");
+    assert!(
+        live_lines(&warned, 0, 200, 2, false)
+            .iter()
+            .all(|row| row != line)
+    );
+
+    let mut done = warned.clone();
+    done.rows.first_mut().unwrap().state = State::Completed;
+    let text = plain(
+        initial,
+        vec![
+            (1, Message::Update(warned)),
+            (2, Message::Finish(done, Disposition::Settled)),
+        ],
+    );
+    assert_eq!(text.matches(line).count(), 1, "{text}");
 }

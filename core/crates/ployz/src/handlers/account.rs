@@ -9,6 +9,7 @@ use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;
 
+use crate::approval;
 use crate::cloud_account::{self, Credential, ServerClears, TokenKind, TokenPreset};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Hint, Table, Tone};
@@ -116,7 +117,7 @@ pub(super) fn org_remove_command(command: Command) -> Command {
                      (ployz project rm). Every Server is unpaired: Cloud's key and every \
                      device key are cleared on it. A Server that doesn't confirm keeps the \
                      Organization, disabled, until the same command confirms it. Type its \
-                     slug with --confirm.",
+                     slug with --confirm. A human approves it in Ployz Cloud first.",
         )
         .arg(positional("organization", true).help("Organization, from ployz org ls"))
         .arg(
@@ -124,6 +125,7 @@ pub(super) fn org_remove_command(command: Command) -> Command {
                 .value_name("ORGANIZATION")
                 .help("The Organization's slug, typed to confirm its removal"),
         )
+        .arg(crate::cli::approval())
 }
 
 /// Run `work` with `PLOYZ_TOKEN` or this device's sign-in.
@@ -201,8 +203,11 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
         table.row([
             Cell::from("device"),
             Cell::from(&device.id),
-            Cell::from(""),
-            Cell::from(""),
+            Cell::from(format!(
+                "ployz login {}",
+                device.created_at.get(..10).unwrap_or(&device.created_at)
+            )),
+            Cell::from("Full as you"),
             Cell::from(device.expires_at.to_string()),
             current(device.current),
         ]);
@@ -353,7 +358,7 @@ pub(super) fn org_use(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("organization")
         .expect("organization is required");
     let organization = in_cloud(root, async |store, credential| {
-        cloud_account::use_organization(store, credential, slug).await
+        cloud_account::use_organization(store, credential, cloud_account::Target::Slug(slug)).await
     })?;
     crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
         crate::ui::stream(format_args!(
@@ -447,10 +452,14 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
         .0?;
         let acting = match others.first() {
             Some(other) => Some(
-                cloud_account::use_organization(&store, &credential, &other.slug)
-                    .await
-                    .map(|organization| organization.slug)
-                    .map_err(|error| (other.slug.clone(), error)),
+                cloud_account::use_organization(
+                    &store,
+                    &credential,
+                    cloud_account::Target::Listed(other),
+                )
+                .await
+                .map(|organization| organization.slug)
+                .map_err(|error| (other.slug.clone(), error)),
             ),
             None => None,
         };
@@ -507,7 +516,8 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         Ok((refusal, loss))
     })?;
     let store = CredentialStore::beside(&config_path(matches)?);
-    let (removal, acting) = runtime()?.block_on(async {
+    let runtime = runtime()?;
+    let (credential, removing, others) = runtime.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
         let list = cloud_account::organizations(&credential).await?;
         let Some(removing) = list.iter().find(|organization| organization.current) else {
@@ -536,22 +546,36 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         }
         // A device acts in the Organization it removes; afterwards Cloud refuses it
         // everything, `org ls` included, so it moves to another of the user's first.
+        let removing = removing.id.clone();
         let others: Vec<_> = match &credential {
-            Credential::Device(_) => list.iter().filter(|other| !other.current).collect(),
+            Credential::Device(_) => list.into_iter().filter(|other| !other.current).collect(),
             Credential::Token { .. } => Vec::new(),
         };
-        let removal = cloud_account::remove_organization(&credential, &removing.id).await?;
-        let acting = match others.first() {
+        Ok::<_, Error>((credential, removing, others))
+    })?;
+    let removal = approval::approved(
+        &runtime,
+        &credential,
+        approval::Verb::Remove,
+        matches.get_one::<String>("approval").cloned(),
+        |id| super::server::approved_rerun(matches, &again, id),
+        async |approval| cloud_account::remove_organization(&credential, &removing, approval).await,
+    )?;
+    let acting = runtime.block_on(async {
+        match others.first() {
             Some(other) if removal.removed => Some(
-                cloud_account::use_organization(&store, &credential, &other.slug)
-                    .await
-                    .map(|organization| organization.slug)
-                    .map_err(|error| (other.slug.clone(), error)),
+                cloud_account::use_organization(
+                    &store,
+                    &credential,
+                    cloud_account::Target::Listed(other),
+                )
+                .await
+                .map(|organization| organization.slug)
+                .map_err(|error| (other.slug.clone(), error)),
             ),
             _ => None,
-        };
-        Ok::<_, Error>((removal, acting))
-    })?;
+        }
+    });
     let next = (!removal.removed).then_some(retry.as_str());
     let value = serde_json::json!({
             "organization": removal.organization,

@@ -19,16 +19,17 @@ import { usePendingMarks, showPending } from "./store-pending";
 const refreshedBy = {
   environment: ["store_environment"],
   diff: ["store_environment", "store_deployment"],
-  // Live and Failed follow Deployments.
-  history: ["store_environment", "store_deployment"],
-  history_preview: ["store_environment", "store_deployment"],
+  // Live and Failed follow Deployments; a check suite's verdict shows on one waiting for CI.
+  history: ["store_environment", "store_deployment", "store_check_suite"],
+  history_preview: ["store_environment", "store_deployment", "store_check_suite"],
   plan: ["store_environment", "store_deployment"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.
   service: ["store_environment", "store_deployment"],
   services: ["store_environment", "store_deployment"],
-  deployments: ["store_deployment"],
-  deployment: ["store_deployment"],
-  numbered_deployment: ["store_deployment"],
+  // A check suite's verdict shows on a Deployment waiting for CI, which polls nothing while it waits.
+  deployments: ["store_deployment", "store_check_suite"],
+  deployment: ["store_deployment", "store_check_suite"],
+  numbered_deployment: ["store_deployment", "store_check_suite"],
   build_log: ["store_deployment"],
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
@@ -47,7 +48,7 @@ const refreshedBy = {
   removed: ["store_environment", "store_deployment"],
   // A Branch's Live Nodes follow what its Parent and ancestors run; a PR Environment counts toward its pull
   // request's Destination.
-  branch: ["store_environment", "store_deployment", "store_pull_request"],
+  branch: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
@@ -64,7 +65,7 @@ const refreshedBy = {
   // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
   pr_plans: ["store_project", "store_environment"],
   // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
-  pull_request: ["store_environment", "store_deployment", "store_pull_request"],
+  pull_request: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
   // What a merge lands: both Environments' Working and Saved, the Edits, and the pull request's facts.
   on_merge: ["store_environment", "store_pull_request"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
@@ -369,9 +370,9 @@ export function useStoreDeployments(organizationSlug: string, environment: Envir
   return useSuspenseInfiniteQuery(storeDeploymentsOptions(organizationSlug, useCollectionScope(), environment));
 }
 
-/** An Environment's Deployments in flight. In-flight Deployments are the newest, so they sit on the first page. */
+/** An Environment's Deployments in flight, newest number first: the view carries them, whatever page they fall on. */
 export function useInFlightDeployments(organizationSlug: string, environment: EnvironmentRef) {
-  return useStoreDeployments(organizationSlug, environment).data.pages[0]?.deployments.filter((deployment) => deployment.in_flight) ?? [];
+  return useStoreDeployments(organizationSlug, environment).data.pages[0]?.in_flight ?? [];
 }
 
 /** A view the page can't show without: a refusal fails the route, whose error component words it. */

@@ -17,7 +17,7 @@ use crate::policy::{self, Policy};
 use crate::registry;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
-use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
+use crate::settings::{self, Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
 use crate::typed_address::{Instead, Typed};
 use crate::variables::{self, VariableKey};
@@ -43,8 +43,9 @@ pub struct Edit {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
     /// Set a value. Text is accepted for any Setting type. A variable
-    /// (`SERVICE.env.KEY`) takes text, `{"secret": true}` to keep its secret, or
-    /// `{"secret": "…"}` to seal a new one.
+    /// (`SERVICE.env.KEY`) takes text, `{"secret": true}` to keep its secret,
+    /// `{"secret": "…"}` to seal a new one, or `{"secret": {"generate": true}}` to
+    /// seal a random one the Store makes unless it holds a sealed one already.
     Set {
         /// The Setting.
         path: SettingPath,
@@ -154,6 +155,16 @@ pub(crate) fn edit(
     for (path, step) in &steps {
         if let (Step::Set(_), Some(Target::Setting(setting))) = (step, path.target()) {
             set.push((path.settings_of()?.clone(), *setting));
+        }
+    }
+    for (service, setting) in &set {
+        if *setting == ServiceSetting::Image
+            && set.contains(&(service.clone(), ServiceSetting::Git(GitSetting::Repository)))
+        {
+            return Err(error::invalid(
+                format!("Set {service}.image or {service}.repository, not both"),
+                json!({ "service": service }),
+            ));
         }
     }
     // The source changes go first, unsets before sets, so the order of keys never matters.
@@ -384,6 +395,11 @@ impl Editing<'_> {
                 let changed = config.private_dns != name;
                 config.private_dns = name;
                 (changed, Apply::Staged)
+            }
+            (Some(Target::Setting(ServiceSetting::Healthcheck)), Some(value))
+                if settings::is_healthcheck_text(&value) =>
+            {
+                return Err(settings::healthcheck_text(service, &environment.summary));
             }
             (Some(Target::Setting(setting)), value) => {
                 let config = &mut environment.service_mut(service)?.config;

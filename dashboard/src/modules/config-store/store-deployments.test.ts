@@ -1,10 +1,10 @@
-import type { DeploymentView, DiffView, JsonValue, Outcome, RowId, ServiceListing } from "@ployz/sdk";
+import type { DeploymentView, DiffView, JsonValue, MachineId, Outcome, RowId, ServiceId, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
-  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  nodeLight, reviewGroups, shownValue, uploadLabel,
+  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
+  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -115,6 +115,17 @@ it("words a secret as Sealed, or as needing a value until it has one", () => {
   expect(shownValue({ secret: false })).toBe("Not set");
 });
 
+it("words a memory limit in the unit it was likely given", () => {
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
+    { path: "web.memLimit", kind: "update", before: 0.201326592, after: 0.5, canRestore: true, row: null },
+    { path: "web.memLimit", kind: "add", before: null, after: 1.073741824, canRestore: true, row: null },
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.label, row.currentValue, row.newValue])).toEqual([
+    ["Memory limit", "192 MiB", "0.5 GB"],
+    ["Memory limit", "", "1 GiB"],
+  ]);
+});
+
 it("words a Volume's storage by its limit", () => {
   expect(shownValue({ kind: "provisioned", maximumBytes: 4_100_000_000 })).toBe("4.1 GB limit");
   expect(shownValue({ kind: "docker" })).toBe("Docker volume");
@@ -131,16 +142,56 @@ it("reads a pending node as its Deployment does, and a vanished runner's node as
   expect(nodeLight("unknown", { status: "unknown", in_flight: false })).toBe("unknown");
 });
 
-it("shows one action: retry after a Deployment ended without applying, start while queued, cancel before it ends", () => {
-  expect(deploymentActions("failed", false)).toEqual({ primary: "retry", cancelInMenu: false });
-  expect(deploymentActions("queued", false)).toEqual({ primary: "start", cancelInMenu: true });
-  expect(deploymentActions("running", false)).toEqual({ primary: "cancel", cancelInMenu: false });
-  expect(deploymentActions("cancelling", false)).toEqual({ primary: null, cancelInMenu: false });
-  expect(deploymentActions("applied", false)).toEqual({ primary: null, cancelInMenu: false });
+it("shows one action: redeploy once a Deployment ended, start while queued, cancel before it ends", () => {
+  expect(deploymentActions({ status: "failed", remove: false, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "queued", remove: false, held: false }, false)).toEqual({ primary: "start", cancelInMenu: true });
+  expect(deploymentActions({ status: "running", remove: false, held: false }, false)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "cancelling", remove: false, held: false }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "applied", remove: false, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "superseded", remove: false, held: false }, false)).toEqual({ primary: null, cancelInMenu: false });
   // With no Server nothing can run it, so adding one comes first; a running one can still be cancelled.
-  expect(deploymentActions("failed", true)).toEqual({ primary: "add_server", cancelInMenu: false });
-  expect(deploymentActions("queued", true)).toEqual({ primary: "add_server", cancelInMenu: true });
-  expect(deploymentActions("running", true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "failed", remove: false, held: false }, true)).toEqual({ primary: "add_server", cancelInMenu: false });
+  expect(deploymentActions({ status: "queued", remove: false, held: false }, true)).toEqual({ primary: "add_server", cancelInMenu: true });
+  expect(deploymentActions({ status: "running", remove: false, held: false }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  // One waiting for CI queues once its CI passes; only Cancel is left to do.
+  expect(deploymentActions({ status: "waiting_for_ci", remove: false, held: true }, false)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions({ status: "waiting_for_ci", remove: false, held: true }, true)).toEqual({ primary: "cancel", cancelInMenu: false });
+  // Cancelled while it waited, it froze nothing to redeploy, Server or not.
+  expect(deploymentActions({ status: "cancelled", remove: false, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+  expect(deploymentActions({ status: "cancelled", remove: false, held: true }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "cancelled", remove: false, held: true }, true)).toEqual({ primary: null, cancelInMenu: false });
+  // A removal that applied left nothing to redeploy; one that failed redeploys.
+  expect(deploymentActions({ status: "applied", remove: true, held: false }, false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions({ status: "failed", remove: true, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+});
+
+it("names a Deployment by number once it queued, and by its push's short sha while it waits for CI", () => {
+  expect(deploymentLabel({ number: 4, id: "dep_0123456789", push: { head: "abcdef0123456789" } })).toBe("#4");
+  expect(deploymentLabel({ number: null, id: "dep_0123456789", push: { head: "abcdef0123456789" } })).toBe("abcdef0");
+  expect(deploymentLabel({ number: null, id: "dep_0123456789" })).toBe("dep_0123");
+});
+
+it("asks before a redeploy that rolls back Deployments that ran after it, and only then", () => {
+  expect(rollbackConfirm({ number: 6, rolls_back: [] })).toBeNull();
+  expect(rollbackConfirm({ number: 4, rolls_back: [5] })).toEqual({ title: "Roll back to #4", body: "Undoes #5" });
+  expect(rollbackConfirm({ number: 4, rolls_back: [5, 6] })).toEqual({ title: "Roll back to #4", body: "Undoes #5 and #6" });
+  expect(rollbackConfirm({ number: 3, rolls_back: [5, 6, 8] })).toEqual({ title: "Roll back to #3", body: "Undoes #5, #6 and #8" });
+});
+
+it("reads what a redeploy rolls back now from the Store's refusal, and nothing from any other", () => {
+  expect(freshRollback({ code: "confirmation_required", details: { deployment: "d", number: 4, rolls_back: [5, 6] } })).toEqual([5, 6]);
+  expect(freshRollback({ code: "confirmation_required", details: { rolls_back: [] } })).toEqual([]);
+  expect(freshRollback({ code: "confirmation_required", details: { volumes: [] } })).toBeNull();
+  expect(freshRollback({ code: "conflict", details: { rolls_back: [5] } })).toBeNull();
+});
+
+it("words a push waiting for CI by how its CI stands, and lights it red once its CI failed", () => {
+  const waiting = { status: "waiting_for_ci", remove: false, outcome: null } as const;
+  expect(deploymentStatusLabel({ ...waiting, ci: "pending" })).toBe("Waiting for CI");
+  expect(deploymentStatusLabel({ ...waiting, ci: "failed" })).toBe("CI failed");
+  expect(deploymentLight({ status: "waiting_for_ci", ci: "pending" })).toBe("queued");
+  expect(deploymentLight({ status: "waiting_for_ci", ci: "failed" })).toBe("failed");
+  expect(deploymentLight({ status: "running", ci: null })).toBe("deploying");
 });
 
 it("names an upload's provenance, and its uploader only when someone else started the Deployment", () => {
@@ -303,12 +354,30 @@ it("words what a Deployment shipped despite", () => {
   expect(deploymentWarningText({ service: "web", variable: "TOKEN" })).toBe("TOKEN not set in web");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", secret: "web.TOKEN" })).toBe("web.TOKEN not set in sentry/config.yml");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", variable: "web.DSN" })).toBe("web.DSN may break sentry/config.yml");
+  expect(deploymentWarningText({ service: "sentry", variable: "REDIS_URL", broken: true })).toBe("Broken reference: REDIS_URL in sentry");
+  expect(deploymentWarningText({ config: "sentry", file: "config.yml", secret: "redis.URL", broken: true }))
+    .toBe("Broken reference: redis.URL in sentry/config.yml");
   expect(deploymentWarningText({ server: "web-1", ingress: { type: "port_taken", cause: "address already in use" } }))
     .toBe("Ingress isn't running on web-1: something else holds port 80 or 443");
   expect(deploymentWarningText({ server: "web-1", ingress: { type: "failed", cause: "image pull failed" } }))
     .toBe("Ingress isn't running on web-1: image pull failed");
   expect(deploymentWarningText({ cause: "Couldn't list the Cluster's Servers." }))
     .toBe("Couldn't check ingress: Couldn't list the Cluster's Servers. Deploy again to retry");
+  const mismatch = { warning: { type: "image_port_mismatch" as const, service: "web", service_id: "f".repeat(32) as ServiceId, image: "nginx", machines: ["a".repeat(32) as MachineId], exposed: [80], routed: [8080, 8081] } };
+  expect(deploymentWarningText(mismatch)).toBe("web's image nginx exposes 80; its domains send to 8080, 8081");
+  expect(deploymentWarningText(mismatch, "frontend")).toBe("frontend's image nginx exposes 80; its domains send to 8080, 8081");
+});
+
+it("links a port warning to the Service by its runtime name, so a rename keeps the link and a namesake never takes it", () => {
+  const mismatch = { warning: { type: "image_port_mismatch" as const, service: "web", service_id: "f".repeat(32) as ServiceId, image: "nginx", machines: [], exposed: [80], routed: [8080] } };
+  // The warned Service was web when it got its DNS name and is frontend now; another Service took the name web.
+  const nodes = [node("frontend", "deployed"), node("web", "deployed")];
+  const runtime_names = { frontend: "web", web: "web-2" };
+  expect(warnedService({ nodes, runtime_names }, mismatch)?.id).toBe("id-frontend");
+  // A Service that never changed name matches by its own name.
+  expect(warnedService({ nodes: [node("web", "deployed")], runtime_names: { web: "web" } }, mismatch)?.id).toBe("id-web");
+  expect(warnedService({ nodes: [node("api", "deployed")], runtime_names: { api: "api" } }, mismatch)).toBeUndefined();
+  expect(warnedService({ nodes, runtime_names }, { service: "web", variable: "TOKEN" })).toBeUndefined();
 });
 
 it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and leaves an ended one alone", () => {

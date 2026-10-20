@@ -118,7 +118,7 @@ impl Tool for ServiceMetrics {
         ];
         let numbered = self.deployment.map(|number| NumberedDeploymentQuery {
             environment: scope,
-            number,
+            number: Some(number),
         });
         if let Some(query) = &numbered {
             asks.push(store(query)?);
@@ -192,7 +192,7 @@ impl Tool for ServiceMetrics {
         let numbers: BTreeMap<&DeploymentId, u64> = page
             .deployments
             .iter()
-            .map(|deployment| (&deployment.id, deployment.number))
+            .filter_map(|deployment| Some((&deployment.id, deployment.number?)))
             .collect();
         let events = answer
             .events

@@ -46,8 +46,10 @@ mod sdk_update_machine;
 mod sdk_upgrade_machine;
 mod sdk_volumes;
 mod sdk_watch;
+mod server_endpoint_cli;
 mod support;
 mod unix_session;
+mod unknown_service_cli;
 use support::*;
 
 #[tokio::test]
@@ -507,8 +509,9 @@ async fn a_refused_tail_names_the_capability_and_the_server() {
     service.tail_failure = Some(Status::unimplemented(""));
     let (address, server) = serve_discovery(service).await;
 
+    // Retained history printed first, so the refused tail makes the read partial.
     let output = run_ployz(address, &["logs", "app/api", "--follow"]).await;
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
         stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),

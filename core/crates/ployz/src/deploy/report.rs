@@ -98,7 +98,8 @@ pub(crate) fn service_row<'a>(
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
-    let removal = !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
+    let removal =
+        depth.is_none() && !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
     let served = !removal
         && replicas.iter().any(|replica| {
             replica.starts
@@ -292,6 +293,13 @@ impl Direct {
             self.rows.insert(key, (row, timing));
         }
         self.operations = operations.to_vec();
+    }
+
+    /// Show `warning` with the deploy's other notices, once.
+    pub(super) fn notice(&mut self, warning: ployz_core::DeployWarning) {
+        if !self.notices.contains(&warning) {
+            self.notices.push(warning);
+        }
     }
 
     pub(super) fn frame(&self) -> Frame {

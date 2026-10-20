@@ -35,6 +35,12 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub servers: Option<u32>,
+    /// The Servers that didn't answer Cloud just before a removal's admission: a
+    /// removal that failed goes again once one of them answers. None when Cloud
+    /// couldn't look, which says nothing of who answered.
+    #[serde(default)]
+    #[ts(optional)]
+    pub unanswered: Option<Vec<MachineId>>,
     /// The GitHub accounts of the Organization's members, as Cloud linked them: a pull
     /// request deploys without approval only when one of them wrote it. None when Cloud
     /// didn't look, which trusts no one.

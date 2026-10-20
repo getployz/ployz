@@ -39,6 +39,17 @@ describe("CustomDomainDialog", () => {
     );
   });
 
+  it("says a blank target uses the Service's PORT, and what it is when the dialog knows it", () => {
+    const { rerender } = render(
+      <CustomDomainDialog defaultTargetPort={null} onClose={vi.fn()} onSubmit={vi.fn()} />
+    );
+    expect(screen.getByText("Leave blank to use this service's PORT variable.")).toBeTruthy();
+    rerender(
+      <CustomDomainDialog defaultTargetPort={3000} onClose={vi.fn()} onSubmit={vi.fn()} />
+    );
+    expect(screen.getByText("Leave blank to use this service's PORT variable, 3000.")).toBeTruthy();
+  });
+
   it("saves a hostname typed in any case as the lowercase name", async () => {
     const onSubmit = vi.fn();
     render(
@@ -102,6 +113,42 @@ describe("CustomDomainDialog", () => {
         target: { value },
       });
       await waitFor(() => expect(save.hasAttribute("disabled")).toBe(true));
+    }
+  );
+
+  it("refuses a domain this service already has, in any case", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <CustomDomainDialog
+        takenHostnames={["soak-dash.example.com"]}
+        defaultTargetPort={3000}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+    const input = screen.getByLabelText("Domain");
+    fireEvent.change(input, { target: { value: "Soak-Dash.example.com" } });
+    fireEvent.blur(input);
+    expect(await screen.findByText("Already on this service.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save route" }).hasAttribute("disabled")).toBe(true);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it.each(["bücher.example.com", "BÜCHER.example.com"])(
+    "refuses %s when the service has it in punycode, as the Store keeps it",
+    async (value) => {
+      render(
+        <CustomDomainDialog
+          takenHostnames={["xn--bcher-kva.example.com"]}
+          defaultTargetPort={3000}
+          onClose={vi.fn()}
+          onSubmit={vi.fn()}
+        />
+      );
+      const input = screen.getByLabelText("Domain");
+      fireEvent.change(input, { target: { value } });
+      fireEvent.blur(input);
+      expect(await screen.findByText("Already on this service.")).toBeTruthy();
     }
   );
 

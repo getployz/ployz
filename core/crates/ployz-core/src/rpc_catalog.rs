@@ -54,6 +54,7 @@ macro_rules! rpc_catalog {
                 Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always),
                 SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always),
                 SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always),
+                SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always),
                 RequestMachineUpgrade: (request_machine_upgrade, "RequestMachineUpgrade", RequestMachineUpgradeRequest, "request_machine_upgrade", MachineUpgradeAttempt, REQUEST_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.request.v1", Always),
@@ -78,7 +79,7 @@ macro_rules! rpc_catalog {
                 InspectBuildGrant: (inspect_build_grant, "InspectBuildGrant", InspectBuildGrantRequest, "inspect_build_grant", BuildGrantInspected, INSPECT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.inspect.v1", Container),
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
                 PublishServingPointer: (publish_serving_pointer, "PublishServingPointer", PublishServingPointerRequest, "publish_serving_pointer", ServingPointerPublication, PUBLISH_SERVING_POINTER_CAPABILITY, "ployz.serving.publish.v1", Cluster),
-                ReadServingPointer: (read_serving_pointer, "ReadServingPointer", ReadServingPointerRequest, "read_serving_pointer", ServingPointerRead, READ_SERVING_POINTER_CAPABILITY, "ployz.serving.read.v1", Cluster),
+                ReadRoutes: (read_routes, "ReadRoutes", ReadRoutesRequest, "read_routes", RoutesRead, READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1", Cluster),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container),
             }
             server_streaming {

@@ -9,10 +9,11 @@ use ployz_core::{
     METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
     PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
     PUBLISH_SERVING_POINTER_CAPABILITY, PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    READ_SERVING_POINTER_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
+    SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -34,6 +35,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (
             SET_PUSH_TARGET_CAPABILITY,
             "ployz.machine.set-push-target.v1",
+        ),
+        (
+            SELECT_ENDPOINT_CAPABILITY,
+            "ployz.network.select-endpoint.v1",
         ),
         (LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1"),
         (
@@ -81,7 +86,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             PUBLISH_SERVING_POINTER_CAPABILITY,
             "ployz.serving.publish.v1",
         ),
-        (READ_SERVING_POINTER_CAPABILITY, "ployz.serving.read.v1"),
+        (READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1"),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
         (LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1"),
         (FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1"),
@@ -113,6 +118,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.register.v1",
             "ployz.machine.set-management-client.v1",
             "ployz.machine.set-push-target.v1",
+            "ployz.network.select-endpoint.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
             "ployz.machine.upgrade.request.v1",
@@ -155,7 +161,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         [
             "ployz.certificates.publish.v1",
             "ployz.serving.publish.v1",
-            "ployz.serving.read.v1",
+            "ployz.serving.routes.v1",
             "ployz.runtime.watch.v1",
         ]
     );
@@ -197,13 +203,17 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         "/ployz.rpc.v1.MachineRpc/SetPushTarget"
     );
     assert_eq!(
+        op::SelectEndpoint::PATH,
+        "/ployz.rpc.v1.MachineRpc/SelectEndpoint"
+    );
+    assert_eq!(
         op::RequestMachineUpgrade::PATH,
         "/ployz.rpc.v1.MachineRpc/RequestMachineUpgrade"
     );
 }
 
-/// Capabilities every Machine in the field serves: those of v0.3.0-beta.2, the
-/// oldest daemon still running. Raise it only when no Machine runs older.
+/// Capabilities every Machine in the field serves. Serving rotation cut off daemons
+/// that predate serving routes. Raise it only when no Machine runs older.
 const FIELD_FLOOR: &[&str] = &[
     "ployz.build.grant.inspect.v1",
     "ployz.build.grant.mint.v1",
@@ -233,6 +243,8 @@ const FIELD_FLOOR: &[&str] = &[
     "ployz.metrics.history.v1",
     "ployz.rpc.describe-contract.v1",
     "ployz.runtime.watch.v1",
+    "ployz.serving.publish.v1",
+    "ployz.serving.routes.v1",
     "ployz.storage.inspect.v1",
     "ployz.storage.prepare.v1",
     "ployz.volume.copy.floor.v1",
@@ -246,20 +258,16 @@ const FIELD_FLOOR: &[&str] = &[
 /// Each capability above the floor, and what a caller does when a Machine lacks it.
 const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
+        "ployz.network.select-endpoint.v1",
+        "refused legibly: `server set --wg-endpoint` lists the Server as missed and still updates the target",
+    ),
+    (
         "ployz.machine.set-push-target.v1",
         "gated: the SDK checks the contract before calling",
     ),
     (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
-    ),
-    (
-        "ployz.serving.read.v1",
-        "refused legibly: the deploy names the Server to upgrade",
-    ),
-    (
-        "ployz.serving.publish.v1",
-        "refused legibly: the deploy names the Server to upgrade",
     ),
 ];
 

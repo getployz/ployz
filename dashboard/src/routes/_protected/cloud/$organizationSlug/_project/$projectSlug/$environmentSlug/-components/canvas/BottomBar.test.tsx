@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
@@ -14,7 +14,7 @@ import { AgentDock } from "#/components/agent-sidebar/agent-dock";
 import { BottomBar, BottomBarSlot } from "./BottomBar";
 
 const [running, queued] = ["aaaa1111-uuid", "aaaa2222-uuid"];
-const deployment = (id: string, status: DeploymentSummary["status"], number: number) =>
+const deployment = (id: string, status: DeploymentSummary["status"], number: number | null) =>
   asTestDouble<DeploymentSummary>()({ id, status, number, services: [], upload: null });
 const replicas: ChangeGroup = asTestDouble<ChangeGroup>()({
   nodeType: "service", nodeId: "api", nodeName: "api", canDiscard: true, changeCount: 1, lifecycle: "update",
@@ -26,18 +26,19 @@ const onDiscardAll = vi.fn();
 const onSave = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
-let ended: DeploymentSummary[] | undefined = [];
+/** The newest numbered Deployment: null before the first Deploy, undefined until it loads. */
+let latest: DeploymentSummary | null | undefined = null;
 let storage: (deploymentId: string) => string | null = () => null;
 /** Secrets without a value the next Deploy leaves out. */
 let notSet = 0;
 /** A write the Store hasn't answered for yet. */
 let busy: ReadonlySet<Busy> = new Set();
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
-let settle: (lists: { active: DeploymentSummary[]; ended: DeploymentSummary[] | undefined }) => void = () => {};
+let settle: (lists: { active: DeploymentSummary[]; latest: DeploymentSummary | null | undefined }) => void = () => {};
 
 beforeEach(() => {
   active = [];
-  ended = [];
+  latest = null;
   storage = () => null;
   notSet = 0;
   busy = new Set();
@@ -54,7 +55,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canSave
   const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", component: Outlet });
   const canvas = createRoute({ getParentRoute: () => environment, id: "_canvas", component: function Canvas() {
     const [slot, setSlot] = useState<HTMLElement | null>(null);
-    const [lists, setLists] = useState({ active, ended });
+    const [lists, setLists] = useState({ active, latest });
     settle = setLists;
     const [dock, setDock] = useState<HTMLElement | null>(null);
     const [agent, setAgent] = useState(false);
@@ -65,7 +66,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canSave
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
         <BottomBar groups={groups} totalChanges={totalChanges} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
-          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}} notSet={notSet} busy={busy}
+          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} latest={lists.latest} storage={storage} notes={{}} notSet={notSet} busy={busy}
           proposals={{ included: [] }} />
         <Outlet />
       </BottomBarSlot.Provider>
@@ -191,6 +192,31 @@ it("counts the secrets the Deploy leaves out beside the changes", async () => {
   expect((await bar()).getByText("1 change · 2 not set")).toBeTruthy();
 });
 
+it("closes Discard all's confirm on a double click, discarding once", async () => {
+  onDiscardAll.mockClear();
+  const created = asTestDouble<ChangeGroup>()({ ...replicas, nodeId: "worker", nodeName: "worker", lifecycle: "create" });
+  open(canvasUrl, [created], 1);
+  fireEvent.click((await bar()).getByRole("button", { name: "More change actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Discard all changes" }));
+  const confirm = await screen.findByRole("alertdialog", { name: "Discard all changes?" });
+  const discard = within(confirm).getByRole("button", { name: "Discard all" });
+  // A browser keeps the dialog up through its exit animation, so the second click lands on it.
+  let exited = () => {};
+  const exit = new Promise<Animation>((resolve) => { exited = () => resolve(asTestDouble<Animation>()({})); });
+  let exiting = true;
+  HTMLElement.prototype.getAnimations = () => exiting ? [asTestDouble<Animation>()({ finished: exit, playState: "finished", pending: false })] : [];
+  try {
+    await act(async () => { fireEvent.click(discard); });
+    await act(async () => { fireEvent.click(discard); });
+    exiting = false;
+    exited();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  } finally {
+    Reflect.deleteProperty(HTMLElement.prototype, "getAnimations");
+  }
+  expect(onDiscardAll).toHaveBeenCalledOnce();
+});
+
 it("keeps the review open through Discard all so its inverse draft stays reviewable", async () => {
   onDiscardAll.mockClear();
   open(canvasUrl, [replicas], 1);
@@ -233,7 +259,7 @@ it("shows how a Deployment it watched ended, until dismissed, and a Deployed one
   active = [deployment(running, "running", 1)];
   open(canvasUrl);
   expect((await bar()).getByText("Deploying · Deployment #1")).toBeTruthy();
-  act(() => settle({ active: [], ended: [deployment(running, "failed", 1), deployment(queued, "applied", 0)] }));
+  act(() => settle({ active: [], latest: deployment(running, "failed", 1) }));
   const failed = await bar();
   expect(failed.getByText("Failed · Deployment #1")).toBeTruthy();
   expect(failed.getByRole("link", { name: "Logs" })).toBeTruthy();
@@ -241,9 +267,9 @@ it("shows how a Deployment it watched ended, until dismissed, and a Deployed one
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  act(() => settle({ active: [deployment(queued, "running", 2)], ended: [] }));
+  act(() => settle({ active: [deployment(queued, "running", 2)], latest: deployment(queued, "running", 2) }));
   expect((await bar()).getByText("Deploying · Deployment #2")).toBeTruthy();
-  act(() => settle({ active: [], ended: [deployment(queued, "applied", 2), deployment(running, "failed", 1)] }));
+  act(() => settle({ active: [], latest: deployment(queued, "applied", 2) }));
   expect((await bar()).getByText("Deployed · Deployment #2")).toBeTruthy();
   act(() => { vi.advanceTimersByTime(6_000); });
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
@@ -254,7 +280,7 @@ it("shows a failed Deployment above the changes it handed back, until dismissed"
   active = [deployment(running, "running", 1)];
   open(canvasUrl, [replicas], 1);
   expect((await bar()).getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
-  act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
+  act(() => settle({ active: [], latest: deployment(running, "failed", 1) }));
   const both = await bar();
   const rows = both.getAllByText(/Failed · Deployment #1|^1 change$/).map((node) => node.textContent);
   expect(rows).toEqual(["Failed · Deployment #1", "1 change", "1 change"]);
@@ -268,13 +294,13 @@ it("shows a failed Deployment above the changes it handed back, until dismissed"
 
 it("never shows a Deployed one that ended before it was watched", async () => {
   open(canvasUrl);
-  act(() => settle({ active: [], ended: [deployment(running, "applied", 1)] }));
+  act(() => settle({ active: [], latest: deployment(running, "applied", 1) }));
   await act(async () => {});
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 });
 
 it("shows the newest Deployment Failed on a fresh mount, until dismissed, and keeps it dismissed after a reload", async () => {
-  ended = [deployment(running, "failed", 1), deployment(queued, "failed", 0)];
+  latest = deployment(running, "failed", 1);
   open(canvasUrl);
   const failed = await bar();
   expect(failed.getByText("Failed · Deployment #1")).toBeTruthy();
@@ -285,6 +311,14 @@ it("shows the newest Deployment Failed on a fresh mount, until dismissed, and ke
   open(canvasUrl);
   await act(async () => {});
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+it("keeps the newest numbered Deployment's Failed notice behind a page of newer holds that never ran", async () => {
+  // Twenty-one cancelled holds fill the first page of Deployments; #1 Failed comes with the view all the same.
+  active = [];
+  latest = deployment(running, "failed", 1);
+  open(canvasUrl);
+  expect((await bar()).getByText("Failed · Deployment #1")).toBeTruthy();
 });
 
 it("hides while nothing is staged or running", async () => {

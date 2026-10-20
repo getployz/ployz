@@ -611,7 +611,7 @@ fn change_selectors(
         .get_many::<String>("service")
         .ok_or_else(|| Error::usage("at least one Service selector is required"))?
         .map(|selector| {
-            super::operator::in_scope(ServiceSelector::parse(selector.as_str())?, namespace)
+            super::operator::current(ServiceSelector::parse(selector.as_str())?, namespace)
         })
         .collect()
 }

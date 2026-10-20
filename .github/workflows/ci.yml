@@ -34,11 +34,73 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # Linux jobs run on the self-hosted pool when CI_SELF_HOSTED is on, the run is a push or a same-repo PR
+  # (fork PRs never), and a ployz-omarchy runner is online and idle. Otherwise, or on any error, GitHub's.
+  # pool answers whether any ployz-omarchy runner is online. Only then do picks share one group:
+  # ported from mikehardy/runner-fallback-action, they happen one at a time, each after a pause that lets
+  # the previous pick's jobs claim their runners, and queue: max keeps every waiting pick. With the pool
+  # offline every pick is GitHub's, so each run picks at once in its own group.
+  pool:
+    name: Check runner pool
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      online: ${{ steps.check.outputs.online }}
+    steps:
+      - id: check
+        env:
+          TRUSTED: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          # Fine-grained PAT with Administration: Read on this repo; GITHUB_TOKEN cannot list runners.
+          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+        run: |
+          online=false
+          if [ "$TRUSTED" = true ]; then
+            if count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
+              echo "Online ployz-omarchy runners: $count"
+              [ "$count" -ge 1 ] && online=true
+            else
+              echo "::warning::Could not list self-hosted runners; using GitHub's"
+            fi
+          fi
+          echo "online=$online" >> "$GITHUB_OUTPUT"
+
+  runner:
+    name: Pick runner
+    needs: pool
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    concurrency:
+      group: ${{ needs.pool.outputs.online == 'true' && 'ci-runner-pick' || format('ci-runner-pick-{0}', github.run_id) }}
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        env:
+          ONLINE: ${{ needs.pool.outputs.online }}
+          # Fine-grained PAT with Administration: Read on this repo; GITHUB_TOKEN cannot list runners.
+          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+        run: |
+          runner=ubuntu-24.04
+          if [ "$ONLINE" = true ]; then
+            sleep 15
+            if idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners?per_page=100" --jq '[.runners[] | select(.status == "online" and (.busy | not) and any(.labels[]; .name == "ployz-omarchy"))] | length'); then
+              echo "Idle ployz-omarchy runners: $idle"
+              [ "$idle" -ge 1 ] && runner=ployz-omarchy
+            else
+              echo "::warning::Could not list self-hosted runners; using $runner"
+            fi
+          fi
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "Selected runner: $runner" >> "$GITHUB_STEP_SUMMARY"
+
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       jobs: ${{ steps.select.outputs.jobs }}
+      postgres: ${{ steps.select.outputs.postgres }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,8 +114,8 @@ jobs:
         run: python3 scripts/ci.py select "$BASE_SHA" "$GITHUB_SHA"
 
   contracts:
-    needs: changes
-    runs-on: ubuntu-latest
+    needs: [changes, runner]
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -87,9 +149,9 @@ jobs:
     defaults:
       run:
         working-directory: core
-    needs: changes
+    needs: [changes, runner]
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -112,9 +174,9 @@ jobs:
     defaults:
       run:
         working-directory: core
-    needs: changes
+    needs: [changes, runner]
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 25
     permissions:
       contents: read
@@ -150,12 +212,14 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          cargo nextest run --workspace --all-features --locked
+          cargo nextest run --workspace --all-features --locked --no-fail-fast
           cargo test --doc --workspace --all-features --locked
+      # The workspace's features, as built above: `--package ployz-store` alone resolves other features and recompiles.
       - name: ployz-store tests on Postgres
+        if: needs.changes.outputs.postgres == 'true'
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: cargo nextest run --package ployz-store --locked
+        run: cargo nextest run --workspace --all-features --locked -E 'package(ployz-store)'
       - name: Check the missing SSH prerequisite
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
@@ -183,10 +247,10 @@ jobs:
     defaults:
       run:
         working-directory: dashboard/uptime
-    needs: changes
+    needs: [changes, runner]
     # Main always runs it, so every main commit has a ployz-uptime:<sha> for Railway to pin.
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -234,7 +298,7 @@ jobs:
       - run: cargo check --package ployz --all-targets --locked
 
   cloud:
-    needs: changes
+    needs: [changes, runner]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'cloud')
     uses: ./.github/workflows/cloud.yml
     permissions:
@@ -242,6 +306,8 @@ jobs:
       actions: write
       # Main commits and release tags publish the Cloud image.
       packages: write
+    with:
+      runner: ${{ needs.runner.outputs.runner }}
     secrets: inherit
 
   release-contracts:
@@ -256,11 +322,12 @@ jobs:
   # The binaries the verify harness runs, built once per change on main so local runs download them.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
+    needs: [changes, runner]
     if: github.event_name != 'pull_request'
     defaults:
       run:
         working-directory: core
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.runner.outputs.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -302,7 +369,7 @@ jobs:
     name: CI ready
     if: always()
     needs: [changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4

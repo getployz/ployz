@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, sync::Mutex};
 
 use ployz_core::{
-    ContainerId, DeployEvent, DeployOperation, DeployOutcome, ExecutionError, MachineId,
-    MachineName, OperationPhase, OperationRow, OperationStatus, ServiceName,
+    ContainerId, DeployEvent, DeployOperation, DeployOutcome, DeployWarning, ExecutionError,
+    MachineId, MachineName, OperationPhase, OperationRow, OperationStatus, ServiceName,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -143,6 +143,12 @@ impl Progress {
             }
         }
         self.emit();
+    }
+
+    pub(super) fn warn(&self, warning: DeployWarning) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(DeployEvent::Warning { warning });
+        }
     }
 
     pub(super) fn outcome(&self, outcome: DeployOutcome<ExecutionError>) {

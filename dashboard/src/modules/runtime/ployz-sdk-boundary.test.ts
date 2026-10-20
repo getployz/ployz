@@ -18,6 +18,7 @@ const VALUE_IMPORT_ALLOWLIST = new Set([
   "modules/machines/enrollment.server.ts",
   "modules/volume-placement/volume-placement.postgres.test.ts",
   "modules/volume-placement/volume-placement.restore.postgres.test.ts",
+  "modules/volume-run/volume-run.postgres.test.ts",
   "routes/api/cli/agent/-agent.handler.ts",
 ]);
 const BRANDED_CONSTRUCTORS = [

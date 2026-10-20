@@ -217,11 +217,19 @@ fn succeed(store: &ConfigStore, id: &DeploymentId, services: &[&str], removed: V
 
 /// Run Deployment `id` for `services` to a failure on Server `a…`.
 fn fail(store: &ConfigStore, id: &DeploymentId, services: &[&str]) {
+    let busy = RpcError {
+        code: RpcErrorCode::Internal,
+        message: "busy".into(),
+        details: json!({}),
+        cause: Vec::new(),
+    };
+    fail_with(store, id, services, busy);
+}
+
+/// Fail `id` on Server `a…` with `error`.
+fn fail_with(store: &ConfigStore, id: &DeploymentId, services: &[&str], error: RpcError) {
     prepare(store, id, services);
-    let error = json!({
-        "type": "machine", "action": "RemoveContainer",
-        "error": {"code": "internal", "message": "busy", "details": {}}
-    });
+    let error = json!({ "type": "machine", "action": "RemoveContainer", "error": error });
     let rows: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([{
         "index": 0, "machine_id": "a".repeat(32), "service_name": services[0],
         "operation": operation(0), "status": {"type": "failed", "error": error}
@@ -597,6 +605,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
             &RemovalsQuery {
                 environment: at("production"),
                 remove: true,
+                deployment: None,
             },
         )
         .unwrap();
@@ -1045,6 +1054,7 @@ fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
             &RemovalsQuery {
                 environment: at("production"),
                 remove: true,
+                deployment: None,
             },
         )
         .unwrap();
@@ -1072,6 +1082,19 @@ fn shutting_down_what_never_ran_applies_at_once() {
         view.deployment.outcome,
         Some(ployz_store::Outcome::NeverRan)
     );
+    // A removal that applied left nothing to redeploy.
+    let again = store.write_trusted(
+        &who,
+        &Admit::Retry(ployz_store::Retry {
+            id: id(2),
+            deployment: id(1),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        &Trusted::default(),
+    );
+    assert_eq!(refusal(again).code, RpcErrorCode::Conflict);
 }
 
 #[test]
@@ -1139,6 +1162,212 @@ fn a_failed_removal_goes_again_only_on_new_evidence_or_a_retry() {
     // Its remover asks again: it goes again.
     let again = confirmed(&store, &who, request(Some("fix")), &one).unwrap();
     assert_eq!(left(again), [("fix".into(), LeftStatus::Removing)]);
+}
+
+#[test]
+fn a_removal_that_failed_on_a_silent_server_goes_again_once_it_answers() {
+    let (store, who) = branched();
+    // `fix` has no Volume, so only whether its Server answered is evidence.
+    let silent = Trusted {
+        servers: Some(1),
+        unanswered: Some(vec![server('a')]),
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &silent).unwrap();
+    not_executed(&store, &taking_off(&removing, "fix"));
+
+    // The hourly sweep asks again while the Server is still silent: it stalls.
+    assert_eq!(names(&sweep(&store, &who).closing), ["fix"]);
+    let stalled = refusal(admit_removal(&store, &who, "fix", 3, &silent));
+    assert!(stalled.message.contains("stalled"), "{}", stalled.message);
+
+    // The Server answers: the next sweep's admission takes it off.
+    let answers = Trusted {
+        servers: Some(1),
+        unanswered: Some(Vec::new()),
+        ..Trusted::default()
+    };
+    let admitted = admit_removal(&store, &who, "fix", 3, &answers).unwrap();
+    run(&store, &admitted.id, &["web"], Vec::new());
+    assert_eq!(names(&sweep(&store, &who).removed), ["fix"]);
+}
+
+#[test]
+fn a_removal_that_failed_on_a_server_silent_since_admission_goes_again_once_it_answers() {
+    let (store, who) = branched();
+    let all_answer = Trusted {
+        servers: Some(2),
+        unanswered: Some(Vec::new()),
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &all_answer).unwrap();
+    // Every Server answered Cloud before it ran, then `a` went silent while it ran.
+    let silence = RpcError::unanswered_target(
+        RpcErrorCode::Unavailable,
+        format!(
+            "Machine {} did not answer: deadline has elapsed",
+            server('a')
+        ),
+    );
+    fail_with(&store, &taking_off(&removing, "fix"), &["web"], silence);
+
+    let a_silent = Trusted {
+        unanswered: Some(vec![server('a')]),
+        ..all_answer.clone()
+    };
+    let stalled = refusal(admit_removal(&store, &who, "fix", 3, &a_silent));
+    assert!(stalled.message.contains("stalled"), "{}", stalled.message);
+
+    // `a` answers: the hourly admission takes it off.
+    let admitted = admit_removal(&store, &who, "fix", 3, &all_answer).unwrap();
+    run(&store, &admitted.id, &["web"], Vec::new());
+    assert_eq!(names(&sweep(&store, &who).removed), ["fix"]);
+}
+
+#[test]
+fn a_removal_that_failed_on_a_server_that_answered_stalls_while_every_server_answers() {
+    let (store, who) = branched();
+    let all_answer = Trusted {
+        servers: Some(2),
+        unanswered: Some(Vec::new()),
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &all_answer).unwrap();
+    fail(&store, &taking_off(&removing, "fix"), &["web"]);
+
+    let stalled = refusal(admit_removal(&store, &who, "fix", 3, &all_answer));
+    assert!(stalled.message.contains("stalled"), "{}", stalled.message);
+}
+
+#[test]
+fn a_sweep_that_could_not_look_at_the_servers_forgets_none_that_were_silent() {
+    let (store, who) = branched();
+    let silent = |servers| Trusted {
+        servers: Some(servers),
+        unanswered: Some(vec![server('a')]),
+        ..Trusted::default()
+    };
+    let removing = confirmed(&store, &who, request(Some("fix")), &silent(2)).unwrap();
+    not_executed(&store, &taking_off(&removing, "fix"));
+
+    // Cloud couldn't load its connections: that isn't the Server answering.
+    let unseen = |servers| Trusted {
+        servers: Some(servers),
+        ..Trusted::default()
+    };
+    let stalled = refusal(admit_removal(&store, &who, "fix", 3, &unseen(2)));
+    assert!(stalled.message.contains("stalled"), "{}", stalled.message);
+
+    // A Server left, so it goes again unseen, and fails while `a` is still silent.
+    let admitted = admit_removal(&store, &who, "fix", 3, &unseen(1)).unwrap();
+    not_executed(&store, &admitted.id);
+    assert!(
+        refusal(admit_removal(&store, &who, "fix", 4, &silent(1)))
+            .message
+            .contains("stalled")
+    );
+
+    // `a` answers at last: the removal still remembers it was waiting on it.
+    let answers = Trusted {
+        servers: Some(1),
+        unanswered: Some(Vec::new()),
+        ..Trusted::default()
+    };
+    let admitted = admit_removal(&store, &who, "fix", 4, &answers).unwrap();
+    run(&store, &admitted.id, &["web"], Vec::new());
+    assert_eq!(names(&sweep(&store, &who).removed), ["fix"]);
+}
+
+/// Fail `id` before it reaches any Server, as when none could be reached.
+fn not_executed(store: &ConfigStore, id: &DeploymentId) {
+    store.claim(id, &runner()).unwrap();
+    store
+        .record(
+            id,
+            &runner(),
+            RunEvidence::NotExecuted("Ployz couldn't reach your Servers.".into()),
+        )
+        .unwrap();
+}
+
+#[test]
+fn rerunning_a_removal_under_way_needs_no_new_version() {
+    let (store, who) = branched();
+    let removing = confirmed(&store, &who, request(Some("fix")), &Trusted::default()).unwrap();
+    fail(&store, &taking_off(&removing, "fix"), &["web"]);
+
+    // Each failed removal moves the review on, so the first version is stale.
+    let stale = Remove {
+        version: Some("stale".into()),
+        ..request(Some("fix"))
+    };
+    for rerun in [request(Some("fix")), stale] {
+        let again = store
+            .write_trusted(&who, &rerun, &Trusted::default())
+            .unwrap();
+        let taking = taking_off(&again, "fix");
+        assert_eq!(left(again), [("fix".into(), LeftStatus::Removing)]);
+        fail(&store, &taking, &["web"]);
+    }
+}
+
+#[test]
+fn giving_up_every_copy_on_a_rerun_takes_off_past_a_silent_server() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    set_default(&store, &who, "staging");
+    let removing = confirmed(
+        &store,
+        &who,
+        accepting_data(Some("production")),
+        &observing(observed()),
+    )
+    .unwrap();
+    fail(&store, &taking_off(&removing, "production"), &["web"]);
+
+    // `b…` goes silent, so it may hold a copy of `data` nobody confirmed.
+    let silent = observing(VolumeObservation {
+        unanswered: vec![server('b')],
+        ..observed()
+    });
+    let every_copy = Remove {
+        every_copy: volumes(&[("production", &["data"])]),
+        ..accepting_data(Some("production"))
+    };
+    // Giving up more than the removal holds is a fresh confirmation.
+    let asked = refusal(store.write_trusted(&who, &every_copy, &silent));
+    assert_eq!(asked.code, RpcErrorCode::ConfirmationRequired);
+    let rerun = confirmed(&store, &who, every_copy, &silent).unwrap();
+    let taking = taking_off(&rerun, "production");
+    assert_eq!(left(rerun), [("production".into(), LeftStatus::Removing)]);
+    run(&store, &taking, &["web", "db"], deleted(&[held()]));
+    assert_eq!(names(&sweep(&store, &who).removed), ["production"]);
+}
+
+#[test]
+fn an_agent_rerunning_a_removal_under_way_still_asks_a_human() {
+    let (store, who) = branched();
+    let required = Trusted {
+        approval: Approval::Required,
+        ..Trusted::default()
+    };
+    let approved = |asked: RpcError| Trusted {
+        approval: Approval::Approved(
+            serde_json::from_value(asked.details["approval"].clone()).unwrap(),
+        ),
+        ..Trusted::default()
+    };
+    let asked = refusal(confirmed(&store, &who, request(Some("fix")), &required));
+    assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+    let removing = confirmed(&store, &who, request(Some("fix")), &approved(asked)).unwrap();
+    fail(&store, &taking_off(&removing, "fix"), &["web"]);
+
+    let again = refusal(store.write_trusted(&who, &request(Some("fix")), &required));
+    assert_eq!(again.code, RpcErrorCode::from("approval_required"));
+    let rerun = store
+        .write_trusted(&who, &request(Some("fix")), &approved(again))
+        .unwrap();
+    assert_eq!(left(rerun), [("fix".into(), LeftStatus::Removing)]);
 }
 
 #[test]
@@ -1246,6 +1475,22 @@ fn remove_refuses_a_destructive_target_without_its_version() {
         },
     ));
     assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
+    assert!(
+        unversioned
+            .message
+            .ends_with("Pass the version to go ahead"),
+        "{unversioned:?}"
+    );
+    assert!(
+        stale.message.starts_with(
+            "This changed since that version, so nothing was removed. Removing this will"
+        ),
+        "{stale:?}"
+    );
+    assert!(
+        stale.message.ends_with("Pass the new version to go ahead"),
+        "{stale:?}"
+    );
     // Accepting the data isn't confirming it.
     let unconfirmed =
         refusal(store.write_trusted(&who, &accepting_data(None), &observing(observed())));

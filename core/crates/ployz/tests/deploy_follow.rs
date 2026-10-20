@@ -36,6 +36,8 @@ struct Reply {
 enum Interrupt {
     DuringRead,
     AfterObserved(Duration),
+    /// Cloud takes the request and closes the connection without answering.
+    HangUp,
 }
 
 struct Exchange {
@@ -81,11 +83,13 @@ fn replacement() -> Reply {
         path: "/api/config/read",
         kind: "deployments",
         status: 200,
-        body: serde_json::to_value(View::Deployments(DeploymentsView {
+        body: serde_json::to_value(View::Deployments(Box::new(DeploymentsView {
             environment: newer.environment,
-            deployments: vec![newer.deployment],
+            deployments: vec![newer.deployment.clone()],
             next_cursor: None,
-        }))
+            latest: Some(newer.deployment.clone()),
+            in_flight: vec![newer.deployment],
+        })))
         .unwrap(),
         interrupt: None,
         delay: Duration::ZERO,
@@ -137,6 +141,15 @@ fn serve(
         .or_else(|| body.get("command"))
         .and_then(Value::as_str);
     assert_eq!(kind, Some(reply.kind), "{body}");
+    if matches!(reply.interrupt, Some(Interrupt::HangUp)) {
+        return (
+            Exchange {
+                requested,
+                responded: Instant::now(),
+            },
+            None,
+        );
+    }
     let mut sent = None;
     if matches!(reply.interrupt, Some(Interrupt::DuringRead)) {
         sent = Some(interrupt(pid));
@@ -150,7 +163,7 @@ fn serve(
     let responded = Instant::now();
     if let Some(Interrupt::AfterObserved(delay)) = reply.interrupt {
         let deadline = Instant::now() + Duration::from_secs(2);
-        while std::fs::metadata(events).unwrap().len() == 0 {
+        while std::fs::metadata(events).map_or(0, |events| events.len()) == 0 {
             assert!(Instant::now() < deadline, "CLI did not consume its view");
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -178,6 +191,20 @@ fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
 
 fn measured_run(replies: Vec<Reply>, root: &std::path::Path) -> Run {
     let events = root.join("events.ndjson");
+    let mut deploy = vec![
+        "deploy",
+        "--project",
+        "shop",
+        "--env",
+        "production",
+        "--events",
+    ];
+    deploy.push(events.to_str().unwrap());
+    cli_run(replies, root, &deploy)
+}
+
+fn cli_run(replies: Vec<Reply>, root: &std::path::Path, args: &[&str]) -> Run {
+    let events = root.join("events.ndjson");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -191,17 +218,8 @@ fn measured_run(replies: Vec<Reply>, root: &std::path::Path) -> Run {
         .env("PLOYZ_CLOUD_URL", url)
         .arg("--ployz-config")
         .arg(root.join("selected team.yaml"))
-        .args([
-            "--json",
-            "--color=never",
-            "deploy",
-            "--project",
-            "shop",
-            "--env",
-            "production",
-            "--events",
-        ])
-        .arg(&events)
+        .args(["--json", "--color=never"])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -265,7 +283,7 @@ fn measured_run(replies: Vec<Reply>, root: &std::path::Path) -> Run {
         String::from_utf8_lossy(&output.stderr)
     );
     let events = std::fs::read_to_string(events)
-        .unwrap()
+        .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
@@ -475,7 +493,7 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
     *failed.get_mut("runtime_names").unwrap() = json!({"web": "private-web"});
     *failed.get_mut("outcome").unwrap() =
         json!({"type": "executed", "summary": {}, "reason": "web failed", "cause": ["denied"]});
-    *failed.get_mut("nodes").unwrap() = json!([{"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["denied"], "step": null, "log": null, "history": null, "started_at": 1, "finished_at": 2}]}]);
+    *failed.get_mut("nodes").unwrap() = json!([{"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "StartContainer failed", "cause": ["denied"], "step": "start", "log": null, "history": null, "started_at": 1, "finished_at": 2}]}]);
     let mut reply = observed(7, DeploymentStatus::Failed);
     reply.body = serde_json::to_value(View::Deployment(Box::new(
         serde_json::from_value(failed.clone()).unwrap(),
@@ -525,5 +543,170 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
             ],
         ],
         "{stderr}"
+    );
+}
+
+fn hung_up(mut reply: Reply) -> Reply {
+    reply.interrupt = Some(Interrupt::HangUp);
+    reply
+}
+
+/// The one `inspect` command `error` names, without the `--ployz-config` every hint carries.
+fn inspected(error: &Value) -> String {
+    let [command] = error
+        .pointer("/details/inspect")
+        .and_then(Value::as_array)
+        .unwrap()
+        .as_slice()
+    else {
+        panic!("{error}");
+    };
+    let mut words = shell_words::split(command.as_str().unwrap()).unwrap();
+    if let Some(at) = words.iter().position(|word| word == "--ployz-config") {
+        words.drain(at..at + 2);
+    }
+    words.join(" ")
+}
+
+fn failure(output: &Output) -> Value {
+    let printed = if output.stdout.is_empty() {
+        &output.stderr
+    } else {
+        &output.stdout
+    };
+    serde_json::from_slice::<Value>(printed)
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(printed)))
+        .get("error")
+        .cloned()
+        .unwrap_or_else(|| panic!("{output:?}"))
+}
+
+#[test]
+fn a_write_cloud_took_but_never_answered_says_it_may_have_applied() {
+    let root = tempfile::tempdir().unwrap();
+    let add = Reply {
+        path: "/api/config/write",
+        kind: "create_service",
+        status: 200,
+        body: Value::Null,
+        interrupt: Some(Interrupt::HangUp),
+        delay: Duration::ZERO,
+    };
+    let Run { output, .. } = cli_run(
+        vec![add],
+        root.path(),
+        &[
+            "service",
+            "add",
+            "frz",
+            "--image",
+            "nginx:alpine",
+            "--project",
+            "shop",
+            "--env",
+            "production",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(error.get("code"), Some(&json!("unavailable")), "{error}");
+    assert!(
+        error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap()
+            .ends_with("stopped answering after it got this change, so it may have applied."),
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/details/writes"),
+        Some(&json!("unknown")),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz diff --project shop --env production"
+    );
+}
+
+#[test]
+fn a_deploy_cloud_took_but_never_answered_points_at_its_deployments() {
+    let (output, _) = run(vec![hung_up(admitted())]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.pointer("/details/writes"),
+        Some(&json!("unknown")),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment ls --project shop --env production"
+    );
+}
+
+#[test]
+fn losing_cloud_while_following_says_the_deployment_keeps_running() {
+    let (output, _) = run(vec![
+        admitted(),
+        hung_up(observed(7, DeploymentStatus::Running)),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "Stopped following Deployment #7; it keeps running in Ployz Cloud."
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment show 7 --project shop --env production"
+    );
+}
+
+#[test]
+fn losing_cloud_while_looking_for_a_replacement_keeps_the_superseded_status() {
+    let (output, _) = run(vec![
+        admitted(),
+        observed(7, DeploymentStatus::Superseded),
+        hung_up(replacement()),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "Deployment #7 was superseded, and Ployz Cloud stopped answering before its replacement could be read."
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment ls --project shop --env production"
+    );
+}
+
+#[test]
+fn losing_cloud_after_a_replacement_names_the_deployment_being_followed() {
+    let (output, _) = run(vec![
+        admitted(),
+        observed(7, DeploymentStatus::Superseded),
+        replacement(),
+        hung_up(observed(8, DeploymentStatus::Running)),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "Stopped following Deployment #8; it keeps running in Ployz Cloud."
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment show 8 --project shop --env production"
     );
 }

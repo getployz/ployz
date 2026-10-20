@@ -66,6 +66,14 @@ describe("VariableRow", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it("warns in red where a broken reference is fixed, in place of the deleted-Service guess", () => {
+    render(<VariableRow variable={plainVariable({ value: { type: "plain", value: "${{ <deleted>.URL }}" }, broken: "redis was removed" })}
+      collection={collection} onSealVariable={vi.fn()} />);
+    const warning = screen.getByText("Broken reference: redis was removed");
+    expect(warning.parentElement?.className).toContain("text-destructive");
+    expect(screen.queryByText(/References a variable whose service was deleted/u)).toBeNull();
+  });
+
   it("shows a seal action for plain variables and confirms without plaintext", async () => {
     const onSealVariable = vi.fn().mockResolvedValue(undefined);
 
@@ -77,7 +85,7 @@ describe("VariableRow", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Seal"));
 
     expect(await screen.findByText("Seal Variable")).toBeTruthy();
@@ -114,7 +122,7 @@ describe("VariableRow", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Seal"));
     fireEvent.click(screen.getByRole("button", { name: "Seal variable" }));
 
@@ -136,7 +144,7 @@ describe("VariableRow", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Seal"));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -152,13 +160,22 @@ describe("VariableRow", () => {
       />,
     );
 
-    expect(screen.queryByText("Show value")).toBeNull();
-    expect(screen.queryByText("Copy value")).toBeNull();
+    expect(screen.queryByText("Show API_KEY")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy API_KEY" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     expect(await screen.findByText("Delete")).toBeTruthy();
     expect(screen.queryByText("Seal")).toBeNull();
     expect(screen.queryByText("Edit")).toBeNull();
+  });
+
+  it("marks a sealed variable with a lock that says why its value is hidden", async () => {
+    render(<VariableRow variable={sealedVariable()} collection={collection} onSealVariable={vi.fn()} />);
+
+    const sealed = screen.getByRole("button", { name: "Sealed" });
+    expect(screen.queryByText("!")).toBeNull();
+    fireEvent.click(sealed);
+    expect(await screen.findByText("Sealed. Its value is never shown.")).toBeTruthy();
   });
 
   it("shows a saved value as the editor closes, and the stored one again when the write is refused", async () => {
@@ -166,8 +183,8 @@ describe("VariableRow", () => {
     const write = new Promise<void>((_resolve, reject) => { fail = reject; });
     const writer = asTestDouble<VariableWriter>()({ update: vi.fn(() => ({ isPersisted: { promise: write } })) });
     render(<VariableRow variable={plainVariable()} collection={writer} onSealVariable={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Show value" }));
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show API_KEY" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Edit"));
     const input = screen.getByDisplayValue("super-secret");
     fireEvent.change(input, { target: { value: "rotated" } });
@@ -191,7 +208,7 @@ describe("VariableRow", () => {
     expect(screen.getByText("Not set")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Set value" }));
-    const input = screen.getByLabelText("Secret value");
+    const input = screen.getByLabelText("Value of API_KEY");
     expect(input.getAttribute("type")).toBe("password");
     fireEvent.change(input, { target: { value: "prod-key" } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -206,7 +223,7 @@ describe("VariableRow", () => {
     render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onNeverSync={onNeverSync} />);
     expect(screen.getByText("Never synced")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Sync again"));
     expect(onNeverSync).toHaveBeenCalledWith(variable, false);
   });
@@ -217,7 +234,7 @@ describe("VariableRow", () => {
     render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onNeverSync={onNeverSync} />);
     expect(screen.queryByText("Never synced")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Never sync"));
     expect(onNeverSync).toHaveBeenCalledWith(variable, true);
   });
@@ -227,7 +244,7 @@ describe("VariableRow", () => {
     const variable = plainVariable();
     render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onRename={onRename} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Rename"));
     const input = await screen.findByLabelText("Name");
     expect((input as HTMLInputElement).value).toBe("API_KEY");
@@ -249,7 +266,7 @@ describe("VariableRow", () => {
     const variable = sealedVariable();
     render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onRename={onRename} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Rename"));
     fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "STRIPE_KEY" } });
     fireEvent.click(screen.getByRole("button", { name: "Rename" }));
@@ -263,7 +280,7 @@ describe("VariableRow", () => {
     render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onRename={onRename}
       referrers={["web.UPSTREAM", "worker.BACKEND"]} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Rename"));
     expect(await screen.findByText("Also updates 2 references")).toBeTruthy();
     const listed = screen.getByRole("list", { name: "References" });
@@ -278,7 +295,7 @@ describe("VariableRow", () => {
   it("cancels a rename without saving", async () => {
     const onRename = vi.fn();
     render(<VariableRow variable={plainVariable()} collection={collection} onSealVariable={vi.fn()} onRename={onRename} />);
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     fireEvent.click(await screen.findByText("Rename"));
     fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "STRIPE_KEY" } });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -286,9 +303,38 @@ describe("VariableRow", () => {
     expect(onRename).not.toHaveBeenCalled();
   });
 
+  it("names each row's buttons after its key", () => {
+    render(<>
+      <VariableRow variable={plainVariable()} collection={collection} onSealVariable={vi.fn()} />
+      <VariableRow variable={plainVariable({ id: "44444444-4444-4444-8444-444444444444", key: "DB_URL" })} collection={collection} onSealVariable={vi.fn()} />
+    </>);
+    for (const key of ["API_KEY", "DB_URL"]) {
+      expect(screen.getByRole("button", { name: `Show ${key}` })).toBeTruthy();
+      expect(screen.getByRole("button", { name: `Copy ${key}` })).toBeTruthy();
+      expect(screen.getByRole("button", { name: `Actions for ${key}` })).toBeTruthy();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Show API_KEY" }));
+    expect(screen.getByRole("button", { name: "Hide API_KEY" })).toBeTruthy();
+  });
+
+  it.each([
+    ["Escape", (input: HTMLElement) => fireEvent.keyDown(input, { key: "Escape" })],
+    ["Enter", (input: HTMLElement) => fireEvent.keyDown(input, { key: "Enter" })],
+  ])("labels the edit input with its key, and %s returns focus to the row's menu", async (_key, close) => {
+    const writer = asTestDouble<VariableWriter>()({ update: vi.fn(() => ({ isPersisted: { promise: Promise.resolve() } })) });
+    render(<VariableRow variable={plainVariable()} collection={writer} onSealVariable={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
+    fireEvent.click(await screen.findByText("Edit"));
+    const input = screen.getByRole("textbox", { name: "Value of API_KEY" });
+
+    close(input);
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Actions for API_KEY" })));
+  });
+
   it("offers no Rename where the panel can't rename", async () => {
     render(<VariableRow variable={plainVariable()} collection={collection} onSealVariable={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions for API_KEY" }));
     await screen.findByText("Delete");
     expect(screen.queryByText("Rename")).toBeNull();
   });

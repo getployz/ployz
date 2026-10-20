@@ -224,10 +224,10 @@ fn removing_a_node_production_changed_since_is_a_conflict() {
 }
 
 #[test]
-fn a_removal_production_still_references_stays_in_use_and_the_rest_lands() {
+fn a_removal_production_still_references_lands_and_reports_the_reference_broken() {
     let (store, who) = shop_with_nodes();
     remove_db(&store, &who);
-    // production's worker references db since pr-5 started.
+    // production's worker references db since pr-5 started, and keeps web's.
     set(
         &store,
         &who,
@@ -235,50 +235,24 @@ fn a_removal_production_still_references_stays_in_use_and_the_rest_lands() {
         &[("worker.env.DB", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
     );
     save(&store, &who, "production");
+    exclude(&store, &who, "web.env.DB_URL", false);
     let db = row(&store, &who, "db");
-    assert_eq!(
-        (
-            db.ride,
-            db.refused_by
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        ),
-        (Ride::Rides, vec!["worker.env.DB".to_owned()])
-    );
+    assert_eq!((db.ride, db.refused_by), (Ride::Rides, vec![]));
 
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
-    assert!(saved_has(&store, &who, "production", "db"));
-    assert_eq!(
-        value(&store, &who, "production", "web.env.DB_URL"),
-        Some(json!("db.internal"))
-    );
-    assert!(production_diff(&store, &who).published);
-}
-
-#[test]
-fn a_removal_is_refused_by_the_value_that_lands_not_the_previews() {
-    let (store, who) = shop_with_nodes();
-    remove_db(&store, &who);
-    // Excluding the edit that stopped referencing db keeps production's reference.
-    exclude(&store, &who, "web.env.DB_URL", false);
-    let refused: Vec<String> = row(&store, &who, "db")
-        .refused_by
+    assert!(!saved_has(&store, &who, "production", "db"));
+    let broken: Vec<String> = production_diff(&store, &who)
+        .broken
         .iter()
         .map(ToString::to_string)
         .collect();
-    assert_eq!(refused, ["web.env.DB_URL"]);
-    exclude(&store, &who, "web.env.DB_URL", true);
-    assert_eq!(row(&store, &who, "db").refused_by, []);
-
-    // An Edit landing the reference refuses it too.
-    store
-        .write(
-            &who,
-            &merge_value("web.env.DB_URL", Some("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
-        )
-        .unwrap();
-    assert_eq!(row(&store, &who, "db").refused_by.len(), 1);
+    assert_eq!(
+        broken,
+        [
+            "web.env.DB_URL references db, which was removed",
+            "worker.env.DB references db, which was removed",
+        ]
+    );
 }
 
 #[test]
@@ -440,7 +414,7 @@ fn undo_brings_a_removed_service_and_config_back_whole() {
 }
 
 #[test]
-fn each_destination_decides_its_own_removal() {
+fn each_destination_takes_a_removal_its_references_never_hold() {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
@@ -469,6 +443,9 @@ fn each_destination_decides_its_own_removal() {
         .unwrap();
     image_service(&store, &who, "production", 20, "db");
     save(&store, &who, "production");
+    // production runs db, so a Branch without its copy reads it live.
+    let id = deploy_by_hand(&store, &who, &["db"]);
+    run(&store, &id, &["db"]);
     for (n, name) in [(30, "staging"), (31, "qa")] {
         store
             .write(
@@ -488,7 +465,7 @@ fn each_destination_decides_its_own_removal() {
         set(&store, &who, name, &[("web.branch", json!("main"))]);
         save(&store, &who, name);
     }
-    // qa references db since.
+    // qa references db since; the removal still lands there.
     set(
         &store,
         &who,
@@ -533,18 +510,28 @@ fn each_destination_decides_its_own_removal() {
                 "staging".to_owned(),
                 vec![("db".to_owned(), Ride::Rides, 0)]
             ),
-            ("qa".to_owned(), vec![("db".to_owned(), Ride::Rides, 1)]),
+            ("qa".to_owned(), vec![("db".to_owned(), Ride::Rides, 0)]),
         ]
     );
 
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
     assert!(!saved_has(&store, &who, "staging", "db"));
-    assert!(saved_has(&store, &who, "qa", "db"));
+    assert!(!saved_has(&store, &who, "qa", "db"));
     assert!(saved_has(&store, &who, "production", "db"));
+    let qa = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("qa"),
+            },
+        )
+        .unwrap();
+    // Without its copy, qa's reference reads production's db live: nothing broke.
+    assert_eq!(qa.broken, []);
 }
 
 #[test]
-fn the_check_names_a_removal_apart_from_values_and_reads_neutral_while_it_is_in_use() {
+fn the_check_names_a_removal_apart_from_values_and_a_reference_never_holds_it() {
     let (store, who) = shop_with_nodes();
     remove_db(&store, &who);
     store
@@ -570,7 +557,7 @@ fn the_check_names_a_removal_apart_from_values_and_reads_neutral_while_it_is_in_
         }
     );
 
-    // production's worker references db since pr-5 started: the removal waits.
+    // production's worker references db since pr-5 started: the removal still lands.
     set(
         &store,
         &who,
@@ -578,19 +565,7 @@ fn the_check_names_a_removal_apart_from_values_and_reads_neutral_while_it_is_in_
         &[("worker.env.DB", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
     );
     save(&store, &who, "production");
-    let in_use = check(&store, &who).unwrap();
-    assert_eq!(
-        in_use,
-        OnMergeCheck {
-            conclusion: OnMergeConclusion::Neutral,
-            title: "1 config change".into(),
-            summary: "- `web · DB_URL`: ${{ db.PLOYZ_PRIVATE_DOMAIN }} → db.internal\n\n\
-                      - `db`: In use · worker.env.DB\n\n\
-                      - `volumes.data`: Kept"
-                .into(),
-            merged_into: None,
-        }
-    );
+    assert_eq!(check(&store, &who).unwrap(), removes);
 }
 
 #[test]
@@ -840,7 +815,10 @@ fn a_removal_waits_for_ci_with_what_the_merge_changed() {
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     assert_eq!(
-        (pushed.waiting.len(), pushed.admitted.len()),
+        (
+            crate::support::held(&store, &who, "production").len(),
+            pushed.admitted.len()
+        ),
         (1, 0),
         "{pushed:?}"
     );
@@ -1197,6 +1175,9 @@ fn retry(
         &ployz_store::Admit::Retry(ployz_store::Retry {
             id: id.clone(),
             deployment: source.clone(),
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
         }),
         &Trusted::default(),
     )?;
@@ -1439,4 +1420,30 @@ fn a_merge_that_removes_a_mounted_config_takes_it_out_with_the_service() {
         .map(|node| node.node.name().to_owned())
         .collect();
     assert_eq!(nodes, vec!["web".to_owned(), "sentry".to_owned()]);
+}
+
+#[test]
+fn an_edit_keeps_the_service_the_preview_read_after_production_replaced_it() {
+    let (store, who) = shop_with_nodes();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[(
+            "web.env.DB_URL",
+            json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432"),
+        )],
+    );
+    remove_service(&store, &who, "production", "db");
+    image_service(&store, &who, "production", 30, "db");
+    let shown = row(&store, &who, "web.env.DB_URL").lands;
+    let edited = shown.as_str().unwrap().replace(":5432", ":6432");
+
+    store
+        .write(&who, &merge_value("web.env.DB_URL", Some(edited.as_str())))
+        .unwrap();
+    assert_eq!(
+        row(&store, &who, "web.env.DB_URL").lands,
+        json!("${{ <deleted db>.PLOYZ_PRIVATE_DOMAIN }}:6432")
+    );
 }

@@ -22,10 +22,10 @@ use ployz_core::{
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
     MachineList, MachineName, MachineObservation, MachineRpcServer, MembershipObservation,
     Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
-    ServingPointer, ServingPointerPublication, ServingPointerRead, UpdateOrder, VolumeInventory,
-    WireGuardPublicKey,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RoutesRead, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, ServingPointer, ServingPointerPublication, UpdateOrder,
+    VolumeInventory, WireGuardPublicKey,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
 use serde_json::Value;
@@ -626,12 +626,13 @@ impl FakeMachine for DeployService {
         };
         let settled = matches!(
             &ensure.want,
-            ployz_core::ContainerWant::Running { container: RunTarget::New(new) }
+            ployz_core::ContainerWant::Running { container: RunTarget::New(new), .. }
                 if new.answer == AnswerWhen::Settled
         );
         let now = match ensure.want {
             ployz_core::ContainerWant::Running {
                 container: RunTarget::New(new),
+                ..
             } => {
                 if !new.image_prepared {
                     self.creation_pulls.fetch_add(1, Ordering::SeqCst);
@@ -676,6 +677,7 @@ impl FakeMachine for DeployService {
             }
             ployz_core::ContainerWant::Running {
                 container: RunTarget::Existing(locator),
+                ..
             } => {
                 if let Some(error) = &self.start_error {
                     return encoded(RpcResponse::from(error.clone()));
@@ -694,6 +696,9 @@ impl FakeMachine for DeployService {
                     self.removed.lock().unwrap().insert(container_id);
                 }
                 ContainerNow::Absent { of: container }
+            }
+            ployz_core::ContainerWant::Out { .. } | ployz_core::ContainerWant::Held { .. } => {
+                return unused();
             }
         };
         let health = if settled {
@@ -856,12 +861,11 @@ impl FakeMachine for DeployService {
         };
         encoded(RpcResponse::from(publication))
     }
-    async fn read_serving_pointer(
+    async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::ReadServingPointer(read) =
-            request.into_inner().decode_request().unwrap().body
+        let RpcRequestBody::ReadRoutes(read) = request.into_inner().decode_request().unwrap().body
         else {
             panic!("expected pointer read");
         };
@@ -874,10 +878,11 @@ impl FakeMachine for DeployService {
                     .map(move |observed| (observed.machine.id, pointer.deploy.clone()))
             })
             .collect();
-        encoded(RpcResponse::from(ServingPointerRead {
+        encoded(RpcResponse::from(RoutesRead {
             all_routed: pointer.is_some(),
             pointer,
             acks,
+            ..RoutesRead::default()
         }))
     }
     async fn prune_images(
@@ -907,7 +912,7 @@ impl FakeMachine for DeployService {
             policy: pull.policy,
             mutations_before: self.mutating_rpcs.load(Ordering::SeqCst),
         });
-        encoded(RpcResponse::from(ployz_core::ImagePulled {}))
+        encoded(RpcResponse::from(ployz_core::ImagePulled::default()))
     }
     async fn pull_image_from_machine(
         &self,

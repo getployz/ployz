@@ -305,11 +305,14 @@ it.live("a push whose body changed after signing answers 401 and writes nothing"
 it.live("a push signed more than five minutes away from now answers 401 and writes nothing", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
   const now = Math.floor(Date.now() / 1000);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(now * 1000);
   expect((yield* send(push([[10, WEB]]), { at: now - 301 })).status).toBe(401);
   expect((yield* send(push([[10, WEB]]), { at: now + 301 })).status).toBe(401);
   expect(yield* rows()).toEqual(nothing);
-  expect((yield* send(push([[10, WEB]]), { at: now - 290 })).status).toBe(200);
-}), 60_000);
+  expect((yield* send(push([[10, WEB]]), { at: now - 300 })).status).toBe(200);
+  expect((yield* send(push([[10, WEB]]), { at: now + 300 })).status).toBe(200);
+}).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))), 60_000);
 
 it.live("a push with no signature, a malformed one, or a stale timestamp answers 401 before its body or the database is read", () =>
   Effect.gen(function* () {

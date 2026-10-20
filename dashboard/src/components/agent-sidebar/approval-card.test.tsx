@@ -147,6 +147,17 @@ it("counts a Deploy's deleted Volumes, and anything else it destroys as things",
   expect(within(screen.getByLabelText("Deploy shop/production needs approval")).getByText("Destroys 2 things")).toBeTruthy();
 });
 
+it("warns that an agent's rollback deletes Volume data, beside what it undoes", () => {
+  const rollback = { ...approval, id: "a3", command: "retry", review: {
+    effects: [{ kind: "deletes_volume" as const, name: "data", node: "v5", path: "volumes.data" }],
+    diff: asTestDouble<DiffView>()({ environment: { id: "e1", project: "shop", name: "production", revision: 4 }, total_count: 0, changes: [] }),
+    redeploy: { deployment: 1, rolls_back: [2] },
+  } };
+  show(rollback);
+  expect(screen.getByText("Back to #1. Undoes #2.")).toBeTruthy();
+  expect(screen.getByRole("list", { name: "Destroys" }).textContent).toBe("Deletes volume data. Not recoverable.");
+});
+
 it("words a destroyed thing without a name as its kind, never by its id", () => {
   const review = { ...approval.review, effects: [{ kind: "removes_service" as const, node: "0b9c5d1e-svc", path: "services.0b9c5d1e-svc" }] };
   show(asTestDouble<ApprovalView>()({ ...approval, review }));

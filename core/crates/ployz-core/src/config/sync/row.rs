@@ -58,6 +58,7 @@ pub enum Setting {
     Healthcheck,
     RestartPolicy,
     MaxRetries,
+    UpdateOrder,
     Replicas,
     CpuLimit,
     MemLimit,
@@ -68,7 +69,7 @@ pub enum Setting {
 
 impl Setting {
     /// Every Setting, in landing order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Source,
         Self::Branch,
         Self::PrivateDns,
@@ -79,6 +80,7 @@ impl Setting {
         Self::Healthcheck,
         Self::RestartPolicy,
         Self::MaxRetries,
+        Self::UpdateOrder,
         Self::Replicas,
         Self::CpuLimit,
         Self::MemLimit,
@@ -101,6 +103,7 @@ impl Setting {
             Self::Healthcheck => "healthcheck",
             Self::RestartPolicy => "restartPolicy",
             Self::MaxRetries => "maxRetries",
+            Self::UpdateOrder => "updateOrder",
             Self::Replicas => "replicas",
             Self::CpuLimit => "cpuLimit",
             Self::MemLimit => "memLimit",
@@ -127,6 +130,7 @@ impl Setting {
             | Self::Healthcheck
             | Self::RestartPolicy
             | Self::MaxRetries
+            | Self::UpdateOrder
             | Self::Replicas
             | Self::CpuLimit
             | Self::MemLimit
@@ -558,6 +562,7 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
             | Setting::Healthcheck
             | Setting::RestartPolicy
             | Setting::MaxRetries
+            | Setting::UpdateOrder
             | Setting::Replicas
             | Setting::CpuLimit
             | Setting::MemLimit

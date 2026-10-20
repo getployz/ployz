@@ -555,7 +555,8 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::UnbudgetedDiskUsage
             | DeployWarning::StorageObservationUnknown { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
-            | DeployWarning::SkippedDependencyHealth { .. } => false,
+            | DeployWarning::SkippedDependencyHealth { .. }
+            | DeployWarning::ImagePortMismatch { .. } => false,
         }),
         "DNS warning must match the CLI body: {:?}",
         preview.warnings

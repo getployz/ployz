@@ -21,9 +21,9 @@ use ployz_core::{
     MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
     MachineObservation, MachinePath, MachineRpcServer, MachineStorageObservation,
     MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, ServingPointer,
-    ServingPointerPublication, ServingPointerRead, VolumeInventory, VolumeObservationFailure,
+    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RoutesRead, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
+    ServingPointer, ServingPointerPublication, VolumeInventory, VolumeObservationFailure,
     VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
@@ -165,6 +165,8 @@ pub(super) struct DiscoveryService {
     pub(super) history_requests: Arc<Mutex<Vec<(MachineId, ployz_core::LogHistoryRequest)>>>,
     pub(super) history_failures: Arc<Mutex<BTreeMap<MachineId, Status>>>,
     pub(super) history_blocked: Option<Arc<tokio::sync::Notify>>,
+    /// The Services whose lines the Log Stores kept; every one when unset.
+    pub(super) kept_services: Option<std::collections::BTreeSet<String>>,
     pub(super) tail_failure: Option<Status>,
     pub(super) metric_replies: Arc<Mutex<MetricReplies>>,
     pub(super) metric_requests:
@@ -208,6 +210,12 @@ pub(super) struct DiscoveryService {
     pub(super) upgrade_targets: Arc<Mutex<Vec<String>>>,
     /// Lose the next Upgrade request's reply after accepting it.
     pub(super) lose_upgrade_reply: Arc<AtomicBool>,
+    /// Every operator endpoint this entry took for a peer.
+    pub(super) selected_endpoints: Arc<Mutex<Vec<ployz_core::SelectEndpointRequest>>>,
+    /// UpdateMachine fails in transport, as when the target is off the mesh.
+    pub(super) update_unavailable: bool,
+    /// SelectEndpoint is unimplemented, as on a daemon older than it.
+    pub(super) select_unimplemented: bool,
 }
 
 impl DiscoveryService {
@@ -234,6 +242,7 @@ impl DiscoveryService {
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: Arc::new(Mutex::new(BTreeMap::new())),
             history_blocked: None,
+            kept_services: None,
             tail_failure: None,
             metric_replies: Arc::default(),
             metric_requests: Arc::default(),
@@ -267,6 +276,9 @@ impl DiscoveryService {
             upgrade_attempt: Arc::default(),
             upgrade_targets: Arc::default(),
             lose_upgrade_reply: Arc::default(),
+            selected_endpoints: Arc::default(),
+            update_unavailable: false,
+            select_unimplemented: false,
         }
     }
 
@@ -902,6 +914,7 @@ impl FakeMachine for DiscoveryService {
         let now = match ensure.want {
             ployz_core::ContainerWant::Running {
                 container: ployz_core::RunTarget::New(new),
+                ..
             } => {
                 let resolved_spec = new.resolved_spec.clone();
                 self.created_containers.lock().unwrap().push(new);
@@ -933,7 +946,9 @@ impl FakeMachine for DiscoveryService {
                 ployz_core::ContainerNow::Absent { of: container }
             }
             ployz_core::ContainerWant::Running { .. }
-            | ployz_core::ContainerWant::Stopped { .. } => {
+            | ployz_core::ContainerWant::Stopped { .. }
+            | ployz_core::ContainerWant::Out { .. }
+            | ployz_core::ContainerWant::Held { .. } => {
                 return Err(Status::unimplemented("unused"));
             }
         };
@@ -978,6 +993,7 @@ impl FakeMachine for DiscoveryService {
         else {
             return Err(Status::invalid_argument("expected log_history"));
         };
+        let asked = history.service.clone();
         self.history_requests
             .lock()
             .unwrap()
@@ -988,6 +1004,12 @@ impl FakeMachine for DiscoveryService {
         if let Some(received) = &self.history_blocked {
             received.notify_one();
             std::future::pending::<()>().await;
+        }
+        if let (Some(kept), Some(service)) = (&self.kept_services, &asked)
+            && !kept.contains(service)
+        {
+            let end = ployz_core::HistoryRow::End { next: None }.encode().unwrap();
+            return Ok(Response::new(Box::pin(tokio_stream::iter([Ok(end)]))));
         }
         let container_id = ContainerId::parse("9".repeat(64)).unwrap();
         let rows = [
@@ -1146,12 +1168,11 @@ impl FakeMachine for DiscoveryService {
             RpcResponse::from(publication).encode().unwrap(),
         ))
     }
-    async fn read_serving_pointer(
+    async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::ReadServingPointer(read) =
-            request.into_inner().decode_request().unwrap().body
+        let RpcRequestBody::ReadRoutes(read) = request.into_inner().decode_request().unwrap().body
         else {
             panic!("expected pointer read");
         };
@@ -1165,10 +1186,11 @@ impl FakeMachine for DiscoveryService {
             })
             .collect();
         Ok(Response::new(
-            RpcResponse::from(ServingPointerRead {
+            RpcResponse::from(RoutesRead {
                 all_routed: pointer.is_some(),
                 pointer,
                 acks,
+                ..RoutesRead::default()
             })
             .encode()
             .unwrap(),
@@ -1179,7 +1201,7 @@ impl FakeMachine for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Ok(Response::new(
-            RpcResponse::from(ployz_core::ImagePulled {})
+            RpcResponse::from(ployz_core::ImagePulled::default())
                 .encode()
                 .unwrap(),
         ))
@@ -1207,9 +1229,34 @@ impl FakeMachine for DiscoveryService {
         }
         builds.delivered.store(true, Ordering::SeqCst);
         Ok(Response::new(
-            RpcResponse::from(ployz_core::ImagePulled {})
+            RpcResponse::from(ployz_core::ImagePulled::default())
                 .encode()
                 .unwrap(),
+        ))
+    }
+
+    async fn select_endpoint(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if self.select_unimplemented {
+            return Err(Status::unimplemented("SelectEndpoint"));
+        }
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::SelectEndpoint(request) = request.body else {
+            return Err(Status::invalid_argument("expected select_endpoint"));
+        };
+        self.selected_endpoints
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::EndpointSelected {
+                peer: request.peer,
+                endpoint: request.endpoint,
+            })
+            .encode()
+            .unwrap(),
         ))
     }
 
@@ -1217,6 +1264,9 @@ impl FakeMachine for DiscoveryService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self.update_unavailable {
+            return Err(Status::unavailable("target Machine RPC timed out"));
+        }
         let target = ployz_core::MachineTarget::parse(
             request.metadata().get("machine").unwrap().to_str().unwrap(),
         )

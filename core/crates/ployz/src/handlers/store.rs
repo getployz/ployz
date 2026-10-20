@@ -150,13 +150,25 @@ impl<'m> Store<'m> {
 
     /// [`Self::write`], leaving the refusal for the caller to add a next step to.
     pub(crate) fn try_write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
-        self.approved(command, &Trusted::default())
+        self.try_write_checked(command, &["diff"])
     }
 
+    /// [`Self::try_write`] for a command whose effect `check`, a read, shows.
+    pub(crate) fn try_write_checked<C: Tell>(
+        &self,
+        command: &C,
+        check: &[&str],
+    ) -> Result<C::Written, StoreCallError> {
+        self.approved(command, &Trusted::default(), Some(check))
+    }
+
+    /// Apply `command`, asking for approval when Cloud does. A write Cloud took but
+    /// never answered names `check`, the read that shows whether it applied.
     fn approved<C: Tell>(
         &self,
         command: &C,
         trusted: &Trusted,
+        check: Option<&[&str]>,
     ) -> Result<C::Written, StoreCallError> {
         let mut approval = self
             .matches
@@ -170,6 +182,10 @@ impl<'m> Store<'m> {
                 .write(command, trusted.clone(), approval.as_deref())
             {
                 Err(StoreCallError::Refused(refused)) => refused,
+                Err(StoreCallError::Cloud(error @ LoginError::Unanswered { .. })) => {
+                    let check = check.map(|check| Hint::Inspect(next(self.matches, check)));
+                    return Err(StoreCallError::Stopped(Error::from(error).hint(check)));
+                }
                 written => return written,
             };
             let (Backend::Cloud(runtime, credential), Some(asked), false) =
@@ -195,9 +211,10 @@ impl<'m> Store<'m> {
     /// Cloud gathers its own evidence.
     pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
         let volumes = match &self.backend {
-            Backend::Local(..) => {
-                self.observe(std::slice::from_ref(&publish.environment), false)?
-            }
+            Backend::Local(..) => self.observe([RemovalsQuery {
+                environment: publish.environment.clone(),
+                ..RemovalsQuery::default()
+            }])?,
             Backend::Cloud(..) => None,
         };
         self.approved(
@@ -206,22 +223,32 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            Some(&["diff"]),
         )
     }
 
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
     /// Servers this CLI observes; over HTTPS, Cloud gathers its own evidence.
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
+        let removing = |environment: &EnvironmentRef, remove| RemovalsQuery {
+            environment: environment.clone(),
+            remove,
+            deployment: None,
+        };
         let volumes = match (&self.backend, admit) {
             (Backend::Local(..), Admit::Deploy(deploy)) if deploy.services.is_empty() => {
-                self.observe(std::slice::from_ref(&deploy.environment), false)?
+                self.observe([removing(&deploy.environment, false)])?
             }
             (Backend::Local(..), Admit::Remove(removal)) => {
-                self.observe(std::slice::from_ref(&removal.environment), true)?
+                self.observe([removing(&removal.environment, true)])?
             }
             (Backend::Local(..), Admit::ShutDown(shut_down)) => {
-                self.observe(std::slice::from_ref(&shut_down.environment), true)?
+                self.observe([removing(&shut_down.environment, true)])?
             }
+            (Backend::Local(..), Admit::Retry(retry)) => self.observe([RemovalsQuery {
+                deployment: Some(retry.deployment.clone()),
+                ..RemovalsQuery::default()
+            }])?,
             _ => None,
         };
         self.approved(
@@ -230,6 +257,7 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            Some(&["deployment", "ls"]),
         )
     }
 
@@ -241,7 +269,13 @@ impl<'m> Store<'m> {
         members: &[EnvironmentRef],
     ) -> Result<Removal, StoreCallError> {
         let volumes = match &self.backend {
-            Backend::Local(..) => self.observe(members, true)?,
+            Backend::Local(..) => {
+                self.observe(members.iter().map(|environment| RemovalsQuery {
+                    environment: environment.clone(),
+                    remove: true,
+                    deployment: None,
+                }))?
+            }
             Backend::Cloud(..) => None,
         };
         self.approved(
@@ -250,6 +284,7 @@ impl<'m> Store<'m> {
                 volumes,
                 ..Trusted::default()
             },
+            None,
         )
     }
 
@@ -261,20 +296,16 @@ impl<'m> Store<'m> {
         }
     }
 
-    /// Which Servers hold the data of the Volumes a Deploy (or a removal: `remove`)
-    /// of `environments` deletes. A Cluster this can't reach leaves the evidence out,
-    /// so the Store refuses.
+    /// Which Servers hold the data of the Volumes each of `queries` removes: a
+    /// Deploy, removal or rollback. A Cluster this can't reach leaves the evidence
+    /// out, so the Store refuses.
     fn observe(
         &self,
-        environments: &[EnvironmentRef],
-        remove: bool,
+        queries: impl IntoIterator<Item = RemovalsQuery>,
     ) -> Result<Option<VolumeObservation>, StoreCallError> {
         let mut sought = Vec::new();
-        for environment in environments {
-            let removals = self.backend.read(&RemovalsQuery {
-                environment: environment.clone(),
-                remove,
-            })?;
+        for query in queries {
+            let removals = self.backend.read(&query)?;
             sought.extend(
                 removals
                     .volumes
@@ -301,13 +332,19 @@ impl<'m> Store<'m> {
         }))
     }
 
-    /// Hand Cloud the archive of `dir`, the source Deployment `deployment` builds
-    /// from, before admitting it. The in-process Store's runner reads `dir` itself.
-    pub(crate) fn upload(&self, deployment: &DeploymentId, dir: &Path) -> Result<(), Error> {
+    /// Hand Cloud the archive of `listing`, read from `dir`, the source Deployment
+    /// `deployment` builds from, before admitting it. The in-process Store's runner
+    /// reads `dir` itself.
+    pub(crate) fn upload(
+        &self,
+        deployment: &DeploymentId,
+        dir: &Path,
+        listing: &crate::build::UploadListing,
+    ) -> Result<(), Error> {
         let Backend::Cloud(runtime, credential) = &self.backend else {
             return Ok(());
         };
-        let archive = crate::build::upload_archive(dir).map_err(super::deploy::unreadable(dir))?;
+        let archive = listing.archive().map_err(super::deploy::unreadable(dir))?;
         runtime
             .block_on(cloud_account::upload(
                 credential,
@@ -671,6 +708,28 @@ pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
     shell_words::join(next)
 }
 
+/// The command that points `reference` at something there: a new value for its
+/// variable, or a new copy of its Config file.
+pub(crate) fn fix_broken(matches: &ArgMatches, reference: &ployz_store::BrokenReference) -> String {
+    match &reference.at {
+        ployz_store::ReferenceAt::Variable { service, variable } => next(
+            matches,
+            &["set", &format!("{service}.env.{variable}=VALUE")],
+        ),
+        ployz_store::ReferenceAt::File { config, file } => next(
+            matches,
+            &[
+                "config",
+                "put",
+                config.as_str(),
+                file.as_str(),
+                "--from",
+                "PATH",
+            ],
+        ),
+    }
+}
+
 /// A Store error and the hint this command adds to it.
 pub(crate) struct Refusal {
     error: StoreCallError,
@@ -738,11 +797,15 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
 /// one line per domain, `web.domains: added shop.acme.ployz.app`, never as the field storing it.
 pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<String> {
     let Some(domains) = ployz_store::DomainChange::of(row) else {
+        let value = |value: &serde_json::Value| match value.as_f64() {
+            Some(gb) if row.path.ends_with(".memLimit") => ployz_store::memory_size(gb),
+            _ => shown(value),
+        };
         return vec![format!(
             "{}: {} → {}",
             row.path,
-            shown(&row.before),
-            shown(&row.after)
+            value(&row.before),
+            value(&row.after)
         )];
     };
     let service = row.path.split('.').next().unwrap_or_default();
@@ -828,7 +891,7 @@ pub(crate) fn service_name(
     arg: &str,
 ) -> Result<ployz_core::ServiceName, Error> {
     ployz_core::ServiceName::parse(super::required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Service name: up to 63 lowercase letters, digits and -, like web")
+        Error::usage("Expected a Service name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like web")
     })
 }
 
@@ -870,7 +933,7 @@ fn names<T>(
         .map(|name| {
             parse(name).ok_or_else(|| {
                 Error::usage(format!(
-                    "Expected {what} names: lowercase letters, digits and -"
+                    "Expected {what} names: each up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
                 ))
             })
         })
@@ -883,7 +946,7 @@ pub(crate) fn volume_name(
     arg: &str,
 ) -> Result<ployz_store::VolumeName, Error> {
     ployz_store::VolumeName::parse(super::required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Volume name: up to 63 lowercase letters, digits and -, like data")
+        Error::usage("Expected a Volume name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like data")
     })
 }
 
@@ -920,6 +983,16 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(changed(&route), ["web.domains: removed app.example.com"]);
+    }
+
+    #[test]
+    fn a_staged_memory_limit_reads_with_its_unit() {
+        let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
+            "path": "web.memLimit", "kind": "update", "canRestore": true,
+            "before": null, "after": 0.201_326_592,
+        }))
+        .unwrap();
+        assert_eq!(changed(&row), ["web.memLimit: null → 192 MiB"]);
     }
 
     /// Two reads of Working State's revision, with `between` run between them.

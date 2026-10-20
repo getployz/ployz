@@ -16,7 +16,7 @@ use crate::{
     PortPublication, PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource,
     RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceConfigGraph, ServiceContainerSpec,
     ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceRemovals, ServiceVolume,
-    ServiceVolumeGraph, VolumeDriver,
+    ServiceVolumeGraph, UpdateConfig, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -425,7 +425,10 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             ports,
             mount_graph: Default::default(),
             pre_deploy,
-            update: Default::default(),
+            update: UpdateConfig {
+                order: config.update_order.map(Into::into),
+                monitor_millis: None,
+            },
         };
         spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
             .map_err(mount_error)?;

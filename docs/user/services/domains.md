@@ -17,7 +17,8 @@ free https address under your organization's domain, and you can add domains you
 ![Settings → Networking with a generated domain that uses PORT, and the private name](../images/service-settings-networking.png)
 
 The address is the service's name under your organization's domain, like
-`web.acme-x7q2.ployz.app`. A [branch](../environments/environments.md) adds its own name:
+`web.acme-x7q2.ployz.app`. It shows in full, with a copy button, as soon as you generate it, and
+answers once you deploy. Generating your organization's first domain reserves its domain. A [branch](../environments/environments.md) adds its own name:
 `web-staging.acme-x7q2.ployz.app`. Your organization's domain never changes; it's under
 **Domain** in **Organization → General**.
 
@@ -34,8 +35,7 @@ From the CLI, name the subdomain: `ployz domain add web --prefix shop`. Without 
 service that has a generated domain keeps it, and the CLI suggests a free subdomain. To change
 one of several, name it: `ployz domain set web store --domain shop`.
 `ployz get web` or `ployz get web.domains` lists a service's domains, and `ployz diff` shows a staged one by
-its full hostname, `web.domains: added shop.acme.ployz.app`. Before the cluster domain is known, it
-reads `shop.<cluster domain>`.
+its full hostname, `web.domains: added shop.acme.ployz.app`.
 
 ## Choose the port
 
@@ -49,8 +49,10 @@ If your app listens on a fixed port, like 3000, do one of these and deploy:
 
 Either way the health check follows, since it checks the port your domains send traffic to.
 
-The domain's row shows where traffic goes: **→ Uses PORT** or **→ Port 3000**. The dashboard
-ignores `EXPOSE` in your Dockerfile.
+The domain's row shows where traffic goes: **→ Uses PORT** or **→ Port 3000**. Ployz doesn't
+send traffic to the port your image exposes, but the deployment warns when none of its domains
+send to one: "web's image nginx exposes 80; its domains send to 8080. Set the domain port or
+PORT." The deployment still goes ahead.
 
 ## Add a custom domain
 
@@ -105,7 +107,7 @@ A live domain shows no status.
 | **Live after your next deploy** | Click **Deploy**. |
 | **Deploying**, **Setting up**, **Issuing certificate** | Nothing. It goes live on its own. |
 | **Waiting for DNS**, **DNS doesn't point here yet**, **DNS points to another server** | [Fix your DNS records](../troubleshooting/app-not-reachable.md#my-custom-domain-is-waiting-for-dns). |
-| **Port 80 is closed on …** (shown only when no server takes the traffic) | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) on that server. |
+| **Port 80 is closed on …** (shown only when no server takes the traffic) | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) in that server's firewall, for example `ufw allow 80/tcp`. |
 | **Something else answers on port 80 of …** (shown only when no server takes the traffic) | [Free port 80](../troubleshooting/app-not-reachable.md#something-else-answers-on-port-80) on that server. |
 | **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |

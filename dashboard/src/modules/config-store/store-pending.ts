@@ -1,6 +1,7 @@
 import { useMutationState, type Mutation, type MutationFilters, type QueryClient } from "@tanstack/react-query";
 import type { BatchCommand, Change, ConfigCommand, ConfigView, DiscardTarget, EnvironmentRef, EnvironmentView, RowId, SetPrPlan } from "@ployz/sdk";
 import { Schema } from "effect";
+import { storedHostname } from "./store-hostname";
 import { commandEnvironments } from "./store.contract";
 
 /** The mutation key of an Environment's pending writes; `store-write.ts` files each with its command. */
@@ -71,8 +72,8 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "batch": return command.commands.flatMap(marksOf);
     case "never_sync": return [{ mark: "never_sync", environment: command.environment, rows: command.rows, off: command.off ?? false }];
     case "add_domain": {
-      const name = command.hostname ?? command.prefix ?? null;
-      return [{ mark: "domain", environment: command.environment, service: command.service, name: name !== null && /^\p{ASCII}*$/u.test(name) ? name : null }];
+      const name = command.hostname ? storedHostname(command.hostname) : command.prefix ?? null;
+      return [{ mark: "domain", environment: command.environment, service: command.service, name }];
     }
     case "set_generated_domain": return [{ mark: "domain", environment: command.environment, service: command.service, name: command.domain ?? command.prefix }];
     case "set_merge_value": return [{ mark: "merge_value", environment: command.environment, row: command.row }];
@@ -127,8 +128,32 @@ export function pendingMarks(queryClient: QueryClient, organizationSlug: string)
   });
 }
 
-const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark &&
-  (mark.environment.project ?? "") === (environment.project ?? "") && (mark.environment.environment ?? "") === (environment.environment ?? "");
+const sameRef = (a: EnvironmentRef, b: EnvironmentRef) => (a.project ?? "") === (b.project ?? "") && (a.environment ?? "") === (b.environment ?? "");
+const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark && sameRef(mark.environment, environment);
+
+/** Commands that leave an Environment's review where it is: the review's own Deploy and Save, a Deployment's start and cancel. */
+const KEEPS_REVIEW: ReadonlySet<ConfigCommand["command"]> = new Set(["admit", "publish", "start", "cancel"]);
+
+/** Whether `command` can move the Environment's review: any other write that names it, a field's edit or a Volume's storage. */
+const movesReview = (command: ConfigCommand, environment: EnvironmentRef) =>
+  !KEEPS_REVIEW.has(command.command) && commandEnvironments(command).some((named) => sameRef(named, environment));
+
+/** The newest write this tab has made, any kind: a press marks it as its gesture starts, for `reviewMoving`. */
+export function writeMark(queryClient: QueryClient): number {
+  return Math.max(0, ...queryClient.getMutationCache().getAll().map((mutation) => mutation.mutationId));
+}
+
+/**
+ * Whether a write that moves the Environment's review is still saving, or was made after `since` (a `writeMark`), read
+ * outside React: the review the user read doesn't include it, so a Deploy or Save pressed now would ship a version
+ * they haven't read.
+ */
+export function reviewMoving(queryClient: QueryClient, organizationSlug: string, environment: EnvironmentRef, since: number): boolean {
+  return queryClient.getMutationCache().findAll({ mutationKey: ["store-write", organizationSlug] }).some((mutation) => {
+    const command = commandOf(mutation);
+    return command !== undefined && movesReview(command, environment) && (mutation.state.status === "pending" || mutation.mutationId > since);
+  });
+}
 
 /** Whether `project` names the one a Project rename moves; none means the Organization's only Project, which may be it. */
 const sameProject = (from: string, project: string | null | undefined) => project == null || project === from;

@@ -147,6 +147,8 @@ struct Scripted {
     cancel_on: Option<(Call, CancellationToken)>,
     runs_global: bool,
     pull_error: Option<RpcError>,
+    /// What each Machine reports of each image it pulls; none when absent.
+    pull_replies: BTreeMap<MachineId, ImagePulled>,
     pulled: Mutex<BTreeSet<MachineId>>,
     /// No Machine acks this run's pointer of this Service.
     unrouted: Option<ServiceName>,
@@ -189,6 +191,7 @@ impl Scripted {
             cancel_on: None,
             runs_global: false,
             pull_error: None,
+            pull_replies: BTreeMap::new(),
             pulled: Mutex::new(BTreeSet::new()),
             unrouted: None,
             unrouted_machine: None,
@@ -303,6 +306,7 @@ impl MachineOperations for Scripted {
         let (call, of) = match want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
+                ..
             } => {
                 let call = Call::Run(machine, new.slot.kind);
                 settled = new.answer == AnswerWhen::Settled;
@@ -313,6 +317,7 @@ impl MachineOperations for Scripted {
             }
             ContainerWant::Running {
                 container: RunTarget::Existing(locator),
+                ..
             } => (Call::Restart(machine, id_of(&locator)), locator),
             ContainerWant::Stopped {
                 container,
@@ -340,6 +345,9 @@ impl MachineOperations for Scripted {
                     other => panic!("unscripted removal {other:?}"),
                 };
                 (call, container)
+            }
+            want @ (ContainerWant::Out { .. } | ContainerWant::Held { .. }) => {
+                panic!("unscripted rotation {want:?}")
             }
         };
         if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall) {
@@ -442,15 +450,21 @@ impl MachineOperations for Scripted {
         &self,
         machine_id: &MachineId,
         _spec: &ResolvedServiceSpec,
-    ) -> Result<(), RpcError> {
+    ) -> Result<ImagePulled, RpcError> {
         self.pulled.lock().unwrap().insert(*machine_id);
-        self.pull_error.clone().map_or(Ok(()), Err)
+        self.pull_error.clone().map_or_else(
+            || {
+                Ok(self
+                    .pull_replies
+                    .get(machine_id)
+                    .cloned()
+                    .unwrap_or_default())
+            },
+            Err,
+        )
     }
 
-    async fn read_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError> {
+    async fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         let pointer = self.pointers.lock().unwrap().get(service).cloned();
         if self.unreadable_flip && pointer.as_ref().is_some_and(|row| row.deploy == run_id()) {
             return Err(error("read timed out"));
@@ -479,10 +493,11 @@ impl MachineOperations for Scripted {
             _ => BTreeMap::new(),
         };
         let all_routed = pointer.is_some() && routed && lagging.is_none();
-        Ok(ServingPointerRead {
+        Ok(RoutesRead {
             pointer,
             acks,
             all_routed,
+            ..RoutesRead::default()
         })
     }
 
@@ -570,6 +585,8 @@ mod flip;
 mod health;
 #[path = "exec_tests/hooks.rs"]
 mod hooks;
+#[path = "exec_tests/image_ports.rs"]
+mod image_ports;
 #[path = "exec_tests/moving.rs"]
 mod moving;
 #[path = "exec_tests/replacement.rs"]

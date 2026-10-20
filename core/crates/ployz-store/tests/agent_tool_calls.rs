@@ -15,9 +15,9 @@ use ployz_core::{
 };
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
-    Act, Action, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
-    MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp, ToolResult, VolumeRun,
-    WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
+    Act, Action, Ask, Call, CloudQuery, DashboardPage, Fix, Gate, INSTRUCTIONS, MetricsQuery,
+    MetricsSince, MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp,
+    ToolResult, VolumeRun, WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
 };
 use ployz_store::{
     Actor, Admit, ConfigStore, ConfigsQuery, CreateEnvironment, CreateProject, CreateService,
@@ -201,7 +201,9 @@ fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
         call_key,
         &mut no_cloud,
     );
-    if let ToolResult::Refused(refusal) = &run.result {
+    if let ToolResult::Refused(refusal) = &run.result
+        && refusal.code != RpcErrorCode::Ambiguous
+    {
         assert_eq!(refusal.retry.tool, tool, "a retry calls the same tool");
         if refusal.code != RpcErrorCode::ConfirmationRequired && refusal.writes != Writes::Unknown {
             assert_eq!(refusal.retry.input, input, "a retry repeats the input");
@@ -575,6 +577,24 @@ fn a_bad_input_names_the_field_and_an_example() {
 }
 
 #[test]
+fn a_new_volume_on_a_second_replica_is_refused_in_a_whole_sentence() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let replicas = json!({ "service": "web", "set": { "replicas": 2 } });
+    call(&store, "service_update", replicas, "update-1").ok();
+
+    let volume = json!({ "name": "data", "service": "web", "path": "/data" });
+    let refusal = call(&store, "volume_add", volume, "volume-1").refused();
+    assert_eq!(refusal.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refusal.message,
+        "data would be attached to web; set replicas to 1, or add it with shared writes on"
+    );
+    assert!(refusal.next.is_empty(), "{refusal:?}");
+}
+
+#[test]
 fn review_reads_domain_changes_as_domains() {
     let store = shop();
     let service = json!({ "name": "web", "image": "traefik/whoami" });
@@ -648,7 +668,7 @@ fn a_service_goes_from_staged_to_deployed() {
     let review = call(&store, "review", json!({}), "review-1");
     assert_eq!(review.writes, 0);
     let review = review.ok();
-    assert_eq!(review["asks_approval"], false);
+    assert_eq!(review["asks_approval"], true);
     assert!(
         review["lines"]
             .as_array()
@@ -681,7 +701,7 @@ fn a_service_goes_from_staged_to_deployed() {
     let waited = call(
         &store,
         "deployment_show",
-        json!({ "wait_seconds": 1_000 }),
+        json!({ "wait_seconds": WAIT_CAP_SECONDS }),
         "show-2",
     );
     assert_eq!(waited.waited_ms, WAIT_CAP_SECONDS * 1_000);
@@ -790,6 +810,29 @@ fn config_write_sets_permissions_and_a_later_write_keeps_them() {
     .refused();
     assert_eq!(refusal.code, RpcErrorCode::InvalidArgument);
     assert_eq!(refusal.field.as_deref(), Some("mode"));
+}
+
+#[test]
+fn review_names_a_config_by_its_name() {
+    let store = shop();
+    call(
+        &store,
+        "config_write",
+        json!({ "config": "site", "files": { "index.html": "hi" } }),
+        "write-1",
+    )
+    .ok();
+    let review = call(&store, "review", json!({}), "review-1").ok();
+    let lines = review["lines"].as_array().unwrap();
+    assert_eq!(lines[0], "create config site", "{review}");
+    assert!(
+        lines[1]
+            .as_str()
+            .unwrap()
+            .starts_with("  set configs.site.files.index.html = "),
+        "{review}"
+    );
+    assert!(!review.to_string().contains("configs.@"), "{review}");
 }
 
 #[test]
@@ -1462,6 +1505,122 @@ fn server_set_sends_only_the_values_it_was_given() {
 }
 
 #[test]
+fn volume_show_with_no_volumes_lists_none_without_asking_cloud() {
+    let store = shop();
+    let mut cloud =
+        |_: Cloud| -> Result<Value, RpcError> { panic!("no Volume, no copy to ask about") };
+    let shown = drive(
+        &store,
+        in_org(),
+        "volume_show",
+        json!({}),
+        "show-1",
+        &mut cloud,
+    )
+    .ok();
+    assert_eq!(shown["volumes"], json!([]));
+}
+
+#[test]
+fn volume_add_echoes_a_size_in_the_unit_it_was_given() {
+    let store = shop();
+    for (name, given, shown) in [
+        ("data", "1GiB", "1 GiB"),
+        ("logs", "10GB", "10 GB"),
+        ("bulk", "2TiB", "2 TiB"),
+    ] {
+        let added = call(
+            &store,
+            "volume_add",
+            json!({ "name": name, "size": given }),
+            name,
+        )
+        .ok();
+        assert_eq!(added["volume"]["size"], shown, "{given}");
+    }
+}
+
+#[test]
+fn an_unknown_key_another_tool_takes_is_named() {
+    let store = shop();
+    let mut cloud = |_: Cloud| -> Result<Value, RpcError> { panic!("refused before Cloud") };
+    let refusal = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1", "accepts_services": true, "wait_seconds": 60 }),
+        "set-1",
+        &mut cloud,
+    )
+    .refused();
+    assert_eq!(refusal.field.as_deref(), Some("wait_seconds"));
+    assert!(
+        refusal
+            .message
+            .contains("unknown field wait_seconds, expected"),
+        "{}",
+        refusal.message
+    );
+    let own = drive(
+        &store,
+        in_org(),
+        "server_set",
+        json!({ "server": "db-1", "accepts_services": true, "MARKER_9f3c": 1 }),
+        "set-2",
+        &mut cloud,
+    )
+    .refused();
+    assert_eq!(own.field.as_deref(), Some(""));
+    assert!(!own.message.contains("MARKER_9f3c"), "{}", own.message);
+}
+
+#[test]
+fn a_map_key_the_caller_chose_is_never_the_refused_field() {
+    let store = shop();
+    let long = "k".repeat(4096);
+    for (tool, input) in [
+        (
+            "config_write",
+            json!({ "config": "app", "files": { "鍵🔒": 1 } }),
+        ),
+        (
+            "config_write",
+            json!({ "config": "app", "files": { long.clone(): 1 } }),
+        ),
+        (
+            "config_write",
+            json!({ "config": "app", "files": { "../鍵🔒": "a" } }),
+        ),
+        (
+            "service_update",
+            json!({ "service": "web", "rename_env": { "鍵🔒": 1 } }),
+        ),
+    ] {
+        let refusal = call(&store, tool, input, "map-1").refused();
+        let field = refusal.field.as_deref().unwrap_or_default();
+        assert!(["files", "rename_env"].contains(&field), "{field}");
+        for key in ["鍵🔒", long.as_str()] {
+            assert!(!refusal.message.contains(key), "{}", refusal.message);
+        }
+    }
+}
+
+#[test]
+fn service_add_says_which_of_image_and_repository_is_wrong() {
+    let store = shop();
+    for (input, message) in [
+        (json!({ "name": "api" }), "Give an image or a repository"),
+        (
+            json!({ "name": "api", "image": "traefik/whoami", "repository": "acme/api" }),
+            "Give an image or a repository, not both",
+        ),
+    ] {
+        let refusal = call(&store, "service_add", input, "add-1").refused();
+        assert_eq!(refusal.message, message);
+    }
+}
+
+#[test]
 fn server_set_leaves_turning_web_traffic_on_to_the_terminal() {
     let store = shop();
     let mut cloud = |_: Cloud| -> Result<Value, RpcError> { panic!("refused before Cloud") };
@@ -1970,15 +2129,287 @@ fn a_keyed_retry_that_lands_between_its_replays_reads_is_the_replay() {
 }
 
 #[test]
-fn an_applied_deployment_has_nothing_to_retry() {
+fn the_newest_applied_deployment_redeploys_and_rolls_nothing_back() {
     let (store, _) = ended(
         json!({ "type": "completed" }),
         json!({ "type": "success", "completed": [remove_container()] }),
     );
 
-    let refused = call(&store, "deployment_retry", json!({}), "retry-1").refused();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert_eq!(refused.writes, Writes::None);
+    let redeployed = call(&store, "deployment_retry", json!({}), "retry-1").ok();
+    assert_eq!(redeployed["deployment"], 2);
+    assert_eq!(redeployed["retries"], 1);
+    assert_eq!(redeployed["rolls_back"], json!([]));
+
+    // #2 starts and loses track, so redeploying #1 rolls it back.
+    let numbered = |number| {
+        store
+            .read(
+                &who(),
+                &ployz_store::NumberedDeploymentQuery {
+                    environment: EnvironmentRef::default(),
+                    number: Some(number),
+                },
+            )
+            .unwrap()
+            .deployment
+            .id
+    };
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&numbered(2), &runner).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace,
+        "operations": [{
+            "index": 0, "machine_id": machine('a'), "service_name": "web",
+            "operation": remove_container(), "status": { "type": "pending" },
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    store
+        .record(&numbered(2), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    store
+        .record(&numbered(2), &runner, RunEvidence::Abandoned)
+        .unwrap();
+    let rollback = json!({ "deployment": 1, "request_key": "rollback-0001" });
+    let rolled_back = call(&store, "deployment_retry", rollback.clone(), "retry-2").ok();
+    assert_eq!(rolled_back["deployment"], 3);
+    assert_eq!(rolled_back["rolls_back"], json!([2]));
+    // Once #3 starts, a replay still names what it rolled back, not itself.
+    store.claim(&numbered(3), &runner).unwrap();
+    let replayed = call(&store, "deployment_retry", rollback, "retry-3").ok();
+    assert_eq!(replayed["deployment"], 3);
+    assert_eq!(replayed["rolls_back"], json!([2]));
+}
+
+/// #1 shipped `web` alone, then #2 added Volumes `data`, whose data Server a holds,
+/// and `cache`, which holds nothing. Redeploying #1 rolls #2 back and removes both.
+/// An agent's Store calls ask.
+fn rolled_back_volume() -> (ConfigStore, Trusted) {
+    let (store, _) = ended(
+        json!({ "type": "completed" }),
+        json!({ "type": "success", "completed": [remove_container()] }),
+    );
+    store
+        .write(
+            &who(),
+            &CreateVolume {
+                storage_locked: false,
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                storage: ployz_core::config::VolumeKind::Docker {},
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+                shared_writes: false,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who(),
+            &CreateVolume {
+                storage_locked: false,
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("cache").unwrap(),
+                storage: ployz_core::config::VolumeKind::Docker {},
+                mounts: Vec::new(),
+                shared_writes: false,
+            },
+        )
+        .unwrap();
+    let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
+    store
+        .write(
+            &who(),
+            &Admit::Deploy(Deploy {
+                id: second.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+        )
+        .unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&second, &runner).unwrap();
+    let operation = json!({
+        "index": 0, "machine_id": machine('a'), "service_name": "web",
+        "operation": remove_container(), "status": { "type": "pending" },
+    });
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace, "operations": [operation],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    store
+        .record(&second, &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    store
+        .record(
+            &second,
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(
+                    serde_json::from_value(
+                        json!({ "type": "success", "completed": [remove_container()] }),
+                    )
+                    .unwrap(),
+                ),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    let docker = |n: u8| {
+        ployz_core::DockerVolumeName::parse(format!(
+            "{}_vol-00000000-0000-4000-8000-00000000000{n}",
+            claimed.intent.namespace
+        ))
+        .unwrap()
+    };
+    let trusted = Trusted {
+        volumes: Some(ployz_store::VolumeObservation {
+            sought: vec![docker(5), docker(6)],
+            held: vec![ployz_core::DockerVolumeId {
+                machine_id: ployz_core::MachineId::parse(machine('a')).unwrap(),
+                name: docker(5),
+            }],
+            unanswered: Vec::new(),
+        }),
+        approval: ployz_store::Approval::Required,
+        asks: ployz_store::Asks::EveryDeploy,
+        ..Trusted::default()
+    };
+    (store, trusted)
+}
+
+#[test]
+fn an_agent_rollback_that_deletes_data_asks_the_member_to_accept_it() {
+    let (store, trusted) = rolled_back_volume();
+    let refused = drive_as(
+        &store,
+        (&who(), &trusted),
+        in_org(),
+        "deployment_retry",
+        json!({ "deployment": 1 }),
+        "retry-1",
+        &mut no_cloud,
+    )
+    .refused();
+    assert_eq!(
+        refused.code,
+        RpcErrorCode::ConfirmationRequired,
+        "{refused:?}"
+    );
+    assert_eq!(refused.retry.input["accept_volume_loss"], json!(["data"]));
+}
+
+#[test]
+fn an_agent_rollback_with_accepted_volume_loss_goes_to_a_human_for_approval() {
+    let (store, trusted) = rolled_back_volume();
+    let confirm = drive_as(
+        &store,
+        (&who(), &trusted),
+        in_org(),
+        "deployment_retry",
+        json!({ "deployment": 1 }),
+        "retry-1",
+        &mut no_cloud,
+    )
+    .refused()
+    .retry;
+    let confirm_input = confirm.input.clone();
+    let asked = drive_as(
+        &store,
+        (&who(), &trusted),
+        in_org(),
+        "deployment_retry",
+        confirm.input,
+        "retry-2",
+        &mut no_cloud,
+    )
+    .refused();
+    assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
+    assert_eq!(
+        asked.message,
+        "A human must approve rolling back to #1 first: it undoes #2 and deletes the data of data."
+    );
+    // The card Cloud records lists what it removes, as a Deploy's does.
+    let accept = &confirm_input["accept_volume_loss"];
+    let recorded = store_retry(&store, &trusted, accept, &confirm_input);
+    assert_eq!(
+        recorded.details["effects"],
+        json!([
+            {
+                "kind": "deletes_volume", "name": "cache",
+                "node": "00000000-0000-4000-8000-000000000006", "path": "volumes.cache",
+            },
+            {
+                "kind": "deletes_volume", "name": "data",
+                "node": "00000000-0000-4000-8000-000000000005", "path": "volumes.data",
+            },
+        ])
+    );
+    assert_eq!(
+        recorded.details["redeploy"],
+        json!({ "deployment": 1, "rolls_back": [2] })
+    );
+}
+
+/// What the Store answers an agent's redeploy of #1 accepting `accept`, with the
+/// version `confirmed` carries: the refusal Cloud records as the Approval card.
+fn store_retry(
+    store: &ConfigStore,
+    trusted: &Trusted,
+    accept: &Value,
+    confirmed: &Value,
+) -> RpcError {
+    store
+        .write_trusted(
+            &who(),
+            &Admit::Retry(ployz_store::Retry {
+                id: DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap(),
+                deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap(),
+                rolls_back: None,
+                version: confirmed["version"].as_str().map(str::to_owned),
+                accept_volume_loss: serde_json::from_value(accept.clone()).unwrap(),
+            }),
+            trusted,
+        )
+        .unwrap_err()
+}
+
+#[test]
+fn an_agent_rollbacks_approval_binds_exactly_the_volumes_it_accepted() {
+    let (store, trusted) = rolled_back_volume();
+    let confirm = drive_as(
+        &store,
+        (&who(), &trusted),
+        in_org(),
+        "deployment_retry",
+        json!({ "deployment": 1 }),
+        "retry-1",
+        &mut no_cloud,
+    )
+    .refused()
+    .retry;
+    assert_eq!(confirm.input["accept_volume_loss"], json!(["data"]));
+    let digest = |accept: Value| {
+        let asked = store_retry(&store, &trusted, &accept, &confirm.input);
+        assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
+        asked.details["approval"].clone()
+    };
+    // `cache` holds no data, so accepting it too is valid, and a different ask.
+    let exact = digest(json!(["data"]));
+    let wider = digest(json!(["data", "cache"]));
+    assert_ne!(exact, wider);
+    assert_eq!(wider, digest(json!(["cache", "data"])));
 }
 
 /// Cloud's metrics answer with `events`, one CPU row and nothing unanswered.
@@ -2248,6 +2679,156 @@ fn metrics_of_an_unknown_server_are_refused_before_any_are_read() {
     assert_eq!(refusal.did_you_mean.as_deref(), Some("web-1"));
 }
 
+// Catches a generated secret stored as plain text or reaching the agent, and a
+// secret's value an agent sends being sealed instead of refused.
+#[test]
+fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
+    let store = shop();
+    call(
+        &store,
+        "service_add",
+        json!({ "name": "db", "image": "postgres:17" }),
+        "add-1",
+    )
+    .ok();
+
+    let input = json!({ "service": "db", "generate_secret": ["env.POSTGRES_PASSWORD"] });
+    let (mut step, mut state) = start("service_update", input, &place(in_org()), "secret-1");
+    let mut seen = vec![serde_json::to_string(&state).unwrap()];
+    let result = loop {
+        seen.push(serde_json::to_string(&step).unwrap());
+        seen.push(format!("{step:?}"));
+        let answers = match step {
+            Step::Read { asks } => asks
+                .into_iter()
+                .map(|ask| answer(&store, &who(), &mut no_cloud, ask))
+                .collect(),
+            Step::Write { write } => {
+                let Write::Store(command) = *write else {
+                    panic!("an edit is a Store write");
+                };
+                vec![
+                    store
+                        .write(&who(), &command)
+                        .map(|written| serde_json::to_value(written).unwrap()),
+                ]
+            }
+            Step::Wait { .. } => panic!("an edit never waits"),
+            Step::Done { result } => break result,
+        };
+        (step, state) = resume(state, answers);
+        seen.push(serde_json::to_string(&state).unwrap());
+    };
+    let ToolResult::Ok(updated) = result else {
+        panic!("refused: {result:?}");
+    };
+    assert_eq!(updated["changed"], json!(["env.POSTGRES_PASSWORD"]));
+    seen.push(updated.to_string());
+
+    // Only a Deployment's claim unseals it, so that is where the value is read.
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write(
+            &who(),
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+        )
+        .unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let db = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "db")
+        .unwrap();
+    let minted = db.container.environment["POSTGRES_PASSWORD"].clone();
+    assert_eq!(minted.len(), 32);
+    assert!(minted.chars().all(|c| c.is_ascii_alphabetic()), "{minted}");
+    for text in &seen {
+        assert!(
+            !text.contains(&minted),
+            "the agent's call shows the secret: {text}"
+        );
+    }
+    let db = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "db" }),
+        "read-1",
+    )
+    .ok();
+    assert_eq!(
+        db["env"],
+        json!({ "POSTGRES_PASSWORD": { "secret": true } })
+    );
+    assert!(!db.to_string().contains(&minted), "{db}");
+
+    // A call that names no Environment still gets the one it ran in, so the member's
+    // terminal never falls back to another.
+    let named = json!({ "service": "db", "environment": "production" });
+    let inherited = json!({ "service": "db" });
+    for (key, set, mut input) in [
+        (
+            "sent-named",
+            json!({ "env": { "API_KEY": { "secret": "sk-live-123" } } }),
+            named.clone(),
+        ),
+        (
+            "sent-inherited",
+            json!({ "env": { "API_KEY": { "secret": "sk-live-123" } } }),
+            inherited.clone(),
+        ),
+        (
+            "text-named",
+            json!({ "env": { "POSTGRES_PASSWORD": "hunter2" } }),
+            named,
+        ),
+        (
+            "text-inherited",
+            json!({ "env": { "POSTGRES_PASSWORD": "hunter2" } }),
+            inherited,
+        ),
+    ] {
+        input["set"] = set.clone();
+        let refused = call(&store, "service_update", input, key).refused();
+        let variable = set["env"].as_object().unwrap().keys().next().unwrap();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{key}");
+        assert_eq!(refused.field, Some(format!("set.env.{variable}")));
+        assert!(
+            refused.message.contains(&format!(
+                "printf %s \"$VALUE\" | ployz set db.env.{variable} --secret --env production --project shop."
+            )),
+            "{refused:?}"
+        );
+        assert_eq!(
+            refused.fix(),
+            Some(Fix::OpenDashboard {
+                page: DashboardPage::Variables
+            })
+        );
+    }
+    let db = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "db" }),
+        "read-2",
+    )
+    .ok();
+    assert_eq!(
+        db["env"],
+        json!({ "POSTGRES_PASSWORD": { "secret": true } })
+    );
+}
+
 #[test]
 fn renaming_a_referenced_variable_asks_to_update_its_references() {
     let store = shop();
@@ -2329,7 +2910,7 @@ fn service_logs_asks_cloud_for_the_service_and_says_why_a_server_did_not_answer(
     call(
         &store,
         "service_update",
-        json!({ "service": "web", "set": { "env": { "KEY": { "secret": "s3cr3t-value" } } } }),
+        json!({ "service": "web", "generate_secret": ["env.KEY"] }),
         "env-1",
     )
     .ok();
@@ -2631,4 +3212,66 @@ fn every_read_tool_explains_what_it_cannot_find() {
         "answered without saying why:\n{}",
         bare.join("\n")
     );
+}
+
+#[test]
+fn turning_pull_request_environments_off_needs_no_repository() {
+    let store = shop();
+    let run = call(
+        &store,
+        "environment_pr",
+        json!({ "enabled": false }),
+        "call-1",
+    );
+    assert_eq!(run.writes, 0);
+    let off = run.ok();
+    assert_eq!(off["pull_request_environments"], json!(false));
+    let refusal = call(
+        &store,
+        "environment_pr",
+        json!({ "enabled": true }),
+        "call-2",
+    )
+    .refused();
+    assert_eq!(refusal.field.as_deref(), Some("repository"));
+}
+
+#[test]
+fn an_unknown_environment_lists_the_real_ones_instead_of_creating_it() {
+    let store = shop();
+    let refusal = call(
+        &store,
+        "environment_remove",
+        json!({ "project": "shop", "environment": "nope" }),
+        "call-1",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.writes, Writes::None);
+    assert_eq!(refusal.valid, vec!["production".to_owned()]);
+    assert_eq!(refusal.fix(), None);
+    assert_eq!(
+        refusal.next,
+        vec![Call::new("environment_show", json!({ "project": "shop" }))]
+    );
+}
+
+#[test]
+fn review_says_every_agent_deploy_asks_on_cloud_and_none_does_locally() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let on_cloud = call(&store, "review", json!({}), "review-1").ok();
+    assert_eq!(on_cloud["asks_approval"], json!(true), "{on_cloud}");
+    assert_eq!(on_cloud["destroys"], json!([]), "{on_cloud}");
+    let local = drive(
+        &store,
+        StoreAt::Local,
+        "review",
+        json!({}),
+        "review-2",
+        &mut no_cloud,
+    )
+    .ok();
+    assert_eq!(local["asks_approval"], json!(false), "{local}");
 }

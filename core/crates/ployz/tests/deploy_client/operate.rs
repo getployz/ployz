@@ -66,7 +66,22 @@ async fn a_bare_service_name_means_the_selected_environments_service() {
     ]);
     let (address, server) = listening(service).await;
     let address = address.to_string();
-    for args in [&["project", "new", "shop"][..], &["env", "new", "staging"]] {
+    for args in [
+        &["project", "new", "shop"][..],
+        &["env", "new", "staging"],
+        &[
+            "service",
+            "add",
+            "web",
+            "--image",
+            "nginx:1",
+            "--env",
+            "production",
+        ],
+        &[
+            "service", "add", "web", "--image", "nginx:1", "--env", "staging",
+        ],
+    ] {
         assert_eq!(ployz(Some(&db), &address, args).await.0, 0, "{args:?}");
     }
 
@@ -385,31 +400,17 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
         "--connect",
         &connect,
     ];
-    assert_eq!(hints.len(), 2, "{stderr}");
-    for (hint, args) in hints.iter().zip([
-        vec![
-            "logs",
-            "web",
-            "--project",
-            "shop",
-            "--env",
-            "production",
-            "--context",
-            "staging",
-        ],
-        vec![
-            "deploy",
-            "--project",
-            "shop",
-            "--env",
-            "production",
-            "--context",
-            "staging",
-        ],
-    ]) {
-        let expected = prefix.iter().copied().chain(args).collect::<Vec<_>>();
-        assert_eq!(hint, &expected, "{stderr}");
-    }
+    let retry = [
+        "deploy",
+        "--project",
+        "shop",
+        "--env",
+        "production",
+        "--context",
+        "staging",
+    ];
+    let expected = prefix.iter().copied().chain(retry).collect::<Vec<_>>();
+    assert_eq!(hints, [expected], "{stderr}");
 }
 
 #[tokio::test]

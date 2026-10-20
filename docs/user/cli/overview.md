@@ -27,6 +27,9 @@ again, or `brew upgrade ployz`.
 
 This computer starts in the organization the page names. Switching organization in the dashboard
 later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
+If Cloud can't be reached, `ployz logout` still forgets the sign-in here and warns that Cloud may
+still honour it until you remove it with `ployz token rm`. An unreadable sign-in is forgotten too,
+and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
@@ -204,9 +207,10 @@ the way `ployz org rm` does, and prints which one.
 ## Deploy a directory
 
 > [!WARNING]
-> `ployz up` uploads every file in the directory except `.git`, including files Git ignores
-> such as `.env` and `node_modules`. Run it from a fresh clone, or move secrets out of the
-> directory first.
+> In a Git checkout, `ployz up` uploads only the files Git keeps, tracked or not, and leaves out
+> `.git` and every file Git ignores, such as `.env` and `node_modules`. It stops if `git` can't
+> list them. Outside a Git checkout it uploads every file in the directory, so move secrets out
+> of it first.
 
 From your app's directory:
 
@@ -258,8 +262,11 @@ offline, run it again once that server is back. Owners and admins see and can re
 organization token in the organization, not only their own. Members see only theirs.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
-another that outlives it, or revoke the rest. `ployz token ls` shows each token's SCOPE, such as `Deploy staging`, and its KIND: `cli` for
-one made with `ployz token new`, `agent` for the one `ployz mcp login` made. An agent token can't
+another that outlives it, or revoke the rest. While `PLOYZ_TOKEN` is set, Ployz acts with the token
+even after `ployz login`: run `unset PLOYZ_TOKEN && ployz login` before you make or revoke one. `ployz token ls` shows each token's SCOPE, such as `Deploy staging`, and its KIND: `cli` for
+one made with `ployz token new`, `agent` for the one `ployz mcp login` made. It also lists each
+computer where you ran `ployz login` as KIND `device`, named for the day it signed in, such as
+`ployz login 2026-10-18`. `ployz token rm ID` signs that computer out. An agent token can't
 answer approvals, and a token's kind never changes. A token you make outlives the login you made it
 with: `ployz logout` doesn't revoke it.
 
@@ -277,7 +284,7 @@ A single record, such as
 
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
-`Building ZFS`, `Waiting for approval`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
+`Building ZFS`, `Waiting for approval`, `No cluster yet`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
 `Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
 it as `blocked` lines. With `--json` this is the `this_server` object.
 
@@ -290,8 +297,10 @@ selection flags.
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.
 
-Add `--json` to any command to get one JSON object instead of text. If the command fails, that
-object is `{"error": {...}}`. Its `cause` lists every underlying error, outermost first, and
+Add `--json` to any command to get one JSON object instead of text. A stream, such as `ployz logs`,
+prints JSON Lines instead: one object per line. If the command fails before it prints anything,
+that object is `{"error": {...}}`. A stream that fails after it printed names the failure on stderr
+and exits with code 3. Its `cause` lists every underlying error, outermost first, and
 `details` holds the next command to run when there is one.
 
 Scripts can tell failures apart by exit code:
@@ -306,6 +315,13 @@ Scripts can tell failures apart by exit code:
 
 `ployz exec` exits with your command's own exit code.
 
+A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
+`service add` and other changes exit 1 with `Cloud ... stopped answering after it got this
+change, so it may have applied.` Its `inspect:` line names the read that shows whether it
+landed, such as `ployz diff` or, for a deploy, `ployz deployment ls`. Check there before you
+run it again. With `--json` the error's `details` says `"writes": "unknown"`. When Cloud
+can't be reached at all, the error says `Could not reach Cloud` and nothing changed.
+
 A command that deletes something, such as `ployz project rm shop`, shows what goes and asks you
 to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
 `--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
@@ -317,8 +333,10 @@ Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,
-and exits 3. Ployz finishes on its own once the server answers or you remove it with
-`ployz server rm`. With `--json` it reports `removal: removed` only once the environment is gone
+and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour after the server
+answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
+or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
+the first run did. With `--json` it reports `removal: removed` only once the environment is gone
 from `ployz env ls`, or for `project rm` the project from `ployz project ls`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in

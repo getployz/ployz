@@ -87,6 +87,12 @@ pub(crate) fn named_cloud(
     let cloud = cloud.filter(|cloud| !cloud.trim().is_empty());
     let named = match cloud {
         Some(cloud) if token => Some(cloud),
+        None if token => match store.cloud() {
+            Err(LoginError::Corrupt { path, .. }) => {
+                return Err(LoginError::TokenCloudUnreadable(path));
+            }
+            stored => stored?,
+        },
         cloud => store.cloud()?.or(cloud),
     };
     Ok(named.map(|cloud| cloud_origin(&cloud)))
@@ -262,6 +268,12 @@ pub(crate) async fn organizations(
     Ok(reply.organizations)
 }
 
+/// The Organization to switch to: a slug the user typed, or one Cloud listed, sent by ID.
+pub(crate) enum Target<'a> {
+    Slug(&'a str),
+    Listed(&'a OrganizationEntry),
+}
+
 /// Switch this device's sign-in to another of the user's Organizations.
 ///
 /// # Errors
@@ -271,17 +283,24 @@ pub(crate) async fn organizations(
 pub(crate) async fn use_organization(
     store: &CredentialStore,
     credential: &Credential,
-    slug: &str,
+    target: Target<'_>,
 ) -> Result<Organization, LoginError> {
     let Credential::Device(signed_in) = credential else {
         return Err(LoginError::TokenBound);
+    };
+    let (body, slug) = match target {
+        Target::Slug(slug) => (serde_json::json!({ "organizationSlug": slug }), slug),
+        Target::Listed(listed) => (
+            serde_json::json!({ "organizationId": listed.id }),
+            listed.slug.as_str(),
+        ),
     };
     // better-auth's own endpoint moves the session's active Organization, checking membership.
     let response = send(
         credential,
         Method::POST,
         &format!("{}/api/auth/organization/set-active", signed_in.cloud),
-        Some(&serde_json::json!({ "organizationSlug": slug })),
+        Some(&body),
     )
     .await?;
     let status = response.status();
@@ -463,12 +482,23 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
 ) -> Result<T, StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
     let url = format!("{}/api/config/{operation}", credential.cloud());
-    let response =
-        send_approved(credential, via, Method::POST, &url, &body, approval, None).await?;
-    store_answer(credential, response).await
+    let lost = if operation == "write" {
+        cloud_login::lost
+    } else {
+        cloud_login::unreachable
+    };
+    let response = approved_request(credential, via, Method::POST, &url, &body, approval, None)?
+        .send()
+        .await
+        .map_err(|error| lost(credential.cloud(), error))?;
+    store_answer(credential, response, lost).await
 }
 
-async fn send_approved(
+/// How a request that failed in flight becomes a [`LoginError`]: [`cloud_login::lost`]
+/// for a write, else [`cloud_login::unreachable`].
+type Lost = fn(&str, reqwest::Error) -> LoginError;
+
+fn approved_request(
     credential: &Credential,
     via: Via,
     method: Method,
@@ -476,7 +506,7 @@ async fn send_approved(
     body: &serde_json::Value,
     approval: Option<&str>,
     request_key: Option<&str>,
-) -> Result<reqwest::Response, LoginError> {
+) -> Result<reqwest::RequestBuilder, LoginError> {
     let mut request = request(credential, method, url, Some(body))?.timeout(OPERATION_TIMEOUT);
     if via == Via::Agent {
         request = request.header("x-ployz-via", "agent");
@@ -487,10 +517,7 @@ async fn send_approved(
     if let Some(key) = request_key {
         request = request.header("x-ployz-request-key", key);
     }
-    request
-        .send()
-        .await
-        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))
+    Ok(request)
 }
 
 /// Start a durable Cloud run at `/api/cli/<path>`, carrying `approval` when Cloud asked
@@ -568,13 +595,21 @@ pub(crate) async fn keyed_reply<T: DeserializeOwned>(
     request_key: Option<&str>,
 ) -> (Result<T, StoreCallError>, Option<String>) {
     let url = format!("{}/api/cli/{path}", credential.cloud());
-    let response =
-        match send_approved(credential, via, method, &url, body, approval, request_key).await {
-            Ok(response) => response,
-            Err(error) => return (Err(error.into()), None),
-        };
+    let sent = async {
+        approved_request(credential, via, method, &url, body, approval, request_key)?
+            .send()
+            .await
+            .map_err(|error| cloud_login::unreachable(credential.cloud(), error))
+    };
+    let response = match sent.await {
+        Ok(response) => response,
+        Err(error) => return (Err(error.into()), None),
+    };
     let revision = revision_of(response.headers());
-    (store_answer(credential, response).await, revision)
+    (
+        store_answer(credential, response, cloud_login::unreachable).await,
+        revision,
+    )
 }
 
 /// Read the Cloud run at `/api/cli/<path>` every second until its `state` is neither
@@ -685,13 +720,14 @@ impl<T> Settled<T> {
 async fn store_answer<T: DeserializeOwned>(
     credential: &Credential,
     response: reqwest::Response,
+    lost: Lost,
 ) -> Result<T, StoreCallError> {
     let status = response.status();
     notice_revision(&response);
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+        .map_err(|error| lost(credential.cloud(), error))?;
     if !status.is_success() {
         if let Some(refused) = refusal(&bytes) {
             return Err(StoreCallError::Refused(refused));
@@ -757,7 +793,12 @@ pub(crate) async fn check_forget_servers(
     credential: &Credential,
 ) -> Result<ForgetCheck, StoreCallError> {
     let url = format!("{}/api/cli/forget-servers", credential.cloud());
-    store_answer(credential, send(credential, Method::GET, &url, None).await?).await
+    store_answer(
+        credential,
+        send(credential, Method::GET, &url, None).await?,
+        cloud_login::unreachable,
+    )
+    .await
 }
 
 /// Forget the Servers of the credential's Organization, named `organization`: Cloud
@@ -765,19 +806,15 @@ pub(crate) async fn check_forget_servers(
 ///
 /// # Errors
 ///
-/// As [`check_forget_servers`], and `invalid_argument` for another Organization than
-/// the credential's.
+/// As [`check_forget_servers`], `invalid_argument` for another Organization than the
+/// credential's, and `approval_required` until a human approves it.
 pub(crate) async fn forget_servers(
     credential: &Credential,
     organization: &str,
+    approval: Option<&str>,
 ) -> Result<ServersForgotten, StoreCallError> {
-    let url = format!("{}/api/cli/forget-servers", credential.cloud());
     let body = serde_json::json!({ "organization": organization });
-    store_answer(
-        credential,
-        send(credential, Method::POST, &url, Some(&body)).await?,
-    )
-    .await
+    approved_answer(credential, Method::POST, "forget-servers", &body, approval).await
 }
 
 /// What `org rm` did: whether the Organization is gone, and which Servers confirmed
@@ -795,15 +832,20 @@ pub(crate) struct OrganizationRemoval {
 /// # Errors
 ///
 /// Returns Cloud's refusal (`conflict` while it has a Project, `invalid_argument`
-/// for another Organization than the credential's), or a Cloud failure.
+/// for another Organization than the credential's, `approval_required` until a human
+/// approves it), or a Cloud failure.
 pub(crate) async fn remove_organization(
     credential: &Credential,
     id: &str,
+    approval: Option<&str>,
 ) -> Result<OrganizationRemoval, StoreCallError> {
-    let url = format!("{}/api/cli/organizations/{id}", credential.cloud());
-    store_answer(
+    let path = format!("organizations/{id}");
+    approved_answer(
         credential,
-        send(credential, Method::DELETE, &url, None).await?,
+        Method::DELETE,
+        &path,
+        &serde_json::json!({}),
+        approval,
     )
     .await
 }
@@ -934,7 +976,12 @@ pub(crate) async fn refusable<T: DeserializeOwned>(
     body: Option<&serde_json::Value>,
 ) -> Result<T, StoreCallError> {
     let url = format!("{}/api/cli/{path}", credential.cloud());
-    store_answer(credential, send(credential, method, &url, body).await?).await
+    store_answer(
+        credential,
+        send(credential, method, &url, body).await?,
+        cloud_login::unreachable,
+    )
+    .await
 }
 
 /// The most compressed source one upload may hold, the same as Cloud's cap. It stays
@@ -972,14 +1019,14 @@ pub(crate) async fn upload(
         .body(archive)
         .send()
         .await
-        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+        .map_err(|error| cloud_login::lost(credential.cloud(), error))?;
     // A proxy in front of Cloud with a lower cap refuses the body before Cloud sees it.
     if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
         return Err(StoreCallError::Refused(too_big(&format!(
             "Cloud refused the {mib} MiB compressed source as too large."
         ))));
     }
-    store_answer::<serde_json::Value>(credential, response).await?;
+    store_answer::<serde_json::Value>(credential, response, cloud_login::lost).await?;
     Ok(())
 }
 
@@ -988,7 +1035,7 @@ fn too_big(why: &str) -> RpcError {
     RpcError {
         code: ployz_core::RpcErrorCode::InvalidArgument,
         message: format!(
-            "{why} Deploy from GitHub instead, or remove large files from the directory. ployz up uploads every file except .git, including ones Git ignores such as node_modules."
+            "{why} Deploy from GitHub instead, or remove large files from the directory. In a Git checkout, ployz up leaves out files Git ignores, so add ones such as node_modules to .gitignore."
         ),
         details: serde_json::Value::Null,
         cause: Vec::new(),
@@ -1055,7 +1102,7 @@ pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
         .cloned()
 }
 
-/// Cloud's refusal of a call, as it sent it.
+/// Cloud's refusal of a call, with a next step that works under `PLOYZ_TOKEN`.
 pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     #[derive(Deserialize)]
     struct Refusal {
@@ -1063,7 +1110,23 @@ pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     }
     serde_json::from_slice::<Refusal>(body)
         .ok()
-        .map(|refusal| refusal.error)
+        .map(|refusal| past_token(refusal.error))
+}
+
+/// `ployz login` while `PLOYZ_TOKEN` is set: the token still wins over the sign-in.
+pub(crate) const SIGN_IN_PAST_TOKEN: &str = "unset PLOYZ_TOKEN && ployz login";
+
+/// Cloud can't know a token caller is a shell with `PLOYZ_TOKEN` set, so its
+/// `ployz login` step becomes one that works while the token is.
+fn past_token(mut refused: RpcError) -> RpcError {
+    let token = std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+    if token
+        && let Some(next) = refused.details.get_mut("next")
+        && next == "ployz login"
+    {
+        *next = SIGN_IN_PAST_TOKEN.into();
+    }
+    refused
 }
 
 /// A Cloud route's `PublicError`, as the refusal it stands for.
@@ -1198,6 +1261,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ployz_token_never_guesses_a_cloud_past_an_unreadable_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::beside(&dir.path().join("config.yaml"));
+        std::fs::write(dir.path().join("cloud.json"), "{not json").unwrap();
+        let token = || Some("ployz_secret".to_owned());
+        let refused = credential(&store, token(), None).await.err();
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|error| error.to_string().contains("PLOYZ_CLOUD_URL")),
+            "{refused:?}"
+        );
+        let chosen = credential(&store, token(), Some("http://cloud.test".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(chosen.cloud(), "http://cloud.test");
+        assert!(named_cloud(&store, false, None).is_err());
+    }
+
+    #[tokio::test]
     async fn ployz_token_wins_over_the_stored_sign_in() {
         let (_dir, store) = signed_in_store("http://cloud.test");
         let chosen = credential(&store, Some("ployz_secret".to_owned()), None)
@@ -1245,31 +1328,50 @@ mod tests {
 
     #[tokio::test]
     async fn org_use_moves_the_device_among_its_own_organizations() {
-        let cloud = fake_cloud(|route, body| match route {
-            "POST /api/auth/organization/set-active" if body.contains("\"beta\"") => (
-                200,
-                serde_json::json!({ "id": "o2", "slug": "beta", "name": "Beta", "members": [] }),
-            ),
-            _ => (403, serde_json::json!({ "message": "not a member" })),
+        let cloud = fake_cloud(|route, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let beta = body == serde_json::json!({ "organizationSlug": "beta" })
+                || body == serde_json::json!({ "organizationId": "o2" });
+            match route {
+                "POST /api/auth/organization/set-active" if beta => (
+                    200,
+                    serde_json::json!({ "id": "o2", "slug": "beta", "name": "Beta", "members": [] }),
+                ),
+                _ => (403, serde_json::json!({ "message": "not a member" })),
+            }
         });
         let (_dir, store) = signed_in_store(&cloud);
         let device = credential(&store, None, None).await.unwrap();
-        let error = use_organization(&store, &device, "gamma")
+        let error = use_organization(&store, &device, Target::Slug("gamma"))
             .await
             .unwrap_err();
         assert!(
             matches!(error, LoginError::UnknownOrganization(_)),
             "{error}"
         );
-        let error = use_organization(&store, &token(&cloud), "beta")
+        let error = use_organization(&store, &token(&cloud), Target::Slug("beta"))
             .await
             .unwrap_err();
         assert!(matches!(error, LoginError::TokenBound), "{error}");
 
-        let organization = use_organization(&store, &device, "beta").await.unwrap();
+        let organization = use_organization(&store, &device, Target::Slug("beta"))
+            .await
+            .unwrap();
         assert_eq!(organization.slug, "beta");
         let stored = cloud_login::signed_in(&store).await.unwrap();
         assert_eq!(stored.organization.id, "o2");
+
+        // A listed Organization goes by its ID, so a slug Cloud no longer knows still moves.
+        let listed = OrganizationEntry {
+            id: "o2".to_owned(),
+            slug: "beta-renamed".to_owned(),
+            name: "Beta".to_owned(),
+            current: false,
+        };
+        let organization = use_organization(&store, &device, Target::Listed(&listed))
+            .await
+            .unwrap();
+        assert_eq!(organization.id, "o2");
     }
 
     #[tokio::test]
@@ -1359,7 +1461,7 @@ mod tests {
         assert_eq!(refused.code, ployz_core::RpcErrorCode::InvalidArgument);
         assert_eq!(
             refused.message,
-            "The source is 96 MiB compressed, over the 95 MiB upload limit. Deploy from GitHub instead, or remove large files from the directory. ployz up uploads every file except .git, including ones Git ignores such as node_modules."
+            "The source is 96 MiB compressed, over the 95 MiB upload limit. Deploy from GitHub instead, or remove large files from the directory. In a Git checkout, ployz up leaves out files Git ignores, so add ones such as node_modules to .gitignore."
         );
         assert_eq!(
             listener.accept().unwrap_err().kind(),

@@ -44,7 +44,9 @@ A service's numbers add up all of its replicas, on every server that runs one.
 | Net in, Net out | Bytes per second, all of the replica's interfaces together |
 | Disk read, Disk write | Bytes per second the replicas read and write. A managed volume's reads and writes come from ZFS and count once per service, however many replicas share it. |
 
-Below the table, Ployz counts the OOM kills, exits and restarts in the range. When the range holds no readings at all, as for a misspelled name or a service deployed seconds ago, Ployz prints **No readings** instead of a table.
+Below the table, Ployz counts the OOM kills, exits and restarts in the range. When the range holds no readings at all, as for a service deployed seconds ago, Ployz prints **No readings** instead of a table.
+
+A removed service still shows the readings its servers kept. A name the environment doesn't have, and that has no readings, fails with `No Service named nosvc in Environment production` and lists the services you can name. It exits with code 1. This holds whether Ployz reads your servers or Ployz Cloud reads them for a token without server access. When a server doesn't answer, Ployz reports that server instead, since the readings may be on it.
 
 ## Spot trouble on the canvas
 
@@ -55,7 +57,8 @@ exit or a stop, such as `ployz service restart`, a Deploy or a rollback, shows n
 the app exits non-zero on the stop signal, as with SIGTERM (143), SIGINT (130) or SIGKILL (137).
 When other issues share the card, the badge adds their count, as in **⚠ OOM +1**. The badge is
 amber, or red when the service is down. Click the ⚠ to open the service's Monitoring tab. A
-server that needs an upgrade or doesn't answer adds nothing to the card.
+server that needs an upgrade or doesn't answer adds nothing to the card. A failing uptime check
+shows **⚠ Unreachable**, and a failing healthcheck **⚠ Check failing**.
 
 A crash or OOM kill also emails the organization, as
 [Notifications](../account/notifications.md) describes.
@@ -108,7 +111,9 @@ service, until its summaries age out.
   such as "web-2 didn't answer."
 - **A server on an older Ployz has no metrics to show.** The **Monitoring** tab names it, as in
   "web-2 needs an upgrade to show its metrics." When every server running the service needs one,
-  the charts give way to **Upgrade web-2 to see its metrics** with a link to the server. See
+  the charts give way to **Upgrade web-2 to see its metrics** with a link to the server. When
+  your releases are Stable and only Beta has a newer release, the server's page says **Metrics
+  need a Beta release** and opens **Upgrade settings**. See
   [Upgrade Ployz on a server](../servers/manage-servers.md#upgrade-ployz-on-a-server).
 - **Metrics share a CPU budget with logs.** Ployz caps its helper for both at 10% of one CPU core.
   See [Logs](logs.md).

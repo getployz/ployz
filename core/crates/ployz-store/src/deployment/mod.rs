@@ -34,9 +34,10 @@ use ployz_core::config::{
     parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
-    ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId,
-    ExecutionError, FailedOperation, MachineId, Namespace, RpcError, ServiceAttempt, ServiceName,
-    ServiceOutcome, ServiceRemovals, VolumeRemoval, VolumeRemovalOutcome,
+    ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DeployWarning,
+    DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace, RpcError,
+    ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals, VolumeRemoval,
+    VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -47,8 +48,8 @@ use crate::Actor;
 use crate::build::{self, BuildReport, BuildView, GitSource};
 use crate::error;
 use crate::id::{
-    CommitSha, ConfigId, DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal,
-    Revision, RunnerId, ServiceLineageId, VolumeId, VolumeName,
+    BranchName, CommitSha, ConfigId, DeploymentId, EnvironmentId, Hostname, OrganizationId,
+    Principal, RepositoryId, Revision, RunnerId, ServiceLineageId, VolumeId, VolumeName,
 };
 use crate::registry;
 use crate::removal::VolumeLoss;
@@ -62,6 +63,10 @@ use crate::variables;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentStatus {
+    /// A push held until its commit's CI passes: unnumbered, nothing frozen, built
+    /// or claimed. It holds no slot and is no pending attempt; passing CI queues it,
+    /// numbered next.
+    WaitingForCi,
     /// Admitted, waiting for a runner.
     Queued,
     /// A newer admission replaced it before any runner claimed it.
@@ -86,6 +91,38 @@ impl DeploymentStatus {
     pub const fn in_flight(self) -> bool {
         matches!(self, Self::Queued | Self::Running | Self::Cancelling)
     }
+
+    /// Whether it ended: it will never run, or ran and stopped. Neither in flight,
+    /// replaced, nor waiting for CI.
+    #[must_use]
+    pub const fn ended(self) -> bool {
+        match self {
+            Self::Applied | Self::Failed | Self::Unknown | Self::Cancelled => true,
+            Self::WaitingForCi
+            | Self::Queued
+            | Self::Superseded
+            | Self::Running
+            | Self::Cancelling => false,
+        }
+    }
+}
+
+/// The push of a Git branch that admitted a Deployment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct GitPush {
+    pub repository_id: RepositoryId,
+    pub branch: BranchName,
+    pub head: CommitSha,
+}
+
+/// What the check suites of a waiting Deployment's commit say so far.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CiVerdict {
+    /// None reported yet, or some still run. Every one passing queues it.
+    Pending,
+    /// One completed without passing. A rerun that passes still queues it.
+    Failed,
 }
 
 /// A Deployment as lists show it.
@@ -93,8 +130,9 @@ impl DeploymentStatus {
 pub struct DeploymentSummary {
     pub id: DeploymentId,
     pub environment_id: EnvironmentId,
-    /// Counts from 1 within its Environment.
-    pub number: u64,
+    /// Counts from 1 within its Environment, in the order Deployments queued. None
+    /// while it waits for CI, and ever after when it never queued.
+    pub number: Option<u64>,
     pub status: DeploymentStatus,
     /// The Saved revision it ships.
     pub saved: Revision,
@@ -122,6 +160,14 @@ pub struct DeploymentSummary {
     pub ended_at: Option<i64>,
     /// What whoever admitted it said it ships.
     pub message: Option<String>,
+    /// The push that admitted it; none for a manual Deploy, a retry or a removal.
+    pub push: Option<GitPush>,
+    /// What its commit's CI says, exactly while it waits for CI.
+    pub ci: Option<CiVerdict>,
+    /// Whether it waits for CI, or was cancelled while it did: it never froze what
+    /// it ships, so it can't be redeployed.
+    #[serde(default)]
+    pub held: bool,
     /// Whether it may still run: queued, or claimed by a runner still there.
     pub in_flight: bool,
     /// What its runner recorded at its end; none while it hasn't ended.
@@ -137,6 +183,29 @@ pub struct DeploymentSummary {
     pub ingress: Vec<IngressRepair>,
 }
 
+impl DeploymentSummary {
+    /// How a list names it: `#N` once numbered, else the short commit of the push
+    /// it holds.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match (self.number, &self.push) {
+            (Some(number), _) => format!("#{number}"),
+            (None, Some(push)) => push.head.as_str().get(..7).unwrap_or_default().to_owned(),
+            (None, None) => self.id.as_str().get(..8).unwrap_or_default().to_owned(),
+        }
+    }
+
+    /// Its number, which every Deployment that queued has.
+    pub(crate) fn numbered(&self) -> Result<u64, RpcError> {
+        self.number.ok_or_else(|| {
+            error::conflict(
+                "This Deployment never queued: it waited for CI",
+                json!({ "deployment": self.id }),
+            )
+        })
+    }
+}
+
 /// What a Deployment ships despite. It still ships.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
@@ -149,18 +218,28 @@ pub enum DeploymentWarning {
         /// The variable as the file references it, such as `api.TOKEN`.
         variable: String,
     },
-    /// A Service variable left out: it is, or reads, a secret without a value.
+    /// A Service variable left out: it is, or reads, a secret without a value, or
+    /// with `broken`, directly or through another variable, a Service or variable
+    /// that isn't there.
     NotSet {
         service: ServiceName,
         /// The variable's key, such as `TOKEN`.
         variable: String,
+        /// Clients before broken references read it as Not set.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        broken: bool,
     },
-    /// A Config file reference left empty: it is, or reads, a secret without a value.
+    /// A Config file reference left empty: it is, or reads, a secret without a
+    /// value, or with `broken`, a Service or variable that isn't there.
     NotSetInFile {
         config: ConfigName,
         file: ConfigFileName,
         /// The variable as the file references it, such as `api.TOKEN`.
         secret: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        broken: bool,
     },
     /// A Server's Ingress Proxy the Deploy created or started isn't running.
     IngressNotServing {
@@ -169,6 +248,9 @@ pub enum DeploymentWarning {
     },
     /// The Deploy couldn't check the Cluster's Ingress Proxies, so it brought none back.
     IngressUnchecked { cause: String },
+    /// Something the Deploy found while executing, such as an image that exposes a
+    /// port none of a Service's domains send to.
+    Deploy { warning: DeployWarning },
 }
 
 /// What a Deploy did to one Server's missing or stopped Ingress Proxy. It only
@@ -275,6 +357,10 @@ pub struct DeploymentView {
     /// Each Service's runtime name (its Private DNS name) by its name when admitted,
     /// for finding its containers.
     pub runtime_names: BTreeMap<ServiceName, ServiceName>,
+    /// The numbers of the Deployments after it that may have changed the Servers,
+    /// oldest first: what redeploying it rolls back. Empty when it rolls nothing back.
+    #[serde(default)]
+    pub rolls_back: Vec<u64>,
 }
 
 /// What a Deployment did to one of its target nodes.
@@ -393,6 +479,9 @@ pub enum RunEvidence {
     /// Checking the Cluster's Ingress Proxies after execution failed, so none was
     /// filled. It warns; it never fails the Deployment.
     IngressUnchecked(String),
+    /// Something the Deploy found while executing. It warns; it never fails the
+    /// Deployment.
+    Warned(DeployWarning),
     /// The runner still holds the Deployment: it renews the lease and reads the
     /// status back, which says whether it was cancelled.
     Alive,
@@ -643,6 +732,9 @@ pub(crate) struct Stored {
     run: Run,
     /// Until when, in Unix seconds, its runner holds it without recording anything.
     lease: i64,
+    /// Where it lists among its Environment's Deployments: taken once, at insert,
+    /// and never moved, so a page cursor can hold it.
+    pub(crate) listed: i64,
 }
 
 impl Stored {
@@ -680,15 +772,39 @@ impl Stored {
     }
 }
 
-const COLUMNS: &str = "id, environment_id, number, status, saved_revision, services, nodes, \
-     namespace, run, upload, cluster_domain, runner, lease, admitted_by, admitted, started, ended, \
-     message";
+/// What a Deployment row reads as, from an unaliased `config_deployment`. The
+/// second-last column is the [`CiVerdict`] of one waiting for CI: failed once a
+/// check suite of its commit completed without passing, by the rule that lets it go.
+/// The last is where it lists among its Environment's Deployments.
+static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let passing = crate::automation::CheckConclusion::PASSING
+        .iter()
+        .map(|conclusion| format!("'{}'", name_of(conclusion)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let completed = name_of(crate::automation::CheckStatus::Completed);
+    format!(
+        "id, environment_id, number, status, saved_revision, services, nodes, namespace, run, \
+         upload, cluster_domain, runner, lease, admitted_by, admitted, started, ended, message, \
+         push_repository_id, push_branch, push_head, \
+         CASE WHEN status = 'waiting_for_ci' THEN \
+           CASE WHEN EXISTS (SELECT 1 FROM config_check_suite s \
+             WHERE s.organization_id = config_deployment.organization_id \
+             AND s.repository_id = config_deployment.push_repository_id \
+             AND s.head = config_deployment.push_head AND s.status = '{completed}' \
+             AND COALESCE(s.conclusion, '') NOT IN ({passing})) \
+           THEN 'failed' ELSE 'pending' END \
+         END, listed"
+    )
+});
 
 /// SQL selecting Deployments that may still run: queued, or claimed by a runner
-/// whose lease holds. The inverse of [`lapsed`] for claimed ones.
+/// whose lease holds. The inverse of [`lapsed`] for claimed ones. The status set
+/// comes first, spelled as the `config_deployment_in_flight` index's predicate is,
+/// so SQLite's planner takes the index.
 pub(crate) fn in_flight_sql() -> String {
     format!(
-        "(status = 'queued' OR (status IN ('running', 'cancelling') AND lease > {}))",
+        "(status IN ('queued', 'running', 'cancelling') AND (status = 'queued' OR lease > {}))",
         now()
     )
 }
@@ -710,7 +826,8 @@ pub(crate) fn cluster_domain(
 ) -> Result<Option<Hostname>, RpcError> {
     tx.query(
         "SELECT cluster_domain FROM config_deployment \
-         WHERE environment_id = ?1 AND cluster_domain IS NOT NULL ORDER BY number DESC LIMIT 1",
+         WHERE environment_id = ?1 AND number IS NOT NULL AND cluster_domain IS NOT NULL \
+         ORDER BY number DESC LIMIT 1",
         &[environment.as_str().into()],
     )?
     .first()
@@ -780,8 +897,9 @@ pub(crate) fn namespace(
 
 /// Deployment `id` of `who`'s Organization.
 pub(crate) fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<Stored, RpcError> {
+    let columns = COLUMNS.as_str();
     let rows = tx.query(
-        &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
+        &format!("SELECT {columns} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
         &[id.as_str().into(), who.organization.as_str().into()],
     )?;
     stored(rows.first().ok_or_else(|| missing(id))?)
@@ -797,8 +915,9 @@ pub(crate) fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcEr
 
 /// Load a Deployment of any Organization: in-process runner calls only.
 pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
+    let columns = COLUMNS.as_str();
     let rows = tx.query(
-        &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1"),
+        &format!("SELECT {columns} FROM config_deployment WHERE id = ?1"),
         &[id.as_str().into()],
     )?;
     stored(rows.first().ok_or_else(|| missing(id))?)
@@ -812,11 +931,32 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         true => DeploymentStatus::Unknown,
         false => status,
     };
+    let nodes: Vec<TargetNode> = row.json(6, "Deployment")?;
+    let push = match (
+        row.optional_int(18)?,
+        row.optional_text(19)?,
+        row.optional_text(20)?,
+    ) {
+        (Some(_), Some(_), Some(_)) => Some(GitPush {
+            repository_id: row.number(18, "Deployment push")?,
+            branch: row.parse(19, "Deployment push")?,
+            head: row.parse(20, "Deployment push")?,
+        }),
+        (None, None, None) => None,
+        _ => return Err(error::corrupt("Deployment push")),
+    };
+    // Only a push holds, and a push that admitted a Deployment froze what it ships,
+    // at least one node: a hold, cancelled or not, froze none.
+    let held = push.is_some() && nodes.is_empty();
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
             environment_id: row.parse(1, "identity")?,
-            number: row.number(2, "Deployment")?,
+            number: row
+                .optional_int(2)?
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| error::corrupt("Deployment number"))?,
             status,
             saved: row.number(4, "revision")?,
             services: row.json(5, "Deployment")?,
@@ -832,16 +972,26 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             started_at: row.optional_int(15)?,
             ended_at: row.optional_int(16)?,
             message: row.optional_text(17)?.map(str::to_owned),
+            push,
+            ci: row
+                .optional_text(21)?
+                .map(|verdict| {
+                    serde_json::from_value(Value::String(verdict.to_owned()))
+                        .map_err(|_| error::corrupt("CI verdict"))
+                })
+                .transpose()?,
+            held,
             in_flight: status.in_flight(),
             outcome: run.outcome.clone(),
             warnings: run.summary_warnings(),
             ingress: run.ingress.clone(),
         },
-        nodes: row.json(6, "Deployment")?,
+        nodes,
         namespace: row.parse::<Namespace>(7, "Namespace")?,
         run,
         cluster_domain: row.parse_optional(10, "identity")?,
         lease,
+        listed: row.int(22)?,
     })
 }
 
@@ -878,7 +1028,9 @@ fn running(stored: &Stored) -> Result<(), RpcError> {
         DeploymentStatus::Applied | DeploymentStatus::Failed | DeploymentStatus::Cancelled => {
             Err(ended(&stored.summary.id))
         }
-        DeploymentStatus::Queued | DeploymentStatus::Superseded => Err(error::conflict(
+        DeploymentStatus::WaitingForCi
+        | DeploymentStatus::Queued
+        | DeploymentStatus::Superseded => Err(error::conflict(
             "Claim this Deployment before recording what it did",
             json!({ "deployment": stored.summary.id }),
         )),
@@ -922,6 +1074,13 @@ fn missing(id: &DeploymentId) -> RpcError {
 fn superseded(id: &DeploymentId) -> RpcError {
     error::conflict(
         "A newer Deployment replaced this one before it started",
+        json!({ "deployment": id }),
+    )
+}
+
+fn waiting(id: &DeploymentId) -> RpcError {
+    error::conflict(
+        "This Deployment waits for its commit's CI: it queues once every check passes",
         json!({ "deployment": id }),
     )
 }

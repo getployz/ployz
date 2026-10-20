@@ -2,6 +2,8 @@
 //! text, where `${{ KEY }}` and `${{ service.KEY }}` reference other variables, or
 //! a secret. Reads show a secret as `{"secret": true}`, and writing that back keeps
 //! it; a new secret arrives as `{"secret": "…"}` and is sealed before it is stored.
+//! `{"secret": {"generate": true}}` has the Store make a random secret and seal it, so
+//! its value never leaves the Store; a variable that already holds a sealed secret keeps it.
 //! `exported` marks a variable other Services are meant to reference.
 
 use std::collections::BTreeMap;
@@ -10,10 +12,11 @@ use std::fmt;
 use ployz_core::config::{
     CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput, ResolveVariablesResult,
     ResolvedConfigFile, ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
-    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, parse_variable_template,
-    render_variable_parts, resolve_config_file, resolve_variables,
+    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, is_deleted_owner,
+    parse_variable_template, render_variable_parts, resolve_config_file, resolve_variables,
 };
 use ployz_core::{ConfigFileName, RpcError, ServiceName};
+use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{Map, Value, json};
 
 use crate::error;
@@ -33,7 +36,7 @@ impl VariableKey {
             && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if !valid {
             return Err(error::invalid(
-                "A variable name is letters, digits and _, not starting with a digit",
+                "A variable name is letters, digits and _, not starting with a digit, at most 128 characters",
                 json!({ "example": "DATABASE_URL" }),
             ));
         }
@@ -57,6 +60,8 @@ enum Input {
     /// `{"secret": true}` or `{"secret": false}`: keep the stored secret.
     Keep,
     Seal(String),
+    /// `{"secret": {"generate": true}}`: a random secret, unless one is stored already.
+    Generate,
 }
 
 /// A variable's value as reads show it: text with references by Service name,
@@ -175,6 +180,21 @@ pub(crate) fn set(
         .variables
         .iter()
         .find(|variable| variable.key == key.as_str());
+    let seal = |plaintext: String| -> Result<_, RpcError> {
+        validate_text(key, &plaintext)?;
+        let typed = typed_address::in_sealed(&plaintext, key, &others)?;
+        let fingerprint = sealing.fingerprint(&plaintext);
+        let value = match current {
+            // Sealing the same secret again changes nothing.
+            Some(current) if secret(current) && current.value_fingerprint == fingerprint => {
+                current.value.clone()
+            }
+            Some(_) | None => SavedVariableValue::Secret {
+                encrypted_value: Some(sealing.seal(&plaintext)),
+            },
+        };
+        Ok((value, fingerprint, typed))
+    };
     let (value, fingerprint, typed) = match (input, current) {
         (None, None) => return Err(invalid(key, "a new variable needs a value")),
         (None, Some(current)) => (
@@ -188,6 +208,17 @@ pub(crate) fn set(
             None,
         ),
         (Some(Input::Keep), _) => return Err(invalid(key, "it holds no secret to keep")),
+        // A retried edit must not rotate a secret its referrers and a database already use.
+        (Some(Input::Generate), Some(current))
+            if matches!(current.value, SavedVariableValue::Secret { .. }) =>
+        {
+            (
+                current.value.clone(),
+                current.value_fingerprint.clone(),
+                None,
+            )
+        }
+        (Some(Input::Generate), _) => seal(generated_secret()?)?,
         (Some(Input::Text(_)), Some(current)) if secret(current) => {
             return Err(error::conflict(
                 format!(
@@ -197,25 +228,17 @@ pub(crate) fn set(
             ));
         }
         (Some(Input::Text(text)), _) => {
-            let (parts, fingerprint) = text_parts(key, &text, &names)?;
+            let old = current.map_or(&[][..], |current| current.value.parts());
+            let (labels, removed) = (environment.shown_names(), environment.removed_names());
+            let shown = Shown {
+                labels: &labels,
+                removed: &removed,
+            };
+            let (parts, fingerprint) = text_parts(key, &text, &names, shown, old)?;
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
-        (Some(Input::Seal(plaintext)), current) => {
-            validate_text(key, &plaintext)?;
-            let typed = typed_address::in_sealed(&plaintext, key, &others)?;
-            let fingerprint = sealing.fingerprint(&plaintext);
-            let value = match current {
-                // Sealing the same secret again changes nothing.
-                Some(current) if secret(current) && current.value_fingerprint == fingerprint => {
-                    current.value.clone()
-                }
-                Some(_) | None => SavedVariableValue::Secret {
-                    encrypted_value: Some(sealing.seal(&plaintext)),
-                },
-            };
-            (value, fingerprint, typed)
-        }
+        (Some(Input::Seal(plaintext)), _) => seal(plaintext)?,
     };
     let next = SavedVariableIntent {
         id: current.map_or_else(
@@ -295,12 +318,43 @@ pub(crate) fn rename(
             .map(|(service, key)| format!("{service}.{key}"))
             .collect::<Vec<_>>()
     };
+    // A Config file doesn't follow a rename, and the rename would break it.
+    let reads = |part: &ValuePart| {
+        matches!(
+            part,
+            ValuePart::Ref {
+                owner: ValuePartOwner::Service { lineage_id },
+                key: reads,
+            } if *lineage_id == lineage && reads == key.as_str()
+        )
+    };
+    let files: Vec<String> = environment
+        .working
+        .configs
+        .iter()
+        .flat_map(|config| {
+            config
+                .files
+                .iter()
+                .filter(|(_, content)| content.content.iter().any(reads))
+                .map(move |(file, _)| format!("{}/{file}", config.name))
+        })
+        .collect();
+    if !files.is_empty() {
+        return Err(error::conflict(
+            format!(
+                "{} references {service}.{key}; change those references first",
+                files.join(", ")
+            ),
+            json!({ "files": files, "references": format!("{service}.{key}") }),
+        ));
+    }
     let referrers = referrers(environment, service, &lineage, key)?;
     if !referrers.is_empty() && !update_references {
         let summary = &environment.summary;
         return Err(error::conflict(
             format!(
-                "{service}.{key} is used by {}; rename it with update_references to switch them to {to}",
+                "{service}.{key} is used by {}; rename it with updated references to switch them to {to}",
                 names(&referrers).join(", ")
             ),
             json!({
@@ -381,20 +435,74 @@ fn referrers(
     Ok(found)
 }
 
-/// Text as a variable's parts, referencing Services by their names in `names`
-/// (lineage → name), with its fingerprint.
+/// How an edit reads the Services its references name.
+#[derive(Clone, Copy)]
+pub(crate) struct Shown<'a> {
+    /// Each Service by lineage, as reads show it.
+    pub(crate) labels: &'a BTreeMap<String, String>,
+    /// The name each removed Service was last called, by lineage, where a record
+    /// has one.
+    pub(crate) removed: &'a BTreeMap<String, String>,
+}
+
+/// The lineage each `${{ name.KEY }}` of an edit reads: the Service `shown` labels
+/// `name`. A removed Service's, such as `${{ <deleted redis>.KEY }}`, only where the
+/// edited value, `old`, reads that `KEY` of it: an edit keeps the references it had
+/// and adds none to a removed Service. A `<deleted NAME>` no label matches reads the
+/// one Service `old` reads that `KEY` of and that was last called `NAME`, as reads
+/// showed it before another removal of that name made both show by lineage.
+pub(crate) fn lineage_of<'a>(
+    shown: Shown<'a>,
+    old: &'a [ValuePart],
+) -> impl FnMut(&str, &str) -> Option<String> + 'a {
+    move |name, key| {
+        let removed = is_deleted_owner(name);
+        let referenced = || {
+            old.iter().filter_map(|part| match part {
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Service { lineage_id },
+                    key: reads,
+                } => Some((lineage_id, reads)),
+                ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
+            })
+        };
+        let labelled = shown
+            .labels
+            .iter()
+            .filter(|(_, shown)| shown.as_str() == name)
+            .map(|(lineage, _)| lineage)
+            .find(|lineage| {
+                !removed || referenced().any(|(read, reads)| read == *lineage && reads == key)
+            });
+        if let Some(lineage) = labelled {
+            return Some(lineage.clone());
+        }
+        let last_called = name.strip_prefix("<deleted ")?.strip_suffix('>')?;
+        let mut alike: Vec<&String> = referenced()
+            .filter(|(_, reads)| *reads == key)
+            .map(|(lineage, _)| lineage)
+            .filter(|lineage| shown.removed.get(*lineage).map(String::as_str) == Some(last_called))
+            .collect();
+        alike.sort();
+        alike.dedup();
+        match alike.as_slice() {
+            [lineage] => Some((*lineage).clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Text as a variable's parts, referencing Services as [`lineage_of`] reads them,
+/// with its fingerprint.
 pub(crate) fn text_parts(
     key: &VariableKey,
     text: &str,
     names: &BTreeMap<String, String>,
+    shown: Shown<'_>,
+    old: &[ValuePart],
 ) -> Result<(Vec<ValuePart>, String), RpcError> {
     validate_text(key, text)?;
-    let template = parse_variable_template(text, |name| {
-        names
-            .iter()
-            .find(|(_, slug)| slug.as_str() == name)
-            .map(|(lineage, _)| lineage.clone())
-    });
+    let template = parse_variable_template(text, lineage_of(shown, old));
     if template.unterminated {
         return Err(invalid(
             key,
@@ -425,13 +533,26 @@ pub(crate) fn stored(mut parts: Vec<ValuePart>) -> SavedVariableValue {
     }
 }
 
+/// The longest `KEY=value` string Linux passes a program, with its closing NUL:
+/// `MAX_ARG_STRLEN`. A Container given a longer one never starts.
+const MAX_ENV_STRING: usize = 128 * 1024;
+
+const TOO_LONG: &str = "too long for a Container's environment: Linux passes at most 128 KiB per variable, name included";
+
+fn too_long(key: &str, value: &str) -> bool {
+    key.len() + value.len() + 2 > MAX_ENV_STRING
+}
+
 /// Plain and secret values must survive the container's environment unchanged.
 ///
 /// # Errors
-/// Refuses NUL bytes without echoing the value.
+/// Refuses NUL bytes, or a value too long for the environment, without echoing it.
 pub(crate) fn validate_text(key: &VariableKey, text: &str) -> Result<(), RpcError> {
     if text.contains('\0') {
         return Err(invalid(key, "null characters are not allowed"));
+    }
+    if too_long(key.as_str(), text) {
+        return Err(invalid(key, TOO_LONG));
     }
     Ok(())
 }
@@ -491,6 +612,11 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
             Some(Value::String(plaintext)) if !plaintext.is_empty() => {
                 Ok(Input::Seal(plaintext.clone()))
             }
+            Some(Value::Object(asked))
+                if asked.len() == 1 && asked.get("generate") == Some(&Value::Bool(true)) =>
+            {
+                Ok(Input::Generate)
+            }
             Some(_) | None => Err(invalid(key, "expected {\"secret\": true} or a new secret")),
         },
         Value::Null => Err(invalid(key, "null never deletes a variable; unset it")),
@@ -498,6 +624,29 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
             Err(invalid(key, "expected text or {\"secret\": true}"))
         }
     }
+}
+
+/// 32 random letters, the shape of the dashboard's database passwords.
+fn generated_secret() -> Result<String, RpcError> {
+    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    // 208 is the largest multiple of 52 a byte holds, so every letter is equally likely.
+    const LIMIT: u8 = 208;
+    let random = SystemRandom::new();
+    let mut secret = String::with_capacity(32);
+    let mut bytes = [0_u8; 64];
+    while secret.len() < 32 {
+        random
+            .fill(&mut bytes)
+            .map_err(|_| error::unavailable("No randomness to make a secret from"))?;
+        secret.extend(
+            bytes
+                .iter()
+                .filter(|byte| **byte < LIMIT)
+                .filter_map(|byte| LETTERS.get(usize::from(byte % 52)).copied().map(char::from))
+                .take(32_usize.saturating_sub(secret.len())),
+        );
+    }
+    Ok(secret)
 }
 
 fn exported_flag(key: &VariableKey, value: Value) -> Result<bool, RpcError> {
@@ -561,17 +710,20 @@ pub(crate) struct Resolved {
     /// Each Service's variables left out because a secret without a value reaches
     /// them, by Service ID.
     pub(crate) not_set: BTreeMap<String, Vec<String>>,
+    /// Each Service's variables left out because they reference, directly or through
+    /// another variable, a Service or variable that isn't there, by Service ID.
+    pub(crate) broken: BTreeMap<String, Vec<String>>,
 }
 
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers. With `unseal`, secrets and values
 /// that reference one resolve to plaintext. Without it, such a variable is left
-/// out and such a file is empty. A variable a secret without a value reaches is
-/// always left out; in a file that secret is empty.
+/// out and such a file is empty. A variable a secret without a value, or a broken
+/// reference, reaches is always left out; in a file either is empty.
 ///
 /// # Errors
-/// Returns `invalid_argument` for a reference cycle, or `internal` when a sealed
-/// value can't be opened.
+/// Returns `invalid_argument` for a reference cycle or a value too long for the
+/// environment, or `internal` when a sealed value can't be opened.
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
     unseal: Option<&SealingKey>,
@@ -609,6 +761,7 @@ pub(crate) fn resolve(
         env: BTreeMap::new(),
         configs: BTreeMap::new(),
         not_set: BTreeMap::new(),
+        broken: BTreeMap::new(),
     };
     for node in &compiled.node_snapshots {
         let config = match &node.snapshot.0 {
@@ -630,6 +783,7 @@ pub(crate) fn resolve(
         };
         let mut env = BTreeMap::new();
         let mut not_set = Vec::new();
+        let mut broken = Vec::new();
         for (key, value) in &config.env {
             let value = match value {
                 ServiceEnvValue::Literal { value, parts: None } => Some(value.clone()),
@@ -640,11 +794,18 @@ pub(crate) fn resolve(
                     self_owner_id: node.node_id.clone(),
                     producers: producers.clone(),
                 }) {
+                    ResolveVariablesResult::Resolved { warnings, .. } if !warnings.is_empty() => {
+                        broken.push(key.clone());
+                        None
+                    }
                     ResolveVariablesResult::Resolved { value, secret, .. } => {
                         (unseal.is_some() || !secret).then_some(value)
                     }
-                    ResolveVariablesResult::NotSet => {
+                    ResolveVariablesResult::NotSet { warnings } => {
                         not_set.push(key.clone());
+                        if !warnings.is_empty() {
+                            broken.push(key.clone());
+                        }
                         None
                     }
                     ResolveVariablesResult::Cycle { path } => {
@@ -665,11 +826,20 @@ pub(crate) fn resolve(
                 } => open(encrypted_value.as_ref())?,
             };
             if let Some(value) = value {
+                if too_long(key, &value) {
+                    return Err(error::invalid(
+                        format!("{}.env.{key} is {TOO_LONG}", config.settings.private_dns),
+                        json!({ "variable": key }),
+                    ));
+                }
                 env.insert(key.clone(), value);
             }
         }
         if !not_set.is_empty() {
             resolved.not_set.insert(node.node_id.clone(), not_set);
+        }
+        if !broken.is_empty() {
+            resolved.broken.insert(node.node_id.clone(), broken);
         }
         resolved.env.insert(node.node_id.clone(), env);
     }
@@ -720,7 +890,7 @@ mod tests {
     fn a_config_file_that_reads_a_secret_is_empty_without_the_key() {
         let key = SealingKey::new(b"test-encryption-secret").unwrap();
         let file = |text: &str| SavedConfigFile {
-            content: parse_variable_template(text, |_| Some("web-lineage".to_owned())).parts,
+            content: parse_variable_template(text, |_, _| Some("web-lineage".to_owned())).parts,
             mode: FileMode::READ_ONLY,
             uid: 0,
             gid: 0,

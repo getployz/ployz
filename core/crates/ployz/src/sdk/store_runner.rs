@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
-    RpcError, RpcErrorCode, ServiceName,
+    ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
+    MachineId, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -309,10 +309,12 @@ impl Run {
             })
             .await;
         match outcome {
-            Ok((outcome, progress)) => {
+            Ok((outcome, progress, mut warnings)) => {
                 if self.lost_to_another_runner().await {
                     return self.interrupted(outcome, progress).await;
                 }
+                // The last chance: the store takes warnings only while the Deployment runs.
+                self.record_warnings(&mut warnings).await;
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
                     self.renewing(remove_volumes(session, deletes), || ()).await
@@ -464,19 +466,28 @@ impl Run {
             String::new()
         };
         let mut flushed = tokio::time::Instant::now();
-        while let Some(event) = running.next().await {
-            log.push_str(&log_line(&event));
-            if flushed.elapsed() >= LOG_FLUSH && !log.is_empty() {
-                // ponytail: a failed flush keeps the output for the next one.
-                if self
-                    .report(service, BuildStatus::Building, None, log.clone())
-                    .await
-                    .is_ok()
-                {
-                    log.clear();
+        loop {
+            let next = if log.is_empty() {
+                running.next().await
+            } else {
+                tokio::select! {
+                    next = running.next() => next,
+                    () = tokio::time::sleep_until(flushed + LOG_FLUSH) => {
+                        // ponytail: a failed flush keeps the output for the next one.
+                        if self
+                            .report(service, BuildStatus::Building, None, log.clone())
+                            .await
+                            .is_ok()
+                        {
+                            log.clear();
+                        }
+                        flushed = tokio::time::Instant::now();
+                        continue;
+                    }
                 }
-                flushed = tokio::time::Instant::now();
-            }
+            };
+            let Some(event) = next else { break };
+            log.push_str(&log_line(&event));
         }
         let (status, message, ended) = match running.finished().await {
             Ok(BuildOutcome::Built { receipt, reused }) => {
@@ -563,16 +574,26 @@ impl Run {
         (
             DeployOutcome<ExecutionError>,
             Vec<ployz_store::ServerProgress>,
+            Vec<DeployWarning>,
         ),
         RpcError,
     > {
         let mut confirmed = std::collections::BTreeSet::new();
         let mut tracker = RowTracker::default();
         let mut pending = BTreeMap::new();
+        let mut warnings = Vec::new();
         while let Some(event) = running.next().await {
-            let ployz_core::DeployEvent::Progress { rows, .. } = event else {
-                continue;
+            let rows = match event {
+                ployz_core::DeployEvent::Progress { rows, .. } => rows,
+                ployz_core::DeployEvent::Warning { warning } => {
+                    warnings.push(warning);
+                    self.record_warnings(&mut warnings).await;
+                    continue;
+                }
+                ployz_core::DeployEvent::Outcome { .. }
+                | ployz_core::DeployEvent::ImagesPruned { .. } => continue,
             };
+            self.record_warnings(&mut warnings).await;
             for mut row in tracker.changes(&rows) {
                 let container = tracker.container(&row);
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
@@ -617,7 +638,20 @@ impl Run {
             }
         }
         let outcome = running.finished().await?;
-        Ok((outcome, pending.into_values().collect()))
+        Ok((outcome, pending.into_values().collect(), warnings))
+    }
+
+    /// Record each held warning, keeping the ones the store refused for the next try.
+    /// The store keeps a warning once, so a retry after a lost reply changes nothing.
+    async fn record_warnings(&self, warnings: &mut Vec<DeployWarning>) {
+        let mut unrecorded = Vec::new();
+        for warning in warnings.drain(..) {
+            if let Err(error) = self.record(RunEvidence::Warned(warning.clone())).await {
+                tracing::warn!(%error, "couldn't record a Deploy warning; retrying later");
+                unrecorded.push(warning);
+            }
+        }
+        *warnings = unrecorded;
     }
 
     async fn connecting<T>(
@@ -970,6 +1004,9 @@ pub(super) fn log_line(event: &Value) -> String {
     let text = |pointer: &str| event.pointer(pointer).and_then(Value::as_str);
     if let Some(machine) = text("/Selected/machine/name") {
         return format!("Building on {machine}\n");
+    }
+    if text("/Build/Stage") == Some("Queued") {
+        return "Waiting for a build slot\n".to_owned();
     }
     if let Some(output) = text("/Build/StepOutput/text") {
         return output.to_owned();

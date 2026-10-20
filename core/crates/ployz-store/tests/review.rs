@@ -1383,6 +1383,32 @@ fn history_undo_of_a_service_removal_brings_back_what_it_referred_to() {
     assert_eq!(value(&store, &who, "web.env.SOURCE"), Some(json!("old")));
 }
 
+#[test]
+fn history_undo_that_leaves_a_broken_reference_stages_and_the_review_lists_it() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    add_service(&store, &who, 10, "pg");
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "pg.env.PASS", json!("secret"));
+    set(&store, &who, "web.env.DATABASE", json!("${{ pg.PASS }}"));
+    publish(&store, &who, None).unwrap();
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert_eq!(value(&store, &who, "pg.image"), None);
+    let diff = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    let broken: Vec<String> = diff.broken.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        broken,
+        ["web.env.DATABASE references pg, which was removed"]
+    );
+}
+
 fn rename_service(store: &ConfigStore, who: &Actor, from: &str, to: &str) {
     store
         .write(
@@ -2699,7 +2725,7 @@ fn history_undo_volume_mount_named_name_and_shared_writes() {
         )
         .unwrap();
     assert!(
-        preview
+        !preview
             .changes
             .iter()
             .flat_map(|node| &node.settings)

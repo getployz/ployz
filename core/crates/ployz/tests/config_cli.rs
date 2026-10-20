@@ -312,6 +312,7 @@ fn serve(
             200,
             json!({ "connections": [{ "tcp": engine() }], "unreachable": [] }),
         ),
+        (Some(_), "/api/cli/agent/ask") => (200, servers_read(&body)),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
             approvals.run(&method, route, &body, approval.as_deref())
         }
@@ -323,6 +324,36 @@ fn serve(
         "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     )
+}
+
+/// What this Cloud's Servers answer when Cloud reads them: `web-1` has one log line
+/// for runtime Service `web` and nothing for any other, `web-2` does not answer for
+/// `worker`, and no Server has a metric reading.
+fn servers_read(body: &[u8]) -> Value {
+    let ask: Value = serde_json::from_slice(body).unwrap();
+    let seen = json!({ "read_at": 0, "from": "server", "unanswered": [] });
+    match ask["ask"]["query"].as_str() {
+        Some("logs") if ask["ask"]["service"] == "worker" => json!({
+            "servers": [],
+            "seen": { "read_at": 0, "from": "server", "unanswered": ["web-2"] },
+            "notes": ["web-2 did not answer: timed out"],
+        }),
+        Some("logs") => {
+            let servers = if ask["ask"]["service"] == "web" {
+                let text =
+                    json!({ "status": "shown", "lines": ["ready"], "cut": false, "redacted": 0 });
+                json!([{ "server": "web-1", "text": text }])
+            } else {
+                json!([])
+            };
+            json!({ "servers": servers, "seen": seen, "notes": [] })
+        }
+        Some("metrics") => json!({
+            "since": 0, "until": 0, "metrics": [], "oom_kills": 0, "exits": 0, "restarts": 0,
+            "events": [], "notes": [], "seen": seen,
+        }),
+        other => panic!("this Cloud reads no {other:?}"),
+    }
 }
 
 /// What this Cloud knows: its GitHub, its one Server, and its Cluster
@@ -738,7 +769,8 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
                 "web.privateDns",
                 "web.replicas",
                 "web.restartPolicy",
-                "web.startCommand"
+                "web.startCommand",
+                "web.updateOrder"
             ]))
         );
         assert!(added.get("immediate").is_none());
@@ -760,7 +792,7 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
         let got = ok(store, &["get", "web"]);
         assert_eq!(
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
-            12
+            13
         );
         // Read beside a Service, its domains show even when it has none.
         assert_eq!(got.get("domains"), Some(&json!([])));
@@ -789,6 +821,31 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
     }
 }
 
+#[test]
+fn a_service_takes_an_update_order_and_unset_leaves_it_to_each_deploy() {
+    let (code, schema) = ployz(None, &["schema", "web.updateOrder"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        schema.get("enum"),
+        Some(&json!(["start-first", "stop-first", "rolling"]))
+    );
+    for store in &targets() {
+        shop_with_web(store);
+        assert_eq!(setting(store, "web.updateOrder"), Value::Null);
+        let set = ok(store, &["set", "web.updateOrder=rolling"]);
+        assert_eq!(set.get("staged"), Some(&json!(["web.updateOrder"])));
+        assert_eq!(setting(store, "web.updateOrder"), json!("rolling"));
+        let refused = error(store, &["set", "web.updateOrder=blue-green"]);
+        assert_eq!(refused["code"], "invalid_argument", "{refused}");
+        assert_eq!(
+            refused["message"],
+            "updateOrder: Expected start-first, stop-first or rolling"
+        );
+        ok(store, &["unset", "web.updateOrder"]);
+        assert_eq!(setting(store, "web.updateOrder"), Value::Null);
+    }
+}
+
 fn shop_with_web(store: &Target) {
     ok(store, &["project", "new", "shop"]);
     ok(store, &["service", "add", "web", "--image", "nginx:1"]);
@@ -796,6 +853,17 @@ fn shop_with_web(store: &Target) {
 
 fn setting(store: &Target, path: &str) -> Value {
     ok(store, &["get", path])["settings"][0]["value"].clone()
+}
+
+#[test]
+fn a_service_name_over_63_characters_is_refused_with_the_whole_rule() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(&store);
+    let refused = failed(&store, &["deploy", &"a".repeat(64)], 2);
+    assert_eq!(
+        refused["message"],
+        "Expected Service names: each up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
+    );
 }
 
 #[test]
@@ -812,6 +880,38 @@ fn a_healthcheck_is_set_by_path_or_patch_and_refuses_control_characters() {
         assert_eq!(
             setting(store, "web.healthcheck"),
             json!({ "command": "pg_isready", "timeoutSeconds": 60 })
+        );
+        ok(store, &["set", "web.healthcheck=/up"]);
+        assert_eq!(
+            setting(store, "web.healthcheck"),
+            json!({ "path": "/up", "timeoutSeconds": 60 })
+        );
+        let refused = failed(store, &["set", "web.healthcheck=pg_isready"], 2);
+        assert_eq!(
+            refused["message"],
+            "healthcheck: text sets an HTTP path like /health; a command takes an object like {\"command\":\"pg_isready\",\"timeoutSeconds\":60}, and an HTTP check's timeout one like {\"path\":\"/health\",\"timeoutSeconds\":60}"
+        );
+        let next = refused["details"]["next"].as_str().unwrap();
+        let words = shell_words::split(next).unwrap();
+        assert_eq!(words[0], "ployz", "{next}");
+        ok(
+            store,
+            &words[1..].iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            setting(store, "web.healthcheck"),
+            json!({ "command": "pg_isready", "timeoutSeconds": 60 })
+        );
+        ok(
+            store,
+            &[
+                "set",
+                r#"web.healthcheck={"path":"/health","timeoutSeconds":60}"#,
+            ],
+        );
+        assert_eq!(
+            setting(store, "web.healthcheck"),
+            json!({ "path": "/health", "timeoutSeconds": 60 })
         );
         ok(store, &["unset", "web.healthcheck"]);
         assert_eq!(setting(store, "web.healthcheck"), Value::Null);
@@ -1114,6 +1214,36 @@ fn a_deployed_service_staged_for_removal_still_inspects() {
 }
 
 #[test]
+fn removing_a_referenced_service_stages_and_prints_the_broken_reference() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "redis", "--image", "redis:7"]);
+    ok(&store, &["service", "add", "sentry", "--image", "sentry:1"]);
+    ok(
+        &store,
+        &["set", "sentry.env.REDIS=${{ redis.PLOYZ_PRIVATE_DOMAIN }}"],
+    );
+    ok(&store, &["deploy", "--skip-deploy"]);
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
+    };
+    let line = "sentry.env.REDIS references redis, which was removed; deploys skip it until you change it: ployz set 'sentry.env.REDIS=VALUE'";
+    let removed = human(&["service", "rm", "redis"]);
+    assert!(removed.contains(line), "{removed}");
+    let diff = human(&["diff"]);
+    assert!(diff.contains(line), "{diff}");
+    let status = ok(&store, &["status"]);
+    assert_eq!(
+        status["attention"][0]["reason"],
+        json!("broken_reference"),
+        "{status}"
+    );
+}
+
+#[test]
 fn an_agent_renames_a_project() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
@@ -1406,7 +1536,7 @@ fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud
     fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
         if let Written::Deployment(admitted) = written {
             // Keep the second authored Deployment queued, so production can't come off yet.
-            if admitted.number != 2 || admitted.remove {
+            if admitted.number != Some(2) || admitted.remove {
                 succeed(store, &admitted.id);
             }
         }
@@ -1695,7 +1825,7 @@ fn an_agent_marks_settings_never_sync_without_servers() {
         // A node's name marks it and each of its rows, changed, unchanged or at its default.
         let whole = ok(store, &["env", "never-sync", "web", "--env", "fix-web"]);
         let whole = labels(&whole["never_synced"]);
-        assert_eq!(whole.len(), 18);
+        assert_eq!(whole.len(), 19);
         for row in ["web", "web.env.APP_ENV", "web.source", "web.startCommand"] {
             assert!(whole.contains(&row.to_owned()), "{row} in {whole:?}");
         }
@@ -2098,7 +2228,7 @@ fn mistakes_fail_with_their_codes() {
         let no_env = error(store, &["get", "--env", "preview"]);
         assert_eq!(
             no_env.pointer("/details/next"),
-            Some(&json!("ployz env new preview --project shop"))
+            Some(&json!("ployz env ls --project shop"))
         );
 
         let malformed = failed(store, &["set", "web.replicas"], 2);
@@ -2355,7 +2485,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
                 .as_array()
                 .unwrap()
                 .len(),
-            12
+            13
         );
 
         ok(store, &["set", "web.memLimit=1GiB"]);
@@ -2650,7 +2780,7 @@ fn cloud_answers_only_a_credential_in_its_own_organization() {
     assert_eq!(refused.get("code"), Some(&json!("unauthenticated")));
     assert_eq!(
         refused.pointer("/details/next"),
-        Some(&json!("ployz token new"))
+        Some(&json!("unset PLOYZ_TOKEN && ployz login"))
     );
 
     let (code, json) = ployz(None, &["get"]);
@@ -2696,10 +2826,10 @@ fn deployment_text_shows_the_deepest_cause_and_json_keeps_the_chain() {
         let runner = RunnerId::parse("failing-worker").unwrap();
         let claimed = store.claim(&admitted.id, &runner).unwrap();
         let cause = match admitted.number {
-            3 => json!([]),
+            Some(3) => json!([]),
             _ => json!(["Writing Docker metadata failed", "No space left on device"]),
         };
-        let evidence = if admitted.number == 2 {
+        let evidence = if admitted.number == Some(2) {
             let operation = json!({
                 "type": "remove_container", "machine_id": "a".repeat(32),
                 "container_id": "b".repeat(64)
@@ -2920,17 +3050,40 @@ fn an_upload_is_recorded_with_its_base_commit_and_kept_for_later_deploys() {
 }
 
 #[test]
+fn redeploying_an_older_deployment_asks_before_it_rolls_back() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
+    applied(&store, "production");
+    ok(&store, &["set", "web.replicas=2"]);
+    applied(&store, "production");
+
+    let asked = error(&store, &["deployment", "redeploy", "1"]);
+    assert_eq!(asked["code"], "confirmation_required", "{asked}");
+    assert_eq!(asked["details"]["rolls_back"], json!([2]));
+    assert_eq!(
+        asked["details"]["retry"],
+        json!("ployz --json deployment redeploy 1 --yes")
+    );
+
+    let rolled_back = no_server_answers(&store, &["deployment", "redeploy", "1", "--yes"]);
+    assert_eq!(rolled_back["number"], json!(3), "{rolled_back}");
+    // Redeploying the newest one rolls nothing back, so it asks nothing.
+    no_server_answers(&store, &["deployment", "redeploy", "3"]);
+}
+
+#[test]
 fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
         let deployed = no_server_answers(store, &["deploy"]);
         let failed_id = deployed["id"].as_str().unwrap().to_owned();
-        // Saved since: a retry still ships what the failed one froze.
+        // Saved since: a redeploy still ships what the failed one froze.
         ok(store, &["set", "web.replicas=2"]);
         ok(store, &["deploy", "--skip-deploy"]);
 
-        let retried = no_server_answers(store, &["deployment", "retry", &failed_id]);
+        let retried = no_server_answers(store, &["deployment", "redeploy", &failed_id]);
         assert_eq!(
             (&retried["number"], &retried["saved"], &retried["status"]),
             (&json!(2), &json!(1), &json!("failed"))
@@ -2949,7 +3102,7 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
             store,
             &[
                 "deployment",
-                "retry",
+                "redeploy",
                 "00000000-0000-4000-8000-000000000999",
             ],
         );
@@ -2977,6 +3130,101 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
         assert_eq!(unbuilt["code"], json!("not_found"));
         failed(store, &["logs", "--build"], 2);
     }
+}
+
+#[test]
+fn following_logs_refuses_a_service_the_environment_does_not_have() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        for args in [
+            &["logs", "-f", "nosvc"][..],
+            &["logs", "-f", "web", "nosvc"],
+        ] {
+            let refused = error(store, args);
+            assert_eq!(
+                (
+                    &refused["code"],
+                    &refused["message"],
+                    &refused["details"]["valid_children"]
+                ),
+                (
+                    &json!("not_found"),
+                    &json!("No Service named nosvc in Environment production"),
+                    &json!(["web"])
+                ),
+                "{args:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
+    // Cloud refuses this member Server access, so `logs` and `metrics` read through Cloud.
+    let linus = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_linus",
+    };
+    ok(&linus, &["project", "new", "shop"]);
+    ok(&linus, &["service", "add", "web", "--image", "nginx:1"]);
+    ok(&linus, &["service", "add", "worker", "--image", "nginx:1"]);
+    for args in [&["logs", "nosvc"][..], &["metrics", "nosvc"]] {
+        let refused = error(&linus, args);
+        assert_eq!(
+            (
+                &refused["code"],
+                &refused["message"],
+                &refused["details"]["valid_children"]
+            ),
+            (
+                &json!("not_found"),
+                &json!("No Service named nosvc in Environment production"),
+                &json!(["web", "worker"])
+            ),
+            "{args:?}"
+        );
+    }
+    ok(&linus, &["metrics", "web"]);
+    // Nothing printed, but why a Server did not answer for `worker` still shows.
+    let home = tempfile::tempdir().unwrap();
+    let output = linus
+        .command(home.path())
+        .args(["logs", "worker", "nosvc"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap()
+        ),
+        (
+            Some(1),
+            String::new(),
+            "web-2 did not answer: timed out\nerror: No Service named nosvc in Environment production\nvalid: web, worker\n".to_owned()
+        )
+    );
+    // Lines for `web` already printed, so the refusal for `nosvc` comes after them.
+    let home = tempfile::tempdir().unwrap();
+    let output = linus
+        .command(home.path())
+        .args(["logs", "web", "nosvc"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap()
+        ),
+        (
+            Some(3),
+            "web@web-1  ready\n".to_owned(),
+            "error: No Service named nosvc in Environment production\nvalid: web, worker\n"
+                .to_owned()
+        )
+    );
 }
 
 /// Run `ployz --json ARGS` in `dir` with a lasting `home`, where directory links live.
@@ -3254,7 +3502,7 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
         let (_, refused) = run(&["link", "--project", "blog", "--env", "preview"]);
         assert_eq!(
             refused.pointer("/error/details/next"),
-            Some(&json!("ployz env new preview --project blog"))
+            Some(&json!("ployz env ls --project blog"))
         );
 
         ok(store, &["env", "new", "staging", "--project", "blog"]);

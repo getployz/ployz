@@ -59,6 +59,12 @@ data, and references.
 Right-click the service on the canvas, or open its **Settings**, and click **Delete service**.
 Then deploy. Until you do, it keeps running, and discarding the change brings it back.
 
+Variables and config files that reference a deleted service don't stop you. Each shows
+**Broken reference** in red, like **redis was removed**, and so do **Details**, `ployz diff` and
+`ployz status`. `ployz service rm` prints each one with the command that changes it. Deploys leave
+a broken variable out, and any variable that references it, and warn, as for a
+[Not set](../deploy/deployments.md) secret.
+
 Deleting a database's service also deletes its volume and data, unless another service mounts
 it. The deploy asks you to confirm first: see
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).

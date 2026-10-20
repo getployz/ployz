@@ -46,16 +46,20 @@ pub(crate) fn branch_plan(
             .collect()
     };
     let owned = own(&planned);
-    let only = own(&plan(&BranchPicks::Preset {
-        preset: BranchPreset::Only,
-    })?);
-    let uses = own(&plan(&BranchPicks::Preset {
-        preset: BranchPreset::Uses,
-    })?);
-    let presets = match uses == only {
-        true => vec![BranchPreset::Only, BranchPreset::All],
-        false => vec![BranchPreset::Only, BranchPreset::Uses, BranchPreset::All],
-    };
+    // Each preset copies at least what the one before it does; one copying no more is no choice,
+    // and is pressed as the offered one it copies the same as.
+    let mut presets = Vec::new();
+    let mut pressed = planned.preset;
+    let mut copied = None;
+    for preset in [BranchPreset::Only, BranchPreset::Uses, BranchPreset::All] {
+        let copies = Some(own(&plan(&BranchPicks::Preset { preset })?));
+        if copies != copied {
+            presets.push(preset);
+            copied = copies;
+        } else if pressed == Some(preset) {
+            pressed = presets.last().copied();
+        }
+    }
     let role = |role: &BranchNodeRole| match role {
         BranchNodeRole::Own { .. } => PlannedRole::Own,
         BranchNodeRole::Live => PlannedRole::Live,
@@ -105,7 +109,7 @@ pub(crate) fn branch_plan(
         .collect::<Result<_, RpcError>>()?;
     Ok(BranchPlanView {
         from: from.summary.clone(),
-        preset: planned.preset,
+        preset: pressed,
         presets,
         nodes,
     })
@@ -159,7 +163,8 @@ pub(crate) fn lowering(
 }
 
 /// The name of each node `working` uses live, by lineage, from the nearest
-/// Environment it comes from whose Working State names it. Empty for a root.
+/// Environment it comes from whose Working State names it, else whose Applied
+/// State holds it. Empty for a root.
 pub(crate) fn live_names(
     tx: &mut dyn Tx,
     id: &EnvironmentId,
@@ -187,7 +192,55 @@ pub(crate) fn live_names(
             None => true,
         });
     }
+    if !wanted.is_empty()
+        && let Some(row) = row(tx, id)?
+    {
+        for ancestor in chain(tx, &row.parent)? {
+            wanted.retain(|lineage| match name_of(&ancestor.applied, lineage) {
+                Some(name) => {
+                    names.insert(lineage.clone(), name);
+                    false
+                }
+                None => true,
+            });
+        }
+    }
     Ok(names)
+}
+
+/// The variable keys of each Service `working` uses live, by lineage, as the
+/// nearest Environment above `id` that deployed it holds them. One deployed
+/// nowhere is left out.
+pub(crate) fn live_keys(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+    working: &SavedEnvironmentIntent,
+) -> Result<BTreeMap<String, BTreeSet<String>>, RpcError> {
+    let uses = used_live(working);
+    if uses.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let Some(row) = row(tx, id)? else {
+        return Ok(BTreeMap::new());
+    };
+    let chain = chain(tx, &row.parent)?;
+    Ok(uses
+        .into_keys()
+        .filter_map(|lineage| {
+            let service = chain.iter().find_map(|ancestor| {
+                ancestor
+                    .applied
+                    .services
+                    .iter()
+                    .find(|service| service.lineage_id == lineage)
+            })?;
+            let keys = service
+                .variables
+                .iter()
+                .map(|variable| variable.key.clone());
+            Some((lineage, keys.collect()))
+        })
+        .collect())
 }
 
 /// A Branch's view: its Parent, its Live Nodes and their owners, and how many

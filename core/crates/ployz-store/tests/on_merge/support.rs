@@ -380,6 +380,24 @@ pub(crate) fn check(store: &ConfigStore, who: &Actor) -> Option<OnMergeCheck> {
         .check
 }
 
+/// The commits `environment`'s Deployments wait for CI of, newest first.
+pub(crate) fn held(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
+    store
+        .read(
+            who,
+            &ployz_store::DeploymentsQuery {
+                environment: at(environment),
+                ..ployz_store::DeploymentsQuery::default()
+            },
+        )
+        .unwrap()
+        .deployments
+        .into_iter()
+        .filter(|deployment| deployment.status == ployz_store::DeploymentStatus::WaitingForCi)
+        .filter_map(|deployment| deployment.push.map(|push| push.head.to_string()))
+        .collect()
+}
+
 /// CI passed on `head`.
 pub(crate) fn passed(store: &ConfigStore, who: &Actor, head: &str) -> Automated {
     system(
