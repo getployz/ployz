@@ -172,6 +172,26 @@ impl CatchUpClient for Client {
                 && observed.namespace == new.slot.namespace
                 && observed.resolved_spec == new.resolved_spec
         });
+        // The keyed create below answers with a Container that already holds the
+        // creation key's name, so an Out copy must go before a new one is made.
+        let existing = match existing {
+            Some(existing) if matches!(existing.rotation(), CopyRotation::Held(_)) => {
+                return Err(RpcError {
+                    code: ployz_core::RpcErrorCode::Conflict,
+                    message: format!(
+                        "copy {} is stopped on this Machine by a user; start or remove it there first",
+                        existing.container_id.as_str()
+                    ),
+                    details: serde_json::Value::Null,
+                    cause: Vec::new(),
+                });
+            }
+            Some(existing) if *existing.rotation() == CopyRotation::Out => {
+                step_error(self.retire_copy(&Copy::observed(&existing), cancel).await?)?;
+                None
+            }
+            existing => existing,
+        };
         if let Some(existing) = existing {
             let now = ensure_retried(
                 self,
