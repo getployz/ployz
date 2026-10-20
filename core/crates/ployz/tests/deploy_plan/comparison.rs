@@ -16,7 +16,37 @@ fn spec_comparison_distinguishes_mutable_resources_from_recreation() {
         Some(ployz_core::ByteQuantity::try_from(512 * 1024 * 1024).unwrap());
     assert_eq!(
         compare_specs(&current, &resources_changed),
-        SpecChange::NeedsUpdate
+        SpecChange::NeedsRecreate,
+        "a first memory limit needs a new Container"
+    );
+
+    let mut shm_changed = requested.clone();
+    shm_changed.container.resources.shared_memory_bytes =
+        Some(ployz_core::ByteQuantity::try_from(64 * 1024 * 1024).unwrap());
+    assert_eq!(
+        compare_specs(&current, &shm_changed),
+        SpecChange::NeedsRecreate
+    );
+
+    let limited = container('c', '1', &resources_changed, &current_service_id)
+        .into_parts()
+        .resolved_spec;
+    let mut raised = resources_changed.clone();
+    raised.container.resources.memory_bytes =
+        Some(ployz_core::ByteQuantity::try_from(1024 * 1024 * 1024).unwrap());
+    assert_eq!(compare_specs(&limited, &raised), SpecChange::NeedsUpdate);
+    let mut lowered = resources_changed.clone();
+    lowered.container.resources.memory_bytes =
+        Some(ployz_core::ByteQuantity::try_from(256 * 1024 * 1024).unwrap());
+    assert_eq!(
+        compare_specs(&limited, &lowered),
+        SpecChange::NeedsRecreate,
+        "lowering a memory limit needs a new Container"
+    );
+    assert_eq!(
+        compare_specs(&limited, &requested),
+        SpecChange::NeedsRecreate,
+        "clearing a limit needs a new Container"
     );
 
     let mut image_changed = requested.clone();

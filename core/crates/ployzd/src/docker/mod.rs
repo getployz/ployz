@@ -3,6 +3,7 @@ mod create;
 mod http_health;
 mod images;
 mod lifecycle;
+mod limits;
 mod managed_service;
 mod observe;
 mod peer_pull;
@@ -51,8 +52,10 @@ use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
+pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
+use ployz_core::LimitsRefusal;
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
 pub use unregistry::ImageIngest;
 
@@ -1218,6 +1221,23 @@ pub enum Error {
     WorkNotAccepted,
     #[error("container is not managed by Ployz")]
     NotManaged,
+    #[error("container {0} is not a Service Container")]
+    NotAServiceContainer(ContainerId),
+    /// The requested spec is not a limits-only change of this Container's spec.
+    #[error("container {container_id} cannot take these limits in place: {refusal}")]
+    LimitsRefused {
+        container_id: ContainerId,
+        refusal: LimitsRefusal,
+    },
+    /// Docker accepted the update but reports other limits.
+    #[error("Docker reports other limits on container {container_id} after an update: {limits}")]
+    LimitsUnapplied {
+        container_id: ContainerId,
+        limits: Box<UnappliedLimits>,
+    },
+    /// Docker took the update, but the Container was not running when read back.
+    #[error("container {0} stopped after its limits update")]
+    StoppedAfterLimitsUpdate(ContainerId),
     #[error("resolved spec not found in machine.db for {0}")]
     SpecNotFound(ContainerId),
     #[error("container {0} was not found")]
@@ -1282,6 +1302,7 @@ impl Error {
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
             | Self::ServicePlacementMismatch
+            | Self::LimitsRefused { .. }
             | Self::WorkNotAccepted => RpcErrorCode::Conflict,
             Self::ProvisionedStorageUnsupported | Self::UnsupportedImageStore => RpcErrorCode::Unsupported,
             Self::VolumeCreatedButUnverified { .. }
@@ -1300,6 +1321,7 @@ impl Error {
             | Self::MissingField(_)
             | Self::MissingLabel(_)
             | Self::InvalidValue { .. }
+            | Self::NotAServiceContainer(_)
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
@@ -1310,6 +1332,8 @@ impl Error {
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)
             | Self::Clock(_)
+            | Self::LimitsUnapplied { .. }
+            | Self::StoppedAfterLimitsUpdate(_)
             | Self::InvalidVolumeStatus(_)
             | Self::UnexpectedVolumeName { .. }
             | Self::Observation(_) => RpcErrorCode::Internal,
@@ -1332,6 +1356,7 @@ impl From<&Error> for RpcError {
                 serde_json::json!({ "in_use_by": services })
             }
             Error::DiskFull { full, .. } => full.details(),
+            Error::LimitsRefused { refusal, .. } => serde_json::json!({ "reason": refusal }),
             _ => serde_json::Value::Null,
         };
         let code = error.rpc_code();

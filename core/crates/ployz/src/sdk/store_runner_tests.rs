@@ -787,3 +787,377 @@ fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
     };
     assert_eq!(services, [front]);
 }
+
+struct Recording {
+    client: Client,
+    wants: std::sync::Mutex<Vec<ployz_core::ContainerWant>>,
+}
+
+impl MachineOperations for Recording {
+    async fn prepare_volumes(
+        &self,
+        machine_id: &MachineId,
+        specs: &[ployz_core::ServiceStorageSpec],
+    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
+        MachineOperations::prepare_volumes(&self.client, machine_id, specs).await
+    }
+
+    async fn service_containers(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<Vec<ployz_core::ContainerObservation>, RpcError> {
+        MachineOperations::service_containers(&self.client, service).await
+    }
+
+    async fn ensure_container(
+        &self,
+        machine_id: &MachineId,
+        want: ployz_core::ContainerWant,
+    ) -> Result<(ployz_core::ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
+        self.wants.lock().unwrap().push(want.clone());
+        MachineOperations::ensure_container(&self.client, machine_id, want).await
+    }
+
+    async fn inspect_container(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+    ) -> Result<ployz_core::ContainerDetails, RpcError> {
+        MachineOperations::inspect_container(&self.client, machine_id, container_id).await
+    }
+
+    async fn update_container_limits(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ployz_core::ResolvedServiceSpec,
+    ) -> Result<ployz_core::ContainerLimitsUpdated, RpcError> {
+        MachineOperations::update_container_limits(&self.client, machine_id, container_id, spec)
+            .await
+    }
+
+    async fn remove_volume(&self, id: &ployz_core::DockerVolumeId) -> Result<(), RpcError> {
+        MachineOperations::remove_volume(&self.client, id).await
+    }
+
+    async fn runs_global(
+        &self,
+        machine_id: &MachineId,
+        slot: &ployz_core::SlotKey,
+        spec: &ployz_core::ResolvedServiceSpec,
+    ) -> Result<bool, RpcError> {
+        MachineOperations::runs_global(&self.client, machine_id, slot, spec).await
+    }
+
+    async fn ensure_image(
+        &self,
+        machine_id: &MachineId,
+        spec: &ployz_core::ResolvedServiceSpec,
+    ) -> Result<ployz_core::ImagePulled, RpcError> {
+        MachineOperations::ensure_image(&self.client, machine_id, spec).await
+    }
+
+    async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ployz_core::ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        self.wants.lock().unwrap().push(want.clone());
+        MachineOperations::ensure_unsettled(&self.client, machine_id, want, timeout).await
+    }
+
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<ployz_core::RoutesRead, RpcError> {
+        MachineOperations::read_routes(&self.client, machine_id, service).await
+    }
+
+    async fn read_entry_routes(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<ployz_core::RoutesRead, RpcError> {
+        MachineOperations::read_entry_routes(&self.client, service).await
+    }
+}
+
+fn left_running(
+    run: &Run,
+    actor: &ployz_store::Actor,
+    services: &[(&str, NodeStatus, char)],
+) -> DeploymentView {
+    use crate::global_fixtures::container_id;
+    let mut view = run
+        .store
+        .read(
+            actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    for (name, outcome, copy) in services {
+        let name = ServiceName::parse(*name).unwrap();
+        view.nodes.push(ployz_store::NodeOutcome {
+            node: DeployedNode::Service {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                name: name.clone(),
+            },
+            outcome: *outcome,
+            rows: Vec::new(),
+            cancelled: false,
+        });
+        view.runtime_names.insert(name.clone(), name.clone());
+        view.deployment.warnings.push(DeploymentWarning::Deploy {
+            warning: DeployWarning::LeftRunning {
+                service: QualifiedService::new(view.namespace.clone(), name),
+                container_id: container_id(*copy),
+                machine: "one".into(),
+                reason: "proxy on two did not confirm".into(),
+            },
+        });
+    }
+    view
+}
+
+fn holding_c() -> super::super::test_support::DeployService {
+    use super::super::test_support as support;
+    support::DeployService::new(support::machine('a', "one")).with_rotation(
+        crate::global_fixtures::container_id('c'),
+        ployz_core::CopyRotation::In,
+    )
+}
+
+struct Retired {
+    outcome: RetireOutcome,
+    wants: Vec<ployz_core::ContainerWant>,
+    removed: BTreeSet<ContainerId>,
+}
+
+async fn retire(
+    view: &DeploymentView,
+    machine: super::super::test_support::DeployService,
+) -> Retired {
+    let removed = machine.removed_containers();
+    let (mut client, server) = super::super::test_support::connected(machine).await;
+    let machines = client.machines().await.unwrap();
+    let recording = Recording {
+        client,
+        wants: std::sync::Mutex::default(),
+    };
+    let outcome = named_left(
+        view,
+        retire_copies(&recording, &machines, left_copies(view)).await,
+    );
+    server.abort();
+    Retired {
+        outcome,
+        wants: recording.wants.into_inner().unwrap(),
+        removed: removed.lock().unwrap().clone(),
+    }
+}
+
+#[tokio::test]
+async fn a_deployment_that_left_nothing_running_retires_without_connecting() {
+    let (run, actor) = run();
+    let retired = retire_old(run.store, actor, run.deployment, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(retired, RetireOutcome::default());
+}
+
+#[tokio::test]
+async fn another_organizations_deployment_is_not_found() {
+    let (run, _) = run();
+    let other = ployz_store::Actor::system(ployz_store::OrganizationId::parse("other").unwrap());
+    let error = retire_old(run.store, other, run.deployment, Vec::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn a_left_copy_already_gone_counts_as_retired() {
+    let (run, actor) = run();
+    let view = left_running(&run, &actor, &[("web", NodeStatus::Deployed, 'c')]);
+    let mut machine = holding_c();
+    machine
+        .uninspectable
+        .insert(crate::global_fixtures::container_id('c'));
+    let retired = retire(&view, machine).await;
+    assert_eq!(retired.outcome, RetireOutcome::default());
+    assert!(retired.wants.is_empty(), "{:?}", retired.wants);
+}
+
+#[tokio::test]
+async fn a_left_copy_whose_machine_does_not_answer_stays_left_naming_it() {
+    let (run, actor) = run();
+    let view = left_running(&run, &actor, &[("web", NodeStatus::Deployed, 'c')]);
+    let retired = retire(&view, holding_c().fail_inspects("unreachable")).await;
+    assert_eq!(
+        retired.outcome.left,
+        [RetireLeft {
+            machine: "one".into(),
+            service: Some(ServiceName::parse("web").unwrap()),
+            reason: "one did not answer".into(),
+        }]
+    );
+}
+
+/// What the planner records when `machine`, which may hold an old copy, did not
+/// answer before the Deploy.
+fn cut_off(view: &mut DeploymentView, machine: &str) {
+    use crate::global_fixtures::{machine as named, requested};
+    use ployz_core::{MachineFailure, MembershipObservation};
+    let away = named('3', machine);
+    let snapshot = crate::deploy::DeploySnapshot {
+        machines: vec![
+            MachineObservation::new(named('1', "observer"), MembershipObservation::Up),
+            MachineObservation::new(away.clone(), MembershipObservation::Up),
+        ],
+        container_failures: vec![MachineFailure {
+            machine_id: away.id,
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "target Machine RPC timed out".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }],
+        ..Default::default()
+    };
+    let spec = requested(ployz_core::ServiceMode::Replicated {
+        replicas: std::num::NonZeroU32::MIN,
+    });
+    let intent =
+        ployz_core::DeployIntent::apply_all(view.namespace.clone(), [&spec], Default::default());
+    let preview = crate::deploy::preview_deploy(&intent, &snapshot).unwrap();
+    assert!(
+        preview.warnings.contains(&DeployWarning::MixedAfterReturn {
+            machine: machine.into()
+        }),
+        "{:?}",
+        preview.warnings
+    );
+    match &mut view.preview {
+        Some(recorded) => recorded.warnings.extend(preview.warnings),
+        None => view.preview = Some(preview),
+    }
+}
+
+type CutOff = fn(&mut DeploymentView, &str);
+
+/// What the executor records when it loses `machine` mid-run.
+fn lost_mid_run(view: &mut DeploymentView, machine: &str) {
+    view.deployment.warnings.push(DeploymentWarning::Deploy {
+        warning: DeployWarning::MixedAfterReturn {
+            machine: machine.into(),
+        },
+    });
+}
+
+#[tokio::test]
+async fn a_machine_the_deploy_could_not_reach_stays_left_once_without_a_service() {
+    let (run, actor) = run();
+    let sources = [("planner", cut_off as CutOff), ("executor", lost_mid_run)];
+    for (source, record) in sources {
+        let mut view = left_running(&run, &actor, &[]);
+        record(&mut view, "machine-3");
+        record(&mut view, "machine-3");
+        let retired = retire(&view, holding_c()).await;
+        assert_eq!(
+            retired.outcome.kept,
+            [RetireLeft {
+                machine: "machine-3".into(),
+                service: None,
+                reason: "machine-3 was cut off during the Deploy, so a copy there may still run. \
+                         Deploy again once it is back."
+                    .into(),
+            }],
+            "{source}"
+        );
+        assert!(retired.outcome.left.is_empty(), "{source}");
+        assert!(retired.wants.is_empty(), "{:?}", retired.wants);
+        assert!(retired.removed.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_cut_off_machine_with_a_copy_left_running_is_named_once() {
+    let (run, actor) = run();
+    let mut view = left_running(&run, &actor, &[("web", NodeStatus::Deployed, 'c')]);
+    cut_off(&mut view, "one");
+    let retired = retire(&view, holding_c().fail_inspects("unreachable")).await;
+    assert_eq!(
+        retired.outcome.left,
+        [RetireLeft {
+            machine: "one".into(),
+            service: Some(ServiceName::parse("web").unwrap()),
+            reason: "one did not answer".into(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_machine_whose_reported_copy_retired_is_not_named_cut_off() {
+    let (run, actor) = run();
+    let mut view = left_running(&run, &actor, &[("web", NodeStatus::Deployed, 'c')]);
+    cut_off(&mut view, "one");
+    let retired = retire(&view, holding_c()).await;
+    assert_eq!(retired.outcome, RetireOutcome::default());
+}
+
+#[tokio::test]
+async fn a_failed_services_left_copy_is_kept_on_every_try_without_a_retry() {
+    let (run, actor) = run();
+    let view = left_running(&run, &actor, &[("web", NodeStatus::Failed, 'c')]);
+    for attempt in 1..=2 {
+        let retired = retire(&view, holding_c()).await;
+        assert_eq!(
+            retired.outcome,
+            RetireOutcome {
+                left: Vec::new(),
+                kept: vec![RetireLeft {
+                    machine: "one".into(),
+                    service: Some(ServiceName::parse("web").unwrap()),
+                    reason:
+                        "web did not deploy, so its old copy stays. Deploy again to replace it."
+                            .into(),
+                }],
+            },
+            "try {attempt}"
+        );
+        assert!(
+            retired.wants.is_empty(),
+            "try {attempt}: {:?}",
+            retired.wants
+        );
+        assert!(retired.removed.is_empty(), "try {attempt}");
+    }
+}
+
+#[tokio::test]
+async fn only_a_removed_services_left_copy_may_leave_it_empty() {
+    let (run, actor) = run();
+    for (outcome, allow_empty) in [(NodeStatus::Removed, true), (NodeStatus::Deployed, false)] {
+        let view = left_running(&run, &actor, &[("web", outcome, 'c')]);
+        let retired = retire(&view, holding_c()).await;
+        assert_eq!(retired.outcome, RetireOutcome::default(), "{outcome:?}");
+        assert!(
+            matches!(
+                retired.wants.first(),
+                Some(ployz_core::ContainerWant::Out { allow_empty: sent, .. }) if *sent == allow_empty
+            ),
+            "{outcome:?}: {:?}",
+            retired.wants
+        );
+        assert_eq!(
+            retired.removed,
+            BTreeSet::from([crate::global_fixtures::container_id('c')]),
+            "{outcome:?}"
+        );
+    }
+}

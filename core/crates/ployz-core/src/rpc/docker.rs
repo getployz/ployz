@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DockerVolume, DockerVolumeId, DockerVolumeName, PROVISIONED_VOLUME_DRIVER, RpcError,
-    VolumeSource,
+    ContainerId, ContainerLimits, DockerVolume, DockerVolumeId, DockerVolumeName,
+    PROVISIONED_VOLUME_DRIVER, ResolvedServiceSpec, RpcError, VolumeSource,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -157,6 +157,64 @@ mod tests {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VolumeRemoved {}
+
+/// Ask a Machine to apply `spec`'s CPU and memory limits to the running Service
+/// Container `container_id` in place, and record `spec` as its resolved spec. The
+/// Machine refuses any other difference between `spec` and the Container's spec.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdateContainerLimitsRequest {
+    pub container_id: ContainerId,
+    pub spec: ResolvedServiceSpec,
+}
+
+/// The limits a Machine read back from Docker after an in-place update.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerLimitsUpdated {
+    pub container_id: ContainerId,
+    pub limits: ContainerLimits,
+}
+
+/// Why a Machine refused to change a Container's limits in place, before it
+/// asked Docker for anything. Carried in `RpcError.details.reason`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitsRefusal {
+    /// The spec names another Service than the Container runs.
+    OtherService,
+    /// The spec equals the Container's; there is nothing to apply.
+    UpToDate,
+    /// The change needs a new Container.
+    NeedsRecreate,
+    /// The Container is not running, so there is nothing serving to keep.
+    NotRunning,
+    /// The Container runs with more memory than the spec asks for.
+    WouldLowerMemory,
+    /// The Container runs with no memory limit, and the spec would set one.
+    MemoryUnlimited,
+}
+
+impl LimitsRefusal {
+    /// The `reason` of a limits update RPC error, if it is one of the frozen names.
+    #[must_use]
+    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
+        details
+            .get("reason")
+            .and_then(|reason| Self::deserialize(reason).ok())
+    }
+}
+
+impl std::fmt::Display for LimitsRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::OtherService => "the spec names another Service",
+            Self::UpToDate => "the spec is already current",
+            Self::NeedsRecreate => "the change needs a new Container",
+            Self::NotRunning => "the Container is not running",
+            Self::WouldLowerMemory => "the Container runs with a higher memory limit",
+            Self::MemoryUnlimited => "the Container runs without a memory limit",
+        })
+    }
+}
 
 /// Request fresh storage commitments and physical backing capacity.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

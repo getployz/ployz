@@ -115,6 +115,7 @@ fn redact_operation(operation: &mut DeployOperation) {
     let spec = match operation {
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => spec,
         DeployOperation::ReplaceContainer(replacement) => &mut replacement.spec,
+        DeployOperation::UpdateContainer(update) => &mut update.spec,
         DeployOperation::PrepareVolumes { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }

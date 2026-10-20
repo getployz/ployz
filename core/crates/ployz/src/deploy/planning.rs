@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition, HookContainer,
     IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
-    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
-    machine_matches_placement, same_service_mode_kind,
+    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceContainer,
+    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
+    hostname_owners, machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
@@ -24,8 +24,8 @@ mod storage;
 mod volumes;
 
 use placement::{
-    CapacityAdmission, GlobalPlacement, PlacementReservations, PlacementState, ReplicatedPlacement,
-    is_up_to_date, plan_global, plan_replicated,
+    CapacityAdmission, GlobalPlacement, LimitsChange, PlacementReservations, PlacementState,
+    ReplicatedPlacement, ReplicatedReservation, plan_global, plan_replicated,
 };
 use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
 
@@ -664,7 +664,10 @@ fn assemble_plan(
     let name_errors_with_service = requested.len() > 1;
     let mut reservations = PlacementReservations::new(snapshot);
     volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
-    let mut placement = reservations.into_placement(snapshot);
+    let mut budget = ServiceBudget {
+        volumes: volume_plan,
+        placement: reservations.into_placement(snapshot),
+    };
     let mut service_operations = Vec::new();
     let mut ranges = Vec::new();
     for spec in &requested {
@@ -674,8 +677,7 @@ fn assemble_plan(
             &intent.namespace,
             snapshot,
             &services,
-            &mut volume_plan,
-            &mut placement,
+            &mut budget,
             &intent.options,
         )
         .map_err(|source| service_error(name_errors_with_service, spec.name.as_str(), source))?;
@@ -684,7 +686,8 @@ fn assemble_plan(
             | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
                 Some(*machine_id)
             }
-            DeployOperation::WaitHealthy { .. }
+            DeployOperation::UpdateContainer(_)
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
@@ -717,7 +720,7 @@ fn assemble_plan(
         ranges.push((spec.name.clone(), first..service_operations.len()));
     }
     let before_volumes = service_operations.len();
-    let volumes = volume_plan.finish(&mut service_operations)?;
+    let volumes = budget.volumes.finish(&mut service_operations)?;
     let mut operations = service_operations;
     let prelude = operations.len() - before_volumes;
     let preserved_volumes = preserved_owned_volumes(&intent.namespace, &target, snapshot);
@@ -941,13 +944,29 @@ fn order_included<'intent>(
     Ok(ordered)
 }
 
+/// What planning a Service spends: Volume assignments and Machine capacity.
+/// A trial that is abandoned leaves its clone behind and the budget untouched.
+#[derive(Clone)]
+struct ServiceBudget<'snapshot> {
+    volumes: VolumePlan<'snapshot>,
+    placement: PlacementState,
+}
+
+/// One Service to place, with what the Cluster already runs of it.
+struct ServiceTarget<'a, 'snapshot> {
+    requested: &'a RequestedServiceSpec,
+    service_id: ServiceId,
+    current: &'a [ServiceContainer],
+    hooks: &'a [HookContainer],
+    machines: Vec<&'snapshot MachineObservation>,
+}
+
 fn plan_one_service<'snapshot>(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
     services: &[ServiceObservation],
-    volume_plan: &mut VolumePlan<'snapshot>,
-    placement: &mut PlacementState,
+    budget: &mut ServiceBudget<'snapshot>,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let mut machines = eligible_machines(requested, namespace, snapshot, options)?;
@@ -971,20 +990,77 @@ fn plan_one_service<'snapshot>(
             )
         }
     };
-    let reservation = placement.take_reservation(&requested.name);
-    let mut capacity_error = None;
+    let reservation = budget.placement.take_reservation(&requested.name);
     if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
-        volume_plan.constrain_candidates(requested, &mut machines)?;
-        let ServiceMode::Replicated { replicas } = requested.mode else {
-            unreachable!("replicated branch has replicated mode")
-        };
+        budget
+            .volumes
+            .constrain_candidates(requested, &mut machines)?;
+    }
+    let target = ServiceTarget {
+        requested,
+        service_id,
+        current,
+        hooks,
+        machines,
+    };
+    match reservation {
+        // The reservation fixed each copy's action when it was made.
+        Some(reservation) => place_service(
+            &target,
+            Some(reservation),
+            budget,
+            options,
+            LimitsChange::Replace,
+        ),
+        None => LimitsChange::decide(
+            budget
+                .placement
+                .can_update_in_place(current, requested, options),
+            budget,
+            |budget, limits| place_service(&target, None, budget, options, limits),
+            |operations| operations.iter().any(starts_copy),
+        ),
+    }
+}
+
+fn starts_copy(operation: &DeployOperation) -> bool {
+    matches!(
+        operation,
+        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_)
+    )
+}
+
+/// Place one Service under one way of landing its limits change.
+fn place_service<'snapshot>(
+    target: &ServiceTarget<'_, 'snapshot>,
+    reservation: Option<ReplicatedReservation>,
+    budget: &mut ServiceBudget<'snapshot>,
+    options: &PlanOptions,
+    limits: LimitsChange,
+) -> Result<Vec<DeployOperation>, PlanError> {
+    let ServiceTarget {
+        requested,
+        service_id,
+        current,
+        hooks,
+        machines,
+    } = target;
+    let ServiceBudget {
+        volumes: volume_plan,
+        placement,
+    } = budget;
+    let mut machines = machines.clone();
+    let mut capacity_error = None;
+    if let ServiceMode::Replicated { replicas } = requested.mode
+        && reservation.is_none()
+    {
         let up_to_date = current
             .iter()
             .filter(|container| {
                 machines
                     .iter()
                     .any(|machine| machine.machine.id == container.as_observation().machine_id)
-                    && is_up_to_date(container, requested, options)
+                    && PlacementState::keeps_container(container, requested, options, limits)
             })
             .count();
         if requested.pre_deploy.is_some() && up_to_date < replicas.get() as usize {
@@ -998,7 +1074,7 @@ fn plan_one_service<'snapshot>(
         machines.retain(|machine| {
             current.iter().any(|container| {
                 container.as_observation().machine_id == machine.machine.id
-                    && is_up_to_date(container, requested, options)
+                    && PlacementState::keeps_container(container, requested, options, limits)
             }) || placement.capacity_fits(&machine.machine.id, 1)
         });
         if machines.is_empty() {
@@ -1008,23 +1084,28 @@ fn plan_one_service<'snapshot>(
     let volumes = volume_plan.place(requested, machines)?;
     let (service_operations, hook_machine) = match requested.mode {
         ServiceMode::Replicated { .. } => plan_replicated(
-            &service_id,
+            service_id,
             current,
             ReplicatedPlacement {
                 volumes,
-                admission: reservation.unwrap_or_else(|| CapacityAdmission::Pending {
-                    error: capacity_error.expect("unreserved capacity has relevant Machines"),
-                }),
+                admission: match reservation {
+                    Some(reservation) => CapacityAdmission::Reserved { reservation },
+                    None => CapacityAdmission::Pending {
+                        error: capacity_error.expect("unreserved capacity has relevant Machines"),
+                        limits,
+                    },
+                },
             },
             placement,
             options,
         )?,
         ServiceMode::Global => plan_global(
             GlobalPlacement {
-                service_id: &service_id,
+                service_id,
                 current,
                 hooks,
                 volumes,
+                limits,
             },
             placement,
             options,
@@ -1288,8 +1369,10 @@ fn pre_deploy_operations(
             | DeployOperation::ReplaceContainer(ReplacementOperation {
                 machine_id, spec, ..
             }) if hook_machine == Some(machine_id) => Some((machine_id, spec)),
-            DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => None,
-            DeployOperation::WaitHealthy { .. }
+            DeployOperation::RunContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
+            | DeployOperation::WaitHealthy { .. }
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::StopHook { .. }
