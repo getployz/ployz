@@ -53,8 +53,19 @@ impl VolumeStorage {
         else {
             return Err(not_found());
         };
-        let datasets = self.datasets(&pool).await.map_err(internal)?;
-        let Some(held) = self.held(&datasets, &pool, name).map_err(internal)? else {
+        // A receive that finishes during the listing can land a copy the listing missed.
+        // The admission keeps a new one from starting, and a finished one changes
+        // nothing more, so one retake reads the slot as it stays.
+        let mut receiving = self.receives.running(name);
+        let mut datasets = self.datasets(&pool).await.map_err(internal)?;
+        if receiving && !self.receives.running(name) {
+            datasets = self.datasets(&pool).await.map_err(internal)?;
+            receiving = false;
+        }
+        let Some(held) = self
+            .held(&datasets, &pool, name, receiving)
+            .map_err(internal)?
+        else {
             return Err(not_found());
         };
         if let Held::Root(root) = &held {

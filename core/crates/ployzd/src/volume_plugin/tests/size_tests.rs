@@ -329,3 +329,99 @@ async fn a_grow_a_fixed_pool_cannot_hold_is_refused_before_any_write() {
     assert_eq!(reply.pointer("/Err/details/bound_bytes").unwrap(), GIB);
     assert!(!commands(&test).contains("zfs set "), "{}", commands(&test));
 }
+
+/// Wraps `zfs` so a first receive waits before it makes the slot's copy while
+/// `<test>/receive-gate` exists, and the Pool listing waits after its read while
+/// `<test>/list-gate` exists, touching `<test>/list-reached`.
+fn gated_zfs(test: &TestDir, zfs: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let wrapper = test.0.join("gated-zfs");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             \t'receive -u -s '*) while [ -e '{root}/receive-gate' ]; do sleep 0.01; done ;;\n\
+             \t'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank')\n\
+             \t\tif [ -e '{root}/list-gate' ]; then\n\
+             \t\t\tout=$('{zfs}' \"$@\") || exit $?\n\
+             \t\t\ttouch '{root}/list-reached'\n\
+             \t\t\twhile [ -e '{root}/list-gate' ]; do sleep 0.01; done\n\
+             \t\t\tprintf '%s\\n' \"$out\"\n\
+             \t\t\texit 0\n\
+             \t\tfi ;;\n\
+             esac\n\
+             exec '{zfs}' \"$@\"\n",
+            root = test.0.display(),
+            zfs = zfs.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    wrapper
+}
+
+#[tokio::test]
+async fn a_grow_a_first_receive_lands_during_raises_the_copy_it_landed() {
+    let source = Source::start(Some(GIB), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    let (zpool, zfs) = fake_zfs(&test.0, ROOMY_POOL);
+    let mut storage = VolumeStorage::with_programs(zpool, gated_zfs(&test, &zfs));
+    storage.send_port = source.port;
+    let receives = storage.receives.clone();
+    let socket = test.0.join("plugin.sock");
+    let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+    let name: DockerVolumeName = "data".parse().unwrap();
+
+    fs::write(test.0.join("receive-gate"), "").unwrap();
+    let started = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(
+        started.pointer("/Ok/pull/target"),
+        Some(&json!("w-1-1")),
+        "{started}"
+    );
+    assert!(receives.running(&name));
+
+    fs::write(test.0.join("list-gate"), "").unwrap();
+    let grow_during = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await }
+    });
+    for _ in 0..1000 {
+        if test.0.join("list-reached").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        test.0.join("list-reached").exists(),
+        "the grow never listed the Pool"
+    );
+    fs::remove_file(test.0.join("receive-gate")).unwrap();
+    for _ in 0..1000 {
+        if !receives.running(&name) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!receives.running(&name), "the receive never finished");
+    fs::remove_file(test.0.join("list-gate")).unwrap();
+    let reply = grow_during.await.unwrap();
+    server.abort();
+
+    assert_eq!(
+        reply,
+        json!({"Ok": {"bound_bytes": 2 * GIB}}),
+        "{}",
+        commands(&test)
+    );
+    assert_eq!(
+        property(&test, SLOT, "refquota").as_deref(),
+        Some("2147483648")
+    );
+    assert_eq!(
+        property(&test, SLOT_FS, "refquota").as_deref(),
+        Some("2147483648")
+    );
+}

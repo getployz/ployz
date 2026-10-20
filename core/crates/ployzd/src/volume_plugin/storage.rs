@@ -397,12 +397,14 @@ impl VolumeStorage {
         checked_command(&self.zfs, args).await
     }
 
-    /// What this Machine holds for `name`, if anything.
+    /// What this Machine holds for `name` in `datasets`, if anything, with `receiving`
+    /// as sampled after that listing.
     pub(super) fn held<'datasets>(
         &self,
         datasets: &'datasets [Dataset],
         pool: &MachinePool,
         name: &DockerVolumeName,
+        receiving: bool,
     ) -> Result<Option<Held<'datasets>>> {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
             return Ok(Some(Held::Root(root)));
@@ -413,7 +415,7 @@ impl VolumeStorage {
         Ok(Some(Held::Slot {
             parent,
             fs: Self::slot_fs(datasets, pool, name),
-            receiving: self.receives.running(name),
+            receiving,
         }))
     }
 }
