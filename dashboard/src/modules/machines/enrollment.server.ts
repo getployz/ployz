@@ -14,7 +14,7 @@ import { organizationPairing as schemaOrganizationPairing } from "#/modules/runt
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { Ployz, ployzVersion } from "#/modules/runtime/ployz.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime, clusterRead, OrganizationRuntime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
   enrollmentExpiry,
@@ -582,6 +582,19 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   },
 );
 
+/**
+ * A session to the Organization's Cluster and its enrollment snapshot. Its Cluster time is bounded well inside the CLI's
+ * request timeout, so a Cluster that never answers is reported, not waited on. Only a connection that fails or doesn't
+ * come in time reads unreachable; anything else fails as itself.
+ */
+export const observeClusterEnrollment = Effect.fn("MachineEnrollment.observeCluster")(function* (organizationId: string) {
+  const opened = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (opened.status === "unreachable") return { kind: "unreachable" as const };
+  if (opened.status === "no_connection") return { kind: "no_connection" as const };
+  return { kind: "joined" as const, session: opened.connected, snapshot: yield* opened.connected.observeEnrollment().pipe(clusterRead) };
+}, Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.succeed({ kind: "unreachable" as const })),
+withClusterBudget(SERVER_REACH_TIMEOUT_MS));
+
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   function* (input: { token: string; identity: EnrollmentIdentity; joinSlots?: number }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
@@ -627,18 +640,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       if (access.generation !== hashEnrollmentToken(pairing.secret)) {
         return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
       }
-      const runtime = yield* OrganizationRuntime;
-      // Bounded well inside the CLI's request timeout, so a Cluster that never answers is reported, not waited on.
-      // Only a connection that fails or doesn't come in time reads unreachable; anything else fails as itself.
-      const joined = yield* Effect.gen(function* () {
-        const opened = yield* runtime.open(token.organizationId);
-        if (opened.status === "unreachable") return { kind: "unreachable" as const };
-        if (opened.status === "no_connection") return { kind: "no_connection" as const };
-        return { kind: "joined" as const, session: opened.connected, snapshot: yield* opened.connected.observeEnrollment() };
-      }).pipe(Effect.timeoutOrElse({
-        duration: SERVER_REACH_TIMEOUT_MS,
-        orElse: () => Effect.succeed({ kind: "unreachable" as const }),
-      }));
+      const joined = yield* observeClusterEnrollment(token.organizationId);
       // The pairing went while connecting: Cloud access was removed.
       if (joined.kind === "no_connection") return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
       if (joined.kind === "unreachable") return yield* unreachable();
