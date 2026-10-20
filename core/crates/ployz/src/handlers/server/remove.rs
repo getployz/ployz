@@ -594,8 +594,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, drain_first, machine_removal_refusal, movable_services_on, qualified_labels,
-        replicated_services_on, reset_removal_refusal, services_on, under_replicated,
+        VolumeOwner, machine_removal_refusal, movable_services_on, qualified_labels,
+        replicated_services_on, reset_removal_refusal, running_services, services_on,
+        under_replicated,
     };
     use crate::ui::Hint;
 
@@ -763,31 +764,18 @@ mod tests {
     }
 
     #[test]
-    fn rm_suggests_a_drain_only_while_it_still_asks() {
-        let live: LiveServices<RpcError> = derive_live_services(PartialResult {
-            successes: vec![
-                MachineSuccess {
-                    machine_id: machine_id('a'),
-                    value: vec![observation(
-                        '1',
-                        'a',
-                        "web",
-                        ContainerKind::ServiceContainer,
-                        'a',
-                    )],
-                },
-                MachineSuccess {
-                    machine_id: machine_id('b'),
-                    value: Vec::new(),
-                },
-            ],
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        });
+    fn rm_warns_of_running_services_but_suggests_a_drain_only_while_it_still_asks() {
         let web = [QualifiedService::parse("app/web").unwrap()];
-        assert_eq!(drain_first(&machine_id('a'), &live, false, false), web);
-        assert!(drain_first(&machine_id('a'), &live, false, true).is_empty());
-        assert!(drain_first(&machine_id('a'), &live, true, false).is_empty());
+        let warning = "Server gamma is running Services: app/web.".to_owned();
+        assert_eq!(
+            running_services("gamma", &web, false),
+            Some((
+                warning.clone(),
+                Some(Hint::Next("ployz server drain gamma".into()))
+            ))
+        );
+        assert_eq!(running_services("gamma", &web, true), Some((warning, None)));
+        assert_eq!(running_services("gamma", &[], false), None);
     }
 
     #[test]

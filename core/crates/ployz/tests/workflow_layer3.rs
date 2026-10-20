@@ -177,7 +177,10 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
             stderr.contains("Replicated Services may now be under-replicated: workflow/replicated"),
             "{stderr}"
         );
-        assert!(!stderr.contains("is running Services"), "{stderr}");
+        assert!(
+            stderr.contains("Server machine-2 is running Services: workflow/replicated."),
+            "{stderr}"
+        );
         assert!(!stderr.contains("server drain"), "{stderr}");
     }
 }
