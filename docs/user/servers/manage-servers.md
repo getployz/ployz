@@ -529,7 +529,8 @@ If you deleted all your servers at your provider, forget them:
 
 1. Go to **Organization** and, under **Danger**, click **Forget servers**. When the **Servers**
    page can't reach your servers, **Forget them and start over.** opens the same dialog. Only an
-   owner or admin can forget servers. For anyone else the button is disabled.
+   owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can forget
+   servers. For a member the button is disabled.
 2. Ployz lists the servers and their volumes. Type your organization's slug and click **Forget
    servers**.
 

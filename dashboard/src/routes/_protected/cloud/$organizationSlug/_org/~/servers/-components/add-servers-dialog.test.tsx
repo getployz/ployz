@@ -22,7 +22,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function renderDialog(role: "owner" | "admin" | "member" | "loading" | "failed" | "pending" = "owner") {
+async function renderDialog(role: "owner" | "admin" | "member" | "support" | "loading" | "failed" | "pending" = "owner") {
   const router = createRouter({
     routeTree: createRootRoute({ component: () => <AddServersDialog organizationSlug="ada" /> }),
     history: createMemoryHistory({ initialEntries: ["/"] }),
@@ -31,7 +31,8 @@ async function renderDialog(role: "owner" | "admin" | "member" | "loading" | "fa
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (role === "loading") vi.spyOn(memberFunctions, "listMembersServerFn").mockReturnValue(new Promise(() => {}));
   else if (role === "failed") vi.spyOn(memberFunctions, "listMembersServerFn").mockRejectedValue(new Error("offline"));
-  else if (role !== "pending") client.setQueryData(membersKey("ada"), { members: [{ you: true, role }], invites: [], mail: false });
+  else if (role === "support") client.setQueryData(membersKey("ada"), { members: [], invites: [], mail: false, support: true });
+  else if (role !== "pending") client.setQueryData(membersKey("ada"), { members: [{ you: true, role }], invites: [], mail: false, support: false });
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
   await screen.findByRole("button", { name: "Add servers" });
   if (role === "failed") await waitFor(() => expect(client.getQueryState(membersKey("ada"))?.status).toBe("error"));
@@ -175,6 +176,13 @@ it("lets go of a mint that never answers, so Escape closes the dialog", async ()
   }
 });
 
+it("opens Add servers on a support visit, as Cloud does", async () => {
+  await renderDialog("support");
+  const add = screen.getByRole("button", { name: "Add servers" });
+  expect(add).toHaveProperty("disabled", false);
+  expect(add.getAttribute("title")).toBeNull();
+});
+
 it("keeps Add servers closed while your role loads, without claiming who may add", async () => {
   await renderDialog("loading");
   const add = screen.getByRole("button", { name: "Add servers" });
@@ -207,7 +215,7 @@ async function resolveRoleAfterLoading(role: "admin" | "member") {
   await renderDialog("pending");
   const add = screen.getByRole("button", { name: "Add servers" });
   expect(add).toHaveProperty("disabled", true);
-  await act(async () => resolve({ members: [{ you: true, role, name: "Ada", email: "ada@example.com", joined_at: "2026-10-01T00:00:00Z" }], invites: [], mail: false }));
+  await act(async () => resolve({ members: [{ you: true, role, name: "Ada", email: "ada@example.com", joined_at: "2026-10-01T00:00:00Z" }], invites: [], mail: false, support: false }));
   return add;
 }
 

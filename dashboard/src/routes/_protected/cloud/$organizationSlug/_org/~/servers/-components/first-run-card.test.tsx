@@ -18,7 +18,7 @@ it("offers the install command only once your role allows it", async () => {
   const get = screen.getByRole("button", { name: "Get install command" });
   expect(get).toHaveProperty("disabled", true);
   expect(screen.queryByText("Only an owner or admin can add servers.")).toBeNull();
-  await act(async () => resolve({ members: [{ you: true, role: "owner", name: "Ada", email: "ada@example.com", joined_at: "2026-10-01T00:00:00Z" }], invites: [], mail: false }));
+  await act(async () => resolve({ members: [{ you: true, role: "owner", name: "Ada", email: "ada@example.com", joined_at: "2026-10-01T00:00:00Z" }], invites: [], mail: false, support: false }));
   await waitFor(() => expect(get).toHaveProperty("disabled", false));
 });
 
@@ -29,4 +29,11 @@ it("keeps the install command closed when your role can't be read", async () => 
   await waitFor(() => expect(client.getQueryState(membersKey("ada"))?.status).toBe("error"));
   expect(screen.getByRole("button", { name: "Get install command" })).toHaveProperty("disabled", true);
   expect(screen.queryByText("Only an owner or admin can add servers.")).toBeNull();
+});
+
+it("offers the install command on a support visit, as Cloud does", () => {
+  const client = new QueryClient();
+  client.setQueryData(membersKey("ada"), { members: [], invites: [], mail: false, support: true });
+  render(<QueryClientProvider client={client}><FirstRunCard organizationSlug="ada" arrived={false} /></QueryClientProvider>);
+  expect(screen.getByRole("button", { name: "Get install command" })).toHaveProperty("disabled", false);
 });

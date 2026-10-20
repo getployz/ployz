@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
+import { QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { newMajorLine, type ServersUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
+import * as upgradeHooks from "#/modules/server-upgrade/server-upgrade.hooks";
 import { UPGRADE_REFUSED } from "#/modules/server-upgrade/server-upgrade.hooks";
-import { ServersUpgradeActions } from "./servers-upgrade";
+import { clientWithRole, expectGate, ROLE_STATES } from "#/test/your-role";
+import { ServersUpgradeActions, ServersUpgradeBar } from "./servers-upgrade";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const bar = (line: ServersUpgradeLine, input: { major?: ReturnType<typeof newMajorLine>; may?: boolean | undefined } = {}) => {
   const upgrade = vi.fn();
@@ -62,4 +68,12 @@ it("links a newer major line's release notes, and nothing for the Servers' own l
   cleanup();
   bar({ kind: "current", release: "0.2.2" }, { major: newMajorLine("v0", "0.3.0") });
   expect(screen.queryByRole("link")).toBeNull();
+});
+
+it.each(ROLE_STATES)("opens Upgrade to the roles Cloud lets upgrade, support's included (%s)", async (state) => {
+  const client = await clientWithRole("ada", state);
+  vi.spyOn(upgradeHooks, "useServerUpgradeSettings").mockReturnValue({ automatic: false, setAutomatic: vi.fn(), channel: "stable", setChannel: vi.fn() });
+  const upgrade = { line: { kind: "behind", release: "0.2.3", canUpgrade: true } as const, rows: new Map(), major: null, upgrade: vi.fn() };
+  render(<QueryClientProvider client={client}><ServersUpgradeBar organizationSlug="ada" upgrade={upgrade} /></QueryClientProvider>);
+  expectGate(screen.getByRole("button", { name: "Upgrade to 0.2.3" }), state, "servers:operate", UPGRADE_REFUSED);
 });

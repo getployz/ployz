@@ -458,27 +458,27 @@ async function listAs(state: (typeof ROLE_STATES)[number], servers: readonly Wai
   render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={servers} now={NOW} firstRun={firstRun} /></QueryClientProvider>);
 }
 
-it.each(ROLE_STATES)("lets only an owner or admin enroll or reject the first arrival (%s)", async (state) => {
+it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject the first arrival (%s)", async (state) => {
   await listAs(state, [host("web")], true);
-  expectGate(screen.getByRole("button", { name: "Enroll" }), state, ENROLL_REFUSED);
-  expectGate(screen.getByRole("button", { name: "Reject" }), state, ENROLL_REFUSED);
+  expectGate(screen.getByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
+  expectGate(screen.getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
 });
 
-it.each(ROLE_STATES)("lets only an owner or admin enroll or reject the picked servers (%s)", async (state) => {
+it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject the picked servers (%s)", async (state) => {
   await listAs(state, [host("one"), host("two")]);
   fireEvent.click(pick("one"));
-  expectGate(screen.getByRole("button", { name: "Enroll 1" }), state, ENROLL_REFUSED);
-  expectGate(screen.getByRole("button", { name: "Reject" }), state, ENROLL_REFUSED);
+  expectGate(screen.getByRole("button", { name: "Enroll 1" }), state, "servers:add", ENROLL_REFUSED);
+  expectGate(screen.getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
 });
 
-it.each(ROLE_STATES)("lets only an owner or admin enroll or reject from the detail sheet (%s)", async (state) => {
+it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject from the detail sheet (%s)", async (state) => {
   const one = host("one");
   vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...one, report, probe: null } as never);
   await listAs(state, [one, host("two")]);
   fireEvent.click(screen.getByRole("button", { name: "one" }));
   const sheet = await screen.findByRole("dialog");
-  expectGate(await within(sheet).findByRole("button", { name: "Enroll" }), state, ENROLL_REFUSED);
-  expectGate(within(sheet).getByRole("button", { name: "Reject" }), state, ENROLL_REFUSED);
+  expectGate(await within(sheet).findByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
+  expectGate(within(sheet).getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
 });
 
 it("says nothing joins on its own until the first server is enrolled by hand", () => {

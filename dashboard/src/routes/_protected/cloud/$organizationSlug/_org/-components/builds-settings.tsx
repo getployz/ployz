@@ -47,8 +47,8 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
   const writer = useStoreWriter(organizationSlug);
   // Shown at once; a refusal toasts and the saved order shows again.
   const [buildOrder, hold] = useCommitHold(view.build_order ?? "github-then-servers");
-  // The Store refuses the write without org:settings; the control says so first.
-  const may = useYouMay(organizationSlug, "org:settings");
+  // The Store refuses set_build_order without changes:stage; the control says so first.
+  const may = useYouMay(organizationSlug, "changes:stage");
   return (
     <SettingsSection id="build-order" title="Where builds run">
       <SettingsRow

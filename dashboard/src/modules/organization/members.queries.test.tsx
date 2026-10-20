@@ -12,18 +12,23 @@ afterEach(() => {
 });
 
 const EXPECTED = {
-  owner: { "servers:operate": true, "org:delete": true },
-  admin: { "servers:operate": true, "org:delete": false },
-  member: { "servers:operate": false, "org:delete": false },
-  loading: { "servers:operate": undefined, "org:delete": undefined },
-  failed: { "servers:operate": undefined, "org:delete": undefined },
-  "cached-failed": { "servers:operate": undefined, "org:delete": undefined },
-} satisfies Record<RoleState, Record<"servers:operate" | "org:delete", boolean | undefined>>;
+  owner: { "servers:operate": true, "org:delete": true, "environments:protect": true },
+  admin: { "servers:operate": true, "org:delete": false, "environments:protect": true },
+  member: { "servers:operate": false, "org:delete": false, "environments:protect": false },
+  support: { "servers:operate": true, "org:delete": false, "environments:protect": false },
+  loading: { "servers:operate": undefined, "org:delete": undefined, "environments:protect": undefined },
+  failed: { "servers:operate": undefined, "org:delete": undefined, "environments:protect": undefined },
+  "cached-failed": { "servers:operate": undefined, "org:delete": undefined, "environments:protect": undefined },
+} satisfies Record<RoleState, Record<"servers:operate" | "org:delete" | "environments:protect", boolean | undefined>>;
 
 it.each(ROLE_STATES)("knows what you may do only from a read of your role that succeeded (%s)", async (state) => {
   const client = await clientWithRole("ada", state);
   if (state === "cached-failed") expect(client.getQueryState(membersKey("ada"))).toMatchObject({ status: "error", data: { members: [{ role: "owner" }] } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  const { result } = renderHook(() => [useYouMay("ada", "servers:operate"), useYouMay("ada", "org:delete")], { wrapper });
-  expect(result.current).toEqual([EXPECTED[state]["servers:operate"], EXPECTED[state]["org:delete"]]);
+  const { result } = renderHook(() => ({
+    "servers:operate": useYouMay("ada", "servers:operate"),
+    "org:delete": useYouMay("ada", "org:delete"),
+    "environments:protect": useYouMay("ada", "environments:protect"),
+  }), { wrapper });
+  expect(result.current).toEqual(EXPECTED[state]);
 });
