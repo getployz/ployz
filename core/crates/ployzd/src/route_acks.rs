@@ -202,7 +202,6 @@ fn reported_down(
         })
 }
 
-/// Every row whose containers arrived counts, whatever its deploy column holds.
 pub(crate) fn routed(
     rows: BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
     service: &QualifiedService,
@@ -211,7 +210,6 @@ pub(crate) fn routed(
         .filter(|((_, routed), _)| routed == service)
         .filter_map(|((machine, _), row)| match row {
             IngressRouteRow::Acked(ack) => Some((machine, ack.containers)),
-            IngressRouteRow::UnknownDeploy(containers) => Some((machine, containers)),
             IngressRouteRow::UnknownContainers => None,
         })
         .collect()

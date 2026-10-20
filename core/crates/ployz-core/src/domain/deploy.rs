@@ -345,8 +345,8 @@ pub struct ServiceOutcome {
 
 /// A Service ends a Deploy wholly on one side: every replica new, every
 /// replica old, every replica changed in place, or untouched because the Deploy
-/// stopped before it. `Unconfirmed` means its serving pointer write got no
-/// answer and could not be read back, so it may serve either side.
+/// stopped before it. `Unconfirmed` means some proxies never confirmed routing its
+/// new copies, so it may serve either side.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceResult {
@@ -939,7 +939,6 @@ pub enum MachineAction {
     PullImage,
     ListContainers,
     ReadRoutes,
-    PublishServingPointer,
 }
 
 impl Display for MachineAction {
@@ -956,7 +955,6 @@ impl Display for MachineAction {
             Self::PullImage => "pull image",
             Self::ListContainers => "list Containers",
             Self::ReadRoutes => "read routes",
-            Self::PublishServingPointer => "publish Serving Pointer",
         })
     }
 }

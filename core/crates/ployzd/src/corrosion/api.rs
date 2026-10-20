@@ -31,8 +31,6 @@ impl Statement {
 pub(crate) struct ApiClient {
     base_url: Url,
     client: Client,
-    /// Sends each request once: a replayed guarded write can observe its own commit.
-    unretried: Client,
 }
 
 impl ApiClient {
@@ -69,44 +67,28 @@ impl ApiClient {
             });
         let client = configure(Client::builder())
             .connect_timeout(Duration::from_secs(3))
-            .default_headers(headers.clone())
+            .default_headers(headers)
             .retry(retry)
             .build()?;
-        let unretried = configure(Client::builder())
-            .connect_timeout(Duration::from_secs(3))
-            .default_headers(headers)
-            .retry(reqwest::retry::never())
-            .build()?;
-        Ok(Self {
-            base_url,
-            client,
-            unretried,
-        })
+        Ok(Self { base_url, client })
     }
 
     pub(crate) async fn execute(
         &self,
         statements: impl IntoIterator<Item = Statement>,
     ) -> Result<(), Error> {
-        self.transaction(&self.client, statements).await.map(drop)
-    }
-
-    pub(crate) async fn execute_counted(
-        &self,
-        statements: impl IntoIterator<Item = Statement>,
-    ) -> Result<Vec<usize>, Error> {
-        self.transaction(&self.unretried, statements).await
+        self.transaction(statements).await.map(drop)
     }
 
     async fn transaction(
         &self,
-        client: &Client,
         statements: impl IntoIterator<Item = Statement>,
     ) -> Result<Vec<usize>, Error> {
         let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
         let (status, body) = super::within_io_timeout(async {
-            let response = client
+            let response = self
+                .client
                 .post(self.base_url.join("v1/transactions").expect("static path"))
                 .json(&statements)
                 .send()
@@ -455,61 +437,6 @@ mod tests {
         .await
         .unwrap();
         server.abort();
-    }
-
-    #[tokio::test]
-    async fn a_counted_transaction_lost_after_send_fails_once_without_a_count() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::io::AsyncReadExt;
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let received = Arc::new(AtomicUsize::new(0));
-        let server = tokio::spawn({
-            let received = Arc::clone(&received);
-            async move {
-                loop {
-                    let (mut stream, _) = listener.accept().await.unwrap();
-                    let mut request = Vec::new();
-                    let mut buffer = [0_u8; 4096];
-                    while !request_complete(&request) {
-                        let read = stream.read(&mut buffer).await.unwrap();
-                        if read == 0 {
-                            break;
-                        }
-                        request.extend_from_slice(buffer.get(..read).unwrap());
-                    }
-                    received.fetch_add(1, Ordering::SeqCst);
-                    drop(stream);
-                }
-            }
-        });
-        let client = ApiClient::http1(address, &"a".repeat(64)).unwrap();
-        let outcome = client
-            .execute_counted([Statement::new(
-                "UPDATE cluster SET value = ?",
-                [serde_json::json!("x")],
-            )])
-            .await;
-        assert!(outcome.is_err(), "a lost answer is no count: {outcome:?}");
-        assert_eq!(received.load(Ordering::SeqCst), 1, "sent exactly once");
-        server.abort();
-    }
-
-    fn request_complete(request: &[u8]) -> bool {
-        let text = String::from_utf8_lossy(request);
-        let Some((head, body)) = text.split_once("\r\n\r\n") else {
-            return false;
-        };
-        let length = head
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().ok())?
-            })
-            .unwrap_or(0);
-        body.len() >= length
     }
 
     #[tokio::test(start_paused = true)]

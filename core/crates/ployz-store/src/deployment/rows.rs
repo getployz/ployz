@@ -111,8 +111,7 @@ impl FailedAt {
                 MachineAction::InspectContainer
                 | MachineAction::UpdateContainerLimits
                 | MachineAction::ListContainers
-                | MachineAction::ReadRoutes
-                | MachineAction::PublishServingPointer => from_phase(),
+                | MachineAction::ReadRoutes => from_phase(),
             },
             ExecutionError::Health { .. } | ExecutionError::DependencyHealth { .. } => {
                 Some(Self::Health)
@@ -615,8 +614,7 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
                 | MachineAction::RemoveVolume
                 | MachineAction::PullImage
                 | MachineAction::ListContainers
-                | MachineAction::ReadRoutes
-                | MachineAction::PublishServingPointer => None,
+                | MachineAction::ReadRoutes => None,
             },
             ExecutionError::DependencyHealth { .. }
             | ExecutionError::NewerServing { .. }

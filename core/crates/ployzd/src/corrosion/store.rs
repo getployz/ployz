@@ -15,9 +15,8 @@ use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
-    ContainerObservation, DeploymentLogId, DockerVolume, DockerVolumeId, DockerVolumeName,
-    IngressHost, IssuanceClock, Machine, MachineId, QualifiedService, ServingPointer,
-    ServingPointerPublication,
+    ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, IngressHost,
+    IssuanceClock, Machine, MachineId, QualifiedService,
 };
 use serde_json::json;
 
@@ -678,70 +677,6 @@ impl ReplicatedStore {
         Ok((!encoded.is_empty()).then(|| encoded.to_owned()))
     }
 
-    pub(crate) async fn serving_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<Option<ServingPointer>, Error> {
-        let Some(raw) = self.raw_serving_pointer(service).await? else {
-            return Ok(None);
-        };
-        decode_serving_pointer(&raw).map(Some)
-    }
-
-    /// Writes `pointer` only if the row still holds `read`, in one transaction.
-    ///
-    /// `read: None` inserts only when no row exists. A loss answers the row as it stands.
-    pub(crate) async fn compare_and_set_serving_pointer(
-        &self,
-        service: &QualifiedService,
-        read: Option<&ServingPointer>,
-        pointer: &ServingPointer,
-    ) -> Result<ServingPointerPublication, Error> {
-        let key = ServingPointer::key(service);
-        let encoded = serde_json::to_string(pointer)
-            .map_err(|error| Error::Protocol(ployz_core::error_chain::inline(&error)))?;
-        let raw = self.raw_serving_pointer(service).await?;
-        let current = raw.as_deref().map(decode_serving_pointer).transpose()?;
-        if current.as_ref() != read {
-            return Ok(ServingPointerPublication::Superseded { current });
-        }
-        let statement = match raw {
-            None => Statement::new(
-                "INSERT INTO cluster (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",
-                [json!(key), json!(encoded)],
-            ),
-            Some(raw) => Statement::new(
-                "UPDATE cluster SET value = ? WHERE key = ? AND value = ?",
-                [json!(encoded), json!(key), json!(raw)],
-            ),
-        };
-        let written = self.api.execute_counted([statement]).await?;
-        if written.first().copied().unwrap_or(0) > 0 {
-            return Ok(ServingPointerPublication::Published);
-        }
-        Ok(ServingPointerPublication::Superseded {
-            current: self.serving_pointer(service).await?,
-        })
-    }
-
-    async fn raw_serving_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<Option<String>, Error> {
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT value FROM cluster WHERE key = ?",
-                [json!(ServingPointer::key(service))],
-            ))
-            .await?;
-        let rows = query.rows(["value"])?;
-        let Some([value]) = rows.first() else {
-            return Ok(None);
-        };
-        Ok(Some(text(value, "Serving Pointer")?.to_owned()))
-    }
-
     pub(crate) async fn ingress_routes(
         &self,
     ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
@@ -766,23 +701,17 @@ impl ReplicatedStore {
     ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
         let query = self.api.query(statement).await?;
         Ok(query
-            .rows(["machine_id", "service_id", "deploy", "containers"])?
+            .rows(["machine_id", "service_id", "containers"])?
             .into_iter()
-            .filter_map(|[machine_id, service_id, deploy, containers]| {
+            .filter_map(|[machine_id, service_id, containers]| {
                 let machine_id = MachineId::parse(machine_id.as_str()?).ok()?;
                 let service = QualifiedService::parse(service_id.as_str()?).ok()?;
-                let deploy = deploy
-                    .as_str()
-                    .and_then(|deploy| DeploymentLogId::parse(deploy).ok());
                 let containers = containers
                     .as_str()
                     .and_then(|containers| serde_json::from_str(containers).ok());
-                let row = match (deploy, containers) {
-                    (Some(deploy), Some(containers)) => {
-                        IngressRouteRow::Acked(IngressRouteAck { deploy, containers })
-                    }
-                    (None, Some(containers)) => IngressRouteRow::UnknownDeploy(containers),
-                    (_, None) => IngressRouteRow::UnknownContainers,
+                let row = match containers {
+                    Some(containers) => IngressRouteRow::Acked(IngressRouteAck { containers }),
+                    None => IngressRouteRow::UnknownContainers,
                 };
                 Some(((machine_id, service), row))
             })
@@ -805,7 +734,6 @@ impl ReplicatedStore {
                     [
                         json!(machine_id),
                         json!(service.to_string()),
-                        json!(ack.deploy),
                         json!(serde_json::to_string(&ack.containers)?),
                     ],
                 ),
@@ -1101,26 +1029,15 @@ fn volume_incomplete(machine_id: &MachineId, name: &DockerVolumeName) -> Stateme
     )
 }
 
-fn decode_serving_pointer(raw: &str) -> Result<ServingPointer, Error> {
-    serde_json::from_str(raw).map_err(|error| {
-        Error::Protocol(format!(
-            "invalid Serving Pointer: {error}",
-            error = ployz_core::error_chain::inline(&error),
-        ))
-    })
-}
-
-const INGRESS_ROUTES: &str =
-    "SELECT machine_id, service_id, deploy, containers FROM ingress_routes";
+const INGRESS_ROUTES: &str = "SELECT machine_id, service_id, containers FROM ingress_routes";
 const SERVICE_INGRESS_ROUTES: &str =
-    "SELECT machine_id, service_id, deploy, containers FROM ingress_routes WHERE service_id = ?";
-const INGRESS_ROUTE_UPSERT: &str = "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?) ON CONFLICT (machine_id, service_id) DO UPDATE SET deploy = excluded.deploy, containers = excluded.containers";
+    "SELECT machine_id, service_id, containers FROM ingress_routes WHERE service_id = ?";
+const INGRESS_ROUTE_UPSERT: &str = "INSERT INTO ingress_routes (machine_id, service_id, containers) VALUES (?, ?, ?) ON CONFLICT (machine_id, service_id) DO UPDATE SET containers = excluded.containers";
 const INGRESS_ROUTE_DELETE: &str =
     "DELETE FROM ingress_routes WHERE machine_id = ? AND service_id = ?";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IngressRouteAck {
-    pub(crate) deploy: DeploymentLogId,
     pub(crate) containers: BTreeSet<ContainerId>,
 }
 
@@ -1128,7 +1045,6 @@ pub(crate) struct IngressRouteAck {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum IngressRouteRow {
     Acked(IngressRouteAck),
-    UnknownDeploy(BTreeSet<ContainerId>),
     UnknownContainers,
 }
 

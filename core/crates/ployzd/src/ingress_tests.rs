@@ -331,7 +331,6 @@ mod rule_f {
         let acks = route_acks(&routes);
 
         let ack = acks.get(&api()).expect("api has an ack");
-        assert_eq!(ack.deploy.as_str(), "rotation");
         assert_eq!(
             ack.containers,
             BTreeSet::from([ContainerId::parse("2".repeat(64)).unwrap()])

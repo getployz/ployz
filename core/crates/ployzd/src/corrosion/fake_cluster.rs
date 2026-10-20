@@ -26,12 +26,9 @@ struct ClusterKv {
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, (String, String)>,
     volumes: BTreeMap<(String, String), String>,
-    serving_pointers: BTreeMap<String, String>,
-    ingress_routes: BTreeMap<(String, String), (String, String)>,
+    ingress_routes: BTreeMap<(String, String), String>,
     container_changes: broadcast::Sender<()>,
     machine_changes: broadcast::Sender<()>,
-    pointer_changes: broadcast::Sender<()>,
-    ingress_changes: broadcast::Sender<()>,
     /// No test writes a certificate; this only keeps the empty table's subscription open.
     certificate_changes: broadcast::Sender<()>,
     subscriptions: bool,
@@ -51,20 +48,15 @@ impl ClusterKv {
     fn new(subscriptions: bool) -> Self {
         let (container_changes, _) = broadcast::channel(16);
         let (machine_changes, _) = broadcast::channel(16);
-        let (pointer_changes, _) = broadcast::channel(16);
-        let (ingress_changes, _) = broadcast::channel(16);
         let (certificate_changes, _) = broadcast::channel(16);
         Self {
             network: "10.210.0.0/16".into(),
             machines: BTreeMap::new(),
             containers: BTreeMap::new(),
             volumes: BTreeMap::new(),
-            serving_pointers: BTreeMap::new(),
             ingress_routes: BTreeMap::new(),
             container_changes,
             machine_changes,
-            pointer_changes,
-            ingress_changes,
             certificate_changes,
             subscriptions,
             snapshots_fail: false,
@@ -176,12 +168,6 @@ impl FakeCluster {
         self.kv.lock().unwrap().snapshots_fail = fail;
     }
 
-    pub(crate) fn write_serving_pointer(&self, key: &str, value: &str) {
-        let mut kv = self.kv.lock().unwrap();
-        kv.serving_pointers.insert(key.to_owned(), value.to_owned());
-        let _ = kv.pointer_changes.send(());
-    }
-
     /// Hold the answer to the `nth` run of `query`, read before the hold, until the
     /// returned gate is waited on twice: once to see it held, once to release it.
     pub(crate) fn hold_query(&self, query: &str, nth: usize) -> Arc<tokio::sync::Barrier> {
@@ -198,9 +184,8 @@ impl FakeCluster {
         let mut kv = self.kv.lock().unwrap();
         kv.ingress_routes.insert(
             (machine.to_owned(), service.to_owned()),
-            ("d1".to_owned(), "not json".to_owned()),
+            "not json".to_owned(),
         );
-        let _ = kv.ingress_changes.send(());
     }
 
     /// Write a Machine row whose document has not fully replicated.
@@ -292,14 +277,6 @@ async fn subscriptions(
         "SELECT id, info FROM machines" => (
             kv.machine_changes.subscribe(),
             "{\"columns\":[\"id\",\"info\"]}\n{\"eoq\":{\"time\":0.0}}\n",
-        ),
-        "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'" => (
-            kv.pointer_changes.subscribe(),
-            "{\"columns\":[\"serving_key\",\"value\"]}\n{\"eoq\":{\"time\":0.0}}\n",
-        ),
-        "SELECT machine_id, service_id, deploy, containers FROM ingress_routes" => (
-            kv.ingress_changes.subscribe(),
-            "{\"columns\":[\"machine_id\",\"service_id\",\"deploy\",\"containers\"]}\n{\"eoq\":{\"time\":0.0}}\n",
         ),
         "SELECT hostname, body FROM certificates" => (
             kv.certificate_changes.subscribe(),
@@ -405,50 +382,27 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                 kv.volumes.get(&key).map(|volume| vec![json!(volume)]),
             )
         }
-        "SELECT value FROM cluster WHERE key = ?" => {
-            let key = text_param(&statement.params, 0);
-            events(
-                &["value"],
-                kv.serving_pointers.get(key).map(|value| vec![json!(value)]),
-            )
-        }
+        "SELECT value FROM cluster WHERE key = ?" => events(&["value"], Vec::new()),
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
-        "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'" => events(
-            &["serving_key", "value"],
-            kv.serving_pointers
-                .iter()
-                .map(|(key, value)| vec![json!(key), json!(value)]),
-        ),
-        "SELECT machine_id, service_id, deploy, containers FROM ingress_routes" => events(
-            &["machine_id", "service_id", "deploy", "containers"],
+        "SELECT machine_id, service_id, containers FROM ingress_routes" => events(
+            &["machine_id", "service_id", "containers"],
             kv.ingress_routes
                 .iter()
-                .map(|((machine_id, service_id), (deploy, containers))| {
-                    vec![
-                        json!(machine_id),
-                        json!(service_id),
-                        json!(deploy),
-                        json!(containers),
-                    ]
+                .map(|((machine_id, service_id), containers)| {
+                    vec![json!(machine_id), json!(service_id), json!(containers)]
                 }),
         ),
-        "SELECT machine_id, service_id, deploy, containers FROM ingress_routes WHERE service_id = ?" =>
-        {
+        "SELECT machine_id, service_id, containers FROM ingress_routes WHERE service_id = ?" => {
             let service_id = text_param(&statement.params, 0);
             events(
-                &["machine_id", "service_id", "deploy", "containers"],
+                &["machine_id", "service_id", "containers"],
                 kv.ingress_routes
                     .iter()
                     .filter(|((_, routed), _)| routed == service_id)
-                    .map(|((machine_id, service_id), (deploy, containers))| {
-                        vec![
-                            json!(machine_id),
-                            json!(service_id),
-                            json!(deploy),
-                            json!(containers),
-                        ]
+                    .map(|((machine_id, service_id), containers)| {
+                        vec![json!(machine_id), json!(service_id), json!(containers)]
                     }),
             )
         }
@@ -503,19 +457,14 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                         text_param(&statement.params, 0).to_owned(),
                         text_param(&statement.params, 1).to_owned(),
                     ),
-                    (
-                        text_param(&statement.params, 2).to_owned(),
-                        text_param(&statement.params, 3).to_owned(),
-                    ),
+                    text_param(&statement.params, 2).to_owned(),
                 );
-                let _ = kv.ingress_changes.send(());
             }
             query if query.starts_with("DELETE FROM ingress_routes") => {
                 kv.ingress_routes.remove(&(
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),
                 ));
-                let _ = kv.ingress_changes.send(());
             }
             "DELETE FROM containers WHERE id = ? AND machine_id = ?" => {
                 let id = text_param(&statement.params, 0);
