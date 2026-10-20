@@ -268,6 +268,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         }));
     }
     (verb.run)(matches)
+        .map_err(|failure| context::with_no_contexts_next(failure, leaf_matches(matches)))
 }
 
 /// Whether the compiled command at `words` takes a value for the option `id`; a

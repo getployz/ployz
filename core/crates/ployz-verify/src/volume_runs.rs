@@ -27,7 +27,7 @@ use std::net::Ipv6Addr;
 
 use ployz_core::{
     ContainerId, CopyPlan, CopyRefusal, CopyTransition, Drain, ExpectedCopy, ManagementAddress,
-    SlotId, Snapshot, SnapshotGuid, Start, VolumeCopy, WantedCopy, WriterEpoch,
+    SlotId, SlotRole, Snapshot, SnapshotGuid, Start, VolumeCopy, WantedCopy, WriterEpoch,
 };
 use stateright::{Checker, HasDiscoveries, Model, Property};
 
@@ -465,6 +465,7 @@ fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
             newest: newest.map(snapshot),
             resume_token: None,
             pull: None,
+            role: SlotRole::Mirror,
         }),
     }
 }

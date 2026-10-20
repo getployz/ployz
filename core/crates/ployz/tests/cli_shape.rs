@@ -200,7 +200,7 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
     assert!(
         json.get("next")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|next| next.ends_with("server ls")),
+            .is_some_and(|next| next.ends_with(" login")),
         "{json}"
     );
 
