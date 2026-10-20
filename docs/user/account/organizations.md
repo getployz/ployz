@@ -39,7 +39,7 @@ In the sidebar, click **Organization** for its settings:
 - **General**: your organization's **Display name**. Owners and admins can change it: type a new
   one and press Enter or click the check. Its URL stays the same. Below it, your organization's
   **Domain**, which your services' free addresses live under.
-  It appears with your first deploy. Below it, **Allow support access**, and **Forget all
+  It appears when you generate your first domain. Below it, **Allow support access**, and **Forget all
   servers** for when your servers were deleted.
 - **Members**: who's in the organization, their roles, and, for owners and admins, pending
   invites. See
@@ -209,7 +209,8 @@ Deleting an organization removes it with its settings and tokens, and disconnect
 from it. It can't be undone. Only an owner can delete it. For anyone else **Delete organization**
 is disabled.
 
-1. Delete every project in it. **Delete organization** stays disabled until you do.
+1. [Delete every project](../environments/environments.md#delete-a-project) in it. **Delete
+   organization** stays disabled until you do.
 2. **Cancel Pro first.** Deleting the organization doesn't cancel it: go to
    **Organization → Billing → Manage billing**.
 3. Go to **Organization → General** and click **Delete organization**.

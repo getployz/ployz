@@ -36,7 +36,7 @@ pub(crate) fn command(command: Command) -> Command {
             value("token-file", None)
                 .value_parser(clap::value_parser!(PathBuf))
                 .default_value(Paths::TOKEN_FILE)
-                .help("Read the Fleet Token from this file"),
+                .help("Read the Fleet Token from this file. The running check-in loop deletes it once Cloud enrolls or rejects this host, or the token is revoked or expires; an --install that ends with an error keeps it"),
         )
         .arg(
             switch("token-stdin", None)

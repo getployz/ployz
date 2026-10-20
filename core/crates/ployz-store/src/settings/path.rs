@@ -102,9 +102,9 @@ impl From<NodeName> for String {
 /// `SERVICE.mounts.VOLUME` for where it mounts a Volume, `SERVICE.configs.CONFIG`
 /// for where it mounts a Config, `volumes.VOLUME` for a whole Volume,
 /// `volumes.VOLUME.name` / `volumes.VOLUME.storage` for its name or storage, which
-/// only discard addresses, `configs.CONFIG` for a whole Config, or
+/// only discard addresses, `configs.CONFIG` for a whole Config,
 /// `configs.CONFIG.name` / `configs.CONFIG.files.FILE` for its name or one file, which
-/// only discard addresses.
+/// only discard addresses, or `setup.SERVICE` for a Branch's Setup Command in it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
@@ -167,14 +167,17 @@ pub(crate) enum Target {
     ConfigMount(ConfigRef),
     /// Its domains, read here; the domain commands change them.
     Domains,
+    /// The Setup Command a Branch runs in it before it first deploys there, at
+    /// `setup.SERVICE`.
+    Setup,
 }
 
 impl SettingPath {
     /// Parse `SERVICE`, `SERVICE.SETTING`, `SERVICE.env.KEY`,
     /// `SERVICE.env.KEY.exported`, `SERVICE.mounts.VOLUME`, `SERVICE.configs.CONFIG`,
     /// `volumes.VOLUME`, `volumes.VOLUME.name`, `volumes.VOLUME.storage`,
-    /// `configs.CONFIG`, `configs.CONFIG.name` or `configs.CONFIG.files.FILE`.
-    /// Use `@UUID` in place of `CONFIG` to select an exact Config identity.
+    /// `configs.CONFIG`, `configs.CONFIG.name`, `configs.CONFIG.files.FILE` or
+    /// `setup.SERVICE`. Use `@UUID` in place of `CONFIG` to select an exact Config identity.
     ///
     /// # Errors
     /// Returns `invalid_argument` for a malformed path or an unknown Setting, never
@@ -223,6 +226,15 @@ impl SettingPath {
                 }
             };
             return Ok(Self(Addressed::Volume(VolumeName::parse(volume)?, field)));
+        }
+        if let Some(service) = path.strip_prefix("setup.") {
+            let service = ServiceName::parse(service.to_ascii_lowercase()).map_err(|_| {
+                error::invalid(
+                    "Name a Service: setup.SERVICE",
+                    json!({ "example": "setup.web" }),
+                )
+            })?;
+            return Ok(Self::at(&service, Target::Setup));
         }
         let (service, rest) = path.split_once('.').unzip();
         // Service names are lowercase, so `REDIS.replicas` can only mean `redis`.
@@ -409,6 +421,7 @@ impl fmt::Display for SettingPath {
             Some(Target::Setting(setting)) => write!(formatter, "{service}.{}", setting.name()),
             Some(Target::Source) => write!(formatter, "{service}.source"),
             Some(Target::Domains) => write!(formatter, "{service}.domains"),
+            Some(Target::Setup) => write!(formatter, "setup.{service}"),
             Some(Target::Variable(key)) => write!(formatter, "{service}.env.{key}"),
             Some(Target::Exported(key)) => write!(formatter, "{service}.env.{key}.exported"),
             Some(Target::Description(key)) => write!(formatter, "{service}.env.{key}.description"),
