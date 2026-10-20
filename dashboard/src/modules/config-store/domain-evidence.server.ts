@@ -23,6 +23,8 @@ const DomainCall = Schema.Union([
   Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literal("deploy"), environment: Schema.optional(EnvironmentRef) }),
   Schema.Struct({ query: Schema.Literal("domains") }),
   Schema.Struct({ query: Schema.Literal("domain"), environment: Schema.optional(EnvironmentRef), domain: Schema.String }),
+  // A change's views name the generated domains it stages under the Cluster Domain.
+  Schema.Struct({ query: Schema.Literals(["diff", "plan", "service"]) }),
 ]);
 
 const AddDomainAnyHostname = Schema.Struct({ command: Schema.Literal("add_domain"), hostname: Schema.optional(Schema.Unknown) });
@@ -124,7 +126,7 @@ export const lookUpHostname = (hostname: string) => Effect.promise(async (): Pro
   : Effect.void));
 
 /**
- * What Cloud observes of the Organization's public domains, for the Store calls that need it. Admitting a generated domain reserves the Cluster Domain first; reading domains
+ * What Cloud observes of the Organization's public domains, for the Store calls that need it. Staging or admitting a generated domain reserves the Cluster Domain first; reading domains
  * observes the Cluster (or reuses an observation from the last few seconds); checking one also looks up its DNS now and asks for a Cluster Domain sync. Nothing here comes
  * from the caller.
  */
@@ -141,10 +143,9 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   if (wanted === undefined) return nothing;
   if ("command" in wanted) {
     if (wanted.command !== "admit") {
-      const edit: ConfigDomainEvidence = {
-        ...nothing,
-        cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
-      };
+      const generates = wanted.command === "set_generated_domain" || (adding !== undefined && (adding.hostname ?? null) === null);
+      const row = generates ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId);
+      const edit: ConfigDomainEvidence = { ...nothing, cluster_domain: clusterDomain(row) };
       const published = yield* recentlyPublished(organizationId);
       if (published) edit.published = published;
       return edit;
@@ -160,11 +161,9 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
     if (seen) deploy.published = seen.published;
     return deploy;
   }
-  const evidence: ConfigDomainEvidence = {
-    ...nothing,
-    cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
-    ...(yield* observeClusterRecently(organizationId, wanted.query === "domain")),
-  };
+  const named: ConfigDomainEvidence = { ...nothing, cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)) };
+  if (wanted.query !== "domains" && wanted.query !== "domain") return named;
+  const evidence: ConfigDomainEvidence = { ...named, ...(yield* observeClusterRecently(organizationId, wanted.query === "domain")) };
   if (wanted.query === "domains") return evidence;
   // A check refreshes what Cloud knows: the Cluster Domain's records and certificate, and this domain's DNS.
   yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId })).pipe(

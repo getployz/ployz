@@ -864,8 +864,8 @@ mod tests {
     ) -> ClientMove {
         use ployz_core::{
             ContainerDetails, ContainerLocator, ContainerNow, ContainerWant, EnsuredContainer,
-            ImageSummary, MachineImages, MachineList, OpaquePayload, RpcRequestBody, RpcResponse,
-            RunTarget, ServingPointerRead,
+            ImageSummary, MachineImages, MachineList, OpaquePayload, RoutesRead, RpcRequestBody,
+            RpcResponse, RunTarget,
         };
         use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::{Arc, Mutex};
@@ -918,7 +918,7 @@ mod tests {
                             enrollment: None,
                             machines: vec![machine('a', false), machine('b', true)],
                         }),
-                        RpcRequestBody::ReadServingPointer(_) => {
+                        RpcRequestBody::ReadRoutes(_) => {
                             if Some(reads.fetch_add(1, Ordering::SeqCst) + 1) == unreadable_read {
                                 RpcResponse::from(ployz_core::RpcError {
                                     code: ployz_core::RpcErrorCode::Unavailable,
@@ -927,7 +927,7 @@ mod tests {
                                     cause: Vec::new(),
                                 })
                             } else {
-                                RpcResponse::from(ServingPointerRead {
+                                RpcResponse::from(RoutesRead {
                                     pointer,
                                     ..Default::default()
                                 })
@@ -936,6 +936,7 @@ mod tests {
                         RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
                             ContainerWant::Running {
                                 container: RunTarget::New(_),
+                                ..
                             } => RpcResponse::from(EnsuredContainer::Ensured {
                                 health: None,
                                 now: ContainerNow::Present(container('f', 'b', spec)),

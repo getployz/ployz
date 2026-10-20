@@ -368,9 +368,17 @@ fn run_human(args: &[&str]) -> (Option<i32>, String) {
 }
 
 fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let output = human_output(args, env);
+    (
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn human_output(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+    ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
@@ -383,11 +391,7 @@ fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) 
         .env_remove("CLICOLOR_FORCE")
         .envs(env.iter().copied())
         .output()
-        .unwrap();
-    (
-        output.status.code(),
-        String::from_utf8(output.stderr).unwrap(),
-    )
+        .unwrap()
 }
 
 #[test]
@@ -454,6 +458,16 @@ fn color_never_emits_no_escapes() {
         assert!(stderr.contains("--bogus"), "{args:?}: {stderr}");
         assert!(!stderr.contains('\x1b'), "{args:?}: {stderr:?}");
     }
+}
+
+#[test]
+fn color_always_keeps_a_piped_record_colored_and_auto_leaves_it_plain() {
+    let stdout = |args: &[&str]| String::from_utf8(human_output(args, &[]).stdout).unwrap();
+    assert_eq!(
+        stdout(&["status", "--color", "always"]),
+        "\x1b[2msigned in as\x1b[0m = no one\n"
+    );
+    assert_eq!(stdout(&["status"]), "signed in as = no one\n");
 }
 
 #[test]
@@ -2576,6 +2590,45 @@ fn run_token_cloud(cloud: &str, args: &[&str]) -> (Option<i32>, String, String) 
         String::from_utf8(output.stdout).unwrap(),
         String::from_utf8(output.stderr).unwrap(),
     )
+}
+
+/// `ployz login` alone changes nothing while `PLOYZ_TOKEN` is set: the token still wins,
+/// so the refusal would repeat.
+#[test]
+fn a_token_refused_a_token_command_hears_cloud_s_sentence_and_a_next_step_past_the_token() {
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can make tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _sent) = token_cloud(403, refused);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["token", "new", "x"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert_eq!(
+        stderr,
+        "error: Only a signed-in person can make tokens. No changes made.\nnext: unset PLOYZ_TOKEN && ployz login\n"
+    );
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can revoke tokens; revoke it under Organization → Tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _sent) = token_cloud(403, refused);
+    let (code, stdout, stderr) = run_token_cloud(&cloud, &["token", "rm", "t1", "--json"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        json.pointer("/error/details/next"),
+        Some(&serde_json::json!("unset PLOYZ_TOKEN && ployz login"))
+    );
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can make Fleet Tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _sent) = token_cloud(403, refused);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["server", "token", "create"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.ends_with("\nnext: unset PLOYZ_TOKEN && ployz login\n"),
+        "{stderr}"
+    );
+    let older = r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}"#;
+    let (cloud, _sent) = token_cloud(422, older);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["token", "rm", "t1"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        stderr,
+        "error: Only a signed-in person can make or revoke tokens; run `ployz login`.\n"
+    );
 }
 
 fn sent_body(request: &str) -> serde_json::Value {

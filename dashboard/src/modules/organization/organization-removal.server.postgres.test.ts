@@ -2,9 +2,11 @@ import { eq } from "drizzle-orm";
 import { Cause, Effect, Exit } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
+import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
+import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { member, user } from "#/modules/identity/tables";
+import { member, session, user } from "#/modules/identity/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { presetGrant } from "#/modules/identity/token-grant";
 import { removeOrganization, removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
@@ -13,6 +15,7 @@ import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/
 import { Ployz, type PloyzService } from "#/modules/runtime/ployz.server";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
+import { makeSecretEncryption } from "#/utils/encrypted-secret.server";
 import { seedAnonymousStoreOrganization, sendsNowhere } from "#/test/store-cloud";
 
 const LAB = "00000000-0000-4000-8000-00000000c001";
@@ -95,5 +98,77 @@ describe("removeOrganizationAsMember", () => {
     const exit = await removeAs("agent");
     expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain("The organization was not found.");
     expect(await harness.db.select().from(organization).where(eq(organization.id, LAB))).toHaveLength(1);
+  });
+});
+
+describe("removeOrganization", () => {
+  const SHOP = "00000000-0000-4000-8000-00000000c003";
+  const HOME = "00000000-0000-4000-8000-00000000c004";
+  const LATER = "00000000-0000-4000-8000-00000000c005";
+  const NAMED = "00000000-0000-4000-8000-00000000c006";
+
+  const removeOwned = (ownerId: string, organizationId: string, slug: string) => harness.runEffect(Effect.gen(function* () {
+    const store = yield* openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret");
+    return yield* removeOrganization({ userId: ownerId, organization: { id: organizationId, slug }, role: "owner" }, organizationId).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    );
+  }));
+
+  it("releases its Cluster Domain at the Hosted DNS endpoint that granted it", async () => {
+    const hostedDns = await startFakeHostedDns();
+    try {
+      const [fay] = (await harness.db.insert(user).values({ email: "fay@example.test", name: "Fay" }).returning({ id: user.id }))
+        .map((row) => row.id) as [string];
+      await harness.db.insert(organization).values({ id: NAMED, name: "Named", slug: "named" });
+      await harness.db.insert(member).values({ userId: fay, organizationId: NAMED, role: "owner" });
+      const now = new Date();
+      await harness.db.insert(organizationClusterDomain).values({
+        organizationId: NAMED, endpoint: hostedDns.url, name: "named.ployz.test",
+        encryptedToken: makeSecretEncryption("test-encryption-secret").encrypt("named-token"), reservedAt: now, leaseRenewedAt: now,
+      });
+      expect(await removeOwned(fay, NAMED, "named")).toMatchObject({ ok: true, value: { removed: true } });
+      expect(hostedDns.requests).toEqual([
+        { method: "DELETE", path: "/domains/named.ployz.test", authorization: "Bearer named-token", body: null },
+      ]);
+      expect(await harness.db.select().from(organizationClusterDomain).where(eq(organizationClusterDomain.organizationId, NAMED))).toEqual([]);
+    } finally {
+      await hostedDns.close();
+    }
+  });
+
+  it("moves each session acting in it to its user's next Organization, or none", async () => {
+    const [dan, eve] = (await harness.db.insert(user).values([
+      { email: "dan@example.test", name: "Dan" },
+      { email: "eve@example.test", name: "Eve" },
+    ]).returning({ id: user.id })).map((row) => row.id) as [string, string];
+    await harness.db.insert(organization).values([
+      { id: HOME, name: "Home", slug: "home" },
+      { id: SHOP, name: "Shop", slug: "shop" },
+      { id: LATER, name: "Later", slug: "later" },
+    ]);
+    await harness.db.insert(member).values([
+      { userId: dan, organizationId: HOME, role: "owner", createdAt: new Date("2026-01-01") },
+      { userId: dan, organizationId: SHOP, role: "owner", createdAt: new Date("2026-02-01") },
+      { userId: dan, organizationId: LATER, role: "owner", createdAt: new Date("2026-03-01") },
+      { userId: eve, organizationId: SHOP, role: "member" },
+    ]);
+    const expiresAt = new Date(Date.now() + 60_000);
+    await harness.db.insert(session).values([
+      { userId: dan, token: "dan-shop", expiresAt, activeOrganizationId: SHOP, activeOrganizationSlug: "shop" },
+      { userId: dan, token: "dan-later", expiresAt, activeOrganizationId: LATER, activeOrganizationSlug: "later" },
+      { userId: eve, token: "eve-shop", expiresAt, activeOrganizationId: SHOP, activeOrganizationSlug: "shop" },
+    ]);
+    const result = await removeOwned(dan, SHOP, "shop");
+    expect(result).toMatchObject({ ok: true, value: { removed: true } });
+    const sessions = await harness.db.select({ token: session.token, id: session.activeOrganizationId, slug: session.activeOrganizationSlug })
+      .from(session).orderBy(session.token);
+    expect(sessions).toEqual([
+      { token: "dan-later", id: LATER, slug: "later" },
+      { token: "dan-shop", id: HOME, slug: "home" },
+      { token: "eve-shop", id: null, slug: null },
+    ]);
   });
 });

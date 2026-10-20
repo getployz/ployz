@@ -51,6 +51,8 @@ type GitRepoSelectorProps = {
 
 type ImageSelectorProps = {
   disabled?: boolean;
+  /** The image the service runs now, to edit rather than retype. */
+  initialImage?: string;
   onBack?: () => void;
   onSelectImage: (image: string) => void | Promise<void>;
 };
@@ -64,6 +66,7 @@ type GitRepoSelectorDialogProps = {
 
 type ImageSelectorDialogProps = {
   open: boolean;
+  initialImage?: string;
   onOpenChange: (open: boolean) => void;
   onSelectImage: (image: string) => void | Promise<void>;
 };
@@ -548,10 +551,11 @@ function OpenGitBranchSelectorDialog({
 
 export function ImageSelector({
   disabled = false,
+  initialImage = "",
   onBack,
   onSelectImage,
 }: ImageSelectorProps) {
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initialImage);
   const trimmedValue = value.trim();
   const validImage = isValidImageReference(trimmedValue);
   const invalidImage = trimmedValue.length > 0 && !validImage;
@@ -572,6 +576,7 @@ export function ImageSelector({
             aria-invalid={invalidImage || undefined}
             aria-describedby={invalidImage ? "invalid-docker-image" : undefined}
             autoFocus
+            onFocus={(event) => event.currentTarget.setSelectionRange(value.length, value.length)}
             autoComplete="off"
             spellCheck={false}
             disabled={disabled}
@@ -693,6 +698,7 @@ function OpenGitRepoSelectorDialog({
 
 export function ImageSelectorDialog({
   open,
+  initialImage,
   onOpenChange,
   onSelectImage,
 }: ImageSelectorDialogProps) {
@@ -703,6 +709,7 @@ export function ImageSelectorDialog({
   return (
     <OpenImageSelectorDialog
       open={open}
+      initialImage={initialImage}
       onOpenChange={onOpenChange}
       onSelectImage={onSelectImage}
     />
@@ -711,6 +718,7 @@ export function ImageSelectorDialog({
 
 function OpenImageSelectorDialog({
   open,
+  initialImage,
   onOpenChange,
   onSelectImage,
 }: ImageSelectorDialogProps) {
@@ -731,6 +739,7 @@ function OpenImageSelectorDialog({
     >
       <ImageSelector
         disabled={dialog.isPending}
+        initialImage={initialImage}
         onBack={() => onOpenChange(false)}
         onSelectImage={dialog.runSelect}
       />

@@ -15,7 +15,9 @@ To join hosts automatically, turn on **Enroll on arrival** in **Add servers** an
 Anyone with this token can join servers up to that limit until it expires or you revoke it.
 
 Arrival enrollment only joins an existing cluster. In a new organization, enroll the first
-server yourself. Ready hosts then join on their next check-in. Blocked hosts and hosts still
+server yourself. Until then the install ends with
+`No cluster yet. Enroll one server in Ployz Cloud to start it.` and `ployz status` on the host
+shows `No cluster yet`. Ready hosts then join on their next check-in. Blocked hosts and hosts still
 installing Docker or building ZFS keep waiting. Ployz keeps the hostnames and enables
 Services, Web traffic, and Builds. It uses ZFS with a spare disk when available, or the main
 disk otherwise. Hosts where ZFS cannot run, or its preparation failed, was skipped, or was
@@ -48,7 +50,8 @@ check-in refreshes the row. Offline hosts have stopped checking in.
 ## Enroll the selection
 
 1. Select the hosts you recognize by name, source IP and provider, then click **Enroll**.
-   You can select hosts while they prepare. Blocked and Offline hosts cannot be selected.
+   You can select hosts while they prepare. Blocked and Offline hosts cannot be selected. To
+   enroll one host, click its name and then **Enroll** in its details.
 2. For a new cluster, choose the **First server**. Everything else joins once it is up.
 3. Choose **Volumes**. ZFS gives volumes size limits. ZFS uses the main disk. You can fall back
    to Docker where ZFS cannot run. **Docker only** has no managed volume size limits.
@@ -77,8 +80,9 @@ the attempts have joined. Every row draws six progress segments, including Docke
 running cluster. A new server takes no apps until you deploy.
 
 **Cancel** on a row ends that attempt and revokes its enrollment token. A failed or cancelled
-host returns to the bottom of Waiting. The live host status stays primary; its return stage and reason appear below it. Fix the cause,
-then select and enroll the host again. Reloading restores the list and its order.
+host returns to the bottom of Waiting. The live host status stays primary, with **Last enroll failed** or
+**Last enroll cancelled** below it. Open the host to see the stage and reason. Both
+stay until you enroll the host again, however often it checks in. Fix the cause, then enroll the host again. Reloading restores the list and its order.
 
 **Reject** turns away an unrecognized host. The same installation cannot come back with the
 same Fleet Token. Reimaging a host creates a new identity, so review arrivals even when you

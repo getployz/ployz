@@ -218,6 +218,9 @@ pub enum BuildError {
         action: &'static str,
         diagnostic: String,
     },
+    /// A build step failed. BuildKit names the step and gives its diagnosis.
+    #[error("{step}: {error}")]
+    Step { step: String, error: String },
     /// The attempt exceeded its bounded execution time and was terminated.
     #[error("the build exceeded its {0}s execution timeout and was terminated")]
     TimedOut(u64),
@@ -239,7 +242,9 @@ impl BuildError {
             Self::Prerequisite(_) | Self::Request(_) => Stage::Preparation,
             Self::Result(_) => Stage::Output,
             Self::UncertainTermination(_) => Stage::Cleanup,
-            Self::Cancelled | Self::TimedOut(_) | Self::Docker { .. } => Stage::Building,
+            Self::Cancelled | Self::TimedOut(_) | Self::Docker { .. } | Self::Step { .. } => {
+                Stage::Building
+            }
         }
     }
     #[must_use]
@@ -253,6 +258,7 @@ impl BuildError {
             | Self::Prerequisite(_)
             | Self::Request(_)
             | Self::Docker { .. }
+            | Self::Step { .. }
             | Self::TimedOut(_)
             | Self::Result(_) => false,
         }
@@ -674,7 +680,7 @@ fn verify(
         )
         .map_err(|error| match error {
             BuildError::Cancelled | BuildError::TimedOut(_) | BuildError::UncertainTermination(_) => error,
-            error @ (BuildError::AtStage { .. } | BuildError::Busy | BuildError::Prerequisite(_) | BuildError::Request(_) | BuildError::Docker { .. } | BuildError::Result(_)) => BuildError::Result(format!(
+            error @ (BuildError::AtStage { .. } | BuildError::Busy | BuildError::Prerequisite(_) | BuildError::Request(_) | BuildError::Docker { .. } | BuildError::Step { .. } | BuildError::Result(_)) => BuildError::Result(format!(
                 "the completed image {reference} is not in the local image store, which Ployz Builds require Docker's containerd image store to provide: {error}"
             ))
         })?;

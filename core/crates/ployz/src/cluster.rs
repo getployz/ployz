@@ -16,8 +16,8 @@ use ployz_core::{
     MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
     Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
-    RpcResponseBody, RunTarget, StopOptions, StorageCapacity, UnconfirmedDataLoss, VolumeInventory,
-    VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
+    RpcResponseBody, RunRotation, RunTarget, StopOptions, StorageCapacity, UnconfirmedDataLoss,
+    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1818,6 +1818,7 @@ async fn change_container_rpc(
         ContainerAction::Start => (
             ContainerWant::Running {
                 container: RunTarget::Existing(container),
+                rotation: RunRotation::Pending,
             },
             Some(TARGET_RPC_TIMEOUT),
         ),

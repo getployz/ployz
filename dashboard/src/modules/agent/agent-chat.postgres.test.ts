@@ -259,6 +259,18 @@ it.live("a Service restart from the sidebar waits on a human before it runs", ()
     expect(yield* waitingApproval(asked, pending)).toMatchObject({ command: "restart", status: "pending" });
   }));
 
+it.live("a denied Service restart names the restart and its Service", () =>
+  Effect.gen(function* () {
+    const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_restart", input: { service: "web", wait_seconds: 0 } }] }, { text: "Restarting." }]);
+    const approval = yield* waitingApproval(yield* say("restart web", { page: architecture }, model), pending);
+    yield* provided(decideApproval(caller, approval.id, { reject: { reason: "not now" } }));
+
+    const resumed = yield* resume("resolved");
+    expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied", message: "A human denied this restart web: not now" } }]);
+  }));
+
 const architecture = { page: "architecture", project: "shop", environment: "production", service: "web" };
 const ARCHITECTURE = '<dashboard-page page="architecture" project="shop" environment="production" service="web"/>';
 const SERVERS = '<dashboard-page page="servers"/>';

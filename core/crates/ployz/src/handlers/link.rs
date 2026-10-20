@@ -208,9 +208,16 @@ fn load(config: &Path) -> Result<BTreeMap<String, Link>, Error> {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
             Error::caused(
                 RpcErrorCode::Internal,
-                format!("Could not read directory links {}.", path.display()),
+                format!(
+                    "Could not read directory links {}. Delete it, then run ployz link again in each directory you linked.",
+                    path.display()
+                ),
                 error,
             )
+            .hint(Hint::Next(format!(
+                "rm {}",
+                shell_words::quote(&path.to_string_lossy())
+            )))
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(error) => Err(error.into()),
@@ -829,6 +836,27 @@ mod tests {
             project: ProjectName::parse("shop".to_owned()).unwrap(),
             environment: EnvironmentName::parse("production".to_owned()).unwrap(),
         }
+    }
+
+    #[test]
+    fn unreadable_links_name_the_file_and_how_to_start_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        std::fs::write(links_path(&config), "[[[").unwrap();
+        let error = load(&config).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .ends_with("Delete it, then run ployz link again in each directory you linked."),
+            "{error}"
+        );
+        assert_eq!(
+            error.hints(),
+            [Hint::Next(format!(
+                "rm {}",
+                shell_words::quote(&links_path(&config).to_string_lossy())
+            ))]
+        );
     }
 
     #[test]

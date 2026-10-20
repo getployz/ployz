@@ -856,6 +856,17 @@ fn setting(store: &Target, path: &str) -> Value {
 }
 
 #[test]
+fn a_service_name_over_63_characters_is_refused_with_the_whole_rule() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    shop_with_web(&store);
+    let refused = failed(&store, &["deploy", &"a".repeat(64)], 2);
+    assert_eq!(
+        refused["message"],
+        "Expected Service names: each up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
+    );
+}
+
+#[test]
 fn a_healthcheck_is_set_by_path_or_patch_and_refuses_control_characters() {
     for store in &targets() {
         shop_with_web(store);
@@ -869,6 +880,38 @@ fn a_healthcheck_is_set_by_path_or_patch_and_refuses_control_characters() {
         assert_eq!(
             setting(store, "web.healthcheck"),
             json!({ "command": "pg_isready", "timeoutSeconds": 60 })
+        );
+        ok(store, &["set", "web.healthcheck=/up"]);
+        assert_eq!(
+            setting(store, "web.healthcheck"),
+            json!({ "path": "/up", "timeoutSeconds": 60 })
+        );
+        let refused = failed(store, &["set", "web.healthcheck=pg_isready"], 2);
+        assert_eq!(
+            refused["message"],
+            "healthcheck: text sets an HTTP path like /health; a command takes an object like {\"command\":\"pg_isready\",\"timeoutSeconds\":60}, and an HTTP check's timeout one like {\"path\":\"/health\",\"timeoutSeconds\":60}"
+        );
+        let next = refused["details"]["next"].as_str().unwrap();
+        let words = shell_words::split(next).unwrap();
+        assert_eq!(words[0], "ployz", "{next}");
+        ok(
+            store,
+            &words[1..].iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            setting(store, "web.healthcheck"),
+            json!({ "command": "pg_isready", "timeoutSeconds": 60 })
+        );
+        ok(
+            store,
+            &[
+                "set",
+                r#"web.healthcheck={"path":"/health","timeoutSeconds":60}"#,
+            ],
+        );
+        assert_eq!(
+            setting(store, "web.healthcheck"),
+            json!({ "path": "/health", "timeoutSeconds": 60 })
         );
         ok(store, &["unset", "web.healthcheck"]);
         assert_eq!(setting(store, "web.healthcheck"), Value::Null);
@@ -1096,14 +1139,63 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
             // No Server is enrolled in process, so the removal Deployment the name
             // admitted can't take it off: it got past the confirmation in one call.
             Target::Local(_) => {
-                let (code, admitted) = ployz(
-                    Some(store),
-                    &["env", "rm", "staging", "--confirm", "shop/staging"],
-                );
-                assert_eq!(code, Some(3), "{admitted}");
-                assert_eq!(admitted["remove"], true, "{admitted}");
+                // A Ployz config typed on the command line carries into the command
+                // that finishes the removal.
+                let home = tempfile::tempdir().unwrap();
+                let config = home.path().join("my ployz").join("config.yaml");
+                let config = config.to_str().unwrap();
+                let output = store
+                    .command(home.path())
+                    .args(["--json", "--ployz-config", config])
+                    .args(["env", "rm", "staging", "--confirm", "shop/staging"])
+                    .output()
+                    .unwrap();
+                let admitted: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(output.status.code(), Some(3), "{admitted}");
+                assert_eq!(admitted["environment"]["name"], "staging", "{admitted}");
+                assert_eq!(admitted["removal"], "removing", "{admitted}");
+                // The removal Deployment that didn't apply, whole, under `deployment`;
+                // `id` stays the removal's.
+                let deployment = &admitted["deployment"];
+                assert_eq!(deployment["remove"], true, "{admitted}");
+                assert_eq!(deployment["status"], "failed", "{admitted}");
+                assert_eq!(deployment["outcome"]["type"], "not_executed", "{admitted}");
+                assert!(deployment["nodes"].is_array(), "{admitted}");
+                assert_eq!(admitted.get("status"), None, "{admitted}");
+                assert_ne!(admitted["id"], deployment["id"], "{admitted}");
+                assert_eq!(admitted["deployments"][0]["id"], deployment["id"]);
+                assert_eq!(admitted["left"][0]["deployment"]["id"], deployment["id"]);
                 // A removal that didn't apply still names what the name confirmed.
                 assert_eq!(admitted["effects"][0]["name"], "web", "{admitted}");
+                let next = shell_words::join([
+                    "ployz",
+                    "--ployz-config",
+                    config,
+                    "env",
+                    "rm",
+                    "staging",
+                    "--confirm",
+                    "shop/staging",
+                ]);
+                assert_eq!(admitted["next"], next.as_str(), "{admitted}");
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                assert!(stderr.contains(&format!("retry: {next}")), "{stderr}");
+                let (code, admitted) =
+                    ployz(Some(store), &["project", "rm", "shop", "--confirm", "shop"]);
+                assert_eq!(code, Some(3), "{admitted}");
+                assert_eq!(admitted["project"]["name"], "shop", "{admitted}");
+                assert_eq!(
+                    admitted["environments"],
+                    json!(["production", "staging"]),
+                    "{admitted}"
+                );
+                assert_eq!(admitted["removal"], "removing", "{admitted}");
+                assert_eq!(admitted["deployment"]["remove"], true, "{admitted}");
+                assert_eq!(admitted["deployments"][0]["remove"], true, "{admitted}");
+                assert_eq!(
+                    admitted["next"], "ployz project rm shop --confirm shop",
+                    "{admitted}"
+                );
             }
             // This fake Cloud never sweeps, so `--detach` returns once the removal is
             // under way rather than waiting for the sweep.
@@ -2185,7 +2277,7 @@ fn mistakes_fail_with_their_codes() {
         let no_env = error(store, &["get", "--env", "preview"]);
         assert_eq!(
             no_env.pointer("/details/next"),
-            Some(&json!("ployz env new preview --project shop"))
+            Some(&json!("ployz env ls --project shop"))
         );
 
         let malformed = failed(store, &["set", "web.replicas"], 2);
@@ -2737,7 +2829,7 @@ fn cloud_answers_only_a_credential_in_its_own_organization() {
     assert_eq!(refused.get("code"), Some(&json!("unauthenticated")));
     assert_eq!(
         refused.pointer("/details/next"),
-        Some(&json!("ployz token new"))
+        Some(&json!("unset PLOYZ_TOKEN && ployz login"))
     );
 
     let (code, json) = ployz(None, &["get"]);
@@ -3459,7 +3551,7 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
         let (_, refused) = run(&["link", "--project", "blog", "--env", "preview"]);
         assert_eq!(
             refused.pointer("/error/details/next"),
-            Some(&json!("ployz env new preview --project blog"))
+            Some(&json!("ployz env ls --project blog"))
         );
 
         ok(store, &["env", "new", "staging", "--project", "blog"]);
@@ -4046,6 +4138,66 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
     }
 }
 
+#[test]
+fn diff_escapes_what_would_steer_the_terminal_in_follow_hints_and_file_names() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let from = file.path().to_str().unwrap();
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["set", "web.env.MSG=one"]);
+        applied(store, "production");
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(store, &["set", "web.env.MSG=mine", "--env", "fix-web"]);
+        ok(store, &["set", "web.env.MSG=hi\u{202E}evil"]);
+        applied(store, "production");
+        ok(store, &["config", "add", "cfg", "--env", "fix-web"]);
+        for name in ["safe\u{202E}evil.txt", "line\u{2028}break.txt"] {
+            ok(
+                store,
+                &[
+                    "config", "put", "cfg", name, "--from", from, "--env", "fix-web",
+                ],
+            );
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let output = store
+            .command(home.path())
+            .args(["diff", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let human = String::from_utf8(output.stdout).unwrap();
+        assert!(!human.contains(['\u{202E}', '\u{2028}']), "{human}");
+        assert!(
+            human
+                .contains(r#"production deployed web.env.MSG = "hi\u{202e}evil", not staged here"#),
+            "{human}"
+        );
+        assert!(
+            human.contains(r"files.safe\u{202e}evil.txt: null → "),
+            "{human}"
+        );
+        assert!(
+            human.contains(r"files.line\u{2028}break.txt: null → "),
+            "{human}"
+        );
+    }
+}
+
 /// A local Store whose Project shop has PR Environments on for acme/web, and ada's
 /// pull request #5 open at head 1111111, with `members` the Organization's GitHub
 /// accounts. Cloud reports the pull request, which this does through the Store itself.
@@ -4253,6 +4405,87 @@ fn a_config_lists_as_new_until_deployed_and_its_change_names_the_services_it_res
     assert!(human(&["diff"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "--plan"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "web", "--plan"]).contains("\n  restarts web\n"));
+}
+
+#[test]
+fn a_verb_that_changes_nothing_says_so_and_keeps_the_revision() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let revision = || ok(store, &["config", "ls"])["environment"]["revision"].clone();
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    ok(store, &["volume", "add", "data", "--docker"]);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "port: 80\n").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(store, &["config", "put", "app", "app.yml", "--from", from]);
+    applied(store, "production");
+
+    let unchanged = [
+        (
+            vec!["volume", "rename", "data", "data"],
+            "Nothing changed in shop/production; Volume data already has that name.\n",
+        ),
+        (
+            vec!["volume", "set", "data", "--docker"],
+            "Nothing changed in shop/production; Volume data already has that storage.\n",
+        ),
+        (
+            vec!["config", "put", "app", "app.yml", "--from", from],
+            "Nothing changed in shop/production; Config app already holds app.yml as given.\n",
+        ),
+        (
+            vec!["config", "rename", "app", "app"],
+            "Nothing changed in shop/production; Config app already has that name.\n",
+        ),
+        (
+            vec!["config", "mount", "web", "app", "/etc/app"],
+            "Nothing changed in shop/production; web already mounts Config app there.\n",
+        ),
+    ];
+    for (args, said) in &unchanged {
+        let before = revision();
+        let result = ok(store, args);
+        assert_eq!(result["staged"], json!([]), "{args:?}");
+        assert_eq!(result.get("next"), None, "{args:?}");
+        assert_eq!(result["environment"]["revision"], before, "{args:?}");
+        assert_eq!(&human(args), said, "{args:?}");
+        assert_eq!(revision(), before, "{args:?}");
+    }
+
+    let unmounted = ok(store, &["config", "unmount", "web", "app"]);
+    assert_eq!(unmounted["staged"], json!(["web.configs.app"]));
+    let before = revision();
+    assert_eq!(
+        human(&["config", "unmount", "web", "app"]),
+        "Nothing changed in shop/production; web does not mount Config app.\n"
+    );
+    assert_eq!(revision(), before);
+
+    let listing = human(&["config", "ls"]);
+    let row = listing
+        .lines()
+        .find(|line| line.starts_with("app"))
+        .unwrap();
+    assert!(row.ends_with("unmount from web"), "{listing}");
+    assert_eq!(
+        ok(store, &["config", "ls"])["configs"][0]["mount_changes"],
+        json!([{ "service": "web", "before": "/etc/app", "after": null }])
+    );
+
+    assert_eq!(
+        human(&["project", "rename", "shop", "shop"]),
+        "Nothing changed; Project shop already has that name.\n"
+    );
+    let renamed = ok(store, &["project", "rename", "shop", "shop"]);
+    assert_eq!(renamed["project"]["name"], json!("shop"));
+    assert_eq!(renamed["links"], json!(0));
 }
 
 #[test]

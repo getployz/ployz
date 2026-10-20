@@ -815,3 +815,22 @@ fn only_a_target_reply_outlasts_a_later_silence() {
     let error = keep_target_reply(&mut reply, silent());
     assert!(error.target_replied(), "{error}");
 }
+
+#[test]
+fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    let socket = dir.path().join("ployzd.sock");
+    fs::write(&socket, "").unwrap();
+    let error = resolve_connections(&config, None, Some("foo"), &socket).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ConnectError::Context(ContextError::ContextNotFound { name, path })
+                if name == "foo" && path == &config
+        ),
+        "{error:?}"
+    );
+    let selected = resolve_connections(&config, None, None, &socket).unwrap();
+    assert_eq!(selected.source, ConnectionSource::LocalSocket);
+}
