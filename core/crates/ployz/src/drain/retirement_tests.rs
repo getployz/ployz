@@ -337,6 +337,7 @@ async fn retire_copies_takes_an_in_copy_out_waits_it_unlisted_then_removes_it() 
         &cluster,
         &drained.id,
         &qualified("app", "api"),
+        &Names::new(),
         &CancellationToken::new(),
     )
     .await
@@ -356,6 +357,7 @@ async fn retire_copies_refuses_the_last_in_copy_and_leaves_it_serving() {
         &cluster,
         &drained.id,
         &qualified("app", "api"),
+        &Names::new(),
         &CancellationToken::new(),
     )
     .await
@@ -381,6 +383,7 @@ async fn retire_copies_removes_pending_and_out_copies_with_a_plain_gone() {
         &cluster,
         &drained.id,
         &qualified("app", "api"),
+        &Names::new(),
         &CancellationToken::new(),
     )
     .await
@@ -408,6 +411,7 @@ async fn retire_copies_names_the_proxy_that_did_not_confirm_and_keeps_the_copy()
         &cluster,
         &drained.id,
         &qualified("app", "api"),
+        &vec![(stuck.id, stuck.name.clone())],
         &CancellationToken::new(),
     )
     .await
@@ -418,7 +422,7 @@ async fn retire_copies_names_the_proxy_that_did_not_confirm_and_keeps_the_copy()
         format!(
             "not unlisted after {} s; the proxies on {} did not confirm",
             ACK_WAIT.as_secs(),
-            stuck.id
+            stuck.name
         )
     );
     assert_eq!(cluster.wants(), [out('a', CopyRotation::In)]);
@@ -586,6 +590,7 @@ impl RetireClient for FakeRetireClient {
         &mut self,
         _machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        _names: &Names,
         _cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
         self.retire_calls.push(slot.identity().clone());

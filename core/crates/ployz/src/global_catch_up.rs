@@ -22,7 +22,7 @@ use ployz_core::{
 use tokio_util::sync::CancellationToken;
 
 use crate::deploy::cleanup::{self, BroughtIn, Copy, Step};
-use crate::drain::retirement::Names;
+use crate::drain::retirement::{Names, server_name};
 use crate::failure::partial_failure_details;
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -552,13 +552,7 @@ async fn observe_complete<C: CatchUpClient>(
             return Ok(live);
         }
         if attempt == OBSERVATION_ATTEMPTS {
-            let server = |id: &MachineId| {
-                names
-                    .iter()
-                    .find(|(named, _)| named == id)
-                    .map_or_else(|| id.to_string(), |(_, name)| name.to_string())
-            };
-            let details = partial_failure_details(&live.containers, server);
+            let details = partial_failure_details(&live.containers, |id| server_name(&names, id));
             return Err(CatchUpError::new(
                 Failure::unavailable(format!(
                     "Global catch-up cannot plan from partial Service observations: {details}; \

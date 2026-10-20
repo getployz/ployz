@@ -33,11 +33,20 @@ pub(crate) trait RetireClient {
         &mut self,
         machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        names: &Names,
         cancellation: &CancellationToken,
     ) -> Result<(), RpcError>;
 }
 
 pub(crate) type Names = Vec<(MachineId, MachineName)>;
+
+/// `id`'s Server name, or `id` itself when the membership doesn't list it.
+pub(crate) fn server_name(names: &Names, id: &MachineId) -> String {
+    names
+        .iter()
+        .find(|(named, _)| named == id)
+        .map_or_else(|| id.to_string(), |(_, name)| name.to_string())
+}
 
 impl RetireClient for Client {
     async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), ConnectError> {
@@ -56,12 +65,13 @@ impl RetireClient for Client {
         &mut self,
         machine_id: &MachineId,
         slot: &ObservedGlobalSlotSpec,
+        names: &Names,
         cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
         let identity = slot.identity();
         match slot_eligibility(self, machine_id, &identity.namespace, slot.resolved_spec()).await? {
             ServicePlacementEligibility::Ineligible(_) => {
-                retire_copies(self, machine_id, identity, cancellation).await
+                retire_copies(self, machine_id, identity, names, cancellation).await
             }
             ServicePlacementEligibility::Eligible => Err(RpcError {
                 code: RpcErrorCode::Conflict,
@@ -92,6 +102,7 @@ pub(crate) async fn retire_copies<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
     service: &QualifiedService,
+    names: &Names,
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
     for copy in copies_on(client, machine_id, service).await? {
@@ -100,6 +111,7 @@ pub(crate) async fn retire_copies<C: MachineOperations>(
         }
         ended(
             cleanup::retire(client, &copy, false, AnonymousVolumes::Remove, cancellation).await?,
+            names,
         )?;
     }
     Ok(())
@@ -114,7 +126,10 @@ pub(crate) async fn retire_ingress_proxy<C: MachineOperations>(
         if cancellation.is_cancelled() {
             return Err(cancelled());
         }
-        ended(cleanup::remove(client, &copy, AnonymousVolumes::Remove).await?)?;
+        ended(
+            cleanup::remove(client, &copy, AnonymousVolumes::Remove).await?,
+            &Names::new(),
+        )?;
     }
     Ok(())
 }
@@ -157,7 +172,7 @@ pub(crate) async fn let_go<C: MachineOperations>(
     OldCopyEnd::Running { unconfirmed }
 }
 
-fn ended(step: Step) -> Result<(), RpcError> {
+fn ended(step: Step, names: &Names) -> Result<(), RpcError> {
     match step {
         Step::Done => Ok(()),
         Step::Refused(refusal) => Err(refusal.into_error()),
@@ -169,7 +184,7 @@ fn ended(step: Step) -> Result<(), RpcError> {
                 machines
                     .machines
                     .iter()
-                    .map(ToString::to_string)
+                    .map(|id| server_name(names, id))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -213,15 +228,9 @@ pub(crate) async fn retire_globals<C: RetireClient>(
         Err(error) => return everyone(crate::ui::row(&error)),
     };
     if !live.containers.all_targets_succeeded() {
-        let server = |id: &MachineId| {
-            names
-                .iter()
-                .find(|(named, _)| named == id)
-                .map_or_else(|| id.to_string(), |(_, name)| name.to_string())
-        };
         return everyone(format!(
             "cannot retire from partial Service observations: {}",
-            crate::failure::partial_failure_details(&live.containers, server)
+            crate::failure::partial_failure_details(&live.containers, |id| server_name(&names, id))
         ));
     }
     let services = live.services();
@@ -236,7 +245,10 @@ pub(crate) async fn retire_globals<C: RetireClient>(
                     None => Retirement::NotRetired(
                         "its newest Container is not Global; deploy it first".into(),
                     ),
-                    Some(slot) => match client.retire_slot(&server.id, &slot, cancellation).await {
+                    Some(slot) => match client
+                        .retire_slot(&server.id, &slot, &names, cancellation)
+                        .await
+                    {
                         Ok(()) => Retirement::Retired,
                         Err(error) => Retirement::NotRetired(crate::ui::row(&error)),
                     },
