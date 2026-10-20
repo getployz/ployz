@@ -121,7 +121,7 @@ const cleanupEmpty = {
   waiting: "Retiring the old copies",
   done: "Every old copy is gone",
   left_running: "Every old copy is gone",
-  cancelled: "The newer Deployment retires the old copies",
+  cancelled: "The newer Deployment's cleanup took over the old copies",
   failed: "Cloud could not retire the old copies",
 } satisfies Record<DeploymentCleanupView["state"], string>;
 
