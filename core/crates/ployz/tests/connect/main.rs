@@ -132,7 +132,8 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
             runtime,
         )
     };
-    for (after, exit, said) in [
+    let by_id = "a".repeat(32);
+    let cases = [
         (
             vec![web('b', running())],
             1,
@@ -175,7 +176,22 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
             1,
             Some(("The container for app/web stopped; exec ended.", "ployz ps")),
         ),
-    ] {
+    ]
+    .into_iter()
+    .map(|(after, exit, said)| ("app/web", after, exit, said))
+    .chain([(
+        by_id.as_str(),
+        vec![listing_container(
+            'b',
+            'b',
+            "web",
+            ContainerKind::ServiceContainer,
+            running(),
+        )],
+        1,
+        Some(("stopped; exec ended.", "retry: ployz exec app/web")),
+    )]);
+    for (selector, after, exit, said) in cases {
         let mut service = DiscoveryService::new(test_description());
         service.exec_frames = Some(vec![
             ExecId("started".into()),
@@ -199,7 +215,7 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
             config.path().to_str().unwrap(),
             "exec",
             "-T",
-            "app/web",
+            selector,
             "true",
         ]);
         let result = tokio::time::timeout(Duration::from_secs(10), command.output())

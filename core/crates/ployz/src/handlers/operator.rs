@@ -343,7 +343,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 .await
             {
                 let hint = if stopped.another_runs {
-                    Hint::Retry(format!("ployz exec {typed}"))
+                    Hint::Retry(format!("ployz exec {}", session.target.identity))
                 } else {
                     Hint::Inspect("ployz ps".into())
                 };
