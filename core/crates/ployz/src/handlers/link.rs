@@ -17,8 +17,9 @@ use std::time::Duration;
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    ContainerId, EnvironmentValues, MachineId, MachineName, Namespace, QualifiedService,
-    RoutesRead, RpcErrorCode, ServiceObservation, serving_containers,
+    ContainerId, EnvironmentValues, MachineId, MachineName, MachineObservation,
+    MembershipObservation, Namespace, QualifiedService, RoutesRead, RpcErrorCode,
+    ServiceObservation, serving_containers,
 };
 use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
@@ -585,7 +586,8 @@ struct Staged {
 /// Something that needs someone to act, with the command that acts.
 #[derive(Serialize)]
 struct Attention {
-    /// An error code, `deployment_failed`, `deployment_unknown`, `broken_reference` or `routes_not_acked`.
+    /// An error code, `deployment_failed`, `deployment_unknown`, `broken_reference`,
+    /// `machine_down` or `routes_not_acked`.
     reason: String,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -593,15 +595,21 @@ struct Attention {
     #[serde(skip_serializing_if = "Option::is_none")]
     next: Option<String>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    unrouted: Option<Unrouted>,
+    subject: Option<Subject>,
 }
 
-/// A Service whose In copies some live Machine's proxy has not acked.
 #[derive(Serialize)]
-struct Unrouted {
-    service: QualifiedService,
-    /// Each such Machine by name, else by ID when the Machine list lacks it.
-    machines: Vec<String>,
+#[serde(untagged)]
+enum Subject {
+    /// A Service whose In copies some live Machine's proxy has not acked.
+    Unrouted {
+        service: QualifiedService,
+        /// Each such Machine by name, else by ID when the Machine list lacks it.
+        machines: Vec<String>,
+    },
+    Down {
+        machine: MachineName,
+    },
 }
 
 #[derive(Serialize)]
@@ -648,7 +656,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     message: crate::ui::row(&error),
                     deployment: None,
                     next,
-                    unrouted: None,
+                    subject: None,
                 });
                 None
             }
@@ -691,7 +699,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     message: format!("Deployment {} did not complete", ended.label()),
                     deployment: Some(ended.id.clone()),
                     next: Some(super::deploy::hint_for(matches, ended)),
-                    unrouted: None,
+                    subject: None,
                 });
             }
         }
@@ -703,7 +711,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             message: reference.to_string(),
             deployment: None,
             next: Some(super::store::fix_broken(matches, reference)),
-            unrouted: None,
+            subject: None,
         });
     }
     if let (Some(store), Some(_)) = (&store, &diff) {
@@ -764,8 +772,9 @@ fn this_server() -> Option<LocalCheckin> {
 
 const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
 
-/// The Services in `namespace` whose new copies some live Machine has not picked
-/// up. Empty when no Server is set up, and empty after one warning when a read fails.
+/// Each Down Machine, then the Services in `namespace` whose new copies some live
+/// Machine has not picked up. Empty when no Server is set up, and empty after one
+/// warning when a read fails.
 fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
     let found = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&found);
@@ -779,10 +788,6 @@ fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
             let live = client
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await?;
-            let names = machines
-                .into_iter()
-                .map(|observed| (observed.machine.id, observed.machine.name))
-                .collect();
             let mut reads = Vec::new();
             if let Some(reader) = live
                 .containers
@@ -812,7 +817,7 @@ fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
                     reads.push((service, routes));
                 }
             }
-            *sink.borrow_mut() = not_picked_up(&reads, &names);
+            *sink.borrow_mut() = needs_attention(&machines, &reads);
             Ok(())
         })
     });
@@ -830,6 +835,29 @@ fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
 
 fn no_server_set_up(dialed: bool, error: &Error) -> bool {
     !dialed && error.report().code == RpcErrorCode::NotFound
+}
+
+fn needs_attention(
+    machines: &[MachineObservation],
+    reads: &[(ServiceObservation, RoutesRead)],
+) -> Vec<Attention> {
+    let down = machines
+        .iter()
+        .filter(|observed| observed.membership == MembershipObservation::Down)
+        .map(|observed| Attention {
+            reason: "machine_down".to_owned(),
+            message: "Down. Its copies serve again once it's back.".to_owned(),
+            deployment: None,
+            next: None,
+            subject: Some(Subject::Down {
+                machine: observed.machine.name.clone(),
+            }),
+        });
+    let names = machines
+        .iter()
+        .map(|observed| (observed.machine.id, observed.machine.name.clone()))
+        .collect();
+    down.chain(not_picked_up(reads, &names)).collect()
 }
 
 fn not_picked_up(
@@ -874,7 +902,7 @@ fn not_picked_up(
                 ),
                 deployment: None,
                 next: None,
-                unrouted: Some(Unrouted {
+                subject: Some(Subject::Unrouted {
                     service: service.identity.clone(),
                     machines,
                 }),
@@ -962,12 +990,11 @@ fn status_record(status: &Status) -> Fields {
         );
     }
     for attention in &status.attention {
-        let label = attention
-            .unrouted
-            .as_ref()
-            .map_or(Cow::Borrowed("needs attention"), |unrouted| {
-                Cow::Owned(unrouted.service.name.to_string())
-            });
+        let label = match &attention.subject {
+            Some(Subject::Unrouted { service, .. }) => Cow::Owned(service.name.to_string()),
+            Some(Subject::Down { machine }) => Cow::Owned(machine.to_string()),
+            None => Cow::Borrowed("needs attention"),
+        };
         record.push(label, Cell::status(&attention.message, Tone::Bad));
     }
     record
@@ -1256,10 +1283,17 @@ mod tests {
             }
         }
 
-        fn names(machines: &[Machine]) -> HashMap<MachineId, MachineName> {
-            machines
+        fn listed(up: &[&Machine], down: &[&Machine]) -> Vec<MachineObservation> {
+            let up = up
                 .iter()
-                .map(|machine| (machine.id, machine.name.clone()))
+                .map(|machine| (machine, MembershipObservation::Up));
+            let down = down
+                .iter()
+                .map(|machine| (machine, MembershipObservation::Down));
+            up.chain(down)
+                .map(|(machine, membership)| {
+                    MachineObservation::new((*machine).clone(), membership)
+                })
                 .collect()
         }
 
@@ -1302,7 +1336,7 @@ mod tests {
                 ),
             )];
 
-            assert!(not_picked_up(&reads, &names(&[one, two, three])).is_empty());
+            assert!(needs_attention(&listed(&[&one, &two, &three], &[]), &reads).is_empty());
         }
 
         #[test]
@@ -1316,7 +1350,7 @@ mod tests {
                 ),
             )];
 
-            let attention = not_picked_up(&reads, &names(&[one, two, three]));
+            let attention = needs_attention(&listed(&[&one, &two, &three], &[]), &reads);
 
             assert_eq!(
                 serde_json::to_value(&attention).unwrap(),
@@ -1334,14 +1368,43 @@ mod tests {
         }
 
         #[test]
-        fn status_names_no_down_machine_or_a_copy_on_one() {
+        fn status_shows_a_down_machine_as_down_and_never_as_not_picking_up() {
             let [one, two, three] = machines();
             let reads = [(
                 web([routed_on(&one, '1'), routed_on(&three, '3')]),
                 routes_as_ployzd_answers(&[(&one, &['1']), (&two, &['1'])], &[&three]),
             )];
 
-            assert!(not_picked_up(&reads, &names(&[one, two, three])).is_empty());
+            let attention = needs_attention(&listed(&[&one, &two], &[&three]), &reads);
+
+            assert_eq!(
+                serde_json::to_value(&attention).unwrap(),
+                json!([{
+                    "reason": "machine_down",
+                    "message": "Down. Its copies serve again once it's back.",
+                    "machine": "machine-3",
+                }])
+            );
+            assert_eq!(
+                rendered(attention),
+                "organization  ?\nsigned in as  local\nmachine-3     Down. Its copies serve again once it's back.\n"
+            );
+        }
+
+        #[test]
+        fn status_shows_a_down_machine_when_no_service_has_copies() {
+            let [one, two, three] = machines();
+
+            let attention = needs_attention(&listed(&[&one, &two], &[&three]), &[]);
+
+            assert_eq!(
+                serde_json::to_value(&attention).unwrap(),
+                json!([{
+                    "reason": "machine_down",
+                    "message": "Down. Its copies serve again once it's back.",
+                    "machine": "machine-3",
+                }])
+            );
         }
     }
 }
