@@ -1996,14 +1996,55 @@ fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
 fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
     use std::os::unix::process::ExitStatusExt;
 
-    let (reader, writer) = std::io::pipe().unwrap();
-    drop(reader);
-    let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["schema"])
-        .stdout(Stdio::from(writer))
-        .spawn()
-        .unwrap();
-    assert_eq!(child.wait().unwrap().signal(), Some(13));
+    for args in [&["schema"][..], &["--version"], &["--help"]] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .stdout(Stdio::from(writer))
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.signal(), Some(13), "{args:?}");
+        assert!(output.stderr.is_empty(), "{args:?} {output:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_stdout_fails_the_command_in_both_modes() {
+    // A result, clap's help and version, and the help a bare command or group prints.
+    for args in [
+        &["--version"][..],
+        &["--json", "--version"],
+        &["-V"],
+        &["--help"],
+        &["--json", "--help"],
+        &["-h"],
+        &["help", "server"],
+        &["server", "ls", "--help"],
+        &["--json", "server", "ls", "--help"],
+        &[],
+        &["server"],
+    ] {
+        let full = std::fs::File::options()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .stdout(Stdio::from(full))
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?} {output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(
+            stderr,
+            "error: Could not write the result to stdout.\n  cause: No space left on device (os error 28)\n",
+            "{args:?}"
+        );
+    }
 }
 
 #[test]

@@ -1106,11 +1106,36 @@ pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
 pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     #[derive(Deserialize)]
     struct Refusal {
-        error: RpcError,
+        error: Refused,
     }
-    serde_json::from_slice::<Refusal>(body)
-        .ok()
-        .map(|refusal| past_token(refusal.error))
+    /// A Cloud command's refusal also names the input field, what fits there and
+    /// whether it wrote. They ride in `details`, where a write's `writes` already does.
+    #[derive(Deserialize)]
+    struct Refused {
+        #[serde(flatten)]
+        error: RpcError,
+        field: Option<serde_json::Value>,
+        expected: Option<serde_json::Value>,
+        writes: Option<serde_json::Value>,
+    }
+    let Refused {
+        mut error,
+        field,
+        expected,
+        writes,
+    } = serde_json::from_slice::<Refusal>(body).ok()?.error;
+    let told = [("field", field), ("expected", expected), ("writes", writes)]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value)));
+    for (key, value) in told {
+        if !error.details.is_object() {
+            error.details = serde_json::json!({});
+        }
+        if let serde_json::Value::Object(details) = &mut error.details {
+            details.insert(key, value);
+        }
+    }
+    Some(past_token(error))
 }
 
 /// `ployz login` while `PLOYZ_TOKEN` is set: the token still wins over the sign-in.

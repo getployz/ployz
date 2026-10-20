@@ -66,7 +66,7 @@ export type GithubObservationOperation =
   | "read_user_membership";
 
 export type GithubObservationErrorCode =
-  | "invalid_input"
+  | "invalid_argument"
   | "request_failed"
   | "not_found"
   | "invalid_response"
@@ -255,7 +255,7 @@ export const resolveGithubRepository = Effect.fn(
   const operation = "resolve_repository";
   if (!isValidGithubId(repositoryId)) {
     return yield* githubObservationError({
-      code: "invalid_input",
+      code: "invalid_argument",
       operation,
       retriable: false,
     });
@@ -292,7 +292,7 @@ export const resolveGithubBranchHead = Effect.fn(
   const repositoryPath = resolvedRepositoryPath(repository);
   if (!repositoryPath || !isValidGithubBranchRef(ref)) {
     return yield* githubObservationError({
-      code: "invalid_input",
+      code: "invalid_argument",
       operation,
       retriable: false,
     });
@@ -347,7 +347,7 @@ export const compareInstallationRepositoryCommits = Effect.fn(
     !isValidGithubExactSha(headSha)
   ) {
     return yield* githubObservationError({
-      code: "invalid_input",
+      code: "invalid_argument",
       operation,
       retriable: false,
     });
@@ -405,7 +405,7 @@ export const fetchInstallationCheckSuite = Effect.fn(
   const repositoryPath = resolvedRepositoryPath(repository);
   if (!repositoryPath || !isValidGithubId(checkSuiteId)) {
     return yield* githubObservationError({
-      code: "invalid_input",
+      code: "invalid_argument",
       operation,
       retriable: false,
     });
@@ -440,7 +440,7 @@ export const fetchInstallationPullRequest = Effect.fn(
 )(function* (access: GithubAccess, repositoryId: number, number: number) {
   const operation = "fetch_pull_request";
   if (!isValidGithubId(repositoryId) || !isValidGithubId(number)) {
-    return yield* githubObservationError({ code: "invalid_input", operation, retriable: false });
+    return yield* githubObservationError({ code: "invalid_argument", operation, retriable: false });
   }
   const api = yield* GithubApi;
   const observed = yield* api.json({
@@ -503,7 +503,7 @@ export const postInstallationCheckRun = Effect.fn(
   headSha: string; name: string; externalId: string; conclusion: "success" | "neutral"; detailsUrl: string; title: string; summary: string;
 }) {
   if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(input.headSha)) {
-    return yield* githubObservationError({ code: "invalid_input", operation: "create_check_run", retriable: false });
+    return yield* githubObservationError({ code: "invalid_argument", operation: "create_check_run", retriable: false });
   }
   const api = yield* GithubApi;
   const repository: `/${string}` = `/repositories/${repositoryId}`;
@@ -601,7 +601,7 @@ export const GithubApiLive = Layer.effect(
     const json: GithubApiService["json"] = Effect.fn("GithubApi.json")(
       function* <S extends Schema.ConstraintDecoder<unknown>>({ access, ...input }: GithubJsonRequest<S>) {
         if (access.type !== "public" && !isValidGithubId(access.installationId)) {
-          return yield* githubObservationError({ code: "invalid_input", operation: input.operation, retriable: false });
+          return yield* githubObservationError({ code: "invalid_argument", operation: input.operation, retriable: false });
         }
         const token = yield* bearer(access);
         return yield* request({ ...input, token });
@@ -618,7 +618,7 @@ export const GithubApiLive = Layer.effect(
     const installationRepositories: GithubApiService["installationRepositories"] = Effect.fn("GithubApi.installationRepositories")(
       function* (input) {
         if (!isValidGithubId(input.installationId) || !Number.isSafeInteger(input.page) || input.page < 1) {
-          return yield* githubObservationError({ code: "invalid_input", operation: "list_repositories", retriable: false });
+          return yield* githubObservationError({ code: "invalid_argument", operation: "list_repositories", retriable: false });
         }
         const token = yield* tokens.systemInstallationToken(input.installationId);
         return yield* request({
@@ -633,7 +633,7 @@ export const GithubApiLive = Layer.effect(
     const archive: GithubApiService["archive"] = Effect.fn("GithubApi.archive")(function* (input) {
       const repository = resolvedRepositoryPath(input.repository);
       if (!repository || !isValidGithubExactSha(input.sha)) {
-        return yield* githubObservationError({ code: "invalid_input", operation: "download_source", retriable: false });
+        return yield* githubObservationError({ code: "invalid_argument", operation: "download_source", retriable: false });
       }
       const token = yield* bearer(input.access);
       const headers: GithubRequestHeaders = { "X-GitHub-Api-Version": GITHUB_API_VERSION };

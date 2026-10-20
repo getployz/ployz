@@ -11,6 +11,7 @@ import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
+import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { runAgentCall } from "#/modules/agent/agent-runner.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -1392,12 +1393,41 @@ it.live(
           const { drizzle } = yield* Database;
           return yield* drizzle.execute<{ name: string }>(sql`select name from organization_cluster_domain`, "objects");
         });
+        const planned = yield* request("read", alice, { query: "plan", environment: here, services: [] });
+        assert.strictEqual(planned.status, 200);
+        assert.strictEqual(reservations(), 0, "a plan reads the Cluster Domain and reserves none");
+        assert.lengthOf(yield* reserved(), 0);
+
         const generate: ConfigCommand = { ...custom, hostname: null };
+        hostedDns.state.failWith = 503;
+        const failed = yield* request("write", alice, generate);
+        hostedDns.state.failWith = null;
+        assert.strictEqual(failed.status, 503);
+        assert.deepStrictEqual(failed.json, {
+          error: { code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; try again.", details: null },
+        });
+        assert.lengthOf(yield* reserved(), 0, "a failed reserve keeps no Cluster Domain");
+
+        hostedDns.requests.length = 0;
+        hostedDns.state.reservesTogether = 2;
         const staged = yield* Effect.all([request("write", alice, generate), request("write", alice, generate)], { concurrency: "unbounded" });
+        hostedDns.state.reservesTogether = 1;
         const hostname = staged[0].json.domain?.hostname ?? "";
         assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/, "staging a generated domain names it in full");
         assert.strictEqual(staged[1].json.domain?.hostname, hostname, "two stages at once share one Cluster Domain");
         assert.lengthOf(yield* reserved(), 1);
+        const { drizzle } = yield* Database;
+        const [kept] = yield* drizzle.select().from(organizationClusterDomain);
+        assert.isDefined(kept);
+        const keptToken = (yield* SecretEncryption).decrypt(kept.encryptedToken);
+        // The fake grants token-N for the Nth request it records.
+        const granted = hostedDns.requests.flatMap((call, index) => call.method === "POST" ? [`token-${index + 1}`] : []);
+        assert.lengthOf(granted, 2, "both stages reached Hosted DNS");
+        assert.deepStrictEqual(
+          hostedDns.requests.filter((call) => call.method === "DELETE").map((call) => [call.path, call.authorization]),
+          granted.filter((token) => token !== keptToken).map((token) => [`/domains/${kept.name}`, `Bearer ${token}`]),
+          "the losing stage releases the name it was granted, and only that one",
+        );
         const listed = yield* request("read", alice, { query: "domains", environment: here, service: null });
         assert.deepStrictEqual(listed.json.domains?.map((domain) => [domain.hostname, domain.status, domain.action?.type]), [
           ["app.example.com", "setting_up", "deploy"],
