@@ -587,10 +587,21 @@ struct Attention {
     next: Option<String>,
 }
 
+/// This host's check-in record, and whether its Machine left the Cluster since it joined.
+#[derive(Serialize)]
+struct ThisServer {
+    #[serde(flatten)]
+    checkin: LocalCheckin,
+    /// The check-in loop saw this server join, and its daemon now runs no Machine, as after
+    /// `ployz server rm` resets it. The stopped loop never rewrites its record.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    left: bool,
+}
+
 #[derive(Serialize)]
 struct Status {
     #[serde(skip_serializing_if = "Option::is_none")]
-    this_server: Option<LocalCheckin>,
+    this_server: Option<ThisServer>,
     identity: Option<Identity>,
     scope: Scope,
     /// The Environment the scope resolves to; none when it doesn't resolve.
@@ -724,19 +735,23 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn this_server() -> Option<LocalCheckin> {
+fn this_server() -> Option<ThisServer> {
     let path = Path::new(Paths::CHECKIN_DIR).join("status.json");
-    LocalCheckin::read(&path)
+    let checkin = LocalCheckin::read(&path)
         .inspect_err(|error| {
             crate::ui::warn(format!("Could not read {}: {error}", path.display()));
         })
         .ok()
-        .flatten()
+        .flatten()?;
+    Some(ThisServer {
+        checkin,
+        left: false,
+    })
 }
 
 fn status_record(status: &Status) -> Fields {
     let mut record = Fields::new();
-    if let Some(checkin) = &status.this_server {
+    if let Some(ThisServer { checkin, .. }) = &status.this_server {
         let crate::checkin::Headline {
             title: headline,
             ended,
@@ -1048,5 +1063,51 @@ mod tests {
             ..linked_in("org_globex", "globex")
         };
         check_acting_in("org_acme", "/src/shop", &link).unwrap();
+    }
+
+    /// The check-in record a Fleet Token host kept after `ployz server rm` reset it.
+    const JOINED: &str = r#"{
+        "answer": "joined",
+        "token_fingerprint": "32e8dfa6b195171a",
+        "at": "2026-10-20T22:29:15.665202151Z",
+        "prep": {"docker": "ready", "zfs": "ready"},
+        "blockers": [],
+        "prepare_retries": 0,
+        "attempt": {"attemptId": "166be583-83bf-4e66-b1fd-5164630fff37", "stage": "publishing"}
+    }"#;
+
+    fn status_on(left: bool) -> String {
+        let status = Status {
+            this_server: Some(ThisServer {
+                checkin: serde_json::from_str(JOINED).unwrap(),
+                left,
+            }),
+            identity: None,
+            scope: Scope {
+                project: None,
+                environment: None,
+                link: None,
+            },
+            environment: None,
+            staged: None,
+            deploying: Vec::new(),
+            attention: Vec::new(),
+        };
+        let mut out = Vec::new();
+        status_record(&status).write(&mut out, false).unwrap();
+        anstream::adapter::strip_str(&String::from_utf8(out).unwrap()).to_string()
+    }
+
+    #[test]
+    fn a_reset_server_is_not_in_a_cluster_whatever_its_check_in_last_saw() {
+        assert_eq!(
+            status_on(true),
+            "this server = Not in a Cluster\nsigned in as = no one\n"
+        );
+        assert!(
+            status_on(false).starts_with("this server = Joined\nchecked in = "),
+            "{}",
+            status_on(false)
+        );
     }
 }
