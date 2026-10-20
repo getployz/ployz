@@ -541,6 +541,7 @@ fn observed() -> VolumeObservation {
         sought: vec![held().name],
         held: vec![held()],
         unanswered: Vec::new(),
+        failure: None,
     }
 }
 
@@ -1341,6 +1342,22 @@ fn a_sweep_that_could_not_look_at_the_servers_forgets_none_that_were_silent() {
     };
     let stalled = refusal(admit_removal(&store, &who, "fix", 3, &unseen(2)));
     assert!(stalled.message.contains("stalled"), "{}", stalled.message);
+    // Nor is a look that couldn't ask any Server it could name.
+    let failed = Trusted {
+        volumes: Some(VolumeObservation::failed(
+            Vec::new(),
+            Vec::new(),
+            ployz_store::ObservationFailure::unreachable(ployz_core::RpcError {
+                code: ployz_core::RpcErrorCode::Unavailable,
+                message: "Could not connect to the Machine.".to_owned(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            }),
+        )),
+        ..unseen(2)
+    };
+    let stalled = refusal(admit_removal(&store, &who, "fix", 3, &failed));
+    assert!(stalled.message.contains("stalled"), "{}", stalled.message);
 
     // A Server left, so it goes again unseen, and fails while `a` is still silent.
     let admitted = admit_removal(&store, &who, "fix", 3, &unseen(1)).unwrap();
@@ -1594,6 +1611,7 @@ fn every_copy_refuses_a_lost_volume_it_did_not_name() {
         sought: vec![docker('a', 5).name, docker('a', 9).name],
         held: vec![docker('a', 5)],
         unanswered: Vec::new(),
+        failure: None,
     };
     let removing = confirmed(
         &store,
@@ -1612,6 +1630,7 @@ fn every_copy_refuses_a_lost_volume_it_did_not_name() {
         sought: vec![docker('a', 5).name, docker('a', 9).name],
         held: vec![docker('a', 5), docker('a', 9)],
         unanswered: Vec::new(),
+        failure: None,
     };
     let refused = refusal(admit_removal(
         &store,
@@ -1648,6 +1667,7 @@ fn mirrored(every_copy: bool) -> (ConfigStore, Result<DeploymentSummary, RpcErro
         sought: vec![held().name],
         held: vec![held(), docker('b', 5)],
         unanswered: Vec::new(),
+        failure: None,
     };
     let admitted = admit_removal(&store, &who, "production", 3, &observing(mirror));
     (store, admitted)
