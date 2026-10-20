@@ -628,7 +628,43 @@ it.live("an approval from another Organization is no approval here, whether or n
     expect(yield* cli(publish, own)).toMatchObject({ status: 200, json: { written: "published" } });
   }));
 
-const removeShop = (version: string | null = null): ConfigCommand => ({ command: "remove", project: "shop", version });
+/** Another owner of the Organization, signed in to the dashboard. */
+const colleagueOwner = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [person] = yield* drizzle.insert(user).values({ email: "grace.owner@example.test", name: "Grace Owner" }).returning();
+  const userId = person?.id ?? expect.fail("no colleague");
+  yield* drizzle.insert(member).values({ userId, organizationId: ORGANIZATION, role: "owner" });
+  return {
+    userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "grace-session" }, role: "owner", support: null, via: "cli",
+  } satisfies Caller;
+});
+
+const notTheirs = "Someone else asked for this approval, so only they can use it. Run the command again without it to ask for your own.";
+const elsewhere = "This approval was asked for from another session or token. Run the command again without it to ask for one from here.";
+
+it.live("an approval runs only for whoever asked, through the token they asked from, and only for the command they asked about", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, store } = yield* shopRemovingWeb();
+    const { secret: laptop } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-2" } }, { name: "laptop", expiresInDays: 1 }));
+    const grace = yield* provided(colleagueOwner);
+    const { secret: graceToken } = yield* provided(createOrganizationToken(grace, { name: "grace", expiresInDays: 1 }));
+    const details = (yield* cli(publish)).json.error?.details;
+    const id = details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval({ ...grace, via: "dashboard" }, id, { approve: { digest: details?.approval ?? expect.fail("no digest") } }));
+    const write = vi.spyOn(store, "write");
+    const refused = (message: string) => ({ status: 403, json: { error: { code: "forbidden", message, details: { approval_id: id } } } });
+
+    expect(yield* cli(publish, id, undefined, laptop)).toMatchObject(refused(elsewhere));
+    expect(yield* cli(publish, id, undefined, graceToken)).toMatchObject(refused(notTheirs));
+    expect(yield* cli(deploy(1), id)).toMatchObject(refused(
+      "This approval covers only the request to save production. Run the command again without it to ask for one.",
+    ));
+    expect(write).not.toHaveBeenCalled();
+
+    expect(yield* cli(publish, id)).toMatchObject({ status: 200, json: { written: "published" } });
+  }));
+
+const removeShop =(version: string | null = null): ConfigCommand => ({ command: "remove", project: "shop", version });
 /** The version a `confirmation_required` refusal hands back, the one a removal names to go ahead. */
 const confirmed = (reply: { json: Reply }) => (reply.json.error?.details as { version?: string } | null)?.version ?? expect.fail("no version");
 /** `web` ran on the Servers, so removing Shop stops it there. */
@@ -842,8 +878,35 @@ it("an operation digest ignores key order and changes with the preview or with w
   const metrics = { kind: "removes_service", name: "shop.metrics", node: "metrics", path: "services/shop.metrics" } as const;
   expect(operationDigest({ ...asked, effects: [...asked.effects, metrics] })).not.toBe(operationDigest(asked));
   expect(operationDigest({ ...asked, verb: "clean" })).not.toBe(operationDigest(asked));
+  expect(operationDigest({ ...asked, subject: `server:${"b".repeat(32)}` })).not.toBe(operationDigest(asked));
   expect(operationDigest(asked)).toMatch(/^drain:[0-9a-f]{64}$/);
 });
+
+it.live("an operation approval runs only for whoever asked, through the token they asked from, and only on the target they asked about", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate } = yield* operationCloud();
+    const grace = yield* provided(colleagueOwner);
+    const laptop: Caller = { ...caller, credential: { kind: "token", id: "token-2", grant: FULL_GRANT } };
+    const asked = drainOf(["shop.web"]);
+    const first = refusedWith(yield* gate(asked));
+    // Anyone else asking for the same opens an approval of their own, and leaves this one theirs.
+    expect(refusedWith(yield* provided(gateOperation(grace, null, asked))).approval_id).not.toBe(first.approval_id);
+    expect(refusedWith(yield* provided(gateOperation(laptop, null, asked))).approval_id).not.toBe(first.approval_id);
+    yield* provided(decideApproval({ ...grace, via: "dashboard" }, first.approval_id, { approve: { digest: first.approval } }, answers(first.approval)));
+    const refused = (message: string) => ({ ok: false, refusal: { code: "forbidden", message, details: { approval_id: first.approval_id } } });
+
+    expect(yield* provided(gateOperation(laptop, first.approval_id, asked))).toEqual(refused(elsewhere));
+    expect(yield* provided(gateOperation(grace, first.approval_id, asked))).toEqual(refused(notTheirs));
+    const fra2 = { ...asked, subject: `server:${"b".repeat(32)}`, name: "fra-2" };
+    expect(yield* gate(fra2, first.approval_id)).toEqual(refused(
+      "This approval covers only the request to drain fra-1. Run the command again without it to ask for one.",
+    ));
+    expect(yield* gate({ ...asked, verb: "clean" }, first.approval_id)).toEqual(refused(
+      "This approval covers only the request to drain fra-1. Run the command again without it to ask for one.",
+    ));
+
+    expect(yield* gate(asked, first.approval_id)).toEqual({ ok: true, approvalId: first.approval_id });
+  }));
 
 it.live("an operation that destroys nothing runs without asking", () =>
   Effect.gen(function* () {

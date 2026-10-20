@@ -1517,14 +1517,14 @@ it.live(
         const approvalId = asked.approval_id ?? assert.fail("no approval id");
         yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
 
+        const covers = "This approval covers only the request to forget fra-1. Run the command again without it to ask for one.";
         const reset = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
-        assert.strictEqual(reset.json.error?.code, "approval_required");
-        assert.notStrictEqual(reset.json.error?.details?.approval_id ?? assert.fail("no approval id"), approvalId);
+        assert.deepStrictEqual(refusedWith(reset), [403, covers]);
 
         const started = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         const removalId = started.json.id ?? assert.fail("no removal id");
         const resetAfterUse = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
-        assert.strictEqual(resetAfterUse.json.error?.code, "approval_required");
+        assert.deepStrictEqual(refusedWith(resetAfterUse), [403, covers]);
         const elsewhere = yield* cli("POST", `servers/${"e".repeat(32)}/forget`, { ...alice, approval: approvalId }, {});
         assert.strictEqual(elsewhere.json.error?.code, "not_found");
         const ended = new Date();
@@ -1559,6 +1559,11 @@ it.live(
           .where(eq(machineRemoveAttempt.id, removalId));
         cluster.observesFra1 = false;
 
+        const laptop = yield* signIn("alice");
+        assert.deepStrictEqual(refusedWith(yield* cli("POST", `servers/${fra1}/forget`, { ...laptop, approval: approvalId }, {})), [
+          403,
+          "This approval was asked for from another session or token. Run the command again without it to ask for one from here.",
+        ]);
         const retried = yield* cli("POST", `servers/${fra1}/forget`, { ...alice, approval: approvalId }, {});
         assert.strictEqual(retried.status, 200);
         assert.strictEqual(retried.json.id, removalId);
