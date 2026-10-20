@@ -128,6 +128,22 @@ it("submits a bounded arrival token and describes it after minting", async () =>
   expect(create).toHaveBeenCalledWith({ data: { organizationSlug: "ada", name: null, expiresIn: "1d", autoEnroll: { maxServers: 3 } } });
 });
 
+it("describes Maximum servers with what the token can join, and the label toggles Enroll on arrival", async () => {
+  await renderDialog();
+  fireEvent.click(screen.getByRole("button", { name: "Add servers" }));
+  const arrival = screen.getByRole("switch", { name: "Enroll on arrival" });
+  fireEvent.click(screen.getByText("Enroll on arrival"));
+  expect(arrival.getAttribute("aria-checked")).toBe("true");
+  const max = screen.getByRole("spinbutton", {
+    name: "Maximum servers",
+    description: "Only joins an existing cluster. Enroll the first server yourself. Anyone with this token can join up to 10 servers before it expires.",
+  });
+  fireEvent.change(max, { target: { value: "0" } });
+  expect(screen.getByRole("spinbutton", { name: "Maximum servers", description: /can join up to N servers before it expires\.$/ })).toBe(max);
+  fireEvent.click(screen.getByText("Enroll on arrival"));
+  expect(arrival.getAttribute("aria-checked")).toBe("false");
+});
+
 it("shows the one-time command when Create is double-clicked", async () => {
   const create = vi.spyOn(fleetTokenFunctions, "createFleetTokenServerFn")
     .mockResolvedValueOnce({ token: TOKEN, id: "token-1", name: "soak-add-dbl", expiresAt: "2026-10-19T10:00:00Z", cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3" })
