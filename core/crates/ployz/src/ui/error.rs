@@ -207,6 +207,23 @@ pub(crate) fn sentence(mut text: String) -> String {
     text
 }
 
+/// `next` follows `message` as its own sentence, with one break however
+/// `message` ended.
+pub(crate) fn then_sentence(message: &str, next: &str) -> String {
+    match message.trim_end() {
+        "" => next.to_owned(),
+        message => format!("{} {next}", sentence(message.to_owned())),
+    }
+}
+
+/// `what`, then `: reason` when there is a reason to give.
+pub(crate) fn with_reason(what: impl std::fmt::Display, reason: &str) -> String {
+    match reason.trim() {
+        "" => what.to_string(),
+        reason => format!("{what}: {reason}"),
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn chain_text(error: Chain<'_>) -> String {
     inline(error)

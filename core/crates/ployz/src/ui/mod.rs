@@ -15,7 +15,9 @@ mod tree;
 #[cfg(test)]
 pub(crate) use error::chain_text;
 pub use error::{Hint, VALID_SHOWN, causes};
-pub(crate) use error::{retrying, row, rpc_error, sentence, warn_cause};
+pub(crate) use error::{
+    retrying, row, rpc_error, sentence, then_sentence, warn_cause, with_reason,
+};
 pub use exit::{PARTIAL_EXIT, exit, exit_code};
 #[cfg(test)]
 pub(crate) use exit::{after_result, plain};
