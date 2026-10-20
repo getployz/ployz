@@ -702,7 +702,7 @@ async fn move_one(
 
 /// The Server `id` names, as the snapshot knew it. Proxies report ids the snapshot may
 /// not list any more; those keep their id for a name.
-fn named(known: &[MachineRef], id: &MachineId) -> MachineRef {
+pub(crate) fn named(known: &[MachineRef], id: &MachineId) -> MachineRef {
     known
         .iter()
         .find(|machine| machine.id == *id)

@@ -25,7 +25,7 @@ mod report;
 mod schedule;
 
 pub(crate) use apply::{Outcome, apply_requested};
-pub(crate) use convergence::{Converged, LastIn, Moving, converge};
+pub(crate) use convergence::{Converged, LastIn, Moving, converge, named};
 pub use convergence::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
 };
