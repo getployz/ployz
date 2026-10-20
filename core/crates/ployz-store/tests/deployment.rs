@@ -182,6 +182,18 @@ fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
     result.unwrap_err().code
 }
 
+/// The nodes Deployment `n` marks cancelled: Failed, read Cancelled.
+fn cancelled_nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<String> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|node| node.cancelled)
+        .map(|node| node.node.name().to_owned())
+        .collect()
+}
+
 fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
     store
         .read(who, &ployz_store::DeploymentQuery { id: id(n) })
@@ -1710,6 +1722,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     }),
                     unanswered: false,
                     out_of_memory: None,
+                    cancelled: false,
                 }
             ),
             ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
@@ -2161,19 +2174,279 @@ fn a_cancelled_queued_deployment_never_runs() {
 #[test]
 fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
     let (store, who) = shop();
+    let a = runner("runner-a");
+    let stopped_by = |n: u8, error: serde_json::Value| {
+        admit(&store, &who, n, &[], None).unwrap();
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        assert_eq!(
+            cancel(&store, &who, n).unwrap().status,
+            DeploymentStatus::Cancelling
+        );
+        // Its runner stops it partway and records what ran.
+        let stopped = RunEvidence::Executed {
+            progress: Vec::new(),
+            outcome: Box::new(outcome(json!({
+                "type": "failed", "completed": [operation("web")],
+                "failed": {"type": "operation", "operation": operation("api"), "error": error},
+                "unexecuted": []
+            }))),
+            removed: Vec::new(),
+        };
+        store.record(&id(n), &a, stopped).unwrap();
+        assert_eq!(status(&store, &who, n), DeploymentStatus::Cancelled);
+        assert_eq!(
+            nodes(&store, &who, n),
+            [
+                ("web".to_owned(), NodeStatus::Deployed),
+                ("api".to_owned(), NodeStatus::Failed)
+            ]
+        );
+        cancelled_nodes(&store, &who, n)
+    };
+    assert_eq!(stopped_by(1, json!({"type": "cancelled"})), ["api"]);
+    assert_eq!(changed(&store, &who), ["api"]);
+    assert_eq!(
+        stopped_by(
+            2,
+            json!({
+                "type": "machine", "action": "CreateContainer",
+                "error": {"code": "internal", "message": "no space left on device", "details": {}}
+            })
+        ),
+        Vec::<String>::new(),
+        "work that failed on its own stays failed, even once cancelled"
+    );
+}
+
+fn create_error() -> Value {
+    json!({
+        "type": "machine", "action": "CreateContainer",
+        "error": {"code": "internal", "message": "no space left on device", "details": {}}
+    })
+}
+
+#[test]
+fn a_copy_restored_after_another_service_failed_is_not_cancelled() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    let restored_after = |n: u8, failed: &str| {
+        admit(&store, &who, n, &[], None).unwrap();
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        let error = |service: &str| {
+            if service == "api" {
+                create_error()
+            } else {
+                json!({"type": "cancelled"})
+            }
+        };
+        let unexecuted = if failed == "api" { "web" } else { "api" };
+        let executed = RunEvidence::Executed {
+            progress: RowTracker::default().changes(&progress(&[
+                (
+                    "web",
+                    "alpha",
+                    json!({"type": "failed", "error": error("web")}),
+                ),
+                (
+                    "api",
+                    "alpha",
+                    json!({"type": "failed", "error": error("api")}),
+                ),
+            ])),
+            outcome: Box::new(outcome(json!({
+                "type": "failed", "completed": [],
+                "failed": {"type": "operation", "operation": operation(failed), "error": error(failed)},
+                "unexecuted": [operation(unexecuted)]
+            }))),
+            removed: Vec::new(),
+        };
+        store.record(&id(n), &a, executed).unwrap();
+        assert_eq!(status(&store, &who, n), DeploymentStatus::Failed);
+        let web = rows(&store, &who, n).remove(0);
+        assert_eq!(web.0, "web");
+        assert!(
+            matches!(
+                web.1[0].state,
+                RowState::Failed {
+                    cancelled: false,
+                    ..
+                }
+            ),
+            "nobody cancelled it: {:?}",
+            web.1[0].state
+        );
+        cancelled_nodes(&store, &who, n)
+    };
+    for (n, failed) in [(1, "api"), (2, "web")] {
+        assert!(restored_after(n, failed).is_empty(), "{failed} first");
+    }
+}
+
+#[test]
+fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and_node() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "web"])))
+        .unwrap();
+    cancel(&store, &who, 1).unwrap();
+    let cancelled = json!({"type": "failed", "error": {"type": "cancelled"}});
+    let mut tracker = RowTracker::default();
+    let first = tracker.changes(&progress(&[
+        ("web", "alpha", cancelled.clone()),
+        ("web", "alpha", waiting(5_000)),
+    ]));
+    store
+        .record(&id(1), &a, RunEvidence::Progress(first))
+        .unwrap();
+    let state = &rows(&store, &who, 1)[0].1[0].state;
+    assert!(
+        matches!(
+            state,
+            RowState::Failed {
+                cancelled: true,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    let executed = RunEvidence::Executed {
+        progress: tracker.changes(&progress(&[
+            ("web", "alpha", cancelled),
+            (
+                "web",
+                "alpha",
+                json!({"type": "failed", "error": create_error()}),
+            ),
+        ])),
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [],
+            "failed": {"type": "operation", "operation": operation("web"), "error": {"type": "cancelled"}},
+            "unexecuted": [operation("web")]
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, executed).unwrap();
+    let state = &rows(&store, &who, 1)[0].1[0].state;
+    assert!(
+        matches!(
+            state,
+            RowState::Failed {
+                cancelled: false,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Failed),
+            ("api".to_owned(), NodeStatus::Unchanged)
+        ]
+    );
+    assert!(cancelled_nodes(&store, &who, 1).is_empty());
+}
+
+/// The row state and Node Outcome a Store from before Cancelled decodes, as it
+/// shipped them.
+mod before_cancelled {
+    use std::collections::BTreeMap;
+
+    use ployz_store::{FailedAt, RowPhase};
+    use serde::Deserialize;
+    use serde_json::Value;
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "state", rename_all = "snake_case")]
+    pub enum RowState {
+        Pending,
+        Running {
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            phase: RowPhase,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            serving: bool,
+        },
+        Completed,
+        Failed {
+            reason: String,
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            cause: Vec<String>,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            step: Option<FailedAt>,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            log: Option<Value>,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            unanswered: bool,
+            #[serde(default)]
+            #[expect(dead_code, reason = "decoded as it shipped")]
+            out_of_memory: Option<Value>,
+        },
+        NotAttempted,
+        Unknown,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct RowTransition {
+        #[expect(dead_code, reason = "decoded as it shipped")]
+        pub at: i64,
+        #[serde(flatten)]
+        pub state: RowState,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+    #[serde(rename_all = "snake_case")]
+    pub enum NodeStatus {
+        Pending,
+        Deployed,
+        Removed,
+        Failed,
+        NotAttempted,
+        Unchanged,
+        Unknown,
+    }
+
+    /// The run document, as far as its Node Outcomes.
+    #[derive(Debug, Deserialize)]
+    pub struct Run {
+        #[serde(default)]
+        pub nodes: BTreeMap<String, NodeStatus>,
+    }
+}
+
+#[test]
+fn a_store_from_before_cancelled_reads_the_work_a_cancel_stopped_as_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.db");
+    let (store, who) =
+        shop_in(ConfigStore::open(&format!("sqlite:{}", path.display()), backend::key()).unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
     let a = runner("runner-a");
     store.claim(&id(1), &a).unwrap();
     store
         .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
-    assert_eq!(
-        cancel(&store, &who, 1).unwrap().status,
-        DeploymentStatus::Cancelling
-    );
-    // Its runner stops it partway and records what ran.
-    let stopped = RunEvidence::Executed {
-        progress: Vec::new(),
+    cancel(&store, &who, 1).unwrap();
+    let cancelled = json!({"type": "failed", "error": {"type": "cancelled"}});
+    let mut tracker = RowTracker::default();
+    let stopped = tracker.changes(&progress(&[
+        ("web", "alpha", json!({"type": "completed"})),
+        ("api", "alpha", cancelled),
+    ]));
+    let executed = RunEvidence::Executed {
+        progress: stopped,
         outcome: Box::new(outcome(json!({
             "type": "failed", "completed": [operation("web")],
             "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
@@ -2181,16 +2454,58 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
         }))),
         removed: Vec::new(),
     };
-    store.record(&id(1), &a, stopped).unwrap();
+    store.record(&id(1), &a, executed).unwrap();
     assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
+    assert_eq!(cancelled_nodes(&store, &who, 1), ["api"]);
+    let api = &rows(&store, &who, 1)[1];
+    assert_eq!(api.0, "api");
+    assert!(
+        matches!(
+            api.1[0].state,
+            RowState::Failed {
+                cancelled: true,
+                ..
+            }
+        ),
+        "{:?}",
+        api.1[0].state
+    );
+
+    // A Store rolled back past Cancelled still reads this Deployment, as Failed.
+    let sql = rusqlite::Connection::open(&path).unwrap();
+    let run: String = sql
+        .query_row("SELECT run FROM config_deployment", [], |row| row.get(0))
+        .unwrap();
+    let run: before_cancelled::Run = serde_json::from_str(&run).unwrap();
+    let mut outcomes: Vec<_> = run.nodes.into_values().collect();
+    outcomes.sort();
     assert_eq!(
-        nodes(&store, &who, 1),
+        outcomes,
         [
-            ("web".to_owned(), NodeStatus::Deployed),
-            ("api".to_owned(), NodeStatus::Failed)
+            before_cancelled::NodeStatus::Deployed,
+            before_cancelled::NodeStatus::Failed
         ]
     );
-    assert_eq!(changed(&store, &who), ["api"]);
+    let (state, history): (String, String) = sql
+        .query_row(
+            "SELECT state, history FROM config_deployment_row WHERE service = 'api'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let state: before_cancelled::RowState = serde_json::from_str(&state).unwrap();
+    assert!(
+        matches!(&state, before_cancelled::RowState::Failed { reason, .. } if reason == "Cancelled"),
+        "{state:?}"
+    );
+    let history: Vec<before_cancelled::RowTransition> = serde_json::from_str(&history).unwrap();
+    assert!(
+        matches!(
+            history.last().map(|entry| &entry.state),
+            Some(before_cancelled::RowState::Failed { .. })
+        ),
+        "{history:?}"
+    );
 }
 
 #[test]
@@ -4559,6 +4874,7 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
             }),
             unanswered: false,
             out_of_memory: None,
+            cancelled: false,
         }
     );
     let reserialized = serde_json::to_string(&state).unwrap();
@@ -4969,6 +5285,29 @@ fn a_running_retry_that_applies_a_service_moves_its_queued_deploy_onto_the_retri
         )])
     );
     assert_eq!(claimed.deployment.upload, Some(digested('a')));
+}
+
+#[test]
+fn a_cancelled_queued_deploy_no_longer_chooses_its_upload_as_it_starts() {
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &runner("cli-a")).unwrap();
+    let queued = admit(&store, &who, 4, &["web"], None).unwrap();
+    assert!(queued.chooses_upload_at_start);
+    let cancelled = cancel(&store, &who, 4).unwrap();
+    assert!(
+        !cancelled.chooses_upload_at_start,
+        "a Deployment that will never start chooses nothing as it starts"
+    );
+    assert_eq!(
+        cancelled,
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(4) })
+            .unwrap()
+            .deployment,
+        "the cancel answers what a later read shows"
+    );
 }
 
 #[test]

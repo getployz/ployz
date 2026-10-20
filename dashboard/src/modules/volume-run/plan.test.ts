@@ -7,7 +7,7 @@ import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-
 const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, volumeName: "data", orphan: false });
 const sync = (full = false): PlanInput => ({ kind: "sync", args: { full }, volumeName: "data", orphan: false });
 const remove = (slot: string | null, confirmed: string | null = null): PlanInput =>
-  ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed }, volumeName: "data", orphan: false });
+  ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed, role: "any" }, volumeName: "data", orphan: false });
 const move = (to: string): PlanInput => ({ kind: "move", args: { to }, volumeName: "data", orphan: false });
 const release: PlanInput = { kind: "release", args: {}, volumeName: "data", orphan: false };
 const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, volumeName: "data", orphan: false });

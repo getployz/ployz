@@ -1360,7 +1360,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
         .map(|ployz_core::ServiceOutcome { service, result }| {
             let words = match result {
                 ployz_core::ServiceResult::New => "serves its new copies",
-                ployz_core::ServiceResult::Old => "still serves its old copies",
+                ployz_core::ServiceResult::Old => "not switched to its new copies",
                 ployz_core::ServiceResult::NotStarted => "not started",
                 ployz_core::ServiceResult::Unconfirmed => {
                     "may serve its new copies: the switch was not confirmed"
@@ -1429,7 +1429,7 @@ mod tests {
             service_outcome_lines(&services),
             [
                 "  web: serves its new copies",
-                "  api: still serves its old copies",
+                "  api: not switched to its new copies",
                 "  db: not started",
                 "  worker: may serve its new copies: the switch was not confirmed",
             ]

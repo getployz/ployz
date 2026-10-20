@@ -1,7 +1,7 @@
 //! The canvas word's cases, from the dashboard's node-status tests.
 
 use super::*;
-use Container::{Down, Running, Serving, Stopped};
+use Container::{Down, Idle, Running, Serving, Stopped};
 
 const SEEN: Watch = Watch::Observed { whole: true };
 
@@ -34,7 +34,14 @@ fn running_without_a_passed_healthcheck_is_degraded() {
 
 #[test]
 fn clean_exits_are_not_running_and_any_failure_exit_is_a_crash() {
-    assert_eq!(status(Some(&[Stopped]), SEEN), ServiceStatus::NotRunning);
+    assert_eq!(status(Some(&[Idle]), SEEN), ServiceStatus::NotRunning);
+    assert_eq!(status(Some(&[Idle, Down]), SEEN), ServiceStatus::Crashed);
+}
+
+#[test]
+fn a_stop_on_request_reads_stopped_unless_another_container_crashed() {
+    assert_eq!(status(Some(&[Stopped]), SEEN), ServiceStatus::Stopped);
+    assert_eq!(status(Some(&[Stopped, Idle]), SEEN), ServiceStatus::Stopped);
     assert_eq!(status(Some(&[Stopped, Down]), SEEN), ServiceStatus::Crashed);
 }
 

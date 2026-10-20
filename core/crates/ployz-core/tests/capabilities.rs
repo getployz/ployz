@@ -13,7 +13,7 @@ use ployz_core::{
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
     SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
+    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -101,6 +101,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1"),
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
+        (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -156,6 +157,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.exec.v1",
             "ployz.build.v1",
             "ployz.volume.copy.floor.v1",
+            "ployz.volume.size.shrink.v1",
         ]
     );
     assert_eq!(
@@ -274,6 +276,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.volume.size.set.v1",
         "gated: a caller checks the contract first and refuses the resize, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.volume.size.shrink.v1",
+        "gated: a caller checks the contract on every Machine holding a copy and refuses the shrink, naming the Server whose daemon lacks it",
     ),
 ];
 
