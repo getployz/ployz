@@ -5,7 +5,12 @@ import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { requirements } from "#/modules/runtime/daemon-compat";
-import { makeOrganizationRuntimeLayer, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import {
+  CLI_CLUSTER_DEADLINE_MS,
+  makeOrganizationRuntimeLayer,
+  RUNTIME_FRAME_TIMEOUT_MS,
+  withClusterDeadline,
+} from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import {
@@ -69,7 +74,11 @@ it.effect("a Cluster that never sends a frame fails as one to wait out once the 
   }),
 );
 
-it.effect("a release whose two reads each take 35 seconds is reported as not answering at 45 seconds, inside the CLI's request", () =>
+const volume = { environmentId: "e1", volumeName: "data", dockerVolume: "production_data", refquotaBytes: 0 };
+const release = { volumeId: "v1", environment: { project: "web", environment: "production" }, kind: "release", args: {} } as const;
+const unanswered = { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } as const;
+
+it.effect("a release whose two reads each take 35 seconds is reported as not answering at the request's 50-second deadline", () =>
   Effect.gen(function* () {
     // One Server holding only a mirror: the release reads the members, then which slot keeps the Service.
     const machine = runtimeWatchMachineFixture("a".repeat(32), "box-1");
@@ -103,10 +112,9 @@ it.effect("a release whose two reads each take 35 seconds is reported as not ans
       Layer.merge(Layer.succeed(CloudStore, { open: Effect.die("the plan read the Store") })),
       Layer.merge(Layer.succeed(Database, undefined as never)),
     );
-    const volume = { environmentId: "e1", volumeName: "data", dockerVolume: "production_data", refquotaBytes: 0 };
-    const planning = yield* planOnCluster("org-1", volume, {
-      volumeId: "v1", environment: { project: "web", environment: "production" }, kind: "release", args: {},
-    }, null).pipe(Effect.provide(layer), Effect.forkChild);
+    const planning = yield* planOnCluster("org-1", volume, release, null).pipe(
+      withClusterDeadline(CLI_CLUSTER_DEADLINE_MS), Effect.provide(layer), Effect.forkChild,
+    );
     // The members read connects after 28 seconds and frames 7 seconds later.
     const connectMembers = yield* Queue.take(dials);
     yield* TestClock.adjust("28 seconds");
@@ -114,13 +122,47 @@ it.effect("a release whose two reads each take 35 seconds is reported as not ans
     const frameMembers = yield* Queue.take(watches);
     yield* TestClock.adjust("7 seconds");
     frameMembers();
-    // The keptOn read dials at 35 seconds; the deadline ends it at 45, before its own 35 seconds are up.
+    // The keptOn read dials at 35 seconds; the deadline ends it at 50, before its own 35 seconds are up.
     yield* Queue.take(dials);
-    yield* TestClock.adjust("10 seconds");
+    yield* TestClock.adjust("15 seconds");
     yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
-    const settled = planning.pollUnsafe();
-    assert.deepStrictEqual(settled, Exit.succeed({
-      ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null },
-    }));
+    assert.deepStrictEqual(planning.pollUnsafe(), Exit.succeed(unanswered));
+  }),
+);
+
+it.effect("a connections query held past the deadline is not interrupted, and the plan then refuses without dialing", () =>
+  Effect.gen(function* () {
+    const querying = yield* Deferred.make<void>();
+    const answer = yield* Deferred.make<void>();
+    let interrupted = false;
+    let dials = 0;
+    const layer = makeOrganizationRuntimeLayer(
+      () => Deferred.succeed(querying, undefined).pipe(
+        Effect.andThen(Deferred.await(answer)),
+        Effect.onInterrupt(() => Effect.sync(() => { interrupted = true; })),
+        Effect.as({ kind: "ready" as const, generation: "current", connections }),
+      ),
+      noPairingChanges,
+    ).pipe(
+      Layer.provide(makePloyzLayer({
+        connect: async () => {
+          dials += 1;
+          return asTestDouble<Client>()({ close: async () => {} });
+        },
+      })),
+      Layer.merge(Layer.succeed(CloudStore, { open: Effect.die("the plan read the Store") })),
+      Layer.merge(Layer.succeed(Database, undefined as never)),
+    );
+    const planning = yield* planOnCluster("org-1", volume, release, null).pipe(
+      withClusterDeadline(CLI_CLUSTER_DEADLINE_MS), Effect.provide(layer), Effect.forkChild,
+    );
+    yield* Deferred.await(querying);
+    yield* TestClock.adjust("55 seconds");
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    assert.isFalse(interrupted);
+    assert.isUndefined(planning.pollUnsafe());
+    yield* Deferred.succeed(answer, undefined);
+    assert.deepStrictEqual(yield* Fiber.join(planning), unanswered);
+    assert.strictEqual(dials, 0);
   }),
 );
