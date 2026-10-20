@@ -526,6 +526,30 @@ async fn a_shrink_on_a_mirror_lowers_the_copy_then_the_slot_and_a_resend_writes_
 }
 
 #[tokio::test]
+async fn a_mirror_shrink_takes_its_floor_from_what_the_copy_references() {
+    let test = TestDir::new();
+    let (socket, server) = mirror(&test, USABLE_POOL);
+    set_property(&test, SLOT_FS, "referenced", "1900000000");
+
+    let below = post(&socket, "/Volume.Size.Set", shrink(2 * GIB)).await;
+    assert_eq!(refusal(&below), "below_floor", "{below}");
+    assert_eq!(
+        below.pointer("/Err/details/floor_bytes").unwrap(),
+        2_900_000_000u64
+    );
+    assert!(refquota_sets(&test).is_empty());
+
+    let reply = post(&socket, "/Volume.Size.Set", shrink(3_000_000_000)).await;
+    server.abort();
+
+    assert_eq!(reply, json!({"Ok": {"bound_bytes": 3_000_000_000u64}}));
+    assert_eq!(
+        property(&test, SLOT_FS, "refquota").as_deref(),
+        Some("3000000000")
+    );
+}
+
+#[tokio::test]
 async fn a_slot_with_no_copy_shrinks_to_the_floor_of_an_empty_volume() {
     let test = TestDir::new();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror"]);
