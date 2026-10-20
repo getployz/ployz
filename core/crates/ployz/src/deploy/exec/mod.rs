@@ -954,7 +954,7 @@ async fn restore_group<C: MachineOperations>(
         let why = if blocked.contains(&old.machine_id) {
             Some("its new copy may be serving".to_owned())
         } else {
-            let restore = restore_old(client, old, spec, rows, &cleanup).await;
+            let restore = restore_old(client, progress, old, spec, rows, &cleanup).await;
             if restore.may_run {
                 may_run.insert(old.machine_id);
             }
@@ -963,7 +963,11 @@ async fn restore_group<C: MachineOperations>(
                     restored = true;
                     None
                 }
-                RestoreAttempt::NotServing => None,
+                // `restore_old` removed it, or said why it could not.
+                RestoreAttempt::NotServing
+                | RestoreAttempt::Failed {
+                    error: ExecutionError::NewerServing { .. },
+                } => None,
                 RestoreAttempt::LeftHeld => Some("another Deploy holds it".to_owned()),
                 RestoreAttempt::Failed { error } => Some(error.to_string()),
             }
@@ -1982,6 +1986,13 @@ impl<'a> Rows<'a> {
                     away,
                 )
             }
+            Left::Older(left) => {
+                let (reason, away) = self.explain(copy, *left);
+                let newer = ExecutionError::NewerServing {
+                    service: copy.service.clone(),
+                };
+                (format!("{newer}, and removing it failed: {reason}"), away)
+            }
         }
     }
 
@@ -2018,6 +2029,8 @@ enum Left {
     Failed(RpcError),
     /// This run Held the copy and could not bring it back In, for this reason.
     NotRestored(Box<Left>, String),
+    /// A newer copy is In, and removing this one stopped for this reason.
+    Older(Box<Left>),
     DeployFailed,
 }
 
@@ -2858,12 +2871,34 @@ async fn leave_unstopped<C: MachineOperations>(
     let not_restored = match cleanup::bring_in(client, copy, spec, Some(rows.run.clone())).await {
         Ok(cleanup::BroughtIn::In) => None,
         Ok(cleanup::BroughtIn::NotIn { .. }) => Some("it failed health".to_owned()),
+        Ok(cleanup::BroughtIn::Refused(refusal))
+            if refusal.reason == ContainerRefusalReason::OlderThanIn =>
+        {
+            let cleanup = CancellationToken::new();
+            return retire_older(client, progress, copy, rows, &cleanup).await;
+        }
         Ok(cleanup::BroughtIn::Refused(refusal)) => Some(refusal.message),
         Err(error) => Some(error.message),
     };
     match not_restored {
         None => rows.leave_running(progress, copy, left),
         Some(why) => rows.leave_running(progress, copy, Left::NotRestored(Box::new(left), why)),
+    }
+}
+
+/// The owner refuses In to a copy older than one already In, so this copy can
+/// never serve again and leaves for good.
+async fn retire_older<C: MachineOperations>(
+    client: &C,
+    progress: &Progress,
+    copy: &cleanup::Copy,
+    rows: &Rows<'_>,
+    cancellation: &CancellationToken,
+) {
+    let retired =
+        cleanup::retire(client, copy, false, AnonymousVolumes::Remove, cancellation).await;
+    if let Some(left) = left_unless_done(retired) {
+        rows.leave_running(progress, copy, Left::Older(Box::new(left)));
     }
 }
 
@@ -2899,7 +2934,7 @@ async fn compensate<C: MachineOperations>(
     let compensation = match held_old {
         Some((spec, old)) => ReplacementCompensation::OldStopped {
             stop_new_container,
-            restore_old_container: restore_old(client, &old, &spec, rows, cancellation)
+            restore_old_container: restore_old(client, progress, &old, &spec, rows, cancellation)
                 .await
                 .attempt,
         },
@@ -2926,6 +2961,7 @@ struct Restore {
 
 async fn restore_old<C: MachineOperations>(
     client: &C,
+    progress: &Progress,
     old: &cleanup::Copy,
     spec: &ResolvedServiceSpec,
     rows: &Rows<'_>,
@@ -2959,6 +2995,17 @@ async fn restore_old<C: MachineOperations>(
             if refusal.reason == ployz_core::ContainerRefusalReason::HeldByOtherRun =>
         {
             return ended(RestoreAttempt::LeftHeld, false);
+        }
+        Ok(cleanup::BroughtIn::Refused(refusal))
+            if refusal.reason == ContainerRefusalReason::OlderThanIn =>
+        {
+            retire_older(client, progress, old, rows, cancellation).await;
+            return ended(
+                failed(ExecutionError::NewerServing {
+                    service: old.service.clone(),
+                }),
+                false,
+            );
         }
         Ok(cleanup::BroughtIn::Refused(refusal)) => {
             return ended(
