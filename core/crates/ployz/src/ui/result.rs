@@ -284,6 +284,22 @@ impl Gaps {
         }
     }
 
+    /// Add a Machine that stopped answering partway, warning by name the first time.
+    pub(crate) fn stopped(&mut self, machine_id: MachineId) {
+        if self.omitted.contains(&machine_id) {
+            return;
+        }
+        self.omitted.push(machine_id);
+        flag(&self.stopped_answering(&machine_id));
+    }
+
+    pub(crate) fn stopped_answering(&self, machine_id: &MachineId) -> String {
+        format!(
+            "{} stopped answering; its lines are missing from here on.",
+            self.name(machine_id)
+        )
+    }
+
     fn is_complete(&self) -> bool {
         self.failures.is_empty() && self.omitted.is_empty()
     }

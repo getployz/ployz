@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
+  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shippedService, shownValue, uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -123,6 +123,17 @@ it("words a memory limit in the unit it was likely given", () => {
   expect(web?.rows.map((row) => [row.label, row.currentValue, row.newValue])).toEqual([
     ["Memory limit", "192 MiB", "0.5 GB"],
     ["Memory limit", "", "1 GiB"],
+  ]);
+});
+
+it("words a CPU limit in vCPUs", () => {
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
+    { path: "web.cpuLimit", kind: "update", before: 0.5, after: 2, canRestore: true, row: null },
+    { path: "web.cpuLimit", kind: "add", before: null, after: 1, canRestore: true, row: null },
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.currentValue, row.newValue])).toEqual([
+    ["0.5 vCPUs", "2 vCPUs"],
+    ["", "1 vCPU"],
   ]);
 });
 
@@ -384,4 +395,13 @@ it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and
   expect(showCancelling({ status: "running", in_flight: true }, true)).toEqual({ status: "cancelling", in_flight: true });
   expect(showCancelling({ status: "queued", in_flight: true }, false)).toEqual({ status: "queued", in_flight: true });
   expect(showCancelling({ status: "applied", in_flight: false }, true)).toEqual({ status: "applied", in_flight: false });
+});
+
+it("counts a Service as shipped by a full Deploy, one that names it, and one that ships it because a named one references it", () => {
+  const narrowed = { services: ["web"], ships: ["web", "db"] };
+  expect(shippedService(narrowed, "web")).toBe(true);
+  expect(shippedService(narrowed, "db")).toBe(true);
+  expect(shippedService(narrowed, "api")).toBe(false);
+  expect(shippedService({ services: [], ships: ["web"] }, "api")).toBe(true);
+  expect(shippedService({ services: ["web"], ships: [] }, "web")).toBe(true);
 });

@@ -48,7 +48,6 @@ BAKE_NAME = re.compile(re.escape(BAKED) + "[0-9a-f]{10}")
 # Bakes this host made; another host or person may share the account and the name prefix.
 BAKES = REGISTRY / "bakes.ledger"
 BAKE = """
-ufw disable >/dev/null
 printf '%s\\n' "$@" | xargs -P8 -n1 docker pull -q >/dev/null
 caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
 caddy_version=${caddy_version%% *}
@@ -61,6 +60,8 @@ command -v zstd >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y 
     { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null; }
 sync
 """
+# A bare host keeps Boat's UFW, which drops inbound IPv6, the only address a sandbox serves the internet on.
+OPEN_WEB = "ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"
 # A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
 # port 22 in use. Kill only listeners, so open SSH sessions survive.
 LISTENER = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
@@ -792,6 +793,7 @@ class Provider:
             self.install_key(node, sandbox)
         self.wait_agent(node)
         if self.run.get("bare"):
+            self.exec(node, ["sh", "-ec", OPEN_WEB])
             if self.run.get("distro") == "debian-12":
                 key = (self.private / "id_ed25519.pub").read_text().strip()
                 self.exec(node, ["bash", "-ec", GUEST, "guest", key], timeout=900)
@@ -806,6 +808,8 @@ class Provider:
 main=$(systemctl show -p MainPID --value ssh.service)
 for pid in $(pgrep -f {LISTENER}); do [ "$pid" = "$main" ] || kill "$pid"; done
 if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
+# Boat turns UFW back on in every clone, so the bake cannot keep it off.
+ufw disable >/dev/null
 {bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
         if POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not fingerprints(self.run["image"]).exists():
             # The first fresh clone of a bake records what reset must return every later sandbox to.

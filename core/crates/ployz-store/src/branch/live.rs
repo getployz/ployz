@@ -134,14 +134,7 @@ pub(crate) fn lowering(
     let Some(row) = row(tx, id)? else {
         return Ok(Lowering::default());
     };
-    let deployed = tx
-        .query(
-            "SELECT node_id FROM config_applied WHERE environment_id = ?1",
-            &[id.as_str().into()],
-        )?
-        .iter()
-        .map(|row| row.text(0).map(str::to_owned))
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let deployed = super::setup::deployed(tx, id)?;
     let setup = saved
         .services
         .iter()

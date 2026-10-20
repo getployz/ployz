@@ -18,8 +18,8 @@ FLEET_TOKEN_FILE=${PLOYZ_TEST_ROOT:-}/etc/ployz/fleet-token
 # Unset first, so a name exported by the caller doesn't carry the token into ployz's environment.
 unset FLEET_TOKEN TTY
 TTY=${PLOYZ_TEST_ROOT:-}/dev/tty
-FLEET_TOKEN=${PLOYZ_ENROLL_TOKEN:-}
-unset PLOYZ_ENROLL_TOKEN
+FLEET_TOKEN=${PLOYZ_FLEET_TOKEN:-}
+unset PLOYZ_FLEET_TOKEN
 # Same grammar as scripts/release-tag.sh; this file is fetched alone, so it cannot source it.
 RELEASE_NUMBER='(0|[1-9][0-9]{0,18})'
 STABLE_VERSION="$RELEASE_NUMBER\.$RELEASE_NUMBER\.$RELEASE_NUMBER"
@@ -127,7 +127,7 @@ is_fleet_token() {
 # The script itself arrives on stdin, so the token is read from the terminal, never echoed.
 read_fleet_token() {
     tty_mode=$(stty -g 2>/dev/null < "$TTY") ||
-        error "No terminal to read the Fleet Token from. Set PLOYZ_ENROLL_TOKEN in the root environment instead, as cloud-init does."
+        error "No terminal to read the Fleet Token from. Set PLOYZ_FLEET_TOKEN in the root environment instead, as cloud-init does."
     trap 'stty "$tty_mode" < "$TTY"; exit 130' HUP INT TERM
     stty -echo < "$TTY" || error "Could not turn off echo on the terminal, so the Fleet Token isn't read from it."
     # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
@@ -152,11 +152,11 @@ check_in() {
         "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE" --token-stdin
 }
 
-case "$ENROLL:$FLEET_TOKEN" in
-    1:* | :pflt_*) check_in ;;
-    :) install_cli ;;
-    *)
-        echo "PLOYZ_ENROLL_TOKEN doesn't start with pflt_, so this installs only the CLI." >&2
-        install_cli
-        ;;
-esac
+if [ -n "$ENROLL$FLEET_TOKEN" ]; then
+    check_in
+else
+    case "${PLOYZ_ENROLL_TOKEN:-}" in
+        pflt_*) error "PLOYZ_ENROLL_TOKEN holds a Fleet Token. Set PLOYZ_FLEET_TOKEN instead; PLOYZ_ENROLL_TOKEN is the token ployz server add reads." ;;
+    esac
+    install_cli
+fi
