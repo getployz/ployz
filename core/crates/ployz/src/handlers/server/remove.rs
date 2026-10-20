@@ -1,6 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, Machine, MachineId, MachineTarget, RpcError, RpcErrorCode, op,
+    DescribeContractRequest, Machine, MachineId, MachineTarget, QualifiedService, RpcError,
+    RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -149,15 +150,17 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 )));
             }
         }
+        let last = machines.len() == 1;
         let services = services_on(&selected.id, &live);
-        let replicated_services = replicated_services_on(&selected.id, &live);
+        let replicated_services = left_behind(replicated_services_on(&selected.id, &live), last);
         Ok::<_, Error>((cloud, observed, services, replicated_services))
     })?;
-    if !services.is_empty() {
+    let movable = left_behind(services.clone(), machines.len() == 1);
+    if !movable.is_empty() {
         crate::ui::warn(format!(
             "Server {} is running Services: {}.",
             selected.name,
-            super::super::joined(&services)
+            super::super::joined(&movable)
         ));
         crate::ui::hint(&Hint::Next(format!("ployz server drain {}", selected.name)));
     }
@@ -410,6 +413,18 @@ async fn cloud_manages(
 /// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
 /// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
 /// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
+/// The Services a Drain could still move off the Server: none from the last one, and never
+/// Ployz's own, which run on every Server.
+fn left_behind(services: Vec<QualifiedService>, last: bool) -> Vec<QualifiedService> {
+    if last {
+        return Vec::new();
+    }
+    services
+        .into_iter()
+        .filter(|service| !service.namespace.is_reserved())
+        .collect()
+}
+
 fn volume_labels(root: &ArgMatches, docker: &[&str]) -> VolumeLabels {
     let mut owners = Vec::new();
     if docker.is_empty() {
@@ -530,8 +545,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, machine_removal_refusal, qualified_labels, replicated_services_on,
-        reset_removal_refusal, services_on,
+        VolumeOwner, left_behind, machine_removal_refusal, qualified_labels,
+        replicated_services_on, reset_removal_refusal, services_on,
     };
     use crate::ui::Hint;
 
@@ -649,6 +664,18 @@ mod tests {
             services_on(&machine_id('a'), &live),
             [QualifiedService::parse("app/api").unwrap()]
         );
+    }
+
+    #[test]
+    fn only_services_a_drain_can_move_are_left_behind() {
+        let services = ["app/api", "ployz-system/ingress"]
+            .map(|service| QualifiedService::parse(service).unwrap())
+            .to_vec();
+        assert_eq!(
+            left_behind(services.clone(), false),
+            [QualifiedService::parse("app/api").unwrap()]
+        );
+        assert!(left_behind(services, true).is_empty());
     }
 
     #[test]

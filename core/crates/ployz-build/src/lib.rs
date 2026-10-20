@@ -72,6 +72,15 @@ pub fn builder_name() -> String {
     format!("ployz-{}", rustix::process::getuid().as_raw())
 }
 
+/// Whether `volume` is the build cache of a Ployz builder, any user's: Ployz's own, not data.
+#[must_use]
+pub fn is_builder_cache(volume: &str) -> bool {
+    volume
+        .strip_prefix("buildx_buildkit_ployz-")
+        .and_then(|rest| rest.strip_suffix("_state"))
+        .is_some_and(|node| !node.is_empty() && node.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 /// One Build's captured inputs, ready to execute.
 ///
 /// Paths point into the caller's private capture; nothing here is read from

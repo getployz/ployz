@@ -1628,14 +1628,10 @@ async fn data_loss_on_machine(
             .value
             .volumes
             .into_iter()
-            .map(|volume| DataLoss::DockerVolume { id: volume.id })
-            .chain(
-                volumes
-                    .value
-                    .failures
-                    .into_iter()
-                    .map(|failure| DataLoss::DockerVolume { id: failure.id }),
-            )
+            .map(|volume| volume.id)
+            .chain(volumes.value.failures.into_iter().map(|failure| failure.id))
+            .filter(|id| !ployz_build::is_builder_cache(id.name.as_str()))
+            .map(|id| DataLoss::DockerVolume { id })
             .collect(),
     })
 }
