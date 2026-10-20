@@ -2,6 +2,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { serverUpgradeLine, type LatestUpgrade } from "#/modules/server-upgrade/server-upgrade";
+import { ROLE_CHECKING, type RoleGate } from "#/modules/organization/members.queries";
+import { UPGRADE_REFUSED } from "#/modules/server-upgrade/server-upgrade.hooks";
 import { ServerUpgradeRow } from "./server-upgrade-section";
 
 afterEach(cleanup);
@@ -16,13 +18,14 @@ const row = (input: {
   pendingFrom?: string | null;
   automatic?: boolean;
   rolloutRunning?: boolean;
+  gate?: RoleGate;
 }) => {
   const onUpgrade = vi.fn();
   const line = serverUpgradeLine({
     version: "0.2.1", status: input.status ?? "online", release: "0.2.2", latest: input.latest ?? null,
     pendingFrom: input.pendingFrom, now: Date.now(), automatic: input.automatic ?? true, rolloutRunning: input.rolloutRunning ?? false,
   });
-  render(<ServerUpgradeRow version="0.2.1" line={line} onUpgrade={onUpgrade} />);
+  render(<ServerUpgradeRow version="0.2.1" line={line} gate={input.gate ?? { allowed: true, reason: undefined }} onUpgrade={onUpgrade} />);
   return onUpgrade;
 };
 const description = () => screen.getByText("0.2.1").parentElement?.textContent;
@@ -32,6 +35,23 @@ it("shows the version and offers the release", () => {
   expect(description()).toContain("0.2.2 is out");
   fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
   expect(onUpgrade).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  { gate: { allowed: false, reason: UPGRADE_REFUSED }, title: UPGRADE_REFUSED },
+  { gate: { allowed: false, reason: ROLE_CHECKING }, title: ROLE_CHECKING },
+  { gate: { allowed: true, reason: undefined }, title: null },
+])("lets only a role that may upgrade press Upgrade or Try again, and says why not ($title)", ({ gate: roleGate, title }) => {
+  const disabled = !roleGate.allowed;
+  const gate = (name: string) => {
+    const button = screen.getByRole<HTMLButtonElement>("button", { name });
+    return [button.disabled, button.getAttribute("title")];
+  };
+  row({ gate: roleGate });
+  expect(gate("Upgrade")).toEqual([disabled, title]);
+  cleanup();
+  row({ gate: roleGate, latest: failed() });
+  expect(gate("Try again")).toEqual([disabled, title]);
 });
 
 it("reads Upgrading to the release once clicked, with no button", () => {

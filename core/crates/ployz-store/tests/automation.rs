@@ -195,6 +195,7 @@ fn saved_loss_of(orphaned: bool) -> (ConfigStore, Actor) {
             &ployz_store::CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),

@@ -28,7 +28,14 @@ import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modu
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import {
+  ClusterOutOfTime,
+  clusterRead,
+  OrganizationRuntime,
+  PLAN_CLUSTER_BUDGET_MS,
+  RUNTIME_FRAME_TIMEOUT_MS,
+  withClusterBudget,
+} from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
@@ -467,7 +474,26 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   if (pending !== null && input.kind !== "delete_mirror" && refusedWhileOwed(input, pending)) {
     return { ok: false, refusal: yield* namedOwedRefusal(pending) } satisfies VolumeRunPlan;
   }
-  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input).pipe(Effect.option);
+  return yield* planOnCluster(organizationId, volume, input, pending);
+});
+
+/** A read's failure as none, except the plan running out of Cluster time, which refuses the whole plan. */
+const answered = <A, E, R>(read: Effect.Effect<A, E, R>) => read.pipe(
+  Effect.map(Option.some),
+  Effect.catch((error) => error instanceof ClusterOutOfTime ? Effect.fail(error) : Effect.succeedNone),
+);
+
+/**
+ * The rest of a plan, read off the copies the Cluster reports. Its Cluster reads share one budget, so a plan that opens
+ * two sessions still answers inside the CLI's request, and one that runs out of time says the Servers aren't answering.
+ */
+export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
+  organizationId: string,
+  volume: ResolvedVolume,
+  input: PlanRequest,
+  pending: Owed | null,
+) {
+  const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
   if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
@@ -485,7 +511,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   const verb = VERBS[input.kind];
   const { phase } = planned;
   if (phase.kind === "landed") {
-    const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.option);
+    const source = yield* answered(keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)));
     if (Option.isNone(source)) return { ok: false, refusal: unanswered } satisfies VolumeRunPlan;
     if (source.value === null) {
       return { ok: false, refusal: storeRefusal(alreadyOn(volume.volumeName, phase.target.machine.name)) } satisfies VolumeRunPlan;
@@ -493,7 +519,9 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const from = phase.kind === "release" ? phase.from : null;
   const source = from?.kind === "slots"
-    ? yield* keptOn(organizationId, volume.dockerVolume, from.slots.map((member) => member.machine)).pipe(Effect.map((kept) => kept?.machine.id ?? null), Effect.option)
+    ? yield* answered(keptOn(organizationId, volume.dockerVolume, from.slots.map((member) => member.machine)).pipe(
+      Effect.map((kept) => kept?.machine.id ?? null),
+    ))
     : Option.some(null);
   const release = releasePlan(from, source);
   const effects = phaseEffects(volume, phase, release.forgets);
@@ -507,7 +535,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
   const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
   return { ok: true, volume, asked, input: pinned } satisfies VolumeRunPlan;
-});
+}, Effect.catchTag("ClusterOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies VolumeRunPlan)), withClusterBudget(PLAN_CLUSTER_BUDGET_MS));
 
 const owedTarget = Effect.fn("VolumeRun.owedTarget")(function* (pending: Owed, members: readonly Member[]) {
   return members.find((member) => member.machine.id === pending.current)?.machine
@@ -714,7 +742,7 @@ export const holdDeployLane = Effect.fn("VolumeRun.holdDeployLane")(function* (c
 /** The Machines the Cluster names now; none when it does not answer. */
 export const namedMachines = Effect.fn("VolumeRun.namedMachines")(function* (organizationId: string) {
   const frame = yield* openSession(organizationId).pipe(
-    Effect.flatMap((session) => session.watchFirstFrame(5_000)),
+    Effect.flatMap((session) => session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead)),
     Effect.option,
   );
   return Option.match(frame, {
@@ -1057,7 +1085,7 @@ export const DRAIN_MS = 3_000;
 
 const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (organizationId: string, dockerVolume: string) {
   const session = yield* openSession(organizationId);
-  const frame = yield* session.watchFirstFrame(5_000);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   return frame.containers.filter((container) =>
     container.kind === "service_container"
     && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
@@ -1232,7 +1260,7 @@ const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; 
  */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
   const session = yield* openSession(organizationId);
-  const frame = yield* session.watchFirstFrame(5_000);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
   const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
@@ -1244,6 +1272,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     );
     const floorless = run !== undefined && serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.volumeFloor) === false;
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
+      clusterRead,
       Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
         ? lacks(requirements.volumeFloor.capability)
         : Effect.succeed<Member>({

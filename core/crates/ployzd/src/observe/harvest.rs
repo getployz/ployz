@@ -32,8 +32,8 @@ use super::{
     docker_file_age,
     frame::{self, DamageScan},
     layout::{
-        ContainerKind, ContainerMeta, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason, LINKING_FILE,
-        LogFileName, META_FILE, SCANNED_FILE, StoreRoot, create_private_dir,
+        ContainerKind, ContainerMeta, EXITS_FILE, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason,
+        LINKING_FILE, LogFileName, META_FILE, RunExit, SCANNED_FILE, StoreRoot, create_private_dir,
     },
     metrics::{
         sampler,
@@ -581,7 +581,28 @@ impl Harvester {
         let state = found.and_then(|inspected| inspected.state.as_ref());
         let stop_signal = found.and_then(stop_signal);
         for exit in exits {
-            self.record(exit.settle(state, stop_signal));
+            let marker = exit.settle(state, stop_signal);
+            self.keep_exit(&marker);
+            self.record(marker);
+        }
+    }
+
+    /// Keeps the exit beside the container's logs, which hold every run.
+    /// A container the store does not hold has no directory to keep it in.
+    fn keep_exit(&self, marker: &MetricMarker) {
+        let MarkerKind::Exit { exit_code, oom, .. } = marker.kind else {
+            return;
+        };
+        let id = marker.container_id;
+        let exit = RunExit {
+            ts: marker.ts,
+            exit_code,
+            oom_killed: oom,
+        };
+        if let Err(error) = append_line(&self.store.container(&id).join(EXITS_FILE), &exit)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(container = %id, %error, "cannot keep a run's exit for history");
         }
     }
 
@@ -1627,19 +1648,23 @@ fn close_removed_container(store_dir: &Path, now: i64) -> io::Result<Option<Gap>
     Ok(Some(gap))
 }
 
-/// Appends one line to `gaps.jsonl`. A line an earlier append left unfinished
+fn append_gap(store_dir: &Path, gap: &Gap) -> io::Result<()> {
+    append_line(&store_dir.join(GAPS_FILE), gap)
+}
+
+/// Appends one JSON line to `path`. A line an earlier append left unfinished
 /// is cut off first, and a failed append is cut back off, so every line the
 /// file ends up with is whole.
-fn append_gap(store_dir: &Path, gap: &Gap) -> io::Result<()> {
+fn append_line(path: &Path, value: &impl Serialize) -> io::Result<()> {
     use std::{io::Read as _, os::unix::fs::OpenOptionsExt as _};
-    let mut line = serde_json::to_vec(gap).map_err(io::Error::other)?;
+    let mut line = serde_json::to_vec(value).map_err(io::Error::other)?;
     line.push(b'\n');
     let mut file = fs::OpenOptions::new()
         .create(true)
         .read(true)
         .append(true)
         .mode(0o600)
-        .open(store_dir.join(GAPS_FILE))?;
+        .open(path)?;
     let mut recorded = Vec::new();
     file.read_to_end(&mut recorded)?;
     let whole = recorded
@@ -2880,6 +2905,70 @@ mod tests {
                 (Some(&*at(1)), Some(&*at(5)), Some(137), true)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn history_shows_every_oom_kill_of_a_container_docker_keeps_restarting() {
+        let host = host().with_machine();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        let service = ("ployz.service.id", SERVICE_ID);
+        for (started, previous) in [(1, None), (4, Some(3))] {
+            let before = previous.map_or_else(
+                || self::running(started),
+                |finished| running_after(started, finished),
+            );
+            let harvester = &mut running.harvester;
+            harvester.on_inspected(id, inspected(&before));
+            harvester.on_docker_event(event("oom", T0 + started + 1, &[service]));
+            harvester.on_docker_event(event(
+                "die",
+                T0 + started + 2,
+                &[service, ("exitCode", "137")],
+            ));
+            running.settle_exits(|| inspected(&restarting(started, started + 2, 137, true)));
+            running
+                .harvester
+                .on_docker_event(event("start", T0 + started + 3, &[service]));
+        }
+        running
+            .harvester
+            .on_inspected(id, inspected(&running_after(7, 6)));
+
+        let query = super::super::query::Query::new(ployz_core::LogHistoryRequest {
+            namespace: Some("default".into()),
+            limit: 100,
+            ..ployz_core::LogHistoryRequest::default()
+        })
+        .unwrap();
+        let page = super::super::query::page(
+            &host.store,
+            &query,
+            &super::super::query::Bounds::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let exits: Vec<_> = page
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let ployz_core::HistoryRow::Exit {
+                    ts,
+                    exit_code,
+                    oom_killed,
+                    ..
+                } = row
+                else {
+                    return None;
+                };
+                Some((*ts, *exit_code, *oom_killed))
+            })
+            .collect();
+        assert_eq!(
+            exits,
+            [(T0 + 3, Some(137), true), (T0 + 6, Some(137), true)]
+        );
     }
 
     #[tokio::test]
