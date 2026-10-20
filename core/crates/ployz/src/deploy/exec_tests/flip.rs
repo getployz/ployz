@@ -175,13 +175,21 @@ async fn a_newer_in_copy_fails_the_deploy_naming_the_newer_deploy_and_removes_th
             services: ended(&[("api", ServiceResult::Old)]),
         }
     );
-    let shown = crate::ui::plain(&crate::deploy::report::failure(&outcome, Vec::new()));
+    let failure = crate::deploy::report::failure(&outcome, Vec::new());
+    let shown = crate::ui::plain(&failure);
     assert_eq!(
         shown.lines().next(),
         Some("error: api: A newer deploy is already serving app/api."),
         "{shown}"
     );
     assert!(!shown.contains("start"), "{shown}");
+    assert_eq!(failure.report().code, RpcErrorCode::Conflict);
+    assert_eq!(
+        failure
+            .diagnostic()
+            .and_then(|diagnostic| diagnostic.failed_machine),
+        None
+    );
     assert!(client.brought_in().is_empty());
     assert_eq!(client.rotation(&newer), Some(CopyRotation::In));
     client.assert_done();
