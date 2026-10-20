@@ -1216,6 +1216,28 @@ mod tests {
     }
 
     #[test]
+    fn a_staged_config_mount_reads_by_its_config_name() {
+        let mount = |config_name: Option<&str>| {
+            changed(
+                &serde_json::from_value(json!({
+                    "path": "web.configs.@a18f32f9-1b2c-4d3e-8f40-5a6b7c8d9e0f",
+                    "configName": config_name, "kind": "add", "canRestore": true,
+                    "before": null, "after": "/etc/sentry",
+                }))
+                .unwrap(),
+            )
+        };
+        assert_eq!(
+            mount(Some("sentry")),
+            [r#"web.configs.sentry: null → "/etc/sentry""#]
+        );
+        assert_eq!(
+            mount(None),
+            [r#"web.configs.@a18f32f9-1b2c-4d3e-8f40-5a6b7c8d9e0f: null → "/etc/sentry""#]
+        );
+    }
+
+    #[test]
     fn a_staged_memory_limit_reads_with_its_unit() {
         let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
             "path": "web.memLimit", "kind": "update", "canRestore": true,
