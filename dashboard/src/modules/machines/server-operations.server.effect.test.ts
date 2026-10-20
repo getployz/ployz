@@ -1,6 +1,6 @@
 import type { Client, Connection, MachineId } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import { planRemove, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
@@ -49,13 +49,11 @@ it.effect("a Server whose connection comes up after 6 seconds is planned, not re
 
 it.effect("Servers that refuse the connection are reported as not answering", () =>
   Effect.gen(function* () {
-    const exit = yield* planRemove("org-1", machineId, null).pipe(
+    const error = yield* planRemove("org-1", machineId, null).pipe(
       Effect.provide(runtime(async () => { throw new Error("connection refused"); })),
-      Effect.exit,
+      Effect.flip,
     );
-    assert.isTrue(Exit.isFailure(exit));
-    const error = Exit.isFailure(exit) ? exit.cause.reasons[0] : undefined;
-    assert.isTrue(error?._tag === "Fail" && error.error instanceof Conflict && error.error.message === UNREACHABLE_MESSAGE);
+    assert.isTrue(error instanceof Conflict && error.message === UNREACHABLE_MESSAGE);
   }),
 );
 
@@ -66,11 +64,10 @@ it.effect("Servers that never answer the connection are reported as not answerin
       options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       Effect.runSync(Deferred.succeed(dialing, undefined));
     }));
-    const planning = yield* planRemove("org-1", machineId, null).pipe(Effect.provide(layer), Effect.exit, Effect.forkChild);
+    const planning = yield* planRemove("org-1", machineId, null).pipe(Effect.provide(layer), Effect.flip, Effect.forkChild);
     yield* Deferred.await(dialing);
     yield* TestClock.adjust(ORGANIZATION_CONNECT_TIMEOUT);
-    const exit = yield* Fiber.join(planning);
-    const error = Exit.isFailure(exit) ? exit.cause.reasons[0] : undefined;
-    assert.isTrue(error?._tag === "Fail" && error.error instanceof Conflict && error.error.message === UNREACHABLE_MESSAGE);
+    const error = yield* Fiber.join(planning);
+    assert.isTrue(error instanceof Conflict && error.message === UNREACHABLE_MESSAGE);
   }),
 );

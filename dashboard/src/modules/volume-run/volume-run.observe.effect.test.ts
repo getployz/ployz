@@ -1,6 +1,6 @@
 import type { Client, Connection, RuntimeWatchView } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import { makeOrganizationRuntimeLayer, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
@@ -52,13 +52,12 @@ it.effect("a Cluster that never sends a frame fails as one to wait out once the 
     const watching = yield* Deferred.make<void>();
     const observing = yield* observeVolumeMembers("org-1", "pg-data").pipe(
       Effect.provide(cluster(new Promise<void>(() => {}), watching)),
-      Effect.exit,
+      Effect.flip,
       Effect.forkChild,
     );
     yield* Deferred.await(watching);
     yield* TestClock.adjust(RUNTIME_FRAME_TIMEOUT_MS);
-    const exit = yield* Fiber.join(observing);
-    const reason = Exit.isFailure(exit) ? exit.cause.reasons[0] : undefined;
-    assert.isTrue(reason?._tag === "Fail" && reason.error instanceof RuntimeConnectionFailure && reason.error.waitable);
+    const error = yield* Fiber.join(observing);
+    assert.isTrue(error instanceof RuntimeConnectionFailure && error.waitable);
   }),
 );
