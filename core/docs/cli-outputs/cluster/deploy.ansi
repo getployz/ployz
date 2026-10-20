@@ -4,7 +4,7 @@ web (create)
   web.replicas: 1 -> 2
 api (create)
   api.startCommand: null -> "sh -c 'echo api up; sleep 100000'"
-Decided by the Servers when it runs: which containers start and stop.
+Decided by the Servers when it runs: operations.
 next: ployz deploy --expect-version 6:0:0.0
 
 === deploy --plan --json :: $ ployz deploy --plan --json
@@ -562,6 +562,6 @@ Deployment #7 of shop/production: failed
   web: create Container failed: Docker operation failed: Docker responded with status code 404: failed to resolve reference "docker.io/library/alpine:does-not-exist": docker.io/library/alpine:does-not-exist: not found
   web: failed
   api: unchanged
-# exit 3
+# exit 1
 
 

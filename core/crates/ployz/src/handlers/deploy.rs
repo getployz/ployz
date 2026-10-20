@@ -323,7 +323,8 @@ pub(super) fn open_events(
     Ok(Some(std::io::BufWriter::new(file)))
 }
 
-/// Run or follow a queued Deployment and report it. Exits 3 unless it applied.
+/// Run or follow a queued Deployment and report it. A failed Deploy exits 1; a failed
+/// removal or shutdown, or an applied one missing a Server, exits 3.
 fn ship(
     matches: &ArgMatches,
     store: &Store,

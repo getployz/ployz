@@ -312,7 +312,7 @@ stdout:
 
 ```console
 $ timeout 30 ployz deploy --project shop
-# exit 3
+# exit 1
 ```
 
 stderr:

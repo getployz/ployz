@@ -507,7 +507,7 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
     )))
     .unwrap();
     let (output, events) = run_at(vec![admitted(), reply], root.path());
-    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result.get("status"), Some(&json!("failed")));
     assert_eq!(result.get("nodes"), failed.get("nodes"));

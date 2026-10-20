@@ -301,13 +301,13 @@ fn target(deployment: &DeploymentSummary) -> String {
 }
 
 /// How to retry a removal or shutdown that ended without applying when the command that
-/// ran it is `deployment retry` or `start`: retry this Deployment in its own Environment.
+/// ran it is `deployment redeploy` or `start`: redeploy it in its own Environment.
 /// A Deploy can't.
 pub(super) fn removal_retry(
     view: &DeploymentView,
     command: impl Fn(&[&str]) -> String,
 ) -> Option<Hint> {
-    // The statuses `deployment retry` accepts.
+    // The ended statuses `deployment redeploy` accepts for a removal.
     let ended = matches!(
         view.deployment.status,
         DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled
@@ -315,7 +315,7 @@ pub(super) fn removal_retry(
     (view.deployment.remove && ended).then(|| {
         Hint::Retry(command(&[
             "deployment",
-            "retry",
+            "redeploy",
             &target(&view.deployment),
             "--project",
             view.environment.project.as_str(),
@@ -519,6 +519,13 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     if view.deployment.remove {
         return failure;
     }
+    // Only a Deploy that failed is its own result (exit 1). One replaced, cancelled or
+    // whose runner was lost didn't fail: part of what was asked just didn't happen (3).
+    let mut failure = if view.deployment.status == DeploymentStatus::Failed {
+        failure.outcome()
+    } else {
+        failure
+    };
     if bad_image {
         let revision = view.deployment.saved.to_string();
         failure = failure.hint(Hint::Undo(command(
@@ -1051,12 +1058,35 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_deploy_is_its_result_and_a_failed_removal_stays_partial() {
+        let mut view = view();
+        assert!(completion(&view, None, command).unwrap_err().is_outcome());
+        view.deployment.remove = true;
+        assert!(!completion(&view, None, command).unwrap_err().is_outcome());
+    }
+
+    #[test]
+    fn only_a_failed_deploy_exits_1_and_a_superseded_one_stays_partial() {
+        let mut view = view();
+        for (status, code) in [
+            (DeploymentStatus::Failed, 1),
+            (DeploymentStatus::Superseded, 3),
+            (DeploymentStatus::Cancelled, 3),
+            (DeploymentStatus::Unknown, 3),
+        ] {
+            view.deployment.status = status;
+            let failure = completion(&view, None, command).unwrap_err();
+            assert_eq!(crate::ui::after_result(&failure), code, "{status:?}");
+        }
+    }
+
+    #[test]
     fn a_failed_removal_retried_by_deployment_says_to_retry_it_again() {
         let mut removal = view();
         assert_eq!(removal_retry(&removal, command), None);
         removal.deployment.remove = true;
         let retry = Some(Hint::Retry(
-            "ployz deployment retry 7 --project shop --env production".to_owned(),
+            "ployz deployment redeploy 7 --project shop --env production".to_owned(),
         ));
         for status in [
             DeploymentStatus::Failed,
@@ -1075,6 +1105,32 @@ mod tests {
         ] {
             removal.deployment.status = status;
             assert_eq!(removal_retry(&removal, command), None, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn every_retry_hint_is_a_command_the_cli_accepts() {
+        let mut removal = view();
+        removal.deployment.remove = true;
+        let hints = failure(&view(), command)
+            .hints()
+            .iter()
+            .cloned()
+            .chain(removal_retry(&removal, command))
+            .filter_map(|hint| {
+                if let Hint::Retry(retry) = hint {
+                    Some(retry)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(hints.len(), 2, "{hints:?}");
+        for retry in hints {
+            let words = shell_words::split(&retry).unwrap();
+            if let Err(error) = crate::cli::command().try_get_matches_from(&words) {
+                panic!("{retry}: {error}");
+            }
         }
     }
 

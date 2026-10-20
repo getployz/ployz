@@ -1,6 +1,6 @@
 === deploy --plan, nothing staged :: $ ployz deploy --plan
 No authored changes to deploy in shop/production.
-Decided by the Servers when it runs: which containers start and stop.
+Decided by the Servers when it runs: operations.
 next: ployz deploy --expect-version 26:16:0.32
 
 === deploy --plan --json, nothing staged :: $ ployz --json deploy --plan
@@ -28,7 +28,7 @@ next: ployz deploy
 === deploy --plan with a staged change :: $ ployz deploy --plan
 web (update)
   web.env.GREETING: null -> "hello"
-Decided by the Servers when it runs: which containers start and stop.
+Decided by the Servers when it runs: operations.
 next: ployz deploy --expect-version 27:16:0.34
 
 === deploy --plan --json with a staged change :: $ ployz --json deploy --plan
@@ -366,7 +366,7 @@ denied
   postgres: unchanged
   worker: failed
   pg-data: unchanged
-# exit 3
+# exit 1
 
 
 === deployment show of the failed Deployment :: $ ployz deployment show c405d65a-c1f7-4ea9-9fa4-d1286e12dfc9

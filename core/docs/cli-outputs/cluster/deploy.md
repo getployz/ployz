@@ -954,7 +954,7 @@ Deployment #7 of shop/production: failed
   web: create Container failed: Docker operation failed: Docker responded with status code 404: failed to resolve reference "docker.io/library/alpine:does-not-exist": docker.io/library/alpine:does-not-exist: not found
   web: failed
   api: unchanged
-# exit 3
+# exit 1
 
 ```
 
@@ -962,7 +962,7 @@ Deployment #7 of shop/production: failed
 
 ```console
 $ ployz deploy
-# exit 3
+# exit 1
 ```
 
 stdout:
