@@ -702,6 +702,7 @@ pub(crate) fn shut_down(
         };
         super::gate(
             who,
+            "shut_down",
             &Target::Environment(id.clone()),
             &review.view.version,
             approval::destructive_effects(&deployed, &empty, &cluster_domains),

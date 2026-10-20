@@ -382,6 +382,7 @@ pub(crate) fn remove(
     }
     gate(
         who,
+        "remove",
         &target,
         &version,
         reviews
@@ -723,10 +724,11 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
     ))
 }
 
-/// Ask a human once for everything a removal deletes: the same digest whether
-/// `remove` or `Admit::ShutDown` asks.
+/// Ask a human once for everything a removal deletes, bound to `command`: `remove`
+/// or `shut_down`, so an approval for one never runs the other.
 pub(crate) fn gate(
     who: &Actor,
+    command: &str,
     target: &Target,
     version: &str,
     effects: BTreeSet<DestructiveEffect>,
@@ -737,8 +739,8 @@ pub(crate) fn gate(
         return Ok(());
     }
     let digest = match target {
-        Target::Environment(id) => approval::approval_digest(who, id, version, &effects),
-        Target::Project(id) => project_digest(who, id, version, &effects),
+        Target::Environment(id) => approval::approval_digest(who, command, id, version, &effects),
+        Target::Project(id) => project_digest(who, command, id, version, &effects),
     };
     if matches!(approval, Approval::Approved(approved) if *approved == digest) {
         return Ok(());
@@ -754,14 +756,20 @@ pub(crate) fn gate(
     ))
 }
 
+#[cfg(test)]
+#[path = "gate_tests.rs"]
+mod gate_tests;
+
 fn project_digest(
     who: &Actor,
+    command: &str,
     project: &ProjectId,
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
     let bound = json!({
         "organization": who.organization,
+        "command": command,
         "project": project,
         "effects": effects,
     });

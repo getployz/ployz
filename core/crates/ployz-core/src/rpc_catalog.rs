@@ -70,6 +70,7 @@ macro_rules! rpc_catalog {
                 InspectVolumeCopy: (inspect_volume_copy, "InspectVolumeCopy", InspectVolumeCopyRequest, "inspect_volume_copy", VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container),
                 SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", VolumeCopyView, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container),
                 SetVolumeCopy: (set_volume_copy, "SetVolumeCopy", SetVolumeCopyRequest, "set_volume_copy", SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container),
+                SetVolumeSize: (set_volume_size, "SetVolumeSize", SetVolumeSizeRequest, "set_volume_size", SetVolumeSizeReply, SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1", Container),
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container),
                 PruneImages: (prune_images, "PruneImages", PruneImagesRequest, "prune_images", ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container),
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),

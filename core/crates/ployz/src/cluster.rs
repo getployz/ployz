@@ -107,6 +107,14 @@ impl Client {
         self.entry
     }
 
+    /// The Server this client enters, as people read it: its connection's name, else its
+    /// Machine ID.
+    pub(crate) fn server(&self) -> Option<String> {
+        self.connection
+            .server()
+            .or_else(|| self.entry.map(|machine| machine.to_string()))
+    }
+
     /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
     async fn redial(&mut self) -> Result<(), ConnectError> {
         self.entry = None;

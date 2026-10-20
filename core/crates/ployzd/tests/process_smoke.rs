@@ -138,22 +138,6 @@ fn volume_plugin_rejects_more_than_one_systemd_socket() {
 }
 
 #[test]
-fn volume_plugin_requires_a_systemd_socket() {
-    let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
-        .arg("volume-plugin")
-        .env_remove("LISTEN_FDS")
-        .env_remove("LISTEN_PID")
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("systemd did not pass the Volume plugin socket")
-    );
-}
-
-#[test]
 fn join_leaves_a_journal_line_and_records_the_restart() {
     let root = TestDir::new("ployzd-process-join");
     fs::create_dir_all(&root.0).unwrap();

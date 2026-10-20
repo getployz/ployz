@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
+import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, redeployLine } from "#/modules/approvals/approvals";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
@@ -50,6 +51,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const { asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
+  const now = useMinute() ?? new Date();
 
   const decide = async (decision: ApprovalDecision) => {
     if (sending) return;
@@ -87,7 +89,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
                   <span>
                     {line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}
                     {effect.lost_after !== undefined && (
-                      <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000))} are not in ${effect.lost_after.restored}`}</span>
+                      <span className="block">{`Changes after ${lossMoment(new Date(effect.lost_after.at * 1000), now)} are not in ${effect.lost_after.restored}`}</span>
                     )}
                   </span>
                 </li>
