@@ -27,6 +27,8 @@ export type WaitingServerDetail = {
   readonly firstSeenAt: string;
   readonly lastCheckInAt: string;
   readonly probe: PortStates | null;
+  /** The latest enroll attempt when it ended without joining. It stays until the next attempt. */
+  readonly returned: WaitingReturn | null;
 };
 
 export type WaitingReturn = {
@@ -46,7 +48,6 @@ type ListReport = Pick<StoredReport, "hostname" | "os" | "cpuCount" | "memoryTot
 export type WaitingServerView = Omit<WaitingServerDetail, "report" | "probe"> & {
   readonly report: ListReport;
   readonly arrivalAt: string;
-  readonly returned: WaitingReturn | null;
 };
 
 export function waitingServerStatus(report: StoredReport, lastCheckInAt: Date, now: Date): WaitingServerStatus {

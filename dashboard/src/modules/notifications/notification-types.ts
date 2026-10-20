@@ -16,7 +16,7 @@ export const NOTIFICATION_TYPES = {
   },
   "upgrade-failed": {
     label: "Failed automatic upgrades",
-    description: "When an automatic Server upgrade fails.",
+    description: "When an automatic server upgrade fails.",
     unsubscribe: "Turn off failed upgrade emails",
     emails: "failed upgrade emails",
   },

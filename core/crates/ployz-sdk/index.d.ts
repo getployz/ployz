@@ -22,7 +22,7 @@ import type {
   RpcError as RpcErrorPayload,
   RpcErrorCode,
   RuntimeWatchView,
-  ContainerLogRecord,
+  LiveLogRecord,
   InspectVolumeCopyRequest,
   SeedVolumeRequest,
   SetVolumeCopyReply,
@@ -41,7 +41,9 @@ export {
   observeCopies,
   observeVolumes,
   ployzVersion,
+  SealedNames,
 } from "./generated/native";
+export type { NamesRead } from "./generated/native";
 
 /** One request `Client.volumeSwitch` sends: a Volume copy verb and its payload. */
 export type VolumeSwitchRequest =
@@ -79,7 +81,8 @@ export type LogFilter = {
 };
 /** What a line says about itself; a line that says nothing is `info`, stderr included. */
 export type LogLevel = "error" | "warn" | "info" | "debug";
-export type LogRecord = ContainerLogRecord & { id: string; level: LogLevel };
+/** A line shows as text, or as `hidden` when it couldn't be checked for Sealed values. */
+export type LogRecord = LiveLogRecord & { id: string };
 /** `capability` names what the Server lacks. */
 export type LogSourceError = {
   type: "source_error"; machineId: string; containerId: string; message: string;
@@ -88,11 +91,12 @@ export type LogSourceError = {
 /** A container whose source failed has left the Runtime Watch; nothing more will come from it. */
 export type LogSourceGone = { type: "source_gone"; machineId: string; containerId: string };
 export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError | LogSourceGone;
-export type LogOptions = WatchOptions & { filter?: LogFilter; tail?: number; follow?: boolean };
-/** A stretch of one container's output its Server's Log Store doesn't have. */
+/** `sealed` names the values every line is scrubbed of; one per request, fed from the Store. */
+export type LogOptions = WatchOptions & { sealed: native.SealedNames; filter?: LogFilter; tail?: number; follow?: boolean };
+/** A stretch of one container's output its Server's Log Store doesn't have, or that couldn't be checked for Sealed values. */
 export type LogGap = {
   machineId: string; machineName: string; containerId: string; serviceName: string;
-  fromNanos: string; toNanos: string; reason: "not_captured" | "corrupt";
+  fromNanos: string; toNanos: string; reason: "not_captured" | "corrupt" | "hidden";
 };
 /** A container stopping; `exitCode` is null when Docker didn't say. */
 export type LogExit = {
@@ -102,7 +106,7 @@ export type LogExit = {
 /** A Server whose Log Store didn't answer, and why. */
 export type LogMachineFailure = { machineId: string; machineName: string; message: string; code?: RpcErrorCode; capability?: string };
 /** Without `cursor`, the first page starts at each Server's newest row, or before `before` (Unix nanoseconds). */
-export type LogHistoryOptions = WatchOptions & { filter: LogFilter; cursor?: string; before?: string; limit?: number };
+export type LogHistoryOptions = WatchOptions & { sealed: native.SealedNames; filter: LogFilter; cursor?: string; before?: string; limit?: number };
 /** Newest first across every Server; `cursor` is null once none has anything older. */
 export type LogHistoryPage = { records: LogRecord[]; gaps: LogGap[]; exits: LogExit[]; failures: LogMachineFailure[]; cursor: string | null };
 
@@ -239,7 +243,7 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
   build(input: PreparationInput, options?: BuildOptions): RunningBuild;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
-    logs(options?: LogOptions): AsyncIterable<LogEvent>;
+    logs(options: LogOptions): AsyncIterable<LogEvent>;
     logHistory(options: LogHistoryOptions): Promise<LogHistoryPage>;
     /** Sums a Service across the Machines that answered; names each Machine that did not. */
     metricHistory(input: MetricHistoryInput): Promise<MetricHistory>;

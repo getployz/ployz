@@ -71,6 +71,7 @@ const refused = (code: string, message: string): ToolOutcome => ({ ok: false, re
 
 const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
 const DeniedApproval = Schema.Struct({ approval: Schema.Struct({ reason: Schema.NullOr(Schema.String) }) });
+const DeniedOperation = Schema.Struct({ approval: Schema.Struct({ review: Schema.Struct({ operation: Schema.Struct({ name: Schema.String }) }) }) });
 
 /** A denial as the agent hears it: what was denied and the human's reason, without the approval's ID to echo. */
 const denialForAgent = (what: string, refusal: StoreRefusal): StoreRefusal => {
@@ -79,16 +80,45 @@ const denialForAgent = (what: string, refusal: StoreRefusal): StoreRefusal => {
   return { code: refusal.code, message: `A human denied this ${what}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
 };
 
-const ACTS = {
-  service: "Service act",
-  drain: "drain",
-  upgrade: "upgrade",
-  set_server: "server policy change",
-  clean: "cleanup",
-  remove_server: "server removal",
-  forget_server: "server forget",
-  volume: "Volume run",
-} as const satisfies Record<Act["action"]["action"], string>;
+/** A denied act as the agent hears it, naming the Volume a Volume run's approval named. */
+export const actDenial = (action: Act["action"], refusal: StoreRefusal): StoreRefusal => {
+  const denied = Schema.decodeUnknownOption(DeniedOperation)(refusal.details);
+  return denialForAgent(actWords(action, Option.getOrNull(Option.map(denied, ({ approval }) => approval.review.operation.name))), refusal);
+};
+
+/** An act in the words a denial names it by, as in `restart whoami`. */
+const actWords = (action: Act["action"], volume: string | null): string => {
+  switch (action.action) {
+    case "service":
+      return `${action.verb} ${action.service}`;
+    case "drain":
+      return `drain ${action.server.name}`;
+    case "upgrade":
+      return `upgrade ${action.server.name}`;
+    case "set_server":
+      return `policy change on ${action.server.name}`;
+    case "clean":
+      return `cleanup of ${action.leftover}`;
+    case "remove_server":
+      return `removal of ${action.server.name}`;
+    case "forget_server":
+      return `forget ${action.server.name}`;
+    case "volume":
+      switch (action.run.run) {
+        case "mirror":
+          return `Volume mirror to ${action.run.to.name}`;
+        case "move":
+          return `Volume move to ${action.run.to.name}`;
+        case "restore":
+          return `Volume restore from ${action.run.from.name}`;
+        case "remove_mirror":
+          return volume === null ? "Volume mirror removal" : `mirror removal of ${volume}`;
+        case "sync":
+        case "release":
+          return volume === null ? `Volume ${action.run.run}` : `${action.run.run} of ${volume}`;
+      }
+  }
+};
 
 const StaleReview = Schema.Struct({
   diff: Schema.Struct({
@@ -149,7 +179,7 @@ const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: AgentCalle
     const asked = asking(result.refusal);
     if (asked !== null) return asked;
   }
-  return { result: { ok: false, refusal: denialForAgent(ACTS[act.action.action], result.refusal) } as const };
+  return { result: { ok: false, refusal: actDenial(act.action, result.refusal) } as const };
 });
 
 /** A published command's answer as the model hears it; the line `ployz` prints for a human is not for the model. */

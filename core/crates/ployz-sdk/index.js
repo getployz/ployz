@@ -12,12 +12,12 @@ class Client {
     this._inner = inner;
     const logTransport = {
       watch: (options) => iterateWatch(() => inner.watch(), options.signal),
-      open: async (input) => {
-        const reader = await withRpcError(inner.containerLogs(input));
+      open: async (input, sealed) => {
+        const reader = await withRpcError(inner.containerLogs(input, sealed));
         return { next: () => withRpcError(reader.next()), cancel: () => reader.cancel() };
       },
-      history: async (input) => {
-        const reader = await withRpcError(inner.logHistory(input));
+      history: async (input, sealed) => {
+        const reader = await withRpcError(inner.logHistory(input, sealed));
         return { next: () => withRpcError(reader.next()), cancel: () => reader.cancel() };
       },
     };
@@ -237,6 +237,7 @@ const agentTools = rpc(native.agentTools);
 const agentStart = rpc(native.agentStart);
 const agentResume = rpc(native.agentResume);
 const agentCloudCall = rpc(native.agentCloudCall);
+const { SealedNames } = native;
 
 function setVolumeCopyRefusal(error) {
   const details = error?.details;
@@ -265,6 +266,7 @@ module.exports = {
   connect,
   Client,
   RpcError,
+  SealedNames,
   applyAll,
   applyOne,
 };

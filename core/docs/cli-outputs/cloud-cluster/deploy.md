@@ -1922,7 +1922,7 @@ Options:
           Reset the --server if it already runs Ployz, before adding it
 
       --accept-volume-loss <name>
-          Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this
+          Accept permanent deletion: repeat once per exact volume name in the full deletion list
 
       --expect-version <VERSION>
           Refuse unless this is still the reviewed version; a data-loss refusal names it
