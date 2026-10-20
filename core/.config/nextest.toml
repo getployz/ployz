@@ -1,0 +1,14 @@
+# Start the tests that wait 10s or longer first, so a run never ends waiting on one alone.
+[[profile.default.overrides]]
+filter = """
+test(=created_but_unverified_volume_fails_the_container_operation)
+| test(=removal_cli::a_server_listed_up_that_never_replies_leaves_without_a_reset_when_dead_is_typed)
+| test(=removal_cli::a_server_that_stops_answering_after_its_name_is_typed_is_kept)
+| test(=sdk_remove_machine::remove_machine_membership_refuses_a_server_that_answered_before_going_quiet)
+| test(=sdk_remove_machine::remove_machine_membership_forgets_an_up_server_that_never_replies)
+| test(=provisioning::setup_tests::remote_verify_timeout_kills_the_child_and_cleans_the_stage)
+| test(=checkin::tests::a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempting)
+| test(=an_unmounted_config_edits_while_another_service_mounts_too_much)
+| test(=build::tests::client_waits_past_connection_deadline_and_uploads_only_after_admission)
+"""
+priority = 100
