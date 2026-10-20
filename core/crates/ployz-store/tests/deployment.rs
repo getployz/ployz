@@ -4694,3 +4694,72 @@ fn a_superseded_retry_of_the_failed_version_clears_failed() {
         "the newest version's latest attempt was superseded, not failed"
     );
 }
+
+#[test]
+fn verifier_partial_retry_keeps_successfully_applied_service_upload() {
+    let (store, who) = shop();
+    for name in ["web", "api"] {
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse(&format!("{name}.image")).unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    let a = runner("cli-a");
+    for (n, digest) in [(1, 'a'), (2, 'b')] {
+        deploy_sent(&store, &who, n, Some(digest));
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    }
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(3),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed",
+                    "completed": [operation("web")],
+                    "failed": {"type": "operation", "operation": operation("api"), "error": {
+                        "type": "machine", "action": "RemoveContainer",
+                        "error": {"code": "internal", "message": "disk failure", "details": {}}
+                    }},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
+    assert!(nodes(&store, &who, 3).contains(&("web".to_owned(), NodeStatus::Deployed)));
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2, 3]),
+        [false, true, true],
+        "web runs a, so its newest copy stays"
+    );
+    admit(&store, &who, 4, &["web"], None).unwrap();
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+}
