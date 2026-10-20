@@ -99,6 +99,7 @@ type Send = {
   readonly report?: Partial<HostReport>;
   readonly prep?: Prep;
   readonly probe?: CheckinRequest["probe"];
+  readonly attempt?: CheckinRequest["attempt"];
   readonly skew?: number;
   readonly badSignature?: boolean;
   readonly ip?: string;
@@ -110,6 +111,7 @@ const request = (token: string, host: Host, options: Send = {}) => {
     checkinKey: host.key,
     cliVersion: options.cliVersion ?? "0.3.0",
     report: { ...report, ...options.report, hostname: options.hostname ?? report.hostname },
+    ...(options.attempt === undefined ? {} : { attempt: options.attempt }),
   } as const;
   const withPrep: CheckinRequest = options.prep === undefined ? base : { ...base, prep: options.prep };
   const checkin: CheckinRequest = options.probe === undefined ? withPrep : { ...withPrep, probe: options.probe };
@@ -1044,6 +1046,33 @@ it("refuses a second arrival to a joined host that returns on its token after th
   expect(await run(closeStaleServerEnrollments())).toEqual({ failed: 0, removed: 1 });
   expect(await send(token, host, readyAuto)).toEqual(wait);
   expect(await autoAttempts()).toHaveLength(0);
+});
+
+it("brings a joined host back to Waiting once its Server is gone, without a second arrival", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  const attempt = (await autoAttempts())[0]?.id ?? "";
+  await endAuto(attempt, "joined");
+  await harness.pool.query(`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability)
+    values ($1, repeat('a', 32), repeat('c', 64), '{}')`, [adaOrg]);
+  // A reset host still names the attempt that joined it.
+  const reset = { ...readyAuto, attempt: { attemptId: attempt, stage: "publishing" } };
+  const shown = async () => (await run(listWaitingServers(ada, { organizationSlug: "ada" }))).map((server) => server.report.hostname);
+
+  expect(await send(token, host, reset)).toEqual(wait);
+  expect(await shown()).toEqual([]);
+  await harness.pool.query("delete from organization_machine");
+  expect(await send(token, host, reset)).toEqual(wait);
+  expect(await send(token, host, reset)).toEqual(wait);
+  expect(await shown()).toEqual(["web-1"]);
+  expect(await autoAttempts()).toHaveLength(0);
+  expect((await run(listFleetTokens(ada, { organizationSlug: "ada" })))[0]).toMatchObject({ joined: 1, waiting: 1 });
+
+  const input = { ids: [(await one()).id], names: { kind: "hostnames" }, storage: { kind: "none" }, runs: { services: true, ingress: true, builds: true } } as const;
+  await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  expect(await send(token, host, reset)).toMatchObject({ kind: "enroll", role: "joiner" });
 });
 
 it.each(["revoked", "expired", "swept"] as const)("refuses a second arrival after an attempt an older app inserted, once the host's row is %s", async (end) => {
