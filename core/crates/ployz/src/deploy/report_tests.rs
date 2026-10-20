@@ -760,6 +760,7 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
     };
     let tail = LogTail {
         service: QualifiedService::parse("ployz-system/ingress").unwrap(),
+        name: QualifiedService::system_ingress().name,
         machine,
         server: "edge".into(),
         log: Some(shown("could not load configuration")),
@@ -824,6 +825,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     };
     let tail = LogTail {
         service: QualifiedService::parse("shop/web").unwrap(),
+        name: ServiceName::parse("web").unwrap(),
         machine,
         server: "edge".into(),
         log: None,

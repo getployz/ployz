@@ -366,6 +366,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             }
             diagnostic.logs.push(LogTail {
                 service: service.clone(),
+                name: name.clone(),
                 machine: row.machine_id,
                 server: row.server.clone(),
                 log: log.clone(),
@@ -477,6 +478,16 @@ mod tests {
         assert!(
             !text.contains("private-web on edge: CreateContainer"),
             "{text}"
+        );
+        assert!(
+            text.contains("Last 1 log lines from web on edge:"),
+            "{text}"
+        );
+        assert!(!text.contains("from private-web"), "{text}");
+        // JSON keeps the runtime identity that log lookups use.
+        assert_eq!(
+            failure.json().pointer("/details/progress/logs/0/service"),
+            Some(&json!("shop-production/private-web"))
         );
     }
 
