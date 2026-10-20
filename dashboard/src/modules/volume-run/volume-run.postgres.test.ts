@@ -62,6 +62,7 @@ import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { appliedMirrors, observePlacement } from "#/modules/volume-placement/volume-placement";
+import { deleteOldCopy } from "#/modules/volume-placement/volume-placement.server";
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
@@ -2199,6 +2200,19 @@ describe("volume runs", () => {
 
       expect(sent.at(-1)?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
       expect(verbs).toEqual(["forget@fsn-2"]);
+      expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
+    });
+
+    it("deletes only the old copy it was admitted for, though a pull made it the mirror before the run looked", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
+      const admitted = await runEffect(deleteOldCopy(organizationId, userId, { volumeId, environment, server: "fsn-2" }));
+      if (!admitted.ok) throw new Error(admitted.refusal.message);
+      named("fsn-2").copy = slotCopy(base, null, "7", "mirror");
+
+      await execute(admitted.run.id);
+
+      expect(sent.find((request) => request.want.kind === "forget")?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
