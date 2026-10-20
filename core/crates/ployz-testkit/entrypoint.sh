@@ -48,6 +48,12 @@ if [ "${PLOYZ_TESTKIT_PRIME:-}" = 1 ]; then
 fi
 (
   while :; do
+    ployzd "$@" volume-plugin || true
+    sleep 1
+  done
+) &
+(
+  while :; do
     ployzd "$@" dns &
     echo "$!" >/run/ployz-dns.pid
     wait "$!" || true

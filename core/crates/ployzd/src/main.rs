@@ -259,7 +259,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         return Ok(ExitCode::SUCCESS);
     }
     if matches!(args.command, Some(Command::VolumePlugin)) {
-        let listener = volume_plugin::inherited_listener()?;
+        let listener = volume_plugin::listener(Path::new(ployzd::VOLUME_PLUGIN_SOCKET))?;
         volume_plugin::run(listener, &args.data_dir, &run_dir).await?;
         return Ok(ExitCode::SUCCESS);
     }

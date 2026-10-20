@@ -1,7 +1,14 @@
 //! Docker v1 Volume plugin backed by bounded ZFS datasets.
 
 use std::{
-    collections::BTreeMap, fmt, io, os::unix::net::UnixListener as StdUnixListener, str::FromStr,
+    collections::BTreeMap,
+    fmt, fs, io,
+    os::unix::{
+        fs::{FileTypeExt, PermissionsExt},
+        net::UnixListener as StdUnixListener,
+    },
+    path::Path,
+    str::FromStr,
     time::Duration,
 };
 
@@ -131,21 +138,38 @@ struct MountResponse {
     error: String,
 }
 
-/// Takes the one Unix listener supplied by systemd socket activation.
+/// Takes the listener `ployz-volume-plugin.socket` passed, or else binds `path`
+/// here (the local testkit runs without systemd), replacing a socket a previous
+/// run left behind.
 ///
 /// # Errors
 ///
-/// Returns an error unless systemd supplied exactly one valid Unix listener.
-pub(super) fn inherited_listener() -> io::Result<StdUnixListener> {
-    ployzd::socket_activation::inherited_unix_listener()?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "systemd did not pass the Volume plugin socket",
-        )
-    })
+/// Returns an error when the inherited socket is invalid, `path` holds something
+/// other than a socket, or binding `path` fails.
+pub(super) fn listener(path: &Path) -> io::Result<StdUnixListener> {
+    if let Some(listener) = ployzd::socket_activation::inherited_unix_listener()? {
+        return Ok(listener);
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("refusing to replace non-socket {}", path.display()),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let listener = StdUnixListener::bind(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
+    Ok(listener)
 }
 
-/// Serves the Docker Volume plugin on an activated Unix listener.
+/// Serves the Docker Volume plugin on its Unix listener.
 ///
 /// # Errors
 ///
@@ -419,6 +443,24 @@ mod tests {
         assert!(log.contains("zfs create -o refquota=1073741824 tank/ployz/data"));
         assert!(log.contains("zfs mount tank/ployz/data"));
         assert!(!log.contains("recordsize"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn without_systemd_a_restarted_plugin_binds_its_socket_and_departs_a_machine_without_zfs()
+    {
+        let test = TestDir::new();
+        let socket = test.0.join("plugins/ployz.sock");
+        drop(listener(&socket).unwrap());
+        let listener = listener(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let storage = VolumeStorage::with_programs(test.0.join("no-zpool"), test.0.join("no-zfs"));
+        let server = tokio::spawn(serve(UnixListener::from_std(listener).unwrap(), storage));
+
+        assert_eq!(
+            post(&socket, "/Storage.Demote", json!(null)).await,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+        );
         server.abort();
     }
 
