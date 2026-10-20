@@ -1,6 +1,6 @@
 //! The Server check of `ployz status`: each Down Machine, and each live Machine whose
-//! proxy has not picked up a Service's In copies. What the check could not see is a
-//! warning, never an all-clear.
+//! proxy lacks a Service's In copies or still routes its Out or Held ones. What the
+//! check could not see is a warning, never an all-clear.
 
 use std::collections::{BTreeSet, HashMap};
 
