@@ -316,7 +316,7 @@ it as `blocked` lines. With `--json` this is the `this_server` object.
 
 When a server is up but still sends a service's requests to its old replicas after a deploy,
 `ployz status` names it, one line per service, like
-`web  web-2 has not picked up the new copies. Check its network.` A server that's down shows as
+`web = web-2 has not picked up the new copies. Check its network.` A server that's down shows as
 **Down** instead. See
 [A server hasn't picked up the new version](../troubleshooting/deployments.md#a-server-hasnt-picked-up-the-new-version).
 A `read` or `deploy` token without server access doesn't show this line yet. To check this, `ployz status`

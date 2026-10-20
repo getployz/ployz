@@ -238,7 +238,7 @@ The deploy stops the old replica, and the warning doesn't come back.
 
 ## A server hasn't picked up the new version
 
-`web  web-2 has not picked up the new copies. Check its network.`
+`web = web-2 has not picked up the new copies. Check its network.`
 
 `ployz status` prints this when web-2 is up but still sends `web`'s requests to the old
 replicas. Visitors who reach web-2 get the old version.
@@ -247,6 +247,9 @@ replicas. Visitors who reach web-2 get the old version.
   [Troubleshooting servers](servers.md).
 - **Wait for it to rejoin.** Once web-2 catches up, the line goes away. A server that's down
   shows as **Down** instead, and catches up once it's back.
+
+For a few seconds after a server rejoins, status can name servers that still see another one as
+Down. Run it again before you act.
 
 A `read` or `deploy` token without server access doesn't show this line yet, because Ployz Cloud
 reads for it.
