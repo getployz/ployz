@@ -2296,6 +2296,46 @@ fn a_sync_plan_reads_a_new_config_with_files_as_diff_does() {
     }
 }
 
+/// A Service a Sync creates hides its rows, as `diff` does, but never the warnings they
+/// carry: a secret it arrives without is named under it.
+#[test]
+fn a_sync_plan_warns_of_a_new_services_missing_secret() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(
+            store,
+            &[
+                "service", "add", "api", "--image", "api:1", "--env", "fix-web",
+            ],
+        );
+        let (code, set) = ployz_with_stdin(
+            store,
+            &["set", "api.env.API_KEY", "--secret", "--env", "fix-web"],
+            "test-key\n",
+        );
+        assert_eq!(code, Some(0), "{set}");
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["env", "sync", "--to", "--plan", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert_eq!(
+            node_block(&human, "api", 2),
+            [
+                "api (create)",
+                "  api.image: null → \"api:1\"",
+                "  api.env.API_KEY (production lacks this secret: it arrives Not set)",
+            ],
+            "{human}"
+        );
+    }
+}
+
 #[test]
 fn an_agent_syncs_between_any_two_environments_of_a_project() {
     for store in &targets() {
