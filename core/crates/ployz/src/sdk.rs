@@ -948,7 +948,7 @@ impl Session {
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
                 | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
             })?;
-            crate::drain::retirement::retire_ingress_proxy(&mut client, &id, cancel).await
+            crate::drain::retirement::retire_ingress_proxy(&client, &id, cancel).await
         })
         .await
     }
