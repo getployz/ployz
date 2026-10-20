@@ -62,8 +62,9 @@ shows **⚠ Unreachable**, and a failing healthcheck **⚠ Check failing**.
 
 A crash or OOM kill also emails the organization, as
 [Notifications](../account/notifications.md) describes. A crash that happened while the server's
-`ployz-observe` service was stopped or restarting counts once it is back, as long as Docker still
-holds the event. Docker keeps only its last 256 events and none from before it restarted.
+`ployz-observe` service was stopped or restarting counts once it is back, from the first time
+`ployz-observe` started on this version onward, and only while Docker still holds the event.
+Docker keeps only its last 256 events and none from before it restarted.
 
 ## See a server's metrics
 
