@@ -1023,6 +1023,42 @@ it.live(
 );
 
 it.live(
+  "a Sync that closes its Branch asks its Organization's Store to sweep now",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "config-store-test" });
+      const sent: unknown[] = [];
+      vi.spyOn(inngest, "send").mockImplementation(async (event) => {
+        sent.push(event);
+        return { ids: [] };
+      });
+      const layer = yield* cloudLayer({}, inngest);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const organizationId = (yield* resolveCaller(signedIn(alice))).organization.id;
+        yield* request("write", alice, shop);
+        yield* request("write", alice, web);
+        const fixWeb = { project: null, environment: "fix-web" };
+        const production = { project: null, environment: "production" };
+        assert.strictEqual((yield* request("write", alice, {
+          command: "create_branch", id: "00000000-0000-4000-8000-000000000005", from: production, name: "fix-web",
+          copy: ["web"], live: [], setup: [], keep: false,
+        })).status, 200);
+        assert.strictEqual((yield* request("write", alice, {
+          command: "edit", environment: fixWeb, expect: null, changes: [{ op: "set", path: "web.image", value: "web:2" }],
+        })).status, 200);
+        const sweep = { name: "config/sweep.requested", data: { organizationId } };
+        const read = yield* callStore(organizationId, null, { operation: "read", query: { query: "sync", from: fixWeb, into: production } });
+        const version = read.ok && read.value.view === "sync" ? read.value.version : assert.fail("no sync");
+        const sync: ConfigCommand = { command: "sync", from: fixWeb, into: production, version, close_after: true };
+        assert.deepInclude((yield* request("write", alice, sync)).json, { written: "synced" });
+        expect(sent).toContainEqual(sweep);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a Deploy meets the copies it takes before the Store sees it, on every path to the Store",
   () =>
     Effect.gen(function* () {
@@ -1326,7 +1362,7 @@ it.live(
 );
 
 it.live(
-  "domains: a custom one is free, and a generated one reserves the Cluster Domain when it is first admitted",
+  "domains: a custom one is free, and a generated one reserves the Cluster Domain when it is first staged",
   () =>
     Effect.gen(function* () {
       const hostedDns = yield* Effect.acquireRelease(Effect.promise(startFakeHostedDns), (fake) => Effect.promise(() => fake.close()));
@@ -1351,25 +1387,39 @@ it.live(
         const custom: ConfigCommand = { command: "add_domain", environment: here, service: "web", hostname: "app.example.com", port: null };
         assert.strictEqual((yield* request("write", alice, custom)).status, 200);
 
-        const generated = yield* request("write", alice, { ...custom, hostname: null });
-        // No Cluster Domain yet: only admission reserves one.
-        assert.deepInclude(generated.json.domain, { kind: "generated", prefix: "web", hostname: null });
-        assert.lengthOf(hostedDns.requests, 0);
+        const reservations = () => hostedDns.requests.filter((call) => call.method === "POST").length;
+        const reserved = () => Effect.gen(function* () {
+          const { drizzle } = yield* Database;
+          return yield* drizzle.execute<{ name: string }>(sql`select name from organization_cluster_domain`, "objects");
+        });
+        const generate: ConfigCommand = { ...custom, hostname: null };
+        const staged = yield* Effect.all([request("write", alice, generate), request("write", alice, generate)], { concurrency: "unbounded" });
+        const hostname = staged[0].json.domain?.hostname ?? "";
+        assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/, "staging a generated domain names it in full");
+        assert.strictEqual(staged[1].json.domain?.hostname, hostname, "two stages at once share one Cluster Domain");
+        assert.lengthOf(yield* reserved(), 1);
         const listed = yield* request("read", alice, { query: "domains", environment: here, service: null });
-        assert.deepStrictEqual(listed.json.domains?.map((domain) => [domain.status, domain.action?.type]), [
-          ["setting_up", "deploy"],
-          ["setting_up", "deploy"],
+        assert.deepStrictEqual(listed.json.domains?.map((domain) => [domain.hostname, domain.status, domain.action?.type]), [
+          ["app.example.com", "setting_up", "deploy"],
+          [hostname, "setting_up", "deploy"],
         ]);
+        for (const query of [{ query: "diff", environment: here }, { query: "service", environment: here, service: "web" }] as const) {
+          const shown = JSON.stringify((yield* request("read", alice, query)).json);
+          assert.include(shown, hostname, `${query.query} names the staged domain in full`);
+          assert.notInclude(shown, "<cluster domain>");
+        }
+
+        const before = reservations();
+        assert.strictEqual((yield* request("write", alice, { command: "remove_domain", environment: here, domain: "web" })).status, 200);
+        assert.strictEqual((yield* request("write", alice, generate)).json.domain?.hostname, hostname);
+        assert.strictEqual(reservations(), before, "re-staging reserves nothing more");
 
         const admit: ConfigCommand = {
           command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
           accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
-        assert.lengthOf(hostedDns.requests.filter((call) => call.method === "POST"), 1);
-        const deploying = yield* request("read", alice, { query: "domains", environment: here, service: null });
-        const hostname = deploying.json.domains?.[1]?.hostname ?? "";
-        assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/);
+        assert.strictEqual(reservations(), before, "admitting under a reserved Cluster Domain reserves nothing more");
 
         const caller = yield* resolveCaller(signedIn(alice));
         const listQuery: ConfigQuery = { query: "domains", environment: here, service: null };

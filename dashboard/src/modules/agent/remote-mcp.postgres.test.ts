@@ -354,6 +354,28 @@ it.live("a Cloud command refuses a remote agent as a Store tool does: the field,
     });
   }).pipe(Effect.scoped), 30_000);
 
+it.live("a call missing an argument is refused in the tools' own shape, not the transport's", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    for (const name of ["project_create", "docs"]) {
+      const refused = yield* Effect.promise(() => agent.client.callTool({ name, arguments: {} }));
+      expect(refused).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument", writes: "none" } } });
+    }
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("an approval its schema doesn't take is refused before anything is written", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const writes = vi.spyOn(shop.store, "write");
+    for (const tool of ["discard", "deploy"]) {
+      const refused = yield* Effect.promise(() => agent.client.callTool({ name: tool, arguments: { ...SHOP, approval: 42 } }));
+      expect(refused).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument", writes: "none" } } });
+    }
+    expect(writes).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
@@ -432,6 +454,16 @@ it.live("revoking the grant turns its token away, and connecting again issues on
     const renewed = yield* connect(shop, clientId);
     expect((yield* raw(shop, renewed)).status).toBe(200);
     expect((yield* raw(shop, old)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a Ployz token on /mcp is turned away with what to use instead", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const refused = yield* raw(shop, `ployz_${"a".repeat(40)}`);
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get("www-authenticate")).toMatch(/^Bearer /);
+    const body = yield* Effect.promise(() => refused.json());
+    expect(body).toMatchObject({ error: { message: "/mcp takes a Connect sign-in, not a Ployz token. For a token, run ployz mcp with PLOYZ_TOKEN." } });
   }).pipe(Effect.scoped), 30_000);
 
 it.live("leaving Shop ends the grant, and neither rejoining nor connecting again revives its credentials", () =>

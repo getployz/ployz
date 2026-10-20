@@ -50,6 +50,6 @@ it("shows a close waiting for the sweep as deleting, and can delete it again", (
     </QueryClientProvider>,
   );
   expect(screen.getByText("Deleting feat…")).toBeTruthy();
-  expect(screen.getByText("Ployz takes it off your servers at its next hourly sweep. If that hasn't started, delete it again.")).toBeTruthy();
+  expect(screen.getByText("Ployz starts taking it off your servers shortly, or at its next hourly sweep if it can't start yet. If it hasn't started by then, delete it again.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Delete feat" }).hasAttribute("disabled")).toBe(false);
 });

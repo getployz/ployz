@@ -5,9 +5,14 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "#/lib/utils.ts"
 import { Button } from "#/components/ui/button.tsx"
 import { XIcon } from "lucide-react"
+import { OpenerFocusContext, useOpenerFinalFocus, useOpenerFocus } from "#/components/ui/opener-focus.ts"
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+  return (
+    <OpenerFocusContext value={useOpenerFocus(props.open)}>
+      <DialogPrimitive.Root data-slot="dialog" {...props} />
+    </OpenerFocusContext>
+  )
 }
 
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
@@ -45,10 +50,12 @@ function DialogContent({
   showCloseButton = true,
   padding,
   surface,
+  finalFocus,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
 } & VariantProps<typeof dialogContentVariants>) {
+  const opener = useOpenerFinalFocus()
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -58,6 +65,8 @@ function DialogContent({
           dialogContentVariants({ padding, surface }),
           className
         )}
+        ref={opener.popup}
+        finalFocus={finalFocus ?? opener.finalFocus}
         {...props}
       >
         {children}

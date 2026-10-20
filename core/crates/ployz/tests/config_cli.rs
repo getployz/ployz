@@ -2228,7 +2228,7 @@ fn mistakes_fail_with_their_codes() {
         let no_env = error(store, &["get", "--env", "preview"]);
         assert_eq!(
             no_env.pointer("/details/next"),
-            Some(&json!("ployz env new preview --project shop"))
+            Some(&json!("ployz env ls --project shop"))
         );
 
         let malformed = failed(store, &["set", "web.replicas"], 2);
@@ -3502,7 +3502,7 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
         let (_, refused) = run(&["link", "--project", "blog", "--env", "preview"]);
         assert_eq!(
             refused.pointer("/error/details/next"),
-            Some(&json!("ployz env new preview --project blog"))
+            Some(&json!("ployz env ls --project blog"))
         );
 
         ok(store, &["env", "new", "staging", "--project", "blog"]);

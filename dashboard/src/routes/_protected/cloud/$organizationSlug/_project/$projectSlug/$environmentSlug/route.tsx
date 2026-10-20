@@ -1,5 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { Suspense } from "react";
+import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { prefetchStoreEnvironment, requireStoreEnvironment } from "#/collections/route-data";
+import { LeaveWhenClosed } from "./-components/sync/branch-close";
 import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 
 export const Route = createFileRoute(
@@ -15,4 +17,14 @@ export const Route = createFileRoute(
       branchQuery(store));
     return { environmentId: environment.id, store };
   },
+  component: EnvironmentLayout,
 });
+
+function EnvironmentLayout() {
+  return (
+    <>
+      <Suspense fallback={null}><LeaveWhenClosed /></Suspense>
+      <Outlet />
+    </>
+  );
+}
