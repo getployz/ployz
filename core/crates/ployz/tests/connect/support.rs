@@ -1379,6 +1379,7 @@ pub(super) fn created_volume(machine_id: MachineId, create: CreateVolumeRequest)
             bound_bytes: NonZeroU64::new(amount.parse::<u64>().unwrap() * multiplier).unwrap(),
             used_bytes: 0,
             role: None,
+            slot_role: None,
         }
     } else {
         DockerVolumeStorageObservation::Plain {

@@ -169,7 +169,7 @@ class Scratch(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.uploads = []
 
-    def upload(self, found, content, *, run, fork=False, branch="main", expired=False, digest=None):
+    def upload(self, found, content, *, run, fork=False, branch="main", expired=False, digest=None, head_sha=None):
         """Record a CI upload of found, newest first, as the artifacts API lists them."""
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as files:
@@ -178,7 +178,7 @@ class Scratch(unittest.TestCase):
         archive = archive.getvalue()
         row = {"id": len(self.uploads), "name": found.artifact, "expired": expired,
                "digest": digest or "sha256:" + hashlib.sha256(archive).hexdigest(),
-               "workflow_run": {"id": run, "head_sha": f"sha{run}", "head_branch": branch, "repository_id": 1,
+               "workflow_run": {"id": run, "head_sha": head_sha or f"sha{run}", "head_branch": branch, "repository_id": 1,
                                 "head_repository_id": 2 if fork else 1}}
         self.uploads.insert(0, (row, archive))
 
@@ -186,8 +186,11 @@ class Scratch(unittest.TestCase):
         if path.endswith("/zip"):
             stdout.write(next(archive for row, archive in self.uploads if path.endswith(f"/{row['id']}/zip")))
             return None
-        name = path.split("name=")[1].split("&")[0]
-        listing = {"artifacts": [row for row, _ in self.uploads if row["name"] == name]}
+        if "name=" in path:
+            name = path.split("name=")[1].split("&")[0]
+            listing = {"artifacts": [row for row, _ in self.uploads if row["name"] == name]}
+        else:  # every artifact, one page of them
+            listing = {"artifacts": [row for row, _ in self.uploads] if path.endswith("&page=1") else []}
         return SimpleNamespace(stdout=json.dumps(listing).encode())
 
     def build(self, name, content):
@@ -318,10 +321,11 @@ class Main(Scratch):
     def store_build(self, content):
         artifacts.store(artifacts.key("sdk"), self.build("main-build", content), revision=self.built)
 
-    def stale(self):
+    def stale(self, deep=False):
         stderr = io.StringIO()
         with mock.patch.object(sys, "stderr", stderr):
-            meta = artifacts.fetch_main(artifacts.key("sdk"), self.root / "out", "SDK=exact to build", same_surface=True)
+            meta = artifacts.fetch_main(artifacts.key("sdk"), self.root / "out", "SDK=exact to build", same_surface=True,
+                                        deep=deep)
         return meta, stderr.getvalue().strip()
 
     def test_an_edit_behind_an_unchanged_interface_takes_mains_newest_build_and_names_what_differs(self):
@@ -360,6 +364,51 @@ class Main(Scratch):
         meta, said = self.stale()
         self.assertIsNone(meta)
         self.assertEqual(said, "sdk: main has no build in its last 20 commits")
+
+    def test_main_runs_cancelled_past_the_last_20_commits_take_the_newest_upload_at_or_before_the_fork_point(self):
+        """A run of quick merges cancels each main run before it uploads; only deep looks back far enough."""
+        shutil.rmtree(self.root / "cache")
+        self.upload(artifacts.key("sdk", rev=self.built), b"main", run=1, head_sha=self.built)
+        for index in range(25):
+            self.write("crates/ployz-store/src/lib.rs", f"// cancelled {index}\n")
+            self.commit(f"cancelled {index}")
+        artifacts.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        later = artifacts.key("sdk")  # a main build past the fork point, and one from a commit this clone lacks
+        self.upload(later, b"later", run=3, head_sha="0" * 40)
+        artifacts.git("checkout", "-q", "-b", "branch", "HEAD~1")
+        self.upload(later, b"after", run=2, head_sha=artifacts.git("rev-parse", "main").decode().strip())
+        meta, said = self.stale()
+        self.assertIsNone(meta)
+        self.assertEqual(said, "sdk: main has no build in its last 20 commits")
+        meta, said = self.stale(deep=True)
+        self.assertEqual((meta["run"], meta["revision"]), (1, self.built))
+        self.assertRestored(b"main")
+        self.assertTrue(said.startswith(f"sdk: stale main@{self.built[:9]} (ployz-store differs)"))
+
+    def test_deep_restores_the_upload_it_chose_though_a_later_main_commit_uploaded_the_same_key(self):
+        """A main commit past the fork point that reverts to the chosen build's sources uploads under its key too."""
+        shutil.rmtree(self.root / "cache")
+        chosen = artifacts.key("sdk", rev=self.built)
+        self.upload(chosen, b"main", run=1, head_sha=self.built)
+        for index in range(25):
+            self.write("crates/ployz-store/src/lib.rs", f"// cancelled {index}\n")
+            self.commit(f"cancelled {index}")
+        self.write("crates/ployz-store/src/lib.rs", "// one\n")
+        later = self.commit("revert to the built sources")
+        self.assertEqual(artifacts.key("sdk").artifact, chosen.artifact)
+        self.upload(chosen, b"later", run=2, head_sha=later)
+        artifacts.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        artifacts.git("checkout", "-q", "-b", "branch", "HEAD~1")
+        meta, said = self.stale(deep=True)
+        self.assertEqual((meta["run"], meta["revision"]), (1, self.built))
+        self.assertRestored(b"main")
+        self.assertTrue(said.startswith(f"sdk: stale main@{self.built[:9]} "))
+
+    def test_deep_with_no_upload_at_or_before_the_fork_point_builds(self):
+        shutil.rmtree(self.root / "cache")
+        meta, said = self.stale(deep=True)
+        self.assertIsNone(meta)
+        self.assertEqual(said, "sdk: main has no build at or before this checkout's fork point")
 
 
 class Slots(Scratch):

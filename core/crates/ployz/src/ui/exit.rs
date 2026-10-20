@@ -8,7 +8,7 @@ use serde_json::json;
 use super::{Mode, error};
 use crate::failure::Failure;
 
-/// A result printed, but some Servers failed or did not answer.
+/// A result printed, but some Servers failed or did not answer, so part of it is missing.
 pub const PARTIAL_EXIT: u8 = 3;
 
 const SUCCESS_EXIT: u8 = 0;
@@ -78,7 +78,8 @@ fn end(
 }
 
 /// Print `failure` for `mode` and return its exit code. Once a result is
-/// printed, stdout keeps that one object and the failure turns it partial.
+/// printed, stdout keeps that one object and the failure turns it partial,
+/// unless the failure is that result's own outcome.
 fn render(
     failure: &Failure,
     mode: Mode,
@@ -114,11 +115,17 @@ fn render(
     }
     if failure.is_interrupted() {
         CANCELLED_EXIT
-    } else if emitted {
+    } else if emitted && !failure.is_outcome() {
         PARTIAL_EXIT
     } else {
         exit_code(&report.code)
     }
+}
+
+/// The exit code for `failure` once a result has printed.
+#[cfg(test)]
+pub(crate) fn after_result(failure: &Failure) -> u8 {
+    render(failure, Mode::Plain, true, &mut io::sink(), &mut io::sink())
 }
 
 /// What a person sees for `failure` in Plain mode.
@@ -366,6 +373,19 @@ mod tests {
             "error: Could not write the result to stdout.\n  cause: No space left on device (os error 28)\n"
         );
         assert!(super::super::stdout::take_broken().is_none());
+    }
+
+    #[test]
+    fn a_failed_outcome_after_a_printed_result_exits_by_its_code() {
+        let failure = Failure::coded(RpcErrorCode::Internal, "Deployment #3 failed.").outcome();
+        for mode in [Mode::Json, Mode::Plain] {
+            let ended = end(&failure, mode, true);
+            assert_eq!(ended.code, 1);
+            assert_eq!(ended.stdout, "");
+            assert_eq!(ended.stderr, "error: Deployment #3 failed.\n");
+        }
+        let ended = end(&failure.context("Ship failed."), Mode::Json, true);
+        assert_eq!(ended.code, 1);
     }
 
     #[test]
