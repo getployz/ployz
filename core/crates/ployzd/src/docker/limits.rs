@@ -83,17 +83,7 @@ impl ContainerRuntime {
             .inspect_container(container_id.as_str(), None)
             .await
             .map_err(|error| docker_error(container_id, error))?;
-        refuse_unless_running(container_id, &inspected)?;
-        let observed = live_limits(&inspected)?;
-        if observed != requested {
-            return Err(Error::LimitsUnapplied {
-                container_id: *container_id,
-                limits: Box::new(UnappliedLimits {
-                    requested,
-                    observed,
-                }),
-            });
-        }
+        let observed = confirm(container_id, requested, &inspected)?;
         config_operation.put(container_id, spec).await?;
         Ok(ContainerLimitsUpdated {
             container_id: *container_id,
@@ -143,6 +133,29 @@ fn live_limits(inspected: &ContainerInspectResponse) -> Result<ContainerLimits, 
         .map(observed_limits)
         .transpose()
         .map(Option::unwrap_or_default)
+}
+
+/// Read back an updated Container. Docker has already taken the update here, so
+/// a Container found stopped is not a refusal: its limits may be the new ones.
+fn confirm(
+    container_id: &ContainerId,
+    requested: ContainerLimits,
+    inspected: &ContainerInspectResponse,
+) -> Result<ContainerLimits, Error> {
+    if !is_running(inspected) {
+        return Err(Error::StoppedAfterLimitsUpdate(*container_id));
+    }
+    let observed = live_limits(inspected)?;
+    if observed != requested {
+        return Err(Error::LimitsUnapplied {
+            container_id: *container_id,
+            limits: Box::new(UnappliedLimits {
+                requested,
+                observed,
+            }),
+        });
+    }
+    Ok(observed)
 }
 
 fn refuse_unless_running(
@@ -285,6 +298,38 @@ mod tests {
                 }) if id == container_id
             ));
         }
+    }
+
+    #[test]
+    fn a_container_stopped_after_the_update_is_unconfirmed_not_refused() {
+        let container_id = ContainerId::parse("c".repeat(64)).unwrap();
+        let requested = spec(Some(128)).container.resources.limits();
+        let inspected = |running: bool| ContainerInspectResponse {
+            state: Some(bollard::models::ContainerState {
+                running: Some(running),
+                ..bollard::models::ContainerState::default()
+            }),
+            host_config: Some(HostConfig {
+                memory: Some(128),
+                ..HostConfig::default()
+            }),
+            ..ContainerInspectResponse::default()
+        };
+        assert_eq!(
+            confirm(&container_id, requested, &inspected(true)).unwrap(),
+            requested
+        );
+        let stopped = confirm(&container_id, requested, &inspected(false)).unwrap_err();
+        assert!(
+            matches!(stopped, Error::StoppedAfterLimitsUpdate(id) if id == container_id),
+            "{stopped}"
+        );
+        assert!(
+            ployz_core::RpcError::from(&stopped)
+                .details
+                .get("reason")
+                .is_none()
+        );
     }
 
     #[test]

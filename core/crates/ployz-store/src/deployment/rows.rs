@@ -359,7 +359,7 @@ impl Failure {
                 // lost answer, leaves the live limits unknown.
                 let outcome = match LimitsRefusal::from_details(&error.details) {
                     Some(LimitsRefusal::NotRunning) => {
-                        "found the Container not running, so the new limits do not apply. The next deploy replaces it"
+                        "found the Container not running, so the new limits do not apply"
                     }
                     Some(_) => {
                         "did not apply the new limits. The Container keeps its previous limits"
@@ -1218,7 +1218,7 @@ mod tests {
         assert_eq!(
             Failure::of(&refused("not_running", "stopped"), &[]).reason,
             format!(
-                "Server {machine_id} found the Container not running, so the new limits do not apply. The next deploy replaces it"
+                "Server {machine_id} found the Container not running, so the new limits do not apply"
             )
         );
         assert_eq!(

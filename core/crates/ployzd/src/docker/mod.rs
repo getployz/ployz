@@ -1235,6 +1235,9 @@ pub enum Error {
         container_id: ContainerId,
         limits: Box<UnappliedLimits>,
     },
+    /// Docker took the update, but the Container was not running when read back.
+    #[error("container {0} stopped after its limits update")]
+    StoppedAfterLimitsUpdate(ContainerId),
     #[error("resolved spec not found in machine.db for {0}")]
     SpecNotFound(ContainerId),
     #[error("container {0} was not found")]
@@ -1330,6 +1333,7 @@ impl Error {
             | Self::ReplicatedStore(_)
             | Self::Clock(_)
             | Self::LimitsUnapplied { .. }
+            | Self::StoppedAfterLimitsUpdate(_)
             | Self::InvalidVolumeStatus(_)
             | Self::UnexpectedVolumeName { .. }
             | Self::Observation(_) => RpcErrorCode::Internal,

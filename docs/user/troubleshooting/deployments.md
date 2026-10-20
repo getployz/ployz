@@ -126,17 +126,17 @@ kill the Container. Ployz has no command that only replaces a replica. Deploy a 
 setting of the service at the same time, such as a variable, and the deploy replaces the replica
 with the new limits.
 
-**web: Server edge found the Container not running, so the new limits do not apply. The next
-deploy replaces it.**
+**web: Server edge found the Container not running, so the new limits do not apply.**
 
-The replica had stopped before the server could change it. Run the `retry:` command; the deploy
-replaces the stopped replica with one that has the new limits.
+The replica had stopped before the server could change it. Run the `retry:` command. A replica
+still stopped is replaced with one that has the new limits, and one its restart policy brought
+back gets the new limits in place.
 
 **web: Server edge could not confirm the new limits.**, with Docker's reason or the lost
 connection as the cause
 
-The server asked Docker for the change and got an error, read back other limits, or didn't
-answer in time. Which limits the replica runs with now is not known. Run the `retry:` command: a
+The server asked Docker for the change and got an error, read back other limits, found the
+replica stopped right after the change, or didn't answer in time. Which limits the replica runs with now is not known. Run the `retry:` command: a
 replica already on the new limits passes as up to date, and any other is updated again.
 
 ## My running service fails its healthcheck
