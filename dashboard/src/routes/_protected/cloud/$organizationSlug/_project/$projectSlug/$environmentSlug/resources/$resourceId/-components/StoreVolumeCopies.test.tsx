@@ -155,7 +155,7 @@ describe("VolumeCopiesPanel", () => {
 
   it("dates an old copy's and a silent Primary's restore point from another day", async () => {
     const at = new Date(NOW.getTime() - 3 * DAY);
-    panel([member("web-1", "writer"), mirrorAsOf("web-3", at)], row([]));
+    panel([member("web-1", "writer"), oldAsOf("web-3", at)], row([]));
     expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${dated.format(at)}`)]);
     fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
     expect(within(await screen.findByRole("alertdialog")).getByText(`web-3 · data · ${dated.format(at)}`)).toBeTruthy();
@@ -168,7 +168,7 @@ describe("VolumeCopiesPanel", () => {
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
     const at = new Date(2026, 9, 11, 23, 55);
-    panel([member("web-1", "writer"), mirrorAsOf("web-3", at)], row([]));
+    panel([member("web-1", "writer"), oldAsOf("web-3", at)], row([]));
     expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${clock.format(at)}`)]);
     act(() => vi.advanceTimersByTime(2 * 60_000));
     expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${dated.format(at)}`)]);
@@ -176,7 +176,7 @@ describe("VolumeCopiesPanel", () => {
 
   it("gives an old copy's and a silent Primary's restore point from today the time alone", async () => {
     const at = new Date(NOW.getTime() - 5 * 60_000);
-    panel([member("web-1", "writer"), mirrorAsOf("web-3", at)], row([]));
+    panel([member("web-1", "writer"), oldAsOf("web-3", at)], row([]));
     expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${clock.format(at)}`)]);
     fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
     expect(within(await screen.findByRole("alertdialog")).getByText(`web-3 · data · ${clock.format(at)}`)).toBeTruthy();
