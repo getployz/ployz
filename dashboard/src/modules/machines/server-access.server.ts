@@ -9,6 +9,7 @@ import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
+import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -35,9 +36,9 @@ const lockCredential = (credentialId: string) => Effect.gen(function* () {
 const setHolder = (connection: Connection, label: string) =>
   Effect.scoped(Effect.gen(function* () {
     const ployz = yield* Ployz;
-    const client = yield* ployz.connect({ connections: [connection], timeoutMs: SERVER_TIMEOUT_MS });
+    const client = yield* ployz.connect({ connections: [connection], timeoutMs: SERVER_TIMEOUT_MS }, { closeWithin: clusterRead });
     return yield* client.setManagementClient(label);
-  })).pipe(Effect.timeout(SERVER_TIMEOUT_MS));
+  })).pipe(Effect.timeout(SERVER_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
 
 /**
  * Why a Server gave no holder, or null when it sent no reply: Cloud's timeout ran out, or the SDK says the dial failed
@@ -186,10 +187,10 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (
     const management = yield* decryptPairingSecret(row.cloud);
     yield* Effect.scoped(Effect.gen(function* () {
       const ployz = yield* Ployz;
-      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS });
+      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS }, { closeWithin: clusterRead });
       // Clearing an absent or already-cleared slot succeeds, so a retry after a lost reply confirms.
       yield* client.clearManagementClient(serverAccessLabel(row.credentialId));
-    })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2));
+    })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2), withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     yield* drizzle.delete(serverAccess).where(and(
       eq(serverAccess.organizationId, row.organizationId),
       eq(serverAccess.credentialId, row.credentialId),

@@ -47,6 +47,12 @@ type ClusterTime = { readonly budgetMs: number; spentMs: number; reading: number
 
 export const ClusterBudget = Context.Reference<ClusterTime | null>("ployz/ClusterBudget", { defaultValue: () => null });
 
+/**
+ * The Cluster time a short-lived session gets to close when its caller reads the Cluster under its own ceilings. Past
+ * it, the connection is aborted and the close goes on in the background.
+ */
+export const SESSION_CLOSE_CLUSTER_MS = 2_000;
+
 /** A read found the Cluster budget spent, or the budget ran out while it waited. */
 export class ClusterOutOfTime extends Data.TaggedError("ClusterOutOfTime") {}
 
@@ -276,7 +282,8 @@ export function makeOrganizationRuntimeLayer(
             if (connections.length === 0) {
               return { status: "unreachable" as const, error: null };
             }
-            return yield* ployz.connect({ connections }).pipe(
+            // A close spends the caller's Cluster budget; a long-lived session, opened with none, waits for its close.
+            return yield* ployz.connect({ connections }, { closeWithin: clusterRead }).pipe(
               Effect.timeoutOrElse({
                 duration: ORGANIZATION_CONNECT_TIMEOUT,
                 orElse: () => Effect.fail(new PloyzProviderError({

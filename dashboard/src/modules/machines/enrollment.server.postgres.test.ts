@@ -41,7 +41,7 @@ import type { SetupReport } from "#/modules/machines/enrollment";
 import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { asTestDouble } from "#/lib/test-double";
 import { readCollection } from "#/collections/read.server";
-import { firstRuntimeFrame, OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame, OrganizationRuntime, OrganizationRuntimeLive, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -94,6 +94,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
   let closed = 0;
   const connection = {
     error: null as Error | null,
+    closeHangs: false,
     beforeConnect: async (_options: ConnectOptions) => {},
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
   };
@@ -104,7 +105,10 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     await connection.beforeConnect(options);
     if (connection.error) throw connection.error;
     return asTestDouble<Client>()({
-      close: async () => { closed += 1; },
+      close: () => {
+        closed += 1;
+        return connection.closeHangs ? new Promise<void>(() => {}) : Promise.resolve();
+      },
       observeEnrollment: async () => { observations += 1; return snapshot; },
       register: async (assignment: EnrollmentAssignment) => {
         registerCalls += 1;
@@ -733,6 +737,17 @@ describe("organization enrollment coordinator", () => {
     expect((await harness.pool.query("select cluster_key, is_dial_entry from organization_machine")).rows).toEqual(before.rows);
     expect(fake.closed()).toBe(fake.connected.length);
   });
+
+  it("refreshes credentials within its Cluster time, and aborts the connection, when the Machine's session never closes", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    await fake.coordinator.publish({ ...attempt, capability });
+    fake.connection.closeHangs = true;
+    const held = new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), SESSION_CLOSE_CLUSTER_MS + 8_000); });
+    expect(await Promise.race([fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" }), held]))
+      .toMatchObject({ success: { machineId: attempt.machineId } });
+    expect(fake.connected.at(-1)?.signal?.aborted).toBe(true);
+  }, 30_000);
 
   const keyed = (key: number, secret = 0xee) => `ployz1:${Buffer.concat([Buffer.alloc(32, key), Buffer.alloc(32, secret)]).toString("base64url")}`;
 

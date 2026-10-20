@@ -78,10 +78,14 @@ const encryption = makeSecretEncryption("fixture-server-access-encryption-123456
  * as a daemon does, or drop the Set's reply. Failures are the SDK's own RpcError, marked unanswered as it marks them.
  */
 function fakeServers() {
-  const servers = new Map<string, { online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string> }>();
+  const servers = new Map<string, {
+    online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string>; closeHangs?: boolean;
+  }>();
+  const signals: AbortSignal[] = [];
   let sets = 0;
   const layer = makePloyzLayer({
     connect: async (options) => {
+      if (options.signal) signals.push(options.signal);
       const [connection] = options.connections;
       const server = connection && "machine_id" in connection ? servers.get(connection.machine_id ?? "") : undefined;
       if (server?.online === "hangs") return new Promise<never>(() => undefined);
@@ -104,11 +108,11 @@ function fakeServers() {
         setPushTarget: async () => undefined,
         clearManagementClient: async (label: string) => { server.slots.delete(label); },
         inspect: async () => ({ management_clients: [...server.slots.keys()] }),
-        close: async () => undefined,
+        close: () => server.closeHangs ? new Promise<void>(() => {}) : Promise.resolve(),
       });
     },
   });
-  return { servers, layer, sets: () => sets };
+  return { servers, layer, signals, sets: () => sets };
 }
 
 const pairingSecret = "ppair_fixture_server_access";
@@ -831,6 +835,36 @@ it.live(
       }).pipe(Effect.provide(layer));
     }),
   90_000,
+);
+
+it.live(
+  "Server access sets and clears a holder within the CLI's request budget, aborting each connection, when the Server's "
+    + "session never closes",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001256");
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true, slots: new Map<string, string>(), closeHangs: true };
+        fake.servers.set(machine, server);
+
+        const started = Date.now();
+        const access = (yield* cli("POST", "server-access", alice)).json;
+        assert.isBelow(Date.now() - started, 15_000);
+        assert.deepStrictEqual(access.connections?.map((row) => row.machine_id), [machine]);
+
+        yield* database.drizzle.delete(member).where(eq(member.organizationId, alice.organization.id));
+        const swept = yield* retireServerAccess();
+        assert.deepStrictEqual(swept.confirmed, [machine]);
+        assert.strictEqual(server.slots.size, 0);
+        assert.deepStrictEqual(fake.signals.map((signal) => signal.aborted), [true, true]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
 );
 
 it.live(

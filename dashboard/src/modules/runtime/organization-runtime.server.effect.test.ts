@@ -616,3 +616,50 @@ it.effect("Cluster reads in flight together spend their budget once, and time be
     assert.isTrue((yield* Fiber.join(read)) instanceof ClusterOutOfTime);
   }),
 );
+
+/** A runtime whose Cluster answers one frame but whose close settles only with `closed`; `closing` succeeds once it starts. */
+const slowClosing = (closing: Deferred.Deferred<void>, signals: AbortSignal[], closed = new Promise<void>(() => {})) =>
+  makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections }), noPairingChanges)
+    .pipe(Layer.provide(makePloyzLayer({
+      connect: async ({ signal }) => {
+        if (signal) signals.push(signal);
+        return asTestDouble<Client>()({
+          close: () => {
+            Effect.runSync(Deferred.succeed(closing, undefined));
+            return closed;
+          },
+          runtime: { watch: async function* () { yield runtimeWatchFrameFixture(); } },
+        });
+      },
+    })));
+
+it.effect("a look-once frame answers within its Cluster time, and aborts the connection, when the session never closes", () =>
+  Effect.gen(function* () {
+    const closing = yield* Deferred.make<void>();
+    const signals: AbortSignal[] = [];
+    const looking = yield* firstRuntimeFrame("org-1").pipe(Effect.provide(slowClosing(closing, signals)), Effect.forkChild);
+    yield* Deferred.await(closing);
+    yield* TestClock.adjust("5 seconds");
+    assert.deepStrictEqual(yield* Fiber.join(looking), runtimeWatchFrameFixture());
+    assert.deepStrictEqual(signals.map((signal) => signal.aborted), [true]);
+  }),
+);
+
+it.effect("a session opened with no Cluster budget waits for its close", () =>
+  Effect.gen(function* () {
+    const closing = yield* Deferred.make<void>();
+    const signals: AbortSignal[] = [];
+    let close = () => {};
+    const closed = new Promise<void>((resolve) => { close = resolve; });
+    const open = yield* Effect.scoped(Effect.gen(function* () {
+      yield* (yield* OrganizationRuntime).open("org-1");
+    })).pipe(Effect.provide(slowClosing(closing, signals, closed)), Effect.forkChild);
+    yield* Deferred.await(closing);
+    yield* TestClock.adjust("1 hour");
+    assert.isUndefined(open.pollUnsafe());
+    assert.deepStrictEqual(signals.map((signal) => signal.aborted), [false]);
+    close();
+    yield* Fiber.join(open);
+    assert.deepStrictEqual(signals.map((signal) => signal.aborted), [true]);
+  }),
+);

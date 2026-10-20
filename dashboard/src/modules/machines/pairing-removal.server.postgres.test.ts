@@ -8,7 +8,7 @@ import { seedAnonymousStoreOrganization, sendsNowhere } from "#/test/store-cloud
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
-import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntimeLive, SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -41,7 +41,7 @@ describe("protected pairing removal", () => {
 
   function fixture() {
     // The authenticated endpoint distinguishes a cleared Management Client from a replaced client key.
-    const endpoint = { paired: true, online: true, loseAck: false, replaced: false, devices: new Set<string>() };
+    const endpoint = { paired: true, online: true, loseAck: false, replaced: false, closeHangs: false, devices: new Set<string>() };
     const cleared: string[] = [];
     const calls: string[] = [];
     const dialed: ConnectOptions[] = [];
@@ -68,7 +68,7 @@ describe("protected pairing removal", () => {
             if (endpoint.loseAck) throw new Error("Rotation closed the old stream");
           },
           setPushTarget: async (target: string | null) => { calls.push(`push:${target}`); },
-          close: async () => undefined,
+          close: () => endpoint.closeHangs ? new Promise<void>(() => {}) : Promise.resolve(),
         });
       },
     });
@@ -120,6 +120,19 @@ describe("protected pairing removal", () => {
       expect((await harness.pool.query("select * from organization_machine")).rows).toEqual([]);
     } finally { await runtime.dispose(); }
   });
+
+  it("confirms within its Cluster time, and aborts the connection, when the Machine's session never closes", async () => {
+    const fake = fixture();
+    fake.endpoint.closeHangs = true;
+    const runtime = fake.makeRuntime();
+    try {
+      const held = new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), SESSION_CLOSE_CLUSTER_MS + 8_000); });
+      expect(await Promise.race([runtime.runPromise(revokeOrganizationPairing(organizationId)), held])).toEqual({
+        confirmed: true, endpoints: [{ machineId, status: "confirmed" }],
+      });
+      expect(fake.dialed.map((options) => options.signal?.aborted)).toEqual([true]);
+    } finally { await runtime.dispose(); }
+  }, 30_000);
 
   it("confirms on the Machine's response and erases credentials", async () => {
     const fake = fixture();

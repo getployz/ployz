@@ -168,13 +168,16 @@ type PloyzBindings = {
   readonly connect: (options: ConnectOptions) => Promise<Client>;
 };
 
+/** Why a bound cut a close, such as `ClusterOutOfTime`. */
+export type CloseCut = { readonly _tag: string };
+
 /**
  * How a session closes when its scope does. `closeWithin` bounds the close for a short-lived caller (pass `clusterRead`
  * to spend Cluster time on it): a close it cuts aborts the connection and goes on in the background. Without it, the
  * scope waits for the close.
  */
 export type PloyzSessionClose = {
-  readonly closeWithin?: (close: Effect.Effect<void>) => Effect.Effect<void, unknown>;
+  readonly closeWithin?: (close: Effect.Effect<void>) => Effect.Effect<void, CloseCut>;
 };
 
 export interface PloyzService {
@@ -377,6 +380,13 @@ function closeSession(session: Client) {
   );
 }
 
+/** The warning for a close its bound cut: only running out of Cluster time is "in time". */
+export function closeCutWarning(cut: CloseCut) {
+  return cut._tag === "ClusterOutOfTime"
+    ? "The Ployz session didn't close in time, so its connection was aborted."
+    : `The Ployz session's close failed with ${cut._tag}, so its connection was aborted.`;
+}
+
 function closeSessionWithin(
   session: Client,
   controller: AbortController,
@@ -384,8 +394,8 @@ function closeSessionWithin(
 ) {
   return Effect.forkDetach(closeSession(session)).pipe(
     Effect.flatMap((closing) => closeWithin(Fiber.join(closing))),
-    Effect.catch(() => Effect.sync(() => controller.abort()).pipe(
-      Effect.andThen(Effect.logWarning("The Ployz session didn't close in time, so its connection was aborted.")),
+    Effect.catch((error) => Effect.sync(() => controller.abort()).pipe(
+      Effect.andThen(Effect.logWarning(closeCutWarning(error))),
     )),
   );
 }
