@@ -270,6 +270,38 @@ impl VolumeStorage {
             .await
     }
 
+    /// Lowers the bound `held` carries to `wanted`, which releases the difference from the
+    /// Pool's commitment. A slot's copy comes down before its parent, so a write that
+    /// fails between them leaves the committed bound at or above the copy's.
+    pub(super) async fn shrink_bound(&self, held: &Held<'_>, wanted: u64) -> Result<()> {
+        let wanted = wanted.to_string();
+        if let Held::Slot { fs: Some(fs), .. } = held {
+            self.set_verified(&fs.name, "refquota", &wanted).await?;
+        }
+        self.set_verified(&held.dataset().name, "refquota", &wanted)
+            .await
+    }
+
+    /// Bytes the dataset holding `held`'s data references; a slot with no copy holds none.
+    pub(super) async fn referenced(&self, held: &Held<'_>) -> Result<u64> {
+        let dataset = match held {
+            Held::Root(root) => root,
+            Held::Slot { fs: Some(fs), .. } => fs,
+            Held::Slot { fs: None, .. } => return Ok(0),
+        };
+        let value = self
+            .zfs(&["get", "-Hp", "-o", "value", "referenced", &dataset.name])
+            .await?;
+        let value = value.trim_end_matches('\n');
+        value.parse().map_err(|_| {
+            format!(
+                "ZFS reported referenced={value} for dataset {}",
+                dataset.name
+            )
+            .into()
+        })
+    }
+
     /// Sets `property` on `dataset` and reads it back in bytes (`-p`): the value ZFS
     /// reports is the one that counts, whatever the write accepted.
     pub(super) async fn set_verified(

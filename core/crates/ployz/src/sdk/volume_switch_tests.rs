@@ -148,3 +148,22 @@ async fn a_close_after_the_call_starts_is_unanswered() {
     let (failure, ()) = tokio::join!(waiting, closing);
     assert!(failure.unwrap_err().unanswered);
 }
+
+#[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+fn a_set_volume_size_refusal_below_the_floor_passes_through_with_the_floor() {
+    let refused = ployz_core::SetVolumeSizeRefused {
+        reason: ployz_core::SizeRefusal::BelowFloor,
+        bound_bytes: Some(ployz_core::ProvisionedVolumeMaximumBytes::new(
+            std::num::NonZeroU64::new(5_000_000_000).unwrap_or_else(|| unreachable!()),
+        )),
+        capacity: None,
+        floor_bytes: Some(3_000_000_000),
+    }
+    .rpc_error("Volume data shrinks to no less than 3 GB".to_owned());
+    let error = volume_switch_payload("set_volume_size", RpcResponseBody::Error(refused.clone()))
+        .expect_err("a refusal is the Machine's error");
+    assert_eq!(error, refused);
+    assert_eq!(error.details["reason"], json!("below_floor"));
+    assert_eq!(error.details["floor_bytes"], json!(3_000_000_000u64));
+}

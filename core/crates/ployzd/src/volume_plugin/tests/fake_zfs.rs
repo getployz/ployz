@@ -236,6 +236,12 @@ case "$*" in
     require "$6"
     prop "$6" "$5" {slot_bound}
     ;;
+  'get -Hp -o value referenced '*)
+    require "$6"
+    # A dataset references what the listing reports it uses, unless a test sets it.
+    case "$6" in tank/ployz/data) used=966367642 ;; *) used=0 ;; esac
+    prop "$6" referenced "$used"
+    ;;
   'get -Hp -o value '*)
     require "$6"
     prop "$6" "$5" -

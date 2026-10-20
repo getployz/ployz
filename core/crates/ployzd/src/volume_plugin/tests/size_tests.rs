@@ -1,5 +1,5 @@
 //! SetVolumeSize over fake ZFS: `data` holds a 1 GiB bound on its root, or a 3 GiB bound
-//! on its mirror slot and its landed copy, and grows in place.
+//! on its mirror slot and its landed copy, and grows in place or shrinks when allowed.
 
 use std::time::Duration;
 
@@ -23,6 +23,18 @@ fn mirror(test: &TestDir, pool: &str) -> (PathBuf, tokio::task::JoinHandle<io::R
 
 fn grow(maximum_bytes: u64) -> Value {
     json!({"name": "data", "maximum_bytes": maximum_bytes})
+}
+
+fn shrink(maximum_bytes: u64) -> Value {
+    json!({"name": "data", "maximum_bytes": maximum_bytes, "allow_shrink": true})
+}
+
+fn refquota_sets(test: &TestDir) -> Vec<String> {
+    commands(test)
+        .lines()
+        .filter(|line| line.starts_with("zfs set refquota="))
+        .map(str::to_owned)
+        .collect()
 }
 
 fn refusal(reply: &Value) -> &str {
@@ -74,13 +86,8 @@ async fn a_grow_on_a_mirror_raises_the_slot_once_and_then_its_copy() {
         property(&test, SLOT_FS, "refquota").as_deref(),
         Some("4294967296")
     );
-    let log = commands(&test);
-    let sets = log
-        .lines()
-        .filter(|line| line.starts_with("zfs set refquota="))
-        .collect::<Vec<_>>();
     assert_eq!(
-        sets,
+        refquota_sets(&test),
         [
             format!("zfs set refquota=4294967296 {SLOT}"),
             format!("zfs set refquota=4294967296 {SLOT_FS}"),
@@ -181,8 +188,14 @@ async fn a_slot_receiving_is_refused_until_the_receive_lands() {
         "{started}"
     );
 
-    let shrink = post(&socket, "/Volume.Size.Set", grow(GIB / 2)).await;
-    assert_eq!(refusal(&shrink), "shrink", "{shrink}");
+    let shrink_refused = post(&socket, "/Volume.Size.Set", grow(GIB / 2)).await;
+    assert_eq!(refusal(&shrink_refused), "shrink", "{shrink_refused}");
+    let shrink_receiving = post(&socket, "/Volume.Size.Set", shrink(GIB / 2)).await;
+    assert_eq!(
+        refusal(&shrink_receiving),
+        "switching",
+        "{shrink_receiving}"
+    );
     let refused = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
     assert_eq!(refusal(&refused), "switching", "{refused}");
     assert_eq!(refused.pointer("/Err/details/bound_bytes").unwrap(), GIB);
@@ -422,6 +435,145 @@ async fn a_grow_a_first_receive_lands_during_raises_the_copy_it_landed() {
     );
     assert_eq!(
         property(&test, SLOT_FS, "refquota").as_deref(),
+        Some("2147483648")
+    );
+}
+
+/// `data` holds 2 GiB beside a 1 GiB `sibling` on the fixed 4 GiB Pool, which leaves no
+/// room for the sibling to grow until `data` gives some back.
+#[tokio::test]
+async fn a_shrink_lowers_the_bound_and_releases_it_to_the_pool() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "sibling"]);
+    set_property(&test, ROOT, "refquota", "2147483648");
+    set_property(&test, ROOT, "referenced", "0");
+    let grow_sibling = json!({"name": "sibling", "maximum_bytes": 2 * GIB});
+
+    let full = post(&socket, "/Volume.Size.Set", grow_sibling.clone()).await;
+    assert_eq!(refusal(&full), "no_capacity", "{full}");
+
+    let reply = post(&socket, "/Volume.Size.Set", shrink(GIB)).await;
+    assert_eq!(reply, json!({"Ok": {"bound_bytes": GIB}}));
+    assert_eq!(
+        property(&test, ROOT, "refquota").as_deref(),
+        Some("1073741824")
+    );
+
+    let grown = post(&socket, "/Volume.Size.Set", grow_sibling).await;
+    server.abort();
+    assert_eq!(grown, json!({"Ok": {"bound_bytes": 2 * GIB}}));
+}
+
+#[tokio::test]
+async fn a_shrink_below_the_floor_is_refused_with_the_floor_and_the_bound_held() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+
+    let reply = post(&socket, "/Volume.Size.Set", shrink(GIB / 2)).await;
+    server.abort();
+
+    assert_eq!(refusal(&reply), "below_floor", "{reply}");
+    assert_eq!(reply.pointer("/Err/code").unwrap(), "conflict");
+    assert_eq!(reply.pointer("/Err/details/bound_bytes").unwrap(), GIB);
+    assert_eq!(
+        reply.pointer("/Err/details/floor_bytes").unwrap(),
+        966_367_642 + 1_000_000_000u64
+    );
+    assert!(!commands(&test).contains("zfs set "), "{}", commands(&test));
+}
+
+#[tokio::test]
+async fn a_shrink_of_a_root_held_by_a_run_is_refused_before_reading_the_floor() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "readonly-volume"]);
+
+    let reply = post(&socket, "/Volume.Size.Set", shrink(GIB / 2)).await;
+    server.abort();
+
+    assert_eq!(refusal(&reply), "switching", "{reply}");
+    assert_eq!(reply.pointer("/Err/details/bound_bytes").unwrap(), GIB);
+    let log = commands(&test);
+    assert!(!log.contains("referenced"), "{log}");
+    assert!(!log.contains("zfs set "), "{log}");
+}
+
+#[tokio::test]
+async fn a_shrink_on_a_mirror_lowers_the_copy_then_the_slot_and_a_resend_writes_nothing() {
+    let test = TestDir::new();
+    let (socket, server) = mirror(&test, USABLE_POOL);
+
+    let reply = post(&socket, "/Volume.Size.Set", shrink(2 * GIB)).await;
+    assert_eq!(reply, json!({"Ok": {"bound_bytes": 2 * GIB}}));
+    let lowered = [
+        format!("zfs set refquota=2147483648 {SLOT_FS}"),
+        format!("zfs set refquota=2147483648 {SLOT}"),
+    ];
+    assert_eq!(refquota_sets(&test), lowered);
+
+    let again = post(&socket, "/Volume.Size.Set", shrink(2 * GIB)).await;
+    server.abort();
+
+    assert_eq!(again, json!({"Ok": {"bound_bytes": 2 * GIB}}));
+    assert_eq!(refquota_sets(&test), lowered);
+    assert_eq!(
+        property(&test, SLOT, "refquota").as_deref(),
+        Some("2147483648")
+    );
+    assert_eq!(
+        property(&test, SLOT_FS, "refquota").as_deref(),
+        Some("2147483648")
+    );
+}
+
+#[tokio::test]
+async fn a_slot_with_no_copy_shrinks_to_the_floor_of_an_empty_volume() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror"]);
+
+    let below = post(&socket, "/Volume.Size.Set", shrink(999_999_999)).await;
+    assert_eq!(refusal(&below), "below_floor", "{below}");
+    assert_eq!(
+        below.pointer("/Err/details/floor_bytes").unwrap(),
+        1_000_000_000u64
+    );
+
+    let reply = post(&socket, "/Volume.Size.Set", shrink(1_000_000_000)).await;
+    server.abort();
+
+    assert_eq!(reply, json!({"Ok": {"bound_bytes": 1_000_000_000u64}}));
+    assert_eq!(
+        refquota_sets(&test),
+        [format!("zfs set refquota=1000000000 {SLOT}")]
+    );
+    assert!(
+        !commands(&test).contains("referenced"),
+        "{}",
+        commands(&test)
+    );
+}
+
+/// ZFS refuses a `refquota` below what the dataset references, as when a writer races
+/// past the floor between the read and the write.
+#[tokio::test]
+async fn a_shrink_zfs_refuses_is_an_error_and_leaves_the_bound_held() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, ROOT, "refquota", "2147483648");
+    set_property(&test, ROOT, "referenced", "0");
+    fs::write(
+        test.0.join("props/fail-command"),
+        "set refquota=1073741824 tank/ployz/data",
+    )
+    .unwrap();
+
+    let reply = post(&socket, "/Volume.Size.Set", shrink(GIB)).await;
+    let held = post(&socket, "/Volume.Size.Set", grow(2 * GIB)).await;
+    server.abort();
+
+    assert_eq!(reply.pointer("/Err/code").unwrap(), "internal", "{reply}");
+    assert_eq!(held, json!({"Ok": {"bound_bytes": 2 * GIB}}));
+    assert_eq!(
+        property(&test, ROOT, "refquota").as_deref(),
         Some("2147483648")
     );
 }
