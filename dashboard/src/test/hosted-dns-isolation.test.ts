@@ -5,6 +5,9 @@ import { testConfigEnvironment } from "#/test/config-environment";
 
 const CLOSED = "http://127.0.0.1:9/";
 
+/** fetch fails with `fetch failed`; the guard's refusal is its cause. */
+const refusal = (cause: unknown) => (cause instanceof TypeError ? cause.cause : cause);
+
 const hostedDnsUrl = (provider: ConfigProvider.ConfigProvider) =>
   AppConfig.make.pipe(
     Effect.map((config) => config.ployz.hostedDnsUrl.href),
@@ -31,7 +34,7 @@ describe("Hosted DNS in tests", () => {
       const env = { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused", PLOYZ_HOSTED_DNS_URL: "https://dns.ployz.app/" };
       const endpoint = yield* hostedDnsUrl(ConfigProvider.fromEnv({ env }));
       const failure = yield* Effect.flip(Effect.tryPromise(() => fetch(new URL("v1/names", endpoint), { method: "POST" })));
-      assert.include(String(failure.cause), "Tests must not reach the real Hosted DNS");
+      assert.include(String(refusal(failure.cause)), "Tests must not reach the real Hosted DNS");
     }),
   );
 
@@ -40,7 +43,7 @@ describe("Hosted DNS in tests", () => {
     (endpoint) =>
       Effect.gen(function* () {
         const failure = yield* Effect.flip(Effect.tryPromise(() => fetch(new URL("v1/names", endpoint), { method: "POST" })));
-        assert.include(String(failure.cause), "Tests must not reach the real Hosted DNS");
+        assert.include(String(refusal(failure.cause)), "Tests must not reach the real Hosted DNS");
       }),
   );
 });

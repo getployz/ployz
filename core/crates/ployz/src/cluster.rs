@@ -60,6 +60,8 @@ pub struct Client {
     connection: Connection,
     source: ConnectionSource,
     connector: Arc<dyn Connector>,
+    /// The Machine the entry described itself as when it was last confirmed.
+    entry: Option<MachineId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -82,6 +84,7 @@ impl Client {
             connection,
             source,
             connector,
+            entry: None,
         }
     }
 
@@ -95,6 +98,19 @@ impl Client {
         &self.source
     }
 
+    /// The entry Machine this client reaches, as the daemon on its current channel
+    /// described itself when confirmed. None when it didn't.
+    pub(crate) fn entry_machine(&self) -> Option<MachineId> {
+        self.entry
+    }
+
+    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
+    async fn redial(&mut self) -> Result<(), ConnectError> {
+        self.entry = None;
+        self.channel = self.connector.connect(&self.connection).await?;
+        self.confirm_entry().await
+    }
+
     /// One-shot check that this channel reaches a daemon. No unary retry — a
     /// down daemon must not stall the connection walk.
     ///
@@ -102,7 +118,7 @@ impl Client {
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
     /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
-    pub(crate) async fn confirm_entry(&self) -> Result<(), ConnectError> {
+    pub(crate) async fn confirm_entry(&mut self) -> Result<(), ConnectError> {
         let confirm = async {
             let payload =
                 op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
@@ -124,15 +140,16 @@ impl Client {
                             },
                         ));
                     }
-                    Ok(())
+                    Ok(Some(description.machine_id))
                 }
-                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(()),
+                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(None),
                 Err(error) => Err(error),
             }
         };
-        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
+        self.entry = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
             .await
-            .map_err(|_| ConnectError::EntryNotReady)?
+            .map_err(|_| ConnectError::EntryNotReady)??;
+        Ok(())
     }
 
     /// The id of the Machine this client enters by.
@@ -332,11 +349,7 @@ impl Client {
         deadline: tokio::time::Instant,
     ) -> Result<T::Response, ConnectError> {
         if redial {
-            let reconnect = async {
-                self.channel = self.connector.connect(&self.connection).await?;
-                self.confirm_entry().await
-            };
-            match tokio::time::timeout_at(deadline, reconnect).await {
+            match tokio::time::timeout_at(deadline, self.redial()).await {
                 Ok(confirmed) => confirmed?,
                 Err(_) => {
                     return Err(tonic::Status::deadline_exceeded(
@@ -362,8 +375,7 @@ impl Client {
         redial: bool,
     ) -> Result<T::Response, ConnectError> {
         if redial {
-            self.channel = self.connector.connect(&self.connection).await?;
-            self.confirm_entry().await?;
+            self.redial().await?;
         }
         self.call_once::<T>(payload, target).await
     }
@@ -376,12 +388,20 @@ impl Client {
         target: &MachineTarget,
         timeout: Option<Duration>,
     ) -> Result<T::Response, RpcError> {
-        let payload = T::into_request(request)
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(timeout, self.call_once::<T>(payload, Some(target)))
+        self.invoke_answered::<T>(request, target, timeout)
             .await
             .map_err(rpc_error)
+    }
+
+    /// [`Self::invoke`], keeping whether the failure came back from a daemon or no reply came.
+    pub(crate) async fn invoke_answered<T: Rpc>(
+        &self,
+        request: T::Request,
+        target: &MachineTarget,
+        timeout: Option<Duration>,
+    ) -> Result<T::Response, ConnectError> {
+        let payload = T::into_request(request).encode()?;
+        apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
     }
 
     /// One unary RPC from an already-shaped request body. No retry, as [`Self::invoke`].
@@ -676,6 +696,7 @@ impl Client {
             sought,
             held: held.into_iter().collect(),
             unanswered: unanswered.into_iter().collect(),
+            failure: None,
         })
     }
 
@@ -1624,20 +1645,21 @@ async fn data_loss_on_machine(
             ..failure.error
         })?;
     Ok(ObservedDataLoss {
-        data_loss: volumes
-            .value
-            .volumes
-            .into_iter()
-            .map(|volume| DataLoss::DockerVolume { id: volume.id })
-            .chain(
-                volumes
-                    .value
-                    .failures
-                    .into_iter()
-                    .map(|failure| DataLoss::DockerVolume { id: failure.id }),
-            )
-            .collect(),
+        data_loss: volumes_lost(volumes.value),
     })
+}
+
+/// The Docker Volumes a reset loses: every one listed or failing to list, but the
+/// builder's cache, which is no one's data.
+fn volumes_lost(inventory: VolumeInventory) -> Vec<DataLoss> {
+    inventory
+        .volumes
+        .into_iter()
+        .map(|volume| volume.id)
+        .chain(inventory.failures.into_iter().map(|failure| failure.id))
+        .filter(|id| !ployz_build::is_builder_cache(id.name.as_str()))
+        .map(|id| DataLoss::DockerVolume { id })
+        .collect()
 }
 
 fn server_did_not_respond(name: &MachineName) -> RpcError {

@@ -55,7 +55,8 @@ with `approval_required`, anything it would remove, and a link to your organizat
 
 Until you answer, trying again only asks again, and nothing changes. A denied approval stays
 denied. Only you approve, in the dashboard. The agent can't approve its own request, and
-`ployz org approval approve` refuses it too.
+`ployz org approval approve` refuses it too with `forbidden`, before it asks for the
+Organization's name, with or without a terminal and in `--json`.
 
 ## Disconnect
 

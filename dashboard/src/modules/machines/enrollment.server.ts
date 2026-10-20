@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
-import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type RegisterRequest } from "@ployz/sdk";
+import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type MachineName, type RegisterRequest } from "@ployz/sdk";
 import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -14,7 +14,7 @@ import { organizationPairing as schemaOrganizationPairing } from "#/modules/runt
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { Ployz, ployzVersion } from "#/modules/runtime/ployz.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime, clusterRead, OrganizationRuntime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
   enrollmentExpiry,
@@ -237,6 +237,7 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
         organizationId: schemaMachineEnrollmentToken.organizationId,
         claimedMachineId: schemaMachineEnrollmentToken.claimedMachineId,
         claimedPublicKey: schemaMachineEnrollmentToken.claimedPublicKey,
+        claimedName: schemaMachineEnrollmentToken.claimedName,
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
         enrollmentRole: schemaMachineEnrollmentToken.enrollmentRole,
         serverEnrollmentId: schemaMachineEnrollmentToken.serverEnrollmentId,
@@ -266,6 +267,7 @@ const requireTokenClaimedBy = Effect.fn("MachineEnrollment.requireTokenClaim")(
     return {
       organizationId: row.organizationId,
       claimedPublicKey: row.claimedPublicKey,
+      claimedName: row.claimedName,
       spent: row.joinedMachineId !== null,
       serverEnrollmentId: row.serverEnrollmentId,
     };
@@ -295,12 +297,13 @@ const claimHoldsSlot = sql`${schemaMachineEnrollmentToken.claimedAt} > clock_tim
  * Claiming takes a join slot, and renews a claim whose slot lapsed.
  */
 const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
-  function* (token: string, identity: { readonly machineId: MachineId; readonly publicKey: string }) {
+  function* (token: string, identity: { readonly machineId: MachineId; readonly publicKey: string; readonly name: MachineName }) {
     const { drizzle } = yield* Database;
     const [claimed] = yield* drizzle.update(schemaMachineEnrollmentToken)
       .set({
         claimedMachineId: identity.machineId,
         claimedPublicKey: identity.publicKey,
+        claimedName: identity.name,
         claimedAt: sql`case when ${claimHoldsSlot} then ${schemaMachineEnrollmentToken.claimedAt} else now() end`,
         updatedAt: new Date(),
       })
@@ -517,6 +520,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     organizationId: string;
     publicKey: string;
     machineId: MachineId;
+    name: MachineName;
     role: EnrollmentRole | null;
     joinSlots: number;
   }) {
@@ -582,6 +586,19 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   },
 );
 
+/**
+ * A session to the Organization's Cluster and its enrollment snapshot. Its Cluster time is bounded well inside the CLI's
+ * request timeout, so a Cluster that never answers is reported, not waited on. Only a connection that fails or doesn't
+ * come in time reads unreachable; anything else fails as itself.
+ */
+export const observeClusterEnrollment = Effect.fn("MachineEnrollment.observeCluster")(function* (organizationId: string) {
+  const opened = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (opened.status === "unreachable") return { kind: "unreachable" as const };
+  if (opened.status === "no_connection") return { kind: "no_connection" as const };
+  return { kind: "joined" as const, session: opened.connected, snapshot: yield* opened.connected.observeEnrollment().pipe(clusterRead) };
+}, Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.succeed({ kind: "unreachable" as const })),
+withClusterBudget(SERVER_REACH_TIMEOUT_MS));
+
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   function* (input: { token: string; identity: EnrollmentIdentity; joinSlots?: number }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
@@ -595,6 +612,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       organizationId: token.organizationId,
       publicKey: input.identity.publicKey,
       machineId: input.identity.machineId,
+      name: input.identity.name,
       role: token.enrollmentRole,
       joinSlots: input.joinSlots ?? JOIN_SLOTS,
     };
@@ -627,18 +645,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       if (access.generation !== hashEnrollmentToken(pairing.secret)) {
         return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
       }
-      const runtime = yield* OrganizationRuntime;
-      // Bounded well inside the CLI's request timeout, so a Cluster that never answers is reported, not waited on.
-      // Only a connection that fails or doesn't come in time reads unreachable; anything else fails as itself.
-      const joined = yield* Effect.gen(function* () {
-        const opened = yield* runtime.open(token.organizationId);
-        if (opened.status === "unreachable") return { kind: "unreachable" as const };
-        if (opened.status === "no_connection") return { kind: "no_connection" as const };
-        return { kind: "joined" as const, session: opened.connected, snapshot: yield* opened.connected.observeEnrollment() };
-      }).pipe(Effect.timeoutOrElse({
-        duration: SERVER_REACH_TIMEOUT_MS,
-        orElse: () => Effect.succeed({ kind: "unreachable" as const }),
-      }));
+      const joined = yield* observeClusterEnrollment(token.organizationId);
       // The pairing went while connecting: Cloud access was removed.
       if (joined.kind === "no_connection") return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
       if (joined.kind === "unreachable") return yield* unreachable();
@@ -735,16 +742,18 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         }
         if (expectedIv === undefined) return saved.encryptedCapability.iv;
         yield* drizzle.update(organizationMachine).set({
-          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null, updatedAt: new Date(),
+          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+          machineName: token.claimedName ?? saved.machineName, updatedAt: new Date(),
         }).where(scope);
       } else {
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
           clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
-          isDialEntry: pairing.founderClaimMachineId === input.machineId,
+          machineName: token.claimedName, isDialEntry: pairing.founderClaimMachineId === input.machineId,
         }).onConflictDoUpdate({ target: [organizationMachine.organizationId, organizationMachine.machineId],
           set: {
             clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
+            machineName: sql`coalesce(excluded.machine_name, ${organizationMachine.machineName})`,
             isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date(),
           },
         });

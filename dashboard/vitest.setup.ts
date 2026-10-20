@@ -1,4 +1,5 @@
 import { onlineManager } from "@tanstack/react-query";
+import { installEgressGuard } from "#/test/egress-guard";
 
 process.env["NODE_ENV"] ??= "test";
 process.env["DATABASE_URL"] ??= "postgres://postgres:postgres@localhost:5432/ployz_cloud";
@@ -14,18 +15,8 @@ process.env["POLAR_PRODUCT_ID"] ??= "22222222-2222-4222-8222-222222222222";
 process.env["PLOYZ_HOSTED_DNS_URL"] = "http://127.0.0.1:9/";
 process.env["APP_ENCRYPTION_SECRET"] ??= "test-app-encryption-secret-1234567890";
 
-// Backstop for a provider that names its own Hosted DNS URL: a request to the real service fails here.
-const REAL_HOSTED_DNS = "dns.ployz.app";
-if (!(REAL_HOSTED_DNS in globalThis.fetch)) {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = Object.assign((input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(input instanceof Request ? input.url : input);
-    const host = url.hostname.toLowerCase().replace(/\.$/, "");
-    return host === REAL_HOSTED_DNS || host.endsWith(`.${REAL_HOSTED_DNS}`)
-      ? Promise.reject(new Error(`Tests must not reach the real Hosted DNS: ${url.href}`))
-      : realFetch(input, init);
-  }, { [REAL_HOSTED_DNS]: true });
-}
+// No test reaches a production service, whatever URL a provider names: only loopback answers.
+installEgressGuard();
 
 // isolate: false lets a jsdom file inherit the previous file's rendered tree; node files have no document.
 globalThis.document?.body.replaceChildren();

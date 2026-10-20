@@ -74,6 +74,19 @@ describe("the mirror sync", () => {
     `);
   });
 
+  it("refreshes a CLI mirror on a restored Volume", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '[]'`);
+    expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+  });
+
+  it("leaves the old primary a move left alone", async () => {
+    await harness.pool.query(`delete from volume_placement`);
+    members = [member("web-1", "writer"), member("web-2", "old")];
+    expect((await sync()).lines).toEqual(["db has no mirror"]);
+    expect(asked).toEqual([]);
+  });
+
   it("takes one snapshot and makes one hand-off, with no run", async () => {
     expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);
     expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);

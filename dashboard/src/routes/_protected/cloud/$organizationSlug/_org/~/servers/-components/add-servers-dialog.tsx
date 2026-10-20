@@ -10,10 +10,11 @@ import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
-import { installLines, cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
+import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
 import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
-import { useCanAddServers, useMintFleetToken } from "./use-waiting";
+import { ADD_SERVERS_REFUSED, useMintFleetToken } from "./use-waiting";
 
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -27,11 +28,11 @@ export function AddServersDialog({ organizationSlug, label = "Add servers", vari
 }) {
   const [open, setOpen] = useState(false);
   const mint = useMintFleetToken(organizationSlug);
-  const { allowed, refusal } = useCanAddServers(organizationSlug);
+  const gate = useRoleGate(organizationSlug, "servers:add", ADD_SERVERS_REFUSED);
   useBlocker({ shouldBlockFn: () => true, disabled: !mint.holding });
   return (
     <>
-      <Button type="button" variant={variant} disabled={!allowed} title={refusal} onClick={() => { mint.reset(); setOpen(true); }}>
+      <Button type="button" variant={variant} disabled={!gate.allowed} title={gate.reason} onClick={() => { mint.reset(); setOpen(true); }}>
         <PlusIcon data-icon="inline-start" />
         {label}
       </Button>
@@ -54,6 +55,10 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
   const nameOk = name.trim() === "" || NAME_PATTERN.test(name.trim());
   const nameInput = useId();
   const nameRule = useId();
+  const arrivalSwitch = useId();
+  const maxInput = useId();
+  const maxScope = useId();
+  const maxWarning = useId();
 
   if (mint.data !== undefined && mint.variables !== undefined) {
     return (
@@ -108,18 +113,18 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
       </div>
       <FieldGroup className="border-t pt-4">
         <Field orientation="horizontal">
-          <Switch id="enroll-on-arrival" checked={autoEnroll} onCheckedChange={setAutoEnroll} />
+          <Switch id={arrivalSwitch} checked={autoEnroll} onCheckedChange={setAutoEnroll} />
           <FieldContent>
-            <FieldLabel htmlFor="enroll-on-arrival">Enroll on arrival</FieldLabel>
+            <FieldLabel htmlFor={arrivalSwitch}>Enroll on arrival</FieldLabel>
             <FieldDescription>Skip the review. They join as they arrive.</FieldDescription>
           </FieldContent>
         </Field>
         {autoEnroll ? (
           <Field>
-            <FieldLabel htmlFor="enroll-max">Maximum servers</FieldLabel>
-            <Input id="enroll-max" type="number" min={1} max={1000} step={1} value={maxServers} onChange={(event) => setMaxServers(event.target.value)} aria-invalid={!maxOk} className="w-20 tabular-nums" />
-            <FieldDescription>Only joins an existing cluster. Enroll the first server yourself.</FieldDescription>
-            <FieldDescription className="text-warning">Anyone with this token can join up to {maxOk ? max : "N"} servers before it expires.</FieldDescription>
+            <FieldLabel htmlFor={maxInput}>Maximum servers</FieldLabel>
+            <Input id={maxInput} type="number" min={1} max={1000} step={1} value={maxServers} onChange={(event) => setMaxServers(event.target.value)} aria-invalid={!maxOk} aria-describedby={`${maxScope} ${maxWarning}`} className="w-20 tabular-nums" />
+            <FieldDescription id={maxScope}>Only joins an existing cluster. Enroll the first server yourself.</FieldDescription>
+            <FieldDescription id={maxWarning} className="text-warning">Anyone with this token can join up to {maxOk ? max : "N"} servers before it expires.</FieldDescription>
           </Field>
         ) : null}
       </FieldGroup>
@@ -141,14 +146,13 @@ function MintFlow({ organizationSlug, mint, onDone }: { organizationSlug: string
 }
 
 function MintDone({ organizationSlug, minted, onDone }: { organizationSlug: string; minted: Minted; onDone: () => void }) {
-  const lines = installLines(minted);
   return (
     <div className="flex flex-col gap-3">
       <DialogHeader>
         <DialogTitle className="font-mono">{minted.name}</DialogTitle>
         <DialogDescription>{minted.autoEnroll === null ? "Waits for you" : `Auto up to ${minted.autoEnroll.maxServers}`}</DialogDescription>
       </DialogHeader>
-      <InstallTabs lines={lines} />
+      <InstallTabs target={minted} />
       <div className="flex flex-col gap-0.5 text-sm">
         <p className="text-muted-foreground">{minted.autoEnroll === null ? "Installs Docker and Ployz. Nothing joins until you say so." : `Installs Docker and Ployz. Up to ${minted.autoEnroll.maxServers} servers join your existing cluster when ready.`}</p>
         {minted.autoEnroll === null ? <p className="text-muted-foreground">To skip the review, run <code className="font-mono text-foreground">ployz server add --command</code> instead. It enrolls one server now.</p> : null}

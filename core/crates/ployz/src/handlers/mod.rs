@@ -56,10 +56,13 @@ pub fn run() -> Result<(), Error> {
             // A word the tree lacks may be a command Cloud published since the
             // cache was written, or one never cached: one refresh, then parse again.
             let Some(published) = published_after_miss(&error, &command, &args)? else {
-                return Err(usage_failure(error));
+                return Err(usage_failure(misplaced_flag(error, &command, &args)));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
-            command.clone().try_get_matches().map_err(usage_failure)?
+            command
+                .clone()
+                .try_get_matches()
+                .map_err(|error| usage_failure(misplaced_flag(error, &command, &args)))?
         }
     };
     let color = matches
@@ -140,6 +143,43 @@ fn wants_json(args: &[std::ffi::OsString]) -> bool {
         .any(|arg| arg == "--json")
 }
 
+/// A flag written before the command that takes it, `ployz --project web status`:
+/// clap would offer the nearest top-level flag, so name the command's own instead.
+fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString]) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if error.kind() != ErrorKind::UnknownArgument {
+        return error;
+    }
+    let Some(ContextValue::String(invalid)) = error.get(ContextKind::InvalidArg) else {
+        return error;
+    };
+    let Some(long) = invalid
+        .strip_prefix("--")
+        .and_then(|flag| flag.split('=').next())
+    else {
+        return error;
+    };
+    let path = reached(tree, args);
+    let takes = !path.is_empty()
+        && path
+            .split(' ')
+            .try_fold(tree, |command, name| command.find_subcommand(name))
+            .is_some_and(|command| {
+                command
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some(long))
+            });
+    if !takes {
+        return error;
+    }
+    clap::Error::raw(
+        ErrorKind::UnknownArgument,
+        format!(
+            "unexpected argument '{invalid}' found\n\n  tip: '{path} --{long}' exists; put it after the command\n"
+        ),
+    )
+}
+
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
 fn usage_failure(error: clap::Error) -> Error {
     use clap::error::ErrorKind;
@@ -149,12 +189,15 @@ fn usage_failure(error: clap::Error) -> Error {
         error.kind(),
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
     ) {
-        // clap's own `exit` swallows a closed stdout instead of dying of it.
+        // clap's own `exit` swallows a closed stdout instead of dying of it, and
+        // a full one: `ui::exit` fails a write stdout could not take.
         let mut stdout = crate::ui::stdout();
         let _ = write!(stdout, "{}", error.render().ansi());
         let _ = stdout.flush();
-        std::process::exit(0);
+        return Error::exit(0);
     }
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let error = operator::container_column_asked(error, &args);
     if !wants_json {
         error.exit();
     }
@@ -215,7 +258,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     if context_above_leaf(matches) {
         // Store commands address a Project and Environment, never a context.
-        let takes = |id| leaf_matches(matches).try_get_one::<String>(id).is_ok();
+        let takes = |id| takes_value(path.split(' '), id);
         return Err(Error::usage(if takes("context") {
             format!("--context goes after the command: ployz {path} --context NAME")
         } else if takes("project") {
@@ -225,6 +268,29 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         }));
     }
     (verb.run)(matches)
+        .map_err(|failure| context::with_no_contexts_next(failure, leaf_matches(matches)))
+}
+
+/// Whether the compiled command at `words` takes a value for the option `id`; a
+/// positional of the same name is not the option. Read from the command tree: `ArgMatches` refuses unknown ids only in debug builds. The tree is
+/// unbuilt, so a global argument still sits on the ancestor that declares it.
+fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
+    let root = crate::cli::compiled();
+    let takes = |arg: &clap::Arg| {
+        arg.get_id() == id && arg.get_long().is_some() && arg.get_action().takes_values()
+    };
+    let mut command = &root;
+    let mut inherited = false;
+    for word in words {
+        let Some(child) = command.find_subcommand(word) else {
+            break;
+        };
+        inherited |= command
+            .get_arguments()
+            .any(|arg| arg.is_global_set() && takes(arg));
+        command = child;
+    }
+    inherited || command.get_arguments().any(takes)
 }
 
 /// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
@@ -505,12 +571,27 @@ where
         &'a mut crate::connect::Client,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
 {
+    with_lister(root, || Err(server::no_servers()), work)
+}
+
+/// [`with_reader`] for a list: an Organization with no Servers yet runs `empty` instead.
+fn with_lister<F>(
+    root: &ArgMatches,
+    empty: impl FnOnce() -> Result<(), Error>,
+    work: F,
+) -> Result<Option<crate::cloud_account::Credential>, Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         match server::reach(leaf, context).await? {
-            server::Reach::Dial(mut client) => work(&mut client).await.map(|()| None),
-            server::Reach::Ask(credential) => Ok(Some(credential)),
+            Some(server::Reach::Dial(mut client)) => work(&mut client).await.map(|()| None),
+            Some(server::Reach::Ask(credential)) => Ok(Some(credential)),
+            None => empty().map(|()| None),
         }
     })
 }
@@ -563,6 +644,71 @@ mod tests {
         ])));
         assert!(!context_above_leaf(&parsed(&["ployz", "ps", "-c", "prod"])));
         assert!(!context_above_leaf(&parsed(&["ployz", "ps"])));
+    }
+
+    #[test]
+    fn a_context_above_the_leaf_names_where_the_leaf_takes_its_scope() {
+        let mut command = command();
+        for (args, expected) in [
+            (
+                &["ps"][..],
+                "--context goes after the command: ployz ps --context NAME",
+            ),
+            (
+                &["config", "ls"],
+                "ployz config ls doesn't use a context; it takes --project and --env",
+            ),
+            (&["org", "ls"], "ployz org ls doesn't use a context"),
+            // A positional named `project` is not the --project option.
+            (
+                &["project", "rename", "old", "new"],
+                "ployz project rename doesn't use a context",
+            ),
+            // `history` hands its global --project and --env down to its actions.
+            (
+                &["history", "restore", "1"],
+                "ployz history restore doesn't use a context; it takes --project and --env",
+            ),
+            (
+                &["history", "undo", "1"],
+                "ployz history undo doesn't use a context; it takes --project and --env",
+            ),
+        ] {
+            let matches = command
+                .clone()
+                .try_get_matches_from(["ployz", "-c", "prod"].iter().chain(args))
+                .unwrap();
+            assert_eq!(
+                dispatch(&matches, &mut command).unwrap_err().to_string(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn a_flag_typed_before_its_command_names_the_command() {
+        let tip = |args: &[&str]| {
+            let tree = crate::cli::compiled();
+            let args = args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let error = tree
+                .clone()
+                .try_get_matches_from(std::iter::once("ployz".into()).chain(args.clone()))
+                .unwrap_err();
+            misplaced_flag(error, &tree, &args).to_string()
+        };
+        let error = tip(&["--project", "zs1", "status"]);
+        assert!(error.contains("tip: 'status --project' exists"), "{error}");
+        assert!(!error.contains("--connect"), "{error}");
+        let error = tip(&["--project=zs1", "service", "ls"]);
+        assert!(
+            error.contains("tip: 'service ls --project' exists"),
+            "{error}"
+        );
+        let error = tip(&["--nonsense", "status"]);
+        assert!(!error.contains("exists; put it after"), "{error}");
     }
 
     fn command() -> Command {
@@ -651,6 +797,7 @@ mod tests {
                 failed_machine: Some(failed),
                 logs: vec![LogTail {
                     service: QualifiedService::system_ingress(),
+                    name: QualifiedService::system_ingress().name,
                     machine: failed,
                     server: "same-name".into(),
                     log: None,
@@ -822,7 +969,13 @@ mod tests {
                 .unwrap_err()
                 .causes()
                 .get(..2),
-            Some(&["Could not connect to the Machine.", "transport error"].map(String::from)[..]),
+            Some(
+                &[
+                    "Couldn't open a connection to the Server.",
+                    "transport error"
+                ]
+                .map(String::from)[..]
+            ),
         );
     }
 

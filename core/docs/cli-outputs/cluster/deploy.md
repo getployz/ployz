@@ -84,7 +84,7 @@ web (create)
   web.replicas: 1 -> 2
 api (create)
   api.startCommand: null -> "sh -c 'echo api up; sleep 100000'"
-Decided by the Servers when it runs: operations.
+Decided by the Servers when it runs: which containers start and stop.
 next: ployz deploy --expect-version 6:0:0.0
 ```
 
@@ -383,9 +383,9 @@ applied: web unchanged, api deployed
 ### deploy --events NDJSON (first 15 lines)
 
 ```
-{"nodes":[{"id":"a085f2f9-e4df-439e-9d34-99e5b3ee7405","name":"web","outcome":"pending","type":"service"},{"id":"df2493a4-6fa5-4eb2-a66d-c198a6232238","name":"api","outcome":"pending","type":"service"}],"status":"queued","type":"deployment"}
-{"nodes":[{"id":"a085f2f9-e4df-439e-9d34-99e5b3ee7405","name":"web","outcome":"unchanged","type":"service"},{"id":"df2493a4-6fa5-4eb2-a66d-c198a6232238","name":"api","outcome":"pending","type":"service"}],"status":"running","type":"deployment"}
-{"nodes":[{"id":"a085f2f9-e4df-439e-9d34-99e5b3ee7405","name":"web","outcome":"unchanged","type":"service"},{"id":"df2493a4-6fa5-4eb2-a66d-c198a6232238","name":"api","outcome":"deployed","type":"service"}],"status":"applied","type":"deployment"}
+{"id":"bcb27adc-b55b-40dd-a889-0890a61a739e","nodes":[{"id":"a085f2f9-e4df-439e-9d34-99e5b3ee7405","name":"web","outcome":"pending","type":"service"},{"id":"df2493a4-6fa5-4eb2-a66d-c198a6232238","name":"api","outcome":"pending","type":"service"}],"number":3,"status":"queued","type":"deployment"}
+{"id":"bcb27adc-b55b-40dd-a889-0890a61a739e","nodes":[{"id":"a085f2f9-e4df-439e-9d34-99e5b3ee7405","name":"web","outcome":"unchanged","type":"service"},{"id":"df2493a4-6fa5-4eb2-a66d-c198a6232238","name":"api","outcome":"pending","type":"service"}],"number":3,"status":"running","type":"deployment"}
+{"id":"bcb27adc-b55b-40dd-a889-0890a61a739e","nodes":[{"id":"a085f2f9-e4df-439e-9d34-99e5b3ee7405","name":"web","outcome":"unchanged","type":"service"},{"id":"df2493a4-6fa5-4eb2-a66d-c198a6232238","name":"api","outcome":"deployed","type":"service"}],"number":3,"status":"applied","type":"deployment"}
 ```
 
 ### deploy with nothing staged
@@ -954,7 +954,7 @@ Deployment #7 of shop/production: failed
   web: create Container failed: Docker operation failed: Docker responded with status code 404: failed to resolve reference "docker.io/library/alpine:does-not-exist": docker.io/library/alpine:does-not-exist: not found
   web: failed
   api: unchanged
-# exit 3
+# exit 1
 
 ```
 
@@ -962,7 +962,7 @@ Deployment #7 of shop/production: failed
 
 ```console
 $ ployz deploy
-# exit 3
+# exit 1
 ```
 
 stdout:

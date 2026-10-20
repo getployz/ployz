@@ -186,7 +186,7 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
     assert_eq!(error.to_string(), "invalid log time \"notatime\"");
     assert_eq!(
         crate::ui::chain_text(&ConnectError::Rpc(error)),
-        "Machine RPC failed: invalid log time \"notatime\""
+        "Ployz's call to your Server's daemon failed: invalid log time \"notatime\""
     );
 }
 
@@ -290,6 +290,7 @@ fn each_connect_failure_names_one_retry_class() {
         (ConnectError::EntryNotReady, Retry::AfterRestart),
         (remote(RpcErrorCode::Unavailable), Retry::Never),
         (ConnectError::ClientRefused, Retry::Never),
+        (ConnectError::OlderMachine, Retry::Never),
         (ConnectError::SshClientMissing, Retry::Never),
     ] {
         assert_eq!(error.retry(), retry, "{error}");
@@ -343,6 +344,46 @@ fn only_a_spent_budget_or_the_router_reports_the_target_unanswered() {
         (ConnectError::EntryNotReady, false),
     ] {
         assert_eq!(error.target_unanswered(), unanswered, "{error}");
+    }
+}
+
+#[test]
+fn only_a_call_that_got_no_status_back_is_unreplied() {
+    let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
+    for (error, unreplied) in [
+        (
+            ConnectError::Rpc(TransportError::budget_expired(
+                "target Machine RPC timed out",
+            )),
+            true,
+        ),
+        (
+            ConnectError::from(ployz_core::rpc::target_unanswered_status(&io::Error::new(
+                io::ErrorKind::TimedOut,
+                "operation timed out",
+            ))),
+            true,
+        ),
+        (
+            ConnectError::from(tonic::Status::from_error(Box::new(dropped))),
+            true,
+        ),
+        // A daemon sent these, so it refused before acting.
+        (
+            ConnectError::from(tonic::Status::unavailable("Cluster is not available")),
+            false,
+        ),
+        (
+            ConnectError::Remote(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "Cluster store is not available".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            }),
+            false,
+        ),
+    ] {
+        assert_eq!(error.unreplied(), unreplied, "{error}");
     }
 }
 

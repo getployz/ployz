@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
+  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shippedService, shownValue, uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -256,8 +256,19 @@ it("words a Deployment that takes its Environment off the Servers as the Branch 
   expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "forgotten" } })).toBe("Left on old servers");
   expect(outcomeReason({ type: "forgotten" })).toContain("still there");
   expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "never_ran" } })).toBe("Off the servers");
-  expect(deploysLabel({ services: [], remove: true })).toBeNull();
-  expect(deploysLabel({ services: ["web", "api"], remove: false })).toBe("Deploys web, api");
+  expect(deploysLabel({ services: [], ships: ["web", "api"], remove: true })).toBeNull();
+});
+
+it("names a Deploy's targets in their order, then the Services it ships by reference alphabetically", () => {
+  expect(deploysLabel({ services: ["web"], ships: ["web", "postgres", "api"], remove: false })).toBe("Deploys web (+ api, postgres)");
+  expect(deploysLabel({ services: ["web"], ships: ["web"], remove: false })).toBe("Deploys web");
+  expect(deploysLabel({ services: ["web", "api"], ships: ["api", "web", "redis"], remove: false })).toBe("Deploys web, api (+ redis)");
+  expect(deploysLabel({ services: [], ships: ["web", "api", "postgres"], remove: false })).toBe("Deploys every service");
+  // Waiting for CI, nothing is frozen yet: it names only its targets.
+  expect(deploysLabel({ services: ["web"], ships: [], remove: false })).toBe("Deploys web");
+  // A rollback or retry reads its own ships, so it lists what it ships now, not what its source shipped.
+  const source = { services: ["web"], ships: ["web", "api", "postgres"], remove: false };
+  expect(deploysLabel({ ...source, ships: ["web", "api"] })).toBe("Deploys web (+ api)");
 });
 
 
@@ -395,4 +406,13 @@ it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and
   expect(showCancelling({ status: "running", in_flight: true }, true)).toEqual({ status: "cancelling", in_flight: true });
   expect(showCancelling({ status: "queued", in_flight: true }, false)).toEqual({ status: "queued", in_flight: true });
   expect(showCancelling({ status: "applied", in_flight: false }, true)).toEqual({ status: "applied", in_flight: false });
+});
+
+it("counts a Service as shipped by a full Deploy, one that names it, and one that ships it because a named one references it", () => {
+  const narrowed = { services: ["web"], ships: ["web", "db"] };
+  expect(shippedService(narrowed, "web")).toBe(true);
+  expect(shippedService(narrowed, "db")).toBe(true);
+  expect(shippedService(narrowed, "api")).toBe(false);
+  expect(shippedService({ services: [], ships: ["web"] }, "api")).toBe(true);
+  expect(shippedService({ services: ["web"], ships: [] }, "web")).toBe(true);
 });

@@ -27,6 +27,8 @@ use crate::{
 pub struct Failure {
     inner: Inner,
     interrupted: bool,
+    /// The printed result is itself the failure, not a partial one.
+    outcome: bool,
     diagnostic: Option<Box<ui::progress::Diagnostic>>,
     /// Data its `--json` error carries in `details` beside what the error says.
     added: serde_json::Map<String, Value>,
@@ -72,6 +74,7 @@ impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
             interrupted: false,
+            outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
             inner: Inner::Command {
@@ -90,12 +93,24 @@ impl Failure {
         self
     }
 
-    /// End the process with the remote command's exit code. Only `ployz exec` uses it.
+    /// Whether a command failed because the Ployz config has no contexts.
+    pub(crate) fn has_no_contexts(&self) -> bool {
+        std::iter::successors(self.source(), |&link| link.source()).any(|link| {
+            matches!(
+                link.downcast_ref::<ContextError>(),
+                Some(ContextError::NoContexts(_))
+            )
+        })
+    }
+
+    /// End the process with `code`, whatever it printed already said: the remote
+    /// command's exit code, a cancelled prompt, or clap's help.
     #[must_use]
     pub fn exit(code: u8) -> Self {
         Self {
             inner: Inner::Exit(code),
             interrupted: false,
+            outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
         }
@@ -107,6 +122,7 @@ impl Failure {
         Self {
             inner: Inner::Partial,
             interrupted: false,
+            outcome: false,
             diagnostic: None,
             added: serde_json::Map::new(),
         }
@@ -127,6 +143,17 @@ impl Failure {
         self.interrupted
     }
 
+    /// The result already printed is this failure, such as a Deployment that failed:
+    /// it exits by its code rather than as a partial result.
+    pub(crate) fn outcome(mut self) -> Self {
+        self.outcome = true;
+        self
+    }
+
+    pub(crate) const fn is_outcome(&self) -> bool {
+        self.outcome
+    }
+
     pub(crate) fn with_diagnostic(mut self, diagnostic: ui::progress::Diagnostic) -> Self {
         self.diagnostic = Some(Box::new(diagnostic));
         self
@@ -137,6 +164,22 @@ impl Failure {
     pub(crate) fn with_detail(mut self, key: &str, value: Value) -> Self {
         self.added.insert(key.to_owned(), value);
         self
+    }
+
+    /// A Server's daemon answered before this connection failed: a refusal, not an
+    /// unreachable Server.
+    pub(crate) fn daemon_answered(&self) -> bool {
+        let Inner::Command { error, .. } = &self.inner else {
+            return false;
+        };
+        let mut next: Option<&(dyn Error + 'static)> = Some(error.as_ref());
+        while let Some(error) = next {
+            if let Some(error) = error.downcast_ref::<ConnectError>() {
+                return !error.unreached();
+            }
+            next = error.source();
+        }
+        false
     }
 
     pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
@@ -220,6 +263,7 @@ impl Failure {
     pub(crate) fn context(mut self, message: impl Into<Cow<'static, str>>) -> Self {
         let RpcError { code, details, .. } = self.report();
         let interrupted = self.interrupted;
+        let outcome = self.outcome;
         let diagnostic = self.diagnostic.take();
         let mut contextual = Self::command(Message {
             code,
@@ -228,6 +272,7 @@ impl Failure {
             source: Some(Box::new(self)),
         });
         contextual.interrupted = interrupted;
+        contextual.outcome = outcome;
         contextual.diagnostic = diagnostic;
         contextual
     }
@@ -363,6 +408,18 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
             serde_json::json!({ "inspect": ["ployz server ls"] }),
         );
     }
+    let container = error
+        .downcast_ref::<ContainerSelectorError>()
+        .or_else(|| match error.downcast_ref::<OperatorError>() {
+            Some(OperatorError::Container(container)) => Some(container),
+            _ => None,
+        });
+    if let Some(ContainerSelectorError::NotFound { valid, .. }) = container {
+        return (
+            RpcErrorCode::NotFound,
+            serde_json::json!({ "valid_children": valid }),
+        );
+    }
     if let Some(OperatorError::NotRunning {
         running_in_scope, ..
     }) = error.downcast_ref::<OperatorError>()
@@ -487,6 +544,7 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Remote(error) => error.code.clone(),
         ConnectError::Rpc(error) => error.to_rpc_error().code,
         ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
+        ConnectError::OlderMachine => RpcErrorCode::Unsupported,
         ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
             RpcErrorCode::Unsupported
         }
@@ -1192,13 +1250,30 @@ mod tests {
             )))),
         });
         let display = failure.to_string();
-        assert!(
-            display.contains("3 connections from context prod"),
-            "{display}"
+        assert_eq!(
+            display,
+            "Ployz couldn't reach a Server's daemon through any of the 3 connections from context prod."
         );
         assert!(
             !display.contains("Os {") && !display.contains("code: 111"),
             "{display}"
+        );
+    }
+
+    #[test]
+    fn exhausted_connections_say_a_daemon_answered_when_one_did() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Context("prod".into()),
+            attempts: 2,
+            retry: ployz_core::Retry::Never,
+            reached: true,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            failure.to_string(),
+            "A Server's daemon answered, but the 2 connections from context prod all failed."
         );
     }
 
@@ -1314,6 +1389,25 @@ mod tests {
         assert_eq!(failure.report().code, RpcErrorCode::NotFound);
         assert_eq!(failure.report().message, "No running Service \"nope\"");
         assert_eq!(failure.hints(), [Hint::valid(["web"])]);
+    }
+
+    #[test]
+    fn a_missing_container_lists_the_service_containers() {
+        let missing = ContainerSelectorError::NotFound {
+            selector: ployz_core::ContainerSelector::parse("bogus").unwrap(),
+            valid: vec!["web-1".into(), "web-2".into()],
+        };
+        for failure in [
+            Failure::from(missing.clone()),
+            Failure::from(OperatorError::Container(missing)),
+        ] {
+            assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+            assert_eq!(
+                failure.report().message,
+                "Container \"bogus\" was not found"
+            );
+            assert_eq!(failure.hints(), [Hint::valid(["web-1", "web-2"])]);
+        }
     }
 
     #[test]

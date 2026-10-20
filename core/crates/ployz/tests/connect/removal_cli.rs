@@ -879,6 +879,7 @@ async fn a_server_that_answers_holding_copies_is_refused_before_cloud_or_any_con
                 role: ployz_core::CopyRole::Slot,
                 maximum_bytes: bytes,
                 used_bytes: 0,
+                slot_role: None,
             },
         )]),
     });

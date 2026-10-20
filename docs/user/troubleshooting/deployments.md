@@ -24,29 +24,39 @@ ends with a summary that counts the Servers involved. In CI or redirected output
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
-records the existing Deployment events as NDJSON. Source builds appear against their
+records the existing Deployment events as NDJSON, each naming the Deployment's `id` and
+`number`. Source builds appear against their
 Service before the Deploy is planned, without a depth. A failure names the Server
 where it happened.
 
-A failed deploy shows the deepest cause, available failed-container log tails, and a
-`retry:` command. It adds at most one `inspect:` command per failed Service, chosen from
-every Server where that Service failed, in this order:
+A failed deploy shows the deepest cause, available failed-container log tails, and
+`inspect:` and `retry:` commands. It adds at most one `inspect:` command per failed Service,
+chosen from every Server where that Service failed, in this order:
 
-1. `ployz logs <service>` when any of them failed while starting, health-checking, running a
+1. `ployz logs --deployment N --build <service>` when its build failed.
+2. `ployz logs <service>` when any of them failed while starting, health-checking, running a
    hook for, stopping or removing a Container, or failed at an unknown step and has a
    Container log.
-2. Otherwise, `ployz get <service>.image` when any of them failed to pull the image. A Service
+3. Otherwise, `ployz get <service>.image` when any of them failed to pull the image. A Service
    built from source has no `image` setting, so it gets no `inspect:` line.
-3. Otherwise no `inspect:` line. A failed build, or a failure before any Container exists,
-   such as creating the Container or preparing its Volumes, leaves nothing new to inspect:
-   `ployz logs` would show only the old Container.
+4. Otherwise no `inspect:` line. A failure before any Container exists, such as creating the
+   Container or preparing its Volumes, leaves nothing new to inspect: `ployz logs` would show
+   only the old Container.
 
 So a Service that failed to pull on one Server and to start on another shows only
 `ployz logs <service>`.
 
-A Deployment result that did not fully succeed exits with code 3. A warning that
-names an incomplete Server observation also makes an
-otherwise successful invocation exit 3 when that Server was relevant to the selected
+A failed build or an image that won't pull fails the same way again, so neither offers
+`retry: ployz deploy`. An image that won't pull offers `undo: ployz history undo N` to go back
+to the version before it, even when another Server's failure picked the `inspect:` line. A failed `ployz up` retries with `ployz up`, which uploads your fixed
+directory; `ployz deploy` would ship the last upload that built. `up` leaves out the `Open`
+lines when the deploy failed. When a newer deployment, such as a push, takes the place of the
+one you were following without shipping all of its services, the CLI says
+`Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`.
+
+A failed deploy exits with code 1. A Deployment that applied but whose result is missing
+a Server exits with code 3. A warning that names an incomplete Server observation also
+makes an otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
@@ -89,6 +99,17 @@ or a command's exit code and output.
   [Deployments](../deploy/deployments.md).
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
+
+## My new version runs out of memory
+
+**The Container ran out of memory under its 16 MiB memLimit**, with the health check's last
+result as the cause, and `next: ployz set 'web.memLimit=32MiB' …`
+
+Docker killed a process in the new replica for going over the service's **memLimit**. Ployz
+stopped the replica and kept the old version serving. The `next:` command doubles the limit,
+up to the most **memLimit** allows, 1024 GB; set the size your app needs. A service already at
+1024 GB gets no `next:` command: it has to use less memory. Nor does a service without a
+**memLimit**.
 
 ## My running service fails its healthcheck
 
@@ -192,8 +213,8 @@ Pushing an image to your registry deploys nothing, and a server that already has
 
 **Failed at pull**, with `Image nginx:1.27-alpne not found, or its registry needs credentials`
 
-Your servers couldn't download the image, so the deploy stopped before it changed anything. A
-version that was already running keeps running. A registry answers the same way for a tag that
+Your servers couldn't download the image, so the deploy stopped before any of its services
+changed. A version that was already running keeps running. A registry answers the same way for a tag that
 doesn't exist and for a private image you have no access to.
 
 - Check the name and tag under **Settings → Source**. Look for typos, and check that the tag is
@@ -201,20 +222,47 @@ doesn't exist and for a private image you have no access to.
 - If the image is private, add **Registry credentials**, or replace a token that expired. See
   [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
+## My server's disk is full
+
+**Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
+
+The server ran out of disk space while it downloaded an image. A deploy downloads every image it
+needs before it changes any service, so none of the deploy's services changed and the versions
+already running keep running. The cause line under it is Docker's own error.
+
+- Free space on that server: remove files you don't need, or remove old images with
+  `docker image prune`.
+- Give the server a bigger disk if it fills up again.
+- Run the deploy again.
+
 ## Deploy says a service has nothing to run
 
-`api has nothing to run yet: add an image or connect a repository`
+`api has nothing to run yet: add an image, connect a repository, or run ployz up in its directory`
 
 The service has no source, and its card shows **No source**. Ployz won't deploy the environment
 until it has one. Open its **Settings → Source** and click **Git repository** or **Container
-image**, or delete the service.
+image**, or delete the service. A service you uploaded with `ployz up` has no source in a new
+branch: run `ployz up --env <branch>` from your app's directory.
 
 ## My uploaded code is gone
 
 `api has no source to build: its last upload is gone and no image is left to reuse. Upload it again or add an image.`
 
+Ployz keeps a service's latest upload, up to 95 MiB, until you upload again or delete the service
+or its environment. You see this when that upload is gone and no image of it is left.
+
 Run `ployz up` again from your app's directory, or click **Add an image to api** on the
 deployment's page.
+
+## Deploy says a service must build again from an earlier upload
+
+`web must build again from an earlier upload than this Deployment's, and a Deployment builds from one upload. Deploy it on its own: ployz deploy web`
+
+You uploaded `api` and `web` separately, and a deploy of both changed something `web`'s build
+reads, such as one of its variables. Each service keeps its own upload, but one deploy builds from
+only one of them. Services that don't need a new build reuse their images, so this only stops when
+the service with the older upload must build again. Run the command it shows, and `web` builds
+from its own upload.
 
 ## Deploy asks me to confirm it deletes data
 

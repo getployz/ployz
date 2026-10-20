@@ -5,7 +5,7 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
@@ -16,9 +16,9 @@ use crate::cloud_login::{
     self, CredentialStore, DEFAULT_CLOUD, LoginError, Organization, Secret, SignedIn,
 };
 
-/// How long a call that can start an operation waits for Cloud's answer. Cloud plans
-/// before it answers, asking the Servers for their copies (up to about 20s when one is
-/// slow), so the client's 15s default would give up on a run Cloud goes on to start.
+/// How long a call Cloud answers only after reading the Servers waits for that answer.
+/// Cloud may spend up to 50s reading them to plan a clean, so the client's 15s default
+/// would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -120,17 +120,44 @@ pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, Logi
 ///
 /// Returns a Cloud failure.
 pub(crate) async fn acting_in(credential: &Credential) -> Result<Organization, LoginError> {
+    Ok(acting_as(credential).await?.organization)
+}
+
+/// Who `credential` acts as.
+pub(crate) struct Acting {
+    pub(crate) organization: Organization,
+    /// Cloud hears it as an agent: an agent token, which can't answer for a person.
+    pub(crate) agent: bool,
+}
+
+/// [`acting_in`], and whether Cloud hears `credential` as an agent. A device is
+/// never one; a token's kind is Cloud's to say.
+///
+/// # Errors
+///
+/// Returns a Cloud failure.
+pub(crate) async fn acting_as(credential: &Credential) -> Result<Acting, LoginError> {
     match credential {
-        Credential::Device(signed_in) => Ok(signed_in.organization.clone()),
-        Credential::Token { .. } => organizations(credential)
-            .await?
-            .into_iter()
-            .find(|entry| entry.current)
-            .map(|entry| Organization {
-                id: entry.id,
-                slug: entry.slug,
+        Credential::Device(signed_in) => Ok(Acting {
+            organization: signed_in.organization.clone(),
+            agent: false,
+        }),
+        Credential::Token { .. } => {
+            let listed = listed(credential).await?;
+            let organization = listed
+                .organizations
+                .into_iter()
+                .find(|entry| entry.current)
+                .map(|entry| Organization {
+                    id: entry.id,
+                    slug: entry.slug,
+                })
+                .ok_or(LoginError::TokenRefused)?;
+            Ok(Acting {
+                organization,
+                agent: listed.via.as_deref() == Some(TokenKind::Agent.as_str()),
             })
-            .ok_or(LoginError::TokenRefused),
+        }
     }
 }
 
@@ -228,8 +255,35 @@ pub(crate) struct ServerClears {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ServerAccess {
     pub(crate) connections: Vec<crate::context::Connection>,
-    /// Servers Cloud couldn't provision a holder on now.
+    /// Servers that didn't answer Cloud's provisioning of a holder now.
     pub(crate) unreachable: Vec<MachineId>,
+    /// Servers Cloud couldn't provision a holder on for another reason, such as their own refusal.
+    #[serde(default)]
+    pub(crate) refused: Vec<RefusedServer>,
+    /// The names enrollment gave the Organization's Servers, where Cloud holds one.
+    #[serde(default, deserialize_with = "text_names")]
+    pub(crate) names: BTreeMap<MachineId, String>,
+}
+
+/// A Server that gave Cloud no holder for a reason other than silence, with that reason.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RefusedServer {
+    pub(crate) machine_id: MachineId,
+    pub(crate) message: String,
+}
+
+/// Names are display only: an entry that is not a Machine ID and a string is dropped, so
+/// that Server shows by its id and the reply's connections still dial.
+fn text_names<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<MachineId, String>, D::Error> {
+    let serde_json::Value::Object(names) = serde_json::Value::deserialize(deserializer)? else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(names
+        .into_iter()
+        .filter_map(|(id, name)| Some((MachineId::parse(id).ok()?, name.as_str()?.to_owned())))
+        .collect())
 }
 
 /// A token just made: the one reply that carries its secret.
@@ -260,12 +314,20 @@ pub(crate) struct Removed {
 pub(crate) async fn organizations(
     credential: &Credential,
 ) -> Result<Vec<OrganizationEntry>, LoginError> {
-    #[derive(Deserialize)]
-    struct Reply {
-        organizations: Vec<OrganizationEntry>,
-    }
-    let reply: Reply = call(credential, Method::GET, "organizations", None).await?;
-    Ok(reply.organizations)
+    Ok(listed(credential).await?.organizations)
+}
+
+/// `GET organizations`: the Organizations, and how Cloud hears the caller
+/// (`cli` or `agent`; a Cloud that predates it says nothing).
+#[derive(Deserialize)]
+struct Listed {
+    organizations: Vec<OrganizationEntry>,
+    #[serde(default)]
+    via: Option<String>,
+}
+
+async fn listed(credential: &Credential) -> Result<Listed, LoginError> {
+    call(credential, Method::GET, "organizations", None).await
 }
 
 /// The Organization to switch to: a slug the user typed, or one Cloud listed, sent by ID.
@@ -792,13 +854,7 @@ pub(crate) struct ServersForgotten {
 pub(crate) async fn check_forget_servers(
     credential: &Credential,
 ) -> Result<ForgetCheck, StoreCallError> {
-    let url = format!("{}/api/cli/forget-servers", credential.cloud());
-    store_answer(
-        credential,
-        send(credential, Method::GET, &url, None).await?,
-        cloud_login::unreachable,
-    )
-    .await
+    refusable_operation(credential, Method::GET, "forget-servers", None).await
 }
 
 /// Forget the Servers of the credential's Organization, named `organization`: Cloud
@@ -982,6 +1038,36 @@ pub(crate) async fn refusable<T: DeserializeOwned>(
         cloud_login::unreachable,
     )
     .await
+}
+
+/// [`refusable`] for a call Cloud answers only once it has read the Servers, so it waits
+/// [`OPERATION_TIMEOUT`] rather than the client's 15s default.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, or a Cloud failure; a Cloud without the route is
+/// [`LoginError::Unsupported`].
+pub(crate) async fn refusable_operation<T: DeserializeOwned>(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<T, StoreCallError> {
+    let response = operation_request(credential, method, path, body)?
+        .send()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    store_answer(credential, response, cloud_login::unreachable).await
+}
+
+fn operation_request(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<reqwest::RequestBuilder, LoginError> {
+    let url = format!("{}/api/cli/{path}", credential.cloud());
+    Ok(request(credential, method, &url, body)?.timeout(OPERATION_TIMEOUT))
 }
 
 /// The most compressed source one upload may hold, the same as Cloud's cap. It stays
@@ -1243,6 +1329,36 @@ mod tests {
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
 
+    #[test]
+    fn a_name_that_is_not_text_costs_only_that_name() {
+        let (held, odd, gone) = ("a".repeat(32), "b".repeat(32), "c".repeat(32));
+        let access: ServerAccess = serde_json::from_value(serde_json::json!({
+            "connections": [{ "machine_id": held, "unix": "/run/ployz.sock" }],
+            "unreachable": [odd, gone],
+            "names": { held.clone(): "web-1", odd: null, gone: 7, "not-an-id": "web-9" },
+        }))
+        .unwrap();
+
+        assert_eq!(access.connections.len(), 1);
+        assert_eq!(access.unreachable.len(), 2);
+        assert_eq!(
+            access.names,
+            BTreeMap::from([(MachineId::parse(held).unwrap(), "web-1".to_owned())])
+        );
+    }
+
+    #[test]
+    fn names_that_are_not_an_object_leave_every_server_by_id() {
+        let access: ServerAccess = serde_json::from_value(serde_json::json!({
+            "connections": [],
+            "unreachable": [],
+            "names": null,
+        }))
+        .unwrap();
+
+        assert!(access.names.is_empty());
+    }
+
     /// A device signed in to `cloud` as Organization `acme`.
     fn signed_in_store(cloud: &str) -> (tempfile::TempDir, CredentialStore) {
         let dir = tempfile::tempdir().unwrap();
@@ -1263,6 +1379,52 @@ mod tests {
             cloud: cloud.to_owned(),
             token: Secret::new("ployz_secret".to_owned()),
         }
+    }
+
+    #[tokio::test]
+    async fn a_forget_check_waits_past_the_cluster_time_cloud_may_spend_on_it() {
+        // Cloud tries every Server at once: a connect (10s), then its name (2s).
+        let answers_after = Duration::from_secs(12) + Duration::from_secs(5);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cloud = format!("http://{}", listener.local_addr().unwrap());
+        let id = "a".repeat(32);
+        let reply = serde_json::json!({
+            "organization": "acme",
+            "servers": [{ "id": id, "name": "web-1", "reach": "didnt_answer" }],
+            "volumes": [],
+        })
+        .to_string();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let read = tokio::io::AsyncReadExt::read(&mut stream, &mut request)
+                .await
+                .unwrap();
+            assert!(
+                request
+                    .get(..read)
+                    .unwrap()
+                    .starts_with(b"GET /api/cli/forget-servers ")
+            );
+            tokio::time::pause();
+            tokio::time::sleep(answers_after).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+                .await
+                .unwrap();
+        });
+
+        let check = check_forget_servers(&token(&cloud)).await.unwrap();
+        assert_eq!(check.organization, "acme");
+        let [server] = check.servers.as_slice() else {
+            panic!("{:?}", check.servers)
+        };
+        assert_eq!(server.id, MachineId::parse(id).unwrap());
+        assert_eq!(server.reach, Reach::DidntAnswer);
+        assert!(check.volumes.is_empty());
     }
 
     #[test]
@@ -1553,6 +1715,28 @@ mod tests {
         assert_eq!(
             refused.details,
             serde_json::json!({ "valid_children": ["acme/web"] })
+        );
+    }
+
+    #[test]
+    fn a_clean_preview_waits_past_the_cluster_time_cloud_may_spend_on_it() {
+        // Cloud's clean plan may spend a connect (30s), a Data Loss read (10s) and a frame (10s).
+        let cloud_bound = Duration::from_secs(50);
+        let preview = operation_request(
+            &token("https://cloud.test"),
+            Method::GET,
+            "namespaces/app/clean",
+            None,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert!(
+            preview
+                .timeout()
+                .is_some_and(|waits| *waits >= cloud_bound + Duration::from_secs(5)),
+            "{:?}",
+            preview.timeout()
         );
     }
 

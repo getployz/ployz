@@ -52,7 +52,7 @@ prompts           only on a TTY (stdin+out)  never
 - `finish` prints the JSON value or runs the human closure. `show` prints pretty JSON in both modes (inspect-style commands).
 - `warn` prints `WARNING: …` on stderr and adds the text to the next JSON result's `warnings`.
 - Fan-outs print `{…, failures, omitted}` and exit 3 if either is non-empty.
-- After a result is printed, any later error goes to stderr and the exit becomes 3.
+- After a result is printed, any later error goes to stderr and the exit becomes 3, unless the printed result is itself the failure: a failed deploy exits 1.
 - Human errors print the message, then `valid: a, b` from `details.valid_children`, then `next: X` from `details.next` unless the message already holds that command.
 - Exit codes: 0 success; 1 any command failure; 2 a rejected command line (`USAGE_EXIT`, "as clap exits"); 3 partial (`PARTIAL_EXIT`, "The result is printed, but some targets failed or never answered"). `ployz exec` passes through the remote exit code.
 
@@ -105,7 +105,7 @@ Deployment #36 of shop/production: applied
   web: unchanged
 ```
 
-([cloud-cluster/deploy.md](cloud-cluster/deploy.md)). The output is the same on a TTY. Under `--json` the progress lines move to stderr. `--events FILE` writes NDJSON like `{"nodes":[…],"status":"queued","type":"deployment"}` ([cluster/deploy.md](cluster/deploy.md)). The local Store prints no `Following` line. `up` adds `  uploaded by Ada Lovelace, base 5a3ec95`, `Open https://workspace.ada.ployz.test` and `Dashboard: http://localhost:…` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
+([cloud-cluster/deploy.md](cloud-cluster/deploy.md)). The output is the same on a TTY. Under `--json` the progress lines move to stderr. `--events FILE` writes NDJSON like `{"id":"…","nodes":[…],"number":1,"status":"queued","type":"deployment"}` ([cluster/deploy.md](cluster/deploy.md)). The local Store prints no `Following` line. `up` adds `  uploaded by Ada Lovelace, base 5a3ec95`, `Open https://workspace.ada.ployz.test` and `Dashboard: http://localhost:…` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
 
 A redrawing renderer (server add, for the ingress). It is the only output with ANSI escapes: cursor-up, clear, bold, cyan and green ([cluster/server.ansi](cluster/server.ansi)). Its last frame:
 
@@ -133,16 +133,14 @@ Retry: ployz project rm scratch1 --confirm scratch1
 - Volume loss. `This permanently deletes the data of store. Accept each by name.` then `Retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3d1ac37da6e0cfb1` ([cluster/volume.md](cluster/volume.md)).
 - `--yes`. cloud reset refuses with `…then confirm with --yes` and `next: ployz cloud reset --yes` ([cloud/deploy.md](cloud/deploy.md)).
 - Numbered picker on a TTY. `Select a context:` / `  1. dev` / `  2. prod (current)` / `> 1`. A bad choice prints `invalid selection` ([store/context.md](store/context.md)). Without a TTY: `cannot Select a context interactively without a terminal; pass the context name: ployz ctx use <context-name>`.
-- Inline prompt. `Storage preparation [zfs/none] (none is Docker only, not recommended): ` with the next WARNING printed on the same line ([cluster/server.md](cluster/server.md)).
 
 ## 5. Warnings
 
-Dominant: `WARNING: <sentence>.` on stderr. 38 lines, 9 distinct texts.
+Dominant: `WARNING: <sentence>.` on stderr. 35 lines, 8 distinct texts. `server add` prints its Docker only warning as `! Docker only (not recommended): Volumes on this Server get no size limits, …` instead (5 lines, [cluster/server.md](cluster/server.md)).
 
 | Count | Text (start) | Capture |
 |---|---|---|
 | 23 | `WARNING: Live Observation is observer-relative and not globally complete` | [cluster/ps-logs-exec.md](cluster/ps-logs-exec.md) |
-| 5 | `WARNING: Docker only (not recommended): Volumes on this Server get no size limits, …` | [cluster/server.md](cluster/server.md) |
 | 3 | `WARNING: Docker volume (not recommended): no size limit, …` | [cluster/volume.md](cluster/volume.md) |
 | 2 | `WARNING: Server gamma is running Services: … Move them off first: ployz server drain gamma` | [cluster/errors.md](cluster/errors.md) |
 | 2 | `WARNING: Machine … was omitted` | [cluster/errors.md](cluster/errors.md) |
@@ -178,7 +176,7 @@ Raw upstream errors pass through:
 - `Machine RPC failed: Docker operation failed: Docker responded with status code 409: container … is not running` ([cloud-cluster/errors.md](cloud-cluster/errors.md))
 - `create Container failed: Docker operation failed: Docker responded with status code 500: error from registry: denied` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md))
 - `inspect Machine upgrade worker: No such file or directory (os error 2)` ([cluster/server.md](cluster/server.md))
-- `all 1 connections from the explicit connection failed: connection attempt failed: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
+- `error: Ployz couldn't reach your Server's daemon.` with `cause: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
 
 ## 7. Follow-up hints
 
@@ -258,7 +256,7 @@ Exit 2 is applied by hand in about ten handlers through `.with_exit(USAGE_EXIT)`
 ## 13. Help text
 
 - Bare `ployz` prints help on stdout and exits 0. Bare `ployz org` and `ployz github` print help on stderr and exit 2 ([cloud/org.md](cloud/org.md), [cloud/github.md](cloud/github.md)).
-- Summaries mix casing: `server      Manage Servers` but `service     Manage services`; the tagline is `Manage Ployz machines, services, and volumes` ([store/help.md](store/help.md)).
+- Summaries mix casing: `server      Manage Servers` but `service     Manage services` ([store/help.md](store/help.md)).
 - Commands are mostly alphabetical, but `link`, `github`, `token` and `project` are out of place.
 - Every subcommand repeats the globals. `--connect <connect>` has no description. `--ployz-config` shows the env path.
 - Placeholders mix casing: `<name>`, `<context>`, `<SECONDS>`, `<PROJECT>`, `<VERSION>`, `<FILE>`.

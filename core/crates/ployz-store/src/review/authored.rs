@@ -437,6 +437,8 @@ impl Plan {
                         name,
                         storage,
                         shared_writes,
+                        // Only creating a Volume sets it, so no edit changes it.
+                        restored_from: _,
                     } = after;
                     invariant(
                         *resource_lineage_id == before.resource_lineage_id,
@@ -2358,61 +2360,16 @@ pub(super) fn prepare_discard(
     let mut working = environment.working.clone();
     let mut baseline = match target {
         DiscardTarget::Saved => saved.unwrap_or(&environment.working).clone(),
-        DiscardTarget::Head | DiscardTarget::Review => reviewed.head.intent.clone(),
+        DiscardTarget::Review => saved.unwrap_or(&reviewed.head.intent).clone(),
+        DiscardTarget::Head => reviewed.head.intent.clone(),
     };
-    if target == DiscardTarget::Review {
-        if path.is_some() {
-            return Err(error::invalid(
-                "Review discard takes the whole reviewed list",
-                json!({}),
-            ));
-        }
-        let introductions = super::introductions(tx, environment)?;
-        for change in &reviewed.view.changes {
-            if change.lifecycle == ReviewLifecycleKind::Update && !has_node(&baseline, &change.node)
-            {
-                copy_node(&mut baseline, &introductions, &change.node);
-            }
-        }
-        let runtime = Plan::between(&baseline, &environment.working)?;
-        let (_, rows) = runtime.render(&baseline, &environment.working)?;
-        let mut selected = BTreeSet::new();
-        for change in &reviewed.view.changes {
-            for row in &rows {
-                if row.node == change.node
-                    && (change.lifecycle != ReviewLifecycleKind::Update
-                        || change
-                            .settings
-                            .iter()
-                            .any(|display| display.path == row.path))
-                {
-                    selected.extend(&row.effects);
-                }
-            }
-        }
-        let selected: Vec<usize> = selected.into_iter().collect();
-        runtime.reverse_into(&mut working, &selected)?;
-        if let Some(saved) = saved {
-            let draft = Plan::between(saved, &environment.working)?;
-            let chosen: Vec<_> = draft
-                .effects
-                .iter()
-                .enumerate()
-                .filter(|(_, effect)| {
-                    !selected.iter().any(|index| {
-                        effect.intersects(
-                            runtime
-                                .effects
-                                .get(*index)
-                                .expect("runtime selection belongs to plan"),
-                        )
-                    })
-                })
-                .map(|(index, _)| index)
-                .collect();
-            draft.reverse_into(&mut working, &chosen)?;
-        }
-    } else if let Some(path) = path {
+    if target == DiscardTarget::Review && path.is_some() {
+        return Err(error::invalid(
+            "Review discard takes the whole reviewed list",
+            json!({}),
+        ));
+    }
+    if let Some(path) = path {
         if let (Some(Target::Domains), Some(service)) = (path.target(), path.service()) {
             return Err(crate::settings::domains_are_read_only(path, service));
         }

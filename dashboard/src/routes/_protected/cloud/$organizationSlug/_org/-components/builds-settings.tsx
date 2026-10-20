@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { CheckIcon, ChevronRightIcon, ServerIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
@@ -15,8 +14,7 @@ import { githubBuildRepositoryKey, githubBuildWorkflowUrl, type GithubBuildRepos
 import { useGithubBuildRepositories, useGithubWebOrigin } from "#/modules/github/github.queries";
 import { volumeSupportText } from "#/modules/machines/server-status";
 import { useServerList, type ServerListItem } from "#/modules/machines/use-servers";
-import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { can } from "#/modules/organization/permissions";
+import { useRoleGate } from "#/modules/organization/members.queries";
 
 /** Where the Organization's Image Builds run: the Build Order, GitHub setup per repository, and which Servers build. */
 export function BuildsSettings({ organizationSlug }: { organizationSlug: string }) {
@@ -37,6 +35,8 @@ const BUILD_ORDER_LABELS = {
 } satisfies Record<BuildOrder, string>;
 const BUILD_ORDERS: BuildOrder[] = ["github-then-servers", "servers-then-github", "servers-only", "github-only"];
 
+export const BUILD_ORDER_REFUSED = "Only an owner or admin can change where builds run.";
+
 /** The Organization's Build Order, which the settings page prefetches. */
 export const BUILD_ORDER_QUERY = { query: "build_order" } as const;
 
@@ -49,16 +49,16 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
   const writer = useStoreWriter(organizationSlug);
   // Shown at once; a refusal toasts and the saved order shows again.
   const [buildOrder, hold] = useCommitHold(view.build_order ?? "github-then-servers");
-  // The Store refuses the write without org:settings; the control says so first.
-  const yourRole = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
-  const refused = yourRole !== undefined && !can(yourRole, "org:settings");
+  // The Store refuses set_build_order without org:settings; the control says so first.
+  const gate = useRoleGate(organizationSlug, "org:settings", BUILD_ORDER_REFUSED);
   return (
     <SettingsSection id="build-order" title="Where builds run">
       <SettingsRow
         label="Order"
+        hint={gate.reason}
         commit="change"
         control={(
-          <Select value={buildOrder} disabled={refused} onValueChange={(next) => {
+          <Select value={buildOrder} disabled={!gate.allowed} onValueChange={(next) => {
             const order = BUILD_ORDERS.find((candidate) => candidate === next);
             if (!order) return;
             hold(order, writer.commit({ command: "set_build_order", build_order: order }));

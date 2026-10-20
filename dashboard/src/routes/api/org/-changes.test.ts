@@ -82,7 +82,18 @@ it("ends the stream when the change log can't be read, so EventSource reconnects
     readChanges,
   });
   // The stream ends instead of reaching a changes event.
-  expect(await readEvents(response).until("event: changes")).toBe("retry: 1000\n\n");
+  expect(await readEvents(response).until("event: changes")).toBe('retry: 1000\n\nevent: organization\ndata: {"id":"org-1"}\n\n');
+  expect(readChanges).toHaveBeenCalledOnce();
+});
+
+it("names the Organization the slug resolved to, and ends once that Organization is gone", async () => {
+  const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>().mockResolvedValue(null);
+  const response = await handleOrgChangesRequest(request(), "acme", {
+    authorize: vi.fn().mockResolvedValue({ organizationId: "org-1" }),
+    currentCursor: vi.fn().mockResolvedValue("6"),
+    readChanges,
+  });
+  expect(await response.text()).toBe('retry: 1000\n\nevent: organization\ndata: {"id":"org-1"}\n\n');
   expect(readChanges).toHaveBeenCalledOnce();
 });
 
