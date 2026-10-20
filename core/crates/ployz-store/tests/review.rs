@@ -800,8 +800,8 @@ fn discard_of_a_never_deployed_save_lists_it_and_its_path_brings_it_back() {
             .map(|change| (change.name.as_str(), change.lifecycle))
             .collect::<Vec<_>>(),
         [
-            ("web", ReviewLifecycleKind::Create),
-            ("api", ReviewLifecycleKind::Delete)
+            ("api", ReviewLifecycleKind::Delete),
+            ("web", ReviewLifecycleKind::Create)
         ]
     );
     assert_eq!(view.reversals().len(), 1);

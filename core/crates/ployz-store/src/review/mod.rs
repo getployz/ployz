@@ -117,6 +117,7 @@ impl DiffView {
                 current.comparison = Some(ReviewComparisonRole::Saved);
             }
         }
+        by_name(&mut changes);
         changes
     }
 
@@ -249,10 +250,13 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
-    for changes in [&mut view.changes, &mut view.draft_changes] {
-        changes.sort_by(|a, b| (a.node.node_type, &a.name).cmp(&(b.node.node_type, &b.name)));
-    }
+    by_name(&mut view.changes);
+    by_name(&mut view.draft_changes);
     Ok(Review { view, saved, head })
+}
+
+fn by_name(changes: &mut [NodeChange]) {
+    changes.sort_by(|a, b| (a.node.node_type, &a.name).cmp(&(b.node.node_type, &b.name)));
 }
 
 fn saved_comparison(
