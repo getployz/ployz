@@ -367,8 +367,8 @@ pub(crate) struct SignedOut {
 }
 
 /// End this device's sign-in: Cloud first (which also clears its key on each Server), then
-/// the stored credential. A sign-in Cloud already ended, or that Cloud cannot be reached
-/// to end, is only forgotten.
+/// the stored credential. A sign-in Cloud already ended, that Cloud cannot be reached to
+/// end, or that left its Organization, is only forgotten.
 ///
 /// Returns `None` when nothing readable was signed in.
 ///
@@ -413,6 +413,13 @@ pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>,
                 Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
                     (None, Default::default(), None)
                 }
+                // Cloud refuses every call from a sign-in whose Organization is no longer
+                // the account's, logout included, so it can't end the sign-in either.
+                Ok(response) if response.status() == reqwest::StatusCode::FORBIDDEN => (
+                    None,
+                    Default::default(),
+                    Some(LoginError::NotMember(signed_in.organization.slug.clone())),
+                ),
                 Ok(response) => {
                     let reply: Reply = decode(ensure_success(response).await?)?;
                     (Some(reply.signed_out.id), reply.servers, None)
@@ -922,6 +929,54 @@ pub(crate) mod tests {
             start(&store, &cloud).await,
             Ok(Start::Pending { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn logout_forgets_a_sign_in_cloud_refuses_and_keeps_one_cloud_failed_on() {
+        for status in [401, 403, 500] {
+            let cloud = fake_cloud(move |route, _| match route {
+                "POST /api/cli/logout" => (status, serde_json::json!({})),
+                other => panic!("unexpected {other}"),
+            });
+            let (_dir, store) = store();
+            std::fs::write(
+                &store.path,
+                serde_json::json!({
+                    "state": "signed_in",
+                    "cloud": cloud,
+                    "token": "session-token",
+                    "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+                    "organization": { "id": "o1", "slug": "acme" },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let out = logout(&store).await;
+            if status == 500 {
+                assert!(
+                    matches!(out, Err(LoginError::Status { status: 500, .. })),
+                    "{out:?}"
+                );
+                assert!(signed_in(&store).await.is_ok());
+                continue;
+            }
+            let out = out.unwrap().unwrap();
+            assert!(out.device.is_none());
+            if status == 401 {
+                // Cloud already ended it: nothing is left to revoke.
+                assert!(out.unrevoked.is_none(), "{:?}", out.unrevoked);
+            } else {
+                assert!(
+                    matches!(&out.unrevoked, Some(LoginError::NotMember(slug)) if slug == "acme"),
+                    "{:?}",
+                    out.unrevoked
+                );
+            }
+            assert!(matches!(
+                signed_in(&store).await,
+                Err(LoginError::SignedOut)
+            ));
+        }
     }
 
     #[tokio::test]
