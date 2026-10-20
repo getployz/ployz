@@ -27,6 +27,7 @@ mod mirror;
 mod pool;
 mod removal;
 mod seed;
+mod size;
 mod storage;
 mod transfer;
 
@@ -171,6 +172,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Demote", post(departure::demote))
         .route("/Volume.Inspect", post(inspect::inspect))
         .route("/Volume.Seed", post(seed::seed_volume))
+        .route("/Volume.Size.Set", post(size::set_volume_size))
         .route("/Volume.Copy.Inspect", post(copy::inspect))
         .route("/Volume.Copy.Cut", post(copy::cut))
         .route("/Volume.Copy.Snapshot", post(copy::snapshot))
@@ -382,6 +384,7 @@ mod tests {
     #[path = "copy_tests.rs"]
     mod copy_tests;
     mod seed_tests;
+    mod size_tests;
 
     use fake_zfs::{USABLE_POOL, fake_zfs, fake_zfs_seeding};
 

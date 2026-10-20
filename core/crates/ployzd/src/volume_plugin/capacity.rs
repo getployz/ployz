@@ -63,7 +63,7 @@ impl VolumeStorage {
                     .map_err(|error| ployz_core::error_chain::inline(&error))?;
                 let (role, maximum_bytes, slot_role) = match place {
                     super::Place::Root(_) => (
-                        if dataset.readonly {
+                        if dataset.switching() {
                             CopyRole::Switching
                         } else {
                             CopyRole::Writer
