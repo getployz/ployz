@@ -17,7 +17,6 @@ mod rotation;
 mod runtime_watch;
 mod selector;
 mod service_graph;
-mod serving_pointer;
 mod spec;
 mod volume;
 
@@ -40,7 +39,6 @@ pub use rotation::*;
 pub use runtime_watch::*;
 pub use selector::*;
 pub use service_graph::*;
-pub use serving_pointer::*;
 pub use spec::*;
 pub use volume::*;
 

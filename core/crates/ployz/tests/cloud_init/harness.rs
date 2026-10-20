@@ -15,9 +15,9 @@ use ployz_core::{
     EnrollAs, EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
     LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
     MachineNow, MachineObservation, MachineToken, MembershipObservation, NewContainer,
-    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Registered, RoutesRead, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RunRotation, RunTarget, ServingPointer,
-    ServingPointerPublication, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
+    OpaquePayload, PROTOCOL_MAJOR, Registered, RoutesRead, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RunRotation, RunTarget, SetManagementClientResponse, VolumeInventory,
+    WireGuardPublicKey,
 };
 
 /// The Management Capability the fake daemon mints for any Management Client Set.
@@ -124,8 +124,6 @@ struct JoinInner {
     fail_target_inspect: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
-    /// Serving Pointers published so far; the fake Machine acks a pointer as soon as it lands.
-    pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
 }
 
 impl JoinDaemon {
@@ -165,7 +163,6 @@ impl JoinDaemon {
                 fail_target_inspect: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
-                pointers: Mutex::new(BTreeMap::new()),
             }),
         }
     }
@@ -929,27 +926,6 @@ impl FakeMachine for JoinDaemon {
             docker_root: None,
         })
     }
-    async fn publish_serving_pointer(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = request
-            .into_inner()
-            .decode_request()
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::PublishServingPointer(publish) = request.body else {
-            return Err(Status::invalid_argument("expected PublishServingPointer"));
-        };
-        let mut pointers = self.inner.pointers.lock().unwrap();
-        let current = pointers.get(&publish.service).cloned();
-        let publication = if current == publish.read {
-            pointers.insert(publish.service, publish.pointer);
-            ServingPointerPublication::Published
-        } else {
-            ServingPointerPublication::Superseded { current }
-        };
-        rpc_ok(publication)
-    }
     async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
@@ -958,27 +934,10 @@ impl FakeMachine for JoinDaemon {
             .into_inner()
             .decode_request()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let RpcRequestBody::ReadRoutes(read) = request.body else {
+        let RpcRequestBody::ReadRoutes(_) = request.body else {
             return Err(Status::invalid_argument("expected ReadRoutes"));
         };
-        let pointer = self
-            .inner
-            .pointers
-            .lock()
-            .unwrap()
-            .get(&read.service)
-            .cloned();
-        let machine = self.inner.current_machine.lock().unwrap().id;
-        let acks = pointer
-            .iter()
-            .map(|pointer| (machine, pointer.deploy.clone()))
-            .collect();
-        rpc_ok(RoutesRead {
-            all_routed: pointer.is_some(),
-            pointer,
-            acks,
-            ..RoutesRead::default()
-        })
+        rpc_ok(RoutesRead::default())
     }
     async fn pull_image(
         &self,
