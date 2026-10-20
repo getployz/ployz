@@ -134,23 +134,23 @@ jobs:
         include:
           - shard: cli-1
             packages: -p ployz -p ployz-sdk -p ployz-testkit -p ployz-build -p ployz-core -p ployz-verify -p ployz-config-wasm
-            partition: hash:1/2
+            partition: count:1/2
           - shard: cli-2
             packages: -p ployz -p ployz-sdk -p ployz-testkit -p ployz-build -p ployz-core -p ployz-verify -p ployz-config-wasm
-            partition: hash:2/2
+            partition: count:2/2
           - shard: daemon-1
             packages: -p ployzd
-            partition: hash:1/2
+            partition: count:1/2
           - shard: daemon-2
             packages: -p ployzd
-            partition: hash:2/2
-          # The Store suites on SQLite, then on Postgres.
+            partition: count:2/2
+          # The Store suites on SQLite, then on Postgres. `count` deals tests out in turn, so each half gets its share of a slow binary.
           - shard: store-1
             packages: -p ployz-store
-            partition: hash:1/2
+            partition: count:1/2
           - shard: store-2
             packages: -p ployz-store
-            partition: hash:2/2
+            partition: count:2/2
     services:
       postgres:
         # An empty image starts no service: only the Store shards use Postgres.
@@ -188,7 +188,7 @@ jobs:
                 - tcp: 127.0.0.1:1
           EOF
           cargo nextest run ${{ matrix.packages }} --partition ${{ matrix.partition }} --all-features --locked --no-fail-fast
-          if [ "${{ matrix.partition }}" = hash:1/2 ]; then
+          if [ "${{ matrix.partition }}" = count:1/2 ]; then
             cargo test --doc ${{ matrix.packages }} --all-features --locked
           fi
       # A throwaway server: durability only slows each test's new database.
