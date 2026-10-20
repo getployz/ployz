@@ -624,6 +624,46 @@ fn a_typed_project_wins_over_the_link_and_leaves_its_environment_out() {
 }
 
 #[test]
+fn a_typed_project_skips_a_link_made_in_another_organization() {
+    let cloud = Fixture::new("one");
+    let stored = json!({
+        "state": "signed_in",
+        "cloud": cloud.url,
+        "token": "session-token",
+        "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+        "organization": { "id": "o1", "slug": "acme" },
+    });
+    std::fs::write(cloud.home.path().join("cloud.json"), stored.to_string()).unwrap();
+    let dir = linked_dir_as(
+        &cloud,
+        json!({
+            "organization": { "id": "o2", "slug": "other" },
+            "project": "shop",
+            "environment": "staging",
+        }),
+    );
+    let mut args = scoped_args(&entry_scoped());
+    args.extend(["--project".to_owned(), "blog".to_owned()]);
+
+    let output = cloud
+        .command_in(dir.path())
+        .args(&args)
+        .env_remove("PLOYZ_TOKEN")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let bodies = cloud.cloud.lock().unwrap().bodies.clone();
+    assert_eq!(bodies.len(), 1, "one run");
+    assert_eq!(bodies[0]["input"]["project"], "blog");
+    assert!(
+        bodies[0]["input"].get("environment").is_none(),
+        "{}",
+        bodies[0]
+    );
+}
+
+#[test]
 fn an_ambiguous_project_names_ployz_link_as_the_next_step() {
     let cloud = Fixture::new("one");
     cloud.answer_runs_with(

@@ -94,6 +94,14 @@ impl Scope {
         let Some((directory, link)) = find(config)? else {
             return Ok(self);
         };
+        // Another Project leaves the link nothing to supply, so its Organization doesn't matter.
+        if self
+            .project
+            .as_ref()
+            .is_some_and(|named| named.name != link.project)
+        {
+            return Ok(self);
+        }
         check(&directory, &link)?;
         let project = self.project.get_or_insert(Named {
             name: link.project.clone(),
