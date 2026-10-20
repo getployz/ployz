@@ -271,10 +271,6 @@ export function deploymentStatusLabel(
 }
 
 /**
- * What a Deployment ships, for its row: "Deploys every service", or the Services a targeted Deploy named; nothing for one
- * that takes its Environment off the Servers.
- */
-/**
  * How a Deployment is named: "#N" once it queued; while it waits for CI it has no number yet, so the push's short sha
  * stands in, and the ID's first 8 characters when no push is known.
  */
@@ -285,8 +281,16 @@ export const deploymentLabel = ({ number, push, id }: Pick<DeploymentSummary, "n
 export const shippedService = ({ services, ships }: Pick<DeploymentSummary, "services" | "ships">, name: string) =>
   services.length === 0 || services.includes(name) || ships.includes(name);
 
-export const deploysLabel =({ services, remove }: Pick<DeploymentSummary, "services" | "remove">) =>
-  remove ? null : `Deploys ${services.length === 0 ? "every service" : services.join(", ")}`;
+/**
+ * What a Deployment ships, for its row: "Deploys every service", or the Services a targeted Deploy named followed by the
+ * others it ships by reference, "Deploys web (+ api, postgres)"; nothing for one that takes its Environment off the Servers.
+ */
+export function deploysLabel({ services, ships, remove }: Pick<DeploymentSummary, "services" | "ships" | "remove">) {
+  if (remove) return null;
+  if (services.length === 0) return "Deploys every service";
+  const referenced = ships.filter((name) => !services.includes(name)).sort();
+  return `Deploys ${services.join(", ")}${referenced.length > 0 ? ` (+ ${referenced.join(", ")})` : ""}`;
+}
 
 const time = (seconds: number | null) => seconds === null ? null : new Date(seconds * 1000);
 

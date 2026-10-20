@@ -268,6 +268,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         }));
     }
     (verb.run)(matches)
+        .map_err(|failure| context::with_no_contexts_next(failure, leaf_matches(matches)))
 }
 
 /// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf

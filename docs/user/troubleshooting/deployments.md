@@ -90,6 +90,17 @@ or a command's exit code and output.
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
+## My new version runs out of memory
+
+**The Container ran out of memory under its 16 MiB memLimit**, with the health check's last
+result as the cause, and `next: ployz set 'web.memLimit=32MiB' …`
+
+Docker killed a process in the new replica for going over the service's **memLimit**. Ployz
+stopped the replica and kept the old version serving. The `next:` command doubles the limit,
+up to the most **memLimit** allows, 1024 GB; set the size your app needs. A service already at
+1024 GB gets no `next:` command: it has to use less memory. Nor does a service without a
+**memLimit**.
+
 ## My running service fails its healthcheck
 
 A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the

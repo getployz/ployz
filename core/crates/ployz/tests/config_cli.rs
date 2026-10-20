@@ -4398,11 +4398,11 @@ fn diff_escapes_what_would_steer_the_terminal_in_follow_hints_and_file_names() {
             "{human}"
         );
         assert!(
-            human.contains(r"files.safe\u{202e}evil.txt: null → "),
+            human.contains(r"files: added safe\u{202e}evil.txt"),
             "{human}"
         );
         assert!(
-            human.contains(r"files.line\u{2028}break.txt: null → "),
+            human.contains(r"files: added line\u{2028}break.txt"),
             "{human}"
         );
     }

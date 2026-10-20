@@ -6,7 +6,7 @@ use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
     ExecutionError, HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase,
-    OperationRow, OperationStatus, PullPolicy, RpcError, ServiceName,
+    OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -44,6 +44,10 @@ pub enum RowState {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(as = "Option<bool>", optional)]
         unanswered: bool,
+        /// Docker OOM-killed a process of the failed Container.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        out_of_memory: Option<OutOfMemory>,
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
@@ -320,6 +324,20 @@ impl Failure {
                 cause.extend(ployz_core::error_chain::causes(error));
                 (format!("{action} failed"), cause)
             }
+            ExecutionError::Health {
+                out_of_memory: Some(OutOfMemory { memory_bytes }),
+                failure,
+                ..
+            } => (
+                match memory_bytes {
+                    Some(bytes) => format!(
+                        "The Container ran out of memory under its {} memLimit",
+                        crate::memory_size(bytes.get() as f64 / 1e9)
+                    ),
+                    None => "The Container ran out of memory".to_owned(),
+                },
+                vec![failure.to_string()],
+            ),
             ExecutionError::Health { failure, .. } => (
                 match failure {
                     HealthFailure::Runtime {
@@ -339,7 +357,19 @@ impl Failure {
                     | HealthFailure::Runtime { .. } => "The Container failed its health check",
                 }
                 .to_owned(),
-                vec![failure.to_string()],
+                // The reason already says it: `restarting` alone adds nothing.
+                if matches!(
+                    failure,
+                    HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Restarting
+                            | ContainerRuntimeObservation::Dead,
+                        last_check: None,
+                    }
+                ) {
+                    Vec::new()
+                } else {
+                    vec![failure.to_string()]
+                },
             ),
             ExecutionError::DependencyHealth {
                 dependency,
@@ -556,6 +586,13 @@ fn state(
                 why: Withheld::Unanswered,
             }),
             unanswered: matches!(error, ExecutionError::Machine { error, .. } if error.target_unanswered()),
+            out_of_memory: match error {
+                ExecutionError::Health { out_of_memory, .. } => *out_of_memory,
+                ExecutionError::Machine { .. }
+                | ExecutionError::DependencyHealth { .. }
+                | ExecutionError::Hook { .. }
+                | ExecutionError::Cancelled => None,
+            },
         };
     }
     if let Some(phase) = running {
@@ -855,6 +892,10 @@ mod tests {
     }
 
     fn reason(observation: ContainerRuntimeObservation) -> String {
+        failure(observation).reason
+    }
+
+    fn failure(observation: ContainerRuntimeObservation) -> Failure {
         Failure::of(
             &ExecutionError::Health {
                 container_id: ContainerId::parse("a".repeat(64)).unwrap(),
@@ -862,10 +903,10 @@ mod tests {
                     observation,
                     last_check: None,
                 },
+                out_of_memory: None,
             },
             &[],
         )
-        .reason
     }
 
     #[test]
@@ -926,6 +967,19 @@ mod tests {
         assert_eq!(
             reason(ContainerRuntimeObservation::Dead),
             "The Container stopped"
+        );
+    }
+
+    #[test]
+    fn a_cause_that_repeats_the_reason_is_left_out() {
+        assert!(
+            failure(ContainerRuntimeObservation::Restarting)
+                .cause
+                .is_empty()
+        );
+        assert_eq!(
+            failure(ContainerRuntimeObservation::Exited { code: 1 }).cause,
+            ["exited with code 1"]
         );
     }
 }

@@ -14,10 +14,10 @@ use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
     DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain,
-    ExecutionError, ExposedPort, FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure,
-    HealthVerdict, Hold, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
-    MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
-    OperationPhase, PortPublication, PublishServingPointerRequest, PullPolicy, QualifiedService,
+    ExecutionError, ExposedPort, FailedOperation, HEALTH_POLL_INTERVAL, HealthVerdict, Hold,
+    HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest, MachineAction,
+    MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer, OperationPhase,
+    OutOfMemory, PortPublication, PublishServingPointerRequest, PullPolicy, QualifiedService,
     RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode,
     RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, ServingPointer,
     ServingPointerPublication, SlotKey, StopOptions, TransportProtocol, op,
@@ -1896,7 +1896,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         cancellation,
     )
     .await;
-    let new = match started_container(started, cancellation) {
+    let new = match started_container(started, spec, cancellation) {
         Ok(new) => new,
         Err(error) => {
             let keep = adopts || (global && !cancellation.is_cancelled());
@@ -1984,7 +1984,7 @@ async fn start<C: MachineOperations>(
             "couldn't remove a failed start's Container"
         );
     }
-    started_container(started, cancellation)
+    started_container(started, spec, cancellation)
 }
 
 /// A Global start adopts a running Container of its spec, which a cancel must keep.
@@ -2097,6 +2097,7 @@ fn unavailable(message: String) -> RpcError {
 )]
 fn started_container(
     started: Result<(ContainerId, Option<HealthVerdict>), RpcError>,
+    spec: &ResolvedServiceSpec,
     cancellation: &CancellationToken,
 ) -> Result<ContainerId, ExecutionError> {
     if cancellation.is_cancelled() {
@@ -2104,16 +2105,19 @@ fn started_container(
     }
     let (container_id, health) =
         started.map_err(|error| machine_error(MachineAction::CreateContainer, error))?;
-    match health.and_then(HealthVerdict::into_failure) {
+    let Some(health) = health else {
+        return Ok(container_id);
+    };
+    let out_of_memory = health.oom_killed().then_some(OutOfMemory {
+        memory_bytes: spec.container.resources.memory_bytes,
+    });
+    match health.into_failure() {
         None => Ok(container_id),
-        Some(failure) => Err(health_error(container_id, failure)),
-    }
-}
-
-fn health_error(container_id: ContainerId, failure: HealthFailure) -> ExecutionError {
-    ExecutionError::Health {
-        container_id,
-        failure,
+        Some(failure) => Err(ExecutionError::Health {
+            container_id,
+            failure,
+            out_of_memory,
+        }),
     }
 }
 

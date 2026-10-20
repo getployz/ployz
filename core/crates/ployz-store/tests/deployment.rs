@@ -1709,6 +1709,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                         why: Withheld::Unanswered
                     }),
                     unanswered: false,
+                    out_of_memory: None,
                 }
             ),
             ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
@@ -4556,6 +4557,7 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
                 why: Withheld::NoSecretContext
             }),
             unanswered: false,
+            out_of_memory: None,
         }
     );
     let reserialized = serde_json::to_string(&state).unwrap();
