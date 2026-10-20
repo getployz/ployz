@@ -200,7 +200,6 @@ fn reported_down(
         })
 }
 
-/// Every row whose containers arrived counts.
 pub(crate) fn routed(
     rows: BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
     service: &QualifiedService,

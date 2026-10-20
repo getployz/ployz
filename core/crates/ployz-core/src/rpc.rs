@@ -1286,7 +1286,7 @@ pub struct DiskSpace {
 pub struct CertificateMaterialPublished {}
 
 /// Read which copies of one Service each live proxy routes, from the target
-/// Machine's replicated store. Any participating Machine answers.
+/// Machine's replicated store.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReadRoutesRequest {
     pub service: QualifiedService,
