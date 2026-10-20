@@ -10,8 +10,9 @@
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
 use ployz_core::{
-    EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget, MachineUpdate,
-    Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode, UpdateMachineRequest, op,
+    CopyRotation, EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget,
+    MachineUpdate, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode,
+    UpdateMachineRequest, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -19,11 +20,12 @@ use ts_rs::TS;
 
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
+use crate::deploy::cleanup::Copy;
 use crate::deploy::{Converged, converge};
 
 pub(crate) mod retirement;
 
-use retirement::{Retirement, retire_globals};
+use retirement::{Retirement, copies_on, let_go, retire_globals};
 
 pub use crate::deploy::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
@@ -93,20 +95,19 @@ pub struct DrainReport {
 }
 
 impl DrainReport {
-    /// Every chosen Service left the Server or moved, the Drain ran to its end, and what
-    /// remains was observed. A moved Service may still be listed: its old copy is retiring
-    /// through its pointer, and ployzd stops it once every Machine stops routing to it.
+    /// Every chosen Service left the Server, every moved copy's old copy stopped, every
+    /// copy left Out there is gone, the Drain ran to its end, and what remains was
+    /// observed.
     #[must_use]
     pub fn complete(&self) -> bool {
         let Remaining::Observed { services, .. } = &self.remaining else {
             return false;
         };
         self.stopped.is_none()
-            && self.services.iter().all(|service| {
-                service.outcome.complete()
-                    && (matches!(service.outcome, DrainOutcome::Moved { .. })
-                        || !services.contains(&service.service))
-            })
+            && self
+                .services
+                .iter()
+                .all(|service| service.outcome.complete() && !services.contains(&service.service))
     }
 }
 
@@ -124,8 +125,8 @@ struct DrainReportWire {
     stopped: Option<DrainStop>,
     /// What still runs on the Server after the Drain.
     remaining: Remaining,
-    /// Every chosen Service left the Server or moved, the Drain ran to its end, and what
-    /// remains was observed. A moved Service's old copy may still be retiring.
+    /// Every chosen Service left the Server, every old copy stopped, the Drain ran to its
+    /// end, and what remains was observed.
     complete: bool,
 }
 
@@ -185,6 +186,12 @@ pub enum DrainOutcome {
     },
     /// Replicated: nothing moved, and why.
     Stays { reason: StayReason },
+    /// Replicated: a copy the user stopped stays on the Server until they start or remove
+    /// it. The Drain never moves one.
+    Held,
+    /// Replicated: the copies an earlier move left Out on the Server, each waited unlisted
+    /// by every live proxy and then removed. Never empty.
+    OldCopies { ends: Vec<OldCopyEnd> },
     /// Global: its removal from the Server was acknowledged, or none of it was left there.
     Retired,
     /// Global: it may still run on the Server, and why.
@@ -199,9 +206,12 @@ pub enum DrainOutcome {
 impl DrainOutcome {
     fn complete(&self) -> bool {
         match self {
-            Self::Moved { .. } | Self::NothingToMove | Self::Retired => true,
+            Self::Moved { moves } => moves.iter().all(|step| step.old == OldCopyEnd::Stopped),
+            Self::OldCopies { ends } => ends.iter().all(|end| *end == OldCopyEnd::Stopped),
+            Self::NothingToMove | Self::Retired => true,
             Self::Failed { .. }
             | Self::Stays { .. }
+            | Self::Held
             | Self::NotRetired { .. }
             | Self::Interrupted { .. }
             | Self::NotAttempted => false,
@@ -392,6 +402,14 @@ trait DrainClient {
         service: &QualifiedService,
         cancellation: &CancellationToken,
     ) -> Converged;
+    /// Every copy of `service` on `server`, from a fresh listing.
+    async fn copies_on(
+        &mut self,
+        server: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<Copy>, RpcError>;
+    /// Wait until no live proxy lists the Out copy, then remove it.
+    async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd;
 }
 
 impl DrainClient for Client {
@@ -423,6 +441,33 @@ impl DrainClient for Client {
         cancellation: &CancellationToken,
     ) -> Converged {
         converge(self, service, cancellation).await
+    }
+
+    async fn copies_on(
+        &mut self,
+        server: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<Vec<Copy>, RpcError> {
+        copies_on(self, server, service).await
+    }
+
+    async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd {
+        let machines = self.machines().await.unwrap_or_default();
+        let name = |id: &MachineId| {
+            machines
+                .iter()
+                .find(|machine| machine.machine.id == *id)
+                .map_or_else(
+                    || MachineRef {
+                        id: *id,
+                        name: MachineName::parse(id.to_string())
+                            .or_else(|_| MachineName::parse(format!("m{id}")))
+                            .expect("a lowercase hex id is a DNS label"),
+                    },
+                    |machine| MachineRef::from(&machine.machine),
+                )
+        };
+        let_go(self, copy, &name, cancellation).await
     }
 }
 
@@ -488,6 +533,13 @@ async fn execute<C: DrainClient>(
                 record.stop(DrainStop::Cancelled, rest);
                 break 'work;
             }
+            // Listed before the move, so a copy the move itself leaves Out is reported
+            // once, by the move, and not waited on twice. A failed listing leaves the
+            // copies to `remaining`, which still finds the Service there.
+            let left_behind = client
+                .copies_on(&server.id, service)
+                .await
+                .unwrap_or_default();
             let outcome = match client.converge(service, cancellation).await {
                 Converged::Moved { moves } => DrainOutcome::Moved { moves },
                 Converged::NothingToMove => DrainOutcome::NothingToMove,
@@ -499,7 +551,34 @@ async fn execute<C: DrainClient>(
                     break 'work;
                 }
             };
-            record.push(service.clone(), outcome);
+            let held = left_behind
+                .iter()
+                .any(|copy| matches!(copy.rotation, CopyRotation::Held(_)));
+            let out = left_behind
+                .iter()
+                .filter(|copy| copy.rotation == CopyRotation::Out)
+                .collect::<Vec<_>>();
+            let only_leftovers =
+                outcome == DrainOutcome::NothingToMove && (held || !out.is_empty());
+            if !only_leftovers {
+                record.push(service.clone(), outcome);
+            }
+            if held {
+                record.push(service.clone(), DrainOutcome::Held);
+            }
+            if !out.is_empty() {
+                let mut ends = Vec::with_capacity(out.len());
+                for copy in out {
+                    ends.push(if cancellation.is_cancelled() {
+                        OldCopyEnd::Running {
+                            unconfirmed: Unconfirmed::Cancelled,
+                        }
+                    } else {
+                        client.let_go(copy, cancellation).await
+                    });
+                }
+                record.push(service.clone(), DrainOutcome::OldCopies { ends });
+            }
             rest = after;
         }
     }
