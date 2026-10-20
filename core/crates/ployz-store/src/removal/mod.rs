@@ -141,7 +141,10 @@ pub enum LeftStatus {
 pub struct Waiting {
     /// The Server's name, or its Machine ID when no Deployment here named it.
     pub server: String,
-    pub server_id: MachineId,
+    /// None from a Store older than this field, whose `server` is the Machine ID.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub server_id: Option<MachineId>,
     pub why: String,
     pub fix: Fix,
 }
@@ -154,7 +157,7 @@ impl Waiting {
                 .get(&machine)
                 .cloned()
                 .unwrap_or_else(|| machine.to_string()),
-            server_id: machine,
+            server_id: Some(machine),
             why,
             fix: Fix::ServerRemove {
                 server: machine.to_string(),
@@ -455,7 +458,10 @@ fn waiting_on(
         })
         .collect();
     for machine in silent {
-        if waiting.iter().all(|waiting| waiting.server_id != *machine) {
+        if waiting
+            .iter()
+            .all(|waiting| waiting.server_id != Some(*machine))
+        {
             waiting.push(Waiting::on(
                 names,
                 *machine,

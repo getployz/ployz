@@ -1260,6 +1260,22 @@ fn a_removal_waits_on_each_server_that_did_not_answer_cloud_by_its_name() {
 }
 
 #[test]
+fn a_removal_from_a_store_without_server_ids_still_reads() {
+    let older = json!({
+        "removal": "removing", "id": uuid(9), "left": [],
+        "waiting_on": [{
+            "server": server('a'), "why": "It didn't answer whether it holds data",
+            "fix": { "server_remove": { "server": server('a') } },
+        }],
+    });
+    let Removal::Removing { waiting_on, .. } = serde_json::from_value(older).unwrap() else {
+        panic!("removed");
+    };
+    assert_eq!(waiting_on[0].server, server('a').to_string());
+    assert_eq!(waiting_on[0].server_id, None);
+}
+
+#[test]
 fn a_removal_that_failed_on_a_server_silent_since_admission_goes_again_once_it_answers() {
     let (store, who) = branched();
     let all_answer = Trusted {
