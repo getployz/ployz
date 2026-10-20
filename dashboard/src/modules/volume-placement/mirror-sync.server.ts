@@ -65,10 +65,12 @@ type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreach
 const isSlot = (member: Member): member is SlotMember => member.answered && member.view.copy?.kind === "slot";
 const pullingTo = (copy: Slot) => copy.pull !== null && copy.pull.failure === null ? copy.pull.target : null;
 
+export const failureLines = (reported: readonly PullFailure[]) =>
+  reported.map(({ mirror, target, failure }) => `${mirror} could not receive ${target}: ${failure}`);
+
 /** One line per thing the sync did or did not do, for the log and for whoever asked. */
 export function syncLines(name: string, { reported, sync }: Omit<MirrorSyncAnswer, "lines">): string[] {
-  const failures = reported.map(({ mirror, target, failure }) => `${mirror} could not receive ${target}: ${failure}`);
-  return [...failures, ...outcomeLines(name, sync)];
+  return [...failureLines(reported), ...outcomeLines(name, sync)];
 }
 
 const mayHaveReached = (name: string, server: string) =>

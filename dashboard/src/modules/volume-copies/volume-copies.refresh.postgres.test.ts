@@ -163,6 +163,36 @@ describe("Refresh now", () => {
     expect(await refresh()).toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
   });
 
+  it("answers with the round's pull failures before naming a silent Server", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed"), member("web-3", "unanswered")];
+    expect(await refresh()).toEqual({
+      ok: false,
+      refusal: { code: "unanswered", message: "data-web-2 could not receive w-1-4: no space; web-3 isn't answering", details: null },
+    });
+    expect(asked).toEqual([]);
+  });
+
+  it.each([
+    ["a run covers the Volume", async () => {
+      const move = await run(requestVolumeRun(caller, { volumeId, environment, kind: "move", args: { to: "web-2" } }));
+      if (!move.ok) throw new Error("expected a run");
+      return `data refresh is covered by move run ${move.run.id}`;
+    }],
+    ["a Deploy is moving the Volume", async () => {
+      await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
+      await run(stampPlacements(organizationId, [volumeId], "dep-1"));
+      return "skipped data: A Deploy is moving this Volume. Wait for it to finish.";
+    }],
+  ])("answers with the round's pull failures when %s", async (_, open) => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    const skipped = await open();
+    expect(await refresh()).toEqual({
+      ok: false,
+      refusal: { code: "conflict", message: `data-web-2 could not receive w-1-4: no space; ${skipped}`, details: null },
+    });
+    expect(asked).toEqual([]);
+  });
+
   it("names the silent Server when the runtime can't say which Servers answer", async () => {
     members = [member("web-1", "writer"), member("web-2", "unanswered")];
     expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.fail("down"), () => Effect.succeed(members), () => Effect.succeed(members), ask)))
