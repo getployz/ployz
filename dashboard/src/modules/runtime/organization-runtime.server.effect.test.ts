@@ -4,11 +4,14 @@ import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import {
+  ClusterOutOfTime,
+  clusterRead,
   makeOrganizationRuntimeLayer,
   ORGANIZATION_CONNECT_TIMEOUT,
   PAIRING_CHANGE_POLL,
   PAIRING_CHECK_FAILURE_LIMIT,
   OrganizationRuntime,
+  withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -400,5 +403,21 @@ it.effect("lets an in-flight pairing check finish when the caller's scope closes
       assert.isTrue(finished);
       assert.isFalse(interrupted);
     }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("Cluster reads in flight together spend their budget once, and time between reads spends none of it", () =>
+  Effect.gen(function* () {
+    const reading = Effect.gen(function* () {
+      yield* Effect.all([clusterRead(Effect.sleep("6 seconds")), clusterRead(Effect.sleep("6 seconds"))], { concurrency: "unbounded" });
+      yield* Effect.sleep("100 seconds");
+      return yield* clusterRead(Effect.never);
+    }).pipe(withClusterBudget(10_000), Effect.flip, Effect.forkChild);
+    const read = yield* reading;
+    yield* TestClock.adjust("106 seconds");
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    assert.isUndefined(read.pollUnsafe());
+    yield* TestClock.adjust("4 seconds");
+    assert.isTrue((yield* Fiber.join(read)) instanceof ClusterOutOfTime);
   }),
 );

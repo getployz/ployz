@@ -10,6 +10,7 @@ use ployz_store::{
     DestructiveEffect, DestructiveKind, DueQuery, EnvironmentName, EnvironmentRef,
     EnvironmentSummary, EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal,
     RemovalsQuery, Remove, RemovedQuery, ServicesQuery, ShutDown, VolumeName, VolumesQuery,
+    Waiting,
 };
 use serde_json::json;
 
@@ -677,6 +678,9 @@ impl Removed {
                 crate::ui::stream(format_args!("Deployment {} applied", deployment.label()));
             }
             deploy::say_view(view);
+            if let Removal::Removing { waiting_on, .. } = &self.removal {
+                say_waiting(waiting_on);
+            }
             return;
         }
         for deployment in &self.ran {
@@ -710,12 +714,7 @@ impl Removed {
                         store::word(&left.status)
                     ));
                 }
-                for waiting in waiting_on {
-                    crate::ui::stream(format_args!(
-                        "Waiting on {}: {}",
-                        waiting.server, waiting.why
-                    ));
-                }
+                say_waiting(waiting_on);
                 crate::ui::stream(format_args!("Cloud goes on removing {target}."));
             }
         }
@@ -734,6 +733,16 @@ impl Removed {
             }
             _ => Ok(()),
         }
+    }
+}
+
+/// A line for each Server a removal waits on, and why.
+fn say_waiting(waiting_on: &[Waiting]) {
+    for waiting in waiting_on {
+        crate::ui::stream(format_args!(
+            "Waiting on {}: {}",
+            waiting.server, waiting.why
+        ));
     }
 }
 
@@ -890,42 +899,17 @@ pub(super) fn take_off(
     Ok((view, ran))
 }
 
-/// Report a removal Deployment that didn't apply (yet), after the `applied` ones
-/// before it, with the `effects` its removal was bound to, naming `again`, the
+/// Report a shutdown Deployment that didn't apply (yet), naming `again`, the
 /// command that finishes it: exit 3, or 0 when `--detach` asked not to wait.
 pub(super) fn unfinished(
     matches: &ArgMatches,
-    (view, effects): (&DeploymentView, &[DestructiveEffect]),
-    applied: &[DeploymentSummary],
+    view: &DeploymentView,
     ran: Result<(), Error>,
     again: &str,
 ) -> Result<(), Error> {
-    #[derive(serde::Serialize)]
-    struct Unfinished<'a> {
-        #[serde(flatten)]
-        view: &'a DeploymentView,
-        #[serde(skip_serializing_if = "<[_]>::is_empty")]
-        applied: &'a [DeploymentSummary],
-        #[serde(skip_serializing_if = "<[_]>::is_empty")]
-        effects: &'a [DestructiveEffect],
-    }
-    let hint = Some(again.to_owned());
-    crate::ui::finish(
-        &store::Next::new(
-            &Unfinished {
-                view,
-                applied,
-                effects,
-            },
-            hint,
-        ),
-        || {
-            for deployment in applied {
-                crate::ui::stream(format_args!("Deployment {} applied", deployment.label()));
-            }
-            deploy::say_view(view);
-        },
-    )?;
+    crate::ui::finish(&store::Next::new(view, Some(again.to_owned())), || {
+        deploy::say_view(view);
+    })?;
     not_applied(matches, ran, again.to_owned())
 }
 

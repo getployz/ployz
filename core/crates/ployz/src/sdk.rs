@@ -203,6 +203,50 @@ pub struct RunningDeploy {
     join: Mutex<Option<DeployTask>>,
 }
 
+/// A failure, and whether no Machine sent it: the dial failed, or the call went out and
+/// no status came back. A Machine's own refusal is `unanswered: false`.
+#[derive(Debug)]
+pub struct CallError {
+    pub error: RpcError,
+    pub unanswered: bool,
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for CallError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
+}
+
+impl From<ConnectError> for CallError {
+    fn from(error: ConnectError) -> Self {
+        Self {
+            unanswered: error.unreached() || error.unreplied(),
+            error: error.into(),
+        }
+    }
+}
+
+impl From<RpcError> for CallError {
+    fn from(error: RpcError) -> Self {
+        Self {
+            error,
+            unanswered: false,
+        }
+    }
+}
+
+impl From<CallError> for RpcError {
+    fn from(failure: CallError) -> Self {
+        failure.error
+    }
+}
+
 /// Select the first confirmed connection before any operation is dispatched.
 ///
 /// # Errors
@@ -211,8 +255,19 @@ pub async fn connect_connections(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,
 ) -> Result<Session, RpcError> {
+    Ok(connect_answered(connections, connector).await?)
+}
+
+/// [`connect_connections`], keeping whether a Machine refused or none answered.
+///
+/// # Errors
+/// As [`connect_connections`].
+pub async fn connect_answered(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Session, CallError> {
     if connections.is_empty() {
-        return Err(invalid_argument("connections must not be empty".into()));
+        return Err(invalid_argument("connections must not be empty".into()).into());
     }
     let client = connect_selected_with(
         SelectedConnections {
@@ -241,24 +296,28 @@ impl Session {
             .cloned()
     }
 
-    async fn until_closed<T>(
+    async fn until_closed<T, E: From<RpcError>>(
         &self,
-        work: impl std::future::Future<Output = Result<T, RpcError>>,
-    ) -> Result<T, RpcError> {
+        work: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Result<T, E> {
         tokio::select! {
             biased;
-            () = self.inner.cancel.cancelled() => Err(closed()),
+            () = self.inner.cancel.cancelled() => Err(closed().into()),
             result = work => result,
         }
     }
 
     async fn unary<T: Rpc>(&self, request: T::Request) -> Result<T::Response, RpcError> {
+        Ok(self.unary_answered::<T>(request).await?)
+    }
+
+    async fn unary_answered<T: Rpc>(&self, request: T::Request) -> Result<T::Response, CallError> {
         let mut client = self.client()?;
         self.until_closed(async {
             client
                 .call::<T>(request, None)
                 .await
-                .map_err(RpcError::from)
+                .map_err(CallError::from)
         })
         .await
     }
@@ -354,15 +413,20 @@ impl Session {
     pub async fn set_management_client(
         &self,
         label: ployz_core::ManagementClientLabel,
-    ) -> Result<ployz_core::ManagementCapability, RpcError> {
+    ) -> Result<ployz_core::ManagementCapability, CallError> {
         let response = self
-            .unary::<op::SetManagementClient>(ployz_core::SetManagementClientRequest::Set { label })
+            .unary_answered::<op::SetManagementClient>(
+                ployz_core::SetManagementClientRequest::Set { label },
+            )
             .await?;
-        response.capability.ok_or_else(|| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Machine set a Management Client without a Management Capability".into(),
-            details: Value::Null,
-            cause: Vec::new(),
+        response.capability.ok_or_else(|| {
+            RpcError {
+                code: RpcErrorCode::Internal,
+                message: "Machine set a Management Client without a Management Capability".into(),
+                details: Value::Null,
+                cause: Vec::new(),
+            }
+            .into()
         })
     }
 

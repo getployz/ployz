@@ -1142,6 +1142,7 @@ fn with_volume() -> ConfigStore {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("pgdata").unwrap(),
@@ -2195,6 +2196,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),
@@ -2212,6 +2214,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("cache").unwrap(),
