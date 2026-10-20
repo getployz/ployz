@@ -7,6 +7,7 @@ import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
+import { keptMachineName } from "#/modules/machines/machine-names.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import {
@@ -136,6 +137,7 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
       id: input.requestId,
       organizationId,
       machineId: input.machineId,
+      serverName: keptMachineName(organizationId, input.machineId),
       requestedByUserId: caller.userId,
       targets: [...plan.targets],
       approvalId: gated.approvalId,
@@ -170,6 +172,7 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     id: input.attemptId,
     organizationId: caller.organizationId,
     machineId: input.machineId,
+    serverName: keptMachineName(caller.organizationId, input.machineId),
     requestedByUserId: caller.userId,
     targets: [...input.targets],
     approvalId: input.approvalId,

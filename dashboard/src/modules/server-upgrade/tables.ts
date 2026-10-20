@@ -1,3 +1,4 @@
+import type { MachineName } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { boolean, check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { createdAt, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
@@ -25,6 +26,8 @@ export const serverUpgradeAttempt = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
+    /** The Server's name when the run started, so the run keeps it after a rename or removal; null on older rows. */
+    serverName: text("server_name").$type<MachineName>(),
     /** The Server's attempt ID, minted by Cloud; repeating a request with it returns the same attempt. */
     attemptId: text("attempt_id").notNull(),
     trigger: text("trigger").notNull().$type<UpgradeTrigger>(),

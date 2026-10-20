@@ -11,6 +11,7 @@ import {
 } from "#/modules/machines/machine-removal";
 import { Database, sqlErrorFrom } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
+import { keptMachineName } from "#/modules/machines/machine-names.server";
 import { machineRemoveAttempt as schemaMachineRemoveAttempt } from "#/modules/machines/tables";
 
 type Attempt = typeof schemaMachineRemoveAttempt.$inferSelect;
@@ -146,6 +147,7 @@ export const requestMachineRemoveAttempt = Effect.fn(
       organizationId: input.organizationId,
       requestedByUserId: input.requestedByUserId,
       machineId: input.machineId,
+      serverName: keptMachineName(input.organizationId, input.machineId),
       confirmDataLoss: input.confirmDataLoss,
       noReset: input.noReset ?? false,
       approvalId: input.approvalId ?? null,
