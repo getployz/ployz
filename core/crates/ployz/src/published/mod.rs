@@ -8,7 +8,7 @@ mod run;
 mod wire;
 
 pub(crate) use graft::attach;
-pub(crate) use run::{run, run_on};
+pub(crate) use run::{check_scope_env, run, run_on};
 pub(crate) use wire::Ran;
 
 use std::collections::BTreeSet;

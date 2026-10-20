@@ -36,7 +36,7 @@ pub(crate) fn command(command: Command) -> Command {
             value("token-file", None)
                 .value_parser(clap::value_parser!(PathBuf))
                 .default_value(Paths::TOKEN_FILE)
-                .help("Read the Fleet Token from this file"),
+                .help("Read the Fleet Token from this file. The running check-in loop deletes it once Cloud enrolls or rejects this host, or the token is revoked or expires; an --install that ends with an error keeps it"),
         )
         .arg(
             switch("token-stdin", None)
@@ -245,6 +245,7 @@ async fn install(
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     crate::ui::stream("Checking in");
     let pass = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
+    let no_cluster = pass.seen.as_ref().is_some_and(|seen| seen.no_cluster);
     let answered = answer_install(pass, client, paths, install_with)?;
     write_unit(unit::CHECKIN, &checkin_unit)?;
     write_unit(unit::PREPARE, &prepare_unit)?;
@@ -253,7 +254,13 @@ async fn install(
     systemd(&["enable", unit::CHECKIN]).await?;
     // A loop already running checks in with the old token until it starts over.
     systemd(&["restart", unit::CHECKIN]).await?;
-    if answered == Answered::Waiting {
+    if answered == Answered::Waiting && no_cluster {
+        crate::ui::stream(format!(
+            "{}. {}",
+            checkin::NO_CLUSTER,
+            checkin::NO_CLUSTER_WHY
+        ));
+    } else if answered == Answered::Waiting {
         crate::ui::stream("Waiting for approval");
     }
     Ok(())

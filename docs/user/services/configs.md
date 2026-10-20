@@ -22,7 +22,7 @@ Several services can share the same config.
 **Save** writes every edited file together. Each file's options menu shows its size and permissions;
 each file holds up to 256 KB, and a service mounts up to 768 KB across all its configs. Unsaved edits stay visible if a save fails.
 
-File names can include folders, such as `conf.d/site.conf`, with up to four path segments.
+File names can include folders, such as `conf.d/site.conf`, with up to four path segments of up to 255 bytes each.
 Use relative paths without `..`.
 
 ## Mount it into a service

@@ -7,8 +7,8 @@ import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
 import { gateOperation, onceFor, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
-import type { Ran } from "#/modules/commands/command.server";
-import { findCommand, inputSchema, runCommand } from "#/modules/commands/commands.server";
+import { type Called, type Command, inputSchema } from "#/modules/commands/command.server";
+import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
@@ -16,7 +16,7 @@ import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/module
 import type { JsonObject } from "#/db/tables";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
-import { projectJsonValue } from "#/lib/json";
+import { asRecord, projectJsonValue } from "#/lib/json";
 
 /** A Caller acting through an agent: the sidebar, or a remote MCP client. */
 export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
@@ -59,7 +59,7 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
   ...COMMANDS.filter((command) => command.agents && command.typed === null).map((command) => ({
     name: command.name,
     description: command.about,
-    inputSchema: inputSchema(command),
+    inputSchema: inputSchema(command.input),
     gated: command.gate !== "never",
     readOnly: command.kind === "read",
     destructive: command.removes,
@@ -71,6 +71,7 @@ const refused = (code: string, message: string): ToolOutcome => ({ ok: false, re
 
 const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
 const DeniedApproval = Schema.Struct({ approval: Schema.Struct({ reason: Schema.NullOr(Schema.String) }) });
+const DeniedOperation = Schema.Struct({ approval: Schema.Struct({ review: Schema.Struct({ operation: Schema.Struct({ name: Schema.String }) }) }) });
 
 /** A denial as the agent hears it: what was denied and the human's reason, without the approval's ID to echo. */
 const denialForAgent = (what: string, refusal: StoreRefusal): StoreRefusal => {
@@ -79,16 +80,45 @@ const denialForAgent = (what: string, refusal: StoreRefusal): StoreRefusal => {
   return { code: refusal.code, message: `A human denied this ${what}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
 };
 
-const ACTS = {
-  service: "Service act",
-  drain: "drain",
-  upgrade: "upgrade",
-  set_server: "server policy change",
-  clean: "cleanup",
-  remove_server: "server removal",
-  forget_server: "server forget",
-  volume: "Volume run",
-} as const satisfies Record<Act["action"]["action"], string>;
+/** A denied act as the agent hears it, naming the Volume a Volume run's approval named. */
+export const actDenial = (action: Act["action"], refusal: StoreRefusal): StoreRefusal => {
+  const denied = Schema.decodeUnknownOption(DeniedOperation)(refusal.details);
+  return denialForAgent(actWords(action, Option.getOrNull(Option.map(denied, ({ approval }) => approval.review.operation.name))), refusal);
+};
+
+/** An act in the words a denial names it by, as in `restart whoami`. */
+const actWords = (action: Act["action"], volume: string | null): string => {
+  switch (action.action) {
+    case "service":
+      return `${action.verb} ${action.service}`;
+    case "drain":
+      return `drain ${action.server.name}`;
+    case "upgrade":
+      return `upgrade ${action.server.name}`;
+    case "set_server":
+      return `policy change on ${action.server.name}`;
+    case "clean":
+      return `cleanup of ${action.leftover}`;
+    case "remove_server":
+      return `removal of ${action.server.name}`;
+    case "forget_server":
+      return `forget ${action.server.name}`;
+    case "volume":
+      switch (action.run.run) {
+        case "mirror":
+          return `Volume mirror to ${action.run.to.name}`;
+        case "move":
+          return `Volume move to ${action.run.to.name}`;
+        case "restore":
+          return `Volume restore from ${action.run.from.name}`;
+        case "remove_mirror":
+          return volume === null ? "Volume mirror removal" : `mirror removal of ${volume}`;
+        case "sync":
+        case "release":
+          return volume === null ? `Volume ${action.run.run}` : `${action.run.run} of ${volume}`;
+      }
+  }
+};
 
 const StaleReview = Schema.Struct({
   diff: Schema.Struct({
@@ -149,11 +179,19 @@ const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: AgentCalle
     const asked = asking(result.refusal);
     if (asked !== null) return asked;
   }
-  return { result: { ok: false, refusal: denialForAgent(ACTS[act.action.action], result.refusal) } as const };
+  return { result: { ok: false, refusal: actDenial(act.action, result.refusal) } as const };
 });
 
-/** A published command's answer as the model hears it; the line `ployz` prints for a human is not for the model. */
-const heard = (ran: Ran<unknown>): ToolOutcome => ran.ok ? { ok: true, value: ran.output } : { ok: false, refusal: ran.refusal };
+/** The call to repeat after `command` refused: the fields it takes, so a key the caller made up is not echoed. */
+const repeat = (command: Pick<Command, "input">, call: AgentCall): JsonObject =>
+  Object.fromEntries(Object.entries(asRecord(call.input) ?? {}).filter(([key]) => Object.hasOwn(command.input.fields, key)));
+
+/**
+ * A published command's answer as the model hears it, its refusal carrying the call to repeat as a Store tool's does;
+ * the line `ployz` prints for a human is not for the model.
+ */
+const heard = (command: Pick<Command, "input">, call: AgentCall, ran: Called<unknown>): ToolOutcome =>
+  ran.ok ? { ok: true, value: ran.output } : { ok: false, refusal: { ...ran.refusal, retry: { tool: call.tool, input: repeat(command, call) } } };
 
 /** A catalog tool whose input takes a Project: it acts in an Environment, defaulting to the place when a call names none. */
 const ScopedTool = Schema.Struct({ name: Schema.String, input_schema: Schema.Struct({ properties: Schema.Struct({ project: Schema.Struct({}) }) }) });
@@ -195,7 +233,7 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
   if (published !== undefined) {
     if (!published.agents || published.typed !== null) return done(refused("unknown_tool", `No tool is named ${call.tool}.`));
     const ran = yield* runCommand(caller, published.name, call.input, { approvalId: call.approvalId, key: call.key });
-    return (!ran.ok && ran.refusal.code === "approval_required" ? asking(ran.refusal) : null) ?? done(heard(ran));
+    return (!ran.ok && ran.refusal.code === "approval_required" ? asking(ran.refusal) : null) ?? done(heard(published, call, ran));
   }
   if (!COMPILED.has(call.tool)) return done(refused("unknown_tool", `No tool is named ${call.tool}.`));
   const at = placeOf(caller, call.page, call.tool, call.input);

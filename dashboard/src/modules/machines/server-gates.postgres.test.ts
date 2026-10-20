@@ -105,7 +105,7 @@ describe("Server management and copy deletion", () => {
     sent.length = 0;
     expect([await outcomeOf(gate, ids.member), sent]).toEqual([
       name === "server_upgrade_policy_set"
-        ? JSON.stringify({ ok: false, refusal: { code: "forbidden", message: REFUSED, details: null } })
+        ? JSON.stringify({ ok: false, refusal: { code: "forbidden", message: REFUSED, details: null, writes: "none" } })
         : `Forbidden: ${REFUSED}`,
       [],
     ]);

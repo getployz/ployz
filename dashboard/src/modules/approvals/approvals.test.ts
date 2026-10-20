@@ -1,6 +1,6 @@
 import type { ConfigCommand } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { type ApprovalReview, approvalCommand, approvalSubject, asksApproval } from "#/modules/approvals/approvals";
+import { type ApprovalReview, approvalCommand, approvalSubject, approvalTarget, asksApproval } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 
 const here = { project: null, environment: null };
@@ -21,4 +21,9 @@ it("names a shutdown as a shutdown, not a Deploy", () => {
   const review = asTestDouble<ApprovalReview>()({ effects: [], diff: { environment: { name: "staging", project: "shop" } } });
   expect(approvalCommand(shutDown)).toBe("shut_down");
   expect(approvalSubject(approvalCommand(shutDown), review)).toMatchObject({ verb: "Shut down", name: "staging" });
+});
+
+it("lists a Store write's Environment under its Project, so two production approvals read apart", () => {
+  const review = asTestDouble<ApprovalReview>()({ effects: [], diff: { environment: { name: "production", project: "mcp-lab" } } });
+  expect(approvalTarget("deploy", review)).toEqual({ verb: "Deploy", name: "mcp-lab/production" });
 });

@@ -46,16 +46,20 @@ pub(crate) fn branch_plan(
             .collect()
     };
     let owned = own(&planned);
-    let only = own(&plan(&BranchPicks::Preset {
-        preset: BranchPreset::Only,
-    })?);
-    let uses = own(&plan(&BranchPicks::Preset {
-        preset: BranchPreset::Uses,
-    })?);
-    let presets = match uses == only {
-        true => vec![BranchPreset::Only, BranchPreset::All],
-        false => vec![BranchPreset::Only, BranchPreset::Uses, BranchPreset::All],
-    };
+    // Each preset copies at least what the one before it does; one copying no more is no choice,
+    // and is pressed as the offered one it copies the same as.
+    let mut presets = Vec::new();
+    let mut pressed = planned.preset;
+    let mut copied = None;
+    for preset in [BranchPreset::Only, BranchPreset::Uses, BranchPreset::All] {
+        let copies = Some(own(&plan(&BranchPicks::Preset { preset })?));
+        if copies != copied {
+            presets.push(preset);
+            copied = copies;
+        } else if pressed == Some(preset) {
+            pressed = presets.last().copied();
+        }
+    }
     let role = |role: &BranchNodeRole| match role {
         BranchNodeRole::Own { .. } => PlannedRole::Own,
         BranchNodeRole::Live => PlannedRole::Live,
@@ -105,7 +109,7 @@ pub(crate) fn branch_plan(
         .collect::<Result<_, RpcError>>()?;
     Ok(BranchPlanView {
         from: from.summary.clone(),
-        preset: planned.preset,
+        preset: pressed,
         presets,
         nodes,
     })
@@ -130,14 +134,7 @@ pub(crate) fn lowering(
     let Some(row) = row(tx, id)? else {
         return Ok(Lowering::default());
     };
-    let deployed = tx
-        .query(
-            "SELECT node_id FROM config_applied WHERE environment_id = ?1",
-            &[id.as_str().into()],
-        )?
-        .iter()
-        .map(|row| row.text(0).map(str::to_owned))
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let deployed = super::setup::deployed(tx, id)?;
     let setup = saved
         .services
         .iter()

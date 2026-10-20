@@ -225,15 +225,12 @@ impl Fields {
             .unwrap_or_default();
         for (label, value) in &self.fields {
             let value = if value.is_empty() { "-" } else { value };
+            let painted = Tone::Muted.paint(label.as_ref());
             if aligned {
                 let padding = " ".repeat(width - label.width());
-                writeln!(
-                    out,
-                    "{}{padding}  {value}",
-                    Tone::Muted.paint(label.as_ref())
-                )?;
+                writeln!(out, "{painted}{padding}  {value}")?;
             } else {
-                writeln!(out, "{label} = {value}")?;
+                writeln!(out, "{painted} = {value}")?;
             }
         }
         Ok(())
@@ -252,6 +249,19 @@ pub(crate) fn unprintable(c: char) -> bool {
                 | GeneralCategory::LineSeparator
                 | GeneralCategory::ParagraphSeparator
         )
+}
+
+/// `text` with each [`unprintable`] character as its `\u{…}` escape, so a value shows as stored.
+pub(crate) fn escaped(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if unprintable(c) {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 pub(crate) const REPLACED: char = '\u{FFFD}';
