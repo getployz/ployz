@@ -9,7 +9,7 @@ import {
   enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
 } from "#/modules/machines/tables";
 import { cancelOpenServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
@@ -315,7 +315,7 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string) {
     const ployz = yield* Ployz;
     return yield* Effect.scoped(Effect.gen(function* () {
-      const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 });
+      const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 }, { closeWithin: clusterRead });
       return yield* Effect.gen(function* () {
         const { management_clients: labels } = yield* session.inspect();
         for (const label of labels) {
@@ -325,7 +325,7 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
         yield* session.clearManagementClient("cloud");
         return "confirmed" as const;
       }).pipe(Effect.orElseSucceed(() => "answered" as const));
-    })).pipe(Effect.catch((error) => Effect.succeed(
+    })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS), Effect.catch((error) => Effect.succeed(
       error._tag === "PloyzProviderError" && error.operation === "connect"
         && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause)) ? "confirmed" as const : "silent" as const,
     )));

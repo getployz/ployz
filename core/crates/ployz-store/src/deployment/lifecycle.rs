@@ -1395,19 +1395,59 @@ pub(crate) fn record(
             let projection =
                 project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
+            super::rows::record(tx, &stored, &progress)?;
+            // The Deployment's cancel stopped the run, and each Service it left
+            // unfinished, unless one of its rows failed on its own.
+            let cancelled = if stored.summary.status == DeploymentStatus::Cancelling
+                && matches!(
+                    &*outcome,
+                    DeployOutcome::Failed {
+                        failed: FailedOperation::Operation { error, .. }
+                            | FailedOperation::Replacement { error, .. },
+                        ..
+                    } if error.cancelled()
+                ) {
+                let failed = super::rows::failed(tx, &stored)?;
+                projection
+                    .failed_services
+                    .iter()
+                    .filter(|service| !failed.contains(*service))
+                    .cloned()
+                    .collect()
+            } else {
+                std::collections::BTreeSet::new()
+            };
             let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
-            let nodes = node_outcomes(
-                &stored.nodes,
-                &saved,
-                &applied,
-                &Evidence::Executed {
-                    preview,
-                    projection: &projection,
-                    removed: &removed,
-                },
-            );
-            let nodes = keep_advanced(&stored.run.nodes, nodes);
+            let outcomes = |projection| {
+                node_outcomes(
+                    &stored.nodes,
+                    &saved,
+                    &applied,
+                    &Evidence::Executed {
+                        preview,
+                        projection,
+                        removed: &removed,
+                    },
+                )
+            };
+            let nodes = keep_advanced(&stored.run.nodes, outcomes(&projection));
+            // A node the cancel alone failed no longer fails once the Services it
+            // stopped count as never attempted.
+            let mut uncancelled = projection.clone();
+            uncancelled
+                .failed_services
+                .retain(|service| !cancelled.contains(service));
+            uncancelled.unattempted_services.extend(cancelled);
+            let uncancelled = outcomes(&uncancelled);
+            let cancelled = nodes
+                .iter()
+                .filter(|(id, status)| {
+                    **status == NodeStatus::Failed
+                        && uncancelled.get(*id) != Some(&NodeStatus::Failed)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
             // A Deploy that left a Volume's data behind, or may have left a Service
             // it retires or removes running, didn't finish: a retry removes it.
             let unfinished = |(id, status): (&String, &NodeStatus)| {
@@ -1441,9 +1481,9 @@ pub(crate) fn record(
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
             };
-            super::rows::record(tx, &stored, &progress)?;
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;
+            stored.run.cancelled = cancelled;
             stored.run.executed = Some(executed);
             if taken_over {
                 // Another runner owns the Environment now: the run stays Unknown and

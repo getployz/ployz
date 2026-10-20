@@ -110,7 +110,15 @@ pub(crate) fn service_row<'a>(
         });
     let failed = replicas
         .iter()
-        .filter(|replica| matches!(replica.state, RowState::Failed { .. }))
+        .filter(|replica| {
+            matches!(
+                replica.state,
+                RowState::Failed {
+                    cancelled: false,
+                    ..
+                }
+            )
+        })
         .count();
     let counted: Vec<_> = replicas
         .iter()
@@ -187,6 +195,16 @@ pub(crate) fn service_row<'a>(
         State::Pending
     } else if all(|state| matches!(state, RowState::Completed)) {
         State::Completed
+    } else if replicas.iter().any(|replica| {
+        matches!(
+            replica.state,
+            RowState::Failed {
+                cancelled: true,
+                ..
+            }
+        )
+    }) {
+        State::Cancelled
     } else if replicas
         .iter()
         .any(|replica| matches!(replica.state, RowState::NotAttempted))

@@ -270,6 +270,18 @@ impl VolumeStorage {
             .await
     }
 
+    /// Lowers the bound `held` carries to `wanted`, which releases the difference from the
+    /// Pool's commitment. A slot's copy comes down before its parent, so a write that
+    /// fails between them leaves the committed bound at or above the copy's.
+    pub(super) async fn shrink_bound(&self, held: &Held<'_>, wanted: u64) -> Result<()> {
+        let wanted = wanted.to_string();
+        if let Held::Slot { fs: Some(fs), .. } = held {
+            self.set_verified(&fs.name, "refquota", &wanted).await?;
+        }
+        self.set_verified(&held.dataset().name, "refquota", &wanted)
+            .await
+    }
+
     /// Sets `property` on `dataset` and reads it back in bytes (`-p`): the value ZFS
     /// reports is the one that counts, whatever the write accepted.
     pub(super) async fn set_verified(
@@ -444,6 +456,16 @@ impl Held<'_> {
     /// The Provisioned Volume bound; a `refquota` of 0 is none.
     pub(super) fn bound(&self) -> Option<NonZeroU64> {
         self.dataset().bound()
+    }
+
+    /// Bytes the dataset holding the data references, the root or the slot's copy; a
+    /// slot with no copy holds none.
+    pub(super) fn referenced_bytes(&self) -> u64 {
+        match self {
+            Self::Root(root) => root.referenced_bytes,
+            Self::Slot { fs: Some(fs), .. } => fs.referenced_bytes,
+            Self::Slot { fs: None, .. } => 0,
+        }
     }
 
     /// Whether a Volume Run has the Volume mid-switch on this Machine. A root switches

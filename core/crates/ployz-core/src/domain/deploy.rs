@@ -1104,6 +1104,35 @@ pub enum ExecutionError {
     Cancelled,
 }
 
+impl ExecutionError {
+    /// Whether a cancel stopped the work, rather than the work failing. The
+    /// cancel may be the Deployment's own, a takeover's or a failure elsewhere in
+    /// the run's. A hook whose stop also failed may still run, so that is a failure.
+    #[must_use]
+    pub const fn cancelled(&self) -> bool {
+        matches!(
+            self,
+            Self::Cancelled
+                | Self::Health {
+                    failure: HealthFailure::Cancelled,
+                    ..
+                }
+                | Self::DependencyHealth {
+                    failure: DependencyHealthFailure::Cancelled
+                        | DependencyHealthFailure::Container {
+                            failure: HealthFailure::Cancelled,
+                            ..
+                        },
+                    ..
+                }
+                | Self::Hook {
+                    failure: HookFailure::Cancelled { stop_error: None },
+                    ..
+                }
+        )
+    }
+}
+
 /// Live evidence of one in-flight Deploy. Not a Watch frame.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

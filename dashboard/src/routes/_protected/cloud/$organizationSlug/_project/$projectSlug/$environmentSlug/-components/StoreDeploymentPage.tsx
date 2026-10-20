@@ -17,7 +17,7 @@ import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
   admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentLabel, deploymentLight, deploymentStatusLabel, freshRollback, nodeApplied,
-  outcomeReason, rollbackConfirm, showCancelling, warnedService, type DeploymentAction,
+  outcomeReason, rollbackConfirm, showCancelling, shownNodeStatus, warnedService, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreCancelling } from "#/modules/config-store/store-pending";
@@ -78,7 +78,7 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
   // A selected Volume or Config falls back to the Service that failed, so the fix stays one click away.
   const service = selected?.type === "build" ? services.find((node) => node.name === selected.name)
     : selected?.node.type === "service" ? selected.node
-    : services.find((node) => node.outcome === "failed") ?? services.find((node) => !nodeApplied(node.outcome));
+    : services.find((node) => shownNodeStatus(node) === "failed") ?? services.find((node) => !nodeApplied(node.outcome));
   const reason = outcomeReason(deployment.outcome);
   const needsSource = deployment.outcome?.type === "not_executed" ? deployment.outcome.needs_upload : [];
   const fixing = service && canFixOnBranch(deployment, service, noServers) ? service.name : null;

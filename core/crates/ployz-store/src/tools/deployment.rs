@@ -60,15 +60,25 @@ fn reason(outcome: Option<&Outcome>) -> Option<&str> {
 fn node(node: &NodeOutcome) -> Value {
     let failed = node.rows.iter().find_map(|row| match &row.state {
         RowState::Failed {
-            reason, step, log, ..
+            reason,
+            step,
+            log,
+            cancelled: false,
+            ..
         } => Some((row.server.as_str(), reason, step, log)),
         RowState::Pending
         | RowState::Running { .. }
         | RowState::Completed
+        | RowState::Failed { .. }
         | RowState::NotAttempted
         | RowState::Unknown => None,
     });
-    let mut shown = json!({ "name": node.node.name(), "outcome": node.outcome });
+    let outcome = if node.cancelled {
+        json!("cancelled")
+    } else {
+        json!(node.outcome)
+    };
+    let mut shown = json!({ "name": node.node.name(), "outcome": outcome });
     if let (Some((server, reason, step, log)), Value::Object(object)) = (failed, &mut shown) {
         object.insert("server".into(), server.into());
         object.insert("reason".into(), reason.as_str().into());
@@ -108,10 +118,15 @@ fn progress(view: &DeploymentView) -> Value {
 fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
     let service = view.nodes.iter().find_map(|node| match &node.node {
         DeployedNode::Service { name, .. }
-            if node
-                .rows
-                .iter()
-                .any(|row| matches!(row.state, RowState::Failed { .. })) =>
+            if node.rows.iter().any(|row| {
+                matches!(
+                    row.state,
+                    RowState::Failed {
+                        cancelled: false,
+                        ..
+                    }
+                )
+            }) =>
         {
             Some(name)
         }
