@@ -1263,6 +1263,28 @@ fn a_deployed_service_staged_for_removal_still_inspects() {
 }
 
 #[test]
+fn a_new_services_diff_and_plan_say_the_image_it_runs() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(
+        &store,
+        &["service", "add", "web", "--image", "traefik/whoami:v1.10.0"],
+    );
+    ok(&store, &["set", "web.env.PORT=80"]);
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let change = "web (create)\n  web.image: null → \"traefik/whoami:v1.10.0\"\n  web.env.PORT: null → \"80\"\n";
+    for args in [&["diff"][..], &["deploy", "--plan"]] {
+        let shown = human(args);
+        assert!(shown.starts_with(change), "{args:?}: {shown}");
+    }
+}
+
+#[test]
 fn removing_a_referenced_service_stages_and_prints_the_broken_reference() {
     let store = Target::Local(tempfile::tempdir().unwrap());
     ok(&store, &["project", "new", "shop"]);
@@ -2230,13 +2252,20 @@ fn edits_to_a_service_never_deployed_show_in_the_diff_and_discard() {
         let diff = ok(store, &["diff"]);
         let nginx = &diff["changes"][0];
         assert_eq!(nginx["lifecycle"], json!("create"), "{diff}");
+        assert_eq!(nginx["settings"][0]["path"], json!("nginx.image"));
         assert_eq!(
-            nginx["settings"][0]["path"],
+            nginx["settings"][1]["path"],
             json!("nginx.preDeployCommand")
         );
         ok(store, &["discard", "nginx.preDeployCommand"]);
         let diff = ok(store, &["diff"]);
-        assert_eq!(diff["changes"][0]["settings"], json!([]), "{diff}");
+        let paths = diff["changes"][0]["settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["path"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, [json!("nginx.image")], "{diff}");
     }
 }
 
@@ -2386,7 +2415,7 @@ fn an_agent_reviews_saves_and_discards() {
         assert_eq!(diff.pointer("/changes/0/name"), Some(&json!("web")));
         assert_eq!(diff.pointer("/changes/0/lifecycle"), Some(&json!("create")));
         assert_eq!(
-            diff.pointer("/changes/0/settings/0/path"),
+            diff.pointer("/changes/0/settings/1/path"),
             Some(&json!("web.replicas"))
         );
         assert_eq!(diff.get("next"), Some(&json!("ployz deploy")));
