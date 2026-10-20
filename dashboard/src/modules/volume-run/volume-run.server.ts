@@ -951,7 +951,11 @@ export const noteRun = Effect.fn("VolumeRun.note")(function* (ctx: Pick<RunConte
 export const refuseRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, refusal: Refusal) =>
   endRun(ctx, inngestRunId, "failed", refusal.message);
 
-class ClusterUnreachable extends Data.TaggedError("ClusterUnreachable")<{ readonly message: string }> {}
+export class ClusterUnreachable extends Data.TaggedError("ClusterUnreachable")<{ readonly message: string }> {}
+
+/** Cloud could not reach the Cluster, or it sent no frame in time: it may answer later. */
+export const unreachable = (error: Error) =>
+  error instanceof ClusterUnreachable || (error instanceof RuntimeConnectionFailure && error.waitable);
 
 const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
@@ -1325,10 +1329,7 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
 export const observeReachable = Effect.fn("VolumeRun.observeReachable")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
   return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx).pipe(
-    Effect.catchIf(
-      (error) => error instanceof ClusterUnreachable || (error instanceof RuntimeConnectionFailure && error.waitable),
-      () => Effect.succeed(null),
-    ),
+    Effect.catchIf(unreachable, () => Effect.succeed(null)),
   );
 });
 

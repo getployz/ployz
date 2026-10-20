@@ -2,21 +2,21 @@ import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { Effect, Option, Semaphore } from "effect";
+import { Data, Effect, Option, Semaphore } from "effect";
 import { callStoreBy, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
 import { uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import type { Access } from "#/modules/organization/access.server";
-import { withClusterBudget } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import {
   lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, placementLosses, type Placement, type PlacementRow, type Seed,
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { admitRun, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
+import { admitRun, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, unreachable } from "#/modules/volume-run/volume-run.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -395,8 +395,11 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });
 
-/** The Cluster time an old copy's delete may spend asking its Server, with the Volume's placement locked. */
+/** The Cluster time an old copy's delete may spend asking its Server, with the Volume's placement and lane locked. */
 export const OLD_COPY_CLUSTER_BUDGET_MS = 10_000;
+
+/** An old copy's delete its Server refused after the run was inserted: the transaction rolls the run back. */
+class NotDeleted extends Data.TaggedError("NotDeleted")<{ readonly refusal: StoreRefusal | typeof NOT_OLD }> {}
 
 /**
  * Requests `run` unless a Deploy still runs the Volume's placement, or, for an old copy's delete, the staged placement
@@ -426,16 +429,20 @@ export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRu
       sql`${volumePlacement.staged} -> 'seed' ->> 'sourceVolumeId' = ${input.volumeId}`,
       sql`${volumePlacement.staged} -> 'seed' -> 'point' ->> 'guid' = ${deletes.point}`));
     if (reading !== undefined) return { ok: false, refusal: READ } as const;
-    if (deletes !== null) {
-      // Asked under the lock, the Server says whether the copy is still old: the row's mirrors may be stale, and a Deploy
-      // that made it a mirror since the caller looked has ended, since none holds the row.
-      const members = yield* inspect(caller.organizationId, input.environment, input.volumeId).pipe(withClusterBudget(OLD_COPY_CLUSTER_BUDGET_MS), Effect.option);
-      const held = Option.isNone(members) ? undefined : members.value.find((member) => member.machine.id === deletes.server);
-      if (Option.isNone(members) || held?.answered !== true) return { ok: false, refusal: UNANSWERED } as const;
-      const old = oldCopies(observePlacement(members.value), row === undefined ? null : view(row)).some((copy) => copy.server.id === deletes.server);
-      if (!old) return { ok: false, refusal: NOT_OLD } as const;
-    }
-    return yield* admitRun(caller, input, volume, randomUUID());
-  }));
+    const requested = yield* admitRun(caller, input, volume, randomUUID());
+    if (deletes === null || !requested.ok) return requested;
+    // Asked once this run holds the lane, so the Server's answer stands: only a run makes a copy a mirror, one still
+    // going refused this insert, and one admitted from here waits on it. The row's mirrors may be stale.
+    const members = yield* inspect(caller.organizationId, input.environment, input.volumeId).pipe(
+      withClusterBudget(OLD_COPY_CLUSTER_BUDGET_MS),
+      Effect.map(Option.some),
+      Effect.catch((error) => error instanceof ClusterOutOfTime || unreachable(error) ? Effect.succeedNone : Effect.fail(error)),
+    );
+    const held = Option.isNone(members) ? undefined : members.value.find((member) => member.machine.id === deletes.server);
+    if (Option.isNone(members) || held?.answered !== true) return yield* new NotDeleted({ refusal: UNANSWERED });
+    const old = oldCopies(observePlacement(members.value), row === undefined ? null : view(row)).some((copy) => copy.server.id === deletes.server);
+    if (!old) return yield* new NotDeleted({ refusal: NOT_OLD });
+    return requested;
+  })).pipe(Effect.catchIf((error) => error instanceof NotDeleted, ({ refusal }) => Effect.succeed({ ok: false, refusal } as const)));
   return "owed" in admitted && !admitted.ok ? yield* nameRefusal(admitted) : admitted;
 });

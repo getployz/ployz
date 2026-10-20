@@ -8,10 +8,12 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import {
   deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
+import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -215,13 +217,48 @@ describe("volume placement", () => {
       },
     );
 
+    it("refuses a mirror run that would adopt it while its Server's answer is on the way", async () => {
+      await recorded(["web-2"]);
+      const adopt = async () => {
+        const admitted = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "web-3" } }));
+        if (admitted.ok) {
+          await harness.pool.query("update volume_run set state = 'done' where id = $1", [admitted.run.id]);
+          copies = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+        }
+        return admitted;
+      };
+      let adopting: ReturnType<typeof adopt> | undefined;
+      const deleted = await run(request(() => Effect.promise(async () => {
+        const answered = copies;
+        adopting = adopt();
+        await waitFor(async () => (await harness.pool.query(
+          "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like 'insert into \"volume_run\"%'",
+        )).rowCount === 1, adopting);
+        return answered;
+      })));
+      const adopted = await adopting;
+      expect({ deleted: deleted.ok, adopted: adopted?.ok, web3: copies[2] }).toEqual({ deleted: true, adopted: false, web3: member("web-3", "old") });
+      expect(adopted).toMatchObject({ refusal: { message: expect.stringContaining("busy with a mirror removal") } });
+      expect((await harness.pool.query("select kind, state from volume_run")).rows).toEqual([{ kind: "delete_mirror", state: "requested" }]);
+    });
+
     it.each([
       ["its Server doesn't answer", () => Effect.succeed([member("web-1", "writer"), member("web-3", "unanswered")])],
-      ["the Cluster can't be reached", () => Effect.fail(new Error("The cluster is unreachable."))],
+      ["the Cluster can't be reached", () => Effect.fail(new ClusterUnreachable({ message: "The cluster is unreachable." }))],
+      ["the Cluster sends no frame in time", () => Effect.fail(new RuntimeConnectionFailure({ cause: "no frame", waitable: true }))],
       ["the Cluster time runs out", () => Effect.fail(new ClusterOutOfTime())],
     ])("refuses deleting it when %s", async (_, inspect) => {
       await recorded(["web-2"]);
+      const events = async () => (await harness.pool.query("select count(*)::int as events from operation_outbox")).rows;
+      const before = await events();
       expect(await run(request(inspect))).toEqual({ ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+      expect(await events()).toEqual(before);
+    });
+
+    it("fails with what failed, not as servers not answering, when asking fails for another reason", async () => {
+      await recorded(["web-2"]);
+      await expect(run(request(() => Effect.fail(new Error("The cluster is pairing."))))).rejects.toThrow("The cluster is pairing.");
       expect(await runs()).toEqual([{ runs: 0 }]);
     });
 
