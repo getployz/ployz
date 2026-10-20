@@ -421,7 +421,42 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                             },
                         })
                     }
-                    other => panic!("only inspect and ensure are expected: {other:?}"),
+                    other @ (RpcRequestBody::DescribeContract(_)
+                    | RpcRequestBody::Inspect(_)
+                    | RpcRequestBody::Enroll(_)
+                    | RpcRequestBody::Register(_)
+                    | RpcRequestBody::SetManagementClient(_)
+                    | RpcRequestBody::SetPushTarget(_)
+                    | RpcRequestBody::SelectEndpoint(_)
+                    | RpcRequestBody::ListMachines(_)
+                    | RpcRequestBody::UpdateMachine(_)
+                    | RpcRequestBody::RequestMachineUpgrade(_)
+                    | RpcRequestBody::Leave(_)
+                    | RpcRequestBody::Forget(_)
+                    | RpcRequestBody::ListContainers(_)
+                    | RpcRequestBody::InspectStorage(_)
+                    | RpcRequestBody::PrepareVolumes(_)
+                    | RpcRequestBody::ListVolumes(_)
+                    | RpcRequestBody::RemoveVolume(_)
+                    | RpcRequestBody::InspectVolumeCopy(_)
+                    | RpcRequestBody::SeedVolume(_)
+                    | RpcRequestBody::SetVolumeCopy(_)
+                    | RpcRequestBody::ListImages(_)
+                    | RpcRequestBody::PruneImages(_)
+                    | RpcRequestBody::EnsureImageIngest(_)
+                    | RpcRequestBody::PullImage(_)
+                    | RpcRequestBody::PullImageFromMachine(_)
+                    | RpcRequestBody::MintBuildGrant(_)
+                    | RpcRequestBody::InspectBuildGrant(_)
+                    | RpcRequestBody::PublishCertificateMaterial(_)
+                    | RpcRequestBody::PublishServingPointer(_)
+                    | RpcRequestBody::ReadRoutes(_)
+                    | RpcRequestBody::MetricHistory(_)
+                    | RpcRequestBody::LogHistory(_)
+                    | RpcRequestBody::TailLogs(_)
+                    | RpcRequestBody::RuntimeWatch(_)) => {
+                        panic!("only inspect and ensure are expected: {other:?}")
+                    }
                 };
                 Ok(Response::new(response.encode().unwrap()))
             }
