@@ -19,8 +19,8 @@ use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedConfigIntent,
     SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue, SavedVolumeIntent,
-    ServiceGitBranch, ServiceSettingChange, ServiceSource, canonicalize_environment_intent,
-    compile_environment_intent, project_environment_changes,
+    ServiceGitBranch, ServiceSettingChange, ServiceSource, Setting,
+    canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -31,6 +31,7 @@ pub(crate) use approval::{Gate, Moving, approve, approve_move, approve_retry, mo
 
 use crate::Actor;
 use crate::error;
+use crate::git::GitSetting;
 use crate::id::{EnvironmentId, Hostname, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
 use crate::settings::{ServiceSetting, SettingPath, shown};
@@ -418,6 +419,7 @@ fn compare(
             })
             .collect::<Result<_, RpcError>>()?,
     };
+    sources(&mut view, &environment.working);
     renames(&mut view, &environment.working, &head.intent);
     Ok(view)
 }
@@ -497,6 +499,72 @@ pub(crate) fn destructive(
 /// The losses saved with `saved` as consent for its next Deploy.
 pub(crate) fn consent(saved: Option<&Saved>) -> &[crate::VolumeLoss] {
     saved.map_or(&[], |saved| saved.accepted.as_slice())
+}
+
+/// Core compares a new Service with its introduction, which holds the source it was
+/// added with, so its create gets what it runs here, as `set` names it: `web.image`, or
+/// `web.repository` and `web.branch`. One changed since already has its row.
+fn sources(view: &mut DiffView, working: &SavedEnvironmentIntent) {
+    for change in &mut view.changes {
+        if change.lifecycle != ReviewLifecycleKind::Create
+            || change.node.node_type != EnvironmentNodeType::Service
+        {
+            continue;
+        }
+        let Some(service) = working
+            .services
+            .iter()
+            .find(|service| service.id == change.node.id)
+        else {
+            continue;
+        };
+        let parts = match &service.config.source {
+            ServiceSource::Image { image, .. } => {
+                vec![(ServiceSetting::Image, Setting::Source, json!(image))]
+            }
+            ServiceSource::Git {
+                repository, branch, ..
+            } => {
+                let mut parts = vec![(
+                    ServiceSetting::Git(GitSetting::Repository),
+                    Setting::Source,
+                    json!(repository),
+                )];
+                if let ServiceGitBranch::Connected { name } = branch {
+                    parts.push((
+                        ServiceSetting::Git(GitSetting::Branch),
+                        Setting::Branch,
+                        json!(name),
+                    ));
+                }
+                parts
+            }
+            ServiceSource::Empty { .. } => Vec::new(),
+        };
+        let rows: Vec<_> = parts
+            .into_iter()
+            .filter_map(|(setting, at, after)| {
+                let row = RowId::of(&service.lineage_id, At::Setting(at));
+                let changed = change
+                    .settings
+                    .iter()
+                    .any(|shown| shown.row == Some(row.clone()));
+                (!changed).then(|| ServiceSettingChange {
+                    path: format!("{}.{}", service.slug, setting.name()),
+                    kind: ChangeKind::Add,
+                    before: serde_json::Value::Null,
+                    after,
+                    // Discarding the Service takes it; alone it has nothing to go back to.
+                    can_restore: false,
+                    row: Some(row),
+                    config_name: None,
+                    hostnames: None,
+                })
+            })
+            .collect();
+        view.total_count += rows.len();
+        change.settings.splice(0..0, rows);
+    }
 }
 
 /// Core compares Settings only, so a Service renamed since Head gets its name row

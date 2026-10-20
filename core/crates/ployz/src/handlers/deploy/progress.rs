@@ -287,10 +287,17 @@ pub(super) fn completion(
         .preview
         .as_ref()
         .is_some_and(|preview| preview.has_observation_gaps())
+        || left_a_copy_running(view)
     {
         return Err(Failure::partial());
     }
     Ok(())
+}
+
+fn left_a_copy_running(view: &DeploymentView) -> bool {
+    view.deployment.warnings.iter().any(|warning| {
+        matches!(warning, DeploymentWarning::Deploy { warning } if warning.leaves_a_copy_running())
+    })
 }
 
 /// How a command names a Deployment: its number once it queued, else its ID.
@@ -392,6 +399,15 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     ];
     let deployment = target(&view.deployment);
     let mut diagnostic = Diagnostic::default();
+    if let Some(ployz_store::Outcome::Executed { compensation, .. }) = &view.deployment.outcome {
+        diagnostic.compensation = compensation
+            .iter()
+            .map(|line| Detail {
+                message: line.clone(),
+                causes: Vec::new(),
+            })
+            .collect();
+    }
     let mut hints = Vec::new();
     // A failed build, or an image that won't pull, fails the same way again.
     let mut same_again = false;
@@ -625,6 +641,31 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_deploy_prints_what_became_of_the_old_container() {
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(serde_json::json!({
+                "type": "executed",
+                "summary": {},
+                "reason": "web: CreateContainer failed",
+                "cause": ["pull failed", "denied"],
+                "compensation": [
+                    "Stopped the new Container.",
+                    "Restored the old Container; it serves again.",
+                ],
+            }))
+            .unwrap(),
+        );
+        let text = crate::ui::plain(&failure(&view, command));
+        assert!(
+            text.contains(
+                "  Stopped the new Container.\n  Restored the old Container; it serves again."
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn duplicate_outcome_is_printed_once_and_identical_failure_on_another_server_survives() {
         let view = view();
         let failure = failure(&view, command);
@@ -767,6 +808,7 @@ mod tests {
                 reason: Some(format!("web: {reason}")),
                 cause: cause.clone(),
                 services: Vec::new(),
+                compensation: Vec::new(),
             });
             let rows = &mut view.nodes.first_mut().unwrap().rows;
             rows.truncate(1);
@@ -1063,6 +1105,31 @@ mod tests {
         assert!(completion(&view, None, command).unwrap_err().is_outcome());
         view.deployment.remove = true;
         assert!(!completion(&view, None, command).unwrap_err().is_outcome());
+    }
+
+    #[test]
+    fn an_applied_deploy_that_left_a_copy_running_is_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = None;
+        assert!(completion(&view, None, command).is_ok());
+        view.deployment.warnings = vec![
+            DeploymentWarning::Deploy {
+                warning: ployz_core::DeployWarning::LeftRunning {
+                    service: "shop-production/web".parse().unwrap(),
+                    container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                    machine: "one".into(),
+                    reason: "one did not answer".into(),
+                },
+            },
+            DeploymentWarning::Deploy {
+                warning: ployz_core::DeployWarning::MixedAfterReturn {
+                    machine: "one".into(),
+                },
+            },
+        ];
+        let failure = completion(&view, None, command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
     }
 
     #[test]

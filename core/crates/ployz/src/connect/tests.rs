@@ -29,6 +29,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         let error = ConnectError::AllFailed {
             selection: ConnectionSource::Direct,
             attempts: 1,
+            server: None,
             retry: aggregate,
             reached: false,
             last: Some(Box::new(ssh_error)),
@@ -554,6 +555,77 @@ async fn missing_ssh_client_keeps_an_earlier_daemons_answer() {
         "{error:?}"
     );
     assert!(!error.unreached(), "{error:?}");
+}
+
+#[tokio::test]
+async fn several_refusing_daemons_name_the_server_tried_last() {
+    let dir = tempfile::tempdir().unwrap();
+    let sockets = ["first.sock", "second.sock"].map(|name| dir.path().join(name));
+    for socket in &sockets {
+        refusing_daemon(socket, || tonic::Status::unauthenticated("not authorized")).await;
+    }
+    let ids = ["a", "b"].map(|digit| MachineId::parse(digit.repeat(32)).unwrap());
+    let [_, last] = ids;
+    let refused = |names: [Option<&'static str>; 2]| {
+        let connections = sockets
+            .iter()
+            .zip(ids)
+            .zip(names)
+            .map(|((socket, id), name)| {
+                let connection = Connection::unix(socket).unwrap().with_machine_id(id);
+                match name {
+                    Some(name) => connection.with_name(name),
+                    None => connection,
+                }
+            })
+            .collect();
+        async move {
+            connect_selected_with(
+                SelectedConnections {
+                    source: ConnectionSource::Cloud,
+                    connections,
+                },
+                Arc::new(SystemConnector::default()),
+            )
+            .await
+            .err()
+            .expect("every daemon refuses")
+            .to_string()
+        }
+    };
+
+    assert_eq!(
+        refused([Some("web-1"), Some("web-2")]).await,
+        "A Server's daemon answered, but the 2 connections from Cloud all failed. \
+         Server web-2, tried last, refused the connection."
+    );
+    // Cloud never learned their names: the Machine ID says which.
+    assert_eq!(
+        refused([None, None]).await,
+        format!(
+            "A Server's daemon answered, but the 2 connections from Cloud all failed. \
+             Server {}, tried last, refused the connection.",
+            last
+        )
+    );
+    // A connection that says no Server, as `--connect` gives, names none.
+    let error = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: sockets
+                .iter()
+                .map(|socket| Connection::unix(socket).unwrap())
+                .collect(),
+        },
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .err()
+    .expect("every daemon refuses");
+    assert_eq!(
+        error.to_string(),
+        "A Server's daemon answered, but the 2 connections from the given connection all failed."
+    );
 }
 
 #[tokio::test]

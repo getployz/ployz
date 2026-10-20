@@ -32,6 +32,8 @@ struct ClusterKv {
     machine_changes: broadcast::Sender<()>,
     pointer_changes: broadcast::Sender<()>,
     ingress_changes: broadcast::Sender<()>,
+    /// No test writes a certificate; this only keeps the empty table's subscription open.
+    certificate_changes: broadcast::Sender<()>,
     subscriptions: bool,
     snapshots_fail: bool,
     tokens: Vec<String>,
@@ -51,6 +53,7 @@ impl ClusterKv {
         let (machine_changes, _) = broadcast::channel(16);
         let (pointer_changes, _) = broadcast::channel(16);
         let (ingress_changes, _) = broadcast::channel(16);
+        let (certificate_changes, _) = broadcast::channel(16);
         Self {
             network: "10.210.0.0/16".into(),
             machines: BTreeMap::new(),
@@ -62,6 +65,7 @@ impl ClusterKv {
             machine_changes,
             pointer_changes,
             ingress_changes,
+            certificate_changes,
             subscriptions,
             snapshots_fail: false,
             tokens: Vec::new(),
@@ -297,6 +301,10 @@ async fn subscriptions(
             kv.ingress_changes.subscribe(),
             "{\"columns\":[\"machine_id\",\"service_id\",\"deploy\",\"containers\"]}\n{\"eoq\":{\"time\":0.0}}\n",
         ),
+        "SELECT hostname, body FROM certificates" => (
+            kv.certificate_changes.subscribe(),
+            "{\"columns\":[\"hostname\",\"body\"]}\n{\"eoq\":{\"time\":0.0}}\n",
+        ),
         query => panic!("unexpected subscription {query}"),
     };
     drop(kv);
@@ -443,6 +451,9 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                         ]
                     }),
             )
+        }
+        "SELECT hostname, body FROM certificates ORDER BY hostname" => {
+            events(&["hostname", "body"], Vec::new())
         }
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())

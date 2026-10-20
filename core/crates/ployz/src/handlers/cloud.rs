@@ -845,6 +845,7 @@ mod tests {
         assert!(!retry_local_connect(&ConnectError::AllFailed {
             selection: ConnectionSource::LocalSocket,
             attempts: 1,
+            server: None,
             retry: ployz_core::Retry::Never,
             reached: false,
             last: None,

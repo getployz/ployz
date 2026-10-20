@@ -133,6 +133,30 @@ fn connection_sources_are_plain_text() {
     );
 }
 
+#[test]
+fn a_connection_reads_the_servers_name_and_never_writes_it() {
+    use super::Connection;
+    let machine = "0123456789abcdef0123456789abcdef";
+    let named: Connection = serde_json::from_value(serde_json::json!({
+        "tcp": "127.0.0.1:1", "machine_id": machine, "name": "box-node-09c8",
+    }))
+    .unwrap();
+    assert_eq!(named.server().as_deref(), Some("box-node-09c8"));
+    // A config file never gets the field older CLIs refuse.
+    assert_eq!(
+        serde_json::to_value(&named).unwrap(),
+        serde_json::json!({ "tcp": "127.0.0.1:1", "machine_id": machine })
+    );
+
+    let unnamed: Connection =
+        serde_json::from_value(serde_json::json!({ "tcp": "127.0.0.1:1", "machine_id": machine }))
+            .unwrap();
+    assert_eq!(unnamed.server().as_deref(), Some(machine));
+    let bare: Connection =
+        serde_json::from_value(serde_json::json!({ "tcp": "127.0.0.1:1" })).unwrap();
+    assert_eq!(bare.server(), None);
+}
+
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use super::{Config, ConfigError, Context, ContextError, RemovedContext};

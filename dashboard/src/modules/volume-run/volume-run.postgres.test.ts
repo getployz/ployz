@@ -3,6 +3,7 @@ import type {
   ContainerId,
   CopyObservation,
   CopyRefusal,
+  CopyRotation,
   ExpectedCopy,
   MachineId,
   RuntimeWatchView,
@@ -100,7 +101,7 @@ type FakeMachine = {
   floor?: number;
 };
 
-type FakeContainer = { machine: string; id: string; running: boolean; created?: number };
+type FakeContainer = { machine: string; id: string; running: boolean; created?: number; rotation?: CopyRotation; gen?: number };
 
 /**
  * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail to answer, or
@@ -347,6 +348,7 @@ describe("volume runs", () => {
         namespace: "shop-production",
         resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
         runtime: { state: container.running ? "running" : "exited" },
+        rotation: container.rotation,
         created_at_unix_nanos: container.created ?? 0,
       })),
       incomplete_ids: { machines: [] },
@@ -354,9 +356,12 @@ describe("volume runs", () => {
     },
     inspectContainer: (target: string, container: string) => Effect.promise(async () => {
       await beforeStart?.();
+      const { rotation, gen } = containers.find((entry) => entry.id === container) ?? {};
       return {
         container: {
           container_id: container,
+          rotation,
+          gen,
           resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
         },
       };
@@ -1618,6 +1623,19 @@ describe("volume runs", () => {
       expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } } } });
     });
 
+    it.each([
+      { rotation: "in", sent: { in: { run: null, expect: "pending" } } },
+      { rotation: { held: "run-user" }, sent: "pending" },
+      { rotation: "pending", sent: "pending" },
+    ] as const)("starts B at A's gen, routed only when A's copy was: $rotation", async ({ rotation, sent: wanted }) => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, rotation, gen: 3 }];
+
+      await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: { id: idOf("fsn-1"), name: "fsn-1" }, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", gen: 3, rotation: wanted } });
+    });
+
     it("with no source named, refuses to guess between stopped Containers on two Machines", async () => {
       const ctx = await owned();
       machines.push({ name: "fsn-3", pool: true, copy: null });
@@ -1687,6 +1705,24 @@ describe("volume runs", () => {
 
       expect(verbs).toEqual(["remove@fsn-1(web-fsn-1)"]);
       expect(containers).toEqual([{ machine: "fsn-2", id: "created-1", running: true }]);
+    });
+
+    it("unhealthy_destination_keeps_source_and_fails_run: a B running the Service unrouted while A's copy is routed is asked again, and its failure fails the run before A's stopped Container goes", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) Object.assign(container, { running: false, rotation: "in" });
+      machines[1] = { name: "fsn-2", pool: true, copy: writerCopy(G, 4) };
+      containers.push({ machine: "fsn-2", id: "created-1", running: true, rotation: "pending" });
+      await owned("committed");
+      failNext.set("writer@fsn-2", new RawFault({ code: "conflict", message: "the moved Service is not routed: unhealthy", details: null }));
+
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const failed = await execute((await releaseRow()).id, "run-2");
+
+      expect(failed.error).toMatchObject({ message: expect.stringContaining("not routed") });
+      expect(verbs).toEqual(["writer@fsn-2(create)"]);
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", rotation: { in: { run: null, expect: "pending" } } } });
+      expect(containers.map(({ id }) => id)).toEqual(["web-fsn-1", "created-1"]);
     });
 
     it("on a committed row whose forward release fails before B starts, a later release inherits the commitment, finishes on B and removes A's stopped Container", async () => {

@@ -101,4 +101,6 @@ either running or stopped.
 
 Restart and start wait for each container's healthcheck to pass, the same way a deploy does,
 before they return. A container that fails its healthcheck, or doesn't pass it before its
-deadline, is reported, and the command exits 3.
+deadline, is reported, and the command exits 3. So is a container a failed deploy left behind:
+restart and start run it, but never route it, because no deploy finished bringing it in. Deploy
+again to replace it.

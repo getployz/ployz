@@ -129,7 +129,13 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     assert_eq!(partial.containers.failures.len(), 1);
 
     let started = client
-        .change_observed_service(&observed, ContainerAction::Start, None, None)
+        .change_observed_service(
+            &observed,
+            ContainerAction::Start,
+            None,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await;
     assert_eq!(started.successes.len(), 1);
     assert_eq!(started.failures.len(), 1);
@@ -146,6 +152,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Stop,
             Some("SIGTERM".into()),
             Some(10),
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
     assert_eq!(stopped.successes.len(), 2);
@@ -161,7 +168,13 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         stopped.failures.get(1).unwrap().error.container_id
     );
     let removed = client
-        .change_observed_service(&observed, ContainerAction::Remove, None, Some(10))
+        .change_observed_service(
+            &observed,
+            ContainerAction::Remove,
+            None,
+            Some(10),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await;
     assert_eq!(removed.successes.len(), 2);
     assert_eq!(removed.failures.len(), 2);
@@ -174,7 +187,13 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     let services = live.services();
     let service = select_service(&services, &ServiceSelector::from(&service_id)).unwrap();
     client
-        .change_observed_service(service, ContainerAction::Remove, None, Some(10))
+        .change_observed_service(
+            service,
+            ContainerAction::Remove,
+            None,
+            Some(10),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await;
     let live = client
         .live_services(ployz_core::EnvironmentValues::Redacted)
@@ -183,7 +202,13 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     let services = live.services();
     let service = select_service(&services, &ServiceSelector::from(&collision_id)).unwrap();
     client
-        .change_observed_service(service, ContainerAction::Remove, None, Some(10))
+        .change_observed_service(
+            service,
+            ContainerAction::Remove,
+            None,
+            Some(10),
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await;
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
