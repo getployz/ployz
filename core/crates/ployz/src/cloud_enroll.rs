@@ -15,8 +15,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long an enroll request waits for Cloud's answer. Cloud reads its database
 /// unbounded, then may spend 10s reaching the Cluster, so the client's 15s default
-/// would give up on an enrollment Cloud goes on to finish.
-const ENROLL_TIMEOUT: Duration = Duration::from_secs(60);
+/// would give up on an enrollment Cloud goes on to finish. It ends inside
+/// `setup_retry::WAIT`, so a held request reports its outcome as uncertain.
+const ENROLL_TIMEOUT: Duration = Duration::from_secs(50);
 /// How long enrollment waits for another Server to finish founding: past Cloud's own
 /// ten minutes for a fresh founding claim, so Cloud answers first.
 const FOUNDER_WAIT: Duration = Duration::from_secs(15 * 60);
@@ -364,7 +365,7 @@ pub(crate) async fn enroll(
             &format!("Cloud enrollment at {}", diagnostic_origin(url)),
             crate::setup_retry::WAIT,
             |error| matches!(error, Error::Connect(_)),
-            async |_| send(enroll_request(&http, url, token, identity)).await,
+            async |_| send(post(&http, url, token, identity).timeout(ENROLL_TIMEOUT)).await,
         )
         .await
         .map_err(|error| retry_error("enrollment", error))?;
@@ -530,15 +531,6 @@ fn classify_http(error: reqwest::Error) -> Error {
     } else {
         Error::Http(error)
     }
-}
-
-fn enroll_request(
-    http: &reqwest::Client,
-    url: &str,
-    token: &CloudEnrollToken,
-    identity: &EnrollIdentity,
-) -> reqwest::RequestBuilder {
-    post(http, url, token, identity).timeout(ENROLL_TIMEOUT)
 }
 
 fn post(
@@ -1108,25 +1100,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_enroll_request_waits_past_the_cluster_time_cloud_may_spend_on_it() {
+    #[tokio::test]
+    async fn an_enroll_waits_past_the_cluster_time_cloud_may_spend_on_it() {
         // Cloud gives the Cluster 10s after its SQL, which runs unbounded.
-        let cloud_bound = Duration::from_secs(10);
-        let request = enroll_request(
-            &http_client().unwrap(),
-            "https://cloud.test/api/enroll",
-            &token(),
-            &identity(),
+        let answers_after = Duration::from_secs(10 + 5 + 2);
+        let (listener, origin) = listen().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            tokio::time::pause();
+            tokio::time::advance(answers_after).await;
+            tokio::time::resume();
+            tokio::io::AsyncWriteExt::write_all(
+                &mut stream,
+                &http_response(200, "OK", &join_body()),
+            )
+            .await
+            .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let outcome = tokio::time::timeout(
+            answers_after + Duration::from_secs(10),
+            enroll(&enroll_url(&origin), &token(), &identity(), &|_| {}),
         )
-        .build()
+        .await
+        .expect("enroll returns once Cloud answers")
         .unwrap();
-        assert!(
-            request
-                .timeout()
-                .is_some_and(|waits| *waits >= cloud_bound + Duration::from_secs(5)),
-            "{:?}",
-            request.timeout()
-        );
+        let Outcome::Join(join) = outcome else {
+            panic!("expected join");
+        };
+        assert_eq!(join.registration, registration());
+        server.await.unwrap();
     }
 
     #[tokio::test]
