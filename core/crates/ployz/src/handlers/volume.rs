@@ -13,7 +13,7 @@ use ployz_core::{
 };
 use ployz_store::{
     CreateVolume, Mount, RemoveVolume, SetVolumeSharedWrites, SetVolumeStorage, VolumeId,
-    VolumeQuery, VolumeStaged, VolumesQuery,
+    VolumeListing, VolumeName, VolumeQuery, VolumeStaged, VolumesQuery,
 };
 
 use super::store::{self, Next};
@@ -43,10 +43,11 @@ pub(super) fn add_command(command: Command) -> Command {
 
 pub(super) fn set_command(command: Command) -> Command {
     storage_flags(store::scoped(command.about(
-        "Change a Volume's storage before its first deployment, or whether it allows shared writes",
+        "Change a Volume's storage before its first deployment, grow a deployed one (Ployz Cloud), or whether it allows shared writes",
     )))
     .arg(positional("volume", true))
     .arg(shared_writes_flag())
+    .arg(run::wait_flag().conflicts_with_all(["docker", "shared-writes"]))
     .group(
         clap::ArgGroup::new("volume-change")
             .args(["size", "docker", "shared-writes"])
@@ -202,10 +203,55 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             ));
         });
     }
-    let storage = requested_storage(matches);
-    let changed = store::store(root)?.write(&SetVolumeStorage {
-        environment: store::environment(matches)?,
+    set_storage(
+        root,
+        &store::store(root)?,
+        volume,
+        requested_storage(matches),
+    )
+}
+
+/// What `volume set --size/--docker` does with the Volume, read off the Store's own listing.
+#[derive(Debug, PartialEq)]
+enum StorageChange {
+    /// A staged `SetVolumeStorage`: before the first Deploy, or a change of kind, which the
+    /// Store refuses on a deployed Volume with its own message.
+    Stage(VolumeKind),
+    /// A deployed Managed Volume asked for a Managed size: a resize run on Ployz Cloud. Cloud,
+    /// not the CLI, refuses an equal or smaller size.
+    Resize(ProvisionedVolumeMaximumBytes),
+}
+
+fn storage_change(listing: &VolumeListing, asked: VolumeKind) -> StorageChange {
+    match (listing.storage_locked, listing.volume.storage, asked) {
+        (true, VolumeKind::Provisioned { .. }, VolumeKind::Provisioned { maximum_bytes }) => {
+            StorageChange::Resize(maximum_bytes)
+        }
+        _ => StorageChange::Stage(asked),
+    }
+}
+
+fn set_storage(
+    root: &ArgMatches,
+    store: &store::Store<'_>,
+    volume: VolumeName,
+    asked: VolumeKind,
+) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let environment = store::environment(matches)?;
+    let view = store.read(&VolumeQuery {
+        environment: environment.clone(),
         volume: volume.clone(),
+    })?;
+    let storage = match storage_change(&view.volume, asked) {
+        StorageChange::Stage(storage) => storage,
+        StorageChange::Resize(maximum_bytes) => {
+            return run::resize(root, store, &view, maximum_bytes);
+        }
+    };
+    let changed = store.write(&SetVolumeStorage {
+        environment,
+        volume,
         storage,
     })?;
     warn_docker(storage);
@@ -293,7 +339,12 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         .field(
             "storage settings",
             if listing.storage_locked {
-                "locked after deployment was requested"
+                match listing.volume.storage {
+                    VolumeKind::Provisioned { .. } => {
+                        "deployed; ployz volume set --size grows it (Ployz Cloud)"
+                    }
+                    VolumeKind::Docker {} => "locked after deployment was requested",
+                }
             } else {
                 "editable before deployment"
             },
@@ -418,6 +469,42 @@ mod tests {
         );
         observed.storage = storage;
         observed
+    }
+
+    #[test]
+    fn only_a_deployed_managed_volume_asked_for_a_size_resizes() {
+        let gb = |size| ProvisionedVolumeMaximumBytes::parse_gb(size).unwrap();
+        let listing = |storage_locked, storage| VolumeListing {
+            volume: ployz_store::VolumeSummary {
+                id: VolumeId::parse(store::mint()).unwrap(),
+                name: VolumeName::parse("data").unwrap(),
+                storage,
+                shared_writes: false,
+            },
+            mounts: Vec::new(),
+            deployed: storage_locked,
+            storage_locked,
+            change: None,
+        };
+        let managed = VolumeKind::Provisioned {
+            maximum_bytes: gb("10"),
+        };
+        let twenty = VolumeKind::Provisioned {
+            maximum_bytes: gb("20"),
+        };
+        let docker = VolumeKind::Docker {};
+        for (locked, storage, asked, change) in [
+            (false, managed, twenty, StorageChange::Stage(twenty)),
+            (true, managed, twenty, StorageChange::Resize(gb("20"))),
+            (true, managed, docker, StorageChange::Stage(docker)),
+            (true, docker, twenty, StorageChange::Stage(twenty)),
+        ] {
+            assert_eq!(
+                storage_change(&listing(locked, storage), asked),
+                change,
+                "locked {locked}, {storage:?} asked {asked:?}"
+            );
+        }
     }
 
     #[test]

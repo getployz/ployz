@@ -1156,7 +1156,7 @@
             "type": "boolean"
           },
           "size": {
-            "description": "New storage limit. Only before its first Deploy.",
+            "description": "New storage limit. Only before its first Deploy; a deployed Volume resizes with `ployz volume set --size` on Ployz Cloud.",
             "examples": [
               "10GiB"
             ],
