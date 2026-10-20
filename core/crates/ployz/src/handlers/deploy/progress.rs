@@ -687,13 +687,12 @@ mod tests {
             }))
             .unwrap(),
         );
-        view.nodes.truncate(1);
-        view.nodes[0] = serde_json::from_value(json!({
+        view.nodes = vec![serde_json::from_value(json!({
             "type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "failed", "rows": [
                 {"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": &reason[5..], "cause": cause, "log": null, "started_at": 1, "finished_at": 2}
             ]
         }))
-        .unwrap();
+        .unwrap()];
         let failure = failure(&view, command);
         assert_eq!(
             crate::ui::plain(&failure),
@@ -705,8 +704,7 @@ mod tests {
             hints(&failure),
             ["retry: ployz deploy --project shop --env production"]
         );
-        let json = failure.json();
-        assert_eq!(json["cause"], json!(cause));
+        assert_eq!(failure.json().get("cause"), Some(&json!(cause)));
     }
 
     #[test]

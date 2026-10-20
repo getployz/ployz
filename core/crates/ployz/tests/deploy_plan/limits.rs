@@ -196,7 +196,15 @@ fn kinds(preview: &DeployPreview) -> Vec<String> {
                 replacement.old_container_id, replacement.machine_id
             ),
             DeployOperation::RunContainer { machine_id, .. } => format!("run on {machine_id}"),
-            other => panic!("unexpected operation: {other:?}"),
+            other @ (DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. }) => {
+                panic!("unexpected operation: {other:?}")
+            }
         })
         .collect::<Vec<_>>();
     kinds.sort();

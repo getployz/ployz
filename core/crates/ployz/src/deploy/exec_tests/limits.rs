@@ -61,11 +61,9 @@ async fn an_update_keeps_the_same_copy_in_and_starts_nothing() {
 async fn a_failed_update_fails_the_operation_and_leaves_the_copy_serving() {
     let machine = machine('1');
     let old = container('a');
-    let plan = vec![DeployOperation::UpdateContainer(update(
-        &machine,
-        &old,
-        UpdateOrder::StopFirst,
-    ))];
+    let operation =
+        DeployOperation::UpdateContainer(update(&machine, &old, UpdateOrder::StopFirst));
+    let plan = vec![operation.clone()];
     let docker = RpcError {
         code: RpcErrorCode::Internal,
         message: "Docker operation failed".into(),
@@ -93,7 +91,7 @@ async fn a_failed_update_fails_the_operation_and_leaves_the_copy_serving() {
         DeployOutcome::Failed {
             completed: Vec::new(),
             failed: FailedOperation::Operation {
-                operation: plan[0].clone(),
+                operation,
                 error: ExecutionError::Machine {
                     action: MachineAction::UpdateContainerLimits,
                     error: named,

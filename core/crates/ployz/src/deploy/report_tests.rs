@@ -929,10 +929,9 @@ fn a_failed_limits_update_names_the_server_and_says_the_old_copy_still_serves() 
             "error: web: Server edge did not apply the new limits. The Container keeps serving with its previous limits.\n  cause: {docker}\n"
         )
     );
-    let json = failure.json();
     assert_eq!(
-        json["cause"],
-        serde_json::json!(["Docker operation failed", docker])
+        failure.json().get("cause"),
+        Some(&serde_json::json!(["Docker operation failed", docker]))
     );
 }
 

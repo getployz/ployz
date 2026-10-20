@@ -1417,7 +1417,15 @@ fn old_copies(
             DeployOperation::ReplaceContainer(replacement) => {
                 Some((replacement.machine_id, replacement.old_container_id))
             }
-            _ => None,
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::RunContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::UpdateContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect()
 }
