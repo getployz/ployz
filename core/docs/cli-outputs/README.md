@@ -21,19 +21,20 @@ A driver that stops early, on a failed setup step or Ctrl-C, exits non-zero with
 These scripts are dev tooling that an operator runs on their own checkout. They protect against accidents: failed steps, partial runs, interrupts, full disks and wrong run directories. They don't protect against an attacker who plants files in `/tmp` or the repo.
 
 - [store/run.sh](store/run.sh): needs only the debug binary `core/target/debug/ployz`; it runs against the hidden SQLite Store (`PLOYZ_STORE=sqlite:…`) under an isolated HOME.
-- [cloud/run.sh](cloud/run.sh): starts its own seeded local Cloud with `dashboard/scripts/verify/up.sh` and stops only that one at the end (`KEEP=1` leaves it running). It refuses to run while this checkout already has a verify Cloud (`dashboard/.verify/run`), because `up.sh` would wipe it, including the one `verify-cluster up --cloud` uses.
+- [cloud/run.sh](cloud/run.sh): starts its own seeded local Cloud with `dashboard/scripts/verify/up.sh` and stops only that one at the end (`KEEP=1` leaves it running). It refuses to run while this checkout already has a verify Cloud (`dashboard/.verify/run`), because `up.sh` would wipe it, including the one `verify-cluster up --cloud` uses. Its org rm of babbage is approved the same way, as Ada ([approve.sh](approve.sh)).
 - [cluster/run.sh](cluster/run.sh): needs privileged Docker, `cargo build -p ployz -p ployzd`, and `docker pull ghcr.io/getployz/ployz-testkit:main`; it builds alpha, beta, gamma plus a lone `solo`, then tears them down. Its Cluster, image and HOME carry a random per-run id, so runs from two checkouts never collide. It stops when a setup capture that later captures depend on fails, such as `server add`.
-- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. Cloud asks a person to approve a removal from `ployz`, so for env rm, project rm and the deploy that removes a domain the driver approves, as the seed's owner Ada, the approval id the command itself prints, with `ployz org approval approve` on a terminal because it asks for the Organization's name ([cloud-cluster/approve.sh](cloud-cluster/approve.sh)). If no single id appears, the approver stalls, or the command then fails, the run stops without `.ok`; `bash cloud-cluster/approve.test.sh` checks that against a stub `ployz`. It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
+- [cloud-cluster/run.sh](cloud-cluster/run.sh): needs a paired run from `scripts/verify-cluster up --machines 1 --daemon checkout --cloud`, linked to `shop` and deployed as its header says; call it as `MANIFEST=…/cluster.json SECTIONS="deploy runtime domain env errors up" run.sh [PARENT]`. Without `MANIFEST` it takes the newest run, and without `SECTIONS` it runs all six. `up` appends to `deploy.md`, so it needs `deploy` earlier in the same run. Cloud asks a person to approve a removal from `ployz`, so for env rm, project rm and the deploy that removes a domain the driver approves, as the seed's owner Ada, the approval id the command itself prints, with `ployz org approval approve` on a terminal because it asks for the Organization's name ([approve.sh](approve.sh)). It refuses a run whose manifest lacks a `.cloud` block or whose `state` is not `ready` (a torn-down run keeps its manifest as `removed`), and one that does not answer.
 
 - [record.py](record.py): runs one command in a PTY and writes an asciicast, a GIF (`agg`) and a last-frame PNG (`ffmpeg`), as in `record.py --gif out.gif --png out.png -- 'ployz deploy'`. It writes nothing unless the command exits with `--expect-exit` (default 0), and replaces each output through a temp file and a rename. [prototype-media/make.sh](prototype-media/make.sh) uses it to re-record the prototype GIFs.
-- [cap.sh](cap.sh): appends one command's capture to a `.md` and its terminal rendering to the matching `.ansi`. Every driver captures through it.
+- [cap.sh](cap.sh): appends one command's capture to a `.md` and its terminal rendering to the matching `.ansi`. Every driver captures through it. `CAP_STDERR=FILE` writes the piped run's stderr to FILE as it happens, so a caller can read a line the command prints before it exits.
+- [approve.sh](approve.sh): the cloud and cloud-cluster drivers source it to capture a command Cloud asks a person to approve. It approves only the id that command prints in its own `next: ployz org approval approve <id>` line. If no single id appears within 120s, the approver doesn't finish within `APPROVE_TIMEOUT` (60s), or the command then fails, the run stops without `.ok`. `bash approve.test.sh` checks that against a stub `ployz` with two pending ids, a failing command and a stalled approver.
 - [capture-dir.sh](capture-dir.sh): creates a driver's fresh output directory under PARENT, so two drivers never share one, and refuses a PARENT inside a git checkout.
 - [publish.sh](publish.sh): copies a finished driver run over the tracked captures, as drawn above.
 - [scrub.sh](scrub.sh): the scrub `publish.sh` runs. Public IPv4 addresses become `203.0.113.10` and global IPv6 addresses `2001:db8::10`, because Servers report their public IP, and secrets (`ployz_` tokens, `pmet_` enrollment tokens, `ppair_` pairing secrets) keep their prefix and become `<prefix>_<redacted>`. `bash scrub.test.sh` checks it after a change.
 
 Each `.md` holds one block per command with its exit code, stdout and stderr. Each `.ansi` holds the same commands run under a terminal. Exit 124 means the capture's own timeout killed the command.
 
-Totals: 684 command blocks (store 244, cloud 155, cluster 105, cloud-cluster 180). Exits: 0 x389, 1 x176, 2 x91, 3 x9, 124 x9, 127 x1, 7 x1, none x8 (piped, typed TTY or killed runs).
+Totals: 684 command blocks (store 244, cloud 155, cluster 105, cloud-cluster 180). Exits: 0 x390, 1 x176, 2 x91, 3 x9, 124 x8, 127 x1, 7 x1, none x8 (piped, typed TTY or killed runs).
 
 ## The contract as the code states it
 
@@ -78,7 +79,7 @@ Empty lists keep the header on stdout and say so on stderr, usually with a `next
 
 ## 2. Success and confirmation lines
 
-Dominant: one past-tense sentence naming the object and its scope, ending with a period. Of the 94 human success sentences that open with a past-tense verb or `Nothing`, 93 end with a period. The exception is token new's line, which ends with a colon before the secret.
+Dominant: one past-tense sentence naming the object and its scope, ending with a period. Of the 96 human success sentences that open with a past-tense verb or `Nothing`, 95 end with a period. The exception is token new's line, which ends with a colon before the secret.
 
 - Staged. `Staged web.replicas in shop/production.` 35 lines take this shape ([store/settings.md](store/settings.md)). Multi-object forms print `Staged: worker, configs.sentry` on a second line ([cloud-cluster/env.md](cloud-cluster/env.md)).
 - Made or removed. `Created Project shop with Environment production.` and `Removed Project scratch1 and its Environments (production).` ([store/project.md](store/project.md)), `Revoked token eaf5a551-4ef7-4b40-a6c4-b906216ee3da.` ([cloud/token.md](cloud/token.md)).
@@ -132,8 +133,8 @@ retry: ployz project rm scratch1 --confirm scratch1
 - What you type differs: `--confirm scratch1` for a Project, `--confirm shop/qa` for an Environment ([store/env.md](store/env.md)).
 - Volume loss. `This permanently deletes the data of store. Accept each by name` (no period), then `retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3db84a7b2f1973e4` ([cluster/volume.md](cluster/volume.md)).
 - `--yes`. cloud reset refuses with `…then confirm with --yes` and `retry: ployz cloud reset --yes` ([cloud/deploy.md](cloud/deploy.md)).
-- Picker on a TTY. ctx use draws `Select a context:` over `  dev` and `> prod (current)`, moved with the arrow keys, and ends `Current context is now prod.` The two captures typed `1` and `9`, which the picker ignores, so both end on prod ([store/context.md](store/context.md)). Without a TTY: `Choosing a context needs a terminal; name one instead.` with `retry: ployz ctx use CONTEXT` and `valid: dev, prod`.
-- Cloud approval. A removal from `ployz` waits for a person: `This removal destroys 2 things:`, a `  ✕ removes Service api` line each, `Approve <id> in Ployz Cloud at http://localhost:…`, `next: ployz org approval approve <id>` and `Waiting for approval in Ployz Cloud… `. A project rm points at the Ployz agent instead, `Approve <id> under Waiting on you in the Ployz agent at …`. Once Ada approves, the line ends `approved.` and the removal runs ([cloud-cluster/env.md](cloud-cluster/env.md), [cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
+- Picker on a TTY. ctx use draws `Select a context:` over `  dev` and `> prod (current)`, moved with the arrow keys, On `<Down> <Enter>` it ends `Current context is now dev.` A typed `9` is ignored, and the picker keeps the current context, dev ([store/context.md](store/context.md)). Without a TTY: `Choosing a context needs a terminal; name one instead.` with `retry: ployz ctx use CONTEXT` and `valid: dev, prod`.
+- Cloud approval. A removal from `ployz` waits for a person: `This removal destroys 2 things:`, a `  ✕ removes Service api` line each, `Approve <id> in Ployz Cloud at http://localhost:…`, `next: ployz org approval approve <id>` and `Waiting for approval in Ployz Cloud… `. A project rm or org rm points at the Ployz agent instead, `Approve <id> under Waiting on you in the Ployz agent at …`. Once Ada approves, the line ends `approved.` and the removal runs ([cloud-cluster/env.md](cloud-cluster/env.md), [cloud-cluster/deploy.md](cloud-cluster/deploy.md), [cloud/org.md](cloud/org.md)).
 
 ## 5. Warnings
 
@@ -191,14 +192,14 @@ Dominant: a trailing `next: <command>` line. Every hint is a labelled line of it
 
 | Form | Count | Example | Capture |
 |---|---|---|---|
-| `next:` | 139 in 23 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
+| `next:` | 140 in 23 files | `next: ployz login` | [cloud/errors.md](cloud/errors.md) |
 | `valid:` | 41 in 12 files | `valid: api, postgres, web, worker` | [cloud-cluster/errors.md](cloud-cluster/errors.md) |
 | `inspect:` | 14 in 8 files | `inspect: ployz server ls` | [cluster/errors.md](cluster/errors.md) |
 | `retry:` | 13 in 9 files | `retry: ployz project rm scratch1 --confirm scratch1` | [store/project.md](store/project.md) |
 | `undo:` | 9 in 4 files | `undo: ployz history undo 7 --project shop --env production` | [cloud-cluster/deploy.md](cloud-cluster/deploy.md) |
 
 - `next:` targets vary in scope: `ployz diff --project shop`, `ployz diff`, `ployz deploy --project shop`.
-- Human output prints fewer hints than the JSON carries. 53 of 124 JSON success objects have a top-level `next`. 83 of 255 human successes print `next:`.
+- Human output prints fewer hints than the JSON carries. 53 of 124 JSON success objects have a top-level `next`. 84 of 256 human successes print `next:`.
 - `valid:` shows eight choices, then `and N more`: `valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more` ([store/settings.md](store/settings.md)). A near miss adds a line above it with the same label: `valid: did you mean replicas?`.
 
 ## 8. Identifiers
@@ -248,11 +249,11 @@ Dominant: one pretty-printed object on stdout (124 of 128 success outputs). The 
 
 | Exit | Count | Meaning seen |
 |---|---|---|
-| 0 | 389 | success |
+| 0 | 390 | success |
 | 1 | 176 | any failure: not found, conflict, unauthenticated, unavailable |
 | 2 | 91 | clap errors, a missing or wrong `--confirm`, volume loss, `Expected a Deployment ID or number`, local `deploy --detach`, two Projects and none chosen |
 | 3 | 9 | partial fan-out with gamma down (7), `server upgrade` failing on its one Server, and `ployz exec` passing a remote 3 through |
-| 124 | 9 | the capture's own timeout: `logs --follow` (3); in cloud/, a login (2), `github connect` and an org rm nobody answers, and two follows that never end |
+| 124 | 8 | the capture's own timeout: `logs --follow` (3); in cloud/, a login (2), `github connect`, and two follows that never end |
 | 7, 127 | 2 | `ployz exec` passing through the remote code ([cloud-cluster/runtime.md](cloud-cluster/runtime.md), [cloud-cluster/errors.md](cloud-cluster/errors.md)) |
 
 8 blocks record no exit of their own: three typed TTY runs, three piped through `head`, and two port-forwards whose `# exit 124` lands in their stderr. Exit 2 now follows the error code, so a missing `--confirm` and a wrong one both exit 2. `ployz exec` can return 1, 2 or 3 from the remote command, which overlap ployz's own codes ([cluster/ps-logs-exec.md](cluster/ps-logs-exec.md)).
@@ -306,6 +307,7 @@ Fixed, each at the capture that shows it:
 - 26, `env branch --live` had two colons: now `db can't be used live: the Branch copies it, so nothing running can lend it`. [store/env.md:936](store/env.md)
 - 28, server add over SSH ended on its wait line: it follows the ingress and ends `Server beta is ready.` [cluster/server.md:27](cluster/server.md)
 - 30, human service add omitted `next`: it prints `next: ployz deploy --project shop`. [store/service.md:43](store/service.md)
+- 4, `org ls` after removing the acting Organization: org rm prints `This device now acts in Organization ada.`, and `org ls` lists `ada	Ada Lovelace's Projects	current`. [cloud/org.md:264](cloud/org.md), [cloud/org.md:286](cloud/org.md)
 - 32, bare `ployz org` printed help on stderr with exit 2: stdout, exit 0. [cloud/org.md:48](cloud/org.md)
 
 Intentional, per a rule the captures state:
@@ -313,9 +315,8 @@ Intentional, per a rule the captures state:
 - 5, a Managed volume can't switch storage after a Deploy was requested: `Volume cache keeps its storage once a Deploy has been requested; add a new Volume for other storage`. [cluster/volume.md:229](cluster/volume.md)
 - 27, a malformed `--expect-version 1` exits 2 and a stale well-formed one exits 1. Exit 2 means the command line is wrong; a stale version is a conflict with the current state, which exits 1. [cloud/deploy.md:768](cloud/deploy.md), [cloud-cluster/errors.md:107](cloud-cluster/errors.md)
 
-Not rechecked, because no capture reaches them now:
+Not rechecked, because no capture reaches it now:
 
-- 4, `org ls` after removing the acting Organization: the cloud/ capture of that `org rm` still waits on an approval nobody gives, so the removal never happens. [cloud/org.md:264](cloud/org.md)
 - 31, the `Docker only` prompt's warning placement: no capture shows that prompt.
 
 ## Open design questions
@@ -330,7 +331,7 @@ Five earlier questions are settled in the code, each as its option B or close to
 
 Still open:
 
-1. **Should human output print every `next` the JSON carries?** 53 JSON successes carry `next`; 83 human ones print it.
+1. **Should human output print every `next` the JSON carries?** 53 JSON successes carry `next`; 84 human ones print it.
    A. Yes, always.
    B. Only when the next step is not obvious (for example after a stage, say "deploy").
    C. Never on success; hints only on errors.

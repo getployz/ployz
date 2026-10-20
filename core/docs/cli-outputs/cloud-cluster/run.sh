@@ -116,8 +116,10 @@ h() { echo "## $2" >>"$CAPTURES/$1"; echo >>"$CAPTURES/$1"; }
 start() { : >"$CAPTURES/$1.ansi"; echo "# $2" >"$CAPTURES/$1.md"; echo >>"$CAPTURES/$1.md"; }
 latest() { "$P" --json deployment ls --limit 1 | jq -r '.deployments[0].id'; }
 latest_number() { "$P" --json deployment ls --limit 1 | jq -r '.deployments[0].number'; }
-# shellcheck source=approve.sh
-source "$DOCS/cloud-cluster/approve.sh"
+# shellcheck source=../approve.sh
+source "$DOCS/approve.sh"
+# gated FILE TITLE -- CMD...   a capture Ada approves; the direct path streams its stderr
+gated() { PLOYZ_CLOUD_DIRECT=1 PLOYZ_CLOUD_TIMEOUT=300 approved ada "$@"; }
 settle() { # wait until no Deployment of production is queued or running
   for _ in $(seq 60); do
     "$P" --json deployment ls --limit 5 | jq -e '[.deployments[] | select(.status == "queued" or .status == "running")] | length == 0' >/dev/null && return
@@ -237,7 +239,7 @@ up_section() {
   c $D "status after up (two Projects)" -- $P status
   c $D "service ls after up (two Projects, no --project, linked directory)" -- $P service ls
   c $D "deployment ls after up" -- $P deployment ls
-  approved $D "project rm the up Project (Ada approves it)" -- $P project rm workspace --confirm workspace
+  gated $D "project rm the up Project (Ada approves it)" -- $P project rm workspace --confirm workspace
   c $D "status with the directory still linked to the removed Project" -- $P status
   c $D "status --json with the directory still linked to the removed Project" -- $P --json status
   # Put the links back as they were, so later commands act on shop again.
@@ -334,7 +336,7 @@ domain_section() {
   c $M "domain ls with two generated domains" -- $P domain ls
   local host; host=$("$P" --json domain ls | jq -r '[.. | objects | select(has("host")) | .host | select(startswith("api"))][0] // empty')
   m $M "domain rm" -- $P domain rm "${host:-api.ada.ployz.test}"
-  approved $M "deploy the removal (Ada approves it)" -- $P deploy
+  gated $M "deploy the removal (Ada approves it)" -- $P deploy
   m $M "domain add --json a generated domain" -- $P --json domain add api
   m $M "domain rm --json" -- $P --json domain rm "${host:-api.ada.ployz.test}"
   m $M "discard" -- $P discard
@@ -397,7 +399,7 @@ env_section() {
 
   h $f "rm"
   m $E "env rm without --confirm" -- $P env rm hotfix
-  approved $E "env rm (Ada approves it)" -- $P env rm hotfix --confirm shop/hotfix
+  gated $E "env rm (Ada approves it)" -- $P env rm hotfix --confirm shop/hotfix
   m $E "env rm --json" -- $P --json env rm preview --confirm shop/preview
   c $E "env ls after" -- $P env ls
 

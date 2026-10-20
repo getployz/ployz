@@ -44,8 +44,8 @@ scenario() {
   mkdir -p "$d"; : >"$d/pending"; : >"$d/approved"
   [ "$3" = 0 ] || : >"$d/stall"
   local status=0
-  STUB_DIR=$d P=$work/ployz cap=$HERE/../cap.sh APPROVE_TIMEOUT=3 \
-    timeout 40 bash -c 'set -euo pipefail; source "$1"; approved "$2" "gated" -- "$P" gated "$3"; echo done' \
+  STUB_DIR=$d P=$work/ployz cap=$HERE/cap.sh APPROVE_TIMEOUT=3 \
+    timeout 40 bash -c 'set -euo pipefail; source "$1"; approved ada "$2" "gated" -- "$P" gated "$3"; echo done' \
     _ "$HERE/approve.sh" "$d/out.md" "$2" >"$d/log" 2>&1 || status=$?
   echo "$status"
 }
