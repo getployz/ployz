@@ -30,7 +30,7 @@ use ts_rs::TS;
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Converged, LastIn, Moving, can_move, converge};
+use crate::deploy::{Converged, LastIn, Moving, can_move, converge, named};
 
 pub(crate) mod retirement;
 
@@ -461,21 +461,14 @@ impl DrainClient for Client {
     }
 
     async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd {
-        let machines = self.machines().await.unwrap_or_default();
-        let name = |id: &MachineId| {
-            machines
-                .iter()
-                .find(|machine| machine.machine.id == *id)
-                .map_or_else(
-                    || MachineRef {
-                        id: *id,
-                        name: MachineName::parse(id.to_string())
-                            .or_else(|_| MachineName::parse(format!("m{id}")))
-                            .expect("a lowercase hex id is a DNS label"),
-                    },
-                    |machine| MachineRef::from(&machine.machine),
-                )
-        };
+        let known: Vec<MachineRef> = self
+            .machines()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|machine| MachineRef::from(&machine.machine))
+            .collect();
+        let name = |id: &MachineId| named(&known, id);
         let_go(self, copy, &name, cancellation).await
     }
 }
