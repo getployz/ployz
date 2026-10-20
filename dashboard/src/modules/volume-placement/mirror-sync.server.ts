@@ -1,13 +1,14 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef, MachineId, Snapshot, VolumeCopy } from "@ployz/sdk";
+import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
-import { Effect, Option, Semaphore } from "effect";
+import { Data, Effect, Option, Semaphore } from "effect";
+import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
-import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
+import { askCopy, type CopyAnswer, DRAIN_MS, type MachineRef, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -41,6 +42,9 @@ export type MirrorSync =
 export type PullFailure = { readonly mirror: string; readonly target: string; readonly failure: string };
 
 export type MirrorSyncAnswer = { readonly reported: readonly PullFailure[]; readonly sync: MirrorSync; readonly lines: readonly string[] };
+
+/** A SetVolumeCopy cut when the sync's Cluster time ran out: `server` may still have taken it. */
+export class ReplyLost extends Data.TaggedError("ReplyLost")<{ readonly server: string }> {}
 
 export type MemberObserver = (organizationId: string, dockerVolume: string) => ReturnType<typeof observeVolumeMembers>;
 export type CopyAsk = typeof askCopy;
@@ -220,8 +224,12 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
   const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
   const steps: MirrorStep[] = [];
   const named = (member: Member) => copyName(volume.name, member.machine.name);
+  const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) => ask(asker, machine, expect, want).pipe(
+    clusterRead,
+    Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ReplyLost({ server: machine.name }))),
+  );
   const pull = (member: SlotMember, copy: Slot, target: string) =>
-    ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }).pipe(
+    setCopy(member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }).pipe(
       Effect.catchIf(
         (error) => error instanceof SwitchAttemptError,
         (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: "unreached", copy: null, message: error.message }),
@@ -246,7 +254,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
   // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
   if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
 
-  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
+  const snapshot = yield* setCopy(writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
   if (!snapshot.ok) return yield* answer(reported, { kind: "refused", message: snapshot.message });
   const target: Snapshot | null = snapshot.copy?.newest ?? null;
   if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });

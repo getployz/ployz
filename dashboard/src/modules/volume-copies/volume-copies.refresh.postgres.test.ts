@@ -1,12 +1,13 @@
 import type { ConfigStore, MachineId, WantedCopy } from "@ployz/sdk";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
+import { TestClock } from "effect/testing";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { mirrorStatuses, refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
+import { mirrorStatuses, refreshMirror, SYNC_CLUSTER_BUDGET_MS } from "#/modules/volume-copies/volume-copies.refresh.server";
 import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
 import { stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
@@ -148,6 +149,37 @@ describe("Refresh now", () => {
     blockers = ["db-old"];
     expect(await refresh()).toMatchObject({ ok: false, refusal: { code: "upgrade_required", details: { servers: ["db-old"] } } });
   });
+
+  it("answers once its Cluster time runs out on a pull the mirror never answers, and lets the sync's SQL finish", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    await harness.pool.query(`insert into volume_mirror_status (organization_id, volume_id, machine_id, failed_at, failed_snapshot, failure, updated_at)
+      values ($1, $2, $3, now(), 'w-1-3', 'old', now())`, [organizationId, volumeId, web("web-2")]);
+    const holder = await harness.pool.connect();
+    await holder.query(`begin; select * from volume_mirror_status for update`);
+    const silent: CopyAsk = (asker, machine, expect, want) => want.kind === "mirror"
+      ? Effect.sync(() => asked.push(want.kind)).pipe(Effect.andThen(Effect.never))
+      : ask(asker, machine, expect, want);
+    const waitFor = (check: () => Promise<boolean> | boolean) => Effect.promise(() => vi.waitFor(async () => {
+      if (!(await check())) throw new Error("not yet");
+    }, { timeout: 10_000 }));
+    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
+
+    const answer = await run(Effect.gen(function* () {
+      const fiber = yield* Effect.forkDetach(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(members), () => Effect.succeed(members), silent));
+      yield* waitFor(async () => (await harness.pool.query(`select 1 from pg_stat_activity where wait_event_type = 'Lock'`)).rowCount === 1);
+      yield* TestClock.adjust(2 * SYNC_CLUSTER_BUDGET_MS);
+      yield* Effect.promise(() => holder.query(`commit`));
+      yield* waitFor(() => asked.includes("mirror"));
+      yield* TestClock.adjust(SYNC_CLUSTER_BUDGET_MS);
+      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+    }).pipe(Effect.provide(TestClock.layer()))).finally(() => holder.release());
+
+    expect(answer).toEqual({
+      ok: false,
+      refusal: { code: "unanswered", message: "web-2 didn't answer in time, so data's sync may have reached it; volume sync data again says where its mirrors got to", details: null },
+    });
+    expect(await run(mirrorStatuses(organizationId, volumeId))).toMatchObject([{ machine: web("web-2"), failure: "no space" }]);
+  }, 30_000);
 
   it("reads what the syncs saw of each mirror", async () => {
     expect(await run(mirrorStatuses(organizationId, volumeId))).toEqual([]);
