@@ -355,14 +355,16 @@ pub struct ServiceOutcome {
 }
 
 /// A Service ends a Deploy wholly on one side: every replica new, every
-/// replica old, or untouched because the Deploy stopped before it.
-/// `Unconfirmed` means its serving pointer write got no answer and could not be
-/// read back, so it may serve either side.
+/// replica old, every replica changed in place, or untouched because the Deploy
+/// stopped before it. `Unconfirmed` means its serving pointer write got no
+/// answer and could not be read back, so it may serve either side.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceResult {
     New,
     Old,
+    /// Its copies kept serving and took the new limits in place.
+    Updated,
     NotStarted,
     Unconfirmed,
 }
@@ -511,6 +513,15 @@ pub struct ReplacementOperation {
     pub skip_health_monitor: bool,
 }
 
+/// Change a running Container's CPU and memory limits to its new spec's, in place.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct LimitsUpdateOperation {
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    /// The spec the Container serves once its limits match.
+    pub spec: ResolvedServiceSpec,
+}
+
 /// Why a Deploy stops a Container.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -572,6 +583,9 @@ pub enum DeployOperation {
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),
+    /// Apply the spec's CPU and memory limits to `container_id` in place. The
+    /// Container keeps its id whether the Machine applies the limits or not.
+    UpdateContainer(LimitsUpdateOperation),
     /// Stop a pre-deploy hook container that is still running, before [`Self::RunHook`]
     /// starts the next one.
     StopHook {
@@ -930,6 +944,8 @@ pub enum MachineAction {
     StopContainer,
     RemoveContainer,
     RemoveVolume,
+    /// Change a running Container's CPU and memory limits in place.
+    UpdateContainerLimits,
     /// Make a Service image present before any Container changes.
     PullImage,
     ListContainers,
@@ -947,6 +963,7 @@ impl Display for MachineAction {
             Self::StopContainer => "stop Container",
             Self::RemoveContainer => "remove Container",
             Self::RemoveVolume => "remove Volume",
+            Self::UpdateContainerLimits => "update Container limits",
             Self::PullImage => "pull image",
             Self::ListContainers => "list Containers",
             Self::ReadRoutes => "read routes",
@@ -1215,6 +1232,8 @@ pub enum OperationPhase {
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
+    /// Docker is changing the running Container's limits in place.
+    UpdatingContainer,
     Compensating,
 }
 
@@ -1262,6 +1281,7 @@ impl DeployOperation {
             | Self::StopHook { machine_id, .. }
             | Self::RunHook { machine_id, .. } => *machine_id,
             Self::ReplaceContainer(replacement) => replacement.machine_id,
+            Self::UpdateContainer(update) => update.machine_id,
             Self::RemoveVolume { id } => id.machine_id,
         }
     }
@@ -1273,6 +1293,7 @@ impl DeployOperation {
             Self::WaitHealthy { dependent, .. } => Some(&dependent.name),
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(&spec.name),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec.name),
+            Self::UpdateContainer(update) => Some(&update.spec.name),
             Self::StopContainer { .. }
             | Self::RemoveContainer { .. }
             | Self::StopHook { .. }
@@ -1289,6 +1310,7 @@ impl DeployOperation {
             | Self::RemoveContainer { container_id, .. }
             | Self::StopHook { container_id, .. } => Some(*container_id),
             Self::ReplaceContainer(replacement) => Some(replacement.old_container_id),
+            Self::UpdateContainer(update) => Some(update.container_id),
             Self::WaitHealthy { .. }
             | Self::RunContainer { .. }
             | Self::RunHook { .. }
@@ -1303,6 +1325,7 @@ impl DeployOperation {
         match self {
             Self::RunContainer { spec, .. } | Self::RunHook { spec, .. } => Some(spec),
             Self::ReplaceContainer(replacement) => Some(&replacement.spec),
+            Self::UpdateContainer(update) => Some(&update.spec),
             Self::WaitHealthy { .. }
             | Self::StopContainer { .. }
             | Self::RemoveContainer { .. }

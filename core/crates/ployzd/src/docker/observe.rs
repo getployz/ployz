@@ -240,6 +240,9 @@ impl ContainerRuntime {
                         "oom",
                         "destroy",
                         "health_status",
+                        // `docker update` keeps the id but changes the limits
+                        // inspect_managed reports.
+                        "update",
                     ],
                 ),
             ]),

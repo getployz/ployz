@@ -6,6 +6,8 @@ mod comparison;
 mod hostnames;
 #[path = "deploy_plan/intent.rs"]
 mod intent;
+#[path = "deploy_plan/limits.rs"]
+mod limits;
 #[path = "deploy_plan/namespace.rs"]
 mod namespace;
 #[path = "deploy_plan/placement.rs"]

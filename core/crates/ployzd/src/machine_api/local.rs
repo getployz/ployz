@@ -378,6 +378,18 @@ impl MachineRpc for MachineService {
         finish(self.local.ensure_container(request.want).await)
     }
 
+    async fn update_container_limits(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::UpdateContainerLimits>(request)?;
+        finish(
+            self.local
+                .update_container_limits(request.container_id, request.spec)
+                .await,
+        )
+    }
+
     async fn inspect_storage(
         &self,
         request: Request<OpaquePayload>,

@@ -230,6 +230,7 @@ fn global_hook_uses_a_changed_machine_with_an_extra_slot() {
             | DeployOperation::StopContainer { .. }
             | DeployOperation::RemoveContainer { .. }
             | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
             | DeployOperation::StopHook { .. }
             | DeployOperation::RunHook { .. }
             | DeployOperation::PrepareVolumes { .. }
