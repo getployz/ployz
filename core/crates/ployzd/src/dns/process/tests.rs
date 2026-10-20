@@ -10,7 +10,7 @@ use hickory_server::proto::{
     op::{Message, Metadata, Query as WireQuery},
     rr::{Name, RData, Record, RecordType, rdata::A},
 };
-use ployz_core::{DeploymentLogId, MachineId, ServingPointer};
+use ployz_core::{CopyRotation, MachineId};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -175,25 +175,20 @@ async fn stays_silent_until_the_first_projection_load() {
 }
 
 #[tokio::test]
-async fn a_pointer_row_narrows_answers_to_the_pointed_containers() {
+async fn a_copy_sent_out_leaves_the_answers() {
     let harness = Harness::new();
     harness.publish_replicas(3).await;
     let shutdown = CancellationToken::new();
     let process = harness.spawn(&shutdown);
     harness.wait_for_replicas(3).await;
 
-    let pointed = replica_observations(1).remove(0);
-    let pointer = ServingPointer {
-        deploy: DeploymentLogId::parse("d1").unwrap(),
-        containers: vec![pointed.container_id],
-        previous: None,
-        retiring: Vec::new(),
-        deciding: None,
-    };
-    harness.cluster.write_serving_pointer(
-        &ServingPointer::key(&pointed.identity()),
-        &serde_json::to_string(&pointer).unwrap(),
-    );
+    let store = harness.cluster.store();
+    for mut replica in replica_observations(3).into_iter().skip(1) {
+        replica
+            .try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+            .unwrap();
+        store.publish_container(&replica).await.unwrap();
+    }
     harness.wait_for_replicas(1).await;
     assert_eq!(
         harness.answers().await,

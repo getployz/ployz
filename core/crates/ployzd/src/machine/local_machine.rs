@@ -44,6 +44,7 @@ pub struct LocalMachine {
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
     zpool: PathBuf,
+    settled: container::SettledCreations,
 }
 
 mod container;
@@ -152,6 +153,7 @@ impl LocalMachine {
             containers: None,
             plugin: crate::storage::Plugin::default(),
             zpool: PathBuf::from("zpool"),
+            settled: container::SettledCreations::default(),
         }
     }
 

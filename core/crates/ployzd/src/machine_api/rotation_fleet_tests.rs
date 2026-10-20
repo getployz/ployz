@@ -1,7 +1,7 @@
 //! Three real Machine API handlers over one fake Corrosion cluster, each on its own
-//! fake Docker. No proxy acks rotation yet, so the tests write the ack rows and the
-//! membership by hand; every Container row reaches the cluster through the real
-//! observation publisher.
+//! fake Docker. The tests write membership by hand, and the ack rows too unless
+//! they run the real Ingress watchers; every Container row reaches the cluster
+//! through the real observation publisher.
 
 #![expect(clippy::indexing_slicing, reason = "JSON fixture reads")]
 
@@ -22,8 +22,8 @@ use ployz_core::{
     ContainerNow, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId,
     EnsureContainerRequest, EnsuredContainer, HealthVerdict, HealthcheckCommand, HealthcheckSpec,
     HttpHealthcheck, Machine, MachineId, MachineName, MachineRpc, MachineRuntime, NewContainer,
-    QualifiedService, ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation, RunTarget,
-    WireGuardPublicKey, op,
+    ProxyRoutes, QualifiedService, ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RunRotation,
+    RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -36,13 +36,15 @@ use tonic::Request;
 
 use super::MachineService;
 use crate::corrosion::{
-    AdminClient, IngressRouteAck, IngressRouteChange, ReplicatedStore, fake_cluster::FakeCluster,
+    AdminClient, IngressRouteAck, IngressRouteChange, IngressRouteRow, MachineView,
+    ReplicatedStore, fake_cluster::FakeCluster,
 };
 use crate::docker::{
     ContainerRuntime,
     test_support::{FakeDocker, fake_runtime_with, spec_with_sources},
 };
 use crate::machine::{LocalMachineStore, RecordOwner};
+use crate::route_acks::{DownMachines, load_down};
 
 const SETTLE: Duration = Duration::from_secs(10);
 const CLUSTER_CONTAINERS: &str = "SELECT id, machine_id, container FROM containers ORDER BY id";
@@ -98,6 +100,7 @@ impl Fleet {
             let (runtime, fake) = fake_runtime_with(FakeDocker {
                 named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
                 list_named: true,
+                stamp_starts: true,
                 ..Default::default()
             })
             .await;
@@ -144,6 +147,10 @@ impl Fleet {
     }
 
     fn down(&self, index: usize) {
+        self.membership(index, "Down");
+    }
+
+    fn membership(&self, index: usize, state: &str) {
         let row = &self.node(index).row;
         let address = std::net::SocketAddr::new(
             row.management_address().0.into(),
@@ -152,7 +159,95 @@ impl Fleet {
         self.states
             .lock()
             .unwrap()
-            .push(json!({ "id": { "addr": address }, "state": "Down" }));
+            .push(json!({ "id": { "addr": address }, "state": state }));
+    }
+
+    async fn addressed(&self, index: usize, container: ContainerId, address: &str) {
+        let id = container.to_string();
+        for named in self
+            .node(index)
+            .fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter(|named| named["Id"] == id.as_str())
+        {
+            named["NetworkSettings"] = json!({ "Networks": { "ployz": { "IPAddress": address } } });
+        }
+        tokio::time::timeout(SETTLE, async {
+            while self
+                .store
+                .container(&container)
+                .await
+                .unwrap()
+                .is_none_or(|row| row.address.is_none())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{container} never published an address"));
+    }
+
+    async fn run_ingress(&self) -> MachineView {
+        let machines = MachineView::start(self.store.clone(), self.shutdown.clone());
+        tokio::time::timeout(SETTLE, async {
+            while machines
+                .current()
+                .is_none_or(|current| current.observations.len() < self.nodes.len())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the Machine view never read every Machine");
+        for node in &self.nodes {
+            let dir = self.dir.join(format!("ingress-{}", node.row.name));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (machines, admin, local) = (machines.clone(), self.admin(), node.row.id);
+            tokio::spawn(crate::ingress::caddy::run(
+                node.row.clone(),
+                self.cluster.store(),
+                move || {
+                    let (machines, admin) = (machines.clone(), admin.clone());
+                    async move { load_down(&machines, &admin, &local).await }
+                },
+                dir.join("Caddyfile"),
+                dir.join("admin.sock"),
+                tokio::sync::watch::channel(Default::default()).0,
+                self.shutdown.clone(),
+            ));
+        }
+        machines
+    }
+
+    fn admin(&self) -> AdminClient {
+        AdminClient::new(self.dir.join("admin.sock"))
+    }
+
+    async fn acked_by_all(&self, service: &QualifiedService, containers: &[ContainerId]) {
+        let want: BTreeSet<_> = containers.iter().copied().collect();
+        tokio::time::timeout(SETTLE, async {
+            loop {
+                let rows = self.store.service_ingress_routes(service).await.unwrap();
+                let acked = self.nodes.iter().all(|node| {
+                    matches!(
+                        rows.get(&(node.row.id, service.clone())),
+                        Some(IngressRouteRow::Acked(ack))
+                            if ack.deploy.as_str() == "rotation" && ack.containers == want
+                    )
+                });
+                if acked {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("every Ingress never acked {service} with {want:?}"));
     }
 
     async fn ack(&self, index: usize, service: &QualifiedService, containers: &[ContainerId]) {
@@ -907,6 +1002,157 @@ async fn unhealthy_in_keeps_rotation() {
     }
 }
 
+/// A Service without a healthcheck whose copies must stay up `MONITOR` to count
+/// as started.
+fn monitored_spec(name: &str) -> ResolvedServiceSpec {
+    let mut spec = spec(name);
+    spec.update.monitor_millis = Some(u64::try_from(MONITOR.as_millis()).unwrap());
+    spec
+}
+
+const MONITOR: Duration = Duration::from_secs(3);
+
+/// A Pending copy of `spec` on `node` that `deploy` created and waited healthy.
+async fn settled_by(
+    node: &Node,
+    key: &str,
+    spec: ResolvedServiceSpec,
+    deploy: &str,
+) -> ContainerId {
+    let mut new = new_copy(key, spec, 1);
+    new.answer = AnswerWhen::Settled;
+    new.deployment_id = Some(run(deploy));
+    let reply = ensure(
+        node,
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+            rotation: RunRotation::Pending,
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            reply,
+            EnsuredContainer::Ensured {
+                health: Some(HealthVerdict::Healthy),
+                ..
+            }
+        ),
+        "{reply:?}"
+    );
+    present(&reply)
+}
+
+/// An In from the run that created a copy and waited it healthy reuses that
+/// verdict instead of waiting the monitor window again.
+#[tokio::test]
+async fn in_reuses_the_health_its_run_settled() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    assert_eq!(node.service.local.settles_for_test(&copy), 1);
+}
+
+/// A copy another run settled waits out its monitor window again.
+#[tokio::test]
+async fn in_from_another_run_settles_again() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+
+    let started = std::time::Instant::now();
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-b")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    assert_eq!(node.service.local.settles_for_test(&copy), 2);
+    assert!(
+        started.elapsed() >= MONITOR * 3 / 4,
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// A copy restarted since its run settled it is a new Docker run, and settles again.
+#[tokio::test]
+async fn in_after_a_restart_settles_again() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+    node.set_state(
+        copy,
+        json!({"Status": "running", "StartedAt": chrono::Utc::now().to_rfc3339()}),
+    );
+
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    assert_eq!(node.service.local.settles_for_test(&copy), 2);
+}
+
+/// A copy its run settled healthy but whose check fails now is refused In.
+#[tokio::test]
+async fn in_for_a_settled_copy_now_unhealthy_is_refused() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+    let started_at = node.container(copy).unwrap()["State"]["StartedAt"].clone();
+    node.set_state(
+        copy,
+        json!({"Status": "running", "StartedAt": started_at, "Health": {"Status": "unhealthy"}}),
+    );
+
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    let EnsuredContainer::Ensured {
+        health: Some(health),
+        ..
+    } = &reply
+    else {
+        panic!("expected Ensured with a health verdict, got {reply:?}");
+    };
+    assert!(matches!(health, HealthVerdict::Failed { .. }), "{health:?}");
+    assert_eq!(node.rotation(copy).await, CopyRotation::Pending);
+}
+
+/// A copy its run settled that has since stopped starts again for the In, and
+/// that new Docker run settles again.
+#[tokio::test]
+async fn in_for_a_settled_copy_since_stopped_settles_again() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let copy = settled_by(node, "a", monitored_spec("api"), "run-a").await;
+    node.set_state(copy, json!({"Status": "exited", "ExitCode": 1}));
+
+    let reply = ensure(
+        node,
+        into(copy, Some(run("run-a")), Some(CopyRotation::Pending)),
+    )
+    .await;
+
+    assert_eq!(rotation_of(&reply), CopyRotation::In, "{reply:?}");
+    assert_eq!(node.service.local.settles_for_test(&copy), 2);
+}
+
 /// An In write that lands after a Stopped want planned its stop, but before it took
 /// the turn, keeps the copy running.
 #[tokio::test]
@@ -1019,6 +1265,54 @@ async fn last_in_ignores_a_sibling_on_a_down_machine() {
 
     refused(&reply, ContainerRefusalReason::LastIn);
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
+}
+
+/// A Machine membership holds no evidence for is unknown, not Down.
+#[tokio::test]
+async fn stale_evidence_keeps_in_copy_routed() {
+    let fleet = Fleet::start().await;
+    let api = service("api");
+    fleet.membership(0, "Alive");
+    fleet.membership(2, "Alive");
+    let a = fleet.routed(0, "a", "api", 1).await;
+    fleet.addressed(0, a, "10.210.1.2").await;
+    let machines = fleet.run_ingress().await;
+    fleet.acked_by_all(&api, &[a]).await;
+    let mut dns_down = DownMachines::new(fleet.id(2));
+    let routed_before = proxy_routes(
+        &service_containers(fleet.store.containers().await.unwrap().observations),
+        |machine| dns_down.contains(machine),
+        &ProxyRoutes::new(),
+    );
+
+    let b = fleet.routed(1, "b", "api", 1).await;
+    fleet.addressed(1, b, "10.210.2.2").await;
+
+    let down = load_down(&machines, &fleet.admin(), &fleet.id(2))
+        .await
+        .unwrap();
+    assert!(down.is_empty(), "no evidence is not Down: {down:?}");
+    dns_down.update(Ok(down));
+    let dns_routes = proxy_routes(
+        &service_containers(fleet.store.containers().await.unwrap().observations),
+        |machine| dns_down.contains(machine),
+        &routed_before,
+    );
+    let dns_routed: BTreeSet<_> = dns_routes[&api]
+        .iter()
+        .map(|serving| serving.as_observation().container_id)
+        .collect();
+    assert_eq!(dns_routed, BTreeSet::from([a, b]));
+    fleet.acked_by_all(&api, &[a, b]).await;
+    let routes = fleet.read_routes(0, &api).await;
+    assert!(!routes.down.contains(&fleet.id(1)), "{routes:?}");
+    assert!(routes.complete, "{routes:?}");
+    assert_eq!(
+        routes.routes,
+        (0..3)
+            .map(|index| (fleet.id(index), Some(BTreeSet::from([a, b]))))
+            .collect(),
+    );
 }
 
 /// A newer local copy brought In while an In want read its guard rows is found under
@@ -1599,3 +1893,6 @@ async fn out_want_p95() {
     let p95 = *took.get(took.len() * 95 / 100 - 1).unwrap();
     println!("out_want_p95 p95 {:.3} ms", p95.as_secs_f64() * 1e3);
 }
+
+#[path = "volume_move_tests.rs"]
+mod volume_move;

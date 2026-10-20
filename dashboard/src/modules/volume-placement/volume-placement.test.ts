@@ -24,7 +24,6 @@ import {
   placementLoss,
   placementLosses,
   volumeLossItems,
-  lossTime,
   lossByVolume,
   lossVersion,
   type PlacementLost,
@@ -551,12 +550,12 @@ describe("placementLoss", () => {
 
   it("says a restore drops the unanswered primary's writes", () => {
     const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
-    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: `web-1 · changes after ${lossTime(at)}` }], losesWrites: true, accept: ["pg-data"] });
+    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-1", lostAfter: at }], losesWrites: true, accept: ["pg-data"] });
   });
 
   it("asks before a restore no Server is known to have held, since it still drops writes", () => {
     expect(lossOf([mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" })))
-      .toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "changes after 10:36" }], losesWrites: true, accept: ["pg-data"] });
+      .toEqual({ items: [{ kind: "volume", name: "pg-data", detail: undefined, lostAfter: at }], losesWrites: true, accept: ["pg-data"] });
   });
 
   it("says a restore from a restore point drops the source's writes after it", () => {
@@ -566,7 +565,7 @@ describe("placementLoss", () => {
         sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
       } },
     };
-    expect(lossOf([], seeded)).toEqual({ items: [{ kind: "volume", name: "data", detail: "changes after 10:36" }], losesWrites: true, accept: ["data"] });
+    expect(lossOf([], seeded)).toEqual({ items: [{ kind: "volume", name: "data", detail: undefined, lostAfter: at }], losesWrites: true, accept: ["data"] });
   });
 });
 
@@ -612,20 +611,20 @@ describe("two write losses on one Volume", () => {
   const restore = (when: Date): PlacementLost => ({ volume: data, server: null, writes: true, after: when });
   const failover = (when: Date | null): PlacementLost => ({ volume: data, server: { id: id("web-1"), name: "web-1" }, writes: true, after: when });
   const later = new Date(at.getTime() + 3_600_000);
-  const detail = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), () => undefined)[0]?.detail;
+  const item = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), () => undefined)[0];
 
   it.each([["restore first", (a: PlacementLost, b: PlacementLost) => [a, b]], ["failover first", (a: PlacementLost, b: PlacementLost) => [b, a]]])(
     "words and binds the earlier cutoff, %s", (_, order) => {
       expect(lossByVolume(order(restore(later), failover(at)))).toMatchObject([{ loss: "writes", after: at.getTime() / 1000 }]);
-      expect(detail(order(restore(later), failover(at)))).toBe(detail(order(failover(at), restore(later))));
+      expect(item(order(restore(later), failover(at)))).toEqual(item(order(failover(at), restore(later))));
       const earlier = new Date(at.getTime() - 60_000);
       expect(lossVersion("v1", order(restore(later), failover(earlier)))).not.toBe(lossVersion("v1", order(restore(later), failover(at))));
     });
 
   it("names the Server losing a copy beside the writes it loses", () => {
-    const named = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), (machine) => machine.replace(/0+$/u, ""))[0]?.detail;
-    expect(named([failover(at)])).toBe(`web-1 · changes after ${lossTime(at)}`);
-    expect(named([failover(null)])).toBe("web-1 · recent changes");
+    const named = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), (machine) => machine.replace(/0+$/u, ""))[0];
+    expect(named([failover(at)])).toEqual({ kind: "volume", name: "data", detail: "web-1", lostAfter: at });
+    expect(named([failover(null)])).toEqual({ kind: "volume", name: "data", detail: "web-1 · recent changes" });
   });
 
   it.each([["restore first", false], ["failover first", true]])("takes an unknown cutoff over a known one, %s", (_, flipped) => {

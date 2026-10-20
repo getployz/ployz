@@ -337,6 +337,10 @@ impl Daemon {
                 .map_err(io::Error::other)?;
         let socket_path = config.socket.clone();
         let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let (route_publishes, published_routes) =
+            tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
         let retire_id = local_id;
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
@@ -396,13 +400,21 @@ impl Daemon {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
                 }
-                match (local_machine.clone(), replicated_store.clone()) {
-                    (Some(machine), Some(replicated)) => {
+                match (
+                    local_machine.clone(),
+                    replicated_store.clone(),
+                    machine_view.clone(),
+                    ingress_admin,
+                ) {
+                    (Some(machine), Some(replicated), Some(machines), Some(admin)) => {
                         ingress::run(
                             machine,
                             replicated,
+                            machines,
+                            admin,
                             ingress_data_dir,
                             ingress_runtime_dir,
+                            route_publishes,
                             shutdown.clone(),
                         )
                         .await
@@ -458,6 +470,35 @@ impl Daemon {
                 }
                 Ok(())
             };
+            let boot_pass = async {
+                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                let (Some(runtime), Some(replicated), Some(machines), Some(admin)) = (
+                    containers.clone(),
+                    replicated_store.clone(),
+                    machine_view.clone(),
+                    boot_admin,
+                ) else {
+                    return Ok(());
+                };
+                let first_synced = runtime.first_synced();
+                let host = crate::boot_pass::DaemonHost {
+                    machine_id: retire_id,
+                    machine: crate::machine::LocalMachine::new(local.clone())
+                        .with_containers(Some(runtime))
+                        .with_plugin(plugin.clone())
+                        .with_cluster(Some((replicated.clone(), admin.clone()))),
+                    replicated,
+                    machines,
+                    admin,
+                };
+                tokio::select! {
+                    () = shutdown.cancelled() => {}
+                    () = crate::boot_pass::run(host, first_synced, published_routes) => {}
+                }
+                Ok(())
+            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 publisher,
@@ -468,6 +509,7 @@ impl Daemon {
                 ingress,
                 certificates,
                 retire,
+                boot_pass,
             )
             .map(|_| ())
         });

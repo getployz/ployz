@@ -55,7 +55,8 @@ one you were following without shipping all of its services, the CLI says
 `Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`.
 
 A failed deploy exits with code 1. A Deployment that applied but whose result is missing
-a Server exits with code 3. A warning that names an incomplete Server observation also
+a Server, or that left an old container running because its Server didn't answer, exits
+with code 3. A warning that names an incomplete Server observation also
 makes an otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the

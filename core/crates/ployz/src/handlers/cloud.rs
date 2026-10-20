@@ -88,7 +88,11 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     runtime()?
-        .block_on(run_enrollment(root, &token, cloud_url, install, &|_| {}))
+        .block_on(run_enrollment(root, &token, cloud_url, install, &|stage| {
+            if stage == EnrollStage::Enrolling && !ui::json() {
+                ui::note("Asking Cloud to enroll this Server…");
+            }
+        }))
         .and_then(|printed| printed)
 }
 
@@ -157,7 +161,6 @@ where
         client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
     }
     report.step(Step::Enroll);
-    progress(EnrollStage::Enrolling);
     let (details, machine_token, name, outcome) = enroll_current_identity(
         &mut client,
         requested_name,
@@ -249,6 +252,7 @@ async fn enroll_current_identity(
         requested_storage,
         initial_policy.clone(),
     );
+    progress(EnrollStage::Enrolling);
     let outcome = cloud_enroll::enroll(url, token, &identity, progress).await?;
     Ok((details, machine_token, name, outcome))
 }
@@ -845,6 +849,7 @@ mod tests {
         assert!(!retry_local_connect(&ConnectError::AllFailed {
             selection: ConnectionSource::LocalSocket,
             attempts: 1,
+            server: None,
             retry: ployz_core::Retry::Never,
             reached: false,
             last: None,

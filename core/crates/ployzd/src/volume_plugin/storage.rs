@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     io,
+    num::NonZeroU64,
     path::{Path, PathBuf},
     process::Output,
     sync::Arc,
@@ -253,6 +254,42 @@ impl VolumeStorage {
         Ok(())
     }
 
+    /// Raises the bound `dataset` carries from `held` to `wanted`: the difference is
+    /// committed to the Pool first, then the one property is written and read back.
+    pub(super) async fn grow_bound(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        dataset: &str,
+        held: u64,
+        wanted: u64,
+    ) -> Result<()> {
+        self.ensure_commitment(pool, datasets, wanted - held)
+            .await?;
+        self.set_verified(dataset, "refquota", &wanted.to_string())
+            .await
+    }
+
+    /// Sets `property` on `dataset` and reads it back in bytes (`-p`): the value ZFS
+    /// reports is the one that counts, whatever the write accepted.
+    pub(super) async fn set_verified(
+        &self,
+        dataset: &str,
+        property: &str,
+        value: &str,
+    ) -> Result<()> {
+        self.zfs(&["set", &format!("{property}={value}"), dataset])
+            .await?;
+        let actual = self
+            .zfs(&["get", "-Hp", "-o", "value", property, dataset])
+            .await?;
+        let actual = actual.trim_end_matches('\n');
+        if actual == value {
+            return Ok(());
+        }
+        Err(format!("{dataset} has {property}={actual} after setting it to {value}").into())
+    }
+
     pub(super) async fn create_root(&self, root: &str) -> Result<()> {
         self.zfs(&[
             "create",
@@ -359,6 +396,66 @@ impl VolumeStorage {
     pub(super) async fn zfs(&self, args: &[&str]) -> Result<String> {
         checked_command(&self.zfs, args).await
     }
+
+    /// What this Machine holds for `name` in `datasets`, if anything, with `receiving`
+    /// as sampled after that listing.
+    pub(super) fn held<'datasets>(
+        &self,
+        datasets: &'datasets [Dataset],
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+        receiving: bool,
+    ) -> Result<Option<Held<'datasets>>> {
+        if let Some(root) = Self::dataset(datasets, pool, name)? {
+            return Ok(Some(Held::Root(root)));
+        }
+        let Some(parent) = Self::slot(datasets, pool, name) else {
+            return Ok(None);
+        };
+        Ok(Some(Held::Slot {
+            parent,
+            fs: Self::slot_fs(datasets, pool, name),
+            receiving,
+        }))
+    }
+}
+
+/// The datasets this Machine holds for a Volume: its writer root, or its mirror slot's
+/// parent with the copy once a receive or a cut landed one. The bound is the root's
+/// `refquota` or the parent's; the copy carries the same bound without committing it.
+pub(super) enum Held<'datasets> {
+    Root(&'datasets Dataset),
+    Slot {
+        parent: &'datasets Dataset,
+        fs: Option<&'datasets Dataset>,
+        receiving: bool,
+    },
+}
+
+impl Held<'_> {
+    /// The dataset carrying the bound.
+    pub(super) fn dataset(&self) -> &Dataset {
+        match self {
+            Self::Root(root) => root,
+            Self::Slot { parent, .. } => parent,
+        }
+    }
+
+    /// The Provisioned Volume bound; a `refquota` of 0 is none.
+    pub(super) fn bound(&self) -> Option<NonZeroU64> {
+        self.dataset().bound()
+    }
+
+    /// Whether a Volume Run has the Volume mid-switch on this Machine. A root switches
+    /// while [`Dataset::switching`]. A slot switches only while a receive runs into it:
+    /// its pull mark stays until a later pull settles, and its copy's cut mark until a
+    /// pull or a promote clears it, so a mark alone says nothing about a step in progress.
+    pub(super) fn switching(&self) -> bool {
+        match self {
+            Self::Root(root) => root.switching(),
+            Self::Slot { receiving, .. } => *receiving,
+        }
+    }
 }
 
 pub(super) struct Dataset {
@@ -439,8 +536,14 @@ impl Dataset {
         .into())
     }
 
+    /// Whether a Volume Run holds this root read-only, from its cut until a Writer want
+    /// makes it writable again.
+    pub(super) fn switching(&self) -> bool {
+        self.readonly
+    }
+
     pub(super) fn require_not_switching(&self, name: &DockerVolumeName) -> Result<()> {
-        if !self.readonly {
+        if !self.switching() {
             return Ok(());
         }
         Err(format!(
@@ -450,8 +553,13 @@ impl Dataset {
         .into())
     }
 
+    /// The Provisioned Volume bound the dataset carries; a `refquota` of 0 is none.
+    pub(super) fn bound(&self) -> Option<NonZeroU64> {
+        NonZeroU64::new(self.refquota)
+    }
+
     pub(super) fn require_provisioned(&self, name: &DockerVolumeName) -> Result<()> {
-        if self.refquota == 0 {
+        if self.bound().is_none() {
             return Err(format!(
                 "ZFS dataset {} has no Provisioned Volume bound; refusing to use it",
                 self.name
@@ -464,11 +572,11 @@ impl Dataset {
     pub(super) fn require_requested(&self, name: &DockerVolumeName, requested: u64) -> Result<()> {
         self.require_mountpoint(&name.mountpoint())?;
         self.require_writable()?;
-        if self.refquota == requested {
+        if self.refquota >= requested {
             return Ok(());
         }
         Err(format!(
-            "Volume {name} already has a {}-byte bound; a Volume's size is fixed once deployed, so it can't become {requested} bytes",
+            "Volume {name} already has a {}-byte bound, below the {requested} bytes requested; creating a Volume never grows its bound",
             self.refquota
         )
         .into())

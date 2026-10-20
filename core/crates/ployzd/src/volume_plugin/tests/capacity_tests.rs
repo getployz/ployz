@@ -69,7 +69,14 @@ async fn device_pool_recovery_preserves_volumes_through_every_admission_route() 
 
 #[tokio::test]
 async fn storage_admission_recovers_unimported_pool_without_recreating_data() {
-    for route in ["/Storage.Inspect", "/Storage.Prepare"] {
+    for (route, request) in [
+        ("/Storage.Inspect", json!({"data":1073741824u64})),
+        ("/Storage.Prepare", json!({"data":1073741824u64})),
+        (
+            "/Volume.Size.Set",
+            json!({"name":"data","maximum_bytes":1073741824u64}),
+        ),
+    ] {
         let test = TestDir::new();
         fs::write(test.0.join(POOL_BACKING_FILE), "existing Pool").unwrap();
         fs::write(test.0.join("allocated"), "2147483648").unwrap();
@@ -82,7 +89,7 @@ async fn storage_admission_recovers_unimported_pool_without_recreating_data() {
             UnixListener::bind(&socket).unwrap(),
             fake_first_pool(&test.0, 4096),
         ));
-        let response = post(&socket, route, json!({"data":1073741824u64})).await;
+        let response = post(&socket, route, request).await;
         assert!(response.get("Ok").is_some(), "{route}: {response}");
         let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
         assert_eq!(capacity.pointer("/Ok/volumes/data").unwrap(), 1073741824u64);
