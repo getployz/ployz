@@ -203,9 +203,9 @@ pub(in crate::handlers) fn enroll_token(
                 env::ENROLL_TOKEN
             )));
         }
-        return Ok(Some(CloudEnrollToken::parse(from_env.trim())?));
+        return parse_enroll_token(&from_env, env::ENROLL_TOKEN).map(Some);
     }
-    let raw = if from_stdin {
+    let (raw, source) = if from_stdin {
         let mut line = String::new();
         std::io::stdin()
             .lock()
@@ -217,9 +217,9 @@ pub(in crate::handlers) fn enroll_token(
                     error,
                 )
             })?;
-        line
+        (line, "--token-stdin")
     } else if let Some(path) = from_file {
-        std::fs::read_to_string(path).map_err(|error| {
+        let raw = std::fs::read_to_string(path).map_err(|error| {
             Error::caused(
                 RpcErrorCode::InvalidArgument,
                 format!(
@@ -228,11 +228,40 @@ pub(in crate::handlers) fn enroll_token(
                 ),
                 error,
             )
-        })?
+        })?;
+        (raw, "--token-file")
     } else {
         return Ok(None);
     };
-    Ok(Some(CloudEnrollToken::parse(raw.trim())?))
+    parse_enroll_token(&raw, source).map(Some)
+}
+
+/// Tokens Cloud mints for other jobs, by prefix, and where each belongs.
+const OTHER_TOKENS: [(&str, &str); 3] = [
+    (
+        "pflt_",
+        "a Fleet Token. Set PLOYZ_FLEET_TOKEN instead: the installer reads it there",
+    ),
+    (
+        "ployz_",
+        "an Organization Token. Set PLOYZ_TOKEN instead: Cloud commands read it there",
+    ),
+    ("ppair_", "a pairing secret, which no command takes"),
+];
+
+/// `raw`, read from `source`, as an enrollment token. A token of another kind is refused
+/// here, before anything reaches a Server or Cloud.
+fn parse_enroll_token(raw: &str, source: &str) -> Result<CloudEnrollToken, Error> {
+    let raw = raw.trim();
+    if let Some((_, kind)) = OTHER_TOKENS
+        .into_iter()
+        .find(|(prefix, _)| raw.starts_with(prefix))
+    {
+        return Err(Error::usage(format!(
+            "{source} holds {kind}. ployz server add takes the enrollment token that ployz server add --command prints."
+        )));
+    }
+    Ok(CloudEnrollToken::parse(raw)?)
 }
 
 fn prompted_token(remote: bool) -> Result<CloudEnrollToken, Error> {
@@ -241,7 +270,7 @@ fn prompted_token(remote: bool) -> Result<CloudEnrollToken, Error> {
         || no_terminal_for_token(remote),
         "Cancelled. Nothing was enrolled.",
     )?;
-    Ok(CloudEnrollToken::parse(token.trim())?)
+    parse_enroll_token(&token, "What you pasted")
 }
 
 /// Run from a script, nothing can answer the prompt. Adding a remote Server, signing in
