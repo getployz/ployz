@@ -89,6 +89,15 @@ pub(crate) struct ServiceUploads {
     pub(crate) services: BTreeMap<String, UploadDigest>,
 }
 
+/// Whether `deployment` applied `service`: it runs the upload it built it from.
+fn applied(deployment: &Stored, service: &str) -> bool {
+    deployment
+        .run
+        .nodes
+        .get(service)
+        .is_some_and(|status| status.advances())
+}
+
 /// Whether `deployment` moved `service` onto the upload it builds it from: it sent
 /// that upload, or applied `service`. A retry leaves a Service it didn't apply on
 /// its latest, and one that never ran leaves every one.
@@ -97,11 +106,7 @@ fn moved(deployment: &Stored, service: &str) -> bool {
         .service_uploads
         .as_ref()
         .is_none_or(|uploads| uploads.sent)
-        || deployment
-            .run
-            .nodes
-            .get(service)
-            .is_some_and(|status| status.advances())
+        || applied(deployment, service)
 }
 
 /// Whether a Deployment admitted now runs after `deployment` has moved `service`:
@@ -214,8 +219,8 @@ pub(crate) fn admitted(
 
 /// The digests Cloud keeps for `environment`, given `held`, the Deployments Cloud
 /// holds an upload for: those that sent one. Each Service without a source keeps
-/// the upload it last built from and its latest upload sent, and a Deployment that
-/// may still run keeps every upload it builds from.
+/// the upload it next builds from, the one it runs, and its latest upload sent, and
+/// a Deployment that may still run keeps every upload it builds from.
 fn kept(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -251,7 +256,11 @@ fn kept(
         .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
     {
         let mut latest = deployments.iter().rev();
-        kept.extend(lineage(&deployments, &service.id, moved).map(|(_, digest)| digest.clone()));
+        for moves in [moved, applied] {
+            kept.extend(
+                lineage(&deployments, &service.id, moves).map(|(_, digest)| digest.clone()),
+            );
+        }
         kept.extend(
             latest
                 .find(|deployment| {
