@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { MaximumBytes } from "#/modules/operations/cli-wire";
+import { listNames } from "#/lib/plural";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { serverSupports } from "#/modules/runtime/daemon-compat";
 import { observePlacement, VolumeInput } from "#/modules/volume-placement/volume-placement";
@@ -54,6 +55,15 @@ export function checkResize({ volume, recorded, working, requested, holders }: R
     return { kind: "refused", message: room === 0 ? `${tightest.name} has no room to grow it.` : `${tightest.name} has room to grow it by ${gb(room)} at most.` };
   }
   return { kind: "grow", from: recorded, to: requested, servers: serving.map((holder) => holder.name) };
+}
+
+/** What the confirm says a grow does: the primary first, as the Servers named it, then its mirrors. */
+export function growWords(volume: string, { from, to, servers }: Extract<ResizeVerdict, { kind: "grow" }>): string {
+  const [primary, ...mirrors] = servers ?? [];
+  const where = primary === undefined ? "on every server that holds a copy"
+    : mirrors.length === 0 ? `on ${primary}`
+    : `on ${primary} and its mirror${mirrors.length === 1 ? "" : "s"} on ${listNames(mirrors)}`;
+  return `Grow ${volume} from ${gb(from)} to ${gb(to)} ${where}. Its services keep running.`;
 }
 
 /** The copies the Servers report, each with its machine record. Null until both are known. */

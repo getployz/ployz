@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import { checkResize, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
+import { checkResize, growWords, type Holder, holdersOf, type ResizeAsk, type ResizeVerdict } from "#/modules/volume-run/resize-check";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const GB = 1_000_000_000;
@@ -54,6 +54,17 @@ describe("checkResize", () => {
     ],
   ])("%s", (_, input, verdict) => {
     expect(checkResize(input)).toEqual(verdict);
+  });
+});
+
+describe("growWords", () => {
+  it.each<[string, readonly string[] | null, string]>([
+    ["names the primary and its mirror", ["fsn-1", "fsn-2"], "Grow data from 10 GB to 20 GB on fsn-1 and its mirror on fsn-2. Its services keep running."],
+    ["names every mirror", ["fsn-1", "fsn-2", "fsn-3"], "Grow data from 10 GB to 20 GB on fsn-1 and its mirrors on fsn-2 and fsn-3. Its services keep running."],
+    ["names a lone primary", ["fsn-1"], "Grow data from 10 GB to 20 GB on fsn-1. Its services keep running."],
+    ["says every copy before the Servers answer", null, "Grow data from 10 GB to 20 GB on every server that holds a copy. Its services keep running."],
+  ])("%s", (_, servers, words) => {
+    expect(growWords("data", { kind: "grow", from: 10 * GB, to: 20 * GB, servers })).toBe(words);
   });
 });
 

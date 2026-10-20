@@ -28,6 +28,7 @@ import {
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
+import { holdersOf } from "#/modules/volume-run/resize-check";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers, useVolumeOwed } from "#/modules/volume-run/volume-run.queries";
 
@@ -61,6 +62,8 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     running,
     owed,
     copies,
+    /** Every copy's Server with its record, for the size a resize may grow to; null until both are in. */
+    holders: holdersOf(members, lens.status === "observed" ? lens.machines : null),
     servers: lens.machines.filter((machine) => machine.acceptsServices),
     accepting: members?.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id) ?? [],
     upgrade: placementBlockers(lens.machines),

@@ -19,16 +19,22 @@ import * as changes from "../../../-components/canvas/useStoreChangeActions";
 import * as copies from "./StoreVolumeCopies";
 import { StoreVolumeDrawer } from "./StoreVolumeDrawer";
 import { volumeSearchSchema } from "./volume-pages";
+import * as runs from "#/modules/volume-run/volume-run.functions";
+import type { Holder } from "#/modules/volume-run/resize-check";
+import type { VolumeRunView } from "#/modules/volume-run/volume-run";
+import { run } from "#/modules/volume-run/volume-run.test-fixture";
 
 const environment = { project: "shop", environment: "production" };
 const env = { id: "env", ...environment, name: "production", revision: 1 };
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: MachineId | null = null, { realMounts = false } = {}) {
+type CopiesData = ReturnType<typeof copies.useVolumeCopies>;
+
+async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: MachineId | null = null, { realMounts = false, data = {} }: { realMounts?: boolean; data?: Partial<CopiesData> } = {}) {
   vi.stubGlobal("scrollTo", () => {});
   vi.spyOn(changes, "useStoreChangeActions").mockReturnValue(asTestDouble<ReturnType<typeof changes.useStoreChangeActions>>()({ dialog: null }));
-  vi.spyOn(copies, "useVolumeCopies").mockReturnValue(asTestDouble<ReturnType<typeof copies.useVolumeCopies>>()({ copies: null }));
+  vi.spyOn(copies, "useVolumeCopies").mockReturnValue(asTestDouble<CopiesData>()({ copies: null, holders: null, running: null, ...data }));
   if (!realMounts) vi.spyOn(mounts, "StoreVolumeMounts").mockImplementation(() => <></>);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "s", userId: "u" };
@@ -123,4 +129,83 @@ it.each([
   expect(control().getAttribute("aria-checked")).toBe(submitted);
   await act(async () => { answer({ ok: true, value: { written: "batch", results: [] } }); });
   await waitFor(() => expect(control().getAttribute("aria-checked")).not.toBe(submitted));
+});
+
+const GB = 1_000_000_000;
+const SIZE = ["ployz.volume.size.set.v1"];
+const holders = (fsn2: readonly string[] = SIZE): Holder[] => [
+  { name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 40 * GB },
+  { name: "fsn-2", role: "mirror", capabilities: fsn2, committableBytes: null },
+];
+const deployed = (maximumBytes = 10 * GB): Partial<VolumeListing> =>
+  ({ deployed: true, storage_locked: true, storage: { kind: "provisioned", maximumBytes }, recorded_storage: 10 * GB });
+const SETTINGS = "/cloud/acme/shop/production/resources/vol?tab=settings";
+const limit = () => screen.getByRole("textbox", { name: "Storage limit" });
+const enter = (value: string) => {
+  fireEvent.change(limit(), { target: { value } });
+  fireEvent.keyDown(limit(), { key: "Enter" });
+};
+
+it("grows a deployed volume after a plain confirm, then shows the run until it ends", async () => {
+  await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
+  expect((limit() as HTMLInputElement).value).toBe("10");
+  screen.getByText("Grows live on every server that holds a copy. Can't shrink yet.");
+  const resize = vi.spyOn(runs, "resizeVolumeServerFn").mockResolvedValue({ id: "run-1" });
+  const growing: VolumeRunView = { ...run("resize", { maximum_bytes: 20 * GB }, "running"), id: "run-1", message: "Growing data to 20 GB on fsn-2" };
+  const read = vi.spyOn(runs, "getVolumeRunServerFn").mockResolvedValue(growing);
+  enter("20");
+  const dialog = await screen.findByRole("alertdialog");
+  within(dialog).getByText("Grow data from 10 GB to 20 GB on fsn-1 and its mirror on fsn-2. Its services keep running.");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Grow" }));
+  await waitFor(() => expect(resize).toHaveBeenCalledTimes(1));
+  expect(resize.mock.calls[0]?.[0]?.data).toMatchObject({ organizationSlug: "acme", volumeId: "vol", environment, maximumBytes: 20 * GB });
+  await screen.findByText("Growing data to 20 GB on fsn-2");
+  expect(limit().hasAttribute("disabled")).toBe(true);
+  read.mockResolvedValue({ ...growing, state: "failed", message: "fsn-2 has no room to grow data to 20 GB" });
+  await screen.findByText("fsn-2 has no room to grow data to 20 GB", {}, { timeout: 5_000 });
+  expect(limit().hasAttribute("disabled")).toBe(false);
+});
+
+it.each([
+  ["a smaller size, as the Store would", holders(), "5", "data is deployed at 10 GB; a deployed volume can't shrink yet."],
+  ["a size a holder's Ployz can't set", holders(["ployz.volume.copy.set.v1"]), "20", "Growing needs a newer Ployz on fsn-2."],
+  ["more than the tightest Pool has room for", holders(), "60", "fsn-1 has room to grow it by 40 GB at most."],
+])("refuses %s in the field, before any confirm", async (_, held, typed, message) => {
+  await openDrawer(SETTINGS, deployed(), null, { data: { holders: held } });
+  enter(typed);
+  await screen.findByText(message);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it("shows a resize the Servers refuse at admission in the field", async () => {
+  await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
+  vi.spyOn(runs, "resizeVolumeServerFn").mockRejectedValue(new Error("data has a move in progress"));
+  enter("20");
+  fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Grow" }));
+  await screen.findByText("data has a move in progress");
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it("stages the held size back over a restored smaller revision, with no resize", async () => {
+  await openDrawer(SETTINGS, deployed(4 * GB), null, { data: { holders: holders() } });
+  screen.getByText("A restored revision asks for 4 GB; the servers keep 10 GB. Enter 10 to keep it.");
+  expect((limit() as HTMLInputElement).value).toBe("4");
+  const write = vi.spyOn(functions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "batch", results: [] } });
+  const resize = vi.spyOn(runs, "resizeVolumeServerFn");
+  enter("10");
+  await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  expect(JSON.stringify(write.mock.calls[0]?.[0])).toContain('"maximumBytes":10000000000');
+  expect(resize).not.toHaveBeenCalled();
+});
+
+it("waits for another run on the volume before it grows", async () => {
+  await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders(), running: run("move", { to: "fsn-2" }, "running") } });
+  screen.getByText("Moving to fsn-2. Growing waits for it to finish.");
+  expect(limit().hasAttribute("disabled")).toBe(true);
+});
+
+it("keeps a deployed Docker volume fixed", async () => {
+  await openDrawer(SETTINGS, { deployed: true, storage_locked: true, storage: { kind: "docker" } });
+  screen.getByText("Fixed after the first deploy.");
+  expect(screen.queryByRole("textbox", { name: "Storage limit" })).toBeNull();
 });

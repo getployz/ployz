@@ -45,7 +45,8 @@ export function useActiveVolumeRuns(organizationSlug: string) {
 const ended = (run: VolumeRunView | undefined) => run !== undefined && !ACTIVE_VOLUME_RUN_STATES.some((state) => state === run.state);
 
 /**
- * Polls each run `watch` names until it ends, then hands it to `onEnd` once and refreshes every run read.
+ * Polls each run `watch` names until it ends, then hands it to `onEnd` once and refreshes every run read. `runs` is
+ * each watched run as last read.
  * `onEnd` gets null for a run that still cannot be read after two retries.
  */
 export function useWatchVolumeRun(organizationSlug: string, onEnd: (run: VolumeRunView | null) => void) {
@@ -74,5 +75,6 @@ export function useWatchVolumeRun(organizationSlug: string, onEnd: (run: VolumeR
     for (const { last } of over) end(last);
   }, [ids, reads, queryClient]);
   const watch = (id: string) => setIds((watched) => (watched.includes(id) ? watched : [...watched, id]));
-  return { watch, watching: ids.length > 0 };
+  const runs = reads.flatMap(({ data: run }, index) => (run !== undefined && run.id === ids[index] ? [run] : []));
+  return { watch, watching: ids.length > 0, runs };
 }
