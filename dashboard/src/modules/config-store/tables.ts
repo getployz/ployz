@@ -38,8 +38,8 @@ export const DEPLOYMENT_CLEANUP_STATES = ["waiting", "done", "left_running", "ca
 export type DeploymentCleanupState = (typeof DEPLOYMENT_CLEANUP_STATES)[number];
 
 /**
- * An old copy a Deployment's cleanup could not retire. `machine` is the Machine's name. `service` is null for a Machine
- * the Deploy could not reach, whose copies it never saw.
+ * An old copy a Deployment's cleanup could not retire. `service` is null for a Machine the Deploy could not reach, whose
+ * copies it never saw.
  */
 export type CleanupLeft = { machine: string; service: string | null; reason: string };
 
@@ -64,5 +64,4 @@ export const deploymentCleanup = pgTable(
   ],
 );
 
-/** What the Run page shows of a Deployment's cleanup. */
 export type DeploymentCleanupView = Pick<typeof deploymentCleanup.$inferSelect, "state" | "left" | "message">;

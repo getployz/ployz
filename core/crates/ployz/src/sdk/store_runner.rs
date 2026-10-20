@@ -293,7 +293,7 @@ pub async fn retire_old(
     .await?;
     let copies = left_copies(&view);
     if copies.is_empty() {
-        return Ok(with_cut_off(&view, Vec::new()));
+        return Ok(with_unreached_machines(&view, Vec::new()));
     }
     let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
     let retired: Result<_, RpcError> = async {
@@ -303,14 +303,10 @@ pub async fn retire_old(
     }
     .await;
     session.close().await;
-    Ok(with_cut_off(&view, retired?))
+    Ok(with_unreached_machines(&view, retired?))
 }
 
-/// `left` and, once each, every Machine the Deploy could not reach and reported no
-/// copy on: a copy the plan never saw may still run there. A Machine with a
-/// reported copy was planned on, so its copies are that report's. Nothing there is
-/// retired, since only a copy a Deploy reported is.
-fn with_cut_off(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutcome {
+fn with_unreached_machines(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutcome {
     let reported: BTreeSet<&str> = view
         .deployment
         .warnings
@@ -348,13 +344,11 @@ fn with_cut_off(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutco
     RetireOutcome { left }
 }
 
-/// A copy a Deploy reported left running, of a Service it deployed or removed.
 struct LeftCopy {
     service: ServiceName,
     container_id: ContainerId,
     machine: String,
-    /// The Service was removed, so its last copy may go Out.
-    allow_empty: bool,
+    service_removed: bool,
 }
 
 fn left_copies(view: &DeploymentView) -> Vec<LeftCopy> {
@@ -400,7 +394,7 @@ fn left_copies(view: &DeploymentView) -> Vec<LeftCopy> {
                 service: (*name).clone(),
                 container_id: *container_id,
                 machine: machine.clone(),
-                allow_empty: *removed,
+                service_removed: *removed,
             })
         })
         .collect()
@@ -450,7 +444,6 @@ async fn retire_copies<C: MachineOperations>(
         .collect()
 }
 
-/// Why `copy` still runs on `machine_id`, or none once it is gone.
 async fn retire_copy<C: MachineOperations>(
     client: &C,
     names: &BTreeMap<MachineId, String>,
@@ -463,12 +456,12 @@ async fn retire_copy<C: MachineOperations>(
     {
         Ok(details) => details.container,
         Err(error) if error.code == RpcErrorCode::NotFound => return None,
-        Err(error) => return Some(failed(&copy.machine, error)),
+        Err(error) => return Some(machine_failure_reason(&copy.machine, error)),
     };
     let step = cleanup::retire(
         client,
         &Copy::observed(&observed),
-        copy.allow_empty,
+        copy.service_removed,
         AnonymousVolumes::Remove,
         &CancellationToken::new(),
     )
@@ -488,12 +481,11 @@ async fn retire_copy<C: MachineOperations>(
             Some(format!("proxy on {} did not confirm", proxies.join(", ")))
         }
         Ok(Step::Cancelled) => Some("interrupted".into()),
-        Err(error) => Some(failed(&copy.machine, error)),
+        Err(error) => Some(machine_failure_reason(&copy.machine, error)),
     }
 }
 
-/// The reason a Deploy gives for a copy whose Machine failed it.
-fn failed(machine: &str, error: RpcError) -> String {
+fn machine_failure_reason(machine: &str, error: RpcError) -> String {
     if error.code == RpcErrorCode::Unavailable || error.target_unanswered() {
         format!("{machine} did not answer")
     } else {

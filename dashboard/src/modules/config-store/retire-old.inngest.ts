@@ -12,12 +12,7 @@ export const RETIRE_OLD_FUNCTION_ID = "retire-old";
 export const RETIRE_ATTEMPTS = 3;
 export const RETIRE_PAUSE = "1m";
 
-/**
- * After a Cloud Deploy ran, retire the old copies its run replaced, through the Store. Each attempt is its own step, so a
- * crash or a killed runner retries only that call, and retiring is idempotent. A copy still running after the last
- * attempt is an outcome the Run page shows, not a failure. A newer Deployment of the Environment takes over, since its
- * own run retires whatever this one leaves.
- */
+/** After a Cloud Deploy ran, retire the old copies its run replaced, through the Store. */
 export const createRetireOld = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
   inngest.createFunction(
     {

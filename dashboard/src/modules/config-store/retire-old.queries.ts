@@ -4,10 +4,8 @@ import type { DeploymentCleanupView } from "./tables";
 import { deploymentCleanupServerFn } from "./retire-old.functions";
 
 const CLEANUP_POLL_MS = 5_000;
-/** The cleanup's row arrives a moment after its Deployment ends, so the page keeps asking that long. */
 const CLEANUP_ARRIVES_WITHIN_S = 60;
 
-/** Whether the page should ask again for a cleanup that reads `row`: one waiting, or one that may still arrive. */
 export function cleanupPending(row: DeploymentCleanupView | null | undefined, deployment: Pick<DeploymentSummary, "in_flight" | "ended_at">, now: number) {
   if (row !== null && row !== undefined) return row.state === "waiting";
   return deployment.in_flight || (deployment.ended_at !== null && now / 1000 - deployment.ended_at < CLEANUP_ARRIVES_WITHIN_S);

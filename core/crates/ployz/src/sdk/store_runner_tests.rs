@@ -722,7 +722,6 @@ fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
     assert_eq!(services, [front]);
 }
 
-/// The real Client, recording each want it sends.
 struct Recording {
     client: Client,
     wants: std::sync::Mutex<Vec<ployz_core::ContainerWant>>,
@@ -801,8 +800,6 @@ impl MachineOperations for Recording {
     }
 }
 
-/// `run`'s Deployment as the Store reads it, with each `(Service, outcome, copy)`
-/// a node whose old copy its Deploy left running on Machine `one`.
 fn left_running(
     run: &Run,
     actor: &ployz_store::Actor,
@@ -842,7 +839,6 @@ fn left_running(
     view
 }
 
-/// Machine `one`, holding copy `c` In.
 fn holding_c() -> super::super::test_support::DeployService {
     use super::super::test_support as support;
     support::DeployService::new(support::machine('a', "one")).with_rotation(
@@ -868,7 +864,7 @@ async fn retire(
         client,
         wants: std::sync::Mutex::default(),
     };
-    let outcome = with_cut_off(
+    let outcome = with_unreached_machines(
         view,
         retire_copies(&recording, &machines, left_copies(view)).await,
     );
@@ -927,7 +923,6 @@ async fn a_left_copy_whose_machine_does_not_answer_stays_left_naming_it() {
     );
 }
 
-/// Adds the warning a Deploy records for `machine` once it could not reach it.
 fn cut_off(view: &mut DeploymentView, machine: &str) {
     view.deployment.warnings.push(DeploymentWarning::Deploy {
         warning: DeployWarning::MixedAfterReturn {
@@ -936,8 +931,6 @@ fn cut_off(view: &mut DeploymentView, machine: &str) {
     });
 }
 
-// Catches a cleanup that reads done while a Machine the Deploy could not reach may
-// still run an old copy the plan never saw, also when its only Service failed.
 #[tokio::test]
 async fn a_machine_the_deploy_could_not_reach_stays_left_once_without_a_service() {
     let (run, actor) = run();
@@ -978,8 +971,6 @@ async fn a_cut_off_machine_with_a_copy_left_running_is_named_once() {
     );
 }
 
-// Catches a Machine named cut off after its reported copy was retired: the plan saw
-// that Machine's copies, so nothing unseen can run there.
 #[tokio::test]
 async fn a_machine_whose_reported_copy_retired_is_not_named_cut_off() {
     let (run, actor) = run();
@@ -989,8 +980,6 @@ async fn a_machine_whose_reported_copy_retired_is_not_named_cut_off() {
     assert_eq!(retired.outcome, RetireOutcome::default());
 }
 
-// Catches a retire that takes out the old copy of a Service whose replacement failed:
-// that copy may be the one serving.
 #[tokio::test]
 async fn a_failed_services_left_copy_is_not_touched() {
     let (run, actor) = run();
