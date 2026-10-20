@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { Connection, MachineId } from "@ployz/sdk";
-import { Context, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
+import { Clock, Context, Data, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
 import {
   Ployz,
   PloyzProviderError,
@@ -33,10 +33,48 @@ export const ORGANIZATION_CONNECT_TIMEOUT = "30 seconds";
 export const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
 
 /**
- * How long an operation's plan may spend reading the Cluster, all its reads together. The CLI gives the whole request
- * 60 seconds, and a plan that reads twice could otherwise spend a connect and a frame ceiling on each read.
+ * How long a plan may spend reading the Cluster, all its reads together. The CLI gives the whole request 60 seconds,
+ * and a plan that opens two sessions could otherwise spend a connect and a frame ceiling on each.
  */
-export const OPERATION_OBSERVE_DEADLINE_MS = 45_000;
+export const PLAN_CLUSTER_BUDGET_MS = 45_000;
+
+/**
+ * The Cluster time an effect may still spend: it runs only while one of its Cluster reads is in flight, so database
+ * and Store reads between them spend none of it. Null for a run step or a page, whose reads keep only their own ceilings.
+ */
+type ClusterTime = { readonly budgetMs: number; spentMs: number; reading: number; since: number };
+
+export const ClusterBudget = Context.Reference<ClusterTime | null>("ployz/ClusterBudget", { defaultValue: () => null });
+
+/** A read found the Cluster budget spent, or the budget ran out while it waited. */
+export class ClusterOutOfTime extends Data.TaggedError("ClusterOutOfTime") {}
+
+/** `self` with `budgetMs` of Cluster time across all its Cluster reads. */
+export const withClusterBudget = (budgetMs: number) => <A, E, R>(self: Effect.Effect<A, E, R>) =>
+  Effect.suspend(() => self.pipe(Effect.provideService(ClusterBudget, { budgetMs, spentMs: 0, reading: 0, since: 0 })));
+
+/**
+ * One Cluster read, cut on top of its own ceiling when its budget runs out. Only an SDK call goes through here, never a
+ * pooled SQL query: interrupting one makes the SQL client send pg_cancel_backend later, which can cancel whatever
+ * statement that connection runs next.
+ */
+export const clusterRead = <A, E, R>(read: Effect.Effect<A, E, R>): Effect.Effect<A, E | ClusterOutOfTime, R> =>
+  Effect.gen(function* () {
+    const time = yield* ClusterBudget;
+    if (time === null) return yield* read;
+    const now = yield* Clock.currentTimeMillis;
+    const left = time.budgetMs - time.spentMs - (time.reading > 0 ? now - time.since : 0);
+    if (left <= 0) return yield* new ClusterOutOfTime();
+    if (time.reading === 0) time.since = now;
+    time.reading += 1;
+    return yield* read.pipe(
+      Effect.timeoutOrElse({ duration: left, orElse: () => Effect.fail(new ClusterOutOfTime()) }),
+      Effect.ensuring(Effect.map(Clock.currentTimeMillis, (end) => {
+        time.reading -= 1;
+        if (time.reading === 0) time.spentMs += end - time.since;
+      })),
+    );
+  });
 
 export type ConnectedRuntimeClient = PloyzSession;
 
@@ -179,13 +217,15 @@ export function makeOrganizationRuntimeLayer(
                   cause: new Error("Connecting to the organization's machines timed out"),
                 })),
               }),
+              clusterRead,
               // Forked outside the session scope so the check can close that scope.
               Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
                 connected,
               })),
-              Effect.catch((error) => Effect.succeed(session.closed ? noConnection : ({
+              // Out of Cluster time fails the open, so its plan refuses instead of reading on as if unpaired.
+              Effect.catch((error) => error instanceof ClusterOutOfTime ? Effect.fail(error) : Effect.succeed(session.closed ? noConnection : ({
                 status: "unreachable" as const,
                 error,
               }))),
@@ -231,7 +271,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
 export const operationRuntimeFrame = Effect.fn("OrganizationRuntime.operationFrame")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") return null;
-  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
 }, Effect.scoped);
 
 /**

@@ -3,7 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
-import { planClean, planRemove, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
+import { freshOperationDigest, planClean, planRemove, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { makeOrganizationRuntimeLayer, ORGANIZATION_CONNECT_TIMEOUT } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
@@ -99,5 +99,25 @@ it.effect("a clean whose data loss never comes back is reported as not answering
     // The test clock stands still from here, so a plan that settles at all settled by 10 seconds.
     const error = yield* Fiber.join(planning);
     assert.isTrue(error instanceof Conflict && error.message === UNREACHABLE_MESSAGE);
+  }),
+);
+
+it.effect("an approval's preview whose Cluster never sends a frame keeps the stored preview after 5 seconds of Cluster time", () =>
+  Effect.gen(function* () {
+    const watching = yield* Deferred.make<void>();
+    const layer = runtime(async () => asTestDouble<Client>()({
+      close: async () => {},
+      runtime: {
+        watch: async function* () {
+          Effect.runSync(Deferred.succeed(watching, undefined));
+          yield await new Promise<typeof frame>(() => {});
+        },
+      },
+    }));
+    const stored = "stored-digest";
+    const refreshing = yield* freshOperationDigest("org-1", `server:${machineId}`, "remove", stored, {}).pipe(Effect.provide(layer), Effect.forkChild);
+    yield* Deferred.await(watching);
+    yield* TestClock.adjust("5 seconds");
+    assert.strictEqual(yield* Fiber.join(refreshing), stored);
   }),
 );
