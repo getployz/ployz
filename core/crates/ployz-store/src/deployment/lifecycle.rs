@@ -1423,6 +1423,16 @@ pub(crate) fn record(
                 reason,
                 cause,
                 services: projection.services.clone(),
+                compensation: match &*outcome {
+                    DeployOutcome::Failed {
+                        failed: FailedOperation::Replacement { compensation, .. },
+                        ..
+                    } => compensation.lines().into_iter().map(String::from).collect(),
+                    DeployOutcome::Failed { .. }
+                    | DeployOutcome::Success { .. }
+                    | DeployOutcome::Superseded { .. }
+                    | DeployOutcome::Interrupted { .. } => Vec::new(),
+                },
             };
             super::rows::record(tx, &stored, &progress)?;
             super::rows::settle(tx, &stored)?;

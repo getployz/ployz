@@ -1,7 +1,7 @@
 //! Observer-local Internal DNS serving and answer projection.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::HashMap,
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
@@ -26,8 +26,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, MachineId, MembershipObservation, Namespace, QualifiedService, ServiceId,
-    service_containers, serving_containers, synthesize_membership,
+    ContainerObservation, MachineId, Namespace, ProxyRoutes, QualifiedService, ServiceId,
+    proxy_routes, service_containers,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -36,10 +36,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::corrosion::{
-    AdminClient, Error as CorrosionError, MachineView, ServingPointers,
-    membership_states_by_address,
-};
+use crate::route_acks::DownMachines;
 
 mod listeners;
 mod process;
@@ -55,7 +52,6 @@ pub use service::DnsService;
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_RESPONSE_BUFFER: usize = 32;
 
@@ -75,52 +71,32 @@ struct Projection {
     caller_namespaces: HashMap<Ipv4Addr, Namespace>,
 }
 
-type Snapshot = (Vec<ContainerObservation>, ServingPointers);
-
 struct ProjectionInputs {
-    local_id: MachineId,
     observations: Vec<ContainerObservation>,
-    pointers: ServingPointers,
-    warned_pointers: BTreeSet<String>,
-    down_machines: Option<HashSet<MachineId>>,
+    down: DownMachines,
+    /// Kept while no copy of a Service is reachable.
+    routed: ProxyRoutes,
 }
 
 impl ProjectionInputs {
-    fn build(&self) -> Projection {
-        Projection::from_observations(
-            &self.observations,
-            &self.pointers,
-            &self.local_id,
-            self.down_machines.as_ref(),
-        )
-    }
-
-    fn replace_snapshot(&mut self, (observations, pointers): Snapshot) {
-        pointers.warn_newly_malformed(&mut self.warned_pointers);
-        self.observations = observations;
-        self.pointers = pointers;
-    }
-
-    fn update_membership(&mut self, loaded: Result<HashSet<MachineId>, CorrosionError>) -> bool {
-        match loaded {
-            Ok(down) if self.down_machines.as_ref() == Some(&down) => false,
-            Ok(down) => {
-                self.down_machines = Some(down);
-                true
-            }
-            Err(error) => {
-                let fallback = if self.down_machines.is_some() {
-                    "keeping the last successful filter"
-                } else {
-                    "serving unfiltered answers"
-                };
-                eprintln!(
-                    "failed to load Internal DNS membership; {fallback}: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                false
-            }
+    fn new(local_id: MachineId) -> Self {
+        Self {
+            observations: Vec::new(),
+            down: DownMachines::new(local_id),
+            routed: ProxyRoutes::new(),
         }
+    }
+
+    fn build(&mut self) -> Projection {
+        let containers = service_containers(self.observations.iter().cloned());
+        let routes = proxy_routes(
+            &containers,
+            |machine| self.down.contains(machine),
+            &self.routed,
+        );
+        let projection = Projection::from_routes(&self.observations, &routes);
+        self.routed = routes;
+        projection
     }
 }
 
@@ -142,23 +118,12 @@ impl ServiceAddresses {
 }
 
 impl Projection {
-    fn from_observations(
-        observations: &[ContainerObservation],
-        pointers: &ServingPointers,
-        local_id: &MachineId,
-        down_machines: Option<&HashSet<MachineId>>,
-    ) -> Self {
-        let containers = service_containers(observations.iter().cloned());
+    fn from_routes(observations: &[ContainerObservation], routes: &ProxyRoutes) -> Self {
         let mut service_ids = HashMap::<ServiceId, Vec<Ipv4Addr>>::new();
         let mut identities = HashMap::<QualifiedService, ServiceAddresses>::new();
         let mut machine_identities = HashMap::<MachineServiceTarget, Vec<Ipv4Addr>>::new();
-        for serving in serving_containers(&containers, |service| pointers.get(service)) {
+        for serving in routes.values().flatten() {
             let observation = serving.as_observation();
-            if observation.machine_id != *local_id
-                && down_machines.is_some_and(|down| down.contains(&observation.machine_id))
-            {
-                continue;
-            }
             let address = serving.address();
             let identity = observation.identity();
             service_ids
@@ -601,37 +566,6 @@ async fn flush_udp(listen: SocketAddr) -> io::Result<()> {
     socket.send(&HEADER_ONLY_QUERY).await?;
     socket.recv(&mut [0; 512]).await?;
     Ok(())
-}
-
-async fn load_down_machines(
-    machines: &MachineView,
-    admin: &AdminClient,
-    local_id: &MachineId,
-) -> Result<HashSet<MachineId>, CorrosionError> {
-    let machines = machines.current().ok_or_else(|| {
-        CorrosionError::Io(io::Error::new(
-            io::ErrorKind::NotConnected,
-            "the Machine view has not observed the store yet",
-        ))
-    })?;
-    let states = tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states())
-        .await
-        .map_err(|_| {
-            CorrosionError::Io(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Internal DNS membership sample timed out",
-            ))
-        })??;
-    let states = membership_states_by_address(states);
-    Ok(
-        synthesize_membership(machines.observations.clone(), local_id, &states)
-            .into_iter()
-            .filter_map(|observation| {
-                (observation.membership == MembershipObservation::Down)
-                    .then_some(observation.machine.id)
-            })
-            .collect(),
-    )
 }
 
 fn nameservers_from_resolv_conf(text: &str, listen: Ipv4Addr) -> Vec<SocketAddr> {

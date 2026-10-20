@@ -109,7 +109,9 @@ pub use teardown::{
     OrganizationRemoved, ProjectListing, ProjectsQuery, ProjectsView, ProtectedView,
     RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
 };
-pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
+pub use trusted::{
+    Approval, Asks, ObservationFailure, ObservationStage, Trusted, VolumeObservation,
+};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,6 +217,7 @@ impl ConfigStore {
     ) -> Result<C::Written, RpcError> {
         let trusted = trusted.held_by(who);
         self.acting(&trusted, |tx| {
+            let trusted = trusted.naming(tx, who)?;
             command.apply(&mut Call {
                 tx,
                 who,
@@ -248,6 +251,7 @@ impl ConfigStore {
     ) -> Result<Committed, RpcError> {
         let trusted = trusted.held_by(who);
         self.acting(&trusted, |tx| {
+            let trusted = trusted.naming(tx, who)?;
             let written = command.apply(&mut Call {
                 tx,
                 who,

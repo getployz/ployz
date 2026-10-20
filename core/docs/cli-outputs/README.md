@@ -133,16 +133,14 @@ Retry: ployz project rm scratch1 --confirm scratch1
 - Volume loss. `This permanently deletes the data of store. Accept each by name.` then `Retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3d1ac37da6e0cfb1` ([cluster/volume.md](cluster/volume.md)).
 - `--yes`. cloud reset refuses with `…then confirm with --yes` and `next: ployz cloud reset --yes` ([cloud/deploy.md](cloud/deploy.md)).
 - Numbered picker on a TTY. `Select a context:` / `  1. dev` / `  2. prod (current)` / `> 1`. A bad choice prints `invalid selection` ([store/context.md](store/context.md)). Without a TTY: `cannot Select a context interactively without a terminal; pass the context name: ployz ctx use <context-name>`.
-- Inline prompt. `Storage preparation [zfs/none] (none is Docker only, not recommended): ` with the next WARNING printed on the same line ([cluster/server.md](cluster/server.md)).
 
 ## 5. Warnings
 
-Dominant: `WARNING: <sentence>.` on stderr. 38 lines, 9 distinct texts.
+Dominant: `WARNING: <sentence>.` on stderr. 35 lines, 8 distinct texts. `server add` prints its Docker only warning as `! Docker only (not recommended): Volumes on this Server get no size limits, …` instead (5 lines, [cluster/server.md](cluster/server.md)).
 
 | Count | Text (start) | Capture |
 |---|---|---|
 | 23 | `WARNING: Live Observation is observer-relative and not globally complete` | [cluster/ps-logs-exec.md](cluster/ps-logs-exec.md) |
-| 5 | `WARNING: Docker only (not recommended): Volumes on this Server get no size limits, …` | [cluster/server.md](cluster/server.md) |
 | 3 | `WARNING: Docker volume (not recommended): no size limit, …` | [cluster/volume.md](cluster/volume.md) |
 | 2 | `WARNING: Server gamma is running Services: … Move them off first: ployz server drain gamma` | [cluster/errors.md](cluster/errors.md) |
 | 2 | `WARNING: Machine … was omitted` | [cluster/errors.md](cluster/errors.md) |
@@ -179,6 +177,7 @@ Raw upstream errors pass through:
 - `create Container failed: Docker operation failed: Docker responded with status code 500: error from registry: denied` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md))
 - `inspect Machine upgrade worker: No such file or directory (os error 2)` ([cluster/server.md](cluster/server.md))
 - `error: Ployz couldn't reach your Server's daemon.` with `cause: SSH connection to root@10.255.255.1 timed out after 3 seconds; …` ([cluster/server.md](cluster/server.md))
+- `error: Server box-node-09c8 isn't answering. Check that its Ployz daemon is running, then retry.` with the connection's `cause:`, when a connection Cloud handed over fails; by Machine ID when Cloud holds no name. No capture yet: pinned by `cli_shape::a_server_cloud_handed_a_connection_for_that_does_not_answer_is_named`
 
 ## 7. Follow-up hints
 

@@ -55,7 +55,8 @@ one you were following without shipping all of its services, the CLI says
 `Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`.
 
 A failed deploy exits with code 1. A Deployment that applied but whose result is missing
-a Server exits with code 3. A warning that names an incomplete Server observation also
+a Server, or that left an old container running because its Server didn't answer, exits
+with code 3. A warning that names an incomplete Server observation also
 makes an otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
@@ -213,8 +214,8 @@ Pushing an image to your registry deploys nothing, and a server that already has
 
 **Failed at pull**, with `Image nginx:1.27-alpne not found, or its registry needs credentials`
 
-Your servers couldn't download the image, so the deploy stopped before it changed anything. A
-version that was already running keeps running. A registry answers the same way for a tag that
+Your servers couldn't download the image, so the deploy stopped before any of its services
+changed. A version that was already running keeps running. A registry answers the same way for a tag that
 doesn't exist and for a private image you have no access to.
 
 - Check the name and tag under **Settings → Source**. Look for typos, and check that the tag is
@@ -226,9 +227,9 @@ doesn't exist and for a private image you have no access to.
 
 **Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
 
-The server ran out of disk space while it downloaded the image, so the deploy stopped before it
-changed anything. A version that was already running keeps running. The cause line under it is
-Docker's own error.
+The server ran out of disk space while it downloaded an image. A deploy downloads every image it
+needs before it changes any service, so none of the deploy's services changed and the versions
+already running keep running. The cause line under it is Docker's own error.
 
 - Free space on that server: remove files you don't need, or remove old images with
   `docker image prune`.

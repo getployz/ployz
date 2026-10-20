@@ -1444,6 +1444,35 @@ fn an_agent_adds_checks_and_removes_domains() {
 }
 
 #[test]
+fn adding_a_custom_domain_tells_a_person_the_dns_records_to_create() {
+    for store in &targets() {
+        let cloud = matches!(store, Target::Cloud { .. });
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let home = tempfile::tempdir().unwrap();
+        let (code, stderr) = person(
+            store,
+            home.path(),
+            &["domain", "add", "web", "app.example.com"],
+        );
+        assert_eq!(code, Some(0), "{stderr}");
+        let record = "Add DNS for app.example.com: CNAME app acme.ployz.app\n";
+        // Only Cloud knows the Cluster Domain the CNAME points at.
+        assert_eq!(stderr.contains(record), cloud, "{stderr}");
+        if cloud {
+            assert!(
+                stderr.find(record) < stderr.find("ployz deploy"),
+                "the records come before the deploy that needs them: {stderr}"
+            );
+        }
+        // Waiting on a deploy, the domain still lists the records, as the dashboard offers them.
+        let (code, listed) = person(store, home.path(), &["domain", "ls"]);
+        assert_eq!(code, Some(0), "{listed}");
+        assert_eq!(listed.contains(record), cloud, "{listed}");
+    }
+}
+
+#[test]
 fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
@@ -4859,6 +4888,12 @@ fn without_a_terminal_a_save_waits_until_a_human_approves_it() {
         ),
         "{stderr}"
     );
+    // A token's approval names no Organization, so the CLI can't link the agent's panel.
+    assert!(
+        stderr.contains("Approve apr_1 in Ployz Cloud at http://"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Waiting on you"), "{stderr}");
     assert!(
         stderr.contains("Waiting for approval in Ployz Cloud… approved.\n"),
         "{stderr}"
@@ -4877,7 +4912,9 @@ fn without_a_terminal_a_denied_save_fails_with_the_reason() {
         stderr.contains("A human denied the request to save production: the worker still drains"),
         "{stderr}"
     );
-    assert!(!stderr.contains("apr_1"), "{stderr}");
+    // The wait names the approval to answer; a denied one has no retry to name it in.
+    let denial = &stderr[stderr.find("error:").unwrap_or_default()..];
+    assert!(!denial.contains("apr_1"), "{stderr}");
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);
     assert_eq!(diff["holds_staged"], json!(false), "nothing was saved");
@@ -5466,7 +5503,9 @@ fn a_denied_drain_or_cleanup_stops_with_the_reason_and_starts_nothing() {
             )),
             "{stderr}"
         );
-        assert!(!stderr.contains("apr_1"), "{stderr}");
+        // The wait names the approval to answer; a denied one has no retry to name it in.
+        let denial = &stderr[stderr.find("error:").unwrap_or_default()..];
+        assert!(!denial.contains("apr_1"), "{stderr}");
         let followed = approvals.runs().into_iter().any(|run| {
             run.starts_with("GET server-drains") || run.starts_with("GET namespace-cleanups")
         });

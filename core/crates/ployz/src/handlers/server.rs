@@ -255,7 +255,8 @@ async fn answering(
     }
     let held = held_servers(&access.connections);
     let refused = access.refused.is_empty();
-    match dial_connections(matches, std::mem::take(&mut access.connections)).await {
+    let connections = named(std::mem::take(&mut access.connections), &access.names);
+    match dial_connections(matches, connections).await {
         Ok(client) => Ok(Some(client)),
         Err(ConnectError::AllFailed { reached: false, .. }) if refused => Ok(None),
         Err(error @ ConnectError::AllFailed { reached: false, .. }) => {
@@ -289,7 +290,7 @@ async fn entries(
                 }
                 return Ok(SelectedConnections {
                     source: ConnectionSource::Cloud,
-                    connections: access.connections,
+                    connections: named(access.connections, &access.names),
                 });
             }
             Err(LoginError::SignedOut) => signed_out = true,
@@ -327,7 +328,8 @@ async fn dial(
         return Err(no_server_access(access, Vec::new(), None));
     }
     let held = held_servers(&access.connections);
-    match dial_connections(matches, std::mem::take(&mut access.connections)).await {
+    let connections = named(std::mem::take(&mut access.connections), &access.names);
+    match dial_connections(matches, connections).await {
         Ok(client) => Ok(Some(client)),
         Err(error @ ConnectError::AllFailed { reached: false, .. })
             if !held.is_empty() || !access.unreachable.is_empty() || !access.refused.is_empty() =>
@@ -343,6 +345,26 @@ fn held_servers(connections: &[crate::context::Connection]) -> Vec<ployz_core::M
     connections
         .iter()
         .filter_map(|connection| connection.machine_id().copied())
+        .collect()
+}
+
+/// Cloud's `connections`, each carrying its Server's name where Cloud holds one.
+fn named(
+    connections: Vec<crate::context::Connection>,
+    names: &BTreeMap<ployz_core::MachineId, String>,
+) -> Vec<crate::context::Connection> {
+    connections
+        .into_iter()
+        .map(|connection| {
+            match connection
+                .machine_id()
+                .and_then(|id| names.get(id))
+                .cloned()
+            {
+                Some(name) => connection.with_name(name),
+                None => connection,
+            }
+        })
         .collect()
 }
 
@@ -435,6 +457,8 @@ fn no_reachable_server(
         .map(|id| names.get(id).cloned().unwrap_or_else(|| id.to_string()))
         .collect::<Vec<_>>();
     let message = match shown.as_slice() {
+        // This CLI's own connection to it failed: Cloud reached it to hand that over.
+        [one] if cause.is_some() => crate::connect::not_answering(one),
         [one] => format!(
             "Server {one} isn't answering. If it just joined or restarted, try again in a moment."
         ),
