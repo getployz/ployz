@@ -1989,7 +1989,7 @@ fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
 fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
     use std::os::unix::process::ExitStatusExt;
 
-    for args in [&["schema"][..], &["--version"]] {
+    for args in [&["schema"][..], &["--version"], &["--help"]] {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
@@ -2006,24 +2006,36 @@ fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_full_stdout_fails_the_command_in_both_modes() {
-    for json in [false, true] {
+    // A result, clap's help and version, and the help a bare command or group prints.
+    for args in [
+        &["--version"][..],
+        &["--json", "--version"],
+        &["-V"],
+        &["--help"],
+        &["--json", "--help"],
+        &["-h"],
+        &["help", "server"],
+        &["server", "ls", "--help"],
+        &["--json", "server", "ls", "--help"],
+        &[],
+        &["server"],
+    ] {
         let full = std::fs::File::options()
             .write(true)
             .open("/dev/full")
             .unwrap();
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
-            .args(json.then_some("--json"))
-            .arg("--version")
+            .args(args)
             .stdout(Stdio::from(full))
             .stderr(Stdio::piped())
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(1), "json={json} {output:?}");
+        assert_eq!(output.status.code(), Some(1), "{args:?} {output:?}");
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert_eq!(
             stderr,
             "error: Could not write the result to stdout.\n  cause: No space left on device (os error 28)\n",
-            "json={json}"
+            "{args:?}"
         );
     }
 }
