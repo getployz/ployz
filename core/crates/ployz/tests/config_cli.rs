@@ -5278,6 +5278,53 @@ fn an_undo_names_the_draft_config_mount_it_overwrites() {
 }
 
 #[test]
+fn an_undo_names_an_overwritten_mount_under_its_renamed_service() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["service", "rename", "web", "api"]);
+    ok(&store, &["config", "mount", "api", "app", "/etc/v2"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["config", "mount", "api", "app", "/etc/v3"]);
+
+    let preview = printed(&store, &["history", "undo", "3", "--preview"]);
+    assert!(
+        preview.contains("  overwrites draft api.configs.app\n"),
+        "{preview}"
+    );
+    assert!(!preview.contains("configs.@"), "{preview}");
+}
+
+#[test]
+fn discarding_a_mount_by_id_names_its_config() {
+    let store = web_and_app(None);
+    ok(&store, &["config", "mount", "web", "app", "/etc/app"]);
+    let diff = ok(&store, &["diff"]);
+    let path = diff["changes"][0]["settings"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(path.starts_with("web.configs.@"), "{diff}");
+
+    let said = printed(&store, &["discard", &path]);
+    assert!(said.contains("web.configs.app"), "{said}");
+    assert!(!said.contains("configs.@"), "{said}");
+}
+
+#[test]
+fn a_discard_to_saved_reads_a_lone_mount_without_an_id() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["config", "rm", "app"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(
+        &store,
+        &["config", "add", "app", "--mount", "web:/etc/app2"],
+    );
+
+    let said = printed(&store, &["discard", "--target", "saved"]);
+    assert!(said.contains("web.configs.app"), "{said}");
+    assert!(!said.contains("(@"), "{said}");
+}
+
+#[test]
 fn a_replaced_config_of_the_same_name_reads_apart_in_diff() {
     let store = web_and_app(Some("web:/etc/app"));
     ok(&store, &["config", "rm", "app"]);
