@@ -62,7 +62,11 @@ export type Connection = (
   | { readonly ssh: string; readonly ssh_key_file?: string }
   | { readonly tcp: string }
   | { readonly unix: string }
-) & { readonly machine_id?: MachineId };
+) & {
+  readonly machine_id?: MachineId;
+  /** The Server's name, where Cloud knows it: a failed connection names the Server by it. */
+  readonly name?: string;
+};
 export type ConnectOptions = {
   readonly connections: readonly Connection[];
   /** Cancels connection establishment and closes the resulting session. */

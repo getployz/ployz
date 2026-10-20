@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
-use crate::connect::{Client, SystemConnector};
+use crate::connect::{Client, ConnectError, SystemConnector};
 use crate::context::Connection;
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
@@ -157,7 +157,7 @@ pub async fn run_deployment(
             .await;
     }
     let session = match run
-        .connecting(connect_connections(
+        .connecting(super::dial(
             connections,
             Arc::new(SystemConnector::default()),
         ))
@@ -167,8 +167,20 @@ pub async fn run_deployment(
         Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
         // Users read it on the Deployment: plain words and one action first, then
         // what the connection said.
+        Err(
+            error @ ConnectError::AllFailed {
+                server: Some(_), ..
+            },
+        ) => {
+            return run
+                .not_executed(Failure {
+                    reason: error.to_string(),
+                    cause: ployz_core::error_chain::causes(&error),
+                })
+                .await;
+        }
         Err(error) => {
-            let Failure { reason, mut cause } = Failure::from(&error);
+            let Failure { reason, mut cause } = Failure::from(&RpcError::from(error));
             cause.insert(0, reason);
             return run
                 .not_executed(Failure {
@@ -691,10 +703,10 @@ impl Run {
         *warnings = unrecorded;
     }
 
-    async fn connecting<T>(
+    async fn connecting<T, E>(
         &self,
-        work: impl std::future::Future<Output = Result<T, RpcError>>,
-    ) -> Result<Option<T>, RpcError> {
+        work: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Result<Option<T>, E> {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
         loop {
