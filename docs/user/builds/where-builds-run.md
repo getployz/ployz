@@ -104,7 +104,8 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 
 ![Settings → Build: Build method, Build command and Preferred Builder](../images/service-settings-build.png)
 
-From the CLI, name the server as `ployz server ls` lists it, or `github`:
+From the CLI, give `github`, or the server's ID. An owner or admin can also give its name as
+`ployz server ls` lists it:
 
 ```bash
 ployz set web.preferredBuilder=machine-1
