@@ -373,6 +373,7 @@ impl Direct {
             };
             tails.push(LogTail {
                 service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
+                name: row.service.clone(),
                 machine: row.machine,
                 server: row.server.clone(),
                 log,

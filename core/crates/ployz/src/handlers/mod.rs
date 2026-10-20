@@ -652,6 +652,7 @@ mod tests {
                 failed_machine: Some(failed),
                 logs: vec![LogTail {
                     service: QualifiedService::system_ingress(),
+                    name: QualifiedService::system_ingress().name,
                     machine: failed,
                     server: "same-name".into(),
                     log: None,

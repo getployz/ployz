@@ -244,12 +244,12 @@ pub(super) fn processes(
     let mut answer: ContainersAnswer = ask(
         credential,
         CloudQuery::Containers {
-            namespace: scoped.namespace,
+            namespace: scoped.namespace.clone(),
             service: None,
         },
     )?;
     answer.containers.sort_by_cached_key(|container| {
-        let service = container.service.to_string();
+        let service = scoped.service_name(&container.service).to_string();
         let server = container.server.to_string();
         match sort {
             "machine" => (server, service, String::new()),
@@ -263,7 +263,7 @@ pub(super) fn processes(
     );
     for container in &answer.containers {
         table.row([
-            container.service.to_string(),
+            scoped.service_name(&container.service).to_string(),
             container.server.to_string(),
             word(&container.state),
             container
