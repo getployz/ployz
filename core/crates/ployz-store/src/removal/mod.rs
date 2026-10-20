@@ -692,6 +692,10 @@ pub(crate) fn gate(
 
 fn project_digest(
     who: &Actor,
+#[cfg(test)]
+#[path = "gate_tests.rs"]
+mod gate_tests;
+
     project: &ProjectId,
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,

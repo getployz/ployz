@@ -494,6 +494,9 @@ describe("callCloud", () => {
       expect(ran).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
       const retried = yield* callCloud(caller, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
       expect(retried).toEqual(ran);
+      // Its key replays the stop only for the credential that asked: another one is refused, even on a replay.
+      const elsewhere = yield* callCloud({ ...caller, credential: { kind: "session", id: "session-2" } }, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
+      expect(elsewhere).toEqual({ ok: false, refusal: expect.objectContaining({ code: "forbidden", details: { approval_id } }) });
       yield* drizzle.execute(sql`update service_act set state = 'done', ended_at = now()`);
 
       const again = yield* callCloud(caller, { act: stop("3") }, approval_id).pipe(Effect.provide(services));

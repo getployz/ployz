@@ -16,6 +16,7 @@ import {
   redeemApproval,
   requestApproval,
 } from "#/modules/approvals/approvals.server";
+import type { OperationVerb } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -575,6 +576,11 @@ it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destr
     const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
     expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
     expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
+
+    // The Store binds the version a Deploy reviewed, which moves once it queues: another Deploy under it asks again.
+    const again = yield* cli(deploy(3), id, "agent");
+    expect(again).toMatchObject({ status: 409, json: { error: { code: "approval_required" } } });
+    expect(again.json.error?.details?.approval_id).not.toBe(id);
   }));
 
 it.live("a Deploy token for staging is refused a production Deploy before anyone is asked", () =>
@@ -673,6 +679,28 @@ it.live("an approval runs only for whoever asked, through the token they asked f
     expect(yield* provided(requestApproval(asker, publish, intoStaging, id))).toEqual({ code: "forbidden", message: covers, details: { approval_id: id } });
     expect(asked(yield* provided(requestApproval(asker, publish, yield* refusal, id))).approval_id).not.toBe(id);
 
+    expect(yield* cli(publish, id)).toMatchObject({ status: 200, json: { written: "published" } });
+  }));
+
+const STAGING = "00000000-0000-4000-8000-00000000a507";
+
+// Catches an approval carried into a write the Store lets through without one, which never compares its target.
+it.live("an approval carried into another Environment is refused there, even for a write nobody would be asked about", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, write, store } = yield* shopRemovingWeb();
+    yield* write({ command: "create_environment", id: STAGING, project: "shop", name: "staging" });
+    const details = (yield* cli(publish)).json.error?.details;
+    const id = details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval(caller, id, { approve: { digest: details?.approval ?? expect.fail("no digest") } }));
+    const writes = vi.spyOn(store, "write");
+    const staging: ConfigCommand = { ...publish, environment: { project: "shop", environment: "staging" } };
+
+    expect(yield* cli(staging, id)).toMatchObject({ status: 403, json: { error: {
+      code: "forbidden",
+      message: "This approval covers only the request to save production. Run the command again without it to ask for one.",
+      details: { approval_id: id },
+    } } });
+    expect(writes).not.toHaveBeenCalled();
     expect(yield* cli(publish, id)).toMatchObject({ status: 200, json: { written: "published" } });
   }));
 
@@ -918,6 +946,34 @@ it.live("an operation approval runs only for whoever asked, through the token th
     ));
 
     expect(yield* gate(asked, first.approval_id)).toEqual({ ok: true, approvalId: first.approval_id });
+  }));
+
+const VERBS: readonly OperationVerb[] = ["drain", "set", "clean", "remove", "forget", "release", "remove_mirror", "stop", "restart", "unprotect"];
+
+// Catches an approval that, once run, runs the same operation again: a demotion repeated after the person was restored.
+for (const verb of VERBS) {
+  it.live(`a ${verb} approval runs one operation, and using it again asks again`, () =>
+    Effect.gen(function* () {
+      const { provided, caller, gate } = yield* operationCloud();
+      const asked = { ...drainOf(["shop.web"]), verb };
+      const first = refusedWith(yield* gate(asked));
+      yield* provided(decideApproval(caller, first.approval_id, { approve: { digest: first.approval } }, answers(first.approval)));
+      expect(yield* gate(asked, first.approval_id)).toEqual({ ok: true, approvalId: first.approval_id });
+
+      const again = refusedWith(yield* gate(asked, first.approval_id));
+      expect(again.approval_id).not.toBe(first.approval_id);
+      expect((yield* provided(getApproval(ORGANIZATION, first.approval_id))).status).toBe("approved");
+    }));
+}
+
+it.live("two operations racing on one approval run one of them; the other asks again", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate } = yield* operationCloud();
+    const asked = drainOf(["shop.web"]);
+    const first = refusedWith(yield* gate(asked));
+    yield* provided(decideApproval(caller, first.approval_id, { approve: { digest: first.approval } }, answers(first.approval)));
+    const raced = yield* Effect.all([gate(asked, first.approval_id), gate(asked, first.approval_id)], { concurrency: 2 });
+    expect(raced.filter((gated) => gated.ok)).toEqual([{ ok: true, approvalId: first.approval_id }]);
   }));
 
 it.live("an operation that destroys nothing runs without asking", () =>

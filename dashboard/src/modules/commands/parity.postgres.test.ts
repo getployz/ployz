@@ -9,14 +9,14 @@ import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat } from "#/modules/agent/agent-chat.server";
 import { runAgentCall } from "#/modules/agent/agent-runner.server";
-import { operationDigest } from "#/modules/approvals/approvals.server";
+import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
-import { invitation, member } from "#/modules/identity/tables";
+import { invitation, member, user } from "#/modules/identity/tables";
 import { createInvite } from "#/modules/organization/invitation.server";
 import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
 import { uptimeCheck } from "#/modules/uptime/tables";
@@ -284,7 +284,39 @@ it.live("an approved call that refused once it ran hears its retry without the a
     expect(first).toMatchObject({ outcome: { ok: false, refusal: { message: "An Organization needs an owner. Make someone else an owner first.", writes: "unknown" } } });
     const retry = "outcome" in first && "refusal" in first.outcome && "retry" in first.outcome.refusal ? first.outcome.refusal.retry : undefined;
     expect(retry).toEqual({ tool: "org_member_role", input });
-    expect(yield* call("role-retry")).toEqual(first);
+    // The approval ran its one call, so repeating it under the same approval asks again.
+    expect(yield* call("role-retry")).toMatchObject({ asking: { refusal: { code: "approval_required" } } });
+  }));
+
+// Catches an approved demotion that demotes again once the person is restored, under the approval already used.
+it.live("an approved role change runs once: repeating it after the role was restored asks again and changes nothing", () =>
+  Effect.gen(function* () {
+    const { provided, team, userId } = yield* parity();
+    const bob = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
+      const id = person?.id ?? expect.fail("no person");
+      yield* drizzle.insert(member).values({ userId: id, organizationId: ORGANIZATION, role: "owner" });
+      return id;
+    }));
+    const roleOf = Effect.map(team, ({ members }) => members.find((row) => row.userId === bob)?.role);
+    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
+    const input = { member: "bob@example.test", role: "member" };
+    const call = (key: string, approvalId: string | null) => provided(runAgentCall(agent, { tool: "org_member_role", input, key, approvalId, page: { at: "organization" } }));
+
+    const asked = yield* call("demote-ask", null);
+    const { refusal } = "asking" in asked ? asked.asking : expect.fail("the demotion ran without asking");
+    const { approval, approval_id } = Schema.decodeUnknownSync(Schema.Struct({ approval: Schema.String, approval_id: Schema.String }))(refusal.details);
+    yield* provided(decideApproval({ ...agent, via: "dashboard" }, approval_id, { approve: { digest: approval } }));
+    expect(yield* call("demote-run", approval_id)).toMatchObject({ outcome: { ok: true } });
+    expect(yield* roleOf).toBe("member");
+
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(member).set({ role: "owner" }).where(eq(member.userId, bob));
+    }));
+    expect(yield* call("demote-replay", approval_id)).toMatchObject({ asking: { refusal: { code: "approval_required" } } });
+    expect(yield* roleOf).toBe("owner");
   }));
 
 it.live("a sidebar call that names an approval in its input does not pass the gate, even one approved for the same plan", () =>
