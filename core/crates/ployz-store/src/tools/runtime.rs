@@ -59,7 +59,7 @@ const fn container(report: &ContainerReport) -> Container {
         (ContainerState::Running, Some(Health::Starting | Health::Unhealthy), _) => {
             Container::Running
         }
-        (ContainerState::Stopped, _, _) => Container::Stopped,
+        (ContainerState::Exited, _, _) if report.stopped => Container::Stopped,
         (ContainerState::Exited, _, Some(0))
         | (ContainerState::Created | ContainerState::Paused, _, _) => Container::Idle,
         (ContainerState::Exited | ContainerState::Restarting | ContainerState::Dead, _, _) => {

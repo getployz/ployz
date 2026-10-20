@@ -656,9 +656,6 @@ fn report(container: &ContainerObservation, server: &ServerName) -> ContainerRep
         }
         ContainerRuntimeObservation::Paused => (ContainerState::Paused, None, None),
         ContainerRuntimeObservation::Restarting => (ContainerState::Restarting, None, None),
-        ContainerRuntimeObservation::Exited { code } if container.stopped => {
-            (ContainerState::Stopped, Some(*code), None)
-        }
         ContainerRuntimeObservation::Exited { code } => (ContainerState::Exited, Some(*code), None),
         ContainerRuntimeObservation::Removing => (ContainerState::Exited, None, None),
         ContainerRuntimeObservation::Dead | ContainerRuntimeObservation::Unknown { .. } => {
@@ -670,6 +667,7 @@ fn report(container: &ContainerObservation, server: &ServerName) -> ContainerRep
         service: container.service_name().clone(),
         state,
         exit_code,
+        stopped: container.stopped,
         health,
         restarts: None,
         image: container.resolved_spec.container.image.clone(),

@@ -1,6 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { alreadyThere, endOf, progressOf, type ServiceActBefore, type ServiceActLeg } from "./service-act";
+import { endOf, progressOf, type ServiceActBefore, type ServiceActLeg } from "./service-act";
 
 const before: ServiceActBefore = { copies: [{ server: "a", machine: "m-a", container: "web-1", state: "running", hook: false }], unanswered: [{ machine: "m-b" as MachineId, name: "b" }] };
 const moved: ServiceActLeg[] = [{ server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "done", reason: null }];
@@ -46,14 +46,6 @@ describe("endOf", () => {
       { server: "a", machine: "m-a", container: "web-2", hook: false, stop: "done", start: "failed", reason: "a couldn't start it." },
     ];
     expect(endOf("restart", answered, halted, null)).toEqual({ state: "failed", reason: "Container 2 on a didn't come back. a couldn't start it." });
-  });
-});
-
-describe("alreadyThere", () => {
-  it("counts a copy its Server stopped on request as already stopped, and never as already started", () => {
-    expect(alreadyThere("stop", "stop", "stopped")).toBe(true);
-    expect(alreadyThere("restart", "stop", "stopped")).toBe(true);
-    expect(alreadyThere("start", "start", "stopped")).toBe(false);
   });
 });
 

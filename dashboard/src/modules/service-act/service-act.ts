@@ -23,7 +23,7 @@ export type ServiceActLeg = {
 export const SERVICE_ACT_PENDING_LIMIT_MS = 15 * 60_000;
 export const SERVICE_ACT_RUNNING_LIMIT_MS = 60 * 60_000;
 
-const STOPPED: ReadonlySet<ContainerState> = new Set(["created", "exited", "stopped", "dead"]);
+const STOPPED: ReadonlySet<ContainerState> = new Set(["created", "exited", "dead"]);
 
 export const stepsOf = (verb: ServiceVerb) => ({ stop: verb !== "start", start: verb !== "stop" });
 

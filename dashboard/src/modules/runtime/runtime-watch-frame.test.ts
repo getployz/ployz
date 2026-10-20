@@ -47,6 +47,19 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     ]);
   });
 
+  it("lets the browser read a frame whose runtime carries a key its bundle does not know, as an older bundle reads stopped", () => {
+    const container = runtimeWatchContainerFixture("machine-a", "ctr-stopped");
+    container.runtime = { state: "exited", code: 1 };
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      services: [{ identity: "production/api", service_id: container.resolved_spec.service_id, containers: [container], hook_containers: [] }],
+      containers: [container],
+    }));
+    const newer = { ...frame, containers: frame.containers.map((sent) => ({ ...sent, runtime: { ...sent.runtime, unknown_to_this_bundle: true } })) };
+    const parsed = Schema.decodeUnknownOption(runtimeWatchFrameSchema)(newer);
+    expect(Option.isSome(parsed)).toBe(true);
+    expect(Option.getOrThrow(parsed).containers[0]?.runtime).toEqual({ state: "exited", code: 1 });
+  });
+
   it("retains direct Engine observations without inferring a runtime verdict", () => {
     const api = runtimeWatchContainerFixture("machine-a", "ctr-api");
     const hook = runtimeWatchContainerFixture("machine-b", "ctr-hook");
