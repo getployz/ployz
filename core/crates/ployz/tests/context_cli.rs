@@ -644,6 +644,9 @@ fn with_no_contexts_ls_and_use_point_at_login_or_cloud_servers() {
         (&SIGNED_IN[..], Some(format!("{config} server ls"))),
         // `server ls` would find no contexts too, so nothing is offered.
         (&with_context[..], None),
+        // Signing in keeps PLOYZ_CONTEXT, so `login` would lead back here too.
+        (&[("PLOYZ_CONTEXT", "dev")][..], None),
+        (&[("PLOYZ_CONTEXT", "")][..], None),
     ] {
         let ployz = ployz_with(&path, env);
 
@@ -688,6 +691,8 @@ fn every_command_that_finds_no_contexts_prints_a_next_line_that_gets_past_them()
     // Signed in, Cloud answers unless a context is named, so these name one.
     for (env, context) in [
         (&[][..], &[][..]),
+        (&[("PLOYZ_CONTEXT", "dev")][..], &[][..]),
+        (&[("PLOYZ_CONTEXT", "")][..], &[][..]),
         (&SIGNED_IN[..], &["--context", "dev"][..]),
         (&with_context[..], &[][..]),
         (&with_empty_context[..], &[][..]),
@@ -773,6 +778,71 @@ fn every_command_that_finds_no_contexts_prints_a_next_line_that_gets_past_them()
             "{env:?}: `{next}` leads back to the same error: {stderr}"
         );
     }
+}
+
+/// A Cloud that counts the requests it hears and answers each that approval is pending.
+fn counting_cloud() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let heard = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = heard.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = stream.read(&mut [0; 4096]);
+            let body = r#"{"error":"authorization_pending"}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (url, heard)
+}
+
+/// A device sign-in waiting for approval is not signed in, and choosing the next line for an
+/// empty config reads it without asking Cloud or rewriting it.
+#[test]
+fn with_no_contexts_a_pending_sign_in_points_at_login_without_asking_cloud() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.yaml");
+    Config::new(&path, None, BTreeMap::new()).save().unwrap();
+    let (cloud, heard) = counting_cloud();
+    let stored = root.path().join("cloud.json");
+    let pending = serde_json::json!({
+        "state": "pending",
+        "cloud": cloud,
+        "device_code": "device-secret",
+        "code": "ABCD2345",
+        "url": format!("{cloud}/device?user_code=ABCD2345"),
+        "expires_at": 4_102_444_800_u64,
+        "interval_secs": 1,
+    });
+    fs::write(&stored, serde_json::to_vec_pretty(&pending).unwrap()).unwrap();
+    let before = fs::read(&stored).unwrap();
+    let login = format!("ployz --ployz-config {} login", path.display());
+    let ployz = ployz_with(&path, &[]);
+
+    let selected = ployz(&["ctx", "use", "dev"]);
+    assert_eq!(selected.status.code(), Some(1), "{selected:?}");
+    let stderr = String::from_utf8_lossy(&selected.stderr);
+    assert!(stderr.contains("no contexts found"), "{stderr}");
+    assert!(stderr.contains(&format!("next: {login}")), "{stderr}");
+
+    let listed = ployz(&["ctx", "ls"]);
+    assert!(listed.status.success(), "{listed:?}");
+    let stderr = String::from_utf8_lossy(&listed.stderr);
+    assert!(stderr.contains(&format!("next: {login}")), "{stderr}");
+
+    assert_eq!(heard.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        fs::read(&stored).unwrap(),
+        before,
+        "cloud.json is unchanged"
+    );
 }
 
 #[test]

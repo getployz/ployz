@@ -15,17 +15,16 @@ use super::{Error, leaf_matches, required};
 
 /// The command that gets a user with no contexts past them, keeping a config file named on
 /// the command line. Signed out, that is `ployz login`: Cloud Servers need no context. Signed
-/// in, it is their Cloud Servers, unless `PLOYZ_CONTEXT` would send `server ls` back here, in
-/// which case no command does.
+/// in, it is their Cloud Servers. `PLOYZ_CONTEXT` outlives both and sends them back here, so
+/// with it set no command does. Read from local state only: choosing a hint never asks Cloud.
 fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
-    let signed_in = super::runtime()
-        .is_ok_and(|runtime| matches!(super::server::signed_in(&runtime, leaf), Ok(Some(_))));
-    let command: &[&str] = if !signed_in {
-        &["login"]
-    } else if std::env::var_os(crate::cli::env::CONTEXT).is_some() {
+    if std::env::var_os(crate::cli::env::CONTEXT).is_some() {
         return None;
-    } else {
+    }
+    let command: &[&str] = if super::server::signed_in_locally(leaf) {
         &["server", "ls"]
+    } else {
+        &["login"]
     };
     let mut args = vec!["ployz"];
     if leaf.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine)
