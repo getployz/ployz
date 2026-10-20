@@ -1,7 +1,12 @@
 use ployz_core::{RpcErrorCode, RpcRequestBody, RpcResponseBody};
 use serde_json::{Value, json};
 
-use super::{volume_switch_path, volume_switch_payload};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use super::{CallError, Session, SessionInner, volume_switch_path, volume_switch_payload};
 
 fn body(command: &str, payload: Value) -> RpcRequestBody {
     serde_json::from_value(json!({ "command": command, "payload": payload }))
@@ -77,4 +82,51 @@ fn a_set_volume_copy_reply_and_its_refusal_pass_through_as_the_machine_sent_them
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(error.details["reason"], json!("behind"));
     assert_eq!(error.details["copy"], copy);
+}
+
+fn session() -> Session {
+    Session {
+        inner: Arc::new(SessionInner {
+            client: std::sync::Mutex::new(None),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }),
+    }
+}
+
+/// A call that records whether it was ever polled and never finishes.
+fn held_call(polled: &Arc<AtomicBool>) -> impl Future<Output = Result<(), CallError>> + use<> {
+    let polled = Arc::clone(polled);
+    async move {
+        polled.store(true, Ordering::SeqCst);
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn a_close_before_the_call_starts_is_answered_and_sends_nothing() {
+    let session = session();
+    let polled = Arc::new(AtomicBool::new(false));
+    session.inner.cancel.cancel();
+    let failure = session
+        .until_closed_answered(held_call(&polled))
+        .await
+        .unwrap_err();
+    assert!(!polled.load(Ordering::SeqCst), "the call was never started");
+    assert!(!failure.unanswered, "{failure}");
+}
+
+#[tokio::test]
+async fn a_close_after_the_call_starts_is_unanswered() {
+    let session = session();
+    let polled = Arc::new(AtomicBool::new(false));
+    let cancel = session.inner.cancel.clone();
+    let waiting = session.until_closed_answered(held_call(&polled));
+    let closing = async {
+        while !polled.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        cancel.cancel();
+    };
+    let (failure, ()) = tokio::join!(waiting, closing);
+    assert!(failure.unwrap_err().unanswered);
 }
