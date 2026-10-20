@@ -1089,7 +1089,7 @@ enum Done {
 
 enum Published {
     Listed,
-    Unconfirmed(Vec<MachineId>),
+    Unconfirmed(cleanup::Unconfirmed),
     /// A newer gen already serves: the new copies are discarded.
     Superseded,
     Cancelled,
@@ -1773,12 +1773,16 @@ impl<'a> Rows<'a> {
         }
     }
 
-    fn not_confirmed(&self, machines: &[MachineId]) -> String {
+    fn not_confirmed(&self, unconfirmed: &cleanup::Unconfirmed) -> String {
         // Every proxy in the read confirmed, but the read did not name every live Machine.
-        if machines.is_empty() {
+        if unconfirmed.machines.is_empty() {
             return "the route set did not name every live Machine".into();
         }
-        let names: Vec<String> = machines.iter().map(|id| self.machine_name(id)).collect();
+        let names: Vec<String> = unconfirmed
+            .machines
+            .iter()
+            .map(|id| self.machine_name(id))
+            .collect();
         format!("proxy on {} did not confirm", names.join(", "))
     }
 
@@ -1807,7 +1811,9 @@ impl<'a> Rows<'a> {
 
     fn explain(&self, copy: &cleanup::Copy, left: Left) -> (String, Vec<MachineId>) {
         match left {
-            Left::NotConfirmed(machines) => (self.not_confirmed(&machines), machines),
+            Left::NotConfirmed(unconfirmed) => {
+                (self.not_confirmed(&unconfirmed), unconfirmed.unanswered)
+            }
             Left::Interrupted => ("interrupted".into(), Vec::new()),
             Left::DeployFailed => ("the Deploy failed".into(), Vec::new()),
             Left::NotListed => (
@@ -1840,7 +1846,7 @@ fn unanswered(error: &RpcError) -> bool {
 
 #[derive(Clone)]
 enum Left {
-    NotConfirmed(Vec<MachineId>),
+    NotConfirmed(cleanup::Unconfirmed),
     Interrupted,
     /// The owner's view never listed a new copy, so it would refuse the Out.
     NotListed,

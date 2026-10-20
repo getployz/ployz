@@ -96,8 +96,16 @@ pub(crate) async fn bring_in<C: MachineOperations>(
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum Wait {
     Done,
-    TimedOut(Vec<MachineId>),
+    TimedOut(Unconfirmed),
     Cancelled,
+}
+
+/// The live Machines whose proxy had not confirmed when the wait ended.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Unconfirmed {
+    pub(crate) machines: Vec<MachineId>,
+    /// Those whose proxy row never arrived: the only ones that may be away.
+    pub(crate) unanswered: Vec<MachineId>,
 }
 
 pub(crate) async fn wait_listed<C: MachineOperations>(
@@ -172,11 +180,11 @@ async fn wait_routes<C: MachineOperations>(
         };
         let waiting = still_waiting(&read, &satisfied);
         for machine in read.routes.keys() {
-            if !waiting.contains(machine) && confirmed.insert(*machine) {
+            if !waiting.machines.contains(machine) && confirmed.insert(*machine) {
                 acked(machine);
             }
         }
-        if read.complete && waiting.is_empty() {
+        if read.complete && waiting.machines.is_empty() {
             return Ok(Wait::Done);
         }
         if Instant::now() >= deadline {
@@ -192,20 +200,25 @@ async fn wait_routes<C: MachineOperations>(
 fn still_waiting(
     read: &RoutesRead,
     satisfied: &impl Fn(&BTreeSet<ContainerId>) -> bool,
-) -> Vec<MachineId> {
-    read.routes
-        .iter()
-        .filter(|(machine, _)| !read.down.contains(*machine))
-        .filter(|(_, routed)| !routed.as_ref().is_some_and(satisfied))
-        .map(|(machine, _)| *machine)
-        .collect()
+) -> Unconfirmed {
+    let mut waiting = Unconfirmed::default();
+    for (machine, routed) in &read.routes {
+        if read.down.contains(machine) || routed.as_ref().is_some_and(satisfied) {
+            continue;
+        }
+        waiting.machines.push(*machine);
+        if routed.is_none() {
+            waiting.unanswered.push(*machine);
+        }
+    }
+    waiting
 }
 
 #[derive(Debug)]
 pub(crate) enum Step {
     Done,
     Refused(ContainerRefusal),
-    NotConfirmed(Vec<MachineId>),
+    NotConfirmed(Unconfirmed),
     Cancelled,
 }
 
@@ -427,10 +440,10 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     let stopped = match hold(client, &copy, run.clone(), cancellation).await? {
         Step::Refused(refusal) => return Err(refusal.into_error()),
         Step::Done => stopped(client, &held, spec, stop, 1).await,
-        Step::NotConfirmed(machines) => Err(unavailable(format!(
+        Step::NotConfirmed(unconfirmed) => Err(unavailable(format!(
             "Container {} was not restarted: the proxies on {} did not confirm they stopped routing it.",
             copy.container_id,
-            listed(&machines)
+            listed(&unconfirmed.machines)
         ))),
         Step::Cancelled => Err(unavailable(format!(
             "Container {} was not restarted: the wait for its proxies was cancelled.",
@@ -590,10 +603,10 @@ fn left_running(copy: &Copy, rotation: &str, step: Step) -> Result<(), RpcError>
     match step {
         Step::Done => Ok(()),
         Step::Refused(refusal) => Err(refusal.into_error()),
-        Step::NotConfirmed(machines) => Err(unavailable(format!(
+        Step::NotConfirmed(unconfirmed) => Err(unavailable(format!(
             "Container {} is left running and {rotation}: the proxies on {} did not confirm they stopped routing it.",
             copy.container_id,
-            listed(&machines)
+            listed(&unconfirmed.machines)
         ))),
         Step::Cancelled => Err(unavailable(format!(
             "Container {} is left running and {rotation}: the wait for its proxies was cancelled.",

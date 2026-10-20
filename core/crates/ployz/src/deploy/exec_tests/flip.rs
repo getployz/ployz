@@ -1283,7 +1283,7 @@ async fn a_new_copy_an_incomplete_route_set_never_confirms_says_the_set_was_inco
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_retirement_no_proxy_confirms_leaves_the_old_copy_running_and_says_it_can_serve_again() {
+async fn a_retirement_no_proxy_confirms_leaves_the_old_copy_running() {
     let machine = machine('1');
     let (old, new) = (container('a'), container('b'));
     let plan = vec![global_replacement(&machine, &old, UpdateOrder::StartFirst)];
@@ -1313,10 +1313,39 @@ async fn a_retirement_no_proxy_confirms_leaves_the_old_copy_running_and_says_it_
     );
     assert_eq!(
         warnings,
+        [left_running(
+            "machine-1",
+            "proxy on machine-1 did not confirm"
+        )]
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_a_machine_whose_proxy_row_never_arrived_is_named_as_serving_on_return() {
+    let (owner, away) = (machine('1'), machine('2'));
+    let old = container('a');
+    let plan = vec![DeployOperation::RemoveContainer {
+        machine_id: owner,
+        container_id: old,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+    }];
+    let client = Scripted {
+        acks: BTreeMap::from([(owner, Ack::Never), (away, Ack::Missing)]),
+        ..Scripted::new(vec![observed(Call::Inspect(owner, old), running())])
+    }
+    .with_copy(&owner, &old, CopyRotation::In);
+
+    let (_, warnings) =
+        execute_reported(&plan, &[owner, away], &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        warnings,
         [
-            left_running("machine-1", "proxy on machine-1 did not confirm"),
-            mixed_after_return("machine-1"),
-        ]
+            left_running("machine-1", "proxy on machine-1, machine-2 did not confirm"),
+            mixed_after_return("machine-2"),
+        ],
+        "machine-1's proxy answered, so it is not away"
     );
     client.assert_done();
 }
@@ -1495,10 +1524,10 @@ async fn an_unconfirmed_stop_first_hold_brings_the_old_copy_back_in() {
     assert_eq!(client.rotation(&old), Some(CopyRotation::In));
     assert_eq!(
         warnings,
-        [
-            left_running("machine-1", "proxy on machine-1 did not confirm"),
-            mixed_after_return("machine-1"),
-        ]
+        [left_running(
+            "machine-1",
+            "proxy on machine-1 did not confirm"
+        )]
     );
     client.assert_done();
 }
@@ -1987,11 +2016,7 @@ async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
         warnings,
         [
             left_running("machine-1", "proxy on machine-1, machine-2 did not confirm"),
-            mixed_after_return("machine-1"),
-            mixed_after_return("machine-2"),
             left_running("machine-2", "proxy on machine-1, machine-2 did not confirm"),
-            mixed_after_return("machine-1"),
-            mixed_after_return("machine-2"),
         ]
     );
     client.assert_done();
