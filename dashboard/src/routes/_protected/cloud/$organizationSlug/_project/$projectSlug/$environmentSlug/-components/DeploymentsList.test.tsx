@@ -52,7 +52,7 @@ it("lists the CLI's and the dashboard's Deployments, narrowed to those that ship
   open("/cloud/acme/shop/production/deployments");
   const all = within(await screen.findByRole("navigation", { name: "Deployments" })).getAllByRole("link");
   expect(all.map((row) => row.textContent)).toEqual([
-    expect.stringMatching(/^Deployment #4Queued · Deploys worker · by ada.+ ago$/u),
+    expect.stringMatching(/^Deployment #4Queued · Deploys worker \(\+ api\) · by ada.+ ago$/u),
     expect.stringMatching(/^Deployment #3Deploying · Deploys worker · by ada.+ ago$/u),
     expect.stringMatching(/^Deployment #2Deployed · Deploys every service.+ ago$/u),
     expect.stringMatching(/^Deployment #1Failed · Uploaded by nick · abc1234.+ ago$/u),
