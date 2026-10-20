@@ -155,12 +155,17 @@ const seed = Effect.gen(function* () {
     command: "create_volume", id: randomUUID(), environment: at(null), name: "pg-data",
     storage: { kind: "provisioned", maximumBytes: 5_000_000_000 }, mounts: [{ service: "postgres", path: "/var/lib/postgresql/data" }],
   });
+  // nginx listens on 80, not PORT's 8080.
+  yield* write("generated domain web", { command: "add_domain", environment: at(null), service: "web", hostname: null, port: 80 });
   yield* write("domain web", { command: "add_domain", environment: at(null), service: "web", hostname: "acme.com", port: null });
   yield* edit("production env", "production", [
     { op: "set", path: "api.env.LOG_LEVEL", value: "warn" },
     { op: "set", path: "api.env.DATABASE_URL", value: "postgres://postgres@postgres:5432/shop" },
     { op: "set", path: "postgres.env.POSTGRES_PASSWORD", value: "postgres" },
-    { op: "set", path: "redis.healthcheck", value: { path: "/health", timeoutSeconds: 30 } },
+    { op: "set", path: "redis.healthcheck", value: { command: "redis-cli -h 127.0.0.1 ping | grep -q PONG", timeoutSeconds: 30 } },
+    // whoami answers every path on 80, so the path passes on a Server while seed-uptime's 404 shows the Monitoring tab's field.
+    { op: "set", path: "worker.env.PORT", value: "80" },
+    { op: "set", path: "worker.healthcheck", value: { path: "/health", timeoutSeconds: 30 } },
     { op: "set", path: "api.env.SECRET_KEY", value: { secret: "verify-secret-key" } },
     { op: "set", path: "api.env.SECRET_KEY.exported", value: true },
   ]);

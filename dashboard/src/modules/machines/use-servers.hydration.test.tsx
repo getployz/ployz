@@ -30,6 +30,7 @@ const observed: RuntimeSnapshot = {
       runningBuilds: 0,
       daemonVersion: "0.2.1",
       capabilities: [],
+      poolCommittableBytes: null,
       membership: "up",
       observedContainerCount: 0,
       observedAt: "2026-07-01T00:00:00.000Z",
