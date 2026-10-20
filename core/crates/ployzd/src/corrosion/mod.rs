@@ -30,7 +30,7 @@ pub use service::{
 };
 pub(crate) use store::{
     IngressRouteAck, IngressRouteChange, IngressRouteRow, LocalContainerSnapshot,
-    LocalVolumeSnapshot, ServingPointers,
+    LocalVolumeSnapshot,
 };
 pub use store::{ReplicatedObservations, ReplicatedStore};
 

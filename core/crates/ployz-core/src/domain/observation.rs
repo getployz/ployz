@@ -13,9 +13,12 @@ use super::{
     spec::{HealthcheckSpec, ResolvedServiceSpec},
 };
 use crate::{
-    ContainerAddress, ContainerId, DEPLOYMENT_ID_LABEL, DeploymentLogId, MachineId, Namespace,
-    QualifiedService, ServiceId, ServiceName,
+    ContainerAddress, ContainerId, DeploymentLogId, MachineId, Namespace, QualifiedService,
+    ServiceId, ServiceName,
 };
+
+/// Docker label carrying the deployment that created a Container.
+pub const DEPLOYMENT_ID_LABEL: &str = "ployz.deployment.id";
 
 /// Value that replaces each environment value in a redacted observation.
 pub const REDACTED_ENVIRONMENT_VALUE: &str = "<redacted>";
