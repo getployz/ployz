@@ -10,6 +10,7 @@ fn capacity(free_gib: u64) -> StorageCapacity {
             host_available_bytes: free_gib * STORAGE_GIB,
         },
         unmanaged_used_bytes: 0,
+        slot_bound_bytes: 0,
         volumes: BTreeMap::new(),
         copies: BTreeMap::new(),
     }
@@ -158,7 +159,7 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
             .insert(
                 app_volume("data"),
                 ProvisionedVolumeMaximumBytes::new(
-                    std::num::NonZeroU64::new(2 * STORAGE_GIB).unwrap(),
+                    std::num::NonZeroU64::new(STORAGE_GIB / 2).unwrap(),
                 ),
             );
         let error = preview_deploy(&intent(&services), &conflicting)

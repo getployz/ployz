@@ -9,14 +9,14 @@ import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat } from "#/modules/agent/agent-chat.server";
 import { runAgentCall } from "#/modules/agent/agent-runner.server";
-import { operationDigest } from "#/modules/approvals/approvals.server";
+import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
-import { invitation, member } from "#/modules/identity/tables";
+import { invitation, member, user } from "#/modules/identity/tables";
 import { createInvite } from "#/modules/organization/invitation.server";
 import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
 import { uptimeCheck } from "#/modules/uptime/tables";
@@ -258,6 +258,7 @@ it.live("refuses an input a command doesn't take and a Service it can't find, sa
 const approvedDemotion = Effect.fn(function* (provided: Effect.Success<ReturnType<typeof parity>>["provided"], userId: string, session: string) {
   const email = "ada@example.test";
   const asked = {
+    subject: `member:${userId}`,
     verb: "set" as const,
     preview: { email, from: "owner", to: "member" },
     effects: [{ kind: "changes_role" as const, name: email, node: userId, path: `members/${userId}` }],
@@ -265,7 +266,7 @@ const approvedDemotion = Effect.fn(function* (provided: Effect.Success<ReturnTyp
   const [approved] = yield* provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.insert(operationApprovals).values({
-      organizationId: ORGANIZATION, subject: `member:${userId}`, via: "agent", credentialKind: "session", credentialId: session,
+      organizationId: ORGANIZATION, subject: asked.subject, requestedByUserId: userId, via: "agent", credentialKind: "session", credentialId: session,
       command: "set", digest: operationDigest(asked), status: "approved", decidedByUserId: userId, decidedAt: new Date(),
       review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: asked.effects, operation: { verb: "set", name: email, preview: asked.preview } }),
     }).returning({ id: operationApprovals.id });
@@ -284,6 +285,49 @@ it.live("an approved call that refused once it ran hears its retry without the a
     const retry = "outcome" in first && "refusal" in first.outcome && "retry" in first.outcome.refusal ? first.outcome.refusal.retry : undefined;
     expect(retry).toEqual({ tool: "org_member_role", input });
     expect(yield* call("role-retry")).toEqual(first);
+  }));
+
+// Catches an approved demotion that demotes again once the person is restored, under the approval already used.
+it.live("an approved role change runs once: repeating it after the role was restored asks again and changes nothing", () =>
+  Effect.gen(function* () {
+    const { provided, team, userId } = yield* parity();
+    const bob = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
+      const id = person?.id ?? expect.fail("no person");
+      yield* drizzle.insert(member).values({ userId: id, organizationId: ORGANIZATION, role: "owner" });
+      return id;
+    }));
+    const roleOf = Effect.map(team, ({ members }) => members.find((row) => row.userId === bob)?.role);
+    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
+    const input = { member: "bob@example.test", role: "member" };
+    const call = (key: string, approvalId: string | null) => provided(runAgentCall(agent, { tool: "org_member_role", input, key, approvalId, page: { at: "organization" } }));
+
+    const asked = yield* call("demote-ask", null);
+    const { refusal } = "asking" in asked ? asked.asking : expect.fail("the demotion ran without asking");
+    const { approval, approval_id } = Schema.decodeUnknownSync(Schema.Struct({ approval: Schema.String, approval_id: Schema.String }))(refusal.details);
+    yield* provided(decideApproval({ ...agent, via: "dashboard" }, approval_id, { approve: { digest: approval } }));
+    expect(yield* call("demote-run", approval_id)).toMatchObject({ outcome: { ok: true } });
+    expect(yield* roleOf).toBe("member");
+
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(member).set({ role: "owner" }).where(eq(member.userId, bob));
+    }));
+    expect(yield* call("demote-replay", approval_id)).toMatchObject({ asking: { refusal: { code: "approval_required" } } });
+    expect(yield* roleOf).toBe("owner");
+  }));
+
+// Catches an approval carried into a command that never asks, which skipped the gate and so every check of it.
+it.live("a command that never asks refuses an approval carried into it, and changes nothing", () =>
+  Effect.gen(function* () {
+    const { provided, rows, userId } = yield* parity();
+    const { id } = yield* approvedDemotion(provided, userId, "session-1");
+    const before = yield* rows;
+    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
+    const ran = yield* provided(runAgentCall(agent, { tool: "server_upgrade_policy_set", input: { channel: "beta" }, key: "carried", approvalId: id, page: { at: "organization" } }));
+    expect(ran).toMatchObject({ outcome: { ok: false, refusal: { code: "forbidden", details: { approval_id: id } } } });
+    expect(yield* rows).toEqual(before);
   }));
 
 it.live("a sidebar call that names an approval in its input does not pass the gate, even one approved for the same plan", () =>

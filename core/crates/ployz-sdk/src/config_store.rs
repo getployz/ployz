@@ -246,6 +246,35 @@ impl ConfigStore {
         )
     }
 
+    /// Claim the Organization's queued Deployment `deployment` as `runner`, and
+    /// resolve to its summary. Its upload is the one it builds from now that the
+    /// Deployment ahead of it settled: the one Cloud extracts before `runDeployment`
+    /// runs it as the same runner. Claiming again as that runner changes nothing
+    /// until it runs. Only Cloud's worker calls this.
+    ///
+    /// # Errors
+    /// Returns `conflict` when this runner has nothing to run, or a storage error.
+    #[napi(ts_return_type = "Promise<DeploymentSummary>")]
+    pub async fn claim_deployment(
+        &self,
+        organization: String,
+        deployment: String,
+        runner: String,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let (deployment, runner) = ids(deployment, runner)?;
+        // Only a Deployment of this Organization runs here.
+        let owned = deployment.clone();
+        self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
+            .await?;
+        self.run(move |store| {
+            store
+                .claim(&deployment, &runner)
+                .map(|claimed| claimed.deployment)
+        })
+        .await
+    }
+
     /// Record that `runner` stopped without finishing Deployment `deployment`: its
     /// outcome is unknown once it prepared it. Recording it after an outcome changes
     /// nothing.

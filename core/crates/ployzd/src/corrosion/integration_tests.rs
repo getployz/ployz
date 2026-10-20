@@ -173,7 +173,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let publisher = tokio::spawn(run_machine_publisher(
         Some((store.clone(), view)),
         local.clone(),
-        tokio::sync::watch::channel(0).1,
+        crate::corrosion::LiveRuntime::unobserved(),
         shutdown.clone(),
     ));
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -217,7 +217,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     let publisher = tokio::spawn(run_machine_publisher(
         Some((unavailable, view)),
         interrupted.clone(),
-        tokio::sync::watch::channel(0).1,
+        crate::corrosion::LiveRuntime::unobserved(),
         shutdown.clone(),
     ));
     tokio::time::sleep(Duration::from_millis(700)).await;

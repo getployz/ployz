@@ -113,6 +113,8 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
         enroll.paths().get(1).map(String::as_str),
         Some("/api/enroll")
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("Asking Cloud"), "{stderr}");
 }
 
 #[tokio::test]

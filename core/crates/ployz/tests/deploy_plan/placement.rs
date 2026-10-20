@@ -577,6 +577,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                             pool_size_bytes: 10 * ployz_core::STORAGE_GIB,
                         },
                         unmanaged_used_bytes: 0,
+                        slot_bound_bytes: 0,
                         volumes: BTreeMap::from([(
                             app_volume("data"),
                             ployz_core::ProvisionedVolumeMaximumBytes::new(
