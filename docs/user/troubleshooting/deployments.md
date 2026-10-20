@@ -149,13 +149,14 @@ service stays **Online**, with an amber **⚠** on its card.
 
 ## My app exits as soon as it starts
 
-**The Container exited**, **The Container is restarting** or **The Container stopped**, with
-`container … failed health monitoring: exited with code 1` or ending in `restarting`
+**The Container exited with code 1**, **The Container exited with code 1 and is restarting**,
+**The Container is restarting** or **The Container stopped**
 
 The new replica stopped right after it started, and the old version kept running. Any exit code
-can show here.
+can show here. The cause is the last line your app printed, from the same logs the **Deploy** log
+shows; it's left out when the logs couldn't be read, or couldn't be checked for Sealed values.
 
-- Read the **Deploy** log for the error your app printed before it stopped.
+- Read the **Deploy** log for the rest of what your app printed before it stopped.
 - Check the service's **Variables** for one your app needs that's missing or wrong.
 - Fix the **Start command**, or clear it to run the image's own command.
 - Code `137` usually means the replica went over its **Memory limit**. Raise or clear it under

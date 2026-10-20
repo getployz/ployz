@@ -2620,6 +2620,7 @@ pub(in crate::deploy) fn health_error(
         container_id,
         failure,
         out_of_memory,
+        last_run: None,
     }
 }
 
@@ -2647,6 +2648,7 @@ fn started_container(
             container_id,
             failure,
             out_of_memory,
+            last_run: None,
         }),
     }
 }

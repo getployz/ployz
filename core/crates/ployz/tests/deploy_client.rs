@@ -1600,9 +1600,11 @@ async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_
         .nodes
         .iter()
         .flat_map(|node| &node.rows)
-        .filter_map(|row| match &row.state {
-            RowState::Failed { reason, cause, .. } => Some((reason.as_str(), cause.clone())),
-            _ => None,
+        .filter_map(|row| {
+            let RowState::Failed { reason, cause, .. } = &row.state else {
+                return None;
+            };
+            Some((reason.as_str(), cause.clone()))
         })
         .collect::<Vec<_>>();
     assert_eq!(
