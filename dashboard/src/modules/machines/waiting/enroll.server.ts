@@ -19,7 +19,7 @@ import {
   isReadyFor,
 } from "#/modules/machines/waiting/server-enrollment";
 import { serversOffline } from "#/modules/machines/waiting/servers-offline";
-import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { fleetToken, fleetTokenAttempt, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -326,9 +326,12 @@ const startPlannedEnrollment = Effect.fn("ServerEnrollment.startPlanned")(functi
 const usedOf = (tokenId: string) => sql<number>`(select count(*) from ${fleetTokenJoin} where ${fleetTokenJoin.fleetTokenId} = ${tokenId})
   + (select count(*) from ${serverEnrollment} where ${serverEnrollment.fleetTokenId} = ${tokenId} and ${serverEnrollment.endedAt} is null)`.mapWith(Number);
 
-// One arrival attempt per host per token: after a failed or cancelled one, the host waits for someone to enroll it again.
-const arrivalSpent = (tokenId: string) => sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id}
-  and (${serverEnrollment.fleetTokenId} = ${tokenId} or ${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`;
+// A host arrives once per token: after any attempt under it, even one whose waiting row has since gone, it waits for a person.
+// A trigger on server_enrollment writes fleet_token_attempt, so every attempt is recorded whichever app version started it.
+const arrivalSpent = (tokenId: string) => sql<boolean>`exists (select 1 from ${fleetTokenAttempt} where ${fleetTokenAttempt.fleetTokenId} = ${tokenId}
+  and ${fleetTokenAttempt.checkinKey} = ${waitingServer.checkinKey})
+  or exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id}
+  and (${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`;
 
 const arrivingHost = (token: { readonly id: string; readonly organizationId: string }, checkinKey: string) => and(
   eq(waitingServer.organizationId, token.organizationId), eq(waitingServer.checkinKey, checkinKey),
