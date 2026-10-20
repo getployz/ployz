@@ -59,6 +59,7 @@ pub const META_FILE: &str = "meta.json";
 pub const META_TEMP_FILE: &str = "meta.tmp";
 pub const GAPS_FILE: &str = "gaps.jsonl";
 pub const EXITS_FILE: &str = "exits.jsonl";
+pub const EXITS_TEMP_FILE: &str = "exits.tmp";
 pub const LINKING_FILE: &str = "linking.tmp";
 pub const SCANNED_FILE: &str = "scanned";
 pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
