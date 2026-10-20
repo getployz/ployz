@@ -222,11 +222,7 @@ impl fmt::Display for MoveFailure {
                 from, to, detail, ..
             } => write!(f, "moving it from {from} to {to}: {detail}"),
             Self::Cancelled { from, to, .. } => {
-                write!(
-                    f,
-                    "moving it from {from} to {to}: {}",
-                    ExecutionError::Cancelled
-                )
+                write!(f, "moving it from {from} to {to}: cancelled")
             }
             Self::Refused { reason } => reason.fmt(f),
         }

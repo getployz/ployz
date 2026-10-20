@@ -214,7 +214,7 @@ fn every_other_outcome_keeps_its_line() {
             "app/idle: nothing to move",
             "app/late: not attempted",
             "app/api: moved 1 from web-2 to web-1; failed: moving it from web-2 to web-1: deploy cancelled",
-            "app/solo: failed: moving it from web-2 to web-1: deploy cancelled",
+            "app/solo: failed: moving it from web-2 to web-1: cancelled",
             "app/web: interrupted",
             "app/web: moved 1 from web-2 to web-1; interrupted",
             "app/db  stays on web-2 (its Volume is on web-2)",
