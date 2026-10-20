@@ -57,9 +57,9 @@ your app didn't answer.
 4. **Check the server running it is up.** A replica on a server that's down or out of reach
    doesn't answer either. See [Troubleshooting servers](servers.md).
 
-When a server running one of your replicas powers off, your other servers stop trying it after
-one second and send the request to another replica. A request that had already reached it waits
-about 14 seconds. Then a `GET`, like a page load, goes to another replica, and anything else, like
+When a server running one of your replicas powers off, a new connection to it gives up after one
+second and the request goes to another replica. A request that had already reached it, or that
+went out on a connection the web server keeps open to it, waits about 14 seconds. Then a `GET`, like a page load, goes to another replica, and anything else, like
 a form post, gets `502 · NO_RESPONSE`. Send that one again.
 
 On a server upgraded from an earlier release, the web server Ployz already ran there keeps the

@@ -319,7 +319,7 @@ When a server is up but still sends a service's requests to its old replicas aft
 `web  web-2 has not picked up the new copies. Check its network.` A server that's down shows as
 **Down** instead. See
 [A server hasn't picked up the new version](../troubleshooting/deployments.md#a-server-hasnt-picked-up-the-new-version).
-Signed in to Ployz Cloud, `ployz status` doesn't show this line yet. To check this, `ployz status`
+A `read` or `deploy` token without server access doesn't show this line yet. To check this, `ployz status`
 reaches your servers the way `ployz ps` does, so it takes the same `--context` and
 `--ssh-timeout` options.
 
