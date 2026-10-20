@@ -491,27 +491,30 @@ impl ContainerRuntime {
     ///
     /// Returns when Docker or the Machine database cannot be read.
     pub(crate) async fn managed_inventory(&self) -> Result<Vec<ContainerId>, Error> {
-        let listed = self
+        let listed = self.managed_slots().await?;
+        if !self.specs.record_creations(listed.clone()).await? {
+            return Ok(listed.into_iter().map(|(id, _)| id).collect());
+        }
+        // Creates and removes hold this lock across their Docker call and spec write,
+        // so only a listing taken under it agrees with the records it moves.
+        let mut operation = self.specs.config_operation().await;
+        let listed = self.managed_slots().await?;
+        for (old, new) in operation.adopt_restored(listed.clone()).await? {
+            eprintln!("adopted restored container {new}, which replaces {old}");
+        }
+        Ok(listed.into_iter().map(|(id, _)| id).collect())
+    }
+
+    async fn managed_slots(
+        &self,
+    ) -> Result<Vec<(ContainerId, Option<spec_store::CreationSlot>)>, Error> {
+        Ok(self
             .docker
             .managed_containers()
             .await?
             .into_iter()
             .map(|(id, labels)| (id, creation_slot(&labels)))
-            .collect::<Vec<_>>();
-        if self.specs.record_creations(listed.clone()).await? {
-            // A create holds this lock from Docker's create to the spec write, so no
-            // Container still waiting for its spec looks restored under it.
-            let adopted = self
-                .specs
-                .config_operation()
-                .await
-                .adopt_restored(listed.clone())
-                .await?;
-            for (old, new) in adopted {
-                eprintln!("adopted restored container {new}, which replaces {old}");
-            }
-        }
-        Ok(listed.into_iter().map(|(id, _)| id).collect())
+            .collect())
     }
 
     /// This Machine's Service Containers of `service`, each with the gen its labels

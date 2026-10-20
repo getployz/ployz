@@ -197,8 +197,8 @@ impl MachineSpecStore {
         }
     }
 
-    /// Point each listed slot at its Container wherever this Machine holds the
-    /// Container's spec. Returns whether a listed Container is a restored one, which
+    /// Point each listed slot with no holder at the listed Container holding its spec.
+    /// Returns whether a listed Container looks restored, which
     /// [`ConfigOperation::adopt_restored`] then adopts under the lock.
     pub(crate) async fn record_creations(
         &self,
@@ -314,7 +314,8 @@ impl ConfigOperation<'_> {
     }
 
     /// Move the records of each listed Container's restored-over ID onto it, so it is
-    /// observed as it was before the restore. Returns each `(old, new)` pair moved.
+    /// observed as it was before the restore. `listed` is Docker's inventory read under
+    /// this lock. Returns each `(old, new)` pair moved.
     pub(crate) async fn adopt_restored(
         &mut self,
         listed: Vec<(ContainerId, Option<CreationSlot>)>,
@@ -524,10 +525,11 @@ fn garbage_collect_config_files(
     Ok(())
 }
 
-/// Point each listed slot at its Container wherever this Machine holds its spec, and
-/// return each listed Container with no spec whose slot names an ID Docker no longer
-/// lists but this Machine holds a spec for: one a restore recreated under a new ID.
-/// With `adopt`, that old ID's records move to the new ID.
+/// Point each listed slot that has no holder with a spec at the listed Container
+/// holding its spec, and return each listed Container with no spec whose slot names
+/// an ID absent from `listed` that holds a spec: one a restore recreated under a new
+/// ID. With `adopt`, that old ID's records move to the new ID, so `listed` must be
+/// read under the lock.
 fn reconcile_creations(
     path: &Path,
     listed: &[(ContainerId, Option<CreationSlot>)],
@@ -553,7 +555,7 @@ fn reconcile_creations(
         };
         if has_spec(id.as_str())? {
             transaction.execute(
-                "INSERT INTO creations (slot, id) VALUES (?1, ?2) ON CONFLICT (slot) DO UPDATE SET id = excluded.id WHERE id != excluded.id",
+                "INSERT INTO creations (slot, id) VALUES (?1, ?2) ON CONFLICT (slot) DO UPDATE SET id = excluded.id WHERE NOT EXISTS (SELECT 1 FROM containers WHERE containers.id = creations.id)",
                 params![slot, id.as_str()],
             )?;
             continue;
