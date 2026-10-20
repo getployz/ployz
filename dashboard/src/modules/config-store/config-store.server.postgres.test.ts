@@ -25,7 +25,7 @@ import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
-import { receiveUpload, releaseUploads, UPLOAD_LIMIT, uploadOwner } from "#/modules/config-store/upload.server";
+import { extractUpload, receiveUpload, releaseUploads, UPLOAD_LIMIT, uploadOwner } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import type { TokenGrant } from "#/modules/identity/token-grant";
@@ -1631,16 +1631,58 @@ it.live(
         assert.strictEqual((yield* admit(webOnly, here, null, ["web"])).status, 200);
         assert.strictEqual(yield* uploadOwner(store, organizationId, webOnly), both);
         yield* run(webOnly);
-        // One Deployment can't build both from one upload.
-        const refused = yield* admit(together, here, null);
-        assert.strictEqual(refused.json.error?.code, "invalid_argument");
+        // A Deploy of both builds each from its own upload. Cloud extracts the one the newer Deployment built from,
+        // web's, and keeps both.
+        assert.strictEqual((yield* admit(together, here, null)).status, 200);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, together), both);
+        yield* run(together);
+        yield* releaseUploads(store, organizationId);
+        assert.deepStrictEqual([yield* held(both), yield* held(apiOnly)], [1, 1]);
         // A retry of an older Deployment ships its upload, and api's latest upload stays.
-        assert.strictEqual((yield* withServers(request("write", alice, {
-          command: "admit", admit: "retry", id: retried, deployment: both,
-        }))).status, 200);
+        const retry = (id: string, of: string) => withServers(request("write", alice, {
+          command: "admit", admit: "retry", id, deployment: of,
+        }));
+        assert.strictEqual((yield* retry(retried, both)).status, 200);
         yield* run(retried);
         yield* releaseUploads(store, organizationId);
         assert.deepStrictEqual([yield* held(both), yield* held(apiOnly)], [1, 1]);
+
+        // An upload sent again after a failed one stays when the failed one is retried after it: it's api's newest
+        // upload. The failed one's went when the newer one replaced it, so its retry needs a new upload, as before.
+        const [firstSent, failed, sentAgain, retriedFailed] = [deployment(217), deployment(218), deployment(219), deployment(220)];
+        for (const [id, c] of [[firstSent, "3"], [failed, "4"], [sentAgain, "3"]] as const) {
+          assert.strictEqual((yield* upload(id, alice, archive)).status, 200);
+          assert.strictEqual((yield* admit(id, here, digest(c), ["api"])).status, 200);
+          yield* run(id);
+        }
+        assert.strictEqual((yield* retry(retriedFailed, failed)).status, 200);
+        yield* run(retriedFailed);
+        yield* releaseUploads(store, organizationId);
+        assert.deepStrictEqual([yield* held(failed), yield* held(sentAgain)], [0, 1]);
+        assert.strictEqual(yield* held(apiOnly), 0);
+
+        // Release takes no lock, so it may delete an upload as a run reads it, before or mid-read. Either way the
+        // run finds no upload, not a broken one: its Services reuse their images or need a new upload.
+        const raced = deployment(221);
+        assert.strictEqual((yield* upload(raced, alice, archive)).status, 200);
+        const select = drizzle.select.bind(drizzle);
+        let selects = 0;
+        const midRead = vi.spyOn(drizzle, "select").mockImplementation(((fields: Parameters<typeof select>[0]) => {
+          selects += 1;
+          const query = select(fields);
+          if (selects !== 2) return query;
+          return {
+            from: (table: typeof uploadChunk) => ({
+              where: (where: Parameters<ReturnType<typeof query.from>["where"]>[0]) =>
+                drizzle.delete(uploadChunk).where(eq(uploadChunk.deploymentId, raced)).pipe(Effect.andThen(query.from(table).where(where))),
+            }),
+          };
+        }) as never);
+        const extracted = yield* extractUpload(organizationId, raced);
+        midRead.mockRestore();
+        assert.strictEqual(selects, 2);
+        assert.strictEqual(extracted, undefined);
+        assert.strictEqual(yield* extractUpload(organizationId, raced), undefined);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped),
   60_000,

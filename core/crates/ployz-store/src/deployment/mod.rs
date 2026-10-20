@@ -491,8 +491,8 @@ pub enum RunEvidence {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Claimed {
     pub deployment: DeploymentSummary,
-    /// Services without a source of their own are left out; they build from
-    /// `deployment.upload` through the SDK's preparation of `input`.
+    /// Services without a source of their own are left out; each builds from its
+    /// upload in `uploads` through the SDK's preparation of `input`.
     pub intent: DeployIntent,
     /// Every environment variable name under which any Container of the Environment,
     /// present or past, may hold a Sealed value. A failed Container's log is scrubbed
@@ -508,8 +508,10 @@ pub struct Claimed {
     /// The Docker Volumes to delete once the Deploy succeeds: exactly those whose
     /// loss admission accepted, each on its Server.
     pub deletes: Vec<DockerVolumeId>,
-    /// The Services it builds from `deployment.upload`, by runtime name.
-    pub uploads: Vec<ServiceName>,
+    /// Each target Service without a source of its own, by runtime name, and the
+    /// digest of the upload it builds from: `deployment.upload`'s, or an older one
+    /// it last built from; none when it has none.
+    pub uploads: BTreeMap<ServiceName, Option<ployz_core::UploadDigest>>,
     /// The Organization's Build Order as the build starts. Uploaded Services skip
     /// GitHub in it: GitHub can't build uploaded source, so they build on Servers.
     pub build_order: Vec<crate::Builder>,
@@ -735,6 +737,10 @@ pub(crate) struct Stored {
     /// Where it lists among its Environment's Deployments: taken once, at insert,
     /// and never moved, so a page cursor can hold it.
     pub(crate) listed: i64,
+    /// The digest of the upload each target Service without a source of its own
+    /// builds from, by lineage; none for one admitted before it was kept, whose
+    /// every such Service builds from its upload.
+    pub(crate) service_uploads: Option<BTreeMap<String, ployz_core::UploadDigest>>,
 }
 
 impl Stored {
@@ -794,7 +800,7 @@ static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
              AND s.head = config_deployment.push_head AND s.status = '{completed}' \
              AND COALESCE(s.conclusion, '') NOT IN ({passing})) \
            THEN 'failed' ELSE 'pending' END \
-         END, listed"
+         END, listed, service_uploads"
     )
 });
 
@@ -992,6 +998,11 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         cluster_domain: row.parse_optional(10, "identity")?,
         lease,
         listed: row.int(22)?,
+        service_uploads: row
+            .optional_text(23)?
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|_| error::corrupt("Deployment uploads"))?,
     })
 }
 

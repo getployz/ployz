@@ -1439,6 +1439,34 @@ async fn a_settings_only_deploy_of_an_upload_rebuilds_from_the_held_upload() {
         })
     }));
     deployed.close();
+
+    // Cloud released the upload before the run read it: an unchanged build still reuses
+    // its image, and a changed one needs a new upload, which the run records as such.
+    let mut unchanged = railpack("hello");
+    unchanged.sources.clear();
+    unchanged.build_receipts = receipts.clone();
+    session
+        .prepare(unchanged)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap()
+        .close();
+    let mut released = railpack("hello-production");
+    released.sources.clear();
+    released.build_receipts = receipts;
+    let error = session
+        .prepare(released)
+        .unwrap()
+        .finished()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        crate::sdk::preparation::needs_upload(&error),
+        Some(vec![name])
+    );
+    assert_eq!(builds.definitions.lock().unwrap().len(), 2, "nothing built");
     session.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();

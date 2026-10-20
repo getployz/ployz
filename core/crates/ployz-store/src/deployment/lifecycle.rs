@@ -59,10 +59,8 @@ pub(crate) fn admit(
     let environment_id = environment.as_str();
     // Without a new upload, each target Service without a source builds from the upload
     // it last built from.
-    let upload = match upload {
-        Some(upload) => Some(upload),
-        None => super::uploads::inherited(tx, environment, &intent, frozen)?,
-    };
+    let (upload, service_uploads) =
+        super::uploads::admitted(tx, environment, &intent, frozen, upload)?;
     // A Service with nothing to run would fail the whole Deploy on the Servers.
     if let (None, Some(name)) = (&upload, frozen.sourceless.first()) {
         return Err(error::invalid(
@@ -101,8 +99,9 @@ pub(crate) fn admit(
         json_text(&frozen.credentials),
     );
     let upload_text = upload.as_ref().map(json_text);
+    let service_uploads_text = service_uploads.as_ref().map(json_text);
     let number = queue(tx, environment, held, |tx, number| {
-        let frozen_columns: [crate::storage::Param<'_>; 11] = [
+        let frozen_columns: [crate::storage::Param<'_>; 12] = [
             revision_param(saved)?.into(),
             targets_text.as_str().into(),
             nodes_text.as_str().into(),
@@ -114,6 +113,7 @@ pub(crate) fn admit(
             admitted_at.into(),
             who.principal.as_ref().map(Principal::as_str).into(),
             message.as_deref().into(),
+            service_uploads_text.as_deref().into(),
         ];
         let [
             saved,
@@ -127,6 +127,7 @@ pub(crate) fn admit(
             at,
             by,
             message,
+            service_uploads,
         ] = frozen_columns;
         let number = i64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?;
         // Number and list position are both one past the last, taken at the same
@@ -140,7 +141,7 @@ pub(crate) fn admit(
                      listed = ?14, \
                      saved_revision = ?2, services = ?3, nodes = ?4, namespace = ?5, run = ?6, \
                      credentials = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
-                     admitted_by = ?11, message = ?12 \
+                     admitted_by = ?11, message = ?12, service_uploads = ?15 \
                      WHERE id = ?1 AND status = 'waiting_for_ci'",
                     &[
                         id.as_str().into(),
@@ -157,6 +158,7 @@ pub(crate) fn admit(
                         message,
                         number.into(),
                         listed.into(),
+                        service_uploads,
                     ],
                 )
                 .map(|_| ());
@@ -165,9 +167,9 @@ pub(crate) fn admit(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, push_repository_id, push_branch, push_head, listed) \
+              message, push_repository_id, push_branch, push_head, listed, service_uploads) \
              VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-              ?16, ?17, ?18, ?19)",
+              ?16, ?17, ?18, ?19, ?20)",
             &[
                 id.as_str().into(),
                 who.organization.as_str().into(),
@@ -190,6 +192,7 @@ pub(crate) fn admit(
                 push.as_ref().map(|push| push.branch.as_str()).into(),
                 push.as_ref().map(|push| push.head.as_str()).into(),
                 listed.into(),
+                service_uploads,
             ],
         )
         .map(|_| ())
@@ -644,9 +647,10 @@ pub(crate) fn retry(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, listed) \
+              message, listed, service_uploads) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
-              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9 \
+              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
+              service_uploads \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),

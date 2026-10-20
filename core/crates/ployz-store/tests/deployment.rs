@@ -2952,8 +2952,24 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
         Some(upload('a'))
     );
     end(3);
-    // One Deployment can't build both from one upload.
-    assert_eq!(code(deploy(4, &[], None)), RpcErrorCode::InvalidArgument);
+    // A full Deploy builds each from its own upload, and carries the newer for Cloud to
+    // extract: front's, sent after back's.
+    assert_eq!(deploy(4, &[], None).unwrap().upload, Some(upload('a')));
+    let own = |name: &str, c: char| (ServiceName::parse(name).unwrap(), Some(upload(c).digest));
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([own("back", 'b'), own("front", 'a')])
+    );
+    store
+        .record(&id(4), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    // It doesn't make back's upload front's: back alone still builds from b.
+    assert_eq!(
+        deploy(40, &["back"], None).unwrap().upload,
+        Some(upload('b'))
+    );
+    end(40);
+    assert_eq!(kept(&[1, 2]), [true, true]);
     // A retry of an older Deployment ships its upload, and back's latest upload stays.
     assert_eq!(retry(&store, &who, 5, 1).unwrap().upload, Some(upload('a')));
     end(5);
@@ -2967,6 +2983,90 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
     deploy(31, &["back"], Some(upload('d'))).unwrap();
     // A newer upload replaced back's b; Deployment 99 was never admitted.
     assert_eq!(kept(&[1, 2, 6, 31, 99]), [true, false, true, true]);
+}
+
+#[test]
+fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_after_it() {
+    let upload = |c: char| UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    };
+    // Cloud holds chunks only for the Deployments that sent an upload, and asks about those.
+    for retry_first in [false, true] {
+        let (store, who) = shop();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("app").unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+        let deploy = |n: u8, upload: Option<UploadedSource>| {
+            store
+                .write_trusted(
+                    &who,
+                    &Admit::Deploy(Deploy {
+                        id: id(n),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload,
+                        accept_volume_loss: Vec::new(),
+                        message: None,
+                    }),
+                    &Trusted::default(),
+                )
+                .unwrap()
+        };
+        let a = runner("cli-a");
+        let end = |n: u8| {
+            store.claim(&id(n), &a).unwrap();
+            store
+                .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+                .unwrap();
+        };
+        let kept = |deployments: &[u8]| -> Vec<bool> {
+            store
+                .read(
+                    &who,
+                    &ployz_store::UploadsQuery {
+                        deployments: deployments.iter().map(|n| id(*n)).collect(),
+                    },
+                )
+                .unwrap()
+                .uploads
+                .iter()
+                .map(|held| held.kept)
+                .collect()
+        };
+        deploy(1, Some(upload('a')));
+        end(1);
+        // A second upload fails.
+        deploy(2, Some(upload('b')));
+        end(2);
+        if retry_first {
+            // Its retry builds b again, then the user uploads a again: the newest upload wins.
+            retry(&store, &who, 3, 2).unwrap();
+            end(3);
+            deploy(4, Some(upload('a')));
+            end(4);
+            assert_eq!(kept(&[1, 2, 4]), [true, false, true]);
+        } else {
+            // The user uploads a again, then retries the failed one: a is still the newest
+            // upload, and b is what the Service last built from.
+            deploy(3, Some(upload('a')));
+            end(3);
+            retry(&store, &who, 4, 2).unwrap();
+            end(4);
+            assert_eq!(kept(&[1, 2, 3]), [true, true, true]);
+        }
+    }
 }
 
 #[test]
@@ -3196,7 +3296,10 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     assert_eq!(admit(2, &who).upload, Some(upload(None)));
     let a = runner("cloud-a");
     let claimed = store.claim(&id(2), &a).unwrap();
-    assert_eq!(claimed.uploads, vec![app.clone()]);
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(app.clone(), Some(upload(None).digest))])
+    );
     assert!(claimed.sources.is_empty());
     let report = |status| {
         RunEvidence::Build(ployz_store::BuildReport {
