@@ -4,6 +4,8 @@
 //! already references: ZFS refuses a `refquota` below that, and the Volume's Container
 //! may be writing toward the old bound.
 
+use std::num::NonZeroU64;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -28,8 +30,9 @@ pub struct SetVolumeSizeRequest {
 /// what it holds plus a tenth of that, and at least 1 GB, so its Container keeps room to
 /// write while the bound comes down.
 #[must_use]
-pub fn shrink_floor(referenced_bytes: u64) -> u64 {
-    referenced_bytes.saturating_add((referenced_bytes / 10).max(crate::domain::GB))
+pub fn shrink_floor(referenced_bytes: u64) -> ProvisionedVolumeMaximumBytes {
+    let floor = referenced_bytes.saturating_add((referenced_bytes / 10).max(crate::domain::GB));
+    ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(floor).expect("a floor is at least 1 GB"))
 }
 
 /// The bound the Volume holds after the request, read back from ZFS.
@@ -72,7 +75,7 @@ pub struct SetVolumeSizeRefused {
     /// The smallest bound accepted, on a `BelowFloor` refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub floor_bytes: Option<u64>,
+    pub floor_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
 impl SetVolumeSizeRefused {
@@ -112,7 +115,6 @@ impl SetVolumeSizeRefused {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
 
     use super::*;
 
@@ -145,7 +147,7 @@ mod tests {
             reason: SizeRefusal::BelowFloor,
             bound_bytes: None,
             capacity: None,
-            floor_bytes: Some(22_000_000_000),
+            floor_bytes: Some(shrink_floor(20_000_000_000)),
         }
         .rpc_error("below the floor");
 
@@ -158,9 +160,9 @@ mod tests {
 
     #[test]
     fn the_shrink_floor_keeps_a_tenth_and_at_least_a_gb_of_headroom() {
-        assert_eq!(shrink_floor(0), 1_000_000_000);
-        assert_eq!(shrink_floor(20_000_000_000), 22_000_000_000);
-        assert_eq!(shrink_floor(u64::MAX - 1), u64::MAX);
+        assert_eq!(shrink_floor(0).get(), 1_000_000_000);
+        assert_eq!(shrink_floor(20_000_000_000).get(), 22_000_000_000);
+        assert_eq!(shrink_floor(u64::MAX - 1).get(), u64::MAX);
     }
 
     #[test]

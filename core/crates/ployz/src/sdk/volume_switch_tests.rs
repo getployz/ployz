@@ -158,7 +158,7 @@ fn a_set_volume_size_refusal_below_the_floor_passes_through_with_the_floor() {
             std::num::NonZeroU64::new(5_000_000_000).unwrap_or_else(|| unreachable!()),
         )),
         capacity: None,
-        floor_bytes: Some(3_000_000_000),
+        floor_bytes: Some(ployz_core::shrink_floor(2_000_000_000)),
     }
     .rpc_error("Volume data shrinks to no less than 3 GB".to_owned());
     let error = volume_switch_payload("set_volume_size", RpcResponseBody::Error(refused.clone()))

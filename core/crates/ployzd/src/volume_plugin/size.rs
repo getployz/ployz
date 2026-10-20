@@ -115,9 +115,7 @@ impl VolumeStorage {
             }
             let referenced = self.referenced(&held).await.map_err(internal)?;
             let floor = shrink_floor(referenced);
-            if wanted.get() < floor {
-                let shown = ProvisionedVolumeMaximumBytes::try_from(floor)
-                    .expect("a shrink floor is at least 1 GB");
+            if wanted < floor {
                 return Err(SetVolumeSizeRefused {
                     reason: SizeRefusal::BelowFloor,
                     bound_bytes: Some(bound),
@@ -125,7 +123,7 @@ impl VolumeStorage {
                     floor_bytes: Some(floor),
                 }
                 .rpc_error(format!(
-                    "Volume {name} references {referenced} bytes, so it shrinks to no less than {shown}, not {wanted}"
+                    "Volume {name} references {referenced} bytes, so it shrinks to no less than {floor}, not {wanted}"
                 )));
             }
             self.shrink_bound(&held, wanted.get())
