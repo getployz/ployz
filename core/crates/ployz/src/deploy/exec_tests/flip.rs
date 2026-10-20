@@ -2011,6 +2011,7 @@ async fn a_failed_restore_after_publication_is_reported() {
             HealthVerdict::Failed {
                 observation: unhealthy(),
                 last_check: None,
+                oom_killed: false,
             },
         )]),
         ..Scripted::new(vec![
@@ -2060,6 +2061,7 @@ async fn a_failed_group_restores_a_copy_held_to_free_host_ports() {
             HealthVerdict::Failed {
                 observation: unhealthy(),
                 last_check: None,
+                oom_killed: false,
             },
         )]),
         ..Scripted::new(vec![

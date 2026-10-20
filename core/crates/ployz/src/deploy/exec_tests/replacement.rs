@@ -751,6 +751,7 @@ async fn a_failed_group_stops_its_new_copies_before_it_restores_the_held_ones() 
             HealthVerdict::Failed {
                 observation: unhealthy(),
                 last_check: None,
+                oom_killed: false,
             },
         )]),
         ..Scripted::new(vec![
@@ -873,6 +874,7 @@ async fn a_refused_or_failed_restore_leaves_the_service_empty() {
     let failed_health = HealthVerdict::Failed {
         observation: unhealthy(),
         last_check: None,
+        oom_killed: false,
     };
     for refused in [true, false] {
         let machine = machine('1');

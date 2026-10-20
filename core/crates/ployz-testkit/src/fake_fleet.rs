@@ -35,8 +35,9 @@ use ployz_core::{
     OpaquePayload, PROTOCOL_MAJOR, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
     QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
     RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget,
-    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, StorageBacking, StorageCapacity, VolumeCopy,
-    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame, SlotRole,
+    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, SlotRole, StorageBacking, StorageCapacity,
+    VolumeCopy, VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch,
+    encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

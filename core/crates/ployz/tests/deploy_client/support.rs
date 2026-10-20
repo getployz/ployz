@@ -297,6 +297,7 @@ impl DeployService {
             return HealthVerdict::TimedOut {
                 deadline_millis: u64::try_from(deadline.as_millis()).ok(),
                 last_check: None,
+                oom_killed: false,
             };
         }
         if matches!(

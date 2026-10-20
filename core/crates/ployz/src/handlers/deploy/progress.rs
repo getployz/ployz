@@ -801,6 +801,7 @@ mod tests {
                 reason: Some(format!("web: {reason}")),
                 cause: cause.clone(),
                 services: Vec::new(),
+                compensation: Vec::new(),
             });
             let rows = &mut view.nodes.first_mut().unwrap().rows;
             rows.truncate(1);

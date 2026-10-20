@@ -18,10 +18,10 @@ use ployz_core::{
     ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL, HealthFailure,
     HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
     MachineAction, MachineId, MachineName, MachineTarget, MembershipObservation, Namespace,
-    NewContainer, OperationPhase, PortPublication, PullPolicy, QualifiedService, ReadRoutesRequest,
-    RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError,
-    RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, SlotKey,
-    StopOptions, TransportProtocol, UpdateOrder, op, OutOfMemory,
+    NewContainer, OperationPhase, OutOfMemory, PortPublication, PullPolicy, QualifiedService,
+    ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec, Retry,
+    RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName,
+    ServiceOutcome, SlotKey, StopOptions, TransportProtocol, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -1324,13 +1324,7 @@ async fn route_new<C: MachineOperations>(
         match cleanup::bring_in(client, &copy, spec, Some(rows.run.clone())).await {
             Ok(cleanup::BroughtIn::In) => {}
             Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
-                let failure = health.and_then(HealthVerdict::into_failure).unwrap_or(
-                    HealthFailure::TimedOut {
-                        deadline_millis: None,
-                        last_check: None,
-                    },
-                );
-                return Err(Published::Failed(health_error(*container_id, failure)));
+                return Err(Published::Failed(health_error(*container_id, health, spec)));
             }
             Ok(cleanup::BroughtIn::Refused(refusal))
                 if refusal.reason == ContainerRefusalReason::OlderThanIn =>
@@ -2571,6 +2565,33 @@ fn unavailable(message: String) -> RpcError {
     }
 }
 
+fn out_of_memory(health: &HealthVerdict, spec: &ResolvedServiceSpec) -> Option<OutOfMemory> {
+    health.oom_killed().then_some(OutOfMemory {
+        memory_bytes: spec.container.resources.memory_bytes,
+    })
+}
+
+fn health_error(
+    container_id: ContainerId,
+    health: Option<HealthVerdict>,
+    spec: &ResolvedServiceSpec,
+) -> ExecutionError {
+    let out_of_memory = health
+        .as_ref()
+        .and_then(|health| out_of_memory(health, spec));
+    let failure = health
+        .and_then(HealthVerdict::into_failure)
+        .unwrap_or(HealthFailure::TimedOut {
+            deadline_millis: None,
+            last_check: None,
+        });
+    ExecutionError::Health {
+        container_id,
+        failure,
+        out_of_memory,
+    }
+}
+
 #[expect(
     clippy::result_large_err,
     reason = "ExecutionError is the Deploy's wire failure value; every step in this file returns it unboxed"
@@ -2588,9 +2609,7 @@ fn started_container(
     let Some(health) = health else {
         return Ok(container_id);
     };
-    let out_of_memory = health.oom_killed().then_some(OutOfMemory {
-        memory_bytes: spec.container.resources.memory_bytes,
-    });
+    let out_of_memory = out_of_memory(&health, spec);
     match health.into_failure() {
         None => Ok(container_id),
         Some(failure) => Err(ExecutionError::Health {
@@ -2935,14 +2954,7 @@ async fn restore_old<C: MachineOperations>(
     match cleanup::bring_in(client, old, spec, Some(rows.run.clone())).await {
         Ok(cleanup::BroughtIn::In) => {}
         Ok(cleanup::BroughtIn::NotIn { health, .. }) => {
-            let failure =
-                health
-                    .and_then(HealthVerdict::into_failure)
-                    .unwrap_or(HealthFailure::TimedOut {
-                        deadline_millis: None,
-                        last_check: None,
-                    });
-            return ended(failed(health_error(old.container_id, failure)), true);
+            return ended(failed(health_error(old.container_id, health, spec)), true);
         }
         Ok(cleanup::BroughtIn::Refused(refusal))
             if refusal.reason == ployz_core::ContainerRefusalReason::HeldByOtherRun =>

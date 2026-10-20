@@ -750,7 +750,7 @@ impl LocalMachine {
             let inspected = containers
                 .inspect_managed_run(container_id, &machine_id)
                 .await?;
-            first_run = first_run.or_else(|| details.run.clone());
+            first_run = first_run.or_else(|| inspected.details.run.clone());
             let elapsed = started.elapsed();
             let wake = match wait.poll(&inspected.details, elapsed).0 {
                 HealthPoll::Complete if checked || elapsed >= monitor => {
