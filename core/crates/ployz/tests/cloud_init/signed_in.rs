@@ -191,7 +191,7 @@ async fn pasted_command_returns_at_once_under_json_and_wait_reports_the_joined_s
     assert_eq!(
         pending.pointer("/command"),
         Some(&json!(format!(
-            "curl -fsSL https://ployz.sh/ | sh -s -- {} && sudo ployz server add --cloud-url '{}'",
+            "curl -fsSL https://ployz.sh/ | sh -s -- {} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --cloud-url '{}'",
             env!("CARGO_PKG_VERSION"),
             cloud.url
         )))
@@ -224,6 +224,43 @@ async fn pasted_command_returns_at_once_under_json_and_wait_reports_the_joined_s
         cloud.cli_calls().last().map(|call| call.2.clone()),
         Some(json!({ "organizationId": "o1", "id": ENROLLMENT }))
     );
+}
+
+#[tokio::test]
+async fn a_bad_server_flag_is_refused_before_cloud_mints_a_token() {
+    for flags in [
+        ["--command", "--name", "BAD NAME"].as_slice(),
+        ["--command", "--label-add", "region"].as_slice(),
+        ["--command", "--wg-endpoint", "not-an-address"].as_slice(),
+        ["--command", "--public-ip", "not-an-address"].as_slice(),
+        ["--name", "BAD NAME"].as_slice(),
+    ] {
+        let cloud = EnrollListen::script([]).await;
+        cloud.reply_cli("/api/cli/servers/enroll", [minted()]);
+        let directory = tempfile::tempdir().unwrap();
+        let config = sign_in(directory.path(), &cloud.url);
+
+        let output = harness::cli()
+            .args(["--ployz-config", &config, "--json", "server", "add"])
+            .args(flags)
+            .output()
+            .await
+            .unwrap();
+
+        assert!(!output.status.success(), "{flags:?}");
+        assert_eq!(
+            stdout_json(&output).pointer("/error/code"),
+            Some(&json!("invalid_argument")),
+            "{flags:?}"
+        );
+        assert!(
+            cloud
+                .cli_calls()
+                .iter()
+                .all(|(path, _, _)| path != "/api/cli/servers/enroll"),
+            "{flags:?} minted a token"
+        );
+    }
 }
 
 #[tokio::test]

@@ -280,7 +280,7 @@ upgrading reads **Upgrading**.
 ### Turn on automatic upgrades
 
 Automatic upgrades are off until you turn them on. Click the **Upgrade settings** icon at the top
-of the **Servers** page and turn on **Upgrade automatically**. Any member can change it. Ployz
+of the **Servers** page and turn on **Upgrade automatically**. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it. Ployz
 starts upgrading right away, then checks every hour. Turn the switch off to go back to upgrading by
 hand.
 
@@ -299,14 +299,15 @@ whether it went back to the release it ran before. Members who set **Failed auto
 ### Upgrade one server
 
 To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**.
-Any member can upgrade servers while they're online and not building. One upgrade runs at a time
+Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can upgrade servers, and only while they're online and not building. For a
+member, **Upgrade** and **Try again** are disabled and say so. One upgrade runs at a time
 per organization, so **Upgrade** and **Try again** wait while one is running.
 
 ### Choose Stable or Beta releases
 
 Click the **Upgrade settings** icon at the top of the **Servers** page and set **Releases** to
-**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
-member can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
+**Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Only an
+owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
 and each server's page then show the newest release on that channel.
 
 Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as
@@ -549,7 +550,8 @@ If you deleted all your servers at your provider, forget them:
 
 1. Go to **Organization** and, under **Danger**, click **Forget servers**. When the **Servers**
    page can't reach your servers, **Forget them and start over.** opens the same dialog. Only an
-   owner or admin can forget servers. For anyone else the button is disabled.
+   owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can forget
+   servers. For a member the button is disabled.
 2. Ployz lists the servers and their volumes. Type your organization's slug and click **Forget
    servers**.
 
