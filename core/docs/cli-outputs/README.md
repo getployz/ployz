@@ -105,7 +105,7 @@ Deployment #36 of shop/production: applied
   web: unchanged
 ```
 
-([cloud-cluster/deploy.md](cloud-cluster/deploy.md)). The output is the same on a TTY. Under `--json` the progress lines move to stderr. `--events FILE` writes NDJSON like `{"nodes":[…],"status":"queued","type":"deployment"}` ([cluster/deploy.md](cluster/deploy.md)). The local Store prints no `Following` line. `up` adds `  uploaded by Ada Lovelace, base 5a3ec95`, `Open https://workspace.ada.ployz.test` and `Dashboard: http://localhost:…` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
+([cloud-cluster/deploy.md](cloud-cluster/deploy.md)). The output is the same on a TTY. Under `--json` the progress lines move to stderr. `--events FILE` writes NDJSON like `{"id":"…","nodes":[…],"number":1,"status":"queued","type":"deployment"}` ([cluster/deploy.md](cluster/deploy.md)). The local Store prints no `Following` line. `up` adds `  uploaded by Ada Lovelace, base 5a3ec95`, `Open https://workspace.ada.ployz.test` and `Dashboard: http://localhost:…` ([cloud-cluster/deploy.md](cloud-cluster/deploy.md)).
 
 A redrawing renderer (server add, for the ingress). It is the only output with ANSI escapes: cursor-up, clear, bold, cyan and green ([cluster/server.ansi](cluster/server.ansi)). Its last frame:
 

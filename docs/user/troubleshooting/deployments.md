@@ -23,7 +23,8 @@ with a summary that counts the Servers involved. In CI or redirected output,
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
-records the existing Deployment events as NDJSON. Source builds appear against their
+records the existing Deployment events as NDJSON, each naming the Deployment's `id` and
+`number`. Source builds appear against their
 Service before the Deploy is planned, without a depth. A failure names the Server
 where it happened.
 

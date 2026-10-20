@@ -84,7 +84,7 @@ web (create)
   web.replicas: 1 -> 2
 api (create)
   api.startCommand: null -> "sh -c 'echo api up; sleep 100000'"
-Decided by the Servers when it runs: operations.
+Decided by the Servers when it runs: which containers start and stop.
 next: ployz deploy --expect-version 6:0:0.0
 ```
 

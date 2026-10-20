@@ -611,7 +611,13 @@ fn tap(
     events: &mut Option<std::io::BufWriter<std::fs::File>>,
     last: &mut Option<serde_json::Value>,
 ) {
-    let event = serde_json::json!({ "type": "deployment", "status": view.deployment.status, "nodes": view.nodes });
+    let event = serde_json::json!({
+        "type": "deployment",
+        "id": view.deployment.id,
+        "number": view.deployment.number,
+        "status": view.deployment.status,
+        "nodes": view.nodes,
+    });
     if last.as_ref() != Some(&event) {
         if let Some(file) = events.as_mut() {
             let _ = writeln!(file, "{event}");
@@ -860,9 +866,18 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             ));
         }
         if !plan.unresolved.is_empty() {
+            let unresolved: Vec<_> = plan
+                .unresolved
+                .iter()
+                .map(|item| match item.as_str() {
+                    "operations" => "which containers start and stop",
+                    "volume data" => "which volume data is deleted",
+                    other => other,
+                })
+                .collect();
             ui::stream(format_args!(
                 "Decided by the Servers when it runs: {}.",
-                plan.unresolved.join(", ")
+                unresolved.join(", ")
             ));
         }
         ui::hint(&Hint::Next(hint.clone()));
