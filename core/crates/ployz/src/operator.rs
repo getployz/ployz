@@ -14,9 +14,8 @@ use ployz_core::{
     ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
     FanoutSelector, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
     MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, QualifiedService,
-    ServiceContainer, ServiceId, ServiceName, ServiceObservation, ServiceSelector,
-    StreamProtocolError, TailLogsRequest, op, resolve_container_selector,
-    resolve_machine_selectors, select_service,
+    ServiceContainer, ServiceId, ServiceObservation, ServiceSelector, StreamProtocolError,
+    TailLogsRequest, op, resolve_container_selector, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -176,8 +175,8 @@ pub enum OperatorError {
         #[source]
         source: Box<OperatorError>,
     },
-    #[error("{service}'s container stopped; exec ended.")]
-    ExecContainerStopped { service: ServiceName },
+    #[error("The container for {service} stopped; exec ended.")]
+    ExecContainerStopped { service: String },
     #[error("Could not start the command in {container}.")]
     StartExec {
         container: String,
@@ -417,7 +416,6 @@ pub struct ExecSession {
 #[derive(Clone, Debug)]
 pub struct ExecTarget {
     pub service_id: ServiceId,
-    pub service: ServiceName,
     pub machine_id: MachineId,
     pub container_id: ContainerId,
 }
@@ -493,7 +491,6 @@ pub async fn open_exec(
         output,
         target: ExecTarget {
             service_id: service.service_id,
-            service: service.identity.name.clone(),
             machine_id,
             container_id: container.container_id,
         },

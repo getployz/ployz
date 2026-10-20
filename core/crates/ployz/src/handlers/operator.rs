@@ -336,17 +336,20 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 return ended.map(drop);
             }
             if !matches!(ended, Ok(0))
-                && let Ok(Some(stopped)) = exec_container_stopped(client, &session.target).await
+                && let Ok(Ok(Some(stopped))) = tokio::time::timeout(
+                    EXEC_STOPPED_CHECK,
+                    exec_container_stopped(client, &session.target),
+                )
+                .await
             {
                 let hint = if stopped.another_runs {
                     Hint::Retry(format!("ployz exec {typed}"))
                 } else {
                     Hint::Inspect("ployz ps".into())
                 };
-                return Err(Error::from(OperatorError::ExecContainerStopped {
-                    service: session.target.service,
-                })
-                .hint(hint));
+                return Err(
+                    Error::from(OperatorError::ExecContainerStopped { service: typed }).hint(hint),
+                );
             }
             match ended? {
                 0 => Ok(()),
@@ -355,6 +358,10 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
         })
     })
 }
+
+/// How long a failed exec waits to learn whether its container stopped before it
+/// reports the command's own ending instead.
+const EXEC_STOPPED_CHECK: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Print an exec's output until it ends, and return its exit code; 0 once a
 /// detached command is confirmed started.

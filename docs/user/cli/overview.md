@@ -332,7 +332,7 @@ Scripts can tell failures apart by exit code:
 
 `ployz exec` exits with your command's own exit code. When the container stops under it,
 because a deploy replaced it or the service was stopped, it exits 1 with
-`web's container stopped; exec ended.` A `retry:` line follows when another container of the
+`The container for web stopped; exec ended.` A `retry:` line follows when another container of the
 service runs, and running it again attaches there.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,

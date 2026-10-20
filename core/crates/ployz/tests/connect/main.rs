@@ -136,12 +136,15 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
         (
             vec![web('b', running())],
             1,
-            Some(("web's container stopped; exec ended.", "ployz exec app/web")),
+            Some((
+                "The container for app/web stopped; exec ended.",
+                "ployz exec app/web",
+            )),
         ),
         (
             vec![web('a', ContainerRuntimeObservation::Exited { code: 137 })],
             1,
-            Some(("web's container stopped; exec ended.", "ployz ps")),
+            Some(("The container for app/web stopped; exec ended.", "ployz ps")),
         ),
         (vec![web('a', running())], 137, None),
     ] {
