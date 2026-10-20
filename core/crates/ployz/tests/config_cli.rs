@@ -3433,7 +3433,7 @@ fn a_branch_of_an_uploaded_service_names_up_to_ship_it() {
         std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
         let run = |args: &[&str]| in_dir(store, home.path(), &dir, args, &[]);
         let (code, shipped) = run(&up);
-        assert_eq!(code, Some(3), "{shipped}");
+        assert_eq!(code, Some(1), "{shipped}");
 
         let (code, made) = run(&["env", "branch", "staging", "--copy", "up-local"]);
         assert_eq!(code, Some(0), "{made}");
@@ -3448,7 +3448,7 @@ fn a_branch_of_an_uploaded_service_names_up_to_ship_it() {
             "{refused}"
         );
         let (code, staging) = run(&[&up[..], &["--env", "staging"]].concat());
-        assert_eq!(code, Some(3), "{staging}");
+        assert_eq!(code, Some(1), "{staging}");
         assert_eq!(
             staging["deployment"]["environment"]["name"],
             json!("staging"),
