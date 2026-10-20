@@ -112,6 +112,22 @@ up to the most **memLimit** allows, 1024 GB; set the size your app needs. A serv
 1024 GB gets no `next:` command: it has to use less memory. Nor does a service without a
 **memLimit**.
 
+## My new limit didn't apply
+
+**web: Server edge did not apply the new limits. The Container keeps serving with its previous
+limits.**, with Docker's reason as the cause, and `retry: ployz deploy …`
+
+A deploy that only changes the CPU limit or raises the Memory limit applies it to the running
+replica in place (see [Changing a limit](../services/settings.md#changing-a-limit)). Here the
+server refused. Nothing was replaced, and the replica still serves with its old limits.
+
+- Run the `retry:` command. A brief failure, such as a server that didn't answer in time, passes
+  on a second try.
+- If the cause is the same each time, the Container was likely changed on the server outside
+  Ployz, for example with `docker update`. Ployz has no command that only replaces a replica.
+  Deploy a change to another setting of the service at the same time, such as a variable, and
+  the deploy replaces the replica with the new limits.
+
 ## My running service fails its healthcheck
 
 A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the
