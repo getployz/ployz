@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -20,8 +20,9 @@ use crate::{
         Error as CorrosionError, IngressRouteAck, IngressRouteRow, ReplicatedObservations,
         ReplicatedStore, store_tests::identity_store, wait_for_catch_up,
     },
+    ingress::PublishedRoutes,
     machine::LocalMachineError,
-    route_acks::required_ackers,
+    route_acks::{required_ackers, routed},
     test_dir::TestDir,
 };
 
@@ -232,13 +233,34 @@ impl BootHost for FakeHost {
     }
 }
 
+/// What this Machine's ingress acked per Service, read from its row in `observed`
+/// as a process that published after catch-up would have it.
+fn own_acks(
+    local: &Machine,
+    observed: &Observed,
+) -> BTreeMap<QualifiedService, BTreeSet<ContainerId>> {
+    routed(observed.routes.clone(), &api())
+        .remove(&local.id)
+        .map(|containers| BTreeMap::from([(api(), containers)]))
+        .unwrap_or_default()
+}
+
+fn synced() -> watch::Receiver<bool> {
+    watch::channel(true).1
+}
+
 /// Ingress publishes again on its own every few seconds, so the pass never waits
 /// on a fake that has stopped publishing.
-fn published() -> watch::Receiver<u64> {
-    let (publishes, published) = watch::channel(0);
+fn published(
+    routes: BTreeMap<QualifiedService, BTreeSet<ContainerId>>,
+) -> watch::Receiver<PublishedRoutes> {
+    let (publishes, published) = watch::channel(PublishedRoutes::default());
     tokio::spawn(async move {
         while !publishes.is_closed() {
-            publishes.send_modify(|publishes| *publishes += 1);
+            publishes.send_modify(|published| {
+                published.count += 1;
+                published.routes.clone_from(&routes);
+            });
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });
@@ -246,8 +268,9 @@ fn published() -> watch::Receiver<u64> {
 }
 
 async fn pass(local: &Machine, observed: Observed) -> Vec<ContainerWant> {
+    let own = own_acks(local, &observed);
     let host = FakeHost::new(local, observed);
-    run(host.clone(), published()).await;
+    run(host.clone(), synced(), published(own)).await;
     host.wants()
 }
 
@@ -333,19 +356,33 @@ async fn store_at_version(dir: &TestDir, version: i64) -> (ReplicatedStore, rusq
     (store, db)
 }
 
+#[tokio::test(start_paused = true)]
+async fn stale_own_row_does_not_ack() {
+    let cluster = Cluster::new();
+    let host = FakeHost::new(&cluster.local, cluster.acked_everywhere());
+
+    run(host.clone(), synced(), published(BTreeMap::new())).await;
+
+    assert!(
+        host.wants().is_empty(),
+        "this Machine's row predates its power-off, and its ingress has not acked the Service since"
+    );
+}
+
 #[tokio::test]
-async fn waits_for_peer_targets_and_own_ack() {
+async fn waits_for_peer_targets_and_catch_up() {
     let dir = TestDir::new("ployzd-boot-pass");
     let (store, db) = store_at_version(&dir, 3).await;
     let cluster = Cluster::new();
+    let observed = cluster.acked_everywhere();
+    let own = own_acks(&cluster.local, &observed);
     let (peer, targets) = watch::channel(None);
     let host = FakeHost {
         targets,
         store: Some(store),
-        ..FakeHost::new(&cluster.local, cluster.acked_everywhere())
+        ..FakeHost::new(&cluster.local, observed)
     };
-    let (publishes, published) = watch::channel(0);
-    let running = tokio::spawn(run(host.clone(), published));
+    let running = tokio::spawn(run(host.clone(), synced(), published(own)));
 
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(host.wants().is_empty(), "no peer has answered yet");
@@ -354,23 +391,45 @@ async fn waits_for_peer_targets_and_own_ack() {
     assert!(host.wants().is_empty(), "the store is behind the peer");
     db.execute("UPDATE crsql_db_versions SET db_version = 5", [])
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert!(
-        host.wants().is_empty(),
-        "this Machine's ingress has not published since catch-up"
-    );
-    publishes.send_modify(|publishes| *publishes += 1);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        host.wants().is_empty(),
-        "the first publish since catch-up may have read the store before it"
-    );
-    assert!(!running.is_finished());
-    publishes.send_modify(|publishes| *publishes += 1);
     tokio::time::timeout(Duration::from_secs(5), running)
         .await
         .unwrap()
         .unwrap();
+
+    assert_eq!(host.wants(), vec![out(&cluster.old)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn waits_for_two_publishes_after_catch_up() {
+    let cluster = Cluster::new();
+    let observed = cluster.acked_everywhere();
+    let own = own_acks(&cluster.local, &observed);
+    let host = FakeHost::new(&cluster.local, observed);
+    let (publishes, published) = watch::channel(PublishedRoutes {
+        count: 1,
+        routes: own.clone(),
+    });
+    let running = tokio::spawn(run(host.clone(), synced(), published));
+    let publish = || {
+        publishes.send_modify(|published| {
+            published.count += 1;
+            published.routes.clone_from(&own);
+        });
+    };
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        host.wants().is_empty(),
+        "a publish before catch-up read the store before it"
+    );
+    publish();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        host.wants().is_empty(),
+        "the first publish since catch-up may have read the store before it"
+    );
+    publish();
+    running.await.unwrap();
 
     assert_eq!(host.wants(), vec![out(&cluster.old)]);
 }
@@ -384,7 +443,7 @@ async fn no_reachable_peer_does_nothing() {
     };
     let started = Instant::now();
 
-    run(host.clone(), published()).await;
+    run(host.clone(), synced(), published(BTreeMap::new())).await;
 
     assert_eq!(started.elapsed(), BOOT_PASS_WAIT);
     assert!(host.wants().is_empty());
@@ -394,10 +453,25 @@ async fn no_reachable_peer_does_nothing() {
 async fn times_out_once_and_does_nothing() {
     let cluster = Cluster::new();
     let host = FakeHost::new(&cluster.local, cluster.acked_everywhere());
-    let (_publishes, never_published) = watch::channel(0);
+    let (_publishes, never_published) = watch::channel(PublishedRoutes::default());
     let started = Instant::now();
 
-    run(host.clone(), never_published).await;
+    run(host.clone(), synced(), never_published).await;
+
+    assert_eq!(started.elapsed(), BOOT_PASS_WAIT);
+    assert!(host.wants().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn first_sync_counts_toward_the_deadline() {
+    let cluster = Cluster::new();
+    let observed = cluster.acked_everywhere();
+    let own = own_acks(&cluster.local, &observed);
+    let host = FakeHost::new(&cluster.local, observed);
+    let (_sync, never_synced) = watch::channel(false);
+    let started = Instant::now();
+
+    run(host.clone(), never_synced, published(own)).await;
 
     assert_eq!(started.elapsed(), BOOT_PASS_WAIT);
     assert!(host.wants().is_empty());

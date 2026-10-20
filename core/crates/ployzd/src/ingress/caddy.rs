@@ -139,7 +139,7 @@ pub async fn run<LoadDown, DownFuture>(
     load_down: LoadDown,
     config_file: PathBuf,
     admin_socket: PathBuf,
-    route_publishes: tokio::sync::watch::Sender<u64>,
+    route_publishes: tokio::sync::watch::Sender<super::PublishedRoutes>,
     shutdown: CancellationToken,
 ) -> io::Result<()>
 where
