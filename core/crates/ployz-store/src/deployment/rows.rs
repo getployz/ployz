@@ -324,7 +324,19 @@ impl Failure {
                     | HealthFailure::Runtime { .. } => "The Container failed its health check",
                 }
                 .to_owned(),
-                vec![failure.to_string()],
+                // The reason already says it: `restarting` alone adds nothing.
+                if matches!(
+                    failure,
+                    HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Restarting
+                            | ContainerRuntimeObservation::Dead,
+                        last_check: None,
+                    }
+                ) {
+                    Vec::new()
+                } else {
+                    vec![failure.to_string()]
+                },
             ),
             ExecutionError::DependencyHealth {
                 dependency,
@@ -840,6 +852,10 @@ mod tests {
     }
 
     fn reason(observation: ContainerRuntimeObservation) -> String {
+        failure(observation).reason
+    }
+
+    fn failure(observation: ContainerRuntimeObservation) -> Failure {
         Failure::of(
             &ExecutionError::Health {
                 container_id: ContainerId::parse("a".repeat(64)).unwrap(),
@@ -850,7 +866,6 @@ mod tests {
             },
             &[],
         )
-        .reason
     }
 
     #[test]
@@ -898,6 +913,19 @@ mod tests {
         assert_eq!(
             reason(ContainerRuntimeObservation::Dead),
             "The Container stopped"
+        );
+    }
+
+    #[test]
+    fn a_cause_that_repeats_the_reason_is_left_out() {
+        assert!(
+            failure(ContainerRuntimeObservation::Restarting)
+                .cause
+                .is_empty()
+        );
+        assert_eq!(
+            failure(ContainerRuntimeObservation::Exited { code: 1 }).cause,
+            ["exited with code 1"]
         );
     }
 }
