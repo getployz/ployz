@@ -151,6 +151,12 @@ impl ContainerRuntime {
         self
     }
 
+    /// Turns `true` once this process has published its container observations
+    /// while participating, and stays `true` across watch retries.
+    pub(crate) fn first_synced(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.first_synced.subscribe()
+    }
+
     pub async fn publish_observations(&self, shutdown: CancellationToken) -> Result<(), Error> {
         let Some(sink) = self.sink.clone() else {
             shutdown.cancelled().await;
@@ -339,6 +345,8 @@ impl ContainerRuntime {
         publication
             .apply_container_rows(&machine_id, &changes.deletions, &changes.upserts)
             .await?;
+        self.first_synced
+            .send_if_modified(|synced| !std::mem::replace(synced, true));
         // The one Service Container the daemon starts unasked, and only while this Machine
         // participates and accepts ingress. It starts an existing container; it never
         // creates, replaces, moves or removes one.
@@ -1003,12 +1011,16 @@ mod tests {
         assert_eq!(volumes.len(), 3, "a listed slot is not added twice");
     }
 
-    #[tokio::test]
-    async fn rotation_write_wakes_sync() {
-        use std::time::Duration;
+    struct Replicating {
+        runtime: super::ContainerRuntime,
+        replicated: crate::corrosion::ReplicatedStore,
+        corrosion: tokio::task::JoinHandle<()>,
+        container_id: ContainerId,
+        data_dir: std::path::PathBuf,
+    }
 
-        use ployz_core::{AdvertisedEndpoint, CopyRotation, MachineId, MachineName};
-        use tokio_util::sync::CancellationToken;
+    async fn replicating(rescan: std::time::Duration) -> Replicating {
+        use ployz_core::{AdvertisedEndpoint, MachineId, MachineName};
 
         use crate::corrosion::store_tests::{corrosion_db, identity_store};
         use crate::docker::test_support::runtime_with_running_container;
@@ -1034,10 +1046,33 @@ mod tests {
             .unwrap();
         let owner = RecordOwner::spawn(store).unwrap();
         let (replicated, corrosion) = identity_store(corrosion_db()).await;
-        let (runtime, _fake, id) = runtime_with_running_container().await;
+        let (runtime, _fake, container_id) = runtime_with_running_container().await;
         let runtime = runtime
             .replicating(replicated.clone(), owner, crate::storage::Plugin::default())
-            .with_rescan_interval(Duration::from_secs(3600));
+            .with_rescan_interval(rescan);
+        Replicating {
+            runtime,
+            replicated,
+            corrosion,
+            container_id,
+            data_dir,
+        }
+    }
+
+    #[tokio::test]
+    async fn rotation_write_wakes_sync() {
+        use std::time::Duration;
+
+        use ployz_core::CopyRotation;
+        use tokio_util::sync::CancellationToken;
+
+        let Replicating {
+            runtime,
+            replicated,
+            corrosion,
+            container_id: id,
+            data_dir,
+        } = replicating(Duration::from_secs(3600)).await;
         let shutdown = CancellationToken::new();
         let publisher = tokio::spawn({
             let (runtime, shutdown) = (runtime.clone(), shutdown.clone());
@@ -1072,6 +1107,75 @@ mod tests {
 
         shutdown.cancel();
         publisher.await.unwrap().unwrap();
+        corrosion.abort();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn first_sync_signals_once() {
+        use std::time::Duration;
+
+        use tokio_util::sync::CancellationToken;
+
+        let Replicating {
+            runtime,
+            replicated,
+            corrosion,
+            container_id,
+            data_dir,
+        } = replicating(Duration::from_millis(20)).await;
+        let sink = runtime.sink.clone().unwrap();
+        let mut synced = runtime.first_synced();
+        let run_awhile = async |watcher: tokio::task::JoinHandle<()>,
+                                shutdown: CancellationToken| {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            shutdown.cancel();
+            watcher.await.unwrap();
+        };
+        let volumes = |shutdown: CancellationToken| {
+            let (runtime, sink) = (runtime.clone(), sink.clone());
+            tokio::spawn(async move {
+                runtime
+                    .watch_volume_observations(&sink, &shutdown)
+                    .await
+                    .unwrap();
+            })
+        };
+        let containers = |shutdown: CancellationToken| {
+            let (runtime, sink) = (runtime.clone(), sink.clone());
+            tokio::spawn(async move {
+                runtime.watch_observations(&sink, &shutdown).await.unwrap();
+            })
+        };
+
+        let shutdown = CancellationToken::new();
+        run_awhile(volumes(shutdown.clone()), shutdown).await;
+        assert!(
+            !*synced.borrow_and_update(),
+            "the Volume observer never signals"
+        );
+
+        let shutdown = CancellationToken::new();
+        let first = containers(shutdown.clone());
+        tokio::time::timeout(Duration::from_secs(5), synced.changed())
+            .await
+            .expect("the first sync signals")
+            .unwrap();
+        assert!(*synced.borrow_and_update());
+        assert!(
+            replicated.container(&container_id).await.unwrap().is_some(),
+            "the signal follows the published observation"
+        );
+        run_awhile(first, shutdown).await;
+
+        let shutdown = CancellationToken::new();
+        run_awhile(containers(shutdown.clone()), shutdown).await;
+        assert!(
+            !synced.has_changed().unwrap(),
+            "rescans and a retried watch leave the signal as it was"
+        );
+        assert!(*synced.borrow());
+
         corrosion.abort();
         let _ = std::fs::remove_dir_all(data_dir);
     }

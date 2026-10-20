@@ -23,6 +23,8 @@ export const organizationRemovalAsked = ({ id, slug }: { id: string; slug: strin
   name: slug,
   preview: { organization: slug },
   effects: [{ kind: "removes_organization", name: slug, node: id, path: `organizations/${id}` }],
+  // Carrying its approval again finishes the removal it began, once a Server that was offline confirms.
+  recorded: true,
 });
 
 /**

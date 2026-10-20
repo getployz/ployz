@@ -12,8 +12,8 @@ use ployz_core::{
     READ_ROUTES_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
     SELECT_ENDPOINT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, op,
+    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -62,6 +62,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1"),
         (SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1"),
+        (SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1"),
         (LIST_IMAGES_CAPABILITY, "ployz.image.list.v1"),
         (PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1"),
         (
@@ -141,6 +142,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.volume.copy.inspect.v1",
             "ployz.volume.seed.v1",
             "ployz.volume.copy.set.v1",
+            "ployz.volume.size.set.v1",
             "ployz.image.list.v1",
             "ployz.image.prune.v1",
             "ployz.image.ingest.ensure.v1",
@@ -268,6 +270,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
+    ),
+    (
+        "ployz.volume.size.set.v1",
+        "gated: a caller checks the contract first and refuses the resize, naming the Server whose daemon lacks it",
     ),
 ];
 
