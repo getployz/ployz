@@ -4,6 +4,7 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::RpcErrorCode;
 use std::path::Path;
+use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
@@ -783,41 +784,53 @@ pub(crate) fn word(value: &impl serde::Serialize) -> String {
 /// A value as a change line shows it: a long one cut to the start that fits 80 columns, and its length, so one big variable doesn't fill the terminal.
 pub(crate) fn shown(value: &serde_json::Value) -> String {
     const SHOWN: usize = 80;
-    let length = value.as_str().map_or_else(
-        || value.to_string().chars().count(),
-        |text| text.chars().count(),
-    );
     let text = value.to_string();
-    if length <= SHOWN {
-        return crate::ui::escaped(&text);
+    let (start, whole) = fitted(&text, SHOWN);
+    if whole {
+        return start;
     }
-    let mut width = 0;
-    let start: String = pieces(&text)
-        .take_while(|piece| {
-            width += piece.width();
-            width <= SHOWN
-        })
-        .collect();
+    let length = value
+        .as_str()
+        .map_or_else(|| text.chars().count(), |raw| raw.chars().count());
     format!("{start}… ({length} chars)")
 }
 
+/// JSON `text` as shown, kept piece by piece while it fits `columns`, and whether all of it did.
+fn fitted(text: &str, columns: usize) -> (String, bool) {
+    let mut start = String::new();
+    let mut width = 0;
+    for piece in pieces(text) {
+        width += piece.width();
+        if width > columns {
+            return (start, false);
+        }
+        start.push_str(&piece);
+    }
+    (start, true)
+}
+
 /// JSON `text` as shown, in pieces a cut must not split: a JSON escape such as `\n` or
-/// `\u0001`, each [`crate::ui::unprintable`] character as its `\u{…}` escape, or one character.
+/// `\u0001`, each [`crate::ui::unprintable`] character as its `\u{…}` escape, or one grapheme
+/// cluster, measured whole since its marks and selectors change its width.
 fn pieces(text: &str) -> impl Iterator<Item = String> + '_ {
-    let mut chars = text.chars();
+    let mut rest = text;
     std::iter::from_fn(move || {
-        let c = chars.next()?;
-        Some(match c {
-            '\\' => {
-                let escape = chars.next();
-                let digits = if escape == Some('u') { 4 } else { 0 };
-                std::iter::once(c)
-                    .chain(escape)
-                    .chain(chars.by_ref().take(digits))
-                    .collect()
-            }
-            c => crate::ui::escaped(c.encode_utf8(&mut [0; 4])),
-        })
+        let c = rest.chars().next()?;
+        let (piece, length) = if c == '\\' {
+            let length = if rest.get(1..2) == Some("u") { 6 } else { 2 };
+            let escape = rest.get(..length).unwrap_or(rest);
+            (escape.to_owned(), escape.len())
+        } else if crate::ui::unprintable(c) {
+            (crate::ui::escaped(c.encode_utf8(&mut [0; 4])), c.len_utf8())
+        } else {
+            let printable = rest
+                .find(|c| c == '\\' || crate::ui::unprintable(c))
+                .map_or(rest, |end| rest.get(..end).unwrap_or(rest));
+            let grapheme = printable.graphemes(true).next().unwrap_or(printable);
+            (grapheme.to_owned(), grapheme.len())
+        };
+        rest = rest.get(length..).unwrap_or_default();
+        Some(piece)
     })
 }
 
@@ -1121,6 +1134,20 @@ mod tests {
         assert_eq!(cut(78, '界'), format!("\"{}… (91 chars)", a(78)));
         assert_eq!(cut(78, '😀'), format!("\"{}… (91 chars)", a(78)));
         assert_eq!(cut(77, '界'), format!("\"{}界… (91 chars)", a(77)));
+    }
+
+    #[test]
+    fn a_value_is_measured_in_columns_by_grapheme() {
+        let wide = |c: &str| format!("\"{}… (40 chars)", c.repeat(39));
+        assert_eq!(shown(&json!("界".repeat(40))), wide("界"));
+        assert_eq!(shown(&json!("😀".repeat(40))), wide("😀"));
+        let marked = format!("{}\u{301}\u{301}\u{301}", "a".repeat(78));
+        assert_eq!(shown(&json!(marked)), format!("\"{marked}\""));
+        let heart = format!("{}\u{2764}\u{FE0F}", "a".repeat(78));
+        assert_eq!(
+            shown(&json!(heart)),
+            format!("\"{}… (80 chars)", "a".repeat(78))
+        );
     }
 
     #[test]
