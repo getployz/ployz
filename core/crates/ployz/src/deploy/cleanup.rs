@@ -475,12 +475,13 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     };
     let brought = bring_in(client, &held, spec, Some(run)).await;
     if let Err(mut error) = stopped {
-        error.message.push_str(match brought {
-            Ok(BroughtIn::In) => " It is back In.",
+        let left = match brought {
+            Ok(BroughtIn::In) => "It is back In.",
             Ok(BroughtIn::NotIn { .. } | BroughtIn::Refused(_)) | Err(_) => {
-                " It is left Held and not routed."
+                "It is left Held and not routed."
             }
-        });
+        };
+        error.message = format!("{}. {left}", error.message.trim_end_matches('.'));
         return Err(error);
     }
     started(&held, brought?)
