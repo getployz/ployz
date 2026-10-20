@@ -122,7 +122,7 @@ pub(crate) async fn retire_ingress_proxy<C: MachineOperations>(
 pub(crate) async fn let_go<C: MachineOperations>(
     client: &C,
     copy: &Copy,
-    name: &dyn Fn(&MachineId) -> MachineRef,
+    name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
     cancellation: &CancellationToken,
 ) -> OldCopyEnd {
     let proxies = |waiting: &cleanup::Unconfirmed| Unconfirmed::Proxies {
