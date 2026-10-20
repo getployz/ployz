@@ -1,10 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "53e9fdcd-09f8-43cf-9911-ed7b51177268",
+  "id": "282ea8ec-0357-4451-9157-0f9389aacb37",
   "prevIds": [
-    "2e03ecd5-7f60-4bf2-8ae5-23aff8fd0495",
-    "d8deedbd-7c25-4f78-985d-1d2777fd29b3"
+    "f55f9aec-39c8-4168-90fc-378bd8bbf1ba"
   ],
   "ddl": [
     {
@@ -5016,6 +5015,32 @@
       "generated": null,
       "identity": null,
       "name": "suspended_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "github_installation"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "repositories_synced_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "github_installation"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "repositories_version",
       "entityType": "columns",
       "schema": "public",
       "table": "github_installation"
