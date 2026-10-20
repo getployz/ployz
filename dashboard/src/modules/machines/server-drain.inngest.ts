@@ -17,7 +17,8 @@ type EffectRunner = typeof runInngestEffect;
 
 /**
  * How long a Drain whose Server doesn't answer waits before it tries again: a Server that answers again is drained
- * within it, and a try spends 2 of a run's 1,000 Inngest steps, so waiting out `DRAIN_PENDING_LIMIT_MS` takes about 90.
+ * within it, and a try spends 2 of a run's 1,000 Inngest steps, so waiting out `DRAIN_PENDING_LIMIT_MS` takes at
+ * most about 90.
  */
 const SERVER_WAIT = "20s";
 
