@@ -33,23 +33,34 @@ pub(crate) fn container_log_config() -> HostConfigLogConfig {
     }
 }
 
+/// Set at create, outside the spec, so changing these never replaces Caddy.
+///
 /// Caddy binds a fresh `SO_REUSEPORT` listener on every reload and closes the old one.
-/// Without migration the kernel resets connections still queued on the closing listener.
-pub(super) fn migrate_ingress_requests(
+/// Without `tcp_migrate_req` the kernel resets connections still queued on the closing
+/// listener.
+///
+/// A request written to a powered-off upstream waits for retransmits, which `dial_timeout`
+/// doesn't cover and the default 15 take about 15 minutes. `tcp_retries2=5` gives up in
+/// about 14s, and Caddy retries a GET on another upstream.
+pub(super) fn ingress_sysctls(
     body: &mut ContainerCreateBody,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
-    kernel_supports: bool,
+    kernel_supports_migrate_req: bool,
 ) {
-    if kernel_supports
-        && QualifiedService::new(namespace.clone(), spec.name.clone())
-            == QualifiedService::system_ingress()
+    if QualifiedService::new(namespace.clone(), spec.name.clone())
+        != QualifiedService::system_ingress()
     {
-        body.host_config
-            .get_or_insert_default()
-            .sysctls
-            .get_or_insert_default()
-            .insert(TCP_MIGRATE_REQ.into(), "1".into());
+        return;
+    }
+    let sysctls = body
+        .host_config
+        .get_or_insert_default()
+        .sysctls
+        .get_or_insert_default();
+    sysctls.insert("net.ipv4.tcp_retries2".into(), "5".into());
+    if kernel_supports_migrate_req {
+        sysctls.insert(TCP_MIGRATE_REQ.into(), "1".into());
     }
 }
 
