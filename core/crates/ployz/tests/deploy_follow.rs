@@ -711,17 +711,22 @@ fn losing_cloud_after_a_replacement_names_the_deployment_being_followed() {
     );
 }
 
-/// Deployment `number` named `named`, with a Service node for each of `ships`.
-fn narrowed(number: u32, status: DeploymentStatus, named: &str, ships: &[&str]) -> DeploymentView {
+/// Deployment `number` named `named`, with a Service node of each `(name, outcome)`.
+fn narrowed(
+    number: u32,
+    status: DeploymentStatus,
+    named: &str,
+    nodes: &[(&str, &str)],
+) -> DeploymentView {
     let mut view = view(number, status);
     view.deployment.services = serde_json::from_value(json!([named])).unwrap();
-    view.nodes = ships
+    view.nodes = nodes
         .iter()
         .enumerate()
-        .map(|(n, name)| {
+        .map(|(n, (name, outcome))| {
             serde_json::from_value(json!({
                 "type": "service", "id": format!("dddddddd-dddd-4ddd-8ddd-dddddddddd{n:02}"),
-                "name": name, "outcome": "pending",
+                "name": name, "outcome": outcome,
             }))
             .unwrap()
         })
@@ -743,32 +748,41 @@ fn listed(newer: &DeploymentView) -> Reply {
             deployments: vec![newer.deployment.clone()],
             next_cursor: None,
             latest: Some(newer.deployment.clone()),
-            in_flight: vec![newer.deployment.clone()],
+            in_flight: if newer.deployment.status.in_flight() {
+                vec![newer.deployment.clone()]
+            } else {
+                Vec::new()
+            },
         })))
         .unwrap(),
         ..replacement()
     }
 }
 
-/// `deploy web`, superseded by `deploy client`, as the CLI ends it.
-fn superseded_by_client(client_ships: &[&str]) -> Output {
+/// `deploy web`, superseded by `newer`, which the CLI reads back as `candidate`;
+/// `follows` scripts the reads that follow `newer` to its end.
+fn superseded_by(newer: &DeploymentView, candidate: Reply, follows: bool) -> Output {
     let root = tempfile::tempdir().unwrap();
-    let ours = narrowed(7, DeploymentStatus::Queued, "web", &["web"]);
-    let superseded = narrowed(7, DeploymentStatus::Superseded, "web", &["web"]);
-    let newer = narrowed(8, DeploymentStatus::Running, "client", client_ships);
-    let mut applied = newer.clone();
-    applied.deployment.status = DeploymentStatus::Applied;
+    let ours = narrowed(7, DeploymentStatus::Queued, "web", &[("web", "pending")]);
+    let superseded = narrowed(
+        7,
+        DeploymentStatus::Superseded,
+        "web",
+        &[("web", "pending")],
+    );
     let mut replies = vec![
         Reply {
             body: serde_json::to_value(Written::Deployment(ours.deployment)).unwrap(),
             ..admitted()
         },
         read(&superseded),
-        listed(&newer),
-        read(&newer),
+        listed(newer),
+        candidate,
     ];
-    if client_ships.contains(&"web") {
-        replies.extend([read(&newer), read(&applied)]);
+    if follows {
+        let mut applied = newer.clone();
+        applied.deployment.status = DeploymentStatus::Applied;
+        replies.extend([read(newer), read(&applied)]);
     }
     let events = root.path().join("events.ndjson");
     let Run { output, .. } = cli_run(
@@ -788,9 +802,22 @@ fn superseded_by_client(client_ships: &[&str]) -> Output {
     output
 }
 
+fn ended_superseded(output: &Output) {
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("number"), Some(&json!(7)), "{result}");
+    assert_eq!(result.get("status"), Some(&json!("superseded")), "{result}");
+}
+
 #[test]
 fn a_superseded_narrowed_deploy_follows_a_newer_one_that_ships_its_service_by_reference() {
-    let output = superseded_by_client(&["client", "web"]);
+    let newer = narrowed(
+        8,
+        DeploymentStatus::Running,
+        "client",
+        &[("client", "pending"), ("web", "pending")],
+    );
+    let output = superseded_by(&newer, read(&newer), true);
     assert!(
         output.status.success(),
         "{}",
@@ -803,9 +830,40 @@ fn a_superseded_narrowed_deploy_follows_a_newer_one_that_ships_its_service_by_re
 
 #[test]
 fn a_superseded_narrowed_deploy_stops_when_the_newer_one_leaves_its_service_out() {
-    let output = superseded_by_client(&["client"]);
-    assert_eq!(output.status.code(), Some(3), "{output:?}");
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result.get("number"), Some(&json!(7)), "{result}");
-    assert_eq!(result.get("status"), Some(&json!("superseded")), "{result}");
+    let newer = narrowed(
+        8,
+        DeploymentStatus::Running,
+        "client",
+        &[("client", "pending")],
+    );
+    ended_superseded(&superseded_by(&newer, read(&newer), false));
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_stops_when_the_newer_one_left_its_service_unchanged() {
+    for outcome in ["unchanged", "not_attempted"] {
+        let newer = narrowed(
+            8,
+            DeploymentStatus::Applied,
+            "client",
+            &[("client", "deployed"), ("web", outcome)],
+        );
+        ended_superseded(&superseded_by(&newer, read(&newer), false));
+    }
+}
+
+#[test]
+fn a_superseded_narrowed_deploy_keeps_its_result_when_reading_the_newer_one_fails() {
+    let newer = narrowed(
+        8,
+        DeploymentStatus::Running,
+        "client",
+        &[("client", "pending"), ("web", "pending")],
+    );
+    let failed = Reply {
+        status: 500,
+        body: json!({"error": {"code": "internal", "message": "boom"}}),
+        ..read(&newer)
+    };
+    ended_superseded(&superseded_by(&newer, failed, false));
 }
