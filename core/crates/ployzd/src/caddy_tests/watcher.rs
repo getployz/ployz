@@ -58,6 +58,7 @@ async fn reconciles_resnapshots_and_retries_protocol_failures() {
         no_down,
         caddyfile.clone(),
         directory.join("missing-admin.sock"),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
     ));
 
@@ -151,6 +152,7 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         config_file,
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -310,6 +312,7 @@ async fn replacing_the_local_caddy_process_reloads_an_unchanged_projection() {
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -349,6 +352,7 @@ async fn periodic_resnapshot_recovers_a_missed_change_notification() {
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -443,6 +447,7 @@ async fn transient_apply_failure_retries_without_a_replicated_event() {
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -488,6 +493,7 @@ async fn rotation_flips_reload_caddy_with_in_upstreams() {
         no_down,
         caddyfile.clone(),
         directory.join("missing-admin.sock"),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
     ));
     let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
@@ -536,6 +542,7 @@ async fn a_down_machine_leaves_caddy_while_another_copy_serves() {
         load_down,
         caddyfile.clone(),
         directory.join("missing-admin.sock"),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
     ));
     let caddy = wait_for_caddyfile(&caddyfile, "10.210.2.2:80").await;
@@ -570,6 +577,7 @@ async fn ingress_never_reads_or_subscribes_to_ingress_routes() {
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -651,6 +659,7 @@ async fn certificate_only_reload_writes_no_ack() {
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -687,6 +696,7 @@ async fn empty_route_writes_empty_ack() {
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -723,6 +733,7 @@ async fn removed_service_deletes_its_ack() {
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -788,6 +799,7 @@ async fn committed_ack_with_a_lost_response_is_rewritten_when_the_route_returns(
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -829,6 +841,7 @@ async fn ack_written_without_a_caddy_admin() {
         no_down,
         caddyfile.clone(),
         directory.join("missing-admin.sock"),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
     ));
 
@@ -864,6 +877,7 @@ async fn no_ack_when_the_caddy_load_fails() {
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
         no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(false).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -884,6 +898,85 @@ async fn no_ack_when_the_caddy_load_fails() {
         .unwrap();
     state.wait_for_ack_transactions(1).await;
     assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn first_publish_signals_once() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let stale = observation(
+        3,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 4]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    );
+    state.transactions.lock().unwrap().push(vec![Statement {
+        query: "INSERT INTO ingress_routes (machine_id, service, deploy, containers) VALUES (?, ?, ?, ?)"
+            .into(),
+        params: ack(&machine, &[&stale]),
+    }]);
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let admin = RetryAdmin {
+        attempts: Arc::clone(&attempts),
+        loads: load_tx,
+    };
+    let (first_publish, mut published) = tokio::sync::watch::channel(false);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        first_publish,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    timeout(Duration::from_millis(500), async {
+        while attempts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first load was not attempted");
+    assert_eq!(state.ack_transactions(), 1, "only the stale row exists");
+    assert!(
+        !*published.borrow_and_update(),
+        "a stale row is not this process's publish"
+    );
+
+    timeout(Duration::from_secs(2), load_rx.recv())
+        .await
+        .expect("failed load was not retried")
+        .unwrap();
+    timeout(Duration::from_secs(5), published.changed())
+        .await
+        .expect("the first publish signals")
+        .unwrap();
+    assert!(*published.borrow_and_update());
+    assert_eq!(state.ack_transactions(), 2);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
+
+    state.set_rotation(first.container_id, CopyRotation::Out);
+    state.wait_for_ack_transactions(3).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !published.has_changed().unwrap(),
+        "later publishes leave the signal as it was"
+    );
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
