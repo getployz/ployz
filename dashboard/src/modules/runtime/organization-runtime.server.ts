@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { Connection, MachineId } from "@ployz/sdk";
-import { Clock, Context, Data, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
+import { Context, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
 import {
   Ployz,
   PloyzProviderError,
@@ -33,44 +33,10 @@ export const ORGANIZATION_CONNECT_TIMEOUT = "30 seconds";
 export const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
 
 /**
- * How long into a CLI call its Cluster reads may run. The CLI waits 60 seconds for an operation's answer
- * (`OPERATION_TIMEOUT` in core's cloud_account.rs); ending the reads 10 seconds short leaves the rest for writing what
- * was planned and answering.
+ * How long an operation's plan may spend reading the Cluster, all its reads together. The CLI gives the whole request
+ * 60 seconds, and a plan that reads twice could otherwise spend a connect and a frame ceiling on each read.
  */
-export const CLI_CLUSTER_DEADLINE_MS = 50_000;
-
-/** A Cluster read with less than this left before its request's deadline is refused without being started. */
-export const CLUSTER_READ_FLOOR_MS = 1_000;
-
-/**
- * When the request reading the Cluster must have its answer, in Clock milliseconds: a CLI call's, or null for a run
- * step or a page, whose reads keep only their own ceilings.
- */
-export const ClusterDeadline = Context.Reference<number | null>("ployz/ClusterDeadline", { defaultValue: () => null });
-
-/** The request's deadline cut a Cluster read, or left too little time to start one. */
-export class ClusterOutOfTime extends Data.TaggedError("ClusterOutOfTime") {}
-
-/** `self` with its Cluster reads ending `ms` from now, or sooner when an outer deadline ends first. */
-export const withClusterDeadline = (ms: number) => <A, E, R>(self: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const at = (yield* Clock.currentTimeMillis) + ms;
-    const outer = yield* ClusterDeadline;
-    return yield* self.pipe(Effect.provideService(ClusterDeadline, outer === null ? at : Math.min(outer, at)));
-  });
-
-/**
- * One Cluster read, cut at its request's deadline on top of its own ceiling, and refused unstarted when too little time
- * is left. Only Cluster I/O goes through here, never a pooled SQL query: interrupting one makes the SQL client send
- * pg_cancel_backend later, which can cancel whatever statement that connection runs next.
- */
-export const clusterRead = <A, E, R>(read: Effect.Effect<A, E, R>) => Effect.gen(function* () {
-  const deadline = yield* ClusterDeadline;
-  if (deadline === null) return yield* read;
-  const left = deadline - (yield* Clock.currentTimeMillis);
-  if (left < CLUSTER_READ_FLOOR_MS) return yield* new ClusterOutOfTime();
-  return yield* read.pipe(Effect.timeoutOrElse({ duration: left, orElse: () => Effect.fail(new ClusterOutOfTime()) }));
-});
+export const OPERATION_OBSERVE_DEADLINE_MS = 45_000;
 
 export type ConnectedRuntimeClient = PloyzSession;
 
@@ -187,7 +153,6 @@ export function makeOrganizationRuntimeLayer(
             yield* Deferred.succeed(cancelled, undefined);
           }));
           const noConnection = { status: "no_connection" as const };
-          // Loading reads the database, so only the connect below runs under the request's deadline.
           return yield* Effect.gen(function* () {
             // Taken before loading, so a change committed while loading is still seen.
             // Uninterruptible for the same reason as the watcher: the cancel race below can interrupt it.
@@ -214,14 +179,13 @@ export function makeOrganizationRuntimeLayer(
                   cause: new Error("Connecting to the organization's machines timed out"),
                 })),
               }),
-              clusterRead,
               // Forked outside the session scope so the check can close that scope.
               Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
                 connected,
               })),
-              Effect.catch((error) => error instanceof ClusterOutOfTime ? Effect.fail(error) : Effect.succeed(session.closed ? noConnection : ({
+              Effect.catch((error) => Effect.succeed(session.closed ? noConnection : ({
                 status: "unreachable" as const,
                 error,
               }))),
@@ -262,12 +226,12 @@ export const OrganizationRuntimeLive = Layer.unwrap(
 /**
  * One Runtime Watch frame of the Organization's Cluster, for an operation that refuses without one: null when no
  * Cluster is paired. A fresh connection through the relay can take longer than a glance allows, so only the connect
- * phase and the frame are bounded, each by its own ceiling and the request's deadline.
+ * phase and the frame are bounded, each by its own ceiling.
  */
 export const operationRuntimeFrame = Effect.fn("OrganizationRuntime.operationFrame")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") return null;
-  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
+  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
 }, Effect.scoped);
 
 /**

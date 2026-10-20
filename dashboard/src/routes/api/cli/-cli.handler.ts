@@ -53,7 +53,6 @@ import { slugifySegment } from "#/utils/slug";
 import { NotFound, Validation } from "#/server/public-error";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
-import { CLI_CLUSTER_DEADLINE_MS, withClusterDeadline } from "#/modules/runtime/organization-runtime.server";
 import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 
 const NewToken = Schema.Struct({
@@ -177,8 +176,6 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
  * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
- * The call's Cluster reads end at one deadline counted from its start, so time spent on the Caller, the Store and the
- * database before them leaves them less.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -493,7 +490,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     default:
       return yield* new NotFound({ message: "Not found." });
   }
-}, withClusterDeadline(CLI_CLUSTER_DEADLINE_MS));
+});
 
 function cliWaitingServer(server: WaitingServerView) {
   return {

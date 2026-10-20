@@ -6,10 +6,9 @@ import { asTestDouble } from "#/lib/test-double";
 import { planClean, planRemove, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import {
-  CLI_CLUSTER_DEADLINE_MS,
   makeOrganizationRuntimeLayer,
+  OPERATION_OBSERVE_DEADLINE_MS,
   ORGANIZATION_CONNECT_TIMEOUT,
-  withClusterDeadline,
 } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
@@ -82,23 +81,9 @@ const noOwners = Layer.succeed(CloudStore, {
   open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async () => ({ namespaces: [] }) })),
 });
 
-const settle = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
-const unanswered = (exit: Exit.Exit<unknown, unknown> | undefined) =>
-  exit !== undefined && Exit.isSuccess(exit) && exit.value instanceof Conflict && exit.value.message === UNREACHABLE_MESSAGE;
-
-it.effect("a clean whose Store read takes 45 seconds and whose data loss never comes back refuses at 50, before the CLI gives up at 60", () =>
+it.effect("a clean whose data loss never comes back is reported as not answering once the plan's deadline passes", () =>
   Effect.gen(function* () {
-    const reading = yield* Deferred.make<void>();
     const asking = yield* Deferred.make<void>();
-    let read: () => void = () => {};
-    const slowStore = Layer.succeed(CloudStore, {
-      open: Effect.succeed(asTestDouble<ConfigStore>()({
-        read: () => new Promise((resolve) => {
-          read = () => resolve({ namespaces: [] });
-          Effect.runSync(Deferred.succeed(reading, undefined));
-        }),
-      })),
-    });
     const layer = makeOrganizationRuntimeLayer(
       () => Effect.succeed({ kind: "ready", generation: "current", connections }),
       noPairingChanges,
@@ -111,50 +96,12 @@ it.effect("a clean whose Store read takes 45 seconds and whose data loss never c
         },
         runtime: { watch: async function* () { yield frame; } },
       }),
-    })), Layer.merge(slowStore));
-    // The CLI handler starts the clock when the request comes in, before the Store read.
-    const planning = yield* planClean("org-1", "stray").pipe(
-      withClusterDeadline(CLI_CLUSTER_DEADLINE_MS), Effect.provide(layer), Effect.flip, Effect.forkChild,
-    );
-    yield* Deferred.await(reading);
-    yield* TestClock.adjust("45 seconds");
-    read();
-    yield* Deferred.await(asking);
-    yield* TestClock.adjust("5 seconds");
-    yield* settle;
-    assert.isTrue(unanswered(planning.pollUnsafe()));
-  }),
-);
-
-it.effect("a connections query held past the deadline is not interrupted, and the clean then refuses without dialing", () =>
-  Effect.gen(function* () {
-    const querying = yield* Deferred.make<void>();
-    const answer = yield* Deferred.make<void>();
-    let interrupted = false;
-    let dials = 0;
-    const layer = makeOrganizationRuntimeLayer(
-      () => Deferred.succeed(querying, undefined).pipe(
-        Effect.andThen(Deferred.await(answer)),
-        Effect.onInterrupt(() => Effect.sync(() => { interrupted = true; })),
-        Effect.as({ kind: "ready" as const, generation: "current", connections }),
-      ),
-      noPairingChanges,
-    ).pipe(Layer.provide(makePloyzLayer({
-      connect: async () => {
-        dials += 1;
-        return client;
-      },
     })), Layer.merge(noOwners));
-    const planning = yield* planClean("org-1", "stray").pipe(
-      withClusterDeadline(CLI_CLUSTER_DEADLINE_MS), Effect.provide(layer), Effect.flip, Effect.forkChild,
-    );
-    yield* Deferred.await(querying);
-    yield* TestClock.adjust("55 seconds");
-    yield* settle;
-    assert.isFalse(interrupted);
-    assert.isUndefined(planning.pollUnsafe());
-    yield* Deferred.succeed(answer, undefined);
-    assert.isTrue(unanswered(Exit.succeed(yield* Fiber.join(planning))));
-    assert.strictEqual(dials, 0);
+    const planning = yield* planClean("org-1", "stray").pipe(Effect.provide(layer), Effect.flip, Effect.forkChild);
+    yield* Deferred.await(asking);
+    yield* TestClock.adjust(OPERATION_OBSERVE_DEADLINE_MS);
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    const settled = planning.pollUnsafe();
+    assert.isTrue(settled !== undefined && Exit.isSuccess(settled) && settled.value instanceof Conflict && settled.value.message === UNREACHABLE_MESSAGE);
   }),
 );
