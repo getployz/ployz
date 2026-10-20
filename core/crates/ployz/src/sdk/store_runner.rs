@@ -710,6 +710,7 @@ impl Run {
             status,
             message,
             log,
+            server: None,
         }))
         .await
     }

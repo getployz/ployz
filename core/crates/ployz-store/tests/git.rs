@@ -373,6 +373,7 @@ fn report(status: BuildStatus, message: Option<&str>, log: &str) -> RunEvidence 
         status,
         message: message.map(Into::into),
         log: log.into(),
+        server: None,
     })
 }
 
@@ -1035,6 +1036,72 @@ fn a_build_clock_starts_at_building_clears_when_skipped_and_reopens_for_a_later_
         clock(),
         (BuildStatus::Building, again, None),
         "a later Builder reopens the clock and keeps its start"
+    );
+}
+
+#[test]
+fn a_build_names_the_server_that_built_it_and_why_github_passed_it_on() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+    store
+        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .unwrap();
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    let why = "acme/web has no .github/workflows/ployz-build.yml on its default branch";
+    store
+        .github_end(
+            &id,
+            None,
+            &GithubEnd::Skipped {
+                message: why.into(),
+            },
+        )
+        .unwrap();
+
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    store.claim(&deployment, &runner).unwrap();
+    for (status, server) in [
+        (BuildStatus::Building, None),
+        (BuildStatus::Building, Some("machine-1")),
+        (BuildStatus::Built, None),
+    ] {
+        store
+            .record(
+                &deployment,
+                &runner,
+                RunEvidence::Build(BuildReport {
+                    service: ServiceName::parse("web").unwrap(),
+                    status,
+                    message: None,
+                    log: String::new(),
+                    server: server.map(Into::into),
+                }),
+            )
+            .unwrap();
+    }
+    let build = store
+        .read(
+            &who,
+            &BuildLogQuery {
+                deployment,
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap()
+        .build;
+    assert_eq!(build.status, BuildStatus::Built);
+    assert_eq!(
+        build.server.as_deref(),
+        Some("machine-1"),
+        "a report that names no Server keeps the one that builds it"
+    );
+    assert_eq!(
+        build.github_skipped.as_deref(),
+        Some(why),
+        "the reason GitHub passed it on outlives the Server's reports"
     );
 }
 

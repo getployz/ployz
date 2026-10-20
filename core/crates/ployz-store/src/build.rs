@@ -73,6 +73,9 @@ pub struct BuildReport {
     /// Why it failed. Users read it: it holds no secret.
     pub message: Option<String>,
     pub log: String,
+    /// The Server building it, by name, once one was chosen.
+    #[serde(default)]
+    pub server: Option<String>,
 }
 
 /// One build of a Deployment.
@@ -95,6 +98,13 @@ pub struct BuildView {
     #[serde(default)]
     #[ts(type = "number | null")]
     pub finished_at: Option<i64>,
+    /// The Server that built it, by name; none until one starts it, and when GitHub
+    /// builds it.
+    #[serde(default)]
+    pub server: Option<String>,
+    /// Why GitHub passed it to the next Builder, when it did.
+    #[serde(default)]
+    pub github_skipped: Option<String>,
 }
 
 /// Ask for the log of `service`'s build in `deployment`; `not_found` when that
@@ -309,6 +319,8 @@ impl BuildRow {
             message: self.message.clone(),
             started_at: self.started,
             finished_at: self.finished,
+            server: None,
+            github_skipped: None,
         }
     }
 }

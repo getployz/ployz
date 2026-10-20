@@ -11,6 +11,7 @@ use crate::ui::{self, Hint};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 
+use ployz_core::MachineObservation;
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
     NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
@@ -334,6 +335,13 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     edit(root, changes)
 }
 
+/// `value` as `set` sends it for `path`: a Server named as a Preferred Builder becomes
+/// its Machine ID, which is all the Store takes, as only the Servers know their names.
+fn resolved(path: &str, value: &str, _servers: &[MachineObservation]) -> Result<String, Error> {
+    let _ = path;
+    Ok(value.to_owned())
+}
+
 /// The one positional a flag applies to.
 fn one_service(matches: &ArgMatches, usage: &'static str) -> Result<String, Error> {
     match matches.get_many::<String>("assignment") {
@@ -541,6 +549,46 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn server(seed: u8, name: &str) -> MachineObservation {
+        MachineObservation::new(
+            ployz_core::Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                id: ployz_core::MachineId::parse(format!("{seed:032x}")).unwrap(),
+                name: ployz_core::MachineName::parse(name).unwrap(),
+                subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+                public_key: ployz_core::WireGuardPublicKey([seed; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                build_concurrency: None,
+            },
+            ployz_core::MembershipObservation::Up,
+        )
+    }
+
+    #[test]
+    fn a_preferred_builder_named_by_its_server_is_sent_as_its_machine_id() {
+        let servers = [server(1, "machine-1"), server(2, "machine-2")];
+        let id = format!("{:032x}", 2);
+        assert_eq!(
+            resolved("web.preferredBuilder", "machine-2", &servers).unwrap(),
+            id
+        );
+        for (path, value) in [
+            ("web.preferredBuilder", "github"),
+            ("web.preferredBuilder", id.as_str()),
+            ("web.env.preferredBuilder", "machine-2"),
+            ("web.image", "machine-2"),
+        ] {
+            assert_eq!(resolved(path, value, &[]).unwrap(), value, "{path}={value}");
+        }
+        let missing = resolved("web.preferredBuilder", "machine-9", &servers).unwrap_err();
+        assert!(missing.to_string().contains("machine-9"), "{missing}");
+    }
 
     fn row(path: &str, value: Value, default: Value) -> SettingRow {
         serde_json::from_value(json!({

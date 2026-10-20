@@ -3422,6 +3422,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             status,
             message: None,
             log: "GitHub can't build uploaded source\n".into(),
+            server: None,
         })
     };
     store
