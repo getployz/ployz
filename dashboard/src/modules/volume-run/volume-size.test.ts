@@ -37,6 +37,23 @@ describe("sizeRefusalOf in a grow", () => {
   });
 });
 
+describe("sizeRefusalOf in a settle", () => {
+  it.each<[string, unknown, unknown]>([
+    [
+      "a copy above the size whose daemon ignored the shrink needs a newer Ployz",
+      refused({ reason: "shrink", bound_bytes: 20 * GB }),
+      { kind: "refused", reason: "shrink", boundBytes: 20 * GB, capacity: null, floorBytes: null, message: "db-1 needs a newer Ployz to shrink data" },
+    ],
+    [
+      "a copy below its floor names the floor rounded up to a whole GB",
+      refused({ reason: "below_floor", bound_bytes: 20 * GB, floor_bytes: 8_030_000_000 }),
+      { kind: "refused", reason: "below_floor", boundBytes: 20 * GB, capacity: null, floorBytes: 8_030_000_000, message: "db-1 can't shrink data to 5 GB; its data needs at least 9 GB" },
+    ],
+  ])("%s", (_, cause, expected) => {
+    expect(sizeRefusalOf("data", db1, 5 * GB, "settle", cause)).toEqual(expected);
+  });
+});
+
 describe("sizeRefusalOf in a shrink", () => {
   it.each<[string, unknown, unknown]>([
     [

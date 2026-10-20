@@ -4,6 +4,7 @@ import type {
   CopyObservation,
   CopyRefusal,
   DestructiveEffect,
+  DockerVolume,
   EnvironmentRef,
   ExpectedCopy,
   MachineId,
@@ -392,7 +393,8 @@ const refusalCode = {
   confirm_required: "confirmation_required",
   invalid: "invalid_argument",
   already_on: "conflict",
-  already_sized: "conflict",
+  held_below: "conflict",
+  unobserved: "unavailable",
   no_writer: "conflict",
   two_writers: "conflict",
   volume_switching: "conflict",
@@ -405,7 +407,7 @@ const refusalCode = {
 
 /** A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry. */
 const storeRefusal = ({ code, message, next }: Refusal): StoreRefusal => {
-  if (code === "already_on" || code === "already_sized") return { code: refusalCode[code], message, details: { settled: true } };
+  if (code === "already_on") return { code: refusalCode[code], message, details: { settled: true } };
   return { code: refusalCode[code], message, details: next === undefined ? null : { next } };
 };
 
@@ -1319,6 +1321,11 @@ const isDestination = (run: VolumeLaneInput, machine: { readonly id: MachineId; 
 /** A run as the observe step reads it: a resize carries the size the Store records, which decides its direction. */
 type ObservedRun = Exclude<VolumeLaneInput, { kind: "resize" }> | (Extract<VolumeLaneInput, { kind: "resize" }> & { readonly recordedBytes: number });
 
+const boundOf = (volumes: readonly DockerVolume[], machineId: MachineId, dockerVolume: string) => {
+  const storage = volumes.find((volume) => volume.id.machine_id === machineId && volume.id.name === dockerVolume)?.storage;
+  return storage?.kind === "provisioned" ? storage.bound_bytes : null;
+};
+
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
  * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone.
@@ -1342,6 +1349,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     const unsized = run?.kind === "resize"
       ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
       : undefined;
+    const sized = run?.kind === "resize" ? { boundBytes: boundOf(frame.volumes, machine.id, dockerVolume) } : {};
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),
@@ -1356,6 +1364,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           answered: true,
           view,
           floorless,
+          ...sized,
         })),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),

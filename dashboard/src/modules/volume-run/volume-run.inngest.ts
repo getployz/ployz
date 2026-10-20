@@ -12,7 +12,7 @@ import {
 } from "#/modules/inngest/events";
 import { gigabytes } from "#/modules/config-store/store-volumes";
 import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patience";
-import { gb, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
+import { gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
 import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planForwardRelease, planFromCopies } from "#/modules/volume-run/plan";
@@ -323,15 +323,16 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
 }
 
-const SIZING = { grow: "Growing", shrink: "Shrinking" } satisfies Record<SizeDirection, string>;
+const SIZING = { grow: "Growing", shrink: "Shrinking", settle: "Setting" } satisfies Record<SizeDirection, string>;
 
 /**
  * What the run says when the Store refused its record. A grow records after every copy holds the size; a shrink
- * records before any Machine is asked, so no copy changed.
+ * records before any Machine is asked, so no copy changed. A settle never records, so its entry is never read.
  */
 const UNRECORDED = {
   grow: (name: string, phase: ResizePhase, on: string) => `${name} grew to ${gb(phase.to)} on ${on}, but`,
   shrink: (name: string, phase: ResizePhase, on: string) => `${name} stays ${gb(phase.from)} on ${on}, because`,
+  settle: (name: string, phase: ResizePhase, on: string) => `${name} stays ${gb(phase.from)} on ${on}, because`,
 } satisfies Record<SizeDirection, (name: string, phase: ResizePhase, on: string) => string>;
 
 const names = (machines: readonly MachineRef[]) => machines.map((machine) => machine.name).join(", ");
@@ -362,7 +363,7 @@ async function resizeVolume(steps: RunSteps, phase: ResizePhase) {
         const undone: RecordAnswer = await step.run("04-unrecord", () => runEffect(recordVolumeSize(run, runId, { from: phase.to, to: phase.from })));
         recorded = !undone.ok;
       }
-      return fail(steps, "05-failed", refusedMessage(run.volumeName, phase, sets, machine, outcome, recorded));
+      return fail(steps, "05-failed", refusedMessage(run.volumeName, phase, sets, each, outcome, recorded));
     }
     done.push("held");
   }
@@ -389,12 +390,21 @@ async function sizeSettle({ step, runEffect, run, runId }: RunSteps, id: string,
  * The refusal, then what the Store says, which copies already hold the size and which were not asked, then what to
  * do: "db-1 has no room to grow data to 20 GB. data stays 10 GB. db-2, db-3 already hold 20 GB;
  * db-4 was not asked. Free space on db-1, then run ployz volume set data --size 20 again." A copy below its floor
- * names the floor: "Shrink data to at least 12 GB instead, or free space in it on db-1, then run ployz volume set
- * data --size 10 again."
+ * names the floor while the Store still holds the old size: "Shrink data to at least 12 GB instead, or free space
+ * in it on db-1, then run ployz volume set data --size 10 again." Once it holds the new one, the same size again
+ * settles the copies, and a mirror's data follows its primary only after a sync: "Free space in data, run ployz
+ * volume sync data so db-2's copy follows, then run ployz volume set data --size 10 again."
  */
 function refusedMessage(
-  name: string, phase: ResizePhase, sets: readonly MachineRef[], refusedBy: MachineRef, outcome: Extract<SizeOutcome, { kind: "refused" }>, recorded: boolean,
+  name: string,
+  phase: ResizePhase,
+  sets: readonly MachineRef[],
+  refused: Extract<ResizeStep, { kind: "set" }>,
+  outcome: Extract<SizeOutcome, { kind: "refused" }>,
+  recorded: boolean,
 ) {
+  const refusedBy = refused.member.machine;
+  const holdsSize = recorded || phase.direction === "settle";
   const at = sets.findIndex((machine) => machine.id === refusedBy.id);
   const hold = sets.slice(0, at);
   const unasked = sets.slice(at + 1);
@@ -403,14 +413,19 @@ function refusedMessage(
     ...(unasked.length > 0 ? [`${names(unasked)} ${unasked.length === 1 ? "was" : "were"} not asked`] : []),
   ];
   const again = `run ployz volume set ${name} --size ${gigabytes(phase.to)} again`;
+  const floor = outcome.reason === "below_floor" ? outcome.floorBytes : null;
   return [
     `${outcome.message}.`,
-    recorded ? `${name} is ${gb(phase.to)}.` : `${name} stays ${gb(phase.from)}.`,
+    holdsSize ? `${name} is ${gb(phase.to)}.` : `${name} stays ${gb(phase.from)}.`,
     ...(copies.length > 0 ? [`${copies.join("; ")}.`] : []),
     outcome.reason === "no_capacity"
       ? `Free space on ${refusedBy.name}, then ${again}.`
-      : outcome.reason === "below_floor" && outcome.floorBytes !== null
-      ? `Shrink ${name} to at least ${gb(outcome.floorBytes)} instead, or free space in it on ${refusedBy.name}, then ${again}.`
+      : floor !== null && !holdsSize
+      ? `Shrink ${name} to at least ${gbAtLeast(floor)} instead, or free space in it on ${refusedBy.name}, then ${again}.`
+      : floor !== null && refused.role === "mirror"
+      ? `Free space in ${name}, run ployz volume sync ${name} so ${refusedBy.name}'s copy follows, then ${again}.`
+      : floor !== null
+      ? `Free space in ${name} on ${refusedBy.name}, then ${again}.`
       : `Run ${again.slice("run ".length)}.`,
   ].join(" ");
 }

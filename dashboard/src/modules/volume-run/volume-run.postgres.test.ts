@@ -105,6 +105,8 @@ type FakeMachine = {
   floor?: number;
   /** The size its copy holds; only a set that allows a shrink lowers it, as a daemon serving the shrink does. */
   bound?: number;
+  /** The smallest bound its data accepts; a shrink below it is refused `below_floor`, as the daemon's floor check does. */
+  needs?: number;
   /** Size requests it answers `switching` to before it holds the size. */
   switching?: number;
 };
@@ -369,6 +371,12 @@ describe("volume runs", () => {
         rotation: container.rotation,
         created_at_unix_nanos: container.created ?? 0,
       })),
+      volumes: machines.flatMap((fake) => fake.copy === null || fake.bound === undefined ? [] : [{
+        id: { machine_id: fake.id ?? idOf(fake.name), name: dockerVolume },
+        options: {},
+        labels: {},
+        storage: { kind: "provisioned", mountpoint: `/volumes/${dockerVolume}`, bound_bytes: fake.bound, used_bytes: 0 },
+      }]),
       incomplete_ids: { machines: [] },
     });
     },
@@ -426,6 +434,9 @@ describe("volume runs", () => {
             const bound = fake.bound ?? 0;
             const shrinks = payload.allow_shrink === true && fake.capabilities?.includes(requirements.volumeShrink.capability) !== false;
             if (asked < bound && !shrinks) return fail(new RawFault({ code: "failed_precondition", message: "shrink", details: { reason: "shrink", bound_bytes: bound } }));
+            if (asked < bound && fake.needs !== undefined && asked < fake.needs) {
+              return fail(new RawFault({ code: "failed_precondition", message: "below_floor", details: { reason: "below_floor", bound_bytes: bound, floor_bytes: fake.needs } }));
+            }
             fake.bound = asked;
             return Effect.succeed({ bound_bytes: asked });
           }),
@@ -3209,9 +3220,18 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "Volume resize needs a newer Ployz on fsn-3." }]);
     });
 
-    it("the size the Store already records is settled at admission", async () => {
-      expect(await admit(grow(10))).toEqual({ ok: false, refusal: { code: "conflict", message: "data already has 10 GB", details: { settled: true } } });
-      expect(await rows()).toEqual([]);
+    it("the size the Store already records asks the primary, then each mirror, to hold it, and records nothing", async () => {
+      const run = await requested(grow(10));
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, resized: 10 * GB });
+      expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
+      expect(sizing).toEqual(["Setting data to 10 GB on fsn-1", "Setting data to 10 GB on fsn-2", "Setting data to 10 GB on fsn-3"]);
+      expect(sizes).toStrictEqual(Array.from({ length: 3 }, () => ({ name: dockerVolume, maximum_bytes: 10 * GB, allow_shrink: true })));
+      expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+      expect(storeEvents).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
     });
 
     it("is refused while a Move runs, and while a committed Move is owed its release", async () => {
@@ -3255,8 +3275,8 @@ describe("volume runs", () => {
         expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
       });
 
-      it("the primary below its floor undoes the record and names the floor, asking no mirror", async () => {
-        failNext.set("size@fsn-1", floor);
+      it("the primary below its floor undoes the record and names the floor in whole GB, asking no mirror", async () => {
+        failNext.set("size@fsn-1", refusal({ reason: "below_floor", bound_bytes: 20 * GB, floor_bytes: 12_300_000_000 }));
         const run = await requested(shrink(10));
 
         await execute(run.id);
@@ -3266,8 +3286,31 @@ describe("volume runs", () => {
         expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
         expect(await rows()).toMatchObject([{
           state: "failed",
-          message: "fsn-1 can't shrink data to 10 GB; its data needs at least 12 GB. data stays 20 GB. fsn-2, fsn-3 were not asked. Shrink data to at least 12 GB instead, or free space in it on fsn-1, then run ployz volume set data --size 10 again.",
+          message: "fsn-1 can't shrink data to 10 GB; its data needs at least 13 GB. data stays 20 GB. fsn-2, fsn-3 were not asked. Shrink data to at least 13 GB instead, or free space in it on fsn-1, then run ployz volume set data --size 10 again.",
         }]);
+      });
+
+      /**
+       * Whole-GB rounding leaves up to 1 GB of room for writes between the refusal and the retry; a larger write still
+       * refuses, naming the new floor.
+       */
+      it("the printed floor is accepted when typed back after a small write", async () => {
+        named("fsn-1").needs = 3_107_428_864;
+        const refused = await requested(shrink(3));
+
+        await execute(refused.id);
+
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "fsn-1 can't shrink data to 3 GB; its data needs at least 4 GB. data stays 20 GB. fsn-2, fsn-3 were not asked. Shrink data to at least 4 GB instead, or free space in it on fsn-1, then run ployz volume set data --size 3 again.",
+        }]);
+        named("fsn-1").needs = 3_107_528_000;
+        const retried = await requested(shrink(4));
+
+        await execute(retried.id, "run-2");
+
+        expect(bounds()).toEqual({ "fsn-1": 4, "fsn-2": 4, "fsn-3": 4 });
+        expect(await rows()).toMatchObject([{ state: "failed" }, { id: retried.id, state: "done", message: "data is 4 GB on fsn-1, fsn-2, fsn-3" }]);
       });
 
       it("a mirror below its floor after the primary shrank keeps the record and says the primary holds it", async () => {
@@ -3281,8 +3324,64 @@ describe("volume runs", () => {
         expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 20, "fsn-3": 20 });
         expect(await rows()).toMatchObject([{
           state: "failed",
-          message: "fsn-2 can't shrink data to 10 GB; its data needs at least 12 GB. data is 10 GB. fsn-1 already holds 10 GB; fsn-3 was not asked. Shrink data to at least 12 GB instead, or free space in it on fsn-2, then run ployz volume set data --size 10 again.",
+          message: "fsn-2 can't shrink data to 10 GB; its data needs at least 12 GB. data is 10 GB. fsn-1 already holds 10 GB; fsn-3 was not asked. Free space in data, run ployz volume sync data so fsn-2's copy follows, then run ployz volume set data --size 10 again.",
         }]);
+      });
+
+      describe("then the same size again", () => {
+        beforeEach(async () => {
+          failNext.set("size@fsn-2", floor);
+          const run = await requested(shrink(10));
+          await execute(run.id);
+          storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 10 * GB }, recorded_storage: 10 * GB }];
+          verbs.length = 0;
+          sizing.length = 0;
+          storeEvents.length = 0;
+        });
+
+        it("shrinks the mirrors the refused shrink left larger, and records nothing", async () => {
+          const settle = await requested(shrink(10));
+
+          await execute(settle.id, "run-2");
+
+          expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
+          expect(sizing).toEqual(["Setting data to 10 GB on fsn-1", "Setting data to 10 GB on fsn-2", "Setting data to 10 GB on fsn-3"]);
+          expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+          expect(storeEvents).toEqual([]);
+          expect(await rows()).toMatchObject([{ state: "failed" }, { id: settle.id, state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
+        });
+
+        it("a mirror still below its floor ends it naming that mirror, and the Store stays at the size", async () => {
+          failNext.set("size@fsn-2", floor);
+          const settle = await requested(shrink(10));
+
+          await execute(settle.id, "run-2");
+
+          expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)"]);
+          expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 20, "fsn-3": 20 });
+          expect(storeEvents).toEqual([]);
+          expect(await rows()).toMatchObject([{ state: "failed" }, {
+            id: settle.id,
+            state: "failed",
+            message: "fsn-2 can't shrink data to 10 GB; its data needs at least 12 GB. data is 10 GB. fsn-1 already holds 10 GB; fsn-3 was not asked. Free space in data, run ployz volume sync data so fsn-2's copy follows, then run ployz volume set data --size 10 again.",
+          }]);
+        });
+      });
+
+      it("a primary that keeps failing without a refusal leaves the record in place once the run gives up, undoing nothing", async () => {
+        failNext.set("size@fsn-1", "down");
+        const run = await requested(shrink(10));
+
+        const output = await execute(run.id);
+
+        expect(output.error).toBeDefined();
+        expect(await rows()).toMatchObject([{ state: "running" }]);
+        await runEffect(closeVolumeRun("run-1", "failure"));
+
+        expect(verbs).toEqual(["size@fsn-1(10)"]);
+        expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+        expect(storeEvents).toEqual([shrunk]);
+        expect(await rows()).toMatchObject([{ state: "failed" }]);
       });
 
       it("a Store that recorded another size since the run read it ends the run before any Machine is asked", async () => {
@@ -3320,6 +3419,21 @@ describe("volume runs", () => {
         expect(await rows()).toMatchObject([{ state: "failed", message: "Volume shrink needs a newer Ployz on fsn-3." }]);
       });
 
+      it("a stale replay left the Store larger than every copy: a settle refuses, asks no Machine and records nothing", async () => {
+        for (const fake of machines) fake.bound = 10 * GB;
+        const run = await requested(shrink(20));
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(sizes).toEqual([]);
+        expect(storeEvents).toEqual([]);
+        expect(await rows()).toMatchObject([{
+          state: "failed",
+          message: "fsn-1, fsn-2 and fsn-3 hold data at 10 GB, below its recorded 20 GB. Run ployz volume set data --size 10 to record the size it holds, then ployz volume set data --size 20 to grow it",
+        }]);
+      });
+
       it("a Store left larger than every copy by a stale record is set back to the held size, and no copy moves", async () => {
         for (const fake of machines) fake.bound = 10 * GB;
         const run = await requested(shrink(10));
@@ -3332,6 +3446,15 @@ describe("volume runs", () => {
         expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
         expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
       });
+    });
+
+    it("a settle is refused while a Move runs, like any other resize", async () => {
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await running(move.id);
+
+      expect(await request(grow(10))).toMatchObject({ ok: false, refusal: { code: "conflict", message: volumeBusyMessage({ id: move.id, kind: "move", volumeName: "data" }) } });
+      expect(verbs).toEqual([]);
+      expect((await rows()).map((row) => row.kind)).toEqual(["move"]);
     });
 
     it("a release takes a warm resize over", async () => {
