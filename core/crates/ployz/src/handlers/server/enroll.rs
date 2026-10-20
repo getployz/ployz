@@ -205,7 +205,7 @@ pub(in crate::handlers) fn enroll_token(
         }
         return parse_enroll_token(&from_env, env::ENROLL_TOKEN).map(Some);
     }
-    let (raw, source) = if from_stdin {
+    let (raw, from) = if from_stdin {
         let mut line = String::new();
         std::io::stdin()
             .lock()
@@ -233,7 +233,7 @@ pub(in crate::handlers) fn enroll_token(
     } else {
         return Ok(None);
     };
-    parse_enroll_token(&raw, source).map(Some)
+    parse_enroll_token(&raw, from).map(Some)
 }
 
 /// Tokens Cloud mints for other jobs, by prefix, and where each belongs.
@@ -249,16 +249,16 @@ const OTHER_TOKENS: [(&str, &str); 3] = [
     ("ppair_", "a pairing secret, which no command takes"),
 ];
 
-/// `raw`, read from `source`, as an enrollment token. A token of another kind is refused
+/// `raw`, read from `from`, as an enrollment token. A token of another kind is refused
 /// here, before anything reaches a Server or Cloud.
-fn parse_enroll_token(raw: &str, source: &str) -> Result<CloudEnrollToken, Error> {
+fn parse_enroll_token(raw: &str, from: &str) -> Result<CloudEnrollToken, Error> {
     let raw = raw.trim();
     if let Some((_, kind)) = OTHER_TOKENS
         .into_iter()
         .find(|(prefix, _)| raw.starts_with(prefix))
     {
         return Err(Error::usage(format!(
-            "{source} holds {kind}. ployz server add takes the enrollment token that ployz server add --command prints."
+            "{from} holds {kind}. ployz server add takes the enrollment token that ployz server add --command prints."
         )));
     }
     Ok(CloudEnrollToken::parse(raw)?)
