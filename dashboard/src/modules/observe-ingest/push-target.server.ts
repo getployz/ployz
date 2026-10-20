@@ -5,6 +5,7 @@ import type { MachineId } from "#/db/tables";
 import { decryptPairingSecret } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
+import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -35,9 +36,9 @@ export const deliverPushTargets = Effect.fn("ObservePushTarget.deliver")(functio
     const management = yield* decryptPairingSecret(row.capability);
     yield* Effect.scoped(Effect.gen(function* () {
       const ployz = yield* Ployz;
-      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS });
+      const client = yield* ployz.connect({ connections: [{ machine_id: row.machineId, management }], timeoutMs: SERVER_TIMEOUT_MS }, { closeWithin: clusterRead });
       yield* client.setPushTarget(row.url);
-    })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2));
+    })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2), withClusterBudget(SESSION_CLOSE_CLUSTER_MS));
     // A publish that lands mid-dial carries a new capability; leave its confirmation for the next sweep.
     yield* drizzle.update(organizationMachine).set({ pushTarget: row.url }).where(and(
       eq(organizationMachine.organizationId, row.organizationId),
