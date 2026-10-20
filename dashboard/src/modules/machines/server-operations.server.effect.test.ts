@@ -121,8 +121,8 @@ it.effect("a clean whose Store read takes 45 seconds and whose data loss never c
     read();
     yield* Deferred.await(asking);
     yield* TestClock.adjust("5 seconds");
-    // The test clock stands still from here, so a plan that settles at all settled by 50 seconds.
-    assert.isTrue(unanswered(Exit.succeed(yield* Fiber.join(planning))));
+    yield* settle;
+    assert.isTrue(unanswered(planning.pollUnsafe()));
   }),
 );
 
