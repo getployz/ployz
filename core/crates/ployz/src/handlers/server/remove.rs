@@ -20,7 +20,7 @@ use crate::handlers::{
     data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
     leaf_matches, store, typed_with,
 };
-use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues, LiveServices};
+use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
 
@@ -174,23 +174,24 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         }
         let last = machines.len() == 1;
         let services = services_on(&selected.id, &live);
-        let movable = drain_first(
-            &selected.id,
-            &live,
-            last,
-            matches.get_one::<String>("confirm").is_some(),
-        );
+        let movable = if last {
+            Vec::new()
+        } else {
+            movable_services_on(&selected.id, &live)
+        };
         let replicated_services =
             under_replicated(replicated_services_on(&selected.id, &live), last);
         Ok::<_, Error>((cloud, observed, services, movable, replicated_services))
     })?;
-    if !movable.is_empty() {
-        crate::ui::warn(format!(
-            "Server {} is running Services: {}.",
-            selected.name,
-            super::super::joined(&movable)
-        ));
-        crate::ui::hint(&Hint::Next(format!("ployz server drain {}", selected.name)));
+    if let Some((warning, drain)) = running_services(
+        selected.name.as_str(),
+        &movable,
+        matches.get_one::<String>("confirm").is_some(),
+    ) {
+        crate::ui::warn(warning);
+        if let Some(drain) = drain {
+            crate::ui::hint(&drain);
+        }
     }
     if hold == CloudHold::Last {
         crate::ui::warn(format!(
@@ -444,19 +445,24 @@ async fn cloud_manages(
         .any(|label| label.as_str() == "cloud"))
 }
 
-/// The Services to drain off the Server before removing it, named only while the removal
-/// still asks: a typed `--confirm` goes ahead and leaves no Server to drain, and the last
-/// Server has nowhere to move them.
-fn drain_first(
-    server: &MachineId,
-    live: &LiveServices<RpcError>,
-    last: bool,
+/// The warning that the Server runs Services a drain could move off it, with the drain
+/// command only while the removal still asks: a typed `--confirm` goes ahead and leaves
+/// no Server to drain.
+fn running_services(
+    server: &str,
+    movable: &[QualifiedService],
     confirmed: bool,
-) -> Vec<QualifiedService> {
-    if last || confirmed {
-        return Vec::new();
+) -> Option<(String, Option<Hint>)> {
+    if movable.is_empty() {
+        return None;
     }
-    movable_services_on(server, live)
+    Some((
+        format!(
+            "Server {server} is running Services: {}.",
+            super::super::joined(movable)
+        ),
+        (!confirmed).then(|| Hint::Next(format!("ployz server drain {server}"))),
+    ))
 }
 
 /// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
