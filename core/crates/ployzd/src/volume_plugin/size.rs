@@ -80,7 +80,7 @@ impl VolumeStorage {
             return Err(refuse(
                 SizeRefusal::NotProvisioned,
                 None,
-                format!("Volume {name} has no Provisioned Volume bound to raise"),
+                format!("Volume {name} has no Provisioned Volume bound to change"),
             ));
         };
         let bound = ProvisionedVolumeMaximumBytes::new(bound);
