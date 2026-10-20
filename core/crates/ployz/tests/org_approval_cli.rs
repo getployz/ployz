@@ -28,6 +28,10 @@ enum Answer {
     Missing,
     /// Answers `503` with a body, as a Cloud failing for the moment does.
     Failing,
+    /// Answers `401`, as Cloud does to a refused token or an ended sign-in.
+    Unauthorized,
+    /// Answers a bare `403`, as Cloud does to a sign-in that left its Organization.
+    Forbidden,
 }
 
 /// Cloud that asks for approval `apr_9` before it removes Organization acme or forgets
@@ -87,6 +91,12 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                 "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Failing) => {
                     ("503 Service Unavailable", "upstream down".to_owned())
                 }
+                "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Unauthorized) => {
+                    ("401 Unauthorized", "{}".to_owned())
+                }
+                "GET /api/cli/approvals/apr_9" if matches!(answer, Answer::Forbidden) => {
+                    ("403 Forbidden", "{}".to_owned())
+                }
                 "GET /api/cli/approvals/apr_9" => (
                     "200 OK",
                     json!({ "approval": { "status": "approved" } }).to_string(),
@@ -97,6 +107,30 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                     json!({ "organization": "acme", "servers": [], "volumes": [], "cancelled": [] }).to_string(),
                 ),
                 "POST /api/cli/forget-servers" => ("409 Conflict", ASKED_FORGET.to_owned()),
+                "POST /api/auth/device/code" => (
+                    "200 OK",
+                    json!({
+                        "device_code": "device-secret",
+                        "user_code": "ABCD2345",
+                        "verification_uri": "http://cloud/device",
+                        "verification_uri_complete": "http://cloud/device?user_code=ABCD2345",
+                        "expires_in": 1800,
+                        "interval": 1,
+                    })
+                    .to_string(),
+                ),
+                "POST /api/auth/device/token" => (
+                    "200 OK",
+                    json!({ "access_token": "session-token" }).to_string(),
+                ),
+                "GET /api/auth/get-session" => (
+                    "200 OK",
+                    json!({
+                        "user": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+                        "session": { "activeOrganizationId": "o1", "activeOrganizationSlug": "acme" },
+                    })
+                    .to_string(),
+                ),
                 "GET /api/cli/organizations" => (
                     "200 OK",
                     json!({ "organizations": [{ "id": "o1", "slug": "acme", "name": "Acme", "current": true }] })
@@ -122,22 +156,41 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
 
 fn ployz(cloud: &str, args: &[&str]) -> Output {
     let dir = tempfile::tempdir().unwrap();
-    Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--ployz-config",
-            dir.path().join("config.yaml").to_str().unwrap(),
-        ])
-        .args(args)
+    let mut command = run(&dir.path().join("config.yaml"), args);
+    command
         .env("PLOYZ_TOKEN", "ployz_acme")
         .env("PLOYZ_CLOUD_URL", cloud)
+        .output()
+        .unwrap()
+}
+
+/// `ployz` signed in to `cloud` as device `d1` of acme, its config under `dir`.
+fn signed_in(cloud: &str, dir: &std::path::Path, args: &[&str]) -> Output {
+    let config = dir.join("config.yaml");
+    for login in [
+        &["login", "--json", "--cloud-url", cloud][..],
+        &["login", "--json"],
+    ] {
+        let output = run(&config, login).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    run(&config, args).output().unwrap()
+}
+
+fn run(config: &std::path::Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .args(args)
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_CLOUD_URL")
         .env_remove("HTTP_PROXY")
         .env_remove("http_proxy")
         .env_remove("HTTPS_PROXY")
         .env_remove("https_proxy")
         .env_remove("ALL_PROXY")
-        .env_remove("all_proxy")
-        .output()
-        .unwrap()
+        .env_remove("all_proxy");
+    command
 }
 
 fn json_of(output: &Output) -> Value {
@@ -322,5 +375,54 @@ fn an_answered_error_while_waiting_names_the_approval_without_calling_it_pending
     assert!(
         retry.ends_with("org rm acme --confirm acme --approval apr_9"),
         "{stderr}"
+    );
+}
+
+/// Cloud refused the credential reading approval `apr_9`: that answers nothing about the
+/// approval, and the same credential can't retry it.
+fn assert_unchecked(refused: &Output, cause: &str, next: &str) {
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("error: Couldn't check approval apr_9."),
+        "{stderr}"
+    );
+    assert!(stderr.contains(cause), "{stderr}");
+    assert!(stderr.lines().any(|line| line == next), "{stderr}");
+    assert!(!stderr.contains("stays pending"), "{stderr}");
+    assert!(!stderr.contains("retry: "), "{stderr}");
+}
+
+const ORG_RM: [&str; 5] = ["org", "rm", "acme", "--confirm", "acme"];
+
+#[test]
+fn a_refused_token_while_waiting_leaves_the_approval_unchecked_without_a_retry() {
+    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Unauthorized);
+    assert_unchecked(
+        &ployz(&cloud, &ORG_RM),
+        "Cloud refused PLOYZ_TOKEN",
+        "next: unset PLOYZ_TOKEN && ployz login",
+    );
+}
+
+#[test]
+fn an_ended_sign_in_while_waiting_leaves_the_approval_unchecked_without_a_retry() {
+    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Unauthorized);
+    let dir = tempfile::tempdir().unwrap();
+    assert_unchecked(
+        &signed_in(&cloud, dir.path(), &ORG_RM),
+        "Cloud ended this device's sign-in",
+        "next: ployz login",
+    );
+}
+
+#[test]
+fn leaving_the_organization_while_waiting_leaves_the_approval_unchecked_without_a_retry() {
+    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Forbidden);
+    let dir = tempfile::tempdir().unwrap();
+    assert_unchecked(
+        &signed_in(&cloud, dir.path(), &ORG_RM),
+        "Organization acme is no longer one of yours",
+        "next: ployz logout",
     );
 }

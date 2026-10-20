@@ -129,7 +129,9 @@ How you answer depends on where the command runs:
   was denied and the reason given. Ctrl-C, or losing Ployz Cloud, stops waiting and leaves the
   approval pending, and the error names the command to run again with `--approval ID`. If Ployz
   Cloud answers with an error instead, the command fails saying it couldn't check the approval,
-  and names the command to run again only when the error is on Cloud's side.
+  and names the command to run again only when the error is on Cloud's side. If Cloud refuses
+  your sign-in or token, or you've left the organization, it names no command to run again;
+  it says what to do instead, such as `ployz login`, a new token or `ployz logout`.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
 - In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the

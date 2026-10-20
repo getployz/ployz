@@ -341,21 +341,22 @@ fn where_to_approve(credential: &Credential, id: &str, organization: Option<&str
     }
 }
 
-/// Whether Cloud never answered the approval's read, or refused the credential before
-/// looking: either way the approval is as it was.
+/// Whether Cloud never answered the approval's read: only then is the approval as it was.
 fn unanswered(error: &LoginError) -> bool {
     match error {
-        LoginError::Unreachable { .. }
-        | LoginError::Unanswered { .. }
-        | LoginError::Store { .. }
+        LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => true,
+        // Cloud refused the credential, so nothing says the approval is still pending, and
+        // a retry with that credential fails again. The local ones can't follow `settle()`
+        // having a credential, but would mean the same.
+        LoginError::Store { .. }
         | LoginError::Corrupt { .. }
         | LoginError::TokenCloudUnreadable(_)
         | LoginError::OtherCloud { .. }
         | LoginError::SignedOut
         | LoginError::Ended
         | LoginError::TokenRefused
-        | LoginError::NotMember(_) => true,
-        LoginError::Unsupported(_)
+        | LoginError::NotMember(_)
+        | LoginError::Unsupported(_)
         | LoginError::Status { .. }
         | LoginError::Reply(_)
         | LoginError::Expired
