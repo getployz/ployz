@@ -45,7 +45,12 @@ impl VolumeStorage {
                 format!("Volume {name} does not exist on this Machine"),
             )
         };
-        let Some(pool) = self.pool.one_usable().await.map_err(internal)? else {
+        let Some(pool) = self
+            .pool
+            .admit(super::pool::UnlabeledBacking::Preserve)
+            .await
+            .map_err(internal)?
+        else {
             return Err(not_found());
         };
         let datasets = self.datasets(&pool).await.map_err(internal)?;

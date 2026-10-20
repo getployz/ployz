@@ -66,6 +66,14 @@ impl SetVolumeSizeRefused {
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
         let code = match self.reason {
             SizeRefusal::NotFound => RpcErrorCode::NotFound,
+            SizeRefusal::NoCapacity
+                if !matches!(
+                    self.capacity,
+                    None | Some(crate::StorageCapacityError::StorageCapacityUnknown { .. })
+                ) =>
+            {
+                RpcErrorCode::Conflict
+            }
             SizeRefusal::NoCapacity => RpcErrorCode::Unavailable,
             SizeRefusal::NotProvisioned | SizeRefusal::Switching | SizeRefusal::Shrink => {
                 RpcErrorCode::Conflict

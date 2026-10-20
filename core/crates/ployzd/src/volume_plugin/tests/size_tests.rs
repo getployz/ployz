@@ -293,7 +293,7 @@ async fn a_grow_the_pool_cannot_hold_is_refused_before_any_write() {
     server.abort();
 
     assert_eq!(refusal(&reply), "no_capacity");
-    assert_eq!(reply.pointer("/Err/code").unwrap(), "unavailable");
+    assert_eq!(reply.pointer("/Err/code").unwrap(), "conflict");
     assert_eq!(
         reply.pointer("/Err/details/capacity/code").unwrap(),
         "insufficient_storage"
@@ -321,7 +321,7 @@ async fn a_grow_a_fixed_pool_cannot_hold_is_refused_before_any_write() {
     server.abort();
 
     assert_eq!(refusal(&reply), "no_capacity");
-    assert_eq!(reply.pointer("/Err/code").unwrap(), "unavailable");
+    assert_eq!(reply.pointer("/Err/code").unwrap(), "conflict");
     assert_eq!(
         reply.pointer("/Err/details/capacity/code").unwrap(),
         "pool_cannot_grow"
