@@ -976,6 +976,14 @@ fn plan_one_service<'snapshot>(
     let mut capacity_error = None;
     if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
         volume_plan.constrain_candidates(requested, &mut machines)?;
+    }
+    let limits = placement.limits_change(
+        current,
+        requested,
+        machines.iter().map(|machine| machine.machine.id),
+        options,
+    );
+    if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
         let ServiceMode::Replicated { replicas } = requested.mode else {
             unreachable!("replicated branch has replicated mode")
         };
@@ -985,7 +993,7 @@ fn plan_one_service<'snapshot>(
                 machines
                     .iter()
                     .any(|machine| machine.machine.id == container.as_observation().machine_id)
-                    && placement.keeps_container(container, requested, options)
+                    && PlacementState::keeps_container(container, requested, options, limits)
             })
             .count();
         if requested.pre_deploy.is_some() && up_to_date < replicas.get() as usize {
@@ -999,7 +1007,7 @@ fn plan_one_service<'snapshot>(
         machines.retain(|machine| {
             current.iter().any(|container| {
                 container.as_observation().machine_id == machine.machine.id
-                    && placement.keeps_container(container, requested, options)
+                    && PlacementState::keeps_container(container, requested, options, limits)
             }) || placement.capacity_fits(&machine.machine.id, 1)
         });
         if machines.is_empty() {
@@ -1016,6 +1024,7 @@ fn plan_one_service<'snapshot>(
                 admission: reservation.unwrap_or_else(|| CapacityAdmission::Pending {
                     error: capacity_error.expect("unreserved capacity has relevant Machines"),
                 }),
+                limits,
             },
             placement,
             options,
@@ -1026,6 +1035,7 @@ fn plan_one_service<'snapshot>(
                 current,
                 hooks,
                 volumes,
+                limits,
             },
             placement,
             options,

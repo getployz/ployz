@@ -176,47 +176,160 @@ fn an_update_needs_no_spare_endpoint_and_runs_no_pre_deploy_hook() {
     }
 }
 
+fn two_replicas() -> ServiceMode {
+    ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    }
+}
+
+fn kinds(preview: &DeployPreview) -> Vec<String> {
+    let mut kinds = operations(preview)
+        .iter()
+        .map(|operation| match operation {
+            DeployOperation::UpdateContainer(update) => {
+                format!(
+                    "update {} on {}",
+                    update.old_container_id, update.machine_id
+                )
+            }
+            DeployOperation::ReplaceContainer(replacement) => format!(
+                "replace {} on {}",
+                replacement.old_container_id, replacement.machine_id
+            ),
+            DeployOperation::RunContainer { machine_id, .. } => format!("run on {machine_id}"),
+            other => panic!("unexpected operation: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    kinds.sort();
+    kinds
+}
+
 #[test]
-fn a_scale_up_updates_the_running_copy_and_starts_the_new_one() {
-    let current = limited(one_replica(), 64);
-    let requested = limited(
-        ServiceMode::Replicated {
-            replicas: NonZeroU32::new(2).unwrap(),
-        },
-        128,
-    );
+fn a_lower_or_first_memory_limit_replaces_while_cpu_moves_both_ways() {
+    let mut less_cpu = limited(one_replica(), 64);
+    less_cpu.container.resources.cpu_nanos = Some(CpuNanos::from_cpus(0.25).unwrap());
+    let mut current_cpu = limited(one_replica(), 64);
+    current_cpu.container.resources.cpu_nanos = Some(CpuNanos::from_cpus(0.5).unwrap());
+    for (name, current, requested, update) in [
+        (
+            "lower memory",
+            limited(one_replica(), 64),
+            limited(one_replica(), 32),
+            false,
+        ),
+        (
+            "first memory limit",
+            requested(one_replica()),
+            limited(one_replica(), 64),
+            false,
+        ),
+        (
+            "cleared memory",
+            limited(one_replica(), 64),
+            requested(one_replica()),
+            false,
+        ),
+        ("less cpu", current_cpu, less_cpu, true),
+    ] {
+        let plan = plan_deploy(
+            [&requested],
+            &DeploySnapshot {
+                machines: vec![capable('1', "first")],
+                containers: vec![container('b', '1', &current, &service_id('a'))],
+                ..Default::default()
+            },
+            PlanOptions::default(),
+        )
+        .unwrap();
+        let expected = if update { "update" } else { "replace" };
+        assert_eq!(
+            kinds(&plan),
+            [format!(
+                "{expected} {} on {}",
+                container_id('b'),
+                machine_id('1')
+            )],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_memory_raise_alone_updates_every_copy_in_place() {
     let plan = plan_deploy(
-        [&requested],
+        [&limited(two_replicas(), 128)],
         &DeploySnapshot {
             machines: vec![capable('1', "first"), capable('2', "second")],
-            containers: vec![container('b', '1', &current, &service_id('a'))],
+            containers: vec![
+                container('b', '1', &limited(two_replicas(), 64), &service_id('a')),
+                container('c', '2', &limited(two_replicas(), 64), &service_id('a')),
+            ],
             ..Default::default()
         },
         PlanOptions::default(),
     )
     .unwrap();
 
-    let mut kinds = operations(&plan)
-        .iter()
-        .map(|operation| {
-            if let DeployOperation::UpdateContainer(update) = operation {
-                format!(
-                    "update {} on {}",
-                    update.old_container_id, update.machine_id
-                )
-            } else if let DeployOperation::RunContainer { machine_id, .. } = operation {
-                format!("run on {machine_id}")
-            } else {
-                panic!("unexpected operation: {operation:?}")
-            }
-        })
-        .collect::<Vec<_>>();
-    kinds.sort();
     assert_eq!(
-        kinds,
+        kinds(&plan),
         [
-            format!("run on {}", machine_id('2')),
             format!("update {} on {}", container_id('b'), machine_id('1')),
+            format!("update {} on {}", container_id('c'), machine_id('2')),
+        ]
+    );
+}
+
+/// A copy updated in place keeps its gen, and a Machine coming back takes it
+/// out of serving once a newer sibling is routed everywhere. So no Deploy
+/// mixes updated copies with new ones in one Service.
+#[test]
+fn a_memory_raise_that_also_starts_a_copy_replaces_every_copy() {
+    let plan = plan_deploy(
+        [&limited(two_replicas(), 128)],
+        &DeploySnapshot {
+            machines: vec![capable('1', "first"), capable('2', "second")],
+            containers: vec![container(
+                'b',
+                '1',
+                &limited(one_replica(), 64),
+                &service_id('a'),
+            )],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        kinds(&plan),
+        [
+            format!("replace {} on {}", container_id('b'), machine_id('1')),
+            format!("run on {}", machine_id('2')),
+        ]
+    );
+}
+
+#[test]
+fn a_server_without_the_capability_makes_the_whole_service_replace() {
+    let plan = plan_deploy(
+        [&limited(two_replicas(), 128)],
+        &DeploySnapshot {
+            machines: vec![capable('1', "first"), machine('2', "second")],
+            containers: vec![
+                container('b', '1', &limited(two_replicas(), 64), &service_id('a')),
+                container('c', '2', &limited(two_replicas(), 64), &service_id('a')),
+            ],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        kinds(&plan),
+        [
+            format!("replace {} on {}", container_id('b'), machine_id('1')),
+            format!("replace {} on {}", container_id('c'), machine_id('2')),
         ]
     );
 }
