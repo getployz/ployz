@@ -1,10 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "53e9fdcd-09f8-43cf-9911-ed7b51177268",
+  "id": "378d8c2e-af71-4303-b7c8-6c4c32fd2d51",
   "prevIds": [
-    "2e03ecd5-7f60-4bf2-8ae5-23aff8fd0495",
-    "d8deedbd-7c25-4f78-985d-1d2777fd29b3"
+    "5a78ca9e-8282-4bb0-81bc-6029dcc76ee4"
   ],
   "ddl": [
     {
@@ -184,6 +183,12 @@
     {
       "isRlsEnabled": false,
       "name": "fleet_token",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "fleet_token_attempt",
       "entityType": "tables",
       "schema": "public"
     },
@@ -3305,6 +3310,19 @@
       "table": "machine_enrollment_token"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "claimed_name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_enrollment_token"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": false,
@@ -3872,6 +3890,19 @@
       "generated": null,
       "identity": null,
       "name": "push_target",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_machine"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "machine_name",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_machine"
@@ -4547,6 +4578,58 @@
       "default": null,
       "generated": null,
       "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "fleet_token_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "checkin_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
       "name": "attempt_id",
       "entityType": "columns",
       "schema": "public",
@@ -4956,6 +5039,32 @@
       "table": "waiting_server"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reported_attempt_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "waiting_server"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reported_stage",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "waiting_server"
+    },
+    {
       "type": "integer",
       "typeSchema": null,
       "notNull": true,
@@ -5016,6 +5125,32 @@
       "generated": null,
       "identity": null,
       "name": "suspended_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "github_installation"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "repositories_synced_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "github_installation"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "repositories_version",
       "entityType": "columns",
       "schema": "public",
       "table": "github_installation"
@@ -6949,6 +7084,19 @@
       "generated": null,
       "identity": null,
       "name": "decided_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "operation_approvals"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "used_at",
       "entityType": "columns",
       "schema": "public",
       "table": "operation_approvals"
@@ -10626,6 +10774,27 @@
           "asc": true,
           "nullsFirst": false,
           "opclass": null
+        },
+        {
+          "value": "command",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "credential_kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "credential_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
         }
       ],
       "isUnique": true,
@@ -11905,6 +12074,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "fleet_token_attempt_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "fleet_token_attempt"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "fleet_token_id"
       ],
       "schemaTo": "public",
@@ -12744,6 +12930,17 @@
       "entityType": "pks",
       "schema": "public",
       "table": "server_access"
+    },
+    {
+      "columns": [
+        "fleet_token_id",
+        "checkin_key"
+      ],
+      "nameExplicit": false,
+      "name": "fleet_token_attempt_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "fleet_token_attempt"
     },
     {
       "columns": [
