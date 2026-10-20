@@ -4920,7 +4920,6 @@ fn partly(store: &ConfigStore, n: u8, completed: &str, failed: &str) {
 }
 
 #[test]
-#[ignore = "needs claim-time upload resolution: fu-2318-claim-time-uploads un-ignores it"]
 fn verifier_a_running_retry_that_fails_a_service_leaves_its_queued_deploy_on_its_confirmed_upload()
 {
     let (store, who) = shop();
@@ -4931,12 +4930,124 @@ fn verifier_a_running_retry_that_fails_a_service_leaves_its_queued_deploy_on_its
     admit(&store, &who, 4, &["web"], None).unwrap();
     partly(&store, 3, "api", "web");
     assert!(nodes(&store, &who, 3).contains(&("web".to_owned(), NodeStatus::Failed)));
+    let claimed = store.claim(&id(4), &a).unwrap();
     assert_eq!(
-        store.claim(&id(4), &a).unwrap().uploads,
+        claimed.uploads,
         std::collections::BTreeMap::from([(
             ServiceName::parse("web").unwrap(),
             Some(digested('b').digest)
         )])
+    );
+    assert_eq!(claimed.deployment.upload, Some(digested('b')));
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(4) })
+            .unwrap()
+            .deployment
+            .upload,
+        Some(digested('b')),
+        "the Deployment shows the upload it runs"
+    );
+}
+
+#[test]
+fn a_running_retry_that_applies_a_service_moves_its_queued_deploy_onto_the_retried_upload() {
+    let (store, who) = shop();
+    uploaded_twice(&store, &who);
+    let a = runner("cli-a");
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    admit(&store, &who, 4, &["web"], None).unwrap();
+    partly(&store, 3, "web", "api");
+    let claimed = store.claim(&id(4), &a).unwrap();
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+    assert_eq!(claimed.deployment.upload, Some(digested('a')));
+}
+
+#[test]
+fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.image").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    let a = runner("cli-a");
+    let only_web = |n: u8, upload: Option<char>| {
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id(n),
+                    environment: EnvironmentRef::default(),
+                    services: vec![ServiceName::parse("web").unwrap()],
+                    version: None,
+                    upload: upload.map(digested),
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap()
+    };
+    for (n, digest) in [(1, 'a'), (2, 'b')] {
+        only_web(n, Some(digest));
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web"])))
+            .unwrap();
+        store.record(&id(n), &a, succeeded(&["web"])).unwrap();
+    }
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    only_web(4, None);
+    // web takes an image while #4 waits, so no Service without a source keeps b.
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.image").unwrap(),
+                    value: json!("nginx:1"),
+                }],
+            },
+        )
+        .unwrap();
+    save(&store, &who);
+    store
+        .record(&id(3), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2]),
+        [true, true],
+        "#4 starts from b now, and a while it may still change"
+    );
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().deployment.upload,
+        Some(digested('b'))
+    );
+    store
+        .record(&id(4), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    assert_eq!(
+        kept_of(&store, &who, &[1, 2]),
+        [false, false],
+        "nothing builds from either once #4 ended"
     );
 }
 
