@@ -82,7 +82,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       }
       await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
       if ("ran" in ran) {
-        await step.sendEvent("retire-old", createConfigDeploymentRetireRequestedEvent({ organizationId, environmentId, deploymentId }));
+        await step.sendEvent("retire-old", createConfigDeploymentRetireRequestedEvent({ organizationId, environmentId, deploymentId, number: ran.ran.number }));
       }
       const applied = "ran" in ran && ran.ran.status === "applied";
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied

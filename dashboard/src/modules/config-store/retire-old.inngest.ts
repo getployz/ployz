@@ -12,7 +12,9 @@ export const RETIRE_ATTEMPTS = 3;
 export const RETIRE_PAUSE = "1m";
 
 const retireRequestedSchema = Schema.Struct({
-  data: Schema.Struct({ organizationId: Schema.String, environmentId: Schema.String, deploymentId: Schema.String }),
+  data: Schema.Struct({
+    organizationId: Schema.String, environmentId: Schema.String, deploymentId: Schema.String, number: Schema.NullOr(Schema.Number),
+  }),
 });
 
 /** After a Cloud Deploy ran, retire the old copies its run replaced, through the Store. */
@@ -47,9 +49,10 @@ const lifecycle = attemptLifecycle({
     id: "retire-old",
     triggers: [{ event: configDeploymentRetireRequestedEventType }],
     concurrency: [{ key: "event.data.environmentId", limit: 1 }],
+    // By queue number, not id: a late redispatch of an older Deployment must not take the cleanup over.
     cancelOn: [{
       event: configDeploymentAdmittedEventType,
-      if: "async.data.environmentId == event.data.environmentId && async.data.deploymentId != event.data.deploymentId",
+      if: "async.data.environmentId == event.data.environmentId && async.data.number > event.data.number",
     }],
     handler: retireOld,
   },

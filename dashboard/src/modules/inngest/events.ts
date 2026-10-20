@@ -236,6 +236,8 @@ export type ConfigDeploymentAdmittedEventData = {
   /** Deployments of one Environment run one at a time. */
   environmentId: string;
   deploymentId: string;
+  /** Its place in its Environment's queue: a newer Deployment has a higher number. None before it queued. */
+  number?: number | null;
   trigger?: DeploymentTrigger;
 };
 
@@ -244,6 +246,8 @@ export type ConfigDeploymentRetireRequestedEventData = {
   organizationId: string;
   environmentId: string;
   deploymentId: string;
+  /** Only a Deployment with a higher number takes the cleanup over. */
+  number: number | null;
 };
 
 export type DeploymentTrigger = "github" | "user";

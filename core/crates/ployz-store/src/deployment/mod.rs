@@ -320,6 +320,8 @@ pub struct Unclaimed {
     pub organization: OrganizationId,
     pub environment: EnvironmentId,
     pub deployment: DeploymentId,
+    /// Its place in its Environment's queue: a newer Deployment has a higher number.
+    pub number: u64,
     /// When it was admitted, in Unix seconds.
     #[ts(type = "number")]
     pub admitted_at: i64,

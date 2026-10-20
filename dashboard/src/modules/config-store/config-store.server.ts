@@ -127,7 +127,7 @@ function admittedBy(written: ConfigWritten): DeploymentSummary[] {
  */
 export function admittedEvents(organizationId: string, written: ConfigWritten, trigger: DeploymentTrigger): ConfigDeploymentAdmittedEventData[] {
   return admittedBy(written).filter((summary) => summary.status !== "applied")
-    .map((summary) => ({ organizationId, environmentId: summary.environment_id, deploymentId: summary.id, trigger }));
+    .map((summary) => ({ organizationId, environmentId: summary.environment_id, deploymentId: summary.id, number: summary.number, trigger }));
 }
 
 /**

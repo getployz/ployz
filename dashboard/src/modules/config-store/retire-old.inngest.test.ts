@@ -28,7 +28,7 @@ beforeEach(() => {
 
 const requested = {
   name: configDeploymentRetireRequestedEvent,
-  data: { organizationId: "org", environmentId: "env", deploymentId: "dep" },
+  data: { organizationId: "org", environmentId: "env", deploymentId: "dep", number: 1 },
 };
 
 async function cleanup(left: CleanupLeft[][]) {

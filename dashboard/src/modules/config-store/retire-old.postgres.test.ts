@@ -12,7 +12,7 @@ import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.ser
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000af01";
-const requested = (deploymentId: string) => ({ organizationId: ORGANIZATION, environmentId: "env", deploymentId });
+const requested = (deploymentId: string) => ({ organizationId: ORGANIZATION, environmentId: "env", deploymentId, number: 1 });
 
 let harness: PostgresTestHarness;
 
@@ -84,6 +84,7 @@ it("keeps a cleanup cancelled when the cancel lands while its first waiting writ
   }
   expect(await harness.runEffect(readDeploymentCleanup(ORGANIZATION, "race"))).toMatchObject({ state: "cancelled" });
 }, 30_000);
+});
 
 it("fails only a waiting cleanup whose Inngest run is gone, keeping what it left, and never a live or unknown one", async () => {
   const machine3 = { machine: "machine-3", service: "web", reason: "machine-3 did not answer" };
