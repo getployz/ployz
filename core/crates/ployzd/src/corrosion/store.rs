@@ -672,27 +672,6 @@ impl ReplicatedStore {
         Ok((!encoded.is_empty()).then(|| encoded.to_owned()))
     }
 
-    pub(crate) async fn serving_pointers(&self) -> Result<ServingPointers, Error> {
-        let query = self.api.query(Statement::new(SERVING_POINTERS, [])).await?;
-        let mut pointers = ServingPointers::default();
-        for [key, value] in query.rows(["serving_key", "value"])? {
-            let key = text(&key, "Serving Pointer key")?;
-            let decoded = key
-                .strip_prefix("serving/")
-                .ok_or_else(|| format!("key {key} is outside serving/"))
-                .and_then(|service| QualifiedService::parse(service).map_err(|e| e.to_string()))
-                .and_then(|service| {
-                    let encoded = value.as_str().ok_or("value is not text")?;
-                    let pointer = serde_json::from_str(encoded).map_err(|e| e.to_string())?;
-                    Ok((service, pointer))
-                });
-            if let Ok((service, pointer)) = decoded {
-                pointers.by_service.insert(service, pointer);
-            }
-        }
-        Ok(pointers)
-    }
-
     pub(crate) async fn serving_pointer(
         &self,
         service: &QualifiedService,
@@ -757,12 +736,6 @@ impl ReplicatedStore {
         Ok(Some(text(value, "Serving Pointer")?.to_owned()))
     }
 
-    pub(crate) async fn subscribe_serving_pointer_changes(&self) -> Result<Subscription, Error> {
-        self.api
-            .subscribe(Statement::new(SERVING_POINTERS, []))
-            .await
-    }
-
     pub(crate) async fn ingress_routes(
         &self,
     ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
@@ -808,10 +781,6 @@ impl ReplicatedStore {
                 Some(((machine_id, service), row))
             })
             .collect())
-    }
-
-    pub(crate) async fn subscribe_ingress_route_changes(&self) -> Result<Subscription, Error> {
-        self.api.subscribe(Statement::new(INGRESS_ROUTES, [])).await
     }
 
     pub(crate) async fn publish_ingress_routes(
@@ -1135,8 +1104,6 @@ fn decode_serving_pointer(raw: &str) -> Result<ServingPointer, Error> {
     })
 }
 
-const SERVING_POINTERS: &str =
-    "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'";
 const INGRESS_ROUTES: &str =
     "SELECT machine_id, service_id, deploy, containers FROM ingress_routes";
 const SERVICE_INGRESS_ROUTES: &str =
@@ -1163,30 +1130,6 @@ pub(crate) enum IngressRouteRow {
 pub(crate) enum IngressRouteChange {
     Upsert(IngressRouteAck),
     Delete,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ServingPointers {
-    by_service: BTreeMap<QualifiedService, ServingPointer>,
-}
-
-impl ServingPointers {
-    #[must_use]
-    pub(crate) fn get(&self, service: &QualifiedService) -> Option<&ServingPointer> {
-        self.by_service.get(service)
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&QualifiedService, &ServingPointer)> {
-        self.by_service.iter()
-    }
-}
-
-impl FromIterator<(QualifiedService, ServingPointer)> for ServingPointers {
-    fn from_iter<I: IntoIterator<Item = (QualifiedService, ServingPointer)>>(pointers: I) -> Self {
-        Self {
-            by_service: pointers.into_iter().collect(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

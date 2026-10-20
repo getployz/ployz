@@ -423,35 +423,6 @@ impl LocalMachine {
             .await?))
     }
 
-    pub(crate) async fn remove_drained_if<W>(
-        &self,
-        container: ContainerId,
-        still_wanted: W,
-    ) -> Result<bool, Error>
-    where
-        W: std::future::Future<Output = Result<bool, crate::corrosion::Error>> + Send + 'static,
-    {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            let still_wanted = async { Ok::<_, Error>(still_wanted.await?) };
-            match containers
-                .stop_if(&container, None, None, still_wanted)
-                .await
-            {
-                Ok(true) | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
-                Ok(false) => return Ok(false),
-                Err(error) => return Err(error),
-            }
-            let remove_volumes = AnonymousVolumes::default() == AnonymousVolumes::Remove;
-            match containers.remove(&container, remove_volumes, false).await {
-                Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => Ok(true),
-                Err(error) => Err(error.into()),
-            }
-        })
-        .await
-    }
-
     /// The cut's Container half: drain and stop every holder of the Volume, then run
     /// `zfs` under the exclusive turn once no holder runs. The holders are listed again
     /// under the turn, so one started during the drain is `Busy` too, as is one the
