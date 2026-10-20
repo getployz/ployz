@@ -108,8 +108,8 @@ See [Add many servers](add-many-servers.md). You can also make a token from your
 ployz server token create --expires 7d
 ```
 
-It prints the token once, and the install line for this release with the token in it. Run that
-line on each host:
+It prints the token once, and an install line with the token in it, for the release of the
+`ployz` CLI you ran. Run that line on each host:
 
 ```sh
 curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh -s -- VERSION

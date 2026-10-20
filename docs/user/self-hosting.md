@@ -163,9 +163,11 @@ app's client ID and secret to ask GitHub which installations the person connecti
    command the dashboard gives you already points at your address.
 
 To install a server with a [Fleet Token](servers/add-a-server.md#install-with-a-fleet-token), use the
-install line your dashboard or `ployz server token create` shows: it already points at your
-address and names the release your Ployz Cloud runs. To write it yourself, add your address, or
-the server checks in with ployz.dev. An address that answers but isn't Ployz Cloud ends the
+install line **Add servers** or `ployz server token create` shows. Both already point at your
+address. The **Add servers** line installs the release your Ployz Cloud runs. The
+`ployz server token create` line installs the release of the `ployz` CLI that made it, so if your
+CLI and your Ployz Cloud run different releases, use the dashboard's line or upgrade the CLI
+first. To write the line yourself, add your address, or the server checks in with ployz.dev. An address that answers but isn't Ployz Cloud ends the
 install with an error:
 
 ```sh
