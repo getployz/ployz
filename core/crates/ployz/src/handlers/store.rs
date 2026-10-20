@@ -508,17 +508,7 @@ impl<'m> Store<'m> {
     /// `history`'s `--version`, or `--expect-version` elsewhere. Read from the
     /// command tree: `ArgMatches` refuses unknown ids only in debug builds.
     fn version_flag(&self) -> (&'static str, &'static str) {
-        let root = crate::cli::compiled();
-        let mut command = &root;
-        for word in &self.words {
-            let Some(child) = command.find_subcommand(word) else {
-                break;
-            };
-            command = child;
-        }
-        let takes_version = command
-            .get_arguments()
-            .any(|arg| arg.get_id() == "version" && arg.get_action().takes_values());
+        let takes_version = super::takes_value(self.words.iter().map(String::as_str), "version");
         if takes_version {
             ("version", "--version")
         } else {

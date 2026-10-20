@@ -345,6 +345,7 @@ fn ordinary_volume_does_not_adopt_an_existing_provisioned_volume() {
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
         role: None,
+        slot_role: None,
     };
 
     let error = plan_deploy(
@@ -407,6 +408,7 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
         role: None,
+        slot_role: None,
     };
 
     let preview = explicitly_targeted_provisioned_deploy(
@@ -441,6 +443,7 @@ fn provisioned_volume_requires_requested_labels() {
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
         role: None,
+        slot_role: None,
     };
 
     let error = explicitly_targeted_provisioned_deploy(
@@ -464,6 +467,7 @@ fn existing_provisioned_volume_is_not_implicitly_resized() {
         bound_bytes: NonZeroU64::new(2_147_483_648).unwrap(),
         used_bytes: 0,
         role: None,
+        slot_role: None,
     };
 
     let error = explicitly_targeted_provisioned_deploy(
@@ -618,6 +622,7 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
         role: None,
+        slot_role: None,
     };
 
     assert_no_eligible(
@@ -646,6 +651,7 @@ fn provisioned_row(machine: char) -> DockerVolume {
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
         role: None,
+        slot_role: None,
     };
     existing
 }
@@ -672,6 +678,7 @@ fn copies_snapshot_of(
                 role: *role,
                 maximum_bytes: maximum_bytes(1_073_741_824),
                 used_bytes: 0,
+                slot_role: None,
             },
         );
     }

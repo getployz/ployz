@@ -1089,6 +1089,7 @@ async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
             NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
         ),
         used_bytes: 0,
+        slot_role: None,
     };
     let name = |suffix: &str| DockerVolumeName::parse(format!("shop-production_{suffix}")).unwrap();
     copies.lock().unwrap().extend([

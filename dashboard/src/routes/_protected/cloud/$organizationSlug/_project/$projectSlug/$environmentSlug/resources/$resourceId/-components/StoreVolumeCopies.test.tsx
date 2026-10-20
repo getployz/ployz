@@ -23,11 +23,13 @@ const row = (mirrors: string[], staged: { primary: string; mirrors?: string[]; d
   unreached: false,
   deploymentId: null,
 });
-const mirrorAsOf = (server: string, when: Date): Member => {
-  const base = member(server, "mirror");
+const copyAsOf = (copy: "mirror" | "old") => (server: string, when: Date): Member => {
+  const base = member(server, copy);
   if (!base.answered || base.view.copy === null) throw new Error("fixture");
-  return { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: { name: "s", guid: server, created_unix_seconds: when.getTime() / 1000 } } } };
+  return { ...base, view: { ...base.view, copy: { ...COPIES[copy], newest: { name: "s", guid: server, created_unix_seconds: when.getTime() / 1000 } } } };
 };
+const mirrorAsOf = copyAsOf("mirror");
+const oldAsOf = copyAsOf("old");
 const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServer => ({ id: id(name), name, storage });
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
@@ -81,7 +83,7 @@ describe("VolumeCopiesPanel", () => {
   });
 
   it("lists the mirror and the old copy elsewhere, and hides Add copy once a mirror exists", () => {
-    const { onOpen } = panel([member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000)), member("web-3", "mirror")], row(["web-2"]));
+    const { onOpen } = panel([member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000)), member("web-3", "old")], row(["web-2"]));
     expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · 15 min · 5 min/), expect.stringMatching(/^web-3Old copy · /)]);
     expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Mirror on web-2" }));
@@ -90,15 +92,15 @@ describe("VolumeCopiesPanel", () => {
 
   it("offers Delete on an old copy once the Deploy that stamped the Volume has ended, and not while it runs", () => {
     const stamped = { ...row([]), deploymentId: "dep-1" };
-    panel([member("web-1", "writer"), member("web-3", "mirror")], stamped);
+    panel([member("web-1", "writer"), member("web-3", "old")], stamped);
     expect(screen.getByRole("button", { name: "Delete copy on web-3" }).hasAttribute("disabled")).toBe(false);
     cleanup();
-    panel([member("web-1", "writer"), member("web-3", "mirror")], stamped, { deploying: true });
+    panel([member("web-1", "writer"), member("web-3", "old")], stamped, { deploying: true });
     expect(screen.getByRole("button", { name: "Delete copy on web-3" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("deletes an old copy at once after a plain confirm, not staged", async () => {
-    const { stage, deleteCopy } = panel([member("web-1", "writer"), member("web-3", "mirror")], row([]));
+    const { stage, deleteCopy } = panel([member("web-1", "writer"), member("web-3", "old")], row([]));
     fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText("Delete copy")).toBeTruthy();
@@ -110,7 +112,7 @@ describe("VolumeCopiesPanel", () => {
   });
 
   it("closes the delete confirm at once, without waiting for Cloud", async () => {
-    const { deleteCopy } = panel([member("web-1", "writer"), member("web-3", "mirror")], row([]));
+    const { deleteCopy } = panel([member("web-1", "writer"), member("web-3", "old")], row([]));
     deleteCopy.mockReturnValue(new Promise(() => undefined));
     fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
@@ -119,7 +121,7 @@ describe("VolumeCopiesPanel", () => {
   });
 
   it("restores from an old copy's latest point, as from a mirror's", () => {
-    const { restore } = panel([member("web-1", "writer"), mirrorAsOf("web-3", new Date(NOW.getTime() - 3_600_000))], row([]));
+    const { restore } = panel([member("web-1", "writer"), oldAsOf("web-3", new Date(NOW.getTime() - 3_600_000))], row([]));
     fireEvent.click(screen.getByRole("button", { name: "Restore from web-3" }));
     expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-3" }));
   });
@@ -134,7 +136,7 @@ describe("VolumeCopiesPanel", () => {
   });
 
   it("only shows while a Server needs a newer Ployz", () => {
-    panel([member("web-1", "writer"), member("web-3", "mirror"), pooled("web-2")], row([]), { upgrade: ["web-2"] });
+    panel([member("web-1", "writer"), member("web-3", "old"), pooled("web-2")], row([]), { upgrade: ["web-2"] });
     expect(screen.getByText("Upgrade web-2 to a newer Ployz")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete copy on web-3" })).toBeNull();
