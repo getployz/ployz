@@ -225,14 +225,14 @@ pub(crate) fn completion(command: Command) -> Command {
 
 #[cfg(test)]
 mod tests {
-    /// Every command and global flag `--help` shows, without its one-line description.
+    /// Every command and argument `--help` shows, without its one-line description.
     fn undescribed(command: &clap::Command, path: &str, blank: &mut Vec<String>) {
         if command.get_about().is_none() {
             blank.push(path.to_owned());
         }
-        for arg in command.get_arguments().filter(|arg| arg.is_global_set()) {
+        for arg in command.get_arguments() {
             if !arg.is_hide_set() && arg.get_help().is_none() {
-                blank.push(format!("{path} --{}", arg.get_id()));
+                blank.push(format!("{path} {}", arg.get_id()));
             }
         }
         for sub in command.get_subcommands() {
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn every_command_and_global_flag_has_a_description() {
+    fn every_command_and_argument_has_a_description() {
         let mut blank = Vec::new();
         let published = crate::published::Published::parse(include_bytes!(
             "../../tests/fixtures/published-manifest.json"
