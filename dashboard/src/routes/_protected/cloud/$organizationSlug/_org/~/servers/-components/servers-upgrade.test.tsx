@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { newMajorLine, type ServersUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
 import * as upgradeHooks from "#/modules/server-upgrade/server-upgrade.hooks";
 import { UPGRADE_REFUSED } from "#/modules/server-upgrade/server-upgrade.hooks";
+import { ROLE_CHECKING, type RoleGate } from "#/modules/organization/members.queries";
 import { clientWithRole, expectGate, ROLE_STATES } from "#/test/your-role";
 import { ServersUpgradeActions, ServersUpgradeBar } from "./servers-upgrade";
 
@@ -13,11 +14,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const bar = (line: ServersUpgradeLine, input: { major?: ReturnType<typeof newMajorLine>; may?: boolean | undefined } = {}) => {
+const bar = (line: ServersUpgradeLine, input: { major?: ReturnType<typeof newMajorLine>; gate?: RoleGate } = {}) => {
   const upgrade = vi.fn();
   const onSettings = vi.fn();
   const { container } = render(
-    <ServersUpgradeActions line={line} major={input.major ?? null} may={"may" in input ? input.may : true} upgrade={upgrade} onSettings={onSettings} />,
+    <ServersUpgradeActions line={line} major={input.major ?? null} gate={input.gate ?? { allowed: true, reason: undefined }} upgrade={upgrade} onSettings={onSettings} />,
   );
   return { text: container.textContent, upgrade, onSettings };
 };
@@ -40,16 +41,16 @@ it("offers Upgrade to the release while Servers are behind", () => {
   expect(upgrade).toHaveBeenCalledTimes(1);
 });
 
-it("lets only a role that may upgrade press Upgrade, and says who may once your role is known", () => {
+it("lets only a role that may upgrade press Upgrade, and says why not", () => {
   const upgradeTo = () => screen.getByRole<HTMLButtonElement>("button", { name: "Upgrade to 0.2.3" });
   const behind = { kind: "behind", release: "0.2.3", canUpgrade: true } as const;
-  bar(behind, { may: false });
+  bar(behind, { gate: { allowed: false, reason: UPGRADE_REFUSED } });
   expect([upgradeTo().disabled, upgradeTo().title]).toEqual([true, UPGRADE_REFUSED]);
   cleanup();
-  bar(behind, { may: undefined });
-  expect([upgradeTo().disabled, upgradeTo().getAttribute("title")]).toEqual([true, null]);
+  bar(behind, { gate: { allowed: false, reason: ROLE_CHECKING } });
+  expect([upgradeTo().disabled, upgradeTo().title]).toEqual([true, ROLE_CHECKING]);
   cleanup();
-  bar(behind, { may: true });
+  bar(behind, { gate: { allowed: true, reason: undefined } });
   expect([upgradeTo().disabled, upgradeTo().getAttribute("title")]).toEqual([false, null]);
 });
 
@@ -75,5 +76,5 @@ it.each(ROLE_STATES)("opens Upgrade to the roles Cloud lets upgrade, support's i
   vi.spyOn(upgradeHooks, "useServerUpgradeSettings").mockReturnValue({ automatic: false, setAutomatic: vi.fn(), channel: "stable", setChannel: vi.fn() });
   const upgrade = { line: { kind: "behind", release: "0.2.3", canUpgrade: true } as const, rows: new Map(), major: null, upgrade: vi.fn() };
   render(<QueryClientProvider client={client}><ServersUpgradeBar organizationSlug="ada" upgrade={upgrade} /></QueryClientProvider>);
-  expectGate(screen.getByRole("button", { name: "Upgrade to 0.2.3" }), state, "servers:operate", UPGRADE_REFUSED);
+  await expectGate(screen.getByRole("button", { name: "Upgrade to 0.2.3" }), state, "servers:operate", UPGRADE_REFUSED);
 });

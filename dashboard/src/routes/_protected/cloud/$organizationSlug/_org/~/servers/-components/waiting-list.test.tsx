@@ -462,15 +462,15 @@ async function listAs(state: (typeof ROLE_STATES)[number], servers: readonly Wai
 
 it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject the first arrival (%s)", async (state) => {
   await listAs(state, [host("web")], true);
-  expectGate(screen.getByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
-  expectGate(screen.getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(screen.getByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(screen.getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
 });
 
 it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject the picked servers (%s)", async (state) => {
   await listAs(state, [host("one"), host("two")]);
   fireEvent.click(pick("one"));
-  expectGate(screen.getByRole("button", { name: "Enroll 1" }), state, "servers:add", ENROLL_REFUSED);
-  expectGate(screen.getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(screen.getByRole("button", { name: "Enroll 1" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(screen.getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
 });
 
 it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject from the detail sheet (%s)", async (state) => {
@@ -479,8 +479,8 @@ it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject fro
   await listAs(state, [one, host("two")]);
   fireEvent.click(screen.getByRole("button", { name: "one" }));
   const sheet = await screen.findByRole("dialog");
-  expectGate(await within(sheet).findByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
-  expectGate(within(sheet).getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(await within(sheet).findByRole("button", { name: "Enroll" }), state, "servers:add", ENROLL_REFUSED);
+  await expectGate(within(sheet).getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
 });
 
 it.each([["failed", "Failed at Setting up ZFS"], ["cancelled", "Cancelled"]] as const)("shows a %s attempt's stage and message in the detail sheet", async (state, reason) => {

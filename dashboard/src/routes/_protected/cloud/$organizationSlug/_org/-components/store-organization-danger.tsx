@@ -9,7 +9,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { toErrorMessage } from "#/lib/error-message";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { removeOrganizationServerFn } from "#/modules/organization/organization-removal.functions";
 import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ForgetServersDialog, useForgetServersGate } from "./forget-servers-dialog";
@@ -54,12 +54,10 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
   }
 
   const forget = useForgetServersGate(organizationSlug);
-  const mayDelete = useYouMay(organizationSlug, "org:delete");
-  const disabledReason = mayDelete === false
-    ? "Only an owner can delete it."
-    : projects.length > 0
-      ? `Delete its projects first: ${projects.map((project) => project.name).join(", ")}.`
-      : undefined;
+  const mayDelete = useRoleGate(organizationSlug, "org:delete", "Only an owner can delete it.");
+  const disabledReason = mayDelete.reason ?? (projects.length > 0
+    ? `Delete its projects first: ${projects.map((project) => project.name).join(", ")}.`
+    : undefined);
 
   return (
     <>
@@ -74,7 +72,7 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
         )}
         <SettingsDanger
           label="Forget all servers"
-          hint={`Use this when your servers were deleted. Your projects and settings stay.${forget.refusal ? ` ${forget.refusal}` : ""}`}
+          hint={`Use this when your servers were deleted. Your projects and settings stay.${forget.reason ? ` ${forget.reason}` : ""}`}
           action={
             <Button variant="destructive" disabled={!forget.allowed} onClick={() => setForgetting(true)}>
               <ServerOffIcon data-icon="inline-start" />
@@ -86,7 +84,7 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
           label="Delete this organization"
           hint={disabledReason ? `Its servers are unpaired from it. ${disabledReason}` : "Its servers are unpaired from it."}
           action={
-            <Button variant="destructive" disabled={mayDelete !== true || disabledReason !== undefined} onClick={() => setOpen(true)}>
+            <Button variant="destructive" disabled={!mayDelete.allowed || disabledReason !== undefined} onClick={() => setOpen(true)}>
               <Trash2Icon data-icon="inline-start" />
               Delete organization
             </Button>

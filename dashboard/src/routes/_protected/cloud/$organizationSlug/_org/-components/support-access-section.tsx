@@ -3,7 +3,7 @@ import { getRouteApi } from "@tanstack/react-router";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
 import { SettingsSection } from "#/components/settings/settings-section";
 import { Switch } from "#/components/ui/switch";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { useSupportAccess } from "#/modules/support-access/support-access.hooks";
 
@@ -20,13 +20,13 @@ export function SupportAccessSection({ organizationSlug }: { organizationSlug: s
   const { row, change } = useSupportAccess(organizationSlug);
   // Only an owner or admin decides what Ployz support may do. Everyone else, support included, sees the switches but can't move them.
   const { access } = organizationRoute.useLoaderData();
-  const may = useYouMay(organizationSlug, "org:settings");
-  const locked = access === "support" || may !== true;
+  const gate = useRoleGate(organizationSlug, "org:settings");
+  const locked = access === "support" || !gate.allowed;
   return (
     <SettingsSection id="support-access" title="Support">
       <SettingsGroup
         label="Allow support access"
-        hint={row.allowed ? "Let Ployz support open this Organization and act in it, and read what's on below. Sealed variables stay hidden." : "Let Ployz support open this Organization and act in it."}
+        hint={`${row.allowed ? "Let Ployz support open this Organization and act in it, and read what's on below. Sealed variables stay hidden." : "Let Ployz support open this Organization and act in it."}${gate.reason ? ` ${gate.reason}` : ""}`}
         commit="change"
         control={(
           <Switch

@@ -6,7 +6,7 @@ import { Schema } from "effect";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ConfirmableInput, type ConfirmStatus } from "#/components/stageable/confirmable-input";
 import { toErrorMessage } from "#/lib/error-message";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { OrganizationName } from "#/modules/organization/organization-state";
 import { renameOrganizationServerFn } from "#/modules/organization/organization-state.functions";
 import { organizationKeys, useOrganizationName } from "#/modules/organization/organization-state.queries";
@@ -30,8 +30,8 @@ function OrganizationNameRow({ organizationSlug, name }: { organizationSlug: str
   const queryClient = useQueryClient();
   // A support visit may not rename a customer's Organization; the settings loader has the members, so a member's role is known.
   const { access } = organizationRoute.useLoaderData();
-  const may = useYouMay(organizationSlug, "org:settings");
-  const locked = access === "support" || may !== true;
+  const gate = useRoleGate(organizationSlug, "org:settings");
+  const locked = access === "support" || !gate.allowed;
   const rename = useMutation({
     mutationFn: useServerFn(renameOrganizationServerFn),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
@@ -52,7 +52,7 @@ function OrganizationNameRow({ organizationSlug, name }: { organizationSlug: str
   return (
     <SettingsRow
       label="Display name"
-      hint="The URL stays the same."
+      hint={`The URL stays the same.${gate.reason ? ` ${gate.reason}` : ""}`}
       commit="confirm"
       control={(
         <ConfirmableInput id="organization-name" aria-label="Display name" value={draft} onValueChange={edit} error={error}

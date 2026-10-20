@@ -8,7 +8,7 @@ import * as github from "#/modules/github/github.queries";
 import * as servers from "#/modules/machines/use-servers";
 import { asTestDouble } from "#/lib/test-double";
 import { can } from "#/modules/organization/permissions";
-import { clientWithRole, ROLE_STATES } from "#/test/your-role";
+import { clientWithRole, gateReason, ROLE_STATES } from "#/test/your-role";
 import { BUILD_ORDER_REFUSED, BuildsSettings } from "./builds-settings";
 
 afterEach(() => {
@@ -27,5 +27,7 @@ it.each(ROLE_STATES)("lets only a role that may change the Organization's settin
   const known = state === "owner" || state === "admin" || state === "member" || state === "support";
   const open = known && can(state, "org:settings");
   expect(screen.getByRole("combobox", { name: "Where builds run" })).toHaveProperty("disabled", !open);
-  expect(screen.queryByText(BUILD_ORDER_REFUSED) !== null).toBe(known && !open);
+  const reason = gateReason(state, "org:settings", BUILD_ORDER_REFUSED);
+  if (reason === undefined) expect(screen.queryByText(/Only an owner|your role/)).toBeNull();
+  else expect(await screen.findByText(reason)).toBeTruthy();
 });

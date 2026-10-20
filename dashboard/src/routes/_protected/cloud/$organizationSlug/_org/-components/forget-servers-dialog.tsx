@@ -4,12 +4,11 @@ import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { forgetServersServerFn, previewForgetServersServerFn } from "#/modules/machines/forget-servers.functions";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 
-/** Whether you may forget the Servers, and why not once your role says so. Closed while your role is unknown. */
+/** Whether you may forget the Servers, and why not. */
 export function useForgetServersGate(organizationSlug: string) {
-  const may = useYouMay(organizationSlug, "servers:remove");
-  return { allowed: may === true, refusal: may === false ? "Only an owner or admin can forget them." : undefined };
+  return useRoleGate(organizationSlug, "servers:remove", "Only an owner or admin can forget them.");
 }
 
 /**

@@ -1,4 +1,4 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { listMembersServerFn, readInviteServerFn } from "#/modules/organization/members.functions";
 import { can, type Permission } from "#/modules/organization/permissions";
 
@@ -19,10 +19,31 @@ export function organizationMembersQueryOptions(organizationSlug: string) {
  * action opens only on true and names who may act only on false.
  */
 export function useYouMay(organizationSlug: string, permission: Permission): boolean | undefined {
-  const members = useQuery(organizationMembersQueryOptions(organizationSlug));
+  return youMay(useQuery(organizationMembersQueryOptions(organizationSlug)), permission);
+}
+
+function youMay(members: UseQueryResult<Members>, permission: Permission) {
   const role = members.status !== "success" ? undefined : members.data.support ? "support" : members.data.members.find((row) => row.you)?.role;
   return role === undefined ? undefined : can(role, permission);
 }
+
+export const ROLE_CHECKING = "Checking your role…";
+export const ROLE_UNCHECKED = "Couldn't check your role. Reload to try again.";
+
+/** A control gated on `useYouMay`, and why it is closed: `refusal` once your role says no, or that your role is still unknown. */
+export interface RoleGate {
+  allowed: boolean;
+  reason: string | undefined;
+}
+
+export function useRoleGate(organizationSlug: string, permission: Permission, refusal?: string): RoleGate {
+  const members = useQuery(organizationMembersQueryOptions(organizationSlug));
+  const may = youMay(members, permission);
+  if (may === true) return { allowed: true, reason: undefined };
+  return { allowed: false, reason: members.status === "pending" ? ROLE_CHECKING : members.status === "error" ? ROLE_UNCHECKED : refusal };
+}
+
+type Members = Awaited<ReturnType<typeof listMembersServerFn>>;
 
 export type Invite = NonNullable<Awaited<ReturnType<typeof readInviteServerFn>>>;
 

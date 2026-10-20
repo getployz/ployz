@@ -4,7 +4,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { Dialog, DialogContent } from "#/components/ui/dialog";
 import * as upgradeHooks from "#/modules/server-upgrade/server-upgrade.hooks";
-import { clientWithRole, ROLE_STATES } from "#/test/your-role";
+import { ROLE_CHECKING } from "#/modules/organization/members.queries";
+import { clientWithRole, gateReason, ROLE_STATES } from "#/test/your-role";
 import { ServerUpgradesDialog, ServerUpgradesForm } from "./server-upgrades-dialog";
 
 afterEach(() => {
@@ -13,20 +14,22 @@ afterEach(() => {
 });
 
 it.each([
-  { may: false, disabled: true, says: true },
-  { may: undefined, disabled: true, says: false },
-  { may: true, disabled: false, says: false },
-])("lets only a role that may upgrade change Server upgrades (may: $may)", ({ may, disabled, says }) => {
+  { gate: { allowed: false, reason: "Only an owner or admin can change these." } },
+  { gate: { allowed: false, reason: ROLE_CHECKING } },
+  { gate: { allowed: true, reason: undefined } },
+])("lets only a role that may upgrade change Server upgrades, and says why not ($gate.reason)", ({ gate }) => {
+  const disabled = !gate.allowed;
   render(
     <Dialog open>
       <DialogContent>
-        <ServerUpgradesForm automatic={false} setAutomatic={vi.fn()} channel="stable" setChannel={vi.fn()} may={may} />
+        <ServerUpgradesForm automatic={false} setAutomatic={vi.fn()} channel="stable" setChannel={vi.fn()} gate={gate} />
       </DialogContent>
     </Dialog>,
   );
   expect(screen.getByRole("switch", { name: "Upgrade automatically" }).hasAttribute("data-disabled")).toBe(disabled);
   expect(screen.getByRole("combobox", { name: "Releases" }).hasAttribute("data-disabled")).toBe(disabled);
-  expect(screen.queryByText("Only an owner or admin can change these.") !== null).toBe(says);
+  if (gate.reason === undefined) expect(screen.queryByText(/Only an owner|your role/)).toBeNull();
+  else expect(screen.getByRole("dialog", { description: gate.reason })).toBeTruthy();
 });
 
 it.each(ROLE_STATES)("opens Server upgrades to the roles Cloud lets upgrade, support's included (%s)", async (state) => {
@@ -35,5 +38,7 @@ it.each(ROLE_STATES)("opens Server upgrades to the roles Cloud lets upgrade, sup
   render(<QueryClientProvider client={client}><ServerUpgradesDialog organizationSlug="ada" open onOpenChange={vi.fn()} /></QueryClientProvider>);
   const open = state === "owner" || state === "admin" || state === "support";
   expect(screen.getByRole("switch", { name: "Upgrade automatically" }).hasAttribute("data-disabled")).toBe(!open);
-  expect(screen.queryByText("Only an owner or admin can change these.") !== null).toBe(state === "member");
+  const reason = gateReason(state, "servers:operate", "Only an owner or admin can change these.");
+  if (reason === undefined) expect(screen.queryByText(/Only an owner|your role/)).toBeNull();
+  else expect(await screen.findByRole("dialog", { description: reason })).toBeTruthy();
 });

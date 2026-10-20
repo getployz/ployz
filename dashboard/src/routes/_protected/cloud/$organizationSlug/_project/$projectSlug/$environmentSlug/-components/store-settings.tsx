@@ -16,7 +16,7 @@ import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config
 import { useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
@@ -66,16 +66,16 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
 function StoreProtection({ organizationSlug, projectSlug, environmentSlug, saved }: Place & { saved: boolean }) {
   const writer = useStoreWriter(organizationSlug);
   const [checked, hold] = useCommitHold(saved);
-  const may = useYouMay(organizationSlug, "environments:protect");
+  const gate = useRoleGate(organizationSlug, "environments:protect", "Only an owner or admin can change this.");
   return (
     <SettingsSection id="protected" title="Protected"
       description="Only an owner or admin can change its repository, deploy branch or protection, and it can't be deleted.">
       <SettingsRow
         label="Protect this environment"
-        hint={may === false ? "Only an owner or admin can change this." : undefined}
+        hint={gate.reason}
         commit="change"
         control={(
-          <Switch id="environment-protected" aria-label="Protected" checked={checked} disabled={may !== true}
+          <Switch id="environment-protected" aria-label="Protected" checked={checked} disabled={!gate.allowed}
             onCheckedChange={(next) => {
               if (next !== checked) {
                 hold(next, writer.commit({ command: "set_environment_protected",

@@ -4,7 +4,7 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Router
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import * as supportAccess from "#/modules/support-access/support-access.hooks";
-import { clientWithRole, ROLE_STATES, seedRole } from "#/test/your-role";
+import { clientWithRole, gateReason, ROLE_STATES, seedRole } from "#/test/your-role";
 import { SupportAccessSection } from "./support-access-section";
 
 afterEach(() => {
@@ -34,6 +34,9 @@ it.each(ROLE_STATES)("lets only an owner or admin decide what support may do, ne
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
   const open = state === "owner" || state === "admin";
   expect((await screen.findByRole("switch", { name: "Allow support access" })).hasAttribute("data-disabled")).toBe(!open);
+  const reason = gateReason(state, "org:settings", undefined);
+  if (reason === undefined) expect(screen.queryByText(/your role/)).toBeNull();
+  else expect(await screen.findByText(reason, { exact: false })).toBeTruthy();
 });
 
 it("keeps working when you go from a support visit to an Organization you belong to", async () => {

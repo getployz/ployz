@@ -7,7 +7,7 @@ import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.fun
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
 import { STALL_MS } from "#/hooks/use-exclusive-mutation";
 import * as memberFunctions from "#/modules/organization/members.functions";
-import { membersKey } from "#/modules/organization/members.queries";
+import { membersKey, ROLE_CHECKING, ROLE_UNCHECKED } from "#/modules/organization/members.queries";
 import { AddServersDialog } from "./add-servers-dialog";
 
 const TOKEN = "pflt_test-fixture-token";
@@ -183,18 +183,18 @@ it("opens Add servers on a support visit, as Cloud does", async () => {
   expect(add.getAttribute("title")).toBeNull();
 });
 
-it("keeps Add servers closed while your role loads, without claiming who may add", async () => {
+it("keeps Add servers closed while your role loads, saying so rather than who may add", async () => {
   await renderDialog("loading");
   const add = screen.getByRole("button", { name: "Add servers" });
   expect(add).toHaveProperty("disabled", true);
-  expect(add.getAttribute("title")).toBeNull();
+  expect(add.getAttribute("title")).toBe(ROLE_CHECKING);
 });
 
-it("keeps Add servers closed when your role can't be read, without claiming who may add", async () => {
+it("keeps Add servers closed when your role can't be read, saying so rather than who may add", async () => {
   await renderDialog("failed");
   const add = screen.getByRole("button", { name: "Add servers" });
   expect(add).toHaveProperty("disabled", true);
-  expect(add.getAttribute("title")).toBeNull();
+  expect(add.getAttribute("title")).toBe(ROLE_UNCHECKED);
 });
 
 it("closes Add servers when a later read of your role fails, though the old role is cached", async () => {
@@ -206,7 +206,7 @@ it("closes Add servers when a later read of your role fails, though the old role
 
   expect(client.getQueryState(membersKey("ada"))).toMatchObject({ status: "error", data: { members: [{ role: "owner" }] } });
   await waitFor(() => expect(add).toHaveProperty("disabled", true));
-  expect(add.getAttribute("title")).toBeNull();
+  expect(add.getAttribute("title")).toBe(ROLE_UNCHECKED);
 });
 
 async function resolveRoleAfterLoading(role: "admin" | "member") {

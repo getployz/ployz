@@ -1,7 +1,8 @@
 import { QueryClient } from "@tanstack/react-query";
+import { waitFor } from "@testing-library/react";
 import { expect, vi } from "vitest";
 import * as memberFunctions from "#/modules/organization/members.functions";
-import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { membersKey, organizationMembersQueryOptions, ROLE_CHECKING, ROLE_UNCHECKED } from "#/modules/organization/members.queries";
 import { can, type Permission } from "#/modules/organization/permissions";
 
 /**
@@ -52,12 +53,21 @@ export async function clientWithRole(organizationSlug: string, state: RoleState)
 }
 
 /**
- * A known role, support's included, may act when it holds `permission` and is refused with `refusal` when it doesn't;
- * while the role is unknown the control stays closed and says nothing.
+ * Why a control gated on `permission` is closed at `state`: `refusal` when a known role, support's included, lacks it,
+ * that the role is still being checked or couldn't be, or nothing when it is open.
  */
-export function expectGate(control: HTMLElement, state: RoleState, permission: Permission, refusal: string) {
+export function gateReason(state: RoleState, permission: Permission, refusal: string | undefined) {
+  if (state === "loading") return ROLE_CHECKING;
+  if (state === "failed" || state === "cached-failed") return ROLE_UNCHECKED;
+  return can(state, permission) ? undefined : refusal;
+}
+
+/**
+ * The control opens only to a known role that holds `permission`, and is otherwise closed with its reason as its title.
+ * A failed read is tried again on mount, so its reason settles once that try fails too.
+ */
+export async function expectGate(control: HTMLElement, state: RoleState, permission: Permission, refusal: string) {
   const known = state === "owner" || state === "admin" || state === "member" || state === "support";
-  const open = known && can(state, permission);
-  expect(control).toHaveProperty("disabled", !open);
-  expect(control.getAttribute("title")).toBe(known && !open ? refusal : null);
+  expect(control).toHaveProperty("disabled", !(known && can(state, permission)));
+  await waitFor(() => expect(control.getAttribute("title")).toBe(gateReason(state, permission, refusal) ?? null));
 }

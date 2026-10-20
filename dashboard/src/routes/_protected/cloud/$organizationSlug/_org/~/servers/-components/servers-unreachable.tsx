@@ -11,13 +11,13 @@ import { ForgetServersDialog, useForgetServersGate } from "../../../-components/
  */
 export function ServersUnreachable({ organizationSlug }: { organizationSlug: string }) {
   const [forgetting, setForgetting] = useState(false);
-  const { allowed, refusal } = useForgetServersGate(organizationSlug);
+  const { allowed, reason } = useForgetServersGate(organizationSlug);
   return (
     <Empty variant="first-run">
       <EmptyHeader>
         <EmptyMedia variant="icon"><WifiOffIcon /></EmptyMedia>
         <EmptyTitle>Can’t reach your servers right now</EmptyTitle>
-        <EmptyDescription>Servers gone for good?{refusal ? ` ${refusal}` : ""}</EmptyDescription>
+        <EmptyDescription>Servers gone for good?{reason ? ` ${reason}` : ""}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
         <Button variant="link" disabled={!allowed} onClick={() => setForgetting(true)}>Forget them and start over.</Button>

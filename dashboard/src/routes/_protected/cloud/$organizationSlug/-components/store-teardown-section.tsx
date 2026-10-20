@@ -15,7 +15,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
 import { useServerList } from "#/modules/machines/use-servers";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 
@@ -69,8 +69,8 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   const writer = useStoreWriter(organizationSlug);
   const [open, setOpen] = useState(false);
   const [left, setLeft] = useState<Extract<Removal, { removal: "removing" }> | null>(null);
-  const may = useYouMay(organizationSlug, target.environment === null ? "project:delete" : "environment:delete");
-  const disabledReason = may === false ? "Only an owner or admin can delete it." : blocked;
+  const gate = useRoleGate(organizationSlug, target.environment === null ? "project:delete" : "environment:delete", "Only an owner or admin can delete it.");
+  const disabledReason = gate.reason ?? blocked;
   const offline = useServerList(organizationSlug).servers.filter((server) => server.status === "offline")
     .map((server) => ({ id: server.machine.id, name: server.name }));
   const inScope = target.environment === null ? environments : environments.filter((row) => row.name === target.environment);
@@ -173,7 +173,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
             label={title}
             hint={description}
             action={
-              <Button variant="destructive" disabled={busy || may !== true || disabledReason !== undefined} onClick={() => setOpen(true)}>
+              <Button variant="destructive" disabled={busy || !gate.allowed || disabledReason !== undefined} onClick={() => setOpen(true)}>
                 <Trash2Icon data-icon="inline-start" />
                 {actionLabel}
               </Button>

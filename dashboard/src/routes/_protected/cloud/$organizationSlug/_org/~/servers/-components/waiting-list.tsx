@@ -10,7 +10,7 @@ import { useMediaQuery } from "#/hooks/use-media-query";
 import { cn } from "#/lib/utils";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { EnrollSheet } from "./enroll-sheet";
 import { EnrollingList, enrollingRows } from "./enrolling-list";
 import { ENROLL_REFUSED, useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
@@ -83,8 +83,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const ordered = useMemo(() => [...servers].sort((a, b) => a.arrivalAt.localeCompare(b.arrivalAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)), [servers]);
   const statusContext = useMemo(() => ({ servers, now }), [servers, now]);
   const reject = useRejectWaiting(organizationSlug);
-  const may = useYouMay(organizationSlug, "servers:add");
-  const refusal = may === false ? ENROLL_REFUSED : undefined;
+  const gate = useRoleGate(organizationSlug, "servers:add", ENROLL_REFUSED);
 
   const counts = new Map<ReadinessFilter, number>([["all", servers.length]]);
   for (const server of servers) counts.set(readiness(server), (counts.get(readiness(server)) ?? 0) + 1);
@@ -148,7 +147,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
       failed={detail.isError}
       server={openId === null ? null : detail.data ?? null}
       now={now}
-      may={may}
+      gate={gate}
       onOpenChange={(next) => { if (!next) setOpenId(null); }}
       onEnroll={opened !== undefined && selectable(opened) ? () => { setOpenId(null); setEnroll([opened]); } : null}
       onReject={(id) => rejectIds([id])}
@@ -176,8 +175,8 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
         <div className="flex flex-wrap items-center gap-2.5">
           <h2 id="waiting-heading" className="text-sm font-semibold">{arrived.report.hostname} is ready to enroll</h2>
           <div className="ml-auto flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={may !== true} title={refusal} onClick={() => rejectIds([arrived.id])}>Reject</Button>
-            <Button size="sm" variant="ink" disabled={may !== true} title={refusal} onClick={() => setEnroll([arrived])}>Enroll</Button>
+            <Button size="sm" variant="outline" disabled={!gate.allowed} title={gate.reason} onClick={() => rejectIds([arrived.id])}>Reject</Button>
+            <Button size="sm" variant="ink" disabled={!gate.allowed} title={gate.reason} onClick={() => setEnroll([arrived])}>Enroll</Button>
           </div>
         </div>
       )}
@@ -262,8 +261,8 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
           <span className="whitespace-nowrap tabular-nums">{chosen.length} selected</span>
           {full ? <span className="text-primary-foreground/70">{SELECTION_MAX} max</span> : null}
           <Button size="sm" variant="ghost" className="text-primary-foreground" onClick={() => setPicked(new Set())}>Clear</Button>
-          <Button size="sm" variant="destructive" disabled={may !== true} title={refusal} onClick={() => rejectIds(chosen)}>Reject</Button>
-          <Button size="sm" variant="secondary" disabled={may !== true} title={refusal} onClick={() => setEnroll(rows.filter((row) => pickedIds.has(row.id)))}>Enroll {chosen.length}</Button>
+          <Button size="sm" variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => rejectIds(chosen)}>Reject</Button>
+          <Button size="sm" variant="secondary" disabled={!gate.allowed} title={gate.reason} onClick={() => setEnroll(rows.filter((row) => pickedIds.has(row.id)))}>Enroll {chosen.length}</Button>
         </div>
       ) : null}
       {sheets}

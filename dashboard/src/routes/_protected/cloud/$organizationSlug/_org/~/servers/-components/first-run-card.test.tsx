@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import * as memberFunctions from "#/modules/organization/members.functions";
-import { membersKey } from "#/modules/organization/members.queries";
+import { membersKey, ROLE_CHECKING, ROLE_UNCHECKED } from "#/modules/organization/members.queries";
 import { FirstRunCard } from "./first-run-card";
 
 afterEach(() => {
@@ -17,6 +17,7 @@ it("offers the install command only once your role allows it", async () => {
   render(<QueryClientProvider client={new QueryClient()}><FirstRunCard organizationSlug="ada" arrived={false} /></QueryClientProvider>);
   const get = screen.getByRole("button", { name: "Get install command" });
   expect(get).toHaveProperty("disabled", true);
+  expect(get.getAttribute("title")).toBe(ROLE_CHECKING);
   expect(screen.queryByText("Only an owner or admin can add servers.")).toBeNull();
   await act(async () => resolve({ members: [{ you: true, role: "owner", name: "Ada", email: "ada@example.com", joined_at: "2026-10-01T00:00:00Z" }], invites: [], mail: false, support: false }));
   await waitFor(() => expect(get).toHaveProperty("disabled", false));
@@ -28,6 +29,7 @@ it("keeps the install command closed when your role can't be read", async () => 
   render(<QueryClientProvider client={client}><FirstRunCard organizationSlug="ada" arrived={false} /></QueryClientProvider>);
   await waitFor(() => expect(client.getQueryState(membersKey("ada"))?.status).toBe("error"));
   expect(screen.getByRole("button", { name: "Get install command" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Get install command" }).getAttribute("title")).toBe(ROLE_UNCHECKED);
   expect(screen.queryByText("Only an owner or admin can add servers.")).toBeNull();
 });
 

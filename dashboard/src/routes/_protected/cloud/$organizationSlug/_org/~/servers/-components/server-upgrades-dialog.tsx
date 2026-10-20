@@ -5,7 +5,7 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
 import { RELEASE_CHANNELS, type ReleaseChannel } from "#/modules/server-upgrade/server-upgrade";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { type RoleGate, useRoleGate } from "#/modules/organization/members.queries";
 import { useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
 
 const CHANNEL_LABELS = { stable: "Stable", beta: "Beta" } satisfies Record<ReleaseChannel, string>;
@@ -17,24 +17,24 @@ export function ServerUpgradesDialog({ organizationSlug, open, onOpenChange }: {
   onOpenChange: (open: boolean) => void;
 }) {
   const settings = useServerUpgradeSettings(organizationSlug);
-  const may = useYouMay(organizationSlug, "servers:operate");
+  const gate = useRoleGate(organizationSlug, "servers:operate", "Only an owner or admin can change these.");
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <ServerUpgradesForm {...settings} may={may} />
+        <ServerUpgradesForm {...settings} gate={gate} />
       </DialogContent>
     </Dialog>
   );
 }
 
 /** The dialog's settings, open only to a role that may upgrade. */
-export function ServerUpgradesForm({ automatic, setAutomatic, channel, setChannel, may }: {
+export function ServerUpgradesForm({ automatic, setAutomatic, channel, setChannel, gate }: {
   automatic: boolean;
   setAutomatic: (automatic: boolean) => void;
   channel: ReleaseChannel;
   setChannel: (channel: ReleaseChannel) => void;
-  /** Whether your role may upgrade; undefined while it is unknown. */
-  may: boolean | undefined;
+  /** Whether your role may upgrade. */
+  gate: RoleGate;
 }) {
   const switchId = useId();
   const channelId = useId();
@@ -42,20 +42,20 @@ export function ServerUpgradesForm({ automatic, setAutomatic, channel, setChanne
     <>
       <DialogHeader>
         <DialogTitle>Server upgrades</DialogTitle>
-        {may === false ? <DialogDescription>Only an owner or admin can change these.</DialogDescription> : null}
+        {gate.reason === undefined ? null : <DialogDescription>{gate.reason}</DialogDescription>}
       </DialogHeader>
       <Field orientation="horizontal">
         <FieldContent>
           <FieldLabel htmlFor={switchId}>Upgrade automatically</FieldLabel>
           <FieldDescription>Your apps keep running while servers upgrade.</FieldDescription>
         </FieldContent>
-        <Switch id={switchId} checked={automatic} disabled={may !== true} onCheckedChange={setAutomatic} />
+        <Switch id={switchId} checked={automatic} disabled={!gate.allowed} onCheckedChange={setAutomatic} />
       </Field>
       <Field orientation="horizontal">
         <FieldContent>
           <FieldLabel htmlFor={channelId}>Releases</FieldLabel>
         </FieldContent>
-        <Select value={channel} disabled={may !== true} onValueChange={(value) => { if (value !== null && value !== channel) setChannel(value); }}>
+        <Select value={channel} disabled={!gate.allowed} onValueChange={(value) => { if (value !== null && value !== channel) setChannel(value); }}>
           <SelectTrigger id={channelId}><SelectValue>{CHANNEL_LABELS[channel]}</SelectValue></SelectTrigger>
           <SelectContent>
             <SelectGroup>

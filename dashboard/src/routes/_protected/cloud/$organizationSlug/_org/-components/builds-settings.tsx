@@ -14,7 +14,7 @@ import { githubBuildRepositoryKey, githubBuildWorkflowUrl, type GithubBuildRepos
 import { useGithubBuildRepositories, useGithubWebOrigin } from "#/modules/github/github.queries";
 import { volumeSupportText } from "#/modules/machines/server-status";
 import { useServerList, type ServerListItem } from "#/modules/machines/use-servers";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 
 /** Where the Organization's Image Builds run: the Build Order, GitHub setup per repository, and which Servers build. */
 export function BuildsSettings({ organizationSlug }: { organizationSlug: string }) {
@@ -50,15 +50,15 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
   // Shown at once; a refusal toasts and the saved order shows again.
   const [buildOrder, hold] = useCommitHold(view.build_order ?? "github-then-servers");
   // The Store refuses set_build_order without org:settings; the control says so first.
-  const may = useYouMay(organizationSlug, "org:settings");
+  const gate = useRoleGate(organizationSlug, "org:settings", BUILD_ORDER_REFUSED);
   return (
     <SettingsSection id="build-order" title="Where builds run">
       <SettingsRow
         label="Order"
-        hint={may === false ? BUILD_ORDER_REFUSED : undefined}
+        hint={gate.reason}
         commit="change"
         control={(
-          <Select value={buildOrder} disabled={may !== true} onValueChange={(next) => {
+          <Select value={buildOrder} disabled={!gate.allowed} onValueChange={(next) => {
             const order = BUILD_ORDERS.find((candidate) => candidate === next);
             if (!order) return;
             hold(order, writer.commit({ command: "set_build_order", build_order: order }));
