@@ -1,6 +1,8 @@
+import { Schema } from "effect";
+import { MaximumBytes } from "#/modules/operations/cli-wire";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { serverSupports } from "#/modules/runtime/daemon-compat";
-import { observePlacement } from "#/modules/volume-placement/volume-placement";
+import { observePlacement, VolumeInput } from "#/modules/volume-placement/volume-placement";
 import { type Bytes, gb, RESIZE_ORDER } from "#/modules/volume-run/resize";
 import type { Member } from "#/modules/volume-run/volume-run";
 
@@ -67,3 +69,10 @@ export function holdersOf(members: readonly Member[] | undefined, machines: read
     ...observed.copies.map((copy) => holder(copy.server, copy.kind === "slot" ? copy.role : "mirror")),
   ];
 }
+
+/** The drawer's confirmed grow; `requestId` is fresh per confirm, so a retried request admits one run. */
+export const ResizeVolumeInput = Schema.Struct({
+  ...VolumeInput.fields,
+  maximumBytes: MaximumBytes,
+  requestId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{8,64}$/)),
+});
