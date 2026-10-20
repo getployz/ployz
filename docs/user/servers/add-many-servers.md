@@ -61,9 +61,11 @@ check-in refreshes the row. Offline hosts have stopped checking in.
 5. Review the names, storage choices and any **Skip** reasons. For a selection across
    providers or networks, check that every source belongs to you. Click **Enroll N**.
 
-When Ployz Cloud can't reach any server already in the organization, the sheet says **Servers
-offline**. Cloud can't join hosts to a cluster it can't reach, so the enroll fails. If those servers
-were deleted, follow **Forget Servers** to forget them first, then enroll.
+When no server already in the organization has contacted Ployz Cloud for three hours, the sheet
+says **Servers offline**. A running server contacts Cloud at least once an hour. Cloud can't join
+hosts to a cluster it can't reach, so the enroll fails. If those servers were deleted, follow
+**Forget Servers** to forget them first, then enroll. Servers that went down less than three hours
+ago don't raise the warning yet. The enroll then fails with the same advice.
 
 ## Use spare disk
 

@@ -37,7 +37,7 @@ export const Route = createFileRoute(
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { token } = Route.useSearch();
-  const { state, servers, unreachable } = useServers(organizationSlug);
+  const { state, servers } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
@@ -73,7 +73,7 @@ function RouteComponent() {
         </p>
       ) : null}
       {/* Above the list: the skeleton below is a guess at the list's height, and the tray must not jump when it settles. */}
-      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} serversOffline={unreachable} /> : null}
+      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} /> : null}
       {page.kind === "loading" ? (
         <ServersSkeleton />
       ) : page.kind === "unreachable" ? (

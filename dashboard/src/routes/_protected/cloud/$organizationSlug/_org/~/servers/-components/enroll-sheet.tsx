@@ -16,12 +16,10 @@ import type { WaitingServerView } from "#/modules/machines/waiting/waiting-serve
 import { startServerEnrollmentServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { enrollmentPlanQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
-export function EnrollSheet({ organizationSlug, servers, hasFirst, serversOffline, onClose }: {
+export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
   hasFirst: boolean;
-  /** None of the Organization's Servers answered Cloud, so it refuses the enroll until they're back or forgotten. */
-  serversOffline: boolean;
   onClose: () => void;
 }) {
   const [initialHasFirst] = useState(hasFirst);
@@ -69,7 +67,7 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, serversOfflin
       <div className="flex-1 overflow-y-auto px-4">
         <FieldGroup>
           {initialHasFirst !== hasFirst ? <FieldDescription>{hasFirst ? "Another server is starting the cluster." : "Choose the first server again."}</FieldDescription> : null}
-          {serversOffline ? <Alert variant="destructive">
+          {preview?.serversOffline ? <Alert variant="destructive">
             <AlertTitle>Servers offline</AlertTitle>
             <AlertDescription>Forget them first. <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} hash="organization-teardown" className="underline underline-offset-4">Forget Servers</Link></AlertDescription>
           </Alert> : null}
