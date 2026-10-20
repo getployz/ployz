@@ -42,7 +42,8 @@ export default defineConfig({
     },
   },
   test: {
-    sequence: { sequencer: SizeBalancedSequencer },
+    // Only sharded runs (CI) take it: a set sequencer replaces the RandomSequencer that `--sequence.shuffle` selects.
+    ...(process.argv.some((arg) => arg.startsWith("--shard")) && { sequence: { sequencer: SizeBalancedSequencer } }),
     projects: [
       {
         test: {
