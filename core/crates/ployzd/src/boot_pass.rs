@@ -129,14 +129,17 @@ pub(crate) async fn run<H: BootHost>(
     route_publishes: watch::Receiver<PublishedRoutes>,
 ) {
     let deadline = Instant::now() + BOOT_PASS_WAIT;
-    match tokio::time::timeout_at(deadline, pass(&host, first_synced, route_publishes)).await {
+    let mut sent = 0;
+    let pass = pass(&host, first_synced, route_publishes, &mut sent);
+    match tokio::time::timeout_at(deadline, pass).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "boot pass skipped, could not read the store");
         }
         Err(_) => {
+            // An admitted Out finishes even when the pass stops waiting for it.
             tracing::warn!(
-                "boot pass stopped, not done after {}s",
+                "boot pass stopped after {}s; {sent} Outs already sent may still finish",
                 BOOT_PASS_WAIT.as_secs()
             );
         }
@@ -150,6 +153,7 @@ async fn pass<H: BootHost>(
     host: &H,
     mut first_synced: watch::Receiver<bool>,
     mut route_publishes: watch::Receiver<PublishedRoutes>,
+    sent: &mut usize,
 ) -> Result<(), CorrosionError> {
     if first_synced.wait_for(|synced| *synced).await.is_err() {
         std::future::pending::<()>().await;
@@ -185,6 +189,7 @@ async fn pass<H: BootHost>(
             allow_empty: false,
             expect: Some(CopyRotation::In),
         };
+        *sent += 1;
         match host.ensure(want).await {
             Ok(EnsuredContainer::Ensured { .. }) => {
                 tracing::info!(
