@@ -927,7 +927,9 @@ const SOURCE_PARTS: [(&str, &str); 4] = [
 
 /// A source row as the Settings it holds, `web.image: "nginx:1.26" → "nginx:1.27"`,
 /// or `None` when no part `set` names changed.
-fn source_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
+pub(crate) fn source_changed(
+    row: &ployz_core::config::ServiceSettingChange,
+) -> Option<Vec<String>> {
     let service = crate::ui::escaped(row.path.strip_suffix(".source")?);
     // No registry credential reads as unset, so a removed Service doesn't list one.
     let part = |value: &serde_json::Value, field: &str| {
@@ -957,9 +959,18 @@ fn source_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<
 /// by the id its path keeps.
 fn config_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
     let (_, field) = row.path.strip_prefix("configs.@")?.split_once('.')?;
-    let line = match field.strip_prefix("files.") {
+    Some(vec![config_field_changed(field, &row.before, &row.after)])
+}
+
+/// A change to `field` of a Config, as [`changed`] reads a Config row.
+pub(crate) fn config_field_changed(
+    field: &str,
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) -> String {
+    match field.strip_prefix("files.") {
         Some(file) => {
-            let edit = match (row.before.is_null(), row.after.is_null()) {
+            let edit = match (before.is_null(), after.is_null()) {
                 (true, _) => "added",
                 (_, true) => "removed",
                 _ => "changed",
@@ -969,11 +980,10 @@ fn config_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<
         None => format!(
             "{}: {} → {}",
             crate::ui::escaped(field),
-            shown(&row.before),
-            shown(&row.after)
+            shown(before),
+            shown(after)
         ),
-    };
-    Some(vec![line])
+    }
 }
 
 /// A staged domain change as JSON reports it, beside the raw row storing it as
