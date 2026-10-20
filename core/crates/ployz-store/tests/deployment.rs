@@ -4763,3 +4763,19 @@ fn verifier_partial_retry_keeps_successfully_applied_service_upload() {
         )])
     );
 }
+
+#[test]
+fn verifier_superseding_a_queued_retry_keeps_latest_sent_upload() {
+    let (store, who) = uploaded_app();
+    deploy_sent(&store, &who, 1, Some('a'));
+    fail(&store, 1);
+    deploy_sent(&store, &who, 2, Some('b'));
+    fail(&store, 2);
+    deploy_sent(&store, &who, 3, Some('a'));
+    fail(&store, 3);
+    assert_eq!(kept_of(&store, &who, &[2, 3]), [false, true]);
+    retry(&store, &who, 4, 2).unwrap();
+    let next = deploy_sent(&store, &who, 5, None);
+    assert_eq!(status(&store, &who, 4), DeploymentStatus::Superseded);
+    assert_eq!(next.upload, Some(digested('a')));
+}
