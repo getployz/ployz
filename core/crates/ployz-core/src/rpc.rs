@@ -1131,6 +1131,10 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         last_check: Option<crate::LastHealthCheck>,
+        /// Docker OOM-killed a process of the Container's run; `false` from older daemons.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        oom_killed: bool,
     },
     TimedOut {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1139,10 +1143,23 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         last_check: Option<crate::LastHealthCheck>,
+        /// Docker OOM-killed a process of the Container's run; `false` from older daemons.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        oom_killed: bool,
     },
 }
 
 impl HealthVerdict {
+    /// Whether Docker OOM-killed a process of the failed Container's run.
+    #[must_use]
+    pub const fn oom_killed(&self) -> bool {
+        match self {
+            Self::Healthy => false,
+            Self::Failed { oom_killed, .. } | Self::TimedOut { oom_killed, .. } => *oom_killed,
+        }
+    }
+
     /// Why the Container is not serving, or `None` when it is.
     #[must_use]
     pub fn into_failure(self) -> Option<crate::HealthFailure> {
@@ -1151,6 +1168,7 @@ impl HealthVerdict {
             Self::Failed {
                 observation,
                 last_check,
+                ..
             } => Some(crate::HealthFailure::Runtime {
                 observation,
                 last_check,
@@ -1158,6 +1176,7 @@ impl HealthVerdict {
             Self::TimedOut {
                 deadline_millis,
                 last_check,
+                ..
             } => Some(crate::HealthFailure::TimedOut {
                 deadline_millis,
                 last_check,
@@ -1705,10 +1724,17 @@ impl RpcError {
                 .and_then(|policy| PullPolicy::deserialize(policy).ok()),
         })
     }
+
+    /// The full disk a failed pull ran into, as [`DiskFull::details`] named it.
+    #[must_use]
+    pub fn disk_full(&self) -> Option<DiskFull> {
+        serde_json::from_value(self.details.get(DISK_FULL)?.clone()).ok()
+    }
 }
 
 const MISSING_IMAGE: &str = "missing_image";
 const PULL_POLICY: &str = "pull_policy";
+const DISK_FULL: &str = "disk_full";
 
 /// An image a pull answered not found for, from [`RpcError::missing_image`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1716,6 +1742,32 @@ pub struct MissingImage<'a> {
     pub image: &'a str,
     /// The policy it was pulled under, when the error recorded one.
     pub policy: Option<PullPolicy>,
+}
+
+/// A pull failed while the Docker root had almost no free space.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiskFull {
+    pub docker_root: String,
+    pub free_bytes: u64,
+}
+
+impl DiskFull {
+    /// [`RpcError`] details that [`RpcError::disk_full`] reads back.
+    #[must_use]
+    pub fn details(&self) -> Value {
+        serde_json::json!({ DISK_FULL: self })
+    }
+}
+
+impl fmt::Display for DiskFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "The Server's disk is full: {} MB free under {}",
+            self.free_bytes / 1_000_000,
+            self.docker_root
+        )
+    }
 }
 
 /// A Machine refused a route because its Ployz lacks the route's capability.

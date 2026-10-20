@@ -49,6 +49,180 @@ async fn client_connector_honours_the_management_transport_contract() {
         .expect("contract test timed out");
 }
 
+/// Two processes holding one capability, such as two CLI commands or Cloud's web and
+/// worker, each dial the relay with their own endpoint. Neither may take the other's
+/// traffic.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_holders_of_one_capability_stay_independent_through_the_relay() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let capability = local
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        Arc::default(),
+        shutdown.clone(),
+    ));
+    let process = || {
+        Arc::new(
+            SystemConnector::default().with_management_relay(
+                ManagementRelay::custom(relay_url.clone(), CaTlsConfig::insecure_skip_verify())
+                    .relay_only(),
+            ),
+        )
+    };
+    let cli = process().connect(&connection(&capability)).await.unwrap();
+    activate(cli.clone()).await;
+    let cloud = ployz::sdk::connect_connections(vec![connection(&capability)], process())
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        tokio::time::timeout(Duration::from_secs(5), describe(cli.clone()))
+            .await
+            .expect("the first holder stalled")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), cloud.about())
+            .await
+            .expect("the second holder stalled")
+            .unwrap();
+    }
+    drop(cloud);
+    drop(cli);
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+/// A proof binds to the connection it was made on: replayed on another connection, even
+/// by a peer that saw it, it admits nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_on_the_previous_management_protocol_is_named_as_older() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let machine = SecretKey::generate();
+    let capability = ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes(*machine.public().as_bytes()),
+        SecretKey::generate().to_bytes(),
+    );
+    let older = Endpoint::builder(presets::Minimal)
+        .secret_key(machine)
+        .alpns(vec![b"ployz/rpc/1".to_vec()])
+        .relay_mode(RelayMode::custom([relay_url.clone()]))
+        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
+        .clear_ip_transports()
+        .bind()
+        .await
+        .unwrap();
+    let accepting = older.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = accepting.accept().await {
+            drop(incoming.await);
+        }
+    });
+    let connector = SystemConnector::default().with_management_relay(
+        ManagementRelay::custom(relay_url, CaTlsConfig::insecure_skip_verify()).relay_only(),
+    );
+    match connector.connect(&connection(&capability)).await {
+        Err(error @ ConnectError::OlderMachine) => assert!(
+            error
+                .to_string()
+                .contains("ployz server upgrade beta SERVER --connect ssh://USER@HOST"),
+            "the error names the SSH upgrade the docs give: {error}"
+        ),
+        Err(error) => panic!("expected OlderMachine, got: {error} ({error:?})"),
+        Ok(_) => panic!("expected OlderMachine, got a channel"),
+    }
+    older.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_management_proof_admits_only_the_connection_it_was_made_on() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let capability = local
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    local
+        .activate_management_client(
+            *SecretKey::from_bytes(capability.client_secret())
+                .public()
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let machine = EndpointAddr::new(endpoint.id()).with_relay_url(relay_url.clone());
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        Arc::default(),
+        shutdown.clone(),
+    ));
+    let (holder, eavesdropper) = (
+        raw_endpoint(&relay_url).await,
+        raw_endpoint(&relay_url).await,
+    );
+    let original = holder
+        .connect(machine.clone(), MANAGEMENT_ALPN)
+        .await
+        .unwrap();
+    let proof = ployz::connect::management_proof(&original, &capability)
+        .unwrap()
+        .to_bytes();
+    let replayed = eavesdropper
+        .connect(machine, MANAGEMENT_ALPN)
+        .await
+        .unwrap();
+    let (mut send, _recv) = replayed.open_bi().await.unwrap();
+    send.write_all(&proof).await.unwrap();
+    assert_refused_close(
+        tokio::time::timeout(Duration::from_secs(10), replayed.closed())
+            .await
+            .expect("a replayed proof must be refused"),
+    );
+    let (mut send, _recv) = original.open_bi().await.unwrap();
+    send.write_all(&proof).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), original.closed())
+            .await
+            .is_err(),
+        "the proof admits the connection it was made on"
+    );
+    holder.close().await;
+    eavesdropper.close().await;
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
     let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
@@ -316,18 +490,15 @@ async fn contract() {
     tokio::time::timeout(Duration::from_secs(10), retry_connection.closed())
         .await
         .unwrap();
-    let delayed_secret = SecretKey::from_bytes(delayed_capability.client_secret());
-    let delayed = Endpoint::builder(presets::Minimal)
-        .secret_key(delayed_secret)
-        .relay_mode(RelayMode::custom([relay_url.clone()]))
-        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
-        .bind()
-        .await
-        .unwrap();
     local
-        .activate_management_client(*delayed.id().as_bytes())
+        .activate_management_client(
+            *SecretKey::from_bytes(delayed_capability.client_secret())
+                .public()
+                .as_bytes(),
+        )
         .await
         .unwrap();
+    let delayed = raw_endpoint(&relay_url).await;
     let waiting = delayed
         .connect(
             EndpointAddr::new(endpoint.id()).with_relay_url(relay_url),
@@ -339,7 +510,7 @@ async fn contract() {
         tokio::time::timeout(Duration::from_millis(100), waiting.closed())
             .await
             .is_err(),
-        "accepted peer must remain connected before rotation"
+        "a peer may take its time to prove its key"
     );
     let capability = local
         .set_management_client(SetManagementClientRequest::Set { label: cloud() })
@@ -398,9 +569,20 @@ async fn contract() {
     tokio::time::timeout(Duration::from_secs(10), resumed_connection.closed())
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), waiting.closed())
-        .await
-        .expect("rotation must revoke a peer waiting to open its first stream");
+    // A proof that arrives after rotation is judged by the record it arrives under.
+    let (mut send, _recv) = waiting.open_bi().await.unwrap();
+    send.write_all(
+        &ployz::connect::management_proof(&waiting, &delayed_capability)
+            .unwrap()
+            .to_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_refused_close(
+        tokio::time::timeout(Duration::from_secs(10), waiting.closed())
+            .await
+            .expect("rotation must refuse a peer that proves a retired key"),
+    );
     delayed.close().await;
     drop(session);
     tokio::time::timeout(Duration::from_secs(10), removal_connection.closed())
@@ -943,6 +1125,27 @@ async fn fake_ingest() -> (std::net::SocketAddr, Arc<Mutex<Vec<String>>>) {
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (address, seen)
+}
+
+/// A management endpoint under a fresh key, dialing only through the relay.
+async fn raw_endpoint(relay_url: &iroh::RelayUrl) -> Endpoint {
+    Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::custom([relay_url.clone()]))
+        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
+        .clear_ip_transports()
+        .bind()
+        .await
+        .unwrap()
+}
+
+fn assert_refused_close(reason: iroh::endpoint::ConnectionError) {
+    let iroh::endpoint::ConnectionError::ApplicationClosed(close) = reason else {
+        panic!("expected an application close, got {reason:?}");
+    };
+    assert!(
+        [management::CLIENT_REFUSED, management::CLIENT_CLEARED].contains(&close.error_code),
+        "expected a refusal, got {close:?}"
+    );
 }
 
 fn assert_refused(result: Result<Channel, ConnectError>) {

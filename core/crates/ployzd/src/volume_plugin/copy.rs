@@ -202,21 +202,13 @@ impl VolumeStorage {
 
     /// The copy as the datasets stand now.
     async fn copy_now(&self, scope: &Scope) -> Result<Copy, RpcError> {
-        let datasets = self.datasets(&scope.pool).await.map_err(internal)?;
-        self.copy(&datasets, &scope.pool, &scope.name)
-            .await
-            .map_err(internal)
-    }
-
-    /// The copy the route found, for a refusal that changed nothing.
-    async fn copy_found(&self, scope: &Scope) -> Result<Copy, RpcError> {
-        self.copy(&scope.datasets, &scope.pool, &scope.name)
+        self.current_copy(&scope.pool, &scope.name)
             .await
             .map_err(internal)
     }
 
     async fn refuse_found(&self, scope: &Scope, reason: CopyRefusal, message: String) -> RpcError {
-        match self.copy_found(scope).await {
+        match self.copy_now(scope).await {
             Ok(copy) => refuse(reason, copy, message),
             Err(error) => error,
         }
@@ -245,7 +237,7 @@ impl VolumeStorage {
         let Some(scope) = self.scope(name).await? else {
             return Ok(None);
         };
-        self.copy_found(&scope).await
+        self.copy_now(&scope).await
     }
 
     /// Writer to Mirror. The daemon stopped the Container and holds its admission turn;
@@ -254,7 +246,7 @@ impl VolumeStorage {
         let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let name = &scope.name;
         let Some(root) = scope.root()? else {
-            let copy = self.copy_found(&scope).await?;
+            let copy = self.copy_now(&scope).await?;
             return match &copy {
                 Some(VolumeCopy::Slot {
                     newest: Some(newest),

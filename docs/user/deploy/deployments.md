@@ -70,7 +70,7 @@ ployz deploy
 
 Open **Deployments** in the sidebar, then **Versions**, to see this environment's saved versions.
 Each version is titled from what it changed unless it was saved with a message, and lists its
-changes one per row, folding past three. **Live** marks the version the latest fully applied
+changes one per row, folding past three. The first version lists what it created. **Live** marks the version the latest fully applied
 deployment shipped. **Failed** marks the newest version when its
 latest deployment failed; a later deployment of it clears it. A version saved but
 not deployed yet has no badge. The version's **⋮** menu:
@@ -186,8 +186,9 @@ their recorded outcomes.
   runner stopped reporting.
 - An applied removal or shutdown can't be redeployed: there is nothing left to ship. One that
   failed, was cancelled or reads `unknown` can.
-- **A rollback lasts until your next push or deploy**, which ships your latest commit and saved
-  settings again. To keep it, revert the commit in Git and change the settings back.
+- **A rollback lasts until your next push or deploy**, which ships your saved settings again. A
+  deploy ships your latest commit too; a push, only to the services it builds. To keep the
+  rollback, revert the commit in Git and change the settings back.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →

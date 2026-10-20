@@ -127,7 +127,7 @@ pub enum OperatorError {
     Container(#[from] ployz_core::ContainerSelectorError),
     #[error("Service has no regular containers")]
     NoRegularContainer,
-    #[error("Machine RPC failed.")]
+    #[error("Ployz's call to your Server's daemon failed.")]
     Rpc(#[source] TransportError),
     #[error("Stream protocol failed.")]
     Protocol(#[from] StreamProtocolError),
