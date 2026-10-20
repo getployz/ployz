@@ -31,6 +31,9 @@ let latest: DeploymentSummary | null | undefined = null;
 let storage: (deploymentId: string) => string | null = () => null;
 /** Secrets without a value the next Deploy leaves out. */
 let notSet = 0;
+/** Edits not yet saved, and the latest Save when the Servers don't run it. */
+let stagedChanges: number | undefined;
+let notRunning: number | null = null;
 /** A write the Store hasn't answered for yet. */
 let busy: ReadonlySet<Busy> = new Set();
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
@@ -41,6 +44,8 @@ beforeEach(() => {
   latest = null;
   storage = () => null;
   notSet = 0;
+  stagedChanges = undefined;
+  notRunning = null;
   busy = new Set();
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
@@ -65,7 +70,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canSave
         <button type="button" onClick={() => setAgent(!agent)}>Agent</button>
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
-        <BottomBar groups={groups} totalChanges={totalChanges} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
+        <BottomBar groups={groups} totalChanges={totalChanges} stagedChanges={stagedChanges} notRunning={notRunning} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} latest={lists.latest} storage={storage} notes={{}} notSet={notSet} busy={busy}
           proposals={{ included: [] }} />
         <Outlet />
@@ -190,6 +195,24 @@ it("counts the secrets the Deploy leaves out beside the changes", async () => {
   notSet = 2;
   open(canvasUrl, [replicas], 1);
   expect((await bar()).getByText("1 change · 2 not set")).toBeTruthy();
+});
+
+it("names a Save the Servers don't run apart from staged changes, with Deploy", async () => {
+  stagedChanges = 0;
+  notRunning = 4;
+  open(canvasUrl, [replicas], 1);
+  const staged = await bar();
+  expect(staged.getAllByText("#4 not running")).toHaveLength(2);
+  expect(staged.queryByText("1 change")).toBeNull();
+  fireEvent.click(staged.getByRole("button", { name: /^Deploy/ }));
+  expect(onDeploy).toHaveBeenCalledOnce();
+});
+
+it("counts only staged changes when a Save isn't running too", async () => {
+  stagedChanges = 2;
+  notRunning = 4;
+  open(canvasUrl, [replicas, cache], 3);
+  expect((await bar()).getAllByText("2 changes")).toHaveLength(2);
 });
 
 it("closes Discard all's confirm on a double click, discarding once", async () => {

@@ -62,7 +62,8 @@ pub struct Discard {
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// The comparison to return to. Head preserves the deployment baseline; Saved
-    /// abandons a draft reversal; Review discards the server-derived visible rows.
+    /// abandons a draft reversal; Review returns everything to Saved, or to Head
+    /// before the first Save.
     /// `None` returns everything to Head, and a path to its row's baseline: Saved
     /// when only a draft reversal lists it, else Head.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -60,7 +60,7 @@ pub(super) fn discard_command(command: Command) -> Command {
         )
         .arg(version())
         .arg(value("target", None).value_parser(["head", "saved", "review"])
-            .help("Head resets deploy changes; saved abandons draft reversals; review discards the displayed combined list [default: head, or saved for a path only saved lists]"))
+            .help("Head resets deploy changes; saved abandons draft reversals; review returns everything to the latest save [default: head, or saved for a path only saved lists]"))
 }
 
 /// `ployz diff --json`: the review, plus each staged domain change as people read it.

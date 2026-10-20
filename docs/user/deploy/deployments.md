@@ -49,7 +49,10 @@ behind. Saving again with no changes creates no new version. The CLI calls this
 `ployz deploy --skip-deploy`, and accepts `--message`.
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
-Discarding a service or volume you never deployed deletes it. Discard does not save a version.
+**Discard all changes** returns everything to your latest saved version, including a staged
+rollback. Discarding a service or volume you never deployed deletes it. Discard does not save a
+version. When your latest saved version is not running, for example because its deploy failed,
+the bottom bar shows **#4 not running** with **Deploy** instead of a change count.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
 Saving records that reversal; Discard on its row returns it to the latest saved value.
 In the CLI, `ployz discard` names each saved change it took out and the command that brings it
