@@ -237,7 +237,7 @@ $ ployz env copy nosuch --env fix-api
 
 stderr:
 ```
-This Branch uses no node named nosuch live
+This Branch uses no node named nosuch live; it uses only what its copies use
 ```
 
 ### env copy in a non-Branch 
@@ -524,7 +524,7 @@ $ ployz --json env copy nosuch --env fix-api
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":[]},"message":"This Branch uses no node named nosuch live"}}
+{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":[]},"message":"This Branch uses no node named nosuch live; it uses only what its copies use"}}
 ```
 
 ### env copy in a non-Branch --json

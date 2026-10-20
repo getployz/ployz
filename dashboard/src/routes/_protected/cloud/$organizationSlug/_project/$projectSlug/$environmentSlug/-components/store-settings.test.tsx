@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { afterEach, expect, it, vi } from "vitest";
-import { StoreEnvironmentSettings, StoreProjectSettings } from "./store-settings";
+import { ProjectNameRow, StoreEnvironmentSettings, StoreProjectSettings } from "./store-settings";
 import { asTestDouble } from "#/lib/test-double";
 import * as storeViews from "#/modules/config-store/store-view.queries";
 
@@ -50,4 +50,19 @@ it.each(pages)("keeps the %s settings open when the Store fails to read a Projec
   await waitFor(() => expect(router.state.status).toBe("idle"));
   await new Promise((settle) => setTimeout(settle, 100));
   expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/settings");
+});
+
+it("holds the project name while a rename saves", () => {
+  const onRename = vi.fn(() => new Promise<void>(() => {}));
+  render(<ProjectNameRow project="shop" onRename={onRename} />);
+  const input = screen.getByRole("textbox", { name: "Name" });
+  fireEvent.change(input, { target: { value: "store" } });
+  fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+  expect(onRename).toHaveBeenCalledExactlyOnceWith("store");
+  expect(input.hasAttribute("disabled")).toBe(true);
+  expect(screen.getByLabelText("Saving")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(onRename).toHaveBeenCalledTimes(1);
 });

@@ -24,6 +24,10 @@ export function serverStatus(machine: Pick<RuntimeMachineRecord, "membership" | 
   }
 }
 
+/** The Servers that read Offline. What they last reported of their containers is not what runs now. */
+export const offlineServers = (machines: readonly Pick<RuntimeMachineRecord, "id" | "membership" | "runningBuilds">[]): ReadonlySet<string> =>
+  new Set(machines.filter((machine) => serverStatus(machine) === "offline").map((machine) => machine.id));
+
 const RANK = { offline: 0, unknown: 1, building: 2, online: 2 } satisfies Record<ServerStatus, number>;
 
 /** Offline and Unknown need someone; a Server that is building is online. */

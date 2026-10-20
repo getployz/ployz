@@ -466,19 +466,28 @@ impl Run {
             String::new()
         };
         let mut flushed = tokio::time::Instant::now();
-        while let Some(event) = running.next().await {
-            log.push_str(&log_line(&event));
-            if flushed.elapsed() >= LOG_FLUSH && !log.is_empty() {
-                // ponytail: a failed flush keeps the output for the next one.
-                if self
-                    .report(service, BuildStatus::Building, None, log.clone())
-                    .await
-                    .is_ok()
-                {
-                    log.clear();
+        loop {
+            let next = if log.is_empty() {
+                running.next().await
+            } else {
+                tokio::select! {
+                    next = running.next() => next,
+                    () = tokio::time::sleep_until(flushed + LOG_FLUSH) => {
+                        // ponytail: a failed flush keeps the output for the next one.
+                        if self
+                            .report(service, BuildStatus::Building, None, log.clone())
+                            .await
+                            .is_ok()
+                        {
+                            log.clear();
+                        }
+                        flushed = tokio::time::Instant::now();
+                        continue;
+                    }
                 }
-                flushed = tokio::time::Instant::now();
-            }
+            };
+            let Some(event) = next else { break };
+            log.push_str(&log_line(&event));
         }
         let (status, message, ended) = match running.finished().await {
             Ok(BuildOutcome::Built { receipt, reused }) => {
@@ -995,6 +1004,9 @@ pub(super) fn log_line(event: &Value) -> String {
     let text = |pointer: &str| event.pointer(pointer).and_then(Value::as_str);
     if let Some(machine) = text("/Selected/machine/name") {
         return format!("Building on {machine}\n");
+    }
+    if text("/Build/Stage") == Some("Queued") {
+        return "Waiting for a build slot\n".to_owned();
     }
     if let Some(output) = text("/Build/StepOutput/text") {
         return output.to_owned();

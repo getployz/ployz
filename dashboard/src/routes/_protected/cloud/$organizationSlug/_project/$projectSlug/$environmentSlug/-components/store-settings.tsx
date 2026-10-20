@@ -111,8 +111,8 @@ function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, save
   // A new command runs where the last one does.
   const last = services.find((service) => service.lineageId === setup.commands.at(-1)?.lineageId) ?? services[0];
   return (
-    <SettingsSection id="branch-setup" title={`Branches of ${environmentSlug}`}
-      description="Runs once in each new branch.">
+    <SettingsSection id="branch-setup" title="Branch setup"
+      description={`Commands that run once in each new branch of ${environmentSlug}.`}>
       {!last ? <SettingsEmpty title="Add a service first." /> : <>
         {setup.commands.length === 0 ? <SettingsEmpty title="No setup commands" /> : (
           <SettingsList label="Setup commands">
@@ -192,8 +192,9 @@ function SetupCommandForm({ submitLabel, services, initial, onSubmit, onCancel }
 }
 
 /** A Project's name: one DNS label, as the Store checks it; renaming it changes its URLs. */
-function ProjectNameRow({ project, onRename }: { project: string; onRename: (name: string) => void }) {
+export function ProjectNameRow({ project, onRename }: { project: string; onRename: (name: string) => Promise<void> }) {
   const [draft, setDraft] = useState(project);
+  const [saving, setSaving] = useState(false);
   const name = draft.trim();
   const error = name === project ? null : dnsLabelError(name);
   return (
@@ -203,8 +204,13 @@ function ProjectNameRow({ project, onRename }: { project: string; onRename: (nam
       commit="confirm"
       control={(
         <ConfirmableInput id="project-name" aria-label="Name" commit="check" value={draft} onValueChange={setDraft} error={error}
-          isDirty={draft !== project} onCancel={() => setDraft(project)}
-          onConfirm={() => { if (name !== project && !error) onRename(name); }} />
+          disabled={saving} status={saving ? { phase: "saving" } : undefined}
+          isDirty={!saving && draft !== project} onCancel={() => setDraft(project)}
+          onConfirm={() => {
+            if (name === project || error) return;
+            setSaving(true);
+            void onRename(name).finally(() => setSaving(false));
+          }} />
       )}
     />
   );
@@ -224,7 +230,7 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
       <SettingsSection id="project" title="Project">
         <ProjectNameRow project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
-          void writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
+          return writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
             navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
         }} />
         <SettingsRow
