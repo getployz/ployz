@@ -4938,3 +4938,62 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
         "web still runs a, api b, and c is web's latest sent"
     );
 }
+
+#[test]
+fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.image").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    let a = runner("cli-a");
+    let only_web = |n: u8, upload: Option<char>| {
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id(n),
+                    environment: EnvironmentRef::default(),
+                    services: vec![ServiceName::parse("web").unwrap()],
+                    version: None,
+                    upload: upload.map(digested),
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+    };
+    only_web(1, Some('b'));
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store.record(&id(1), &a, succeeded(&["web"])).unwrap();
+    only_web(2, Some('c'));
+    fail(&store, 2);
+    retry(&store, &who, 3, 1).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&[])))
+        .unwrap();
+    store.record(&id(3), &a, succeeded(&[])).unwrap();
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Applied);
+    assert!(nodes(&store, &who, 3).contains(&("web".to_owned(), NodeStatus::Unchanged)));
+    only_web(4, None);
+    assert_eq!(
+        store.claim(&id(4), &a).unwrap().uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("web").unwrap(),
+            Some(digested('b').digest)
+        )])
+    );
+}
