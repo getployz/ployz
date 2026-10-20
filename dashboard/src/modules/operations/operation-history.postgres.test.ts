@@ -69,4 +69,27 @@ describe("operationsOn a Server", () => {
       expect(yield* read(5)).toEqual(yield* read(5));
       expect(yield* read(2)).toEqual(["remove machine-1", "upgrade machine-1"]);
     }));
+
+  // Catches the upgrade query's limit keeping a different attempt than the merge ranks first, under a collation other than byte order.
+  it.live("keeps the attempt the merge ranks first under an ICU numeric collation", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.execute(sql`create collation numeric (provider = icu, locale = 'en-u-kn-true')`);
+      yield* drizzle.execute(sql`alter table server_upgrade_attempt alter column attempt_id type text collate numeric`);
+      const startedAt = new Date("2026-10-20T12:00:00.100Z");
+      yield* drizzle.insert(serverUpgradeAttempt).values(["a2b00000000040008000000000000000", "a10b0000000040008000000000000000"].map((attemptId) => ({
+        organizationId: ORGANIZATION, machineId: MACHINE, attemptId, trigger: "manual" as const, requestedByUserId: userId,
+        channel: "stable" as const, fromVersion: "0.5.0", outcome: "succeeded" as const, inngestRunId: `run-${attemptId}`, startedAt, endedAt: new Date(),
+      })));
+      const read = (limit: number) =>
+        operationsOn(ORGANIZATION, { kind: "server", machine: MACHINE }, null, limit, "machine-1").pipe(
+          Effect.map((operations) => operations.map(({ attempt }) => attempt)),
+          Effect.provide(services),
+        );
+
+      expect(yield* read(5)).toEqual(["a10b0000-0000-4000-8000-000000000000", "a2b00000-0000-4000-8000-000000000000"]);
+      expect(yield* read(1)).toEqual(["a10b0000-0000-4000-8000-000000000000"]);
+    }));
 });
