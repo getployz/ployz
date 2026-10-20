@@ -14,6 +14,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -49,6 +50,10 @@ fn rotation_ack_deploy() -> DeploymentLogId {
 }
 
 /// Run the Caddy watcher.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a distinct daemon handle the watcher owns"
+)]
 pub(crate) async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
@@ -56,6 +61,7 @@ pub(crate) async fn run(
     admin: AdminClient,
     data_dir: PathBuf,
     runtime_dir: PathBuf,
+    first_publish: watch::Sender<bool>,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     let local = machine.id;
@@ -69,6 +75,7 @@ pub(crate) async fn run(
         },
         caddy::config_path(&data_dir),
         runtime_dir.join("caddy/admin.sock"),
+        first_publish,
         shutdown,
     )
     .await
@@ -377,6 +384,7 @@ pub(crate) async fn watch_caddy<A: CaddyAdmin, Connect, ConnectFuture, LoadDown,
     replicated: ReplicatedStore,
     mut load_down: LoadDown,
     config_file: PathBuf,
+    first_publish: watch::Sender<bool>,
     shutdown: CancellationToken,
     mut connect: Connect,
 ) -> io::Result<()>
@@ -458,8 +466,14 @@ where
                         }
                         last_input = Some(input);
                     }
-                    publish_route_acks(&replicated, &machine.id, &mut acked, route_acks(&routes))
-                        .await;
+                    // A row already in Corrosion may predate a power-off, so only this
+                    // process's own write counts as published.
+                    if publish_route_acks(&replicated, &machine.id, &mut acked, route_acks(&routes))
+                        .await
+                    {
+                        first_publish
+                            .send_if_modified(|published| !std::mem::replace(published, true));
+                    }
                     routed = routes;
                 }
                 Err(error) => {
@@ -508,7 +522,7 @@ async fn publish_route_acks(
     machine_id: &MachineId,
     acked: &mut BTreeMap<QualifiedService, Option<IngressRouteAck>>,
     acks: BTreeMap<QualifiedService, IngressRouteAck>,
-) {
+) -> bool {
     let mut changes: BTreeMap<_, _> = acked
         .keys()
         .filter(|service| !acks.contains_key(*service))
@@ -527,7 +541,8 @@ async fn publish_route_acks(
             *acked = acks
                 .into_iter()
                 .map(|(service, ack)| (service, Some(ack)))
-                .collect()
+                .collect();
+            true
         }
         Err(error) => {
             // The write may have committed anyway, so the next pass rewrites or deletes these rows.
@@ -538,6 +553,7 @@ async fn publish_route_acks(
                 error = %ployz_core::error_chain::inline(&error),
                 "failed to publish ingress route acks, retrying next pass"
             );
+            false
         }
     }
 }
