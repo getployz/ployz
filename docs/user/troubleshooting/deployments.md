@@ -24,29 +24,39 @@ ends with a summary that counts the Servers involved. In CI or redirected output
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
-records the existing Deployment events as NDJSON. Source builds appear against their
+records the existing Deployment events as NDJSON, each naming the Deployment's `id` and
+`number`. Source builds appear against their
 Service before the Deploy is planned, without a depth. A failure names the Server
 where it happened.
 
-A failed deploy shows the deepest cause, available failed-container log tails, and a
-`retry:` command. It adds at most one `inspect:` command per failed Service, chosen from
-every Server where that Service failed, in this order:
+A failed deploy shows the deepest cause, available failed-container log tails, and
+`inspect:` and `retry:` commands. It adds at most one `inspect:` command per failed Service,
+chosen from every Server where that Service failed, in this order:
 
-1. `ployz logs <service>` when any of them failed while starting, health-checking, running a
+1. `ployz logs --deployment N --build <service>` when its build failed.
+2. `ployz logs <service>` when any of them failed while starting, health-checking, running a
    hook for, stopping or removing a Container, or failed at an unknown step and has a
    Container log.
-2. Otherwise, `ployz get <service>.image` when any of them failed to pull the image. A Service
+3. Otherwise, `ployz get <service>.image` when any of them failed to pull the image. A Service
    built from source has no `image` setting, so it gets no `inspect:` line.
-3. Otherwise no `inspect:` line. A failed build, or a failure before any Container exists,
-   such as creating the Container or preparing its Volumes, leaves nothing new to inspect:
-   `ployz logs` would show only the old Container.
+4. Otherwise no `inspect:` line. A failure before any Container exists, such as creating the
+   Container or preparing its Volumes, leaves nothing new to inspect: `ployz logs` would show
+   only the old Container.
 
 So a Service that failed to pull on one Server and to start on another shows only
 `ployz logs <service>`.
 
-A Deployment result that did not fully succeed exits with code 3. A warning that
-names an incomplete Server observation also makes an
-otherwise successful invocation exit 3 when that Server was relevant to the selected
+A failed build or an image that won't pull fails the same way again, so neither offers
+`retry: ployz deploy`. An image that won't pull offers `undo: ployz history undo N` to go back
+to the version before it, even when another Server's failure picked the `inspect:` line. A failed `ployz up` retries with `ployz up`, which uploads your fixed
+directory; `ployz deploy` would ship the last upload that built. `up` leaves out the `Open`
+lines when the deploy failed. When a newer deployment, such as a push, takes the place of the
+one you were following without shipping all of its services, the CLI says
+`Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`.
+
+A failed deploy exits with code 1. A Deployment that applied but whose result is missing
+a Server exits with code 3. A warning that names an incomplete Server observation also
+makes an otherwise successful invocation exit 3 when that Server was relevant to the selected
 Services or their dependencies, or to observed work the deploy affected. An Entry's
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
