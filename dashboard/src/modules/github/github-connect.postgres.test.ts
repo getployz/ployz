@@ -2,6 +2,7 @@ import { it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Schedule } from "effect";
 import { eq, sql } from "drizzle-orm";
 import { Inngest } from "inngest";
+import { TestClock } from "effect/testing";
 import { expect, vi } from "vitest";
 import { MAX_OFFERED_INSTALLATIONS } from "./github-connect";
 import { acceptGithubOfferInput } from "./github-connect.functions";
@@ -13,7 +14,8 @@ import {
 import { processGithubInstallationEvent, processGithubInstallationRepositoriesEvent } from "./github.server";
 import { githubRepositoryCache } from "./tables";
 import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApi, type GithubApiService } from "./github-observation.api";
-import { executeSyncGithubRepositories } from "./inngest-sync/sync";
+import { executeSyncGithubRepositories, GITHUB_REPOSITORY_PAGE_DEADLINE, syncGithubRepositories } from "./inngest-sync/sync";
+import { isNonRetriableInngestCause } from "#/server/run.server";
 import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import type { AppConfig } from "#/server/config.server";
@@ -439,4 +441,24 @@ it.live("stops cleanly when the installation is forgotten while the sync lists G
     afterSecondPage = run(hopperForgotten).pipe(Effect.asVoid, Effect.orDie);
     expect(yield* sync).toMatchObject({ processedRepoCount: 0, forgotten: true });
     expect((yield* cached).size).toBe(0);
+  }), 60_000);
+
+it.live("gives up on a listing GitHub stops answering, for a retry, and writes nothing", () =>
+  Effect.gen(function* () {
+    const { run, connectHopper, sync, cached } = yield* hopperCloud();
+    yield* connectHopper;
+    const stalled = yield* Deferred.make<void>();
+    afterSecondPage = Deferred.succeed(stalled, undefined).pipe(Effect.andThen(Effect.never));
+    const failure = yield* Effect.gen(function* () {
+      const syncing = yield* Effect.forkChild(run(Effect.flip(syncGithubRepositories(9))));
+      yield* Deferred.await(stalled);
+      yield* TestClock.adjust(GITHUB_REPOSITORY_PAGE_DEADLINE);
+      return yield* Fiber.join(syncing);
+    }).pipe(Effect.provide(TestClock.layer()));
+    expect(failure).toMatchObject({ _tag: "GithubRepositoryListingStalled", installationId: 9, page: 2 });
+    expect(failure.message).toBe("GitHub didn't list page 2 of installation 9's repositories within 30 seconds.");
+    expect(isNonRetriableInngestCause(failure)).toBe(false);
+    expect((yield* cached).size).toBe(0);
+    expect(yield* sync).toMatchObject({ processedRepoCount: 150, forgotten: false });
+    expect((yield* cached).size).toBe(150);
   }), 60_000);
