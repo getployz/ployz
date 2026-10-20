@@ -153,10 +153,6 @@ impl ContainerRuntime {
 
     /// Turns `true` once the first container observation has published since this
     /// process started, and stays `true` across watch retries.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the boot pass in daemon.rs reads it")
-    )]
     pub(crate) fn first_synced(&self) -> tokio::sync::watch::Receiver<bool> {
         self.first_synced.subscribe()
     }

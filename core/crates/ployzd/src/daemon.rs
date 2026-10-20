@@ -338,7 +338,8 @@ impl Daemon {
         let socket_path = config.socket.clone();
         let retire_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let ingress_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
-        let (first_publish, _first_published) = tokio::sync::watch::channel(false);
+        let boot_admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let (first_publish, first_published) = tokio::sync::watch::channel(false);
         let retire_id = local_id;
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
@@ -468,6 +469,42 @@ impl Daemon {
                 }
                 Ok(())
             };
+            let boot_pass = async {
+                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
+                    return Ok(());
+                }
+                let (Some(runtime), Some(replicated), Some(machines), Some(admin)) = (
+                    containers.clone(),
+                    replicated_store.clone(),
+                    machine_view.clone(),
+                    boot_admin,
+                ) else {
+                    return Ok(());
+                };
+                let mut synced = runtime.first_synced();
+                tokio::select! {
+                    () = shutdown.cancelled() => return Ok(()),
+                    synced = synced.wait_for(|synced| *synced) => {
+                        if synced.is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
+                let host = crate::boot_pass::DaemonHost {
+                    machine_id: retire_id,
+                    machine: crate::machine::LocalMachine::new(local.clone())
+                        .with_containers(Some(runtime))
+                        .with_plugin(plugin.clone()),
+                    replicated,
+                    machines,
+                    admin,
+                };
+                tokio::select! {
+                    () = shutdown.cancelled() => {}
+                    () = crate::boot_pass::run(host, first_published) => {}
+                }
+                Ok(())
+            };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
                 publisher,
@@ -478,6 +515,7 @@ impl Daemon {
                 ingress,
                 certificates,
                 retire,
+                boot_pass,
             )
             .map(|_| ())
         });
