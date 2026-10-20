@@ -317,8 +317,10 @@ async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(),
         });
     }
     crate::ui::note(format_args!(
-        "Run this on the Server, and paste the token when it asks (expires {}). From a script, pipe the token to `sudo ployz server add --token-stdin` instead.\n\n  {line}\n\n  {}\n",
-        minted.expires_at, minted.token
+        "Run this on the Server, and paste the token when it asks (expires {}). From a script, export {} with the token first; the line keeps it through sudo.\n\n  {line}\n\n  {}\n",
+        minted.expires_at,
+        env::ENROLL_TOKEN,
+        minted.token
     ));
     crate::ui::note("Waiting for the Server to join...");
     wait_joined(acting, &minted.id).await
@@ -326,7 +328,8 @@ async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(),
 
 /// One line that installs exactly this CLI's release, so the Server speaks the same
 /// enrollment, keeping every flag that shapes the Server. It carries no token: `server add`
-/// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin.
+/// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin, or reads
+/// an exported `PLOYZ_ENROLL_TOKEN`, which plain `sudo` would drop.
 fn pasted_command(cloud: &str, shape: &[String]) -> String {
     let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
@@ -338,8 +341,9 @@ fn pasted_command(cloud: &str, shape: &[String]) -> String {
         .map(|arg| format!(" {}", shell_words::quote(arg)))
         .collect();
     format!(
-        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add{cloud_flag}{shape_flags}",
-        env!("CARGO_PKG_VERSION")
+        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo --preserve-env={} ployz server add{cloud_flag}{shape_flags}",
+        env!("CARGO_PKG_VERSION"),
+        env::ENROLL_TOKEN
     )
 }
 
@@ -413,11 +417,13 @@ mod tests {
         let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
             pasted_command("https://ployz.dev", &[]),
-            format!("curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo ployz server add")
+            format!(
+                "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add"
+            )
         );
         assert!(
             pasted_command("http://localhost:3000", &[])
-                .ends_with("sudo ployz server add --cloud-url 'http://localhost:3000'")
+                .ends_with("ployz server add --cloud-url 'http://localhost:3000'")
         );
     }
 

@@ -35,11 +35,13 @@ server joins. Paste the line in a shell on the server, as root or as a user with
 the token when it asks. The prompt doesn't show what you paste, so the token never enters the
 server's shell history or process list. The token works for 24 hours.
 
-A script, such as cloud-init or `ssh host '...'`, has no terminal to answer the prompt. There, pipe
-the token to `sudo ployz server add --token-stdin` after the install part of the line.
+A script, such as cloud-init or `ssh host '...'`, has no terminal to answer the prompt. There,
+`export PLOYZ_ENROLL_TOKEN=pmet_…` before the line: it keeps that variable through `sudo`. You can
+also pipe the token to `sudo ployz server add --token-stdin` after the install part of the line.
 
 The server takes its hostname as its name; to choose another, run
-`ployz server add --command --name web-1` and the printed line keeps the name. When it
+`ployz server add --command --name web-1` and the printed line keeps the name. It keeps every other
+flag that shapes the server too, such as `--storage`, `--label-add` or `--accepts-ingress`. When it
 finishes, the server shows on the **Servers** page, ready for builds, services and web traffic. If
 it doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md).
 
