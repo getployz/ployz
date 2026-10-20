@@ -19,8 +19,8 @@ use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
-    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish,
-    RunnerId, Start, UploadBase, UploadedSource, VolumeName,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, NodeStatus, PlanQuery,
+    Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Next, Store, environment, mint, next, scoped, store};
@@ -749,19 +749,31 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
         if newer.number <= view.deployment.number {
             continue;
         }
-        // A narrowed one also ships, as Service nodes, the Services its named ones reference.
+        // A narrowed one also ships, as Service nodes, the Services its named ones
+        // reference; a node it left unchanged or never reached ships nothing.
         let shipped = if newer.services.is_empty() || ours.is_empty() {
             newer.services.clone()
         } else {
-            store
-                .read(&ployz_store::DeploymentQuery {
-                    id: newer.id.clone(),
-                })?
-                .nodes
+            let Ok(read) = store.read(&ployz_store::DeploymentQuery {
+                id: newer.id.clone(),
+            }) else {
+                continue;
+            };
+            read.nodes
                 .into_iter()
-                .filter_map(|node| match node.node {
-                    DeployedNode::Service { name, .. } => Some(name),
-                    DeployedNode::Volume { .. } | DeployedNode::Config { .. } => None,
+                .filter_map(|node| match (node.node, node.outcome) {
+                    (
+                        DeployedNode::Service { name, .. },
+                        NodeStatus::Pending
+                        | NodeStatus::Deployed
+                        | NodeStatus::Failed
+                        | NodeStatus::Unknown,
+                    ) => Some(name),
+                    (
+                        DeployedNode::Service { .. },
+                        NodeStatus::Unchanged | NodeStatus::NotAttempted | NodeStatus::Removed,
+                    )
+                    | (DeployedNode::Volume { .. } | DeployedNode::Config { .. }, _) => None,
                 })
                 .collect()
         };
