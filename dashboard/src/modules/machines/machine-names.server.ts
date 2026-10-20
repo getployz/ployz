@@ -24,7 +24,10 @@ export const recordMachineNames = Effect.fn("Machines.recordNames")(function* (
   }
 });
 
-/** The name Cloud keeps for a Server, as SQL a run's row is written with, so the run keeps the name it started under. */
-export const keptMachineName = (organizationId: string, machineId: MachineId) =>
-  sql<MachineName | null>`(select ${organizationMachine.machineName} from ${organizationMachine}
+/**
+ * The name a run's row is written with, so the run keeps the name it started under: the one its act `resolved`, which
+ * its reply names it by, else the one Cloud keeps for the Server, which a rename may not have reached yet.
+ */
+export const startingMachineName = (organizationId: string, machineId: MachineId, resolved: MachineName | null | undefined) =>
+  resolved || sql<MachineName | null>`(select ${organizationMachine.machineName} from ${organizationMachine}
     where ${organizationMachine.organizationId} = ${organizationId} and ${organizationMachine.machineId} = ${machineId})`;
