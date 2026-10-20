@@ -37,7 +37,7 @@ export async function executeSyncClusterDomain(
   });
   if (organizationId === null) return { organizationId: null, skipped: true };
 
-  // Only a deployment that needs a generated hostname reserves the name.
+  // Only staging or deploying a generated domain reserves the name.
   const name = await step.run("load-name", () =>
     runEffect(loadClusterDomain(organizationId).pipe(Effect.map((row) => row?.name ?? null))));
   if (name === null) return { organizationId, skipped: true };

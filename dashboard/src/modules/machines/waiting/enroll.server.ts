@@ -212,6 +212,11 @@ const enrollmentAuthority = Effect.fn("ServerEnrollment.authority")(function* (
   return { pairing, founded, hasFirst: paired || founding !== undefined };
 });
 
+/** Whether the Organization has a first server, founded or founding. */
+export const hasFirstServer = Effect.fn("ServerEnrollment.hasFirst")(function* (organizationId: string) {
+  return (yield* enrollmentAuthority(organizationId, "preview")).hasFirst;
+});
+
 const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   organizationId: string,
   input: EnrollInput,

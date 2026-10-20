@@ -157,26 +157,34 @@ fn the_signature_matches_what_cloud_verifies() {
     );
 }
 
+const fn wait(seconds: u64) -> wire::Wait {
+    wire::Wait {
+        after: Duration::from_secs(seconds),
+        no_cluster: false,
+    }
+}
+
 #[test]
 fn an_answer_this_cli_cannot_read_waits_a_minute() {
     for body in [&br#"{"kind":"reboot"}"#[..], br#"{"kind":"wait"}"#] {
-        assert_eq!(
-            wire::answer(body),
-            Some(Answer::Wait(Duration::from_secs(60)))
-        );
+        assert_eq!(wire::answer(body), Some(Answer::Wait(wait(60))));
     }
     assert_eq!(
         wire::answer(br#"{"kind":"wait","retryAfter":30}"#),
-        Some(Answer::Wait(Duration::from_secs(30)))
+        Some(Answer::Wait(wait(30)))
+    );
+    assert_eq!(
+        wire::answer(br#"{"kind":"wait","retryAfter":30,"noCluster":true}"#),
+        Some(Answer::Wait(wire::Wait {
+            no_cluster: true,
+            ..wait(30)
+        }))
     );
     for huge in [
         &br#"{"kind":"wait","retryAfter":999999}"#[..],
         br#"{"kind":"wait","retryAfter":1e300}"#,
     ] {
-        assert_eq!(
-            wire::answer(huge),
-            Some(Answer::Wait(Duration::from_secs(3600)))
-        );
+        assert_eq!(wire::answer(huge), Some(Answer::Wait(wait(3600))));
     }
 }
 
@@ -832,6 +840,38 @@ async fn a_check_in_is_signed_and_its_answer_recorded() {
 }
 
 #[tokio::test]
+async fn a_wait_on_an_organization_with_no_cluster_says_to_enroll_one_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, _server) = cloud(
+        "200 OK",
+        r#"{"kind":"wait","retryAfter":10,"noCluster":true}"#,
+    )
+    .await;
+    pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+
+    let mut status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert!(status.no_cluster);
+    assert!(status.says_why());
+    assert_eq!(
+        status.message.as_deref(),
+        Some("Enroll one server in Ployz Cloud to start it.")
+    );
+    status.blockers.clear();
+    status.prep = None;
+    assert_eq!(status.headline(), Headline::open("No cluster yet"));
+    status.no_cluster = false;
+    assert_eq!(status.headline(), Headline::open("Waiting for approval"));
+}
+
+#[tokio::test]
 async fn a_stop_answer_is_recorded_with_its_reason() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
@@ -1461,6 +1501,7 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
             prepare_retries: 0,
             prepare_started: None,
             attempt: None,
+            no_cluster: false,
             refused: Some(Refusal {
                 token: sending(token).fingerprint(),
                 date: at,
@@ -2371,6 +2412,7 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
             prepare_started: Some(Utc::now() - TimeDelta::hours(1)),
             refused: None,
             attempt: None,
+            no_cluster: false,
         },
         &paths,
     );
@@ -2458,6 +2500,7 @@ fn the_headline_says_where_the_host_stands() {
         prepare_started: None,
         refused: None,
         attempt: None,
+        no_cluster: false,
     };
     assert_eq!(
         status.headline(),

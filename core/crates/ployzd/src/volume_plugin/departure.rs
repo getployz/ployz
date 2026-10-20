@@ -202,13 +202,13 @@ impl VolumeStorage {
 
     /// Whether the slot's copy may be the only one. Only a mirror pull marks a slot
     /// pulled, once its receive made a snapshot a writer elsewhere had made, and that is
-    /// the only evidence the departure destroys on: every slot without it is kept, so a
-    /// state no release before the mark could tell apart leaks rather than loses data. A
-    /// departure snapshot or a seed, promote, cut or epoch mark keeps a slot even so, as
-    /// each describes a point this Machine may alone hold. A slot with no snapshot at all
-    /// holds only a receive that never completed, which every receive makes resumable with
-    /// `-s`, so it holds no point at all.
-    async fn written_here(&self, fs: &str) -> super::Result<bool> {
+    /// the only evidence a departure or a seed destroys on: every slot without it is
+    /// kept, so a state no release before the mark could tell apart leaks rather than
+    /// loses data. A departure snapshot or a seed, promote, cut or epoch mark keeps a slot
+    /// even so, as each describes a point this Machine may alone hold. A slot with no
+    /// snapshot at all holds only a receive that never completed, which every receive
+    /// makes resumable with `-s`, so it holds no point at all.
+    pub(super) async fn written_here(&self, fs: &str) -> super::Result<bool> {
         if self.marked_written_here(fs).await? {
             return Ok(true);
         }
@@ -220,7 +220,7 @@ impl VolumeStorage {
 
     /// Whether a departure snapshot or a seed, promote, cut or epoch mark says the slot
     /// holds a point this Machine may alone hold.
-    pub(super) async fn marked_written_here(&self, fs: &str) -> super::Result<bool> {
+    async fn marked_written_here(&self, fs: &str) -> super::Result<bool> {
         if self
             .snapshot_names(fs)
             .await?

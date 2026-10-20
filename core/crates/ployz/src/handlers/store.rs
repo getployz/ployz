@@ -386,9 +386,13 @@ impl<'m> Store<'m> {
     }
 
     /// This command again with its [`Self::args`] and `extra`, in the same Project
-    /// and Environment.
+    /// and Environment, with the same Ployz config.
     pub(crate) fn again(&self, extra: &[&str]) -> String {
-        let mut words: Vec<&str> = self.words.iter().map(String::as_str).collect();
+        let mut words: Vec<&str> = super::config_flag(self.matches)
+            .into_iter()
+            .flatten()
+            .collect();
+        words.extend(self.words.iter().map(String::as_str));
         words.extend(extra);
         next(self.matches, &words)
     }
@@ -797,11 +801,15 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
 /// one line per domain, `web.domains: added shop.acme.ployz.app`, never as the field storing it.
 pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<String> {
     let Some(domains) = ployz_store::DomainChange::of(row) else {
+        let value = |value: &serde_json::Value| match value.as_f64() {
+            Some(gb) if row.path.ends_with(".memLimit") => ployz_store::memory_size(gb),
+            _ => shown(value),
+        };
         return vec![format!(
             "{}: {} → {}",
             row.path,
-            shown(&row.before),
-            shown(&row.after)
+            value(&row.before),
+            value(&row.after)
         )];
     };
     let service = row.path.split('.').next().unwrap_or_default();
@@ -887,7 +895,7 @@ pub(crate) fn service_name(
     arg: &str,
 ) -> Result<ployz_core::ServiceName, Error> {
     ployz_core::ServiceName::parse(super::required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Service name: up to 63 lowercase letters, digits and -, like web")
+        Error::usage("Expected a Service name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like web")
     })
 }
 
@@ -929,7 +937,7 @@ fn names<T>(
         .map(|name| {
             parse(name).ok_or_else(|| {
                 Error::usage(format!(
-                    "Expected {what} names: lowercase letters, digits and -"
+                    "Expected {what} names: each up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
                 ))
             })
         })
@@ -942,7 +950,7 @@ pub(crate) fn volume_name(
     arg: &str,
 ) -> Result<ployz_store::VolumeName, Error> {
     ployz_store::VolumeName::parse(super::required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Volume name: up to 63 lowercase letters, digits and -, like data")
+        Error::usage("Expected a Volume name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like data")
     })
 }
 
@@ -979,6 +987,16 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(changed(&route), ["web.domains: removed app.example.com"]);
+    }
+
+    #[test]
+    fn a_staged_memory_limit_reads_with_its_unit() {
+        let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
+            "path": "web.memLimit", "kind": "update", "canRestore": true,
+            "before": null, "after": 0.201_326_592,
+        }))
+        .unwrap();
+        assert_eq!(changed(&row), ["web.memLimit: null → 192 MiB"]);
     }
 
     /// Two reads of Working State's revision, with `between` run between them.
@@ -1097,6 +1115,49 @@ mod tests {
         assert_eq!(
             error.message,
             "This Deploy permanently deletes the data of data"
+        );
+    }
+
+    #[test]
+    fn the_same_command_again_keeps_a_typed_ployz_config() {
+        let config = "/home/me/my ployz/config.yaml";
+        let again = |typed: &[&str]| {
+            let root = crate::cli::command().try_get_matches_from(typed).unwrap();
+            let key = SealingKey::new(&[7; 32]).unwrap();
+            Store {
+                backend: Backend::Local(
+                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+                ),
+                matches: leaf_matches(&root),
+                words: vec!["env".to_owned(), "rm".to_owned(), "staging".to_owned()],
+            }
+            .again(&["--confirm", "shop/staging"])
+        };
+        let typed = again(&[
+            "ployz",
+            "--ployz-config",
+            config,
+            "env",
+            "rm",
+            "staging",
+            "--confirm",
+            "shop/staging",
+        ]);
+        assert_eq!(
+            typed,
+            "ployz --ployz-config '/home/me/my ployz/config.yaml' env rm staging --confirm shop/staging"
+        );
+        let root = crate::cli::command()
+            .try_get_matches_from(shell_words::split(&typed).unwrap())
+            .unwrap();
+        let leaf = leaf_matches(&root);
+        assert_eq!(leaf.get_one::<String>("ployz-config").unwrap(), config);
+        assert_eq!(leaf.get_one::<String>("confirm").unwrap(), "shop/staging");
+        // A default or `PLOYZ_CONFIG` holds for the next command on its own.
+        assert_eq!(
+            again(&["ployz", "env", "rm", "staging", "--confirm", "shop/staging"]),
+            "ployz env rm staging --confirm shop/staging"
         );
     }
 

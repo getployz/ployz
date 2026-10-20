@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, Hold, KeyError};
 pub(crate) use enroll::Committed;
 use probe::Probes;
-use wire::{Answer, CheckinRequest, PrepState};
+use wire::{Answer, CheckinRequest, PrepState, Wait};
 pub(crate) use wire::{
     Attempt, DockerPrep, EnrollInstruction, Issue, Prep, Probe, StopReason, ZfsPrep,
 };
@@ -42,6 +42,8 @@ const REFUSED_ONCE: &str =
     "Cloud refused this Fleet Token. It is checked once more before the loop removes it";
 const GAVE_UP: &str = "Preparation stopped mid-step on every try. Run sudo ployz server checkin --install to try again.";
 const STALE_PLOYZD: &str = "ployzd_outdated";
+pub(crate) const NO_CLUSTER: &str = "No cluster yet";
+pub(crate) const NO_CLUSTER_WHY: &str = "Enroll one server in Ployz Cloud to start it.";
 
 pub(crate) struct Paths {
     pub(crate) checkin_dir: PathBuf,
@@ -339,6 +341,9 @@ pub(crate) struct LocalCheckin {
     /// The enroll attempt Cloud last instructed, sent on every check-in until Cloud replaces it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) attempt: Option<Attempt>,
+    /// Cloud's last wait said the Organization has no cluster for this host to join yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) no_cluster: bool,
 }
 
 /// Cloud's first refusal of a token, dated by Cloud's clock. A second refusal of the same token
@@ -394,6 +399,15 @@ impl LocalCheckin {
                 | Seen::ProbeFailed
                 | Seen::NoPloyzd
         ) || self.enroll_failed()
+            || (self.answer == Seen::Wait && self.no_cluster)
+    }
+
+    fn waited(&mut self, wait: Wait) {
+        self.answer = Seen::Wait;
+        self.no_cluster = wait.no_cluster;
+        if wait.no_cluster {
+            self.message = Some(NO_CLUSTER_WHY.to_owned());
+        }
     }
 
     fn enroll_failed(&self) -> bool {
@@ -428,6 +442,7 @@ impl LocalCheckin {
                     Headline::open("Installing Docker")
                 }
                 Some(prep) if prep.zfs == ZfsPrep::Installing => Headline::open("Building ZFS"),
+                Some(_) | None if self.no_cluster => Headline::open(NO_CLUSTER),
                 Some(_) | None => Headline::open("Waiting for approval"),
             },
         }
@@ -748,6 +763,7 @@ async fn check_in<H: Host>(
         prepare_started,
         refused: None,
         attempt,
+        no_cluster: false,
     };
     status.blockers.extend(stale.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
@@ -799,8 +815,8 @@ async fn check_in<H: Host>(
             status.answer = Seen::Joined;
             Next::Enrolled
         }
-        client::Reply::Answer(Answer::Wait(after)) => {
-            status.answer = Seen::Wait;
+        client::Reply::Answer(Answer::Wait(wait)) => {
+            status.waited(wait);
             if status.enroll_failed() {
                 status.message = status
                     .attempt
@@ -808,9 +824,9 @@ async fn check_in<H: Host>(
                     .and_then(|attempt| attempt.failure.as_ref())
                     .map(enroll::failure_line);
             }
-            Next::Wait { after }
+            Next::Wait { after: wait.after }
         }
-        client::Reply::Answer(Answer::Probe(after, handout)) => {
+        client::Reply::Answer(Answer::Probe(wait, handout)) => {
             probes.open(handout, key, sent).await;
             if installing {
                 crate::ui::note(format!(
@@ -819,8 +835,8 @@ async fn check_in<H: Host>(
                 ));
                 probes.finish().await;
             }
-            status.answer = Seen::Wait;
-            Next::Wait { after }
+            status.waited(wait);
+            Next::Wait { after: wait.after }
         }
         client::Reply::Answer(Answer::Enroll(_)) if installing => {
             probes.close().await;
@@ -969,6 +985,7 @@ pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
         prepare_started: previous.as_ref().and_then(|status| status.prepare_started),
         refused: None,
         attempt: previous.and_then(|status| status.attempt),
+        no_cluster: false,
     };
     record(&status, paths);
 }

@@ -323,7 +323,7 @@ impl Gate {
     #[must_use]
     pub const fn sentence(self) -> &'static str {
         match self {
-            Self::Never => "Never asks a human to approve.",
+            Self::Never => "This call asks no human.",
             Self::Store | Self::Cloud => "May stop to ask a human to approve.",
         }
     }
