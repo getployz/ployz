@@ -113,7 +113,7 @@ it("undoes an edit the Store refuses as a conflict and shows what changed elsewh
 it("words a refused rename as the Store does: a referenced variable isn't a stale revision", async () => {
   const test = setup(view(2, 1));
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
-  const message = "web.API_URL is used by web.UPSTREAM; rename it with update_references to switch them to PUBLIC_API_URL";
+  const message = "web.API_URL is used by web.UPSTREAM; rename it with updated references to switch them to PUBLIC_API_URL";
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message, details: { variables: ["web.UPSTREAM"] } } });
   let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
   act(() => { edit = test.edit({ environment: ref, changes: [{ op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" }] }); });
@@ -130,6 +130,25 @@ it("says a signed-out edit wasn't saved and offers to sign in", async () => {
   await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   expect(error).toHaveBeenCalledWith("You're signed out. Nothing was saved.", expect.objectContaining({ action: expect.objectContaining({ label: "Sign in" }) }));
   await waitFor(() => expect(test.replicas()).toBe(1));
+});
+
+it("says a write that failed in Cloud was undone, even when the failure carries no message", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  test.write.mockImplementationOnce(() => Promise.reject({ error: "boom" }));
+  const order = test.writer.commit({ command: "set_build_order", build_order: "servers-only" }).isPersisted.promise;
+  await expect(order).rejects.toEqual({ error: "boom" });
+  expect(error).toHaveBeenCalledWith("Ployz Cloud couldn't save this change, so it was undone. Try again.");
+});
+
+it("says a write was undone when Cloud fails with its own unavailable error", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const unavailable = { _tag: "PublicError", code: "UNAVAILABLE", message: "Ployz Cloud had a problem. Try again." };
+  test.write.mockImplementationOnce(() => Promise.reject(unavailable));
+  const order = test.writer.commit({ command: "set_build_order", build_order: "servers-only" }).isPersisted.promise;
+  await expect(order).rejects.toEqual(unavailable);
+  expect(error).toHaveBeenCalledWith("Ployz Cloud couldn't save this change, so it was undone. Try again.");
 });
 
 it("seals a variable at once, and a refused seal leaves it as it was", async () => {

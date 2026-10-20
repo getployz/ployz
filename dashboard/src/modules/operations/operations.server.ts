@@ -17,7 +17,7 @@ import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { beyondEnvironments, lacksPermission } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
-import { requestServiceAct, serviceActExists } from "#/modules/service-act/service-act.server";
+import { activeServiceAct, busyRefusal, requestServiceAct, serviceActExists } from "#/modules/service-act/service-act.server";
 import { environmentProtected } from "#/modules/config-store/store-lookup.server";
 import { protectorOnly } from "#/modules/config-store/protected.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
@@ -251,6 +251,8 @@ export const actService = (
       const run = (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...act });
       const interrupted = interrupts(input);
       if (interrupted === null) return run;
+      const busy = yield* activeServiceAct(caller.organization.id, input);
+      if (busy !== null) return refused(busyRefusal(input.service, busy));
       const asked = yield* guarded(caller, input, interrupted);
       const gated = yield* gate(caller, call, asked);
       if (!gated.ok) return refused(gated.refusal);
