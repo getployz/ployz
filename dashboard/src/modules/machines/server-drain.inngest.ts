@@ -31,7 +31,7 @@ const ServerDrainRequestedData = Schema.Struct({
 /**
  * One Drain: bind the run to its row → claim the row, ask the Engine once and record its answer. Only the last step
  * touches the Engine, and a retry of it never asks again (see `executeDrainOnce`). While the Cluster doesn't answer,
- * that step leaves the row pending, and the run waits and tries it again.
+ * that step leaves the row pending, and the run waits and tries it again, until the request's pending limit ends it.
  */
 export async function executeDrainServer(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
@@ -46,7 +46,10 @@ export async function executeDrainServer(
   if (bound.kind === "settled") return { attemptId: request.attemptId, state: bound.state };
   for (let tried = 0; ; tried += 1) {
     if (tried > 0) await step.sleep(`wait-for-server-${tried}`, SERVER_WAIT);
-    const reply = await step.run(tried === 0 ? "execute-once" : `execute-once-${tried}`, () => runEffect(executeDrainOnce(request, runId)));
+    const reply = await step.run(
+      tried === 0 ? "execute-once" : `execute-once-${tried}`,
+      () => runEffect(executeDrainOnce(request, runId, { waited: tried > 0 })),
+    );
     if (reply.state !== "pending") return reply;
   }
 }

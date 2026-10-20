@@ -20,7 +20,7 @@ import {
   type RequestedServerDrain,
   type RequestServerDrainInput,
 } from "#/modules/machines/server-drain";
-import { drainPlan, planDrain } from "#/modules/machines/server-operations.server";
+import { drainPlan, planDrain, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
@@ -278,9 +278,21 @@ export const bindDrainRun = Effect.fn("ServerDrain.bind")(function* (request: Dr
   return { kind: "settled", state: row.state } as const;
 });
 
+/**
+ * When a pending Drain's `DRAIN_PENDING_LIMIT_MS` starts: its request, or the end of the Organization's last Drain when
+ * that is later. The sweep and a run waiting for its Server both time it from here, so they agree on when it expires.
+ * Spelled out: an update renders its columns unqualified, which inside a subquery would name the alias's.
+ */
+const pendingSince = sql`greatest(server_drain_attempt.requested_at, (
+  select max(before.ended_at) from server_drain_attempt as before
+  where before.organization_id = server_drain_attempt.organization_id
+))`;
+
 /** The Cluster as the Drain finds it when its turn comes: the session it drains through, and the frame it plans from. */
 const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  // No Cluster paired is nothing to wait for.
+  if (session.status === "no_connection") return yield* new Conflict({ userFacing: true, message: UNREACHABLE_MESSAGE });
   if (session.status !== "connected") {
     return yield* new ServerDrainUnreachable({ operation: "open organization runtime", cause: session.status });
   }
@@ -331,9 +343,15 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
  * know what moved) but never another answer, and a Drain with no answer in a day ends lost here.
  *
  * A Cluster that doesn't answer before the claim leaves the row pending, for the run to try again after a wait, until
- * the request is `DRAIN_PENDING_LIMIT_MS` old. Past that it fails the step as before, and the run ends `not_started`.
+ * the sweep's deadline (`pendingSince`). A try after a wait that finds the deadline passed ends the row `not_started`
+ * without asking, even if the Cluster would answer now. A first try past it drains if the Cluster answers, as a
+ * Drain that waited its turn always has, and otherwise fails the step as before, and the run ends `not_started`.
  */
-export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (request: DrainRequest, runId: string) {
+export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
+  request: DrainRequest,
+  runId: string,
+  { waited }: { readonly waited: boolean },
+) {
   const { drizzle } = yield* Database;
   const owned = and(eq(serverDrainAttempt.id, request.attemptId), eq(serverDrainAttempt.inngestRunId, runId));
   const current = yield* stateOf(request.attemptId);
@@ -345,15 +363,21 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (requ
   }
   if (current.state !== "pending") return current;
   const [row] = yield* drizzle.select({
-    targets: serverDrainAttempt.targets, planDigest: serverDrainAttempt.planDigest, requestedAt: serverDrainAttempt.requestedAt,
+    targets: serverDrainAttempt.targets,
+    planDigest: serverDrainAttempt.planDigest,
+    since: sql<Date>`${pendingSince}`.mapWith(serverDrainAttempt.requestedAt),
   }).from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId));
+  const expired = row === undefined || (yield* Clock.currentTimeMillis) >= row.since.getTime() + DRAIN_PENDING_LIMIT_MS;
+  if (waited && expired) {
+    yield* drizzle.update(serverDrainAttempt).set(ended("not_started")).where(and(owned, eq(serverDrainAttempt.state, "pending")));
+    return yield* stateOf(request.attemptId);
+  }
   const reached = yield* reachCluster(request.organizationId).pipe(
     Effect.map(Option.some),
-    Effect.catchIf((error) => error instanceof ServerDrainUnreachable, (unreachable) => Effect.gen(function* () {
-      const now = yield* Clock.currentTimeMillis;
-      const waits = row !== undefined && now < row.requestedAt.getTime() + DRAIN_PENDING_LIMIT_MS;
-      return waits ? Option.none() : yield* unreachable;
-    })),
+    Effect.catchIf(
+      (error) => error instanceof ServerDrainUnreachable,
+      (unreachable) => expired ? Effect.fail(unreachable) : Effect.succeedNone,
+    ),
   );
   if (Option.isNone(reached)) return current;
   const { session, frame } = reached.value;
@@ -430,7 +454,7 @@ export const closeDrainRun = Effect.fn("ServerDrain.closeRun")(function* (
 /**
  * The hourly sweep: a request no run picked up in time never starts; a Drain running for a day lost its run. Drains in
  * an Organization run one at a time, so a request waits its turn while one runs there or an earlier request is ahead
- * of it, and its time runs from when the Drain before it ended.
+ * of it, and its time runs from when the Drain before it ended (`pendingSince`).
  */
 export const closeStaleDrains = Effect.fn("ServerDrain.closeStale")(function* () {
   const { drizzle } = yield* Database;
@@ -449,10 +473,7 @@ export const closeStaleDrains = Effect.fn("ServerDrain.closeStale")(function* ()
         where ahead.organization_id = server_drain_attempt.organization_id
           and (ahead.state = 'running' or (ahead.state = 'pending' and ahead.requested_at < server_drain_attempt.requested_at))
       )`,
-      sql`greatest(server_drain_attempt.requested_at, (
-        select max(before.ended_at) from server_drain_attempt as before
-        where before.organization_id = server_drain_attempt.organization_id
-      )) < ${new Date(now - DRAIN_PENDING_LIMIT_MS)}`,
+      sql`${pendingSince} < ${new Date(now - DRAIN_PENDING_LIMIT_MS)}`,
     ))
     .returning({ id: serverDrainAttempt.id });
   return { failed: failed.length, unknown: unknown.length };
