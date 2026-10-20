@@ -667,6 +667,7 @@ fn report(container: &ContainerObservation, server: &ServerName) -> ContainerRep
         service: container.service_name().clone(),
         state,
         exit_code,
+        stopped: container.stopped,
         health,
         restarts: None,
         image: container.resolved_spec.container.image.clone(),

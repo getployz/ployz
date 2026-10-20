@@ -1147,6 +1147,7 @@ impl MachineState {
             resolved_spec,
             address: None,
             labels,
+            stopped: false,
         })
         .map_err(internal)
     }

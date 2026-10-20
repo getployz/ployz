@@ -21,6 +21,8 @@ export const runtimeContainerStateSchema = Schema.Struct({
   state: Schema.String,
   health: Schema.optionalKey(Schema.String),
   code: Schema.optionalKey(Schema.Int),
+  /** On an exited run its Server stopped on request, so its code is no crash. */
+  stopped: Schema.optionalKey(Schema.Literal(true)),
 });
 
 /** Direct container evidence, without historical specs or inferred Service state. */

@@ -644,6 +644,7 @@ fn moving_off_an_old_hook() -> DeployPreview {
             resolved_spec: resolved.clone(),
             address: None,
             labels: Default::default(),
+            stopped: false,
         })
         .unwrap()
     };

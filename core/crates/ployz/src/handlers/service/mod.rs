@@ -224,7 +224,7 @@ fn process_table(
             Row::Container(container) => {
                 let observation = container.as_observation();
                 (
-                    Cell::status(process_state(&observation.runtime), state_tone(container)),
+                    Cell::status(process_state(observation), state_tone(container)),
                     Cell::from(crate::ui::short_id(observation.container_id.as_str())),
                 )
             }
@@ -286,13 +286,15 @@ fn process_kind(container: ContainerRef<'_>) -> &'static str {
     }
 }
 
-/// A runtime state in words: `running`, `running, unhealthy`, `exited with code 1`.
-fn process_state(runtime: &ContainerRuntimeObservation) -> String {
-    match runtime {
+/// A runtime state in words: `running`, `running, unhealthy`, `exited with code 1`,
+/// or `stopped` for a run its Machine stopped on request.
+fn process_state(observation: &ContainerObservation) -> String {
+    match &observation.runtime {
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
         } => "running".into(),
         ContainerRuntimeObservation::Running { health } => format!("running, {}", health.as_str()),
+        ContainerRuntimeObservation::Exited { .. } if observation.stopped => "stopped".into(),
         other @ (ContainerRuntimeObservation::Created
         | ContainerRuntimeObservation::Paused
         | ContainerRuntimeObservation::Restarting

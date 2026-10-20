@@ -1621,6 +1621,7 @@ fn created_container(
         resolved_spec,
         address: None,
         labels: BTreeMap::new(),
+        stopped: false,
     })
     .unwrap()
 }

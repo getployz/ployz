@@ -288,6 +288,7 @@ pub(super) fn container(
             .expect("volume graph is scoped"),
         address: None,
         labels: Default::default(),
+        stopped: false,
     })
     .unwrap()
 }

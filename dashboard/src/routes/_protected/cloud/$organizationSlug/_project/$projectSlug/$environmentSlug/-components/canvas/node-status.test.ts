@@ -40,6 +40,13 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, runtime(exited(0)), watch({ status: "unavailable" }))).toMatchObject({ word: "Stopped", tone: "quiet", down: false });
   });
 
+  it("says Stopped for a run its Server stopped on request whatever its exit code, and Crashed beside any other failure exit", () => {
+    const stopped = { ...container("exited"), runtime: { state: "exited", code: 1, stopped: true as const } };
+    const crashed = { ...container("exited"), runtime: { state: "exited", code: 1 } };
+    expect(runtimeLine(service, runtime(stopped), seen)).toMatchObject({ word: "Stopped", tone: "bad", down: true });
+    expect(runtimeLine(service, runtime(stopped, crashed), seen)).toMatchObject({ word: "Crashed", tone: "crashed", down: true });
+  });
+
   it("says Not running once the Servers' whole evidence has none of it, and Deployed while a Server is missing from it", () => {
     expect(runtimeLine(service, null, seen)).toMatchObject({ word: "Not running", down: true });
     expect(runtimeLine(service, null, watch({ incomplete: true }))).toMatchObject({ word: "Deployed", down: false });
