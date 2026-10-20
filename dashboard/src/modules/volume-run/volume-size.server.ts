@@ -38,7 +38,6 @@ export function sizeRefusalOf(volumeName: string, machine: MachineRef, bytes: By
     case "switching":
       return { kind: "retry" };
     case "no_capacity":
-      // `required_growth_bytes` is the whole Pool's growth, not what this Volume falls short by, so it isn't shown.
       return refused(`${machine.name} has no room to grow ${volumeName} to ${gb(bytes)}`);
     case "not_found":
       return refused(`${machine.name} no longer holds a copy of ${volumeName}`);

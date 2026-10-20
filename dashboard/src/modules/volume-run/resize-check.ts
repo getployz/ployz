@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { gigabytes } from "#/modules/config-store/store-volumes";
 import { MaximumBytes } from "#/modules/operations/cli-wire";
 import { listNames } from "#/lib/plural";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
@@ -39,21 +40,16 @@ export type ResizeVerdict =
   | { readonly kind: "grow"; readonly from: Bytes; readonly to: Bytes; readonly copies: readonly Copy[] | null };
 
 type Copy = Pick<Holder, "name" | "role">;
-const ROLE_ORDER: readonly Holder["role"][] = ["primary", "mirror", "old_copy"];
+const READING_ORDER: readonly Holder["role"][] = ["primary", "mirror", "old_copy"];
 
-/**
- * What the drawer does with a typed size, checked as the run checks it so the input refuses what the run would. The
- * room is a hint the run doesn't read, so an unknown one refuses nothing and the Server's own answer decides.
- */
 export function checkResize({ volume, recorded, working, requested, holders }: ResizeAsk): ResizeVerdict {
-  if (requested < recorded) return { kind: "refused", message: `${volume} is deployed at ${gb(recorded)}; a deployed volume can't shrink yet.` };
+  if (requested < recorded) return { kind: "refused", message: `${volume} is deployed at ${gb(recorded)}; this panel can't shrink it. Use ployz volume set ${volume} --size ${gigabytes(requested)}.` };
   if (requested === recorded) return working === recorded ? { kind: "settled" } : { kind: "restage" };
   if (holders === null) return { kind: "grow", from: recorded, to: requested, copies: null };
   if (!holders.some((holder) => holder.role === "primary")) {
     return { kind: "refused", message: `No server answers with ${volume}'s primary copy, so it can't grow now.` };
   }
 
-  // The run asks every copy, old ones included. A Server with no record can't be checked, and an empty list claims no verb.
   const unreported = holders.filter((holder) => holder.capabilities === null).map((holder) => holder.name);
   if (unreported.length > 0) {
     const one = unreported.length === 1;
@@ -63,11 +59,10 @@ export function checkResize({ volume, recorded, working, requested, holders }: R
     RESIZE_ORDER.grow.requires.some((requirement) => serverSupports({ capabilities: holder.capabilities ?? [] }, requirement) !== true));
   if (lacking.length > 0) return { kind: "refused", message: `Growing needs a newer Ployz on ${lacking.map((holder) => holder.name).join(", ")}.` };
 
-  // The run grows every slot, an old copy included, so each one's Pool must take what its own bound lacks: a copy an
-  // earlier grow left at the size needs nothing.
-  const growing = ROLE_ORDER.flatMap((role) => holders.filter((holder) => holder.role === role));
-  const [short] = growing.flatMap(({ name, committableBytes, boundBytes }) =>
-    committableBytes !== null && Math.max(0, requested - (boundBytes ?? recorded)) > committableBytes ? [{ name, room: committableBytes }] : []);
+  const growing = READING_ORDER.flatMap((role) => holders.filter((holder) => holder.role === role));
+  const lacksFromItsBound = (holder: Holder) => Math.max(0, requested - (holder.boundBytes ?? recorded));
+  const [short] = growing.flatMap((holder) =>
+    holder.committableBytes !== null && lacksFromItsBound(holder) > holder.committableBytes ? [{ name: holder.name, room: holder.committableBytes }] : []);
   if (short !== undefined) {
     const room = Math.floor(short.room / GB) * GB;
     return { kind: "refused", message: room === 0 ? `${short.name} has no room to grow it.` : `${short.name} has room to grow it by ${gb(room)} at most.` };
@@ -75,10 +70,6 @@ export function checkResize({ volume, recorded, working, requested, holders }: R
   return { kind: "grow", from: recorded, to: requested, copies: growing.map(({ name, role }) => ({ name, role })) };
 }
 
-/**
- * What the confirm says a grow does. It names the Servers in reading order, the primary's first, then its mirrors' and
- * old copies'; the run itself grows the mirrors first.
- */
 export function growWords(volume: string, { from, to, copies }: Extract<ResizeVerdict, { kind: "grow" }>): string {
   const named = (role: Holder["role"]) => (copies ?? []).filter((copy) => copy.role === role).map((copy) => copy.name);
   const [primary] = named("primary");

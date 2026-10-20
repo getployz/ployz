@@ -62,7 +62,6 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     running,
     owed,
     copies,
-    /** Every copy's Server with its record, for the size a resize may grow to; null until both are in. */
     holders: holdersOf(volume.id, members, lens.status === "observed" ? lens.machines : null, lens.volumeCopies),
     servers: lens.machines.filter((machine) => machine.acceptsServices),
     accepting: members?.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id) ?? [],

@@ -167,7 +167,7 @@ it("grows a deployed volume after a plain confirm, then shows the run until it e
 });
 
 it.each([
-  ["a smaller size, as the Store would", holders(), "5", "data is deployed at 10 GB; a deployed volume can't shrink yet."],
+  ["a smaller size, as the Store would", holders(), "5", "data is deployed at 10 GB; this panel can't shrink it. Use ployz volume set data --size 5."],
   ["a size a holder's Ployz can't set", holders(["ployz.volume.copy.set.v1"]), "20", "Growing needs a newer Ployz on fsn-2."],
   ["more than the tightest Pool has room for", holders(), "60", "fsn-1 has room to grow it by 40 GB at most."],
 ])("refuses %s in the field, before any confirm", async (_, held, typed, message) => {

@@ -13,7 +13,7 @@ const ask = (requested: number, options: Partial<ResizeAsk> = {}): ResizeAsk =>
 
 describe("checkResize", () => {
   it.each<[string, ResizeAsk, ResizeVerdict]>([
-    ["a smaller size is refused, as the Store refuses it", ask(5 * GB), { kind: "refused", message: "data is deployed at 10 GB; a deployed volume can't shrink yet." }],
+    ["a smaller size is refused, as the Store refuses it", ask(5 * GB), { kind: "refused", message: "data is deployed at 10 GB; this panel can't shrink it. Use ployz volume set data --size 5." }],
     ["the held size is settled", ask(10 * GB), { kind: "settled" }],
     ["the held size over a restored smaller revision stages it back", ask(10 * GB, { working: 4 * GB }), { kind: "restage" }],
     ["a larger size grows the primary and its mirrors", ask(20 * GB), { kind: "grow", from: 10 * GB, to: 20 * GB, copies: [{ name: "fsn-1", role: "primary" }, { name: "fsn-2", role: "mirror" }] }],

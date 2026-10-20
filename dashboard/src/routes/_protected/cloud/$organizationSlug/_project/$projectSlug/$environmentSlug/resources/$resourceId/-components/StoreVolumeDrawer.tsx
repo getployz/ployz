@@ -160,8 +160,8 @@ function StoreVolumeStorage({ state, removing, copies }: { state: StoreVolume; r
   const save = (next: NonNullable<ReturnType<typeof volumeStorage>>) =>
     writer.commit({ command: "set_volume_storage", environment: state.environment, volume: state.volume.name, storage: next });
 
-  // A failed first Deploy locks the storage too, and leaves no size on any Server to grow.
-  if (storage_locked && deployed && !removing && storage.kind === "provisioned" && recorded_storage !== undefined) {
+  const growable = storage_locked && deployed && !removing && storage.kind === "provisioned" && recorded_storage !== undefined;
+  if (growable) {
     return (
       <>
         <StoreVolumeSize organizationSlug={state.organizationSlug} environment={state.environment} volume={state.volume}

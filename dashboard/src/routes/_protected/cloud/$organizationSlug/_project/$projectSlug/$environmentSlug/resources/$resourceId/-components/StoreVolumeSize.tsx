@@ -22,10 +22,6 @@ type Asking = { grow: Grow; settle: (error?: Error) => void };
 const SETTLED: PersistableTransaction = { isPersisted: { promise: Promise.resolve() } };
 const active = (run: VolumeRunView) => ACTIVE_VOLUME_RUN_STATES.some((state) => state === run.state);
 
-/**
- * A deployed Managed Volume's limit. A larger size grows every copy at once after a plain confirm, never staged; the
- * size the Servers hold over a restored smaller revision stages it back.
- */
 export function StoreVolumeSize({ organizationSlug, environment, volume, recorded, holders, running }: {
   organizationSlug: string;
   environment: EnvironmentRef;
@@ -38,8 +34,7 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
   const queryClient = useQueryClient();
   const working = volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : recorded;
   const [asking, setAsking] = useState<Asking | null>(null);
-  // Set before the request goes, so the confirm can't be dismissed while its grow is being admitted.
-  const admitting = useRef(false);
+  const admittingGrow = useRef(false);
   const [growingTo, setGrowingTo] = useState<Bytes | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const { watch, watching, runs } = useWatchVolumeRun(organizationSlug, (run) => {
@@ -47,6 +42,7 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
     if (run?.state === "done") void invalidateViews(queryClient, organizationSlug, new Set([environmentKey(environment)]));
     else setFailure(run?.message ?? `Could not grow ${volume.name}.`);
   });
+  const restoredSmaller = working < recorded;
   const resizing = runs.find(active) ?? (running?.kind === "resize" ? running : null);
   const other = running !== null && running.kind !== "resize" ? running : null;
   const growing = resizing !== null || (watching && growingTo !== null);
@@ -68,7 +64,7 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
   }
 
   async function grow(asked: Asking) {
-    admitting.current = true;
+    admittingGrow.current = true;
     try {
       const { id } = await resizeVolumeServerFn({ data: {
         organizationSlug, volumeId: volume.id, environment, maximumBytes: asked.grow.to, requestId: crypto.randomUUID(),
@@ -80,7 +76,7 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
     } catch (error) {
       asked.settle(error instanceof Error ? error : new Error(`Could not grow ${volume.name}.`));
     } finally {
-      admitting.current = false;
+      admittingGrow.current = false;
     }
     setAsking((current) => (current === asked ? null : current));
   }
@@ -89,16 +85,15 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
     ? resizing?.message ?? `${resizing ? runWords(resizing) : `Growing to ${gb(growingTo ?? recorded)}`}…`
     : other !== null
     ? `${runWords(other)}. Grow it once that finishes.`
-    : working < recorded
+    : restoredSmaller
     ? `A restored revision asks for ${gb(working)}; the servers keep ${gb(recorded)}. Enter ${gigabytes(recorded)} to keep it.`
     : "Grows live on every server that holds a copy. Can't shrink yet.";
 
   return (
     <>
       <SettingsRow label="Storage limit" hint={hint} commit="confirm" control={(
-        // A restored smaller revision shows what it asks for, so entering the held size is a change to confirm.
         <ServiceSettingInput ariaLabel="Storage limit" inputMode="decimal" suffix="GB" disabled={growing || other !== null}
-          value={gigabytes(Math.min(working, recorded))} isChanged={working < recorded}
+          value={gigabytes(Math.min(working, recorded))} isChanged={restoredSmaller}
           validate={(raw) => {
             const next = verdict(raw);
             return next === null ? "Enter at least 0.001 GB." : next.kind === "refused" ? next.message : null;
@@ -110,7 +105,7 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
       <ConfirmDialog open={asking !== null} title="Grow volume" actionLabel="Grow" pendingLabel="Growing"
         description={asking ? growWords(volume.name, asking.grow) : null}
         onOpenChange={(open) => {
-          if (open || asking === null || admitting.current) return;
+          if (open || asking === null || admittingGrow.current) return;
           asking.settle();
           setAsking(null);
         }}
