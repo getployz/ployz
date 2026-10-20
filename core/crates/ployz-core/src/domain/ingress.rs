@@ -111,7 +111,10 @@ fn caddy_container(image: String) -> ServiceContainerSpec {
         pid_mode: None,
         resources: ContainerResources::default(),
         stop_timeout_secs: None,
-        sysctls: BTreeMap::new(),
+        // A request written to a powered-off upstream waits for retransmits, which
+        // dial_timeout doesn't cover and the default 15 take about 15 minutes. 5 gives
+        // up in about 14s, and Caddy retries a GET on another upstream.
+        sysctls: BTreeMap::from([("net.ipv4.tcp_retries2".into(), "5".into())]),
         restart: RestartPolicy::default(),
     }
 }
@@ -208,6 +211,16 @@ mod tests {
                 .container
                 .environment
                 .contains_key(CADDY_ADMIN_ENV)
+        );
+    }
+
+    #[test]
+    fn caddy_gives_up_on_an_unacknowledged_upstream_write_in_seconds() {
+        let requested = caddy_service_spec("caddy:test".into(), Default::default());
+
+        assert_eq!(
+            requested.container.sysctls,
+            BTreeMap::from([("net.ipv4.tcp_retries2".into(), "5".into())])
         );
     }
 
