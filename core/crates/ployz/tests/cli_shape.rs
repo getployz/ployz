@@ -924,6 +924,10 @@ fn waiting_cloud(
                         ),
                     }
                 }
+                "POST /api/config/read" => (
+                    "404 Not Found",
+                    serde_json::json!({ "error": { "code": "not_found", "message": "This Organization has no Project yet" } }),
+                ),
                 _ => ("404 Not Found", serde_json::json!({ "error": "not found" })),
             };
             let recorded = match route.starts_with("POST") {
@@ -962,6 +966,30 @@ fn server_ls_lists_an_organization_without_servers_as_empty() {
         "SERVER\tMEMBERSHIP\tSTORAGE\tPUBLIC IP\tSUBNET\tDAEMON\tOS\n"
     );
     assert!(stderr.contains("No Servers yet."), "{stderr}");
+}
+
+#[test]
+fn ps_lists_an_organization_without_servers_as_empty() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes, WaitingCloud::of(Vec::new()));
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, stderr) = run_json_with(&["ps", "--json"], &token);
+    assert_eq!(code, Some(0), "{json} {stderr}");
+    assert_eq!(
+        json,
+        serde_json::json!({ "containers": [], "failures": [], "omitted": [] })
+    );
+
+    let (code, stdout, stderr) = run_output(&["ps"], &token);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout.unwrap(), "SERVICE\tKIND\tSERVER\tSTATE\n");
+    assert!(stderr.contains("No Containers running yet."), "{stderr}");
+
+    let (code, json, _) = run_json_with(&["metrics", "--server", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict", "{json}");
+    assert_eq!(message(&json), "this Organization has no Servers");
 }
 
 #[test]
