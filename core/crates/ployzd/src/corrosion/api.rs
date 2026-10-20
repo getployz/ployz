@@ -77,13 +77,6 @@ impl ApiClient {
         &self,
         statements: impl IntoIterator<Item = Statement>,
     ) -> Result<(), Error> {
-        self.transaction(statements).await.map(drop)
-    }
-
-    async fn transaction(
-        &self,
-        statements: impl IntoIterator<Item = Statement>,
-    ) -> Result<Vec<usize>, Error> {
         let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
         let (status, body) = super::within_io_timeout(async {
@@ -116,16 +109,16 @@ impl ApiClient {
                     Error::Api,
                 ));
         }
-        let mut counts = Vec::new();
-        let mut errors = Vec::new();
-        for result in decoded?.results {
-            match result {
-                ExecResult::Executed { rows_affected, .. } => counts.push(rows_affected),
-                ExecResult::Error { error } => errors.push(error),
-            }
-        }
+        let errors: Vec<String> = decoded?
+            .results
+            .into_iter()
+            .filter_map(|result| match result {
+                ExecResult::Error { error } => Some(error),
+                ExecResult::Executed { .. } => None,
+            })
+            .collect();
         if errors.is_empty() {
-            Ok(counts)
+            Ok(())
         } else {
             Err(Error::Api(errors.join("; ")))
         }
@@ -301,7 +294,8 @@ struct ExecResponse {
 #[serde(deny_unknown_fields, untagged)]
 enum ExecResult {
     Executed {
-        rows_affected: usize,
+        #[serde(rename = "rows_affected")]
+        _rows_affected: usize,
         #[serde(rename = "time")]
         _time: f64,
     },
