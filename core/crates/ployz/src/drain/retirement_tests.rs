@@ -73,6 +73,18 @@ impl Cluster {
         current.clone()
     }
 
+    /// Take the copy `hex` Out behind the proxies' backs, as a move's Out step did.
+    fn taken_out(&self, hex: char) -> Copy {
+        let mut containers = self.containers.lock().unwrap();
+        let copy = containers
+            .iter_mut()
+            .find(|observation| observation.container_id == container(hex))
+            .expect("the copy is on a Machine");
+        copy.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+            .unwrap();
+        Copy::observed(copy)
+    }
+
     fn wants(&self) -> Vec<ContainerWant> {
         self.wants
             .lock()
@@ -174,31 +186,34 @@ impl MachineOperations for Cluster {
                 expect,
             } => {
                 let id = id_of(&container);
-                let at = containers
+                let service = containers
                     .iter()
-                    .position(|observation| observation.container_id == id)
-                    .expect("an Out names a copy the Machine runs");
-                assert_eq!(expect.as_ref(), Some(containers[at].rotation()));
-                let service = containers[at].identity();
+                    .find(|observation| observation.container_id == id)
+                    .expect("an Out names a copy the Machine runs")
+                    .identity();
                 let another_in = containers.iter().any(|observation| {
                     observation.container_id != id
                         && observation.identity() == service
                         && *observation.rotation() == CopyRotation::In
                 });
+                let copy = containers
+                    .iter_mut()
+                    .find(|observation| observation.container_id == id)
+                    .expect("an Out names a copy the Machine runs");
+                assert_eq!(expect.as_ref(), Some(copy.rotation()));
                 if !allow_empty && !another_in {
                     return Ok(EnsuredContainer::Refused {
-                        now: ContainerNow::Present(containers[at].clone()),
+                        now: ContainerNow::Present(copy.clone()),
                         refusal: ContainerRefusal {
                             reason: ContainerRefusalReason::LastIn,
                             message: "it is the last copy in rotation".into(),
                         },
                     });
                 }
-                containers[at]
-                    .try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+                copy.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
                     .unwrap();
                 Ok(EnsuredContainer::Ensured {
-                    now: ContainerNow::Present(containers[at].clone()),
+                    now: ContainerNow::Present(copy.clone()),
                     health: None,
                 })
             }
@@ -210,7 +225,11 @@ impl MachineOperations for Cluster {
                     health: None,
                 })
             }
-            other => unreachable!("retirement sends Out and Gone only, not {other:?}"),
+            other @ (ContainerWant::Running { .. }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Held { .. }) => {
+                unreachable!("retirement sends Out and Gone only, not {other:?}")
+            }
         }
     }
 
@@ -468,18 +487,15 @@ async fn let_go_leaves_the_copy_running_when_a_proxy_does_not_confirm() {
         machine('2', "other"),
         machine('3', "stuck"),
     );
-    let mut cluster = Cluster::of(
+    let cluster = Cluster::of(
         &[&drained, &other, &stuck],
         vec![
             copy_on(&drained, 'a', CopyRotation::In),
             copy_on(&other, 'b', CopyRotation::In),
         ],
-    );
-    cluster.frozen.insert(stuck.id);
-    cluster.containers.lock().unwrap()[0]
-        .try_update(|parts| parts.rotation = Some(CopyRotation::Out))
-        .unwrap();
-    let copy = Copy::observed(&cluster.containers.lock().unwrap()[0]);
+    )
+    .frozen(&stuck);
+    let copy = cluster.taken_out('a');
     let end = let_go(
         &cluster,
         &copy,
@@ -526,10 +542,7 @@ async fn let_go_leaves_the_copy_running_when_the_drain_is_cancelled() {
     )
     .frozen(&stuck);
     cluster.cancel_on_read = Some(cancellation.clone());
-    cluster.containers.lock().unwrap()[0]
-        .try_update(|parts| parts.rotation = Some(CopyRotation::Out))
-        .unwrap();
-    let copy = Copy::observed(&cluster.containers.lock().unwrap()[0]);
+    let copy = cluster.taken_out('a');
     let end = let_go(
         &cluster,
         &copy,
