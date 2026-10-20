@@ -95,6 +95,7 @@ impl Fixture {
         command
             .args(args)
             .env("HOME", self.home.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env("PLOYZ_CONFIG", self.home.path().join("config.yaml"))
             .env("PLOYZ_TOKEN", "ployz_test_token")
             .env("PLOYZ_CLOUD_URL", &self.url)
@@ -256,6 +257,8 @@ fn expected_args(entry: &Value) -> Vec<String> {
         .map(|property| {
             if positional.contains(&property.as_str()) {
                 property.to_uppercase()
+            } else if property == "environment" {
+                "--env".to_owned()
             } else {
                 format!("--{property}")
             }

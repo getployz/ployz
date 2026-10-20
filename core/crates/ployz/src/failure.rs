@@ -382,6 +382,18 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
             serde_json::json!({ "inspect": ["ployz server ls"] }),
         );
     }
+    let container = error
+        .downcast_ref::<ContainerSelectorError>()
+        .or_else(|| match error.downcast_ref::<OperatorError>() {
+            Some(OperatorError::Container(container)) => Some(container),
+            _ => None,
+        });
+    if let Some(ContainerSelectorError::NotFound { valid, .. }) = container {
+        return (
+            RpcErrorCode::NotFound,
+            serde_json::json!({ "valid_children": valid }),
+        );
+    }
     if let Some(OperatorError::NotRunning {
         running_in_scope, ..
     }) = error.downcast_ref::<OperatorError>()
@@ -1333,6 +1345,25 @@ mod tests {
         assert_eq!(failure.report().code, RpcErrorCode::NotFound);
         assert_eq!(failure.report().message, "No running Service \"nope\"");
         assert_eq!(failure.hints(), [Hint::valid(["web"])]);
+    }
+
+    #[test]
+    fn a_missing_container_lists_the_service_containers() {
+        let missing = ContainerSelectorError::NotFound {
+            selector: ployz_core::ContainerSelector::parse("bogus").unwrap(),
+            valid: vec!["web-1".into(), "web-2".into()],
+        };
+        for failure in [
+            Failure::from(missing.clone()),
+            Failure::from(OperatorError::Container(missing)),
+        ] {
+            assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+            assert_eq!(
+                failure.report().message,
+                "Container \"bogus\" was not found"
+            );
+            assert_eq!(failure.hints(), [Hint::valid(["web-1", "web-2"])]);
+        }
     }
 
     #[test]

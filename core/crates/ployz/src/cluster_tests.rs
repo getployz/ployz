@@ -368,6 +368,21 @@ fn unavailable(message: &str) -> RpcError {
 }
 
 #[test]
+fn a_reset_does_not_report_the_builder_cache_as_lost() {
+    let cache = format!("buildx_buildkit_{}0_state", ployz_build::builder_name());
+    let lost = volumes_lost(VolumeInventory {
+        volumes: vec![docker_volume('a', &cache), docker_volume('a', "app_data")],
+        failures: Vec::new(),
+    });
+    assert_eq!(
+        lost,
+        [DataLoss::DockerVolume {
+            id: docker_volume('a', "app_data").id
+        }]
+    );
+}
+
+#[test]
 fn an_ingress_off_wait_holds_only_once_the_role_is_off() {
     let mut observed = machine('a').machine;
     assert!(!RoleSetting::IngressOff.holds(&observed));
