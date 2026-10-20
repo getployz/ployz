@@ -11,6 +11,7 @@ export const PublicError = Schema.Union([
       "RATE_LIMITED",
       "BUILD_GRANT_UNAVAILABLE",
       "UNAVAILABLE",
+      "UPGRADE_REQUIRED",
       "INTERNAL",
     ]),
     message: Schema.String,

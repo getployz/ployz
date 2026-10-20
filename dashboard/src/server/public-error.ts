@@ -60,6 +60,12 @@ export class Unavailable extends Data.TaggedError("Unavailable")<{
   readonly publicErrorCategory = "unavailable" as const;
 }
 
+export class UpgradeRequired extends Data.TaggedError("UpgradeRequired")<{
+  readonly message: string;
+} & UserFacing> {
+  readonly publicErrorCategory = "upgrade-required" as const;
+}
+
 export const PublicErrorCategory = Schema.Literals([
   "validation",
   "unauthorized",
@@ -70,6 +76,7 @@ export const PublicErrorCategory = Schema.Literals([
   "build-grant-unavailable",
   "unavailable",
   "server-lacks",
+  "upgrade-required",
   "internal",
 ]);
 
@@ -230,6 +237,12 @@ export function encodePublicError(cause: unknown): PublicErrorData {
         ...lack.value,
       });
     }
+    case "upgrade-required":
+      return encode({
+        _tag: "PublicError",
+        code: "UPGRADE_REQUIRED",
+        message: userFacingMessage(cause, "An upgrade is required to continue."),
+      });
     case "internal":
       return internal();
   }
@@ -258,6 +271,8 @@ export function statusForPublicError(error: PublicErrorData): number {
       return 409;
     case "RATE_LIMITED":
       return 429;
+    case "UPGRADE_REQUIRED":
+      return 426;
     case "BUILD_GRANT_UNAVAILABLE":
     case "UNAVAILABLE":
       return 503;

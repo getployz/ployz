@@ -2,8 +2,10 @@ import { Effect, Option, Result, Schema } from "effect";
 import { asRecord } from "#/lib/json";
 import {
   encodePublicError,
+  publicErrorResponse,
   statusForPublicError,
   Unauthorized,
+  UpgradeRequired,
   Validation,
 } from "#/server/public-error";
 import {
@@ -215,22 +217,19 @@ export function handleMachineSetupReport<R>(
   });
 }
 
+const cliVersionSchema = Schema.String.check(
+  Schema.isPattern(/^\d{1,5}\.\d{1,5}\.\d{1,5}(?:-[0-9A-Za-z.-]{1,50})?$/u),
+);
+const decodeCliVersion = Schema.decodeUnknownOption(cliVersionSchema);
+
 export function handleLegacyEnrollment(request: Request): Response {
   const userAgent = request.headers.get("user-agent") ?? "";
   const match = /ployz(?:-cli)?\/([^\s]+)/u.exec(userAgent);
-  const version = match?.[1] ?? "0.2.4";
+  const version = Option.getOrElse(decodeCliVersion(match?.[1]), () => "0.2.4");
   const message = `Ployz ${version} is too old for ployz.dev; install the latest with \`curl -fsSL https://ployz.sh | sh -s beta\`.`;
-  return Response.json(
-    {
-      _tag: "PublicError",
-      code: "UPGRADE_REQUIRED",
-      message,
-      error: message,
-    },
-    {
-      status: 426,
-      headers: { "cache-control": "no-store" },
-    },
+  return publicErrorResponse(
+    new UpgradeRequired({ message, userFacing: true }),
+    { headers: { "cache-control": "no-store" } },
   );
 }
 

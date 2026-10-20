@@ -215,16 +215,22 @@ describe("machine enrollment routes", () => {
         method: "POST",
         headers: { "user-agent": "ployz-cli/0.2.3" },
       }),
+      new Request("https://cloud.example/api/enroll", {
+        method: "POST",
+        headers: { "user-agent": "ployz-cli/latest" },
+      }),
+      new Request("https://cloud.example/api/enroll", {
+        method: "GET",
+      }),
     ];
 
-    const [withVersion, withoutVersion, older] = requests.map(handleLegacyEnrollment);
+    const [withVersion, withoutVersion, older, invalidVersion, exactGet] = requests.map(handleLegacyEnrollment);
 
     expect(withVersion.status).toBe(426);
     await expect(withVersion.json()).resolves.toEqual({
       _tag: "PublicError",
       code: "UPGRADE_REQUIRED",
       message: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
-      error: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
     });
 
     expect(withoutVersion.status).toBe(426);
@@ -232,7 +238,6 @@ describe("machine enrollment routes", () => {
       _tag: "PublicError",
       code: "UPGRADE_REQUIRED",
       message: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
-      error: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
     });
 
     expect(older.status).toBe(426);
@@ -240,7 +245,20 @@ describe("machine enrollment routes", () => {
       _tag: "PublicError",
       code: "UPGRADE_REQUIRED",
       message: "Ployz 0.2.3 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
-      error: "Ployz 0.2.3 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
+    });
+
+    expect(invalidVersion.status).toBe(426);
+    await expect(invalidVersion.json()).resolves.toEqual({
+      _tag: "PublicError",
+      code: "UPGRADE_REQUIRED",
+      message: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
+    });
+
+    expect(exactGet.status).toBe(426);
+    await expect(exactGet.json()).resolves.toEqual({
+      _tag: "PublicError",
+      code: "UPGRADE_REQUIRED",
+      message: "Ployz 0.2.4 is too old for ployz.dev; install the latest with `curl -fsSL https://ployz.sh | sh -s beta`.",
     });
   });
 

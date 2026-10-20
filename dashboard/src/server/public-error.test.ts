@@ -7,6 +7,7 @@ import {
   NotFound,
   publicErrorResponse,
   RateLimited,
+  UpgradeRequired,
   Validation,
 } from "#/server/public-error";
 
@@ -86,6 +87,14 @@ describe("encodePublicError", () => {
     expect(response.status).toBe(429);
     expect(await response.json()).toEqual({
       _tag: "PublicError", code: "RATE_LIMITED", message: "Too many signups from this address.",
+    });
+  });
+
+  it("answers an upgrade required refusal with 426 and UPGRADE_REQUIRED", async () => {
+    const response = publicErrorResponse(new UpgradeRequired({ message: "Ployz 0.2.4 is too old.", userFacing: true }));
+    expect(response.status).toBe(426);
+    expect(await response.json()).toEqual({
+      _tag: "PublicError", code: "UPGRADE_REQUIRED", message: "Ployz 0.2.4 is too old.",
     });
   });
 

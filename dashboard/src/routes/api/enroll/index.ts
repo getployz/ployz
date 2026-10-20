@@ -1,16 +1,24 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { handleMachineEnrollmentJoin } from "#/routes/api/enroll/-handlers";
+import {
+  handleLegacyEnrollment,
+  handleMachineEnrollmentJoin,
+} from "#/routes/api/enroll/-handlers";
 import { publicErrorResponse } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 export const Route = createFileRoute("/api/enroll/")({
   server: {
     handlers: {
-      POST: async ({ request }) =>
-        runAppEffect(
+      GET: async ({ request }) => handleLegacyEnrollment(request),
+      POST: async ({ request }) => {
+        if (!request.headers.get("authorization")?.startsWith("Bearer ")) {
+          return handleLegacyEnrollment(request);
+        }
+        return runAppEffect(
           handleMachineEnrollmentJoin(request),
           { signal: request.signal },
-        ).catch(publicErrorResponse),
+        ).catch(publicErrorResponse);
+      },
     },
   },
 });
