@@ -13,9 +13,10 @@ import {
   operationDigest,
   pendingApprovals,
   readAsker,
+  redeemApproval,
   requestApproval,
-  trustedApproval,
 } from "#/modules/approvals/approvals.server";
+import type { OperationVerb } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -50,6 +51,7 @@ const deploy = (n: number): ConfigCommand => ({
   environment: here, services: [], version: null, accept_volume_loss: [],
 });
 const publish: ConfigCommand = { command: "publish", environment: here, version: null, accept_volume_loss: [] };
+const saving = { command: "publish" };
 const addService = (n: number): ConfigCommand => ({
   command: "create_service", id: `00000000-0000-4000-8000-0000000a51${n.toString().padStart(2, "0")}`, environment: here, name: `cache${n}`, image: "redis:7",
 });
@@ -131,23 +133,23 @@ type Reply = { written?: string; error?: { code: string; message: string; detail
 it.live("a destructive CLI publish waits for a human to approve exactly what it destroys, once", () =>
   Effect.gen(function* () {
     const { provided, write, refusal, caller, store, withApproval } = yield* shopRemovingWeb();
-    expect(yield* provided(trustedApproval(ORGANIZATION, null))).toEqual({ ok: true, approval: "required" });
+    expect(yield* provided(redeemApproval(caller, null, saving))).toEqual({ ok: true, approval: "required" });
 
     const refused = yield* refusal;
     expect(refused.code).toBe("approval_required");
-    const first = asked(yield* provided(requestApproval(caller, publish, refused)));
+    const first = asked(yield* provided(requestApproval(caller, publish, refused, null)));
     expect(first.effects).toMatchObject([{ kind: "removes_service", name: "web" }]);
     // Asking again while it waits answers the same approval.
-    expect(asked(yield* provided(requestApproval(caller, publish, yield* refusal))).approval_id).toBe(first.approval_id);
+    expect(asked(yield* provided(requestApproval(caller, publish, yield* refusal, null))).approval_id).toBe(first.approval_id);
     expect(yield* provided(getApproval(ORGANIZATION, first.approval_id))).toMatchObject({ status: "pending", digest: first.approval });
-    expect(yield* provided(trustedApproval(ORGANIZATION, first.approval_id))).toEqual({ ok: true, approval: "required" });
+    expect(yield* provided(redeemApproval(caller, first.approval_id, saving))).toEqual({ ok: true, approval: "required" });
 
     // Another Organization can't see it, or retry with it.
     yield* provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       yield* drizzle.insert(organization).values({ id: OTHER, name: "Other", slug: "other" });
     }));
-    expect(yield* provided(trustedApproval(OTHER, first.approval_id))).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    expect(yield* provided(redeemApproval({ ...caller, organization: { id: OTHER, slug: "other" } }, first.approval_id, saving))).toMatchObject({ ok: false, refusal: { code: "not_found" } });
     expect(yield* provided(Effect.flip(getApproval(OTHER, first.approval_id)))).toMatchObject({ _tag: "NotFound" });
 
     // Approving another digest conflicts; approving the one asked about is what the retry tells the Store.
@@ -159,7 +161,7 @@ it.live("a destructive CLI publish waits for a human to approve exactly what it 
       .toMatchObject({ ok: true, approval: { status: "approved" } });
     expect(yield* provided(decideApproval(caller, first.approval_id, { reject: {} })))
       .toMatchObject({ ok: false, refusal: { code: "conflict", message: "This approval was already decided elsewhere (approved)." } });
-    const trusted = yield* provided(trustedApproval(ORGANIZATION, first.approval_id));
+    const trusted = yield* provided(redeemApproval(caller, first.approval_id, saving));
     expect(trusted).toEqual({ ok: true, approval: { approved: first.approval } });
     if (!trusted.ok) return;
     expect(yield* storeTry(() => store.write(ORGANIZATION, publish, withApproval(trusted.approval))))
@@ -175,7 +177,7 @@ it.live("a destructive CLI publish waits for a human to approve exactly what it 
 it.live("an approval the plan moved past is superseded, and a denial answers the agent with its reason", () =>
   Effect.gen(function* () {
     const { provided, write, refusal, caller } = yield* shopRemovingWeb();
-    const stale = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    const stale = asked(yield* provided(requestApproval(caller, publish, yield* refusal, null)));
 
     // Editing the Environment moves its version: the waiting approval no longer names this plan.
     yield* write(addService(1));
@@ -184,11 +186,11 @@ it.live("an approval the plan moved past is superseded, and a denial answers the
     expect(yield* provided(decideApproval(caller, stale.approval_id, { approve: { digest: current.digest } })))
       .toMatchObject({ ok: false, refusal: { code: "conflict" } });
 
-    const fresh = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    const fresh = asked(yield* provided(requestApproval(caller, publish, yield* refusal, null)));
     expect(fresh.approval_id).not.toBe(stale.approval_id);
     expect(yield* provided(decideApproval(caller, fresh.approval_id, { reject: { reason: "web still serves traffic" } })))
       .toMatchObject({ ok: true, approval: { status: "denied", reason: "web still serves traffic" } });
-    expect(yield* provided(trustedApproval(ORGANIZATION, fresh.approval_id))).toMatchObject({
+    expect(yield* provided(redeemApproval(caller, fresh.approval_id, saving))).toMatchObject({
       ok: false,
       refusal: { code: "approval_denied", message: "A human denied the request to save production: web still serves traffic" },
     });
@@ -198,7 +200,7 @@ it.live("an agent answers no approval, and what it asked waits on a person in Cl
   Effect.gen(function* () {
     const { provided, refusal, caller } = yield* shopRemovingWeb();
     const ask = (requester: Caller) => provided(Effect.gen(function* () {
-      return asked(yield* requestApproval(requester, publish, yield* refusal)).approval_id;
+      return asked(yield* requestApproval(requester, publish, yield* refusal, null)).approval_id;
     }));
     const approve = (decider: Parameters<typeof decideApproval>[0], id: string) => provided(Effect.gen(function* () {
       const digest = (yield* getApproval(ORGANIZATION, id)).digest;
@@ -245,8 +247,8 @@ it.live("a delayed refusal for an older plan leaves the current plan's approval 
     const { provided, write, refusal, caller } = yield* shopRemovingWeb();
     const old = yield* refusal;
     yield* write(addService(1));
-    const current = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
-    const late = asked(yield* provided(requestApproval(caller, publish, old)));
+    const current = asked(yield* provided(requestApproval(caller, publish, yield* refusal, null)));
+    const late = asked(yield* provided(requestApproval(caller, publish, old, null)));
 
     expect(late.approval_id).not.toBe(current.approval_id);
     expect((yield* provided(getApproval(ORGANIZATION, current.approval_id))).status).toBe("pending");
@@ -261,7 +263,7 @@ it.live("concurrent asks about an older and the current plan leave exactly the c
       yield* write(addService(round));
       const fresh = yield* refusal;
       const answers = yield* Effect.all(
-        [fresh, old, fresh, old, old, fresh, old].map((refused) => provided(requestApproval(caller, publish, refused))),
+        [fresh, old, fresh, old, old, fresh, old].map((refused) => provided(requestApproval(caller, publish, refused, null))),
         { concurrency: "unbounded" },
       );
       const ids = answers.map((answer) => asked(answer).approval_id);
@@ -284,11 +286,11 @@ it.live("an ask whose Store read answers late can't supersede an approval record
       await Effect.runPromise(Deferred.succeed(answered, undefined).pipe(Effect.andThen(Deferred.await(delivered))));
       return view;
     });
-    const slow = yield* Effect.forkChild(provided(requestApproval(caller, publish, old)));
+    const slow = yield* Effect.forkChild(provided(requestApproval(caller, publish, old, null)));
     yield* Deferred.await(answered);
 
     yield* write(addService(1));
-    const current = yield* Effect.forkChild(provided(requestApproval(caller, publish, yield* refusal)));
+    const current = yield* Effect.forkChild(provided(requestApproval(caller, publish, yield* refusal, null)));
     yield* Fiber.join(current).pipe(Effect.timeout("1 second"), Effect.ignore);
     yield* Deferred.succeed(delivered, undefined);
     yield* Fiber.join(slow);
@@ -300,7 +302,7 @@ it.live("an ask whose Store read answers late can't supersede an approval record
 it.live("renaming the Project keeps a waiting approval, which still follows its Environment's plan", () =>
   Effect.gen(function* () {
     const { provided, write, refusal, caller } = yield* shopRemovingWeb();
-    const waiting = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    const waiting = asked(yield* provided(requestApproval(caller, publish, yield* refusal, null)));
 
     yield* write({ command: "rename_project", project: "shop", name: "store" });
     expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("pending");
@@ -312,21 +314,21 @@ it.live("renaming the Project keeps a waiting approval, which still follows its 
 it.live("the pending list drops an approval the plan moved past and shows the one asked about now", () =>
   Effect.gen(function* () {
     const { provided, write, refusal, caller } = yield* shopRemovingWeb();
-    const stale = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    const stale = asked(yield* provided(requestApproval(caller, publish, yield* refusal, null)));
     expect(yield* provided(pendingApprovals(ORGANIZATION))).toMatchObject([{ id: stale.approval_id, status: "pending", digest: stale.approval }]);
 
     yield* write(addService(1));
     expect(yield* provided(pendingApprovals(ORGANIZATION))).toEqual([]);
     expect((yield* provided(getApproval(ORGANIZATION, stale.approval_id))).status).toBe("superseded");
 
-    const fresh = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    const fresh = asked(yield* provided(requestApproval(caller, publish, yield* refusal, null)));
     expect((yield* provided(pendingApprovals(ORGANIZATION))).map((approval) => approval.id)).toEqual([fresh.approval_id]);
   }));
 
 it.live("a Store that can't answer leaves a waiting approval pending", () =>
   Effect.gen(function* () {
     const { provided, refusal, caller, store } = yield* shopRemovingWeb();
-    const waiting = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    const waiting = asked(yield* provided(requestApproval(caller, publish, yield* refusal, null)));
     vi.spyOn(store, "read").mockRejectedValueOnce(new RpcError({ code: "unavailable", message: "The Store is busy.", details: null }));
     expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("pending");
     expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("pending");
@@ -334,20 +336,20 @@ it.live("a Store that can't answer leaves a waiting approval pending", () =>
 
 it.live("nothing turns asking off: no Organization setting is kept, and a call without an approval needs one", () =>
   Effect.gen(function* () {
-    const { provided } = yield* shopRemovingWeb();
+    const { provided, caller } = yield* shopRemovingWeb();
     const settings = yield* provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       return yield* drizzle.execute<{ table: string | null }>(sql`select to_regclass('organization_settings')::text as table`, "objects");
     }));
     expect(settings).toEqual([{ table: null }]);
-    expect(yield* provided(trustedApproval(ORGANIZATION, null))).toEqual({ ok: true, approval: "required" });
+    expect(yield* provided(redeemApproval(caller, null, saving))).toEqual({ ok: true, approval: "required" });
   }));
 
 it.live("a member's deploy into a Protected Environment opens an Approval, which keeps what it runs to itself", () =>
   Effect.gen(function* () {
     const { provided, protectedRefusal } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
-    const opened = yield* provided(requestApproval(ada, publish, yield* protectedRefusal));
+    const opened = yield* provided(requestApproval(ada, publish, yield* protectedRefusal, null));
     expect(opened.details).toMatchObject({ protected: true });
     const approval = yield* provided(getApproval(ORGANIZATION, asked(opened).approval_id));
     expect(approval).toMatchObject({ status: "pending", protected: true, requested_by: ada.userId, review: { protected: { environment: "production" } } });
@@ -358,7 +360,7 @@ it.live("whoever asked into a Protected Environment can't decide it, either way"
   Effect.gen(function* () {
     const { provided, protectedRefusal } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
-    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal)));
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal, null)));
     for (const decision of [{ approve: { digest: opened.approval } }, { reject: {} }]) {
       expect(yield* provided(decideApproval(ada, opened.approval_id, decision)))
         .toMatchObject({ ok: false, refusal: { message: "You asked for this, so someone else who can protect it decides." } });
@@ -370,7 +372,7 @@ it.live("another member can't decide a protected ask either way; an owner can de
   Effect.gen(function* () {
     const { provided, protectedRefusal, caller } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
-    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal)));
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal, null)));
     const bob = yield* provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       const [person] = yield* drizzle.insert(user).values({ email: "bob.member@example.test", name: "Bob Member" }).returning();
@@ -389,7 +391,7 @@ it.live("an admin's approval runs a protected dashboard ask as its asker, with t
   Effect.gen(function* () {
     const { provided, protectedRefusal, caller, store } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
-    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal)));
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal, null)));
     const write = vi.spyOn(store, "write");
     const approve = { approve: { digest: opened.approval } };
     expect(yield* provided(decideAndApply(caller, opened.approval_id, approve))).toMatchObject({ ok: true, approval: { status: "approved" } });
@@ -407,7 +409,7 @@ it.live("an approved dashboard ask that fails to run waits again, unless its pla
   Effect.gen(function* () {
     const { provided, protectedRefusal, caller, store } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
-    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal)));
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal, null)));
     const approve = { approve: { digest: opened.approval } };
     const write = vi.spyOn(store, "write").mockRejectedValueOnce(new Error("socket hang up"));
     expect(yield* provided(decideAndApply(caller, opened.approval_id, approve)))
@@ -420,7 +422,7 @@ it.live("an approved dashboard ask that fails to run waits again, unless its pla
     expect(yield* provided(getApproval(ORGANIZATION, opened.approval_id))).toMatchObject({ status: "superseded" });
   }));
 
-it.live("whoever asks again for a protected ask takes it over with their own way to run it", () =>
+it.live("each credential's protected ask is its own approval, and only the dashboard's runs what it asked once approved", () =>
   Effect.gen(function* () {
     const { provided, protectedRefusal, cli, caller, store } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
@@ -433,18 +435,16 @@ it.live("whoever asks again for a protected ask takes it over with their own way
 
     const fromCli = (yield* cli(publish, undefined, undefined, secret)).json.error?.details?.approval_id ?? expect.fail("no approval_id");
     expect(yield* runs(fromCli)).toBe(false);
-    const fromDashboard = asked(yield* provided(requestApproval(ada, publish, guarded))).approval_id;
-    expect(fromDashboard).toBe(fromCli);
-    expect(yield* runs(fromCli)).toBe(true);
-    yield* cli(publish, undefined, "agent", secret);
-    expect(yield* runs(fromCli)).toBe(true);
-    yield* cli(publish, undefined, undefined, secret);
+    const fromDashboard = asked(yield* provided(requestApproval(ada, publish, guarded, null))).approval_id;
+    expect(fromDashboard).not.toBe(fromCli);
+    expect(yield* runs(fromDashboard)).toBe(true);
+    expect(asked(yield* provided(requestApproval(ada, publish, guarded, null))).approval_id).toBe(fromDashboard);
+    expect((yield* cli(publish, undefined, undefined, secret)).json.error?.details?.approval_id).toBe(fromCli);
     expect(yield* runs(fromCli)).toBe(false);
 
-    yield* provided(requestApproval(ada, publish, guarded));
     const write = vi.spyOn(store, "write");
     const digest = asked(guarded).approval;
-    expect(yield* provided(decideAndApply(caller, fromCli, { approve: { digest } }))).toMatchObject({ ok: true });
+    expect(yield* provided(decideAndApply(caller, fromDashboard, { approve: { digest } }))).toMatchObject({ ok: true });
     expect(write.mock.calls.map(([, command]) => command.command)).toEqual(["publish"]);
   }));
 
@@ -505,8 +505,8 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
   Effect.gen(function* () {
     const { provided, caller, cli } = yield* shopRemovingWeb();
 
-    // A write that never publishes ignores the header, whatever it names.
-    expect(yield* cli(addService(1), UNKNOWN_APPROVAL)).toMatchObject({ status: 200 });
+    // Even a write that never asks checks the approval it carries.
+    expect(yield* cli(addService(1), UNKNOWN_APPROVAL)).toMatchObject({ status: 404, json: { error: { code: "not_found" } } });
 
     const first = yield* cli(publish);
     expect(first.status).toBe(409);
@@ -576,6 +576,11 @@ it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destr
     const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
     expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
     expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
+
+    // The Store binds the version a Deploy reviewed, which moves once it queues: another Deploy under it asks again.
+    const again = yield* cli(deploy(3), id, "agent");
+    expect(again).toMatchObject({ status: 409, json: { error: { code: "approval_required" } } });
+    expect(again.json.error?.details?.approval_id).not.toBe(id);
   }));
 
 it.live("a Deploy token for staging is refused a production Deploy before anyone is asked", () =>
@@ -628,7 +633,99 @@ it.live("an approval from another Organization is no approval here, whether or n
     expect(yield* cli(publish, own)).toMatchObject({ status: 200, json: { written: "published" } });
   }));
 
-const removeShop = (version: string | null = null): ConfigCommand => ({ command: "remove", project: "shop", version });
+/** Another owner of the Organization, signed in to the dashboard. */
+const colleagueOwner = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [person] = yield* drizzle.insert(user).values({ email: "grace.owner@example.test", name: "Grace Owner" }).returning();
+  const userId = person?.id ?? expect.fail("no colleague");
+  yield* drizzle.insert(member).values({ userId, organizationId: ORGANIZATION, role: "owner" });
+  return {
+    userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "grace-session" }, role: "owner", support: null, via: "cli",
+  } satisfies Caller;
+});
+
+const notTheirs = "Someone else asked for this approval, so only they can use it. Run the command again without it to ask for your own.";
+const elsewhere = "This approval was asked for from another session or token. Run the command again without it to ask for one from here.";
+
+it.live("an approval runs only for whoever asked, through the token they asked from, and only for the command they asked about", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, store, refusal } = yield* shopRemovingWeb();
+    const { secret: laptop } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-2" } }, { name: "laptop", expiresInDays: 1 }));
+    const grace = yield* provided(colleagueOwner);
+    const { secret: graceToken } = yield* provided(createOrganizationToken(grace, { name: "grace", expiresInDays: 1 }));
+    const details = (yield* cli(publish)).json.error?.details;
+    const id = details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval({ ...grace, via: "dashboard" }, id, { approve: { digest: details?.approval ?? expect.fail("no digest") } }));
+    const write = vi.spyOn(store, "write");
+    const refused = (message: string) => ({ status: 403, json: { error: { code: "forbidden", message, details: { approval_id: id } } } });
+
+    expect(yield* cli(publish, id, undefined, laptop)).toMatchObject(refused(elsewhere));
+    expect(yield* cli(publish, id, undefined, graceToken)).toMatchObject(refused(notTheirs));
+    const covers = "This approval covers only the request to save production. Run the command again without it to ask for one.";
+    expect(yield* cli(deploy(1), id)).toMatchObject(refused(covers));
+    expect(write).not.toHaveBeenCalled();
+
+    // The Store names the Environment a write lands in as it asks again, so one carried elsewhere is refused, not asked.
+    const token = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [row] = yield* drizzle.select({ id: operationApprovals.credentialId }).from(operationApprovals).where(eq(operationApprovals.id, id));
+      return row?.id ?? expect.fail("no approval");
+    }));
+    const asker: Caller = { ...caller, credential: { kind: "token", id: token, grant: FULL_GRANT } };
+    const { review } = yield* provided(getApproval(ORGANIZATION, id));
+    if (!("diff" in review)) return expect.fail("no diff");
+    const staging = { ...review.diff, environment: { ...review.diff.environment, id: OTHER, name: "staging" } };
+    const intoStaging = { code: "approval_required", message: "asked", details: { approval: details?.approval ?? "", effects: review.effects, diff: staging } };
+    expect(yield* provided(requestApproval(asker, publish, intoStaging, id))).toEqual({ code: "forbidden", message: covers, details: { approval_id: id } });
+    expect(asked(yield* provided(requestApproval(asker, publish, yield* refusal, id))).approval_id).not.toBe(id);
+
+    expect(yield* cli(publish, id)).toMatchObject({ status: 200, json: { written: "published" } });
+  }));
+
+const STAGING = "00000000-0000-4000-8000-00000000a507";
+
+// Catches an approval carried into a write the Store lets through without one, which never compares its target.
+it.live("an approval carried into another Environment is refused there, even for a write nobody would be asked about", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, write, store } = yield* shopRemovingWeb();
+    yield* write({ command: "create_environment", id: STAGING, project: "shop", name: "staging" });
+    const details = (yield* cli(publish)).json.error?.details;
+    const id = details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval(caller, id, { approve: { digest: details?.approval ?? expect.fail("no digest") } }));
+    const writes = vi.spyOn(store, "write");
+    const staging: ConfigCommand = { ...publish, environment: { project: "shop", environment: "staging" } };
+
+    expect(yield* cli(staging, id)).toMatchObject({ status: 403, json: { error: {
+      code: "forbidden",
+      message: "This approval covers only the request to save production. Run the command again without it to ask for one.",
+      details: { approval_id: id },
+    } } });
+    expect(writes).not.toHaveBeenCalled();
+    expect(yield* cli(publish, id)).toMatchObject({ status: 200, json: { written: "published" } });
+  }));
+
+// Catches an approval carried into a write that is already in the state it asks for, which never reaches the gate.
+it.live("an unprotect approval carried into an Environment that is already unprotected, or into a write that never asks, is refused", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, write, store } = yield* shopRemovingWeb();
+    yield* write({ command: "create_environment", id: STAGING, project: "shop", name: "staging" });
+    yield* write({ command: "set_environment_protected", environment: here, protected: true });
+    const unprotect: ConfigCommand = { command: "set_environment_protected", environment: here, protected: false };
+    const details = (yield* cli(unprotect)).json.error?.details;
+    const id = details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval({ ...caller, via: "dashboard" }, id, { approve: { digest: details?.approval ?? expect.fail("no digest") } }));
+    const writes = vi.spyOn(store, "write");
+    const covers = "This approval covers only the request to unprotect shop/production. Run the command again without it to ask for one.";
+    const refused = { status: 403, json: { error: { code: "forbidden", message: covers, details: { approval_id: id } } } };
+
+    expect(yield* cli({ ...unprotect, environment: { project: "shop", environment: "staging" } }, id)).toMatchObject(refused);
+    expect(yield* cli({ ...unprotect, protected: true }, id)).toMatchObject(refused);
+    expect(yield* cli(addService(2), id)).toMatchObject(refused);
+    expect(writes).not.toHaveBeenCalled();
+    expect(yield* cli(unprotect, id)).toMatchObject({ status: 200 });
+  }));
+
+const removeShop =(version: string | null = null): ConfigCommand => ({ command: "remove", project: "shop", version });
 /** The version a `confirmation_required` refusal hands back, the one a removal names to go ahead. */
 const confirmed = (reply: { json: Reply }) => (reply.json.error?.details as { version?: string } | null)?.version ?? expect.fail("no version");
 /** `web` ran on the Servers, so removing Shop stops it there. */
@@ -842,8 +939,63 @@ it("an operation digest ignores key order and changes with the preview or with w
   const metrics = { kind: "removes_service", name: "shop.metrics", node: "metrics", path: "services/shop.metrics" } as const;
   expect(operationDigest({ ...asked, effects: [...asked.effects, metrics] })).not.toBe(operationDigest(asked));
   expect(operationDigest({ ...asked, verb: "clean" })).not.toBe(operationDigest(asked));
+  expect(operationDigest({ ...asked, subject: `server:${"b".repeat(32)}` })).not.toBe(operationDigest(asked));
   expect(operationDigest(asked)).toMatch(/^drain:[0-9a-f]{64}$/);
 });
+
+it.live("an operation approval runs only for whoever asked, through the token they asked from, and only on the target they asked about", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate } = yield* operationCloud();
+    const grace = yield* provided(colleagueOwner);
+    const laptop: Caller = { ...caller, credential: { kind: "token", id: "token-2", grant: FULL_GRANT } };
+    const asked = drainOf(["shop.web"]);
+    const first = refusedWith(yield* gate(asked));
+    // Anyone else asking for the same opens an approval of their own, and leaves this one theirs.
+    expect(refusedWith(yield* provided(gateOperation(grace, null, asked))).approval_id).not.toBe(first.approval_id);
+    expect(refusedWith(yield* provided(gateOperation(laptop, null, asked))).approval_id).not.toBe(first.approval_id);
+    yield* provided(decideApproval({ ...grace, via: "dashboard" }, first.approval_id, { approve: { digest: first.approval } }, answers(first.approval)));
+    const refused = (message: string) => ({ ok: false, refusal: { code: "forbidden", message, details: { approval_id: first.approval_id } } });
+
+    expect(yield* provided(gateOperation(laptop, first.approval_id, asked))).toEqual(refused(elsewhere));
+    expect(yield* provided(gateOperation(grace, first.approval_id, asked))).toEqual(refused(notTheirs));
+    const fra2 = { ...asked, subject: `server:${"b".repeat(32)}`, name: "fra-2" };
+    expect(yield* gate(fra2, first.approval_id)).toEqual(refused(
+      "This approval covers only the request to drain fra-1. Run the command again without it to ask for one.",
+    ));
+    expect(yield* gate({ ...asked, verb: "clean" }, first.approval_id)).toEqual(refused(
+      "This approval covers only the request to drain fra-1. Run the command again without it to ask for one.",
+    ));
+
+    expect(yield* gate(asked, first.approval_id)).toEqual({ ok: true, approvalId: first.approval_id });
+  }));
+
+const VERBS: readonly OperationVerb[] = ["drain", "set", "clean", "remove", "forget", "release", "remove_mirror", "stop", "restart", "unprotect"];
+
+// Catches an approval that, once run, runs the same operation again: a demotion repeated after the person was restored.
+for (const verb of VERBS) {
+  it.live(`a ${verb} approval runs one operation, and using it again asks again`, () =>
+    Effect.gen(function* () {
+      const { provided, caller, gate } = yield* operationCloud();
+      const asked = { ...drainOf(["shop.web"]), verb };
+      const first = refusedWith(yield* gate(asked));
+      yield* provided(decideApproval(caller, first.approval_id, { approve: { digest: first.approval } }, answers(first.approval)));
+      expect(yield* gate(asked, first.approval_id)).toEqual({ ok: true, approvalId: first.approval_id });
+
+      const again = refusedWith(yield* gate(asked, first.approval_id));
+      expect(again.approval_id).not.toBe(first.approval_id);
+      expect((yield* provided(getApproval(ORGANIZATION, first.approval_id))).status).toBe("approved");
+    }));
+}
+
+it.live("two operations racing on one approval run one of them; the other asks again", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate } = yield* operationCloud();
+    const asked = drainOf(["shop.web"]);
+    const first = refusedWith(yield* gate(asked));
+    yield* provided(decideApproval(caller, first.approval_id, { approve: { digest: first.approval } }, answers(first.approval)));
+    const raced = yield* Effect.all([gate(asked, first.approval_id), gate(asked, first.approval_id)], { concurrency: 2 });
+    expect(raced.filter((gated) => gated.ok)).toEqual([{ ok: true, approvalId: first.approval_id }]);
+  }));
 
 it.live("an operation that destroys nothing runs without asking", () =>
   Effect.gen(function* () {
@@ -901,7 +1053,7 @@ it.live("a destructive operation waits on one approval of exactly its preview, a
     expect(moved.approval_id).not.toBe(first.approval_id);
   }));
 
-it.live("a person who asks for what an agent asked approves it at their own prompt; no agent answers it", () =>
+it.live("a person who asks for what an agent asked gets their own approval to answer at their prompt; no agent answers either", () =>
   Effect.gen(function* () {
     const { provided, caller } = yield* operationCloud();
     const asked = drainOf(["shop.web"]);
@@ -914,12 +1066,15 @@ it.live("a person who asks for what an agent asked approves it at their own prom
     const otherAgent: Caller = { ...caller, credential: { kind: "token", id: "token-other", grant: FULL_GRANT }, via: "agent" };
 
     const fromAgent = yield* gateAs(mcp);
-    expect((yield* gateAs(otherAgent)).approval_id).toBe(fromAgent.approval_id);
+    expect((yield* gateAs(mcp)).approval_id).toBe(fromAgent.approval_id);
+    expect((yield* gateAs(otherAgent)).approval_id).not.toBe(fromAgent.approval_id);
     expect(yield* approveAs(otherAgent, fromAgent.approval_id)).toMatchObject(refused);
     expect(yield* approveAs(mcp, fromAgent.approval_id)).toMatchObject(refused);
 
-    expect((yield* gateAs(caller)).approval_id).toBe(fromAgent.approval_id);
-    expect(yield* approveAs(caller, fromAgent.approval_id)).toMatchObject({ ok: true, approval: { status: "approved" } });
+    const fromPerson = yield* gateAs(caller);
+    expect(fromPerson.approval_id).not.toBe(fromAgent.approval_id);
+    expect(yield* approveAs(caller, fromPerson.approval_id)).toMatchObject({ ok: true, approval: { status: "approved" } });
+    expect(yield* provided(gateOperation(caller, fromPerson.approval_id, asked))).toEqual({ ok: true, approvalId: fromPerson.approval_id });
   }));
 
 it.live("asking about a Server's new preview supersedes its pending approval of the old one", () =>

@@ -815,7 +815,9 @@ it.live(
           const code = surface === "sidebar"
             ? refusedCode(yield* runAgentCall(agent, { ...call, approvalId: asked.asking.approvalId }))
             : (yield* send("write", asAgent(session, asked.asking.approvalId), { command: "set_environment_protected", environment: here, protected: false })).json.error?.code;
-          assert.strictEqual(code, "conflict", surface);
+          // The sidebar's tool unprotects the Environment it reviewed, which moved; `ployz mcp`'s write names the default,
+          // now staging, which the production approval doesn't cover.
+          assert.strictEqual(code, surface === "sidebar" ? "conflict" : "forbidden", surface);
           assert.isTrue(moved());
           vi.restoreAllMocks();
           assert.deepStrictEqual(yield* listing(), [["production", false, true], ["staging", true, true]], surface);
