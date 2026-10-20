@@ -437,10 +437,12 @@ apps. The CLI stops with:
 This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
 ```
 
-Upgrade each such server over SSH from your computer, one at a time. Run the newer CLI with
-`--connect` and the server's SSH address:
+Upgrade each such server over SSH from your computer, one at a time. Install the CLI from the beta
+channel; the stable channel is still on a release before the change. Then run it with `--connect`
+and the server's SSH address:
 
 ```sh
+curl -fsSL https://ployz.sh | sh -s -- beta
 ployz server upgrade beta web-1 --connect ssh://root@203.0.113.10
 ```
 
@@ -449,7 +451,8 @@ through the relay again. If the upgrade fails, the server goes back to the relea
 and keeps running; run the command again.
 
 The same boundary holds the other way: a CLI on 0.3.0-beta.6 or earlier can't reach a server on a
-later release. Install the newer CLI with `curl -fsSL https://ployz.sh | sh`.
+later release. Install the newer CLI from the beta channel with
+`curl -fsSL https://ployz.sh | sh -s -- beta`.
 
 ## Remove a server
 
