@@ -328,20 +328,33 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    let servers = if assignments
+    let naming: Vec<&str> = assignments
         .iter()
-        .any(|(path, value)| names_a_server(path, value))
-    {
-        super::server::servers(matches)?
+        .filter(|(path, value)| names_a_server(path, value))
+        .map(|(_, value)| *value)
+        .collect();
+    let servers = if naming.is_empty() {
+        None
     } else {
-        Vec::new()
+        match super::server::servers(matches) {
+            Ok(servers) => Some(servers),
+            // Without Server access a Machine ID still goes, as the Store takes it.
+            Err(_)
+                if naming
+                    .iter()
+                    .all(|value| MachineId::parse(value.trim()).is_ok()) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        }
     };
     let changes = assignments
         .into_iter()
         .map(|(path, value)| {
             Ok(Change::Set {
                 path: SettingPath::parse(path)?,
-                value: Value::String(resolved(path, value, Some(&servers))?),
+                value: Value::String(resolved(path, value, servers.as_deref())?),
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -350,24 +363,24 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
 
 /// `value` as `set` sends it for `path`: a Server named as a Preferred Builder becomes
 /// its Machine ID, which is all the Store takes, as only the Servers know their names.
+/// It resolves as the `server` commands do: an exact Machine ID first, then a name.
+/// Without `servers`, the value goes as given.
 fn resolved(
     path: &str,
     value: &str,
     servers: Option<&[MachineObservation]>,
 ) -> Result<String, Error> {
-    if !names_a_server(path, value) {
+    let Some(servers) = servers.filter(|_| names_a_server(path, value)) else {
         return Ok(value.to_owned());
-    }
-    let servers = servers.unwrap_or_default();
+    };
     let server = crate::cluster::visible_machine(&MachineTarget::parse(value)?, servers)?;
     Ok(server.machine.id.to_string())
 }
 
-/// Whether `value` names a Server as `path`'s Preferred Builder, not GitHub or a Machine ID.
+/// Whether `value` names a Server, by ID or name, as `path`'s Preferred Builder.
 fn names_a_server(path: &str, value: &str) -> bool {
     matches!(path.split_once('.'), Some((service, "preferredBuilder")) if !service.contains('.'))
         && value != "github"
-        && MachineId::parse(value.trim()).is_err()
 }
 
 /// The one positional a flag applies to.

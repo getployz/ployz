@@ -710,7 +710,8 @@ pub(crate) fn github_dispatched(
         received: 0,
         ended: None,
     };
-    save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))
+    save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))?;
+    skip(tx, id, None)
 }
 
 pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<GithubBuild, RpcError> {
@@ -905,17 +906,25 @@ pub(crate) fn github_end(
         }
     };
     save_github(tx, id, status, message.as_deref(), &log, github)?;
-    if let GithubEnd::Skipped { .. } | GithubEnd::Unstarted { .. } = end {
-        tx.execute(
-            "UPDATE config_build SET github_skipped = ?3 WHERE deployment_id = ?1 AND service = ?2",
-            &[
-                id.deployment.as_str().into(),
-                id.service.as_str().into(),
-                message.as_deref().into(),
-            ],
-        )?;
-    }
+    let skipped = match end {
+        GithubEnd::Skipped { .. } | GithubEnd::Unstarted { .. } => message.as_deref(),
+        GithubEnd::Built { .. } | GithubEnd::Failed { .. } => None,
+    };
+    skip(tx, id, skipped)?;
     Ok(status)
+}
+
+/// Record why GitHub passed `id` on, or with `None` that GitHub has it again.
+fn skip(tx: &mut dyn Tx, id: &GithubBuildId, why: Option<&str>) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_build SET github_skipped = ?3 WHERE deployment_id = ?1 AND service = ?2",
+        &[
+            id.deployment.as_str().into(),
+            id.service.as_str().into(),
+            why.into(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// Deployment `id`'s builds still on GitHub: what cancelling it stops.
