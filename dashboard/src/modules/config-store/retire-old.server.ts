@@ -10,12 +10,12 @@ import { Database } from "#/server/database.server";
 
 /**
  * Retire the old copies the Deployment's run replaced, all inside the Rust SDK: Cloud names the Deployment and the Store
- * knows which copies those are. Resolves to the copies still running.
+ * knows which copies those are. Resolves to the copies still running: `left` a retry may retire, `kept` it never will.
  */
 export const retireOldCopies = Effect.fn("DeploymentCleanup.retireOld")(function* (data: ConfigDeploymentRetireRequestedEventData) {
   const store = yield* cloudStore;
   const connections = yield* connectionsOf(data.organizationId);
-  return yield* storeTry<{ left: CleanupLeft[] }>(() => store.retireOld(data.organizationId, data.deploymentId, connections));
+  return yield* storeTry<{ left: CleanupLeft[]; kept: CleanupLeft[] }>(() => store.retireOld(data.organizationId, data.deploymentId, connections));
 });
 
 const cleanupOf = (data: ConfigDeploymentRetireRequestedEventData) =>

@@ -13,11 +13,13 @@ useServiceFreeEffectRunner();
 
 const machine3: CleanupLeft = { machine: "machine-3", service: "web", reason: "machine-3 did not answer" };
 let answers: CleanupLeft[][] = [];
+let kept: CleanupLeft[] = [];
 let writes: object[] = [];
 
 beforeEach(() => {
   writes = [];
-  vi.spyOn(cleanupRows, "retireOldCopies").mockImplementation(() => Effect.succeed({ left: answers.shift() ?? [] }));
+  kept = [];
+  vi.spyOn(cleanupRows, "retireOldCopies").mockImplementation(() => Effect.succeed({ left: answers.shift() ?? [], kept }));
   vi.spyOn(cleanupRows, "recordCleanupWaiting").mockImplementation((runId, _data, left = []) =>
     Effect.sync(() => { writes.push({ waiting: runId, left }); }));
   vi.spyOn(cleanupRows, "endCleanup").mockImplementation((runId, end, requested) =>
@@ -58,6 +60,24 @@ describe("retiring a Deploy's old copies", () => {
     expect(sleeps).toHaveLength(2);
     expect(writes.at(-1)).toEqual({ end: "run-1", state: "left_running", left: [machine3], deploymentId: "dep" });
     expect(answers).toEqual([[]]);
+  });
+
+  it("ends left running on the first attempt when only copies no retry can retire remain", async () => {
+    const failedWeb: CleanupLeft = { machine: "machine-3", service: "web", reason: "web did not deploy, so its old copy stays. Deploy again to replace it." };
+    kept = [failedWeb];
+    const { result, sleeps } = await cleanup([[]]);
+    expect(result).toEqual({ state: "left_running", left: [failedWeb] });
+    expect(sleeps).toEqual([]);
+    expect(answers).toEqual([]);
+  });
+
+  it("keeps retrying what a retry may retire, naming the kept copies alongside", async () => {
+    const failedWeb: CleanupLeft = { machine: "machine-1", service: "web", reason: "web did not deploy, so its old copy stays. Deploy again to replace it." };
+    kept = [failedWeb];
+    const { result, sleeps } = await cleanup([[machine3], []]);
+    expect(result).toEqual({ state: "left_running", left: [failedWeb] });
+    expect(sleeps).toEqual([["pause-1", "1m"]]);
+    expect(writes).toContainEqual({ waiting: "run-1", left: [machine3, failedWeb] });
   });
 
   it("marks the Deployment's row cancelled when Inngest cancels a cleanup, and skips any other function", async () => {

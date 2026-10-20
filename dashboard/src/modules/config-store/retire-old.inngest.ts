@@ -23,15 +23,16 @@ async function retireOld(
   const { data } = decodeInngestEnvelope(retireRequestedSchema)(event);
   await step.run("record-waiting", () => runEffect(recordCleanupWaiting(runId, data)));
   for (let attempt = 1; ; attempt += 1) {
-    const { left } = await step.run(`retire-${attempt}`, () => runEffect(retireOldCopies(data)));
-    const end: CleanupEnd | null = left.length === 0 ? { state: "done" }
-      : attempt === RETIRE_ATTEMPTS ? { state: "left_running", left }
+    const { left, kept } = await step.run(`retire-${attempt}`, () => runEffect(retireOldCopies(data)));
+    const still = [...left, ...kept];
+    const end: CleanupEnd | null = still.length === 0 ? { state: "done" }
+      : left.length === 0 || attempt === RETIRE_ATTEMPTS ? { state: "left_running", left: still }
       : null;
     if (end !== null) {
       await step.run("end", () => runEffect(endCleanup(runId, end, Option.some(data))));
       return end;
     }
-    await step.run(`waiting-${attempt}`, () => runEffect(recordCleanupWaiting(runId, data, left)));
+    await step.run(`waiting-${attempt}`, () => runEffect(recordCleanupWaiting(runId, data, still)));
     await step.sleep(`pause-${attempt}`, RETIRE_PAUSE);
   }
 }

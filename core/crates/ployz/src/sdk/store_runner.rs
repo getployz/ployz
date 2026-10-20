@@ -254,7 +254,11 @@ pub async fn observe_copies(
 /// The old copies a Deployment's retire left running.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, TS)]
 pub struct RetireOutcome {
+    /// Copies it tried to retire and could not: a retry may still retire them.
     pub left: Vec<RetireLeft>,
+    /// Copies it never retires, and Machines the Deploy could not reach: a retry
+    /// changes nothing.
+    pub kept: Vec<RetireLeft>,
 }
 
 /// One old copy still running.
@@ -321,8 +325,8 @@ fn deploy_warnings(view: &DeploymentView) -> impl Iterator<Item = &DeployWarning
 
 /// What `retired` left, plus every old copy the Deploy kept and every Machine it
 /// could not reach, so nothing that may still run goes unnamed.
-fn named_left(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutcome {
-    left.extend(kept_copies(view));
+fn named_left(view: &DeploymentView, left: Vec<RetireLeft>) -> RetireOutcome {
+    let mut kept = kept_copies(view);
     let reported: BTreeSet<&str> = deploy_warnings(view)
         .filter_map(|warning| {
             let DeployWarning::LeftRunning { machine, .. } = warning else {
@@ -335,11 +339,15 @@ fn named_left(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutcome
         let DeployWarning::MixedAfterReturn { machine } = warning else {
             continue;
         };
-        if reported.contains(machine.as_str()) || left.iter().any(|entry| entry.machine == *machine)
+        if reported.contains(machine.as_str())
+            || left
+                .iter()
+                .chain(&kept)
+                .any(|entry| entry.machine == *machine)
         {
             continue;
         }
-        left.push(RetireLeft {
+        kept.push(RetireLeft {
             machine: machine.clone(),
             service: None,
             reason: format!(
@@ -348,7 +356,7 @@ fn named_left(view: &DeploymentView, mut left: Vec<RetireLeft>) -> RetireOutcome
             ),
         });
     }
-    RetireOutcome { left }
+    RetireOutcome { left, kept }
 }
 
 struct LeftCopy {

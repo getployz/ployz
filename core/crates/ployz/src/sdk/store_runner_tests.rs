@@ -1059,7 +1059,7 @@ async fn a_machine_the_deploy_could_not_reach_stays_left_once_without_a_service(
         record(&mut view, "machine-3");
         let retired = retire(&view, holding_c()).await;
         assert_eq!(
-            retired.outcome.left,
+            retired.outcome.kept,
             [RetireLeft {
                 machine: "machine-3".into(),
                 service: None,
@@ -1069,6 +1069,7 @@ async fn a_machine_the_deploy_could_not_reach_stays_left_once_without_a_service(
             }],
             "{source}"
         );
+        assert!(retired.outcome.left.is_empty(), "{source}");
         assert!(retired.wants.is_empty(), "{:?}", retired.wants);
         assert!(retired.removed.is_empty());
     }
@@ -1100,20 +1101,32 @@ async fn a_machine_whose_reported_copy_retired_is_not_named_cut_off() {
 }
 
 #[tokio::test]
-async fn a_failed_services_left_copy_is_not_touched_but_stays_named() {
+async fn a_failed_services_left_copy_is_kept_on_every_try_without_a_retry() {
     let (run, actor) = run();
     let view = left_running(&run, &actor, &[("web", NodeStatus::Failed, 'c')]);
-    let retired = retire(&view, holding_c()).await;
-    assert_eq!(
-        retired.outcome.left,
-        [RetireLeft {
-            machine: "one".into(),
-            service: Some(ServiceName::parse("web").unwrap()),
-            reason: "web did not deploy, so its old copy stays. Deploy again to replace it.".into(),
-        }]
-    );
-    assert!(retired.wants.is_empty(), "{:?}", retired.wants);
-    assert!(retired.removed.is_empty());
+    for attempt in 1..=2 {
+        let retired = retire(&view, holding_c()).await;
+        assert_eq!(
+            retired.outcome,
+            RetireOutcome {
+                left: Vec::new(),
+                kept: vec![RetireLeft {
+                    machine: "one".into(),
+                    service: Some(ServiceName::parse("web").unwrap()),
+                    reason:
+                        "web did not deploy, so its old copy stays. Deploy again to replace it."
+                            .into(),
+                }],
+            },
+            "try {attempt}"
+        );
+        assert!(
+            retired.wants.is_empty(),
+            "try {attempt}: {:?}",
+            retired.wants
+        );
+        assert!(retired.removed.is_empty(), "try {attempt}");
+    }
 }
 
 #[tokio::test]
