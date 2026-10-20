@@ -149,12 +149,15 @@ fn usage_failure(error: clap::Error) -> Error {
         error.kind(),
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
     ) {
-        // clap's own `exit` swallows a closed stdout instead of dying of it.
+        // clap's own `exit` swallows a closed stdout instead of dying of it, and
+        // a full one: `ui::exit` fails a write stdout could not take.
         let mut stdout = crate::ui::stdout();
         let _ = write!(stdout, "{}", error.render().ansi());
         let _ = stdout.flush();
-        std::process::exit(0);
+        return Error::exit(0);
     }
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let error = operator::container_column_asked(error, &args);
     if !wants_json {
         error.exit();
     }
@@ -651,6 +654,7 @@ mod tests {
                 failed_machine: Some(failed),
                 logs: vec![LogTail {
                     service: QualifiedService::system_ingress(),
+                    name: QualifiedService::system_ingress().name,
                     machine: failed,
                     server: "same-name".into(),
                     log: None,

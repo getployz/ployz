@@ -42,7 +42,10 @@ and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
-`ployz ctx` shows where commands act from here.
+`ployz ctx` shows where commands act from here. In a directory with no project linked, it asks Cloud
+which projects there are: it names your only project, or says the organization has several and
+how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
+`ployz link` step.
 
 ## Set up your coding agent
 
@@ -322,7 +325,7 @@ Scripts can tell failures apart by exit code:
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
+| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, or some work couldn't be done, such as a `ployz server drain` that leaves a service where it is because no other server can take it. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
@@ -355,7 +358,8 @@ from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Un
 `removal: removing`, with the removal's `id` and the removal deployments it ran in `deployments`.
 When one of them didn't apply, it also reports that deployment in full under `deployment` (its
 `status`, `outcome` and `nodes`) and `next`: the command that finishes it, with the same
-`--ployz-config` when you passed one.
+`--ployz-config` when you passed one. Each server it waits on is under `waiting_on`, by its name
+in `server` and its machine ID in `server_id`.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

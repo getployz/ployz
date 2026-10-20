@@ -4,11 +4,12 @@ import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { forgetServersServerFn, previewForgetServersServerFn } from "#/modules/machines/forget-servers.functions";
-import { useYouMay } from "#/modules/organization/members.queries";
+import { useRoleGate } from "#/modules/organization/members.queries";
 
-/** Why you can't forget the Servers, or undefined when your role may. */
-export const useForgetServersRefusal = (organizationSlug: string) =>
-  useYouMay(organizationSlug, "servers:remove") ? undefined : "Only an owner or admin can forget them.";
+/** Whether you may forget the Servers, and why not. */
+export function useForgetServersGate(organizationSlug: string) {
+  return useRoleGate(organizationSlug, "servers:remove", "Only an owner or admin can forget them.");
+}
 
 /**
  * Forget Servers, for Servers that were deleted: Cloud tries each as the dialog opens and again on confirm, lists what

@@ -281,6 +281,10 @@ export function deploymentStatusLabel(
 export const deploymentLabel = ({ number, push, id }: Pick<DeploymentSummary, "number" | "id"> & { push?: { head: string } | null }) =>
   number !== null ? `#${number}` : (push?.head.slice(0, 7) ?? id.slice(0, 8));
 
+/** Whether a Deployment ships Service `name`: a full Deploy ships every one, a narrowed one those it names and those they reference. */
+export const shippedService = ({ services, ships }: Pick<DeploymentSummary, "services" | "ships">, name: string) =>
+  services.length === 0 || services.includes(name) || ships.includes(name);
+
 export const deploysLabel =({ services, remove }: Pick<DeploymentSummary, "services" | "remove">) =>
   remove ? null : `Deploys ${services.length === 0 ? "every service" : services.join(", ")}`;
 

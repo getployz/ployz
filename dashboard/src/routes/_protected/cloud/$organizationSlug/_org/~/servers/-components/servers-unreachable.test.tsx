@@ -7,12 +7,13 @@ import { ServersUnreachable } from "./servers-unreachable";
 
 afterEach(cleanup);
 
-function renderAs(role: "admin" | "member" | null) {
+function renderAs(role: "admin" | "member" | "support") {
   const queryClient = new QueryClient();
   queryClient.setQueryData(organizationMembersQueryOptions("ada").queryKey, {
-    members: role === null ? [] : [{ name: "Linus", email: "linus@example.com", role, joined_at: "2026-01-01T00:00:00Z", you: true }],
+    members: role === "support" ? [] : [{ name: "Linus", email: "linus@example.com", role, joined_at: "2026-01-01T00:00:00Z", you: true }],
     invites: [],
     mail: false,
+    support: role === "support",
   });
   render(<QueryClientProvider client={queryClient}><ServersUnreachable organizationSlug="ada" /></QueryClientProvider>);
   return screen.getByRole("button", { name: "Forget them and start over." });
@@ -27,6 +28,6 @@ it("disables forgetting for a member, and says why", () => {
   expect(screen.getByText(/Only an owner or admin can forget them\./)).toBeTruthy();
 });
 
-it("disables forgetting for a visitor with no member row", () => {
-  expect(renderAs(null).hasAttribute("disabled")).toBe(true);
+it("lets support forget the servers, as Cloud does", () => {
+  expect(renderAs("support").hasAttribute("disabled")).toBe(false);
 });
