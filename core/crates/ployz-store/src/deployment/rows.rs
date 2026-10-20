@@ -49,9 +49,13 @@ pub enum RowState {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         out_of_memory: Option<OutOfMemory>,
+        /// The Deployment's cancel stopped this work while it ran, so it reads
+        /// Cancelled. A marker on Failed rather than a state of its own, so a reader
+        /// from before it reads Failed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        cancelled: bool,
     },
-    /// The Deployment's cancel stopped this work while it ran.
-    Cancelled,
     /// The Deployment stopped before this work finished.
     NotAttempted,
     /// Reporting stopped before this row's outcome was confirmed.
@@ -62,11 +66,7 @@ impl RowState {
     pub(crate) const fn finished(&self) -> bool {
         matches!(
             self,
-            Self::Completed
-                | Self::Failed { .. }
-                | Self::Cancelled
-                | Self::NotAttempted
-                | Self::Unknown
+            Self::Completed | Self::Failed { .. } | Self::NotAttempted | Self::Unknown
         )
     }
 }
@@ -94,7 +94,6 @@ impl FailedAt {
             Some(
                 RowState::Pending
                 | RowState::Completed
-                | RowState::Cancelled
                 | RowState::NotAttempted
                 | RowState::Unknown,
             )
@@ -250,8 +249,8 @@ pub struct ServerProgress {
     /// The Server's name, or its Machine ID when it has none.
     pub server: String,
     pub state: RowState,
-    /// Only cancelled work stopped it. The Store reads it Cancelled when the
-    /// Deployment's cancel asked for that, and Failed otherwise.
+    /// Only cancelled work stopped it. The Store marks it Cancelled when the
+    /// Deployment's cancel asked for that, and leaves it Failed otherwise.
     #[serde(default)]
     pub stopped: bool,
 }
@@ -615,6 +614,7 @@ fn state(
                 | ExecutionError::Hook { .. }
                 | ExecutionError::Cancelled => None,
             },
+            cancelled: false,
         };
     }
     if let Some(phase) = running {
@@ -662,17 +662,14 @@ pub(super) fn record(
     // Only the Deployment's own cancel makes the work it stopped read Cancelled.
     let cancelling = stored.summary.status == DeploymentStatus::Cancelling;
     for row in rows {
-        let state = if row.stopped && cancelling {
-            &RowState::Cancelled
-        } else {
-            &row.state
-        };
+        let mut state = row.state.clone();
+        if let RowState::Failed { cancelled, .. } = &mut state {
+            *cancelled = row.stopped && cancelling;
+        }
+        let state = &state;
         let started = matches!(
             state,
-            RowState::Running { .. }
-                | RowState::Completed
-                | RowState::Failed { .. }
-                | RowState::Cancelled
+            RowState::Running { .. } | RowState::Completed | RowState::Failed { .. }
         )
         .then_some(now);
         let finished = state.finished().then_some(now);
@@ -724,7 +721,13 @@ pub(super) fn failed(tx: &mut dyn Tx, stored: &Stored) -> Result<BTreeSet<Servic
     )?;
     let mut failed = BTreeSet::new();
     for row in &found {
-        if matches!(row.json(1, "Deployment row")?, RowState::Failed { .. }) {
+        if matches!(
+            row.json(1, "Deployment row")?,
+            RowState::Failed {
+                cancelled: false,
+                ..
+            }
+        ) {
             failed.insert(row.parse(0, "Deployment row")?);
         }
     }
@@ -889,11 +892,15 @@ pub(super) fn of_nodes(
 
 fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
     let priority = |state: &RowState| match state {
-        RowState::Failed { .. } => 7,
+        RowState::Failed {
+            cancelled: false, ..
+        } => 7,
         RowState::Unknown => 6,
         RowState::Running { .. } => 5,
         RowState::Pending => 4,
-        RowState::Cancelled => 3,
+        RowState::Failed {
+            cancelled: true, ..
+        } => 3,
         RowState::NotAttempted => 2,
         RowState::Completed => 1,
     };

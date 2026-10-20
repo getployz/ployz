@@ -245,8 +245,10 @@ impl From<&ployz_store::RowState> for State {
             ployz_store::RowState::Pending => Self::Pending,
             ployz_store::RowState::Running { phase, .. } => Self::Running(*phase),
             ployz_store::RowState::Completed => Self::Completed,
+            ployz_store::RowState::Failed {
+                cancelled: true, ..
+            } => Self::Cancelled,
             ployz_store::RowState::Failed { .. } => Self::Failed,
-            ployz_store::RowState::Cancelled => Self::Cancelled,
             ployz_store::RowState::NotAttempted => Self::NotAttempted,
             ployz_store::RowState::Unknown => Self::Unknown,
         }

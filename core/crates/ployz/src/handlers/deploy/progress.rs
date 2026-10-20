@@ -9,7 +9,7 @@ use crate::ui::{
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode, config::MEM_LIMIT_MAX};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeStatus, RowState,
+    DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
 };
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -26,7 +26,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                         DeployedNode::Service { name, .. } => name.to_string(),
                     },
                 },
-                state: node_state(node.outcome, false),
+                state: node_state(node, false),
                 detail: None,
                 timing: Timing::Unavailable,
             });
@@ -63,7 +63,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         if node.rows.is_empty() {
             let build = view.builds.iter().find(|build| build.service == *name);
             row.state = node_state(
-                node.outcome,
+                node,
                 build.is_some_and(|build| build.status == BuildStatus::Failed),
             );
             row.detail = build.map(|build| {
@@ -132,13 +132,13 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
     }
 }
 
-fn node_state(outcome: NodeStatus, build_failed: bool) -> State {
-    match outcome {
+fn node_state(node: &NodeOutcome, build_failed: bool) -> State {
+    match node.outcome {
         NodeStatus::Pending if build_failed => State::Failed,
         NodeStatus::Pending => State::Pending,
         NodeStatus::Deployed | NodeStatus::Removed => State::Completed,
+        NodeStatus::Failed if node.cancelled => State::Cancelled,
         NodeStatus::Failed => State::Failed,
-        NodeStatus::Cancelled => State::Cancelled,
         NodeStatus::NotAttempted => State::NotAttempted,
         NodeStatus::Unchanged => State::Unchanged,
         NodeStatus::Unknown => State::Unknown,

@@ -1,5 +1,5 @@
 import type { BuildStatus, BuildView, DeploymentView, FailedAt, NodeOutcome, NodeStatus, RowPhase, ServerRow } from "@ployz/sdk";
-import { buildNodeId, nodeLight, type NodeLight } from "#/modules/config-store/store-deployments";
+import { buildNodeId, nodeLight, shownNodeStatus, type NodeLight } from "#/modules/config-store/store-deployments";
 import type { RunSearch } from "./run-search";
 
 /** Unix seconds over a node's rows; `finished` stays null until every row finished. */
@@ -48,8 +48,9 @@ export function rowLabel(row: ServerRow): string {
     case "pending": return "Pending";
     case "running": return rowPhaseLabel(row.phase);
     case "completed": return "Done";
-    case "failed": return row.step ? `Failed at ${failedAtLabels[row.step]}` : "Failed";
-    case "cancelled": return "Cancelled";
+    case "failed":
+      if (row.cancelled) return "Cancelled";
+      return row.step ? `Failed at ${failedAtLabels[row.step]}` : "Failed";
     case "not_attempted": return "Not attempted";
     case "unknown": return "Unknown";
     default:
@@ -62,8 +63,8 @@ export function rowLight(row: ServerRow): NodeLight {
     case "pending": return "queued";
     case "running": return "deploying";
     case "completed": return "deployed";
-    case "failed": return "failed";
-    case "cancelled": case "not_attempted": return "not_applied";
+    case "failed": return row.cancelled ? "not_applied" : "failed";
+    case "not_attempted": return "not_applied";
     case "unknown": return "unknown";
     default:
       return row satisfies never;
@@ -122,7 +123,7 @@ export function makeRunGraph(deployment: DeploymentView): RunGraph {
     node.type === "service" && deployment.in_flight && node.rows.some((row) => row.state === "running");
   const outcomes = deployment.nodes.map((node): OutcomeRunNode => ({
     type: node.type, id: node.id, name: node.name, node, row: 0, timing: rowTiming(node.rows),
-    light: runs(node) && node.outcome === "deployed" ? "deploying" : nodeLight(node.outcome, deployment),
+    light: runs(node) && node.outcome === "deployed" ? "deploying" : nodeLight(shownNodeStatus(node), deployment),
     column: node.type === "service" ? (deployment.preview?.depths[runtime(node.name)] ?? 0) + 1 : 0,
   }));
   const services = new Map(outcomes.filter((node) => node.type === "service").map((node) => [runtime(node.name), node]));

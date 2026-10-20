@@ -221,8 +221,17 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
+            cancelled: false,
         },
-        "cancelled" => RowState::Cancelled,
+        "cancelled" => RowState::Failed {
+            reason: "Cancelled".into(),
+            cause: Vec::new(),
+            step: Some(ployz_store::FailedAt::Create),
+            log: None,
+            unanswered: false,
+            out_of_memory: None,
+            cancelled: true,
+        },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),
     }

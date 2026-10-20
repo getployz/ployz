@@ -64,12 +64,30 @@ describe("run graph", () => {
     expect(rowLabel(completed())).toBe("Done");
   });
 
-  it("reads work a cancel stopped as Cancelled with a grey light, on its row and its node", () => {
-    const stopped: ServerRow = { ...at, state: "cancelled", finished_at: 20 };
+  const stoppedAtCreate = (fields: { reason?: string; cancelled?: boolean } = {}): ServerRow =>
+    ({ ...at, state: "failed", reason: "Cancelled", cause: [], step: "create", log: null, finished_at: 20, ...fields });
+
+  it("reads work the Deployment's cancel stopped as Cancelled with a grey light, on its row and its node", () => {
+    const stopped = stoppedAtCreate({ cancelled: true });
     expect(rowLabel(stopped)).toBe("Cancelled");
     expect(rowLight(stopped)).toBe("not_applied");
-    const view = deployment({ status: "cancelled", in_flight: false, nodes: [service("web", [stopped], "cancelled")] });
-    expect(makeRunGraph(view).nodes[0]?.light).toBe("not_applied");
+    const view = deployment({
+      status: "cancelled", in_flight: false,
+      nodes: [{ ...service("web", [stopped], "failed"), cancelled: true }, service("api", [stoppedAtCreate({ reason: "No space left" })], "failed")],
+    });
+    const graph = makeRunGraph(view);
+    expect(graph.nodes.map(({ id, light }) => ({ id, light }))).toEqual([
+      { id: "web-id", light: "not_applied" }, { id: "api-id", light: "failed" },
+    ]);
+    expect(selectRunNode(graph, {})?.id).toBe("api-id");
+  });
+
+  it("reads a failed row and node without the cancelled marker as Failed, as a Store from before Cancelled sends them", () => {
+    const failed = stoppedAtCreate();
+    expect(rowLabel(failed)).toBe("Failed at create");
+    expect(rowLight(failed)).toBe("failed");
+    const view = deployment({ status: "cancelled", in_flight: false, nodes: [service("web", [failed], "failed")] });
+    expect(makeRunGraph(view).nodes[0]?.light).toBe("failed");
   });
 
   it("opens the picked node, then the origin's, then the first failed, running, or Service", () => {

@@ -210,11 +210,11 @@ async fn a_takeover_nobody_cancelled_records_no_row_or_node_cancelled() {
         .iter()
         .find(|node| node["name"] == "web")
         .unwrap();
-    assert_ne!(web["outcome"], "cancelled", "{web}");
+    assert_eq!(web.get("cancelled"), None, "{web}");
     let rows = web["rows"].as_array().unwrap();
     assert!(!rows.is_empty(), "{web}");
     assert!(
-        rows.iter().all(|row| row["state"] != "cancelled"),
+        rows.iter().all(|row| row.get("cancelled").is_none()),
         "only the Deployment's cancel stops work as cancelled: {web}"
     );
 }
@@ -264,16 +264,31 @@ async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed
         .iter()
         .find(|node| node["name"] == "web")
         .unwrap();
-    assert_eq!(web["outcome"], "cancelled", "{web}");
+    // Failed as before Cancelled, so older readers read it; marked for newer ones.
+    assert_eq!(
+        (&web["outcome"], &web["cancelled"]),
+        (&serde_json::json!("failed"), &serde_json::json!(true)),
+        "{web}"
+    );
     let states: Vec<_> = web["rows"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|row| (row["server"].clone(), row["state"].clone()))
+        .map(|row| {
+            (
+                row["server"].clone(),
+                row["state"].clone(),
+                row["cancelled"].clone(),
+            )
+        })
         .collect();
     assert_eq!(
         states,
-        [(serde_json::json!("entry"), serde_json::json!("cancelled"))],
+        [(
+            serde_json::json!("entry"),
+            serde_json::json!("failed"),
+            serde_json::json!(true)
+        )],
         "{web}"
     );
     server.abort();

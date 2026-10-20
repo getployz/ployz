@@ -173,9 +173,11 @@ and secret-shaped values such as `password=…` replaced. Other values, such as 
 the image, show as the container printed them. These outcomes stay with that deployment
 when you deploy again. Unchanged services have no rows because no server work ran.
 
-A row whose work your cancel stopped reads `cancelled`, and so does its service's `outcome`. Work
-that failed on its own still reads `failed`, even in a cancelled deployment. So does work Ployz
-stopped for another reason, such as another service failing.
+Work your cancel stopped reads **Cancelled** in the dashboard and `cancelled` in the CLI. In
+`--json`, its row keeps `"state": "failed"` with `"cancelled": true`, and so does its service:
+`"outcome": "failed"` with `"cancelled": true`. Older Ployz versions ignore the marker and read
+it Failed. Work that failed on its own reads Failed, even in a cancelled deployment. So does work
+Ployz stopped for another reason, such as another service failing.
 
 If the runner stops reporting, unfinished rows read `unknown`. Completed and failed rows keep
 their recorded outcomes.

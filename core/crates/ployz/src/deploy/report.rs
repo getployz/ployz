@@ -110,7 +110,15 @@ pub(crate) fn service_row<'a>(
         });
     let failed = replicas
         .iter()
-        .filter(|replica| matches!(replica.state, RowState::Failed { .. }))
+        .filter(|replica| {
+            matches!(
+                replica.state,
+                RowState::Failed {
+                    cancelled: false,
+                    ..
+                }
+            )
+        })
         .count();
     let counted: Vec<_> = replicas
         .iter()
@@ -128,7 +136,6 @@ pub(crate) fn service_row<'a>(
             RowState::Running { .. }
             | RowState::Pending
             | RowState::Failed { .. }
-            | RowState::Cancelled
             | RowState::NotAttempted
             | RowState::Unknown => false,
         })
@@ -153,7 +160,6 @@ pub(crate) fn service_row<'a>(
         RowState::Pending
         | RowState::Completed
         | RowState::Failed { .. }
-        | RowState::Cancelled
         | RowState::NotAttempted
         | RowState::Unknown => None,
     };
@@ -169,7 +175,6 @@ pub(crate) fn service_row<'a>(
             RowState::Running { serving, .. } => *serving || (served && !replica.starts),
             RowState::Completed
             | RowState::Failed { .. }
-            | RowState::Cancelled
             | RowState::NotAttempted
             | RowState::Unknown => false,
         })
@@ -190,10 +195,15 @@ pub(crate) fn service_row<'a>(
         State::Pending
     } else if all(|state| matches!(state, RowState::Completed)) {
         State::Completed
-    } else if replicas
-        .iter()
-        .any(|replica| matches!(replica.state, RowState::Cancelled))
-    {
+    } else if replicas.iter().any(|replica| {
+        matches!(
+            replica.state,
+            RowState::Failed {
+                cancelled: true,
+                ..
+            }
+        )
+    }) {
         State::Cancelled
     } else if replicas
         .iter()
@@ -293,7 +303,6 @@ impl Direct {
                 }
                 RowState::Completed
                 | RowState::Failed { .. }
-                | RowState::Cancelled
                 | RowState::NotAttempted
                 | RowState::Unknown => started.map_or(Timing::Unavailable, |at| {
                     Timing::Finished(at.elapsed().unwrap_or_default())

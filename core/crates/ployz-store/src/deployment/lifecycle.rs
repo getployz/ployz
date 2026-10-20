@@ -1412,18 +1412,35 @@ pub(crate) fn record(
             };
             let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
-            let nodes = node_outcomes(
-                &stored.nodes,
-                &saved,
-                &applied,
-                &Evidence::Executed {
-                    preview,
-                    projection: &projection,
-                    removed: &removed,
-                    cancelled: &cancelled,
-                },
-            );
-            let nodes = keep_advanced(&stored.run.nodes, nodes);
+            let outcomes = |projection| {
+                node_outcomes(
+                    &stored.nodes,
+                    &saved,
+                    &applied,
+                    &Evidence::Executed {
+                        preview,
+                        projection,
+                        removed: &removed,
+                    },
+                )
+            };
+            let nodes = keep_advanced(&stored.run.nodes, outcomes(&projection));
+            // A node the cancel alone failed no longer fails once the Services it
+            // stopped count as never attempted.
+            let mut uncancelled = projection.clone();
+            uncancelled
+                .failed_services
+                .retain(|service| !cancelled.contains(service));
+            uncancelled.unattempted_services.extend(cancelled);
+            let uncancelled = outcomes(&uncancelled);
+            let cancelled = nodes
+                .iter()
+                .filter(|(id, status)| {
+                    **status == NodeStatus::Failed
+                        && uncancelled.get(*id) != Some(&NodeStatus::Failed)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
             // A Deploy that left a Volume's data behind, or may have left a Service
             // it retires or removes running, didn't finish: a retry removes it.
             let unfinished = |(id, status): (&String, &NodeStatus)| {
@@ -1459,6 +1476,7 @@ pub(crate) fn record(
             };
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;
+            stored.run.cancelled = cancelled;
             stored.run.executed = Some(executed);
             if taken_over {
                 // Another runner owns the Environment now: the run stays Unknown and
@@ -1712,16 +1730,13 @@ pub(super) enum Evidence<'run> {
         preview: &'run DeployPreview,
         projection: &'run RuntimeOutcomeProjection,
         removed: &'run [VolumeRemoval],
-        /// Runtime Services the Deployment's cancel stopped before they finished.
-        cancelled: &'run std::collections::BTreeSet<ServiceName>,
     },
 }
 
 /// Each target node's Node Outcome from `evidence`. A Service the preview plans
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
-/// completed is Deployed (Removed once it left Saved State), some ran is Failed, or
-/// Cancelled when the Deployment's cancel stopped it, and none ran is Not attempted. A
-/// Service that left Saved State with nothing planned
+/// completed is Deployed (Removed once it left Saved State), some ran is Failed and
+/// none ran is Not attempted. A Service that left Saved State with nothing planned
 /// is Removed when the snapshot saw every Machine, else Not attempted; one with
 /// several runtime Services reads the worst of them. A kept Volume follows the
 /// targeted Services mounting it: Deployed once one of them is, whatever the others do. It is Unchanged when Applied State already
@@ -1759,15 +1774,9 @@ pub(super) fn node_outcomes(
                 NodeStatus::Unchanged
             }
         }
-        Evidence::Executed {
-            projection,
-            cancelled,
-            ..
-        } => {
+        Evidence::Executed { projection, .. } => {
             if projection.confirmed_services.contains(name) {
                 landed(kept)
-            } else if cancelled.contains(name) {
-                NodeStatus::Cancelled
             } else if projection.failed_services.contains(name) {
                 NodeStatus::Failed
             } else if projection.unattempted_services.contains(name) {
@@ -1797,14 +1806,12 @@ pub(super) fn node_outcomes(
                 | NodeStatus::Deployed
                 | NodeStatus::Removed
                 | NodeStatus::Failed
-                | NodeStatus::Cancelled
                 | NodeStatus::NotAttempted
                 | NodeStatus::Unknown) => status,
             })
             .collect();
         [
             NodeStatus::Failed,
-            NodeStatus::Cancelled,
             NodeStatus::NotAttempted,
             NodeStatus::Pending,
         ]
@@ -1854,8 +1861,6 @@ pub(super) fn node_outcomes(
             NodeStatus::Deployed
         } else if mounting.contains(&NodeStatus::Failed) {
             NodeStatus::Failed
-        } else if mounting.contains(&NodeStatus::Cancelled) {
-            NodeStatus::Cancelled
         } else if mounting.contains(&NodeStatus::NotAttempted) {
             NodeStatus::NotAttempted
         } else if mounting.contains(&NodeStatus::Pending) {
@@ -1904,8 +1909,6 @@ pub(super) fn node_outcomes(
             NodeStatus::Deployed
         } else if mounting.contains(&NodeStatus::Failed) {
             NodeStatus::Failed
-        } else if mounting.contains(&NodeStatus::Cancelled) {
-            NodeStatus::Cancelled
         } else if mounting.contains(&NodeStatus::NotAttempted) {
             NodeStatus::NotAttempted
         } else if mounting.contains(&NodeStatus::Pending) {

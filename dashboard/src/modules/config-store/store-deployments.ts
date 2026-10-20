@@ -237,16 +237,25 @@ type WaitingCi = Partial<Pick<DeploymentSummary, "ci">>;
 export const deploymentLight = ({ status, ci }: Pick<DeploymentSummary, "status"> & WaitingCi): DeploymentLight =>
   ci === "failed" ? "failed" : deploymentStatusIcons[status];
 
+/**
+ * A node's outcome as users read it: Failed work the Deployment's cancel stopped reads Cancelled. The Store marks it
+ * rather than giving it a status of its own, so a reader from before Cancelled reads Failed.
+ */
+export type ShownNodeStatus = NodeStatus | "cancelled";
+
+export const shownNodeStatus = ({ outcome, cancelled }: Pick<NodeOutcome, "outcome" | "cancelled">): ShownNodeStatus =>
+  outcome === "failed" && cancelled ? "cancelled" : outcome;
+
 export const nodeStatusLabels = {
   pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", cancelled: "Cancelled",
   not_attempted: "Not attempted", unchanged: "Unchanged", unknown: "Unknown",
-} satisfies Record<NodeStatus, string>;
+} satisfies Record<ShownNodeStatus, string>;
 
 /** Whether the Deployment left the node as intended: deployed, removed, or nothing it had to change. */
-export const nodeApplied = (outcome: NodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
+export const nodeApplied = (outcome: ShownNodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
 
 /** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
-export function nodeLight(outcome: NodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">): NodeLight {
+export function nodeLight(outcome: ShownNodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">): NodeLight {
   if (nodeApplied(outcome)) return "deployed";
   if (outcome === "failed") return "failed";
   if (outcome === "unknown") return "unknown";
