@@ -553,13 +553,19 @@ impl<'a> Slots<'a> {
         } else {
             format!("{}:{index}", self.plan)
         };
-        slot_key(self.namespace, kind, key)
+        slot_key(self.namespace, &spec.name, kind, key)
     }
 }
 
-fn slot_key(namespace: &Namespace, kind: ContainerKind, key: String) -> SlotKey {
+fn slot_key(
+    namespace: &Namespace,
+    service: &ServiceName,
+    kind: ContainerKind,
+    key: String,
+) -> SlotKey {
     SlotKey {
         namespace: namespace.clone(),
+        service: service.clone(),
         kind,
         creation_key: CreationKey::try_from(key).expect("creation keys stay within 512 bytes"),
     }
@@ -2341,7 +2347,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     } else {
         format!("move:{old}")
     };
-    let slot = slot_key(namespace, ContainerKind::ServiceContainer, key);
+    let slot = slot_key(namespace, &spec.name, ContainerKind::ServiceContainer, key);
     let adopts = global && adopts_running(&client, to, &slot, spec).await;
     // The moved copy keeps the source copy's gen: a Move is not a new rollout.
     let r#gen = match client.inspect_container(from, old).await {

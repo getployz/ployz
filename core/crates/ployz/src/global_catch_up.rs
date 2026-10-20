@@ -386,6 +386,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             r#gen: ployz_core::Gen::FIRST,
             slot: SlotKey {
                 namespace: identity.namespace.clone(),
+                service: slot.resolved_spec().name.clone(),
                 kind: ContainerKind::ServiceContainer,
                 creation_key: CreationKey::try_from(crate::cluster::global_creation_key(
                     slot.resolved_spec(),

@@ -407,6 +407,7 @@ pub struct EndpointSelected {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SlotKey {
     pub namespace: Namespace,
+    pub service: crate::ServiceName,
     pub kind: ContainerKind,
     pub creation_key: crate::CreationKey,
 }

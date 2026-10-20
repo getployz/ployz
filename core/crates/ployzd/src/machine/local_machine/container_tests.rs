@@ -397,7 +397,7 @@ mod plan {
         ContainerNow, ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
         ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
         LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunRotation,
-        RunTarget, SlotKey, StopOptions,
+        RunTarget, ServiceName, SlotKey, StopOptions,
     };
     use serde_json::json;
 
@@ -420,6 +420,7 @@ mod plan {
     fn slot() -> SlotKey {
         SlotKey {
             namespace: Namespace::parse("app").unwrap(),
+            service: ServiceName::parse("api").unwrap(),
             kind: ContainerKind::ServiceContainer,
             creation_key: CreationKey::try_from("k1".to_owned()).unwrap(),
         }
@@ -705,7 +706,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
         .with_containers(Some(runtime))
         .with_zpool("true");
     let new: NewContainer = serde_json::from_value(json!({
-        "slot": {"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
+        "slot": {"namespace":"app", "service":"api", "kind":"pre_deploy_hook", "creation_key":"h1"},
         "resolved_spec": spec_with_sources(vec![]),
         "gen": 1,
     }))
@@ -800,7 +801,7 @@ mod settled {
 
     fn new_container(answer: &str) -> NewContainer {
         serde_json::from_value(json!({
-            "slot": {"namespace":"app", "kind":"service_container", "creation_key":"s1"},
+            "slot": {"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"s1"},
             "resolved_spec": spec_with_sources(vec![]),
             "gen": 1,
             "answer": answer,

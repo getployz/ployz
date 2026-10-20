@@ -627,7 +627,7 @@ async fn checked_at_endpoint(name: &str, silent: bool) -> (ResolvedServiceSpec, 
 
 fn new_copy(key: &str, spec: ResolvedServiceSpec, r#gen: u64) -> NewContainer {
     serde_json::from_value(json!({
-        "slot": {"namespace": "app", "kind": "service_container", "creation_key": key},
+        "slot": {"namespace": "app", "service": spec.name, "kind": "service_container", "creation_key": key},
         "resolved_spec": spec,
         "gen": r#gen,
     }))
