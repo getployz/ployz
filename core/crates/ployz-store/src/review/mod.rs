@@ -727,7 +727,12 @@ pub(crate) fn publish(
     (message, accepted): (Option<&str>, &[crate::VolumeLoss]),
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
-    crate::volume::check_storage(tx, environment, &intent)?;
+    crate::volume::check_storage(
+        tx,
+        environment,
+        &intent.volumes,
+        crate::volume::StorageRule::Replay,
+    )?;
     if let Some(latest) = latest
         && latest.intent == intent
     {
@@ -986,7 +991,10 @@ pub(crate) fn latest_saved(
     let Some(row) = rows.first() else {
         return Ok(None);
     };
-    let intent = row.intent(1, "Saved State")?;
+    let mut intent = canonicalize_environment_intent(row.intent(1, "Saved State")?);
+    // The revision keeps the size it asked for as history; read as the latest
+    // Saved State, it says the size the Servers hold, as Head does.
+    crate::volume::size::held(tx, environment, &mut intent.volumes)?;
     let accepted = match row.optional_text(2)? {
         Some(json) => {
             serde_json::from_str(json).map_err(|_| error::corrupt("accepted Volume losses"))?
@@ -995,7 +1003,7 @@ pub(crate) fn latest_saved(
     };
     Ok(Some(Saved {
         revision: Revision(row.number(0, "revision")?),
-        intent: canonicalize_environment_intent(intent),
+        intent,
         accepted,
     }))
 }

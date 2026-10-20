@@ -156,7 +156,7 @@ impl Tool for VolumeAdd {
 pub(crate) struct VolumeUpdate {
     #[schemars(with = "String", pattern(NODE_NAME))]
     volume: VolumeName,
-    /// New storage limit. Only before its first Deploy.
+    /// New storage limit. Only before its first Deploy; a deployed Volume resizes through a Volume resize on Ployz Cloud.
     #[serde(default)]
     #[schemars(pattern(SIZE), example = &"10GiB")]
     size: Option<String>,

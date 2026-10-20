@@ -1,4 +1,5 @@
 import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import { planResize, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
@@ -13,6 +14,7 @@ export type RefusalCode =
   | "second_mirror"
   | "invalid"
   | "already_on"
+  | "already_sized"
   | "no_mirror"
   | "no_copy"
   | "another_copy"
@@ -46,9 +48,15 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember; readonly args: VolumeRunArgs["seed"] } }
+  | { readonly ok: true; readonly phase: ResizePhase }
   | { readonly ok: false; readonly refusal: Refusal };
 
-export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
+/**
+ * A resize also carries the sizes the Store holds for the Volume: `recordedBytes`, the one its copies hold, 0 before
+ * the first Deploy, and `refquotaBytes`, the Working one, 0 for a Docker Volume.
+ */
+export type PlanInput = (Exclude<VolumeRunInput, { kind: "resize" }> | (Extract<VolumeRunInput, { kind: "resize" }> & { readonly recordedBytes: number; readonly refquotaBytes: number }))
+  & { readonly volumeName: string; readonly orphan: boolean };
 
 export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
@@ -174,6 +182,8 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
   }
   if (roleOf(root) === "cutting") return midRun(name, mirrors, root);
+
+  if (input.kind === "resize") return planResize(name, input.args, { recorded: input.recordedBytes, working: input.refquotaBytes }, root, mirrors);
 
   if (input.kind === "sync") {
     const [mirror, second] = mirrors;

@@ -1,11 +1,11 @@
 ---
 name: verify-volume-runs
-description: Model-check Volume Runs (Move, Release, late steps from a dead run) against DESIGN.md bet 6 with the Stateright model in core/crates/ployz-verify. Use when a change touches `plan` or `expect_matches` in ployz-core's volume_copy.rs, `SetVolumeCopy` handling in ployzd (local_volume_copy.rs, spec_store.rs floors, container.rs cut and start), or the volume-run Inngest steps and Postgres gates in dashboard/src/modules/volume-run/.
+description: Model-check Volume Runs (resize, Move, Release, late steps from a dead run) against DESIGN.md bet 6 with the Stateright model in core/crates/ployz-verify. Use when a change touches `plan` or `expect_matches` in ployz-core's volume_copy.rs, `SetVolumeCopy` or `SetVolumeSize` handling in ployzd (local_volume_copy.rs, spec_store.rs floors, container.rs cut and start, volume_plugin/size.rs, the pull's `raise_slot_bound` in volume_plugin/copy.rs), or the volume-run Inngest steps and Postgres gates in dashboard/src/modules/volume-run/.
 ---
 
 # Verify Volume Runs
 
-The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interleaving of one Move, the Release that takes it over, and every `SetVolumeCopy` the dead Move already sent landing late. Once its row ends, the Move sends nothing new: each step checks ownership first. It calls the real `ployz_core::plan`, so a planner change is checked as written. Everything else (the Machine's lock and floor steps, the Inngest drivers, `requireOwner` and the `commitMove` gate) is a hand copy of the code, and drifts unless you keep it in step.
+The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interleaving of one grow of the Volume, one Move after it, the Release that takes the Move over, and every `SetVolumeSize` and `SetVolumeCopy` a dead run already sent landing late. Once its row ends, the Move sends nothing new: each step checks ownership first. It calls the real `ployz_core::plan`, so a planner change is checked as written. Everything else (the Machine's lock and floor steps, `set_size_admitted` and the pull's bound raise, the Inngest drivers, `requireOwner` and the `commitMove` gate) is a hand copy of the code, and drifts unless you keep it in step.
 
 ## Run it
 
@@ -13,27 +13,35 @@ The model in `core/crates/ployz-verify/src/volume_runs.rs` explores every interl
 cd core && cargo test -p ployz-verify
 ```
 
-A few minutes on a cold build, about 5 s warm. CI runs it in the workspace nextest, so a red model blocks the PR.
+A few minutes on a cold build, about 20 s warm. CI runs it in the workspace nextest, so a red model blocks the PR.
 
-The run is green when all five tests pass:
+The run is green when all eight tests pass:
 
-- `volume_runs_hold`: the code as it is. Every property holds and every `sometimes` is reached. A `sometimes` that is never reached also fails here: it means the model can no longer reach that outcome, so a property passing beside it proves nothing.
-- The four `breaks` tests each remove one guard (a `Broken` flag) and expect the named properties to fail. One of these going green-to-red means a guard no longer earns its keep, or the model lost the path that shows it.
+- `volume_runs_hold`: the code as it is, in each of the three scenarios (below). It prints each scenario's state count. Every property holds and every `sometimes` is reached. A `sometimes` that is never reached also fails here: it means the model can no longer reach that outcome, so a property passing beside it proves nothing.
+- The seven `breaks` tests each remove one guard (a `Broken` flag) and expect the named properties to fail. One of these going green-to-red means a guard no longer earns its keep, or the model lost the path that shows it. Three are the resize's: `a_grow_records_only_after_every_copy_holds_it`, `a_refused_grow_records_nothing`, and `a_move_needs_no_raise_of_its_own`, which shows that the pull's raise is what makes a Move to a Machine the grow never asked safe without a raise step of its own.
+
+The full product of the resize and the Move is millions of states, so `Scenario` splits it into slices, each checked whole:
+
+- `Resize`: the resize alone from every start, its row ended at any moment, with its resend and late requests.
+- `ResizeThenMove`: a resize that runs to its own end, then the Move and its Release. The `breaks` tests run here unless they name another.
+- `LateResize`: a grow whose row ends while a `SetVolumeSize` is on the wire. The Move starts at once, and the late request lands anywhere in it.
 
 ## Read a counterexample
 
 A failure prints the property name and a `Path[n]` of actions:
 
-- `Move`, `Release`: the driver takes its next step, sending a request when the step talks to a Machine.
-- `MoveResend`, `ReleaseResend`: the driver resends its outstanding request; the earlier copy may still land later.
+- `Resize`, `Move`, `Release`: the driver takes its next step, sending a request when the step talks to a Machine.
+- `ResizeResend`, `MoveResend`, `ReleaseResend`: the driver resends its outstanding request; the earlier copy may still land later.
+- `EndResize`: Cloud ends the resize's row. Its `SetVolumeSize` still lands later, unfenced.
 - `EndMove`: Cloud ends the Move's row, which spawns the Release.
-- `Machine(i)`: request `i` in `State.requests` advances one step (admit, cut drain, stop, flip, start, reply). The index is the request's position at that moment, not a stable id.
+- `Machine(i)`: request `i` in `State.requests` advances one step (admit, cut drain, stop, flip, start, reply; a `SetVolumeSize` runs in one step). The index is the request's position at that moment, not a stable id. A `SetVolumeSize` answer no driver waits on leaves the list when it lands, and the indices after it move down.
 - `Crash(i)`: A's daemon restarts mid-flip of request `i`, losing every in-flight request on that Machine.
 
 The action list alone rarely tells the story. To see the states, add a scratch test that takes the path and prints it, then delete it:
 
 ```rust
 let path = check(VolumeRuns::default()).discovery(DONE_HOLDS).expect("found");
+// For a resize property, set the scenario: VolumeRuns { scenario: Scenario::Resize, ..VolumeRuns::default() }
 for (state, action) in path.into_vec() { println!("{state:#?}\n-> {action:?}"); }
 ```
 
@@ -60,6 +68,6 @@ When a change intentionally alters the protocol (a new guard, a new step, a reor
 
 ## Bounds and blind spots
 
-Bounds: Machines A and B, one Move and one takeover, one resend per run, one daemon crash, one Busy retry. A bug that needs more of any of these is invisible.
+Bounds: Machines A and B, one resize, one target, before the Move, one Move and one takeover, one resend per run, one daemon crash, one Busy retry. The resize resends only in the `Resize` scenario. One Machine at most lacks room for the target. A bug that needs more of any of these is invisible.
 
-Out of scope: Deploy lanes, operator collisions, Machines that never answer, warm rounds, a second takeover, and anything inside `plan`'s callers that the model does not copy. A green model says nothing about them; cover them with tests or `verify-server`.
+Out of scope: Deploy lanes, operator collisions, Machines that never answer, warm rounds beyond the one pull that brings in a B the grow never asked, a second takeover, real Pool capacities, ZFS, the Store's record transaction, a shrink, a resize during or after a Move, Restore, and anything inside `plan`'s callers that the model does not copy. A green model says nothing about them; cover them with tests or `verify-server`.

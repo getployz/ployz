@@ -328,6 +328,9 @@ void describeDrain;
 
 client.volumeSwitch("one" as MachineTarget, { command: "inspect_volume_copy", payload: { name: "data" } }) satisfies Promise<import("../generated/payloads").VolumeCopyView>;
 client.volumeSwitch("one" as MachineTarget, { command: "seed_volume", payload: { name: "data", into: "data2", guid: "7" } }) satisfies Promise<import("../generated/payloads").VolumeCopyView>;
+client.volumeSwitch("one" as MachineTarget, { command: "set_volume_size", payload: { name: "data", maximum_bytes: 20_000_000_000 } }) satisfies Promise<import("../generated/payloads").SetVolumeSizeReply>;
+// @ts-expect-error a size is a whole byte count, not a GB string
+client.volumeSwitch("one" as MachineTarget, { command: "set_volume_size", payload: { name: "data", maximum_bytes: "20GB" } });
 // @ts-expect-error hand_over is not a Volume switch command
 client.volumeSwitch("one" as MachineTarget, { command: "hand_over", payload: { name: "data" } });
 import("../index").then((sdk) => sdk.observeCopies([]) satisfies Promise<import("../generated/payloads").CopyObservation>);

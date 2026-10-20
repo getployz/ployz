@@ -8,7 +8,7 @@ export type VolumeRunPhase = (typeof VOLUME_RUN_PHASES)[number];
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
 
 /** The kinds a caller requests. A `deploy` row is never requested; a Deploy inserts it as its own lane. */
-export const VOLUME_RUN_REQUEST_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed"] as const;
+export const VOLUME_RUN_REQUEST_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed", "resize"] as const;
 export type VolumeRunRequestKind = (typeof VOLUME_RUN_REQUEST_KINDS)[number];
 export const VOLUME_RUN_KINDS = [...VOLUME_RUN_REQUEST_KINDS, "deploy"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
@@ -46,6 +46,11 @@ export type VolumeRunArgs = {
     readonly guid: string;
     readonly name: string;
   };
+  /**
+   * The size every copy is asked to hold, in whole bytes, as `SetVolumeSizeRequest` names it. The size it grows from
+   * is the row's `recordedBytes`, read from the Store when the run was requested.
+   */
+  resize: { readonly maximum_bytes: number };
   /**
    * A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. `hold`
    * marks a lane on a Volume no run held: it took nothing, so it is never fenced and leaves no row when the Deploy ends.

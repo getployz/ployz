@@ -131,6 +131,8 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
       return { kind: "release", args: {} };
     case "restore":
       return { kind: "restore", args: { from: body.from } };
+    case "resize":
+      return { kind: "resize", args: { maximum_bytes: body.maximum_bytes } };
   }
 }
 

@@ -2171,7 +2171,12 @@ impl Prepared {
             },
             from,
         )?;
-        crate::volume::check_storage(tx, &environment.summary.id, &working.environment().working)?;
+        crate::volume::check_storage(
+            tx,
+            &environment.summary.id,
+            &working.environment().working.volumes,
+            crate::volume::StorageRule::Replay,
+        )?;
         let actual = Plan::between(&environment.working, &working.environment().working)?;
         let (preview, _) = actual.render(&environment.working, &working.environment().working)?;
         let mut overwritten = BTreeSet::new();

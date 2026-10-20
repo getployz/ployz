@@ -28,6 +28,7 @@ use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
 use crate::storage::{Row, Tx, name_of};
+use crate::volume::size::VolumeResized;
 use crate::{Actor, Trusted, build, registry};
 
 /// An observation Cloud made, of GitHub or of the Cluster. Never caller testimony: only Cloud's worker
@@ -51,6 +52,10 @@ pub enum SystemEvent {
     /// storage go too. Authored configuration and Deployment history stay. A later
     /// removal of an Environment completes as Forgotten.
     ClusterForgotten,
+    /// Cloud's resize run moved a deployed Managed Volume's size, in either
+    /// direction: the Store records it in the Volume's fixed storage, Applied State
+    /// and, where it still says the old size, Working State, at once.
+    VolumeResized(VolumeResized),
 }
 
 /// A branch's head as Cloud read it just now, and what changed since `base`.
@@ -183,6 +188,9 @@ pub(crate) fn system(
             cancelled: crate::teardown::forget_cluster(tx, &who)?,
             ..Automated::default()
         }),
+        SystemEvent::VolumeResized(resized) => {
+            crate::volume::size::record(tx, &who, resized).map(|()| Automated::default())
+        }
     }
 }
 

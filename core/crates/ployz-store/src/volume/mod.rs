@@ -4,6 +4,7 @@
 //! needs its destructive review (see `crate::removal`).
 
 pub(crate) mod query;
+pub(crate) mod size;
 
 use std::collections::BTreeMap;
 
@@ -21,6 +22,7 @@ use crate::id::{EnvironmentId, VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{SettingPath, Target};
 use crate::storage::Tx;
+pub(crate) use size::{StorageRule, check_storage};
 
 /// Create a Volume, optionally mounted into Services.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -85,7 +87,9 @@ pub struct RenameVolume {
     pub name: VolumeName,
 }
 
-/// Change a draft Volume's storage. Deployment fixes its storage choice and limit.
+/// Change a draft Volume's storage. A Deploy fixes its storage choice and limit; a
+/// deployed Managed Volume then resizes only through `ployz volume set NAME --size N`,
+/// which resizes every copy and records the size.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SetVolumeStorage {
@@ -238,7 +242,13 @@ pub(crate) fn set_storage(
     let changed = volume.storage != set.storage;
     if changed {
         volume.storage = set.storage;
-        check_storage(tx, &environment.summary.id, &environment.working)?;
+        let edited = volume.resource_id.clone();
+        check_storage(
+            tx,
+            &environment.summary.id,
+            &environment.working.volumes,
+            StorageRule::Edit { volume: &edited },
+        )?;
         scope::save_working(tx, &mut environment)?;
     }
     staged(environment, &set.volume, changed)
@@ -262,7 +272,8 @@ fn staged(
 
 /// Fix the storage of each Volume of `intent` that `targets` names, the first time
 /// a Deployment targets it: an attempt may prepare storage even when it never
-/// applies, failed, cancelled and retried ones included. Refuse any other storage.
+/// applies, failed, cancelled and retried ones included. Refuse storage the fixed
+/// one doesn't fit under [`StorageRule::Replay`].
 pub(crate) fn fix_storage(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -275,7 +286,7 @@ pub(crate) fn fix_storage(
         }
         lock_storage(tx, environment, &volume.resource_id, &volume.storage)?;
     }
-    check_storage(tx, environment, intent)
+    check_storage(tx, environment, &intent.volumes, StorageRule::Replay)
 }
 
 /// Fix `volume`'s storage at `storage`, unless it is already fixed.
@@ -310,34 +321,6 @@ pub(crate) fn locked_storage(
     .iter()
     .map(|row| Ok((row.text(0)?.to_owned(), row.json(1, "Volume storage")?)))
     .collect()
-}
-
-/// Refuse `intent` when it gives a Volume storage other than its fixed one.
-pub(crate) fn check_storage(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    intent: &SavedEnvironmentIntent,
-) -> Result<(), RpcError> {
-    if intent.volumes.is_empty() {
-        return Ok(());
-    }
-    let locked = locked_storage(tx, environment)?;
-    for volume in &intent.volumes {
-        if locked
-            .get(&volume.resource_id)
-            .is_some_and(|storage| *storage != volume.storage)
-        {
-            return Err(error::conflict(
-                format!(
-                    "Volume {} keeps its storage once a Deploy has been requested; add a new \
-                     Volume for other storage",
-                    volume.name
-                ),
-                json!({ "volume": volume.name, "storage_locked": true }),
-            ));
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn remove_volume(

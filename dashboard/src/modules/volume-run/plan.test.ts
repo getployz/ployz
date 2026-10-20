@@ -4,15 +4,19 @@ import { expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCo
 import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
-const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, volumeName: "data", orphan: false });
-const sync = (full = false): PlanInput => ({ kind: "sync", args: { full }, volumeName: "data", orphan: false });
+const GB = 1_000_000_000;
+const data = { volumeName: "data", orphan: false } as const;
+const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, ...data });
+const sync = (full = false): PlanInput => ({ kind: "sync", args: { full }, ...data });
 const remove = (slot: string | null, confirmed: string | null = null): PlanInput =>
-  ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed, role: "any" }, volumeName: "data", orphan: false });
-const move = (to: string): PlanInput => ({ kind: "move", args: { to }, volumeName: "data", orphan: false });
-const release: PlanInput = { kind: "release", args: {}, volumeName: "data", orphan: false };
-const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, volumeName: "data", orphan: false });
-const seed: PlanInput = { kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "w-1-4" }, volumeName: "data", orphan: false };
-const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, volumeName: "ns_vol-1", orphan: true };
+  ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed, role: "any" }, ...data });
+const move = (to: string): PlanInput => ({ kind: "move", args: { to }, ...data });
+const release: PlanInput = { kind: "release", args: {}, ...data };
+const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, ...data });
+const seed: PlanInput = { kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "w-1-4" }, ...data };
+const resize = (gigabytes: number, size: { recordedBytes?: number; refquotaBytes?: number } = {}): PlanInput =>
+  ({ kind: "resize", args: { maximum_bytes: gigabytes * GB }, ...data, recordedBytes: 10 * GB, refquotaBytes: 10 * GB, ...size });
+const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, ...data, volumeName: "ns_vol-1", orphan: true };
 
 const bare = (server: string, epoch: number): Member =>
   ({ machine: member(server, "cut").machine, address: "fdcc::1", answered: true, view: { copy: { ...COPIES.cut, epoch, newest: null } }, floorless: false });
@@ -46,6 +50,8 @@ function outcome(input: PlanInput, members: Member[]) {
       return `demote ${phase.old.machine.name} below ${phase.writer.machine.name}`;
     case "seed":
       return `seed on ${phase.source.machine.name}`;
+    case "resize":
+      return `${phase.direction} ${phase.from / GB}->${phase.to / GB} GB: ${phase.steps.map((step) => (step.kind === "record" ? "record" : `${step.role} ${step.member.machine.name}`)).join(", ")}`;
   }
 }
 
@@ -369,6 +375,48 @@ describe("plan_from_copies_table", () => {
     });
     expect(planFromCopies(remove("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
     expect(planFromCopies(move("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
+  });
+});
+
+describe("plan a resize", () => {
+  const copies = [member("fsn-1", "writer"), member("fsn-2", "mirror"), member("fsn-3", "mirror")];
+
+  it("sets every mirror first, the primary last, then records", () => {
+    expect(outcome(resize(20), copies)).toBe("grow 10->20 GB: mirror fsn-2, mirror fsn-3, primary fsn-1, record");
+  });
+
+  it("sets a lone primary, then records", () => {
+    expect(outcome(resize(20), [member("fsn-1", "writer")])).toBe("grow 10->20 GB: primary fsn-1, record");
+  });
+
+  it("is the same plan on every replay from the same copies", () => {
+    const once = planFromCopies(resize(20), copies);
+    expect(planFromCopies(resize(20), copies)).toEqual(once);
+    expect(copies.map((each) => each.machine.name)).toEqual(["fsn-1", "fsn-2", "fsn-3"]);
+  });
+
+  it.each<[string, PlanInput, Member[], string]>([
+    ["a Server lacking the verb", resize(20), [...copies, { machine: member("fsn-4", "unanswered").machine, answered: false, lack: "Volume resize needs a newer Ployz on fsn-4." }], "refuse server_lacks"],
+    ["a Server that did not answer", resize(20), [...copies, member("fsn-4", "unanswered")], "refuse unanswered"],
+    ["no writer", resize(20), [member("fsn-2", "mirror")], "refuse no_writer"],
+    ["a cut in progress", resize(20), [member("fsn-1", "cut"), member("fsn-2", "pulling")], "refuse volume_switching"],
+    ["two writers", resize(20), [member("fsn-1", "writer"), member("fsn-2", "writer")], "refuse two_writers"],
+    ["an old copy beside the writer", resize(20), [member("fsn-1", "writer", { epoch: 2 }), member("fsn-2", "writer", { epoch: 1 })], "demote fsn-2 below fsn-1"],
+    ["a Docker Volume", resize(20, { recordedBytes: 0, refquotaBytes: 0 }), copies, "refuse invalid"],
+    ["a Volume no Deploy sized yet", resize(20, { recordedBytes: 0 }), copies, "refuse invalid"],
+    ["the size it already has", resize(10), copies, "refuse already_sized"],
+    ["a smaller size", resize(5), copies, "refuse invalid"],
+  ])("refuses or demotes with %s", (_, input, members, expected) => {
+    expect(outcome(input, members)).toBe(expected);
+  });
+
+  it("names the Server that lacks the verb, the size it already has and the size it cannot shrink to", () => {
+    const lacking: Member = { machine: member("fsn-4", "unanswered").machine, answered: false, lack: "Volume resize needs a newer Ployz on fsn-4." };
+    expect(planFromCopies(resize(20), [...copies, lacking])).toMatchObject({ ok: false, refusal: { message: "Volume resize needs a newer Ployz on fsn-4." } });
+    expect(planFromCopies(resize(10), copies)).toMatchObject({ ok: false, refusal: { code: "already_sized", message: "data already has 10 GB" } });
+    expect(planFromCopies(resize(5), copies)).toMatchObject({ ok: false, refusal: { message: "data has 10 GB; shrinking a deployed Volume isn't supported yet" } });
+    expect(planFromCopies(resize(20, { recordedBytes: 0, refquotaBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data uses Docker storage, which has no size to change; add a Managed Volume for a sized one" } });
+    expect(planFromCopies(resize(20, { recordedBytes: 0 }), copies)).toMatchObject({ ok: false, refusal: { message: "data has no deployed size to change yet; deploy it first" } });
   });
 });
 

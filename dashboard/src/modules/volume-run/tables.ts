@@ -47,6 +47,8 @@ export const volumeRun = pgTable(
     orphan: boolean("orphan").default(false).notNull(),
     // 0 for a Volume without a maximum (a Docker Volume).
     refquotaBytes: bigint("refquota_bytes", { mode: "number" }).default(0).notNull(),
+    /** The size the Store recorded its Servers hold when the run was requested; 0 before its first Deploy or for a Docker Volume. */
+    recordedBytes: bigint("recorded_bytes", { mode: "number" }).default(0).notNull(),
     state: text("state").default("requested").notNull().$type<VolumeRunState>(),
     /** The epoch this run gives a new writer, so a later run on the Volume numbers above it. */
     epoch: bigint("epoch", { mode: "number" }),
