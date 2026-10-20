@@ -1137,11 +1137,19 @@ fn running(stored: &Stored) -> Result<(), RpcError> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread loaded a Saved revision, for tests that bound it.
+    pub(crate) static SAVED_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn saved_at(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
+    #[cfg(test)]
+    SAVED_READS.set(SAVED_READS.get() + 1);
     if revision == NOTHING {
         return scope::load_by_id(tx, environment)
             .map(|loaded| crate::scope::empty(&loaded.working.environment_slug));
