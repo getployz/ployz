@@ -60,7 +60,10 @@ server more time, see [Build resources and cache](build-resources-and-cache.md#g
 
 - **Changing a variable rebuilds** the services that use it on their next deploy, because builds
   can read variables. That includes a service you deploy with `ployz up`: Ployz keeps its latest
-  upload and builds it again. Changing replicas, domains, or CPU and memory limits doesn't.
+  upload and builds it again. If a deploy made while your servers ran 0.3.0-beta.6 or earlier
+  sent a new upload and failed, Ployz keeps that upload until you send another, but builds the
+  service from the upload it last ran. Changing replicas, domains, or CPU and memory limits
+  doesn't.
 - **Git submodules, Git LFS and very large repositories don't build.** Keep large files out of
   the repository; see [Troubleshooting builds](../troubleshooting/builds.md#my-repository-is-too-big-or-uses-submodules).
 - **A build gets your service's variables, secrets included.** See
