@@ -1025,16 +1025,20 @@ fn retried(
 }
 
 /// A queued Deployment of `who`'s Organization, checked that a runner may still
-/// claim it. Nothing changes: the caller hands it to a runner.
+/// claim it and a Server could run it. Nothing changes: the caller hands it to a runner.
 pub(crate) fn start(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &DeploymentId,
+    trusted: &crate::Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     owned(tx, who, id)?;
     let stored = locked(tx, id)?;
     match stored.summary.status {
-        DeploymentStatus::Queued => Ok(stored.summary),
+        DeploymentStatus::Queued => {
+            trusted.runnable()?;
+            Ok(stored.summary)
+        }
         DeploymentStatus::Running | DeploymentStatus::Cancelling => Err(error::conflict(
             "This Deployment is already running",
             json!({ "deployment": id }),
