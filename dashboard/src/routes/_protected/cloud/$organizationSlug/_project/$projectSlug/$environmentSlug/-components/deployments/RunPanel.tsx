@@ -6,7 +6,7 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { LatestButton, LogEmpty } from "#/components/log-scroll";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
-import { missingDeployLogs, nodeStatusLabels, outcomeReason } from "#/modules/config-store/store-deployments";
+import { missingDeployLogs, nodeStatusLabels, outcomeReason, shownNodeStatus } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { buildStatusLabels, rowLabel, rowLight, rowTiming, type OutcomeRunNode, type RunNode } from "./run-graph";
@@ -25,7 +25,7 @@ export function RunPanel({ deployment, node }: { deployment: DeploymentView; nod
 
 function RunNodeDetail({ deployment, node }: { deployment: DeploymentView; node: RunNode }) {
   const Icon = runNodeIcons[node.type];
-  const status = node.type === "build" ? buildStatusLabels[node.build.status] : nodeStatusLabels[node.node.outcome];
+  const status = node.type === "build" ? buildStatusLabels[node.build.status] : nodeStatusLabels[shownNodeStatus(node.node)];
   const deleted = node.type === "volume" && node.node.outcome === "removed";
   return (
     <>
@@ -121,7 +121,7 @@ function Row({ row }: { row: ServerRow }) {
         <span className="text-muted-foreground">{rowLabel(row)}</span>
         <span className="ml-auto"><RunTime timing={rowTiming([row])} /></span>
       </div>
-      {row.state === "failed" ? (
+      {row.state === "failed" && !row.cancelled ? (
         <div className="flex flex-col gap-0.5 pl-5.5 text-destructive">
           <p className="break-words">{row.reason}</p>
           {row.cause.map((cause) => <p key={cause} className="break-words text-muted-foreground">{cause}</p>)}
