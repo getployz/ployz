@@ -258,6 +258,18 @@ async fn a_volume_switch_the_target_never_answered_may_have_reached_it() {
     assert!(failure.unanswered, "{failure}");
 }
 
+#[tokio::test]
+async fn a_volume_switch_whose_dial_to_the_target_failed_never_reached_it() {
+    let (client, _session, _machine) =
+        switch_session(machine_id('b'), SwitchFailure::Undialed).await;
+    let failure = client
+        .volume_switch(machine_id('b').as_str(), set_volume_copy())
+        .await
+        .unwrap_err();
+    assert_eq!(failure.error.code, RpcErrorCode::Unavailable);
+    assert!(!failure.unanswered, "{failure}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_volume_switch_that_outlives_its_deadline_may_have_reached_it() {
     let (client, _session, _machine) = switch_session(machine_id('b'), SwitchFailure::Hangs).await;

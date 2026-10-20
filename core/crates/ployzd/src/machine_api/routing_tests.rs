@@ -206,41 +206,128 @@ async fn forwarding_keeps_the_cloud_routed_mark() {
     server.await.unwrap().unwrap();
 }
 
-#[tokio::test]
-async fn a_target_that_does_not_answer_is_marked_as_the_router_s_own_failure() {
-    let listener = TcpListener::bind("[::1]:0").await.unwrap();
-    let silent_port = listener.local_addr().unwrap().port();
-    drop(listener);
-    let local = machine('1', "local", 1);
-    let remote = machine('2', "remote", 2);
-    let proxy = MachineProxy::new(
-        Routes::new(EchoService::default()),
-        local.id,
-        silent_port,
-        None,
-    );
-    proxy.remote_backends.lock().unwrap().insert(
-        remote.management_address(),
-        tonic::transport::Endpoint::from_shared(format!("http://[::1]:{silent_port}"))
-            .unwrap()
-            .connect_lazy(),
-    );
-    let request = http::Request::builder()
-        .uri("/ployz.rpc.v1.MachineRpc/Inspect")
-        .header("content-type", "application/grpc")
-        .header("machine", remote.name.as_str())
-        .body(Body::empty())
-        .unwrap();
+const TARGET_UNREACHED_KEY: &str = "ployz-target-unreached";
 
-    let response = proxy.dispatch_with_snapshot(request, &[remote]).await;
-    let status = tonic::Status::from_header_map(response.headers()).unwrap();
-    assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
+#[tokio::test]
+async fn a_dial_the_target_refuses_is_marked_as_never_reaching_it() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let closed_port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let status = routed_failure(closed_port, None).await;
+
+    assert!(
+        status
+            .metadata()
+            .contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY),
+        "an older client must still read a failed dial as the router's own failure: {status:?}"
+    );
+    assert!(
+        status.metadata().contains_key(TARGET_UNREACHED_KEY),
+        "a refused dial never sent the call: {status:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_target_that_drops_the_call_after_taking_it_may_have_reached_it() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let target = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_until_request_headers(&mut stream).await;
+    });
+
+    let status = routed_failure(port, None).await;
+    target.await.unwrap();
+
     assert!(
         status
             .metadata()
             .contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY),
         "{status:?}"
     );
+    assert!(
+        !status.metadata().contains_key(TARGET_UNREACHED_KEY),
+        "the target held the call before it dropped: {status:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_target_that_outlives_the_call_deadline_may_have_reached_it() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (release, released) = oneshot::channel::<()>();
+    let target = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_until_request_headers(&mut stream).await;
+        let _ = released.await;
+    });
+
+    let status = routed_failure(port, Some("100m")).await;
+    let _ = release.send(());
+    target.await.unwrap();
+
+    assert!(
+        status
+            .metadata()
+            .contains_key(ployz_core::rpc::TARGET_UNANSWERED_KEY),
+        "{status:?}"
+    );
+    assert!(
+        !status.metadata().contains_key(TARGET_UNREACHED_KEY),
+        "the target held the call when its deadline passed: {status:?}"
+    );
+}
+
+/// The status the router answers for one call to a remote Machine listening on `port`.
+async fn routed_failure(port: u16, grpc_timeout: Option<&str>) -> tonic::Status {
+    let local = machine('1', "local", 1);
+    let remote = machine('2', "remote", 2);
+    let proxy = MachineProxy::new(Routes::new(EchoService::default()), local.id, port, None);
+    proxy.remote_backends.lock().unwrap().insert(
+        remote.management_address(),
+        tonic::transport::Endpoint::from_shared(format!("http://[::1]:{port}"))
+            .unwrap()
+            .connect_lazy(),
+    );
+    let mut request = http::Request::builder()
+        .uri("/ployz.rpc.v1.MachineRpc/Inspect")
+        .header("content-type", "application/grpc")
+        .header("machine", remote.name.as_str());
+    if let Some(timeout) = grpc_timeout {
+        request = request.header("grpc-timeout", timeout);
+    }
+    let request = request.body(Body::empty()).unwrap();
+
+    let response = proxy.dispatch_with_snapshot(request, &[remote]).await;
+    let status = tonic::Status::from_header_map(response.headers()).unwrap();
+    assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
+    status
+}
+
+/// Reads the HTTP/2 preface and frames until the call's HEADERS frame has arrived.
+async fn read_until_request_headers(stream: &mut tokio::net::TcpStream) {
+    use tokio::io::AsyncReadExt;
+
+    const PREFACE: usize = 24;
+    const HEADERS: u8 = 0x1;
+    let mut received = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut frame_start = PREFACE;
+    loop {
+        while received.len() >= frame_start + 9 {
+            let header = &received[frame_start..frame_start + 9];
+            if header[3] == HEADERS {
+                return;
+            }
+            let length =
+                usize::from(header[0]) << 16 | usize::from(header[1]) << 8 | usize::from(header[2]);
+            frame_start += 9 + length;
+        }
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert_ne!(read, 0, "the router closed before sending the call");
+        received.extend_from_slice(&buffer[..read]);
+    }
 }
 
 #[tokio::test]
