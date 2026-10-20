@@ -1,7 +1,8 @@
 import { it } from "@effect/vitest";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Exit, Layer, Redacted, Tracer } from "effect";
-import { expect } from "vitest";
+import { Effect, Exit, Layer, Redacted } from "effect";
+import { Client } from "pg";
+import { expect, vi } from "vitest";
 import { organizationBillingState } from "#/modules/billing/tables";
 import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -428,21 +429,17 @@ it.live("two people claiming at once: one keeps the sandbox, the other hears it 
     expect(yield* drizzle.select().from(user).where(eq(user.isAnonymous, true))).toEqual([]);
   })));
 
-/** The SQL statements `program` sends, each a round trip to PostgreSQL. */
+/** Every statement `program` sends to PostgreSQL through any pg client, transaction control included: one round trip each. */
 const statementsOf = <A, E, R>(program: Effect.Effect<A, E, R>) => Effect.gen(function* () {
-  const spans: Array<Tracer.NativeSpan> = [];
-  const tracer = Tracer.make({
-    span(options) {
-      const span = new Tracer.NativeSpan(options);
-      spans.push(span);
-      return span;
-    },
-  });
-  yield* program.pipe(Effect.withTracer(tracer));
-  return spans.filter((span) => span.name === "sql.execute").map((span) => String(span.attributes.get("db.query.text")));
+  const query = vi.spyOn(Client.prototype, "query");
+  const sent = yield* program.pipe(
+    Effect.map(() => query.mock.calls.map(([statement]) => statement)),
+    Effect.ensuring(Effect.sync(() => query.mockRestore())),
+  );
+  return sent;
 });
 
-it.live("a claim back from the claim page's sign-in takes at most 19 round trips, however many tables name an Organization", () =>
+it.live("a claim back from the claim page's sign-in takes at most 21 round trips, however many tables name an Organization", () =>
   inCloud(Effect.gen(function* () {
     const claimOnce = Effect.fn(function* (i: number) {
       const agent = yield* sandbox();
@@ -452,9 +449,32 @@ it.live("a claim back from the claim page's sign-in takes at most 19 round trips
     // The first claim opens the Store, which makes its tables.
     yield* claimOnce(0);
     const claimed = yield* claimOnce(1);
-    expect(claimed.length).toBeLessThanOrEqual(19);
+    expect(claimed.length).toBeLessThanOrEqual(21);
     const { drizzle } = yield* Database;
     for (let i = 0; i < 5; i++) yield* drizzle.execute(sql.raw(`create table claim_cost_${i} (organization_id text)`));
     expect(yield* claimOnce(2)).toHaveLength(claimed.length);
     expect(yield* organizationIds()).toHaveLength(3);
   })));
+
+// A loose ceiling for what round trips miss; the statement budget above is the tight bound.
+it.live("a claim back from the claim page's sign-in has a p95 under 400 ms", () =>
+  inCloud(Effect.gen(function* () {
+    const warmup = 5;
+    const measured = 60;
+    const pairs = [];
+    for (let i = 0; i < warmup + measured; i++) {
+      const agent = yield* sandbox();
+      pairs.push({ agent, claimer: yield* claimSignUp(`Person ${i}`, `person-${i}@example.test`, agent.secret) });
+    }
+    const timings: number[] = [];
+    for (const [i, { agent, claimer }] of pairs.entries()) {
+      const started = performance.now();
+      yield* claimOrganization(claimer.actor, agent.secret);
+      if (i >= warmup) timings.push(performance.now() - started);
+    }
+    expect(yield* organizationIds()).toHaveLength(warmup + measured);
+    const sorted = [...timings].sort((a, b) => a - b);
+    const at = (q: number) => sorted[Math.ceil(sorted.length * q) - 1] ?? 0;
+    console.log(`claim timings ms: p50=${at(0.5).toFixed(1)} p95=${at(0.95).toFixed(1)} max=${at(1).toFixed(1)}`);
+    expect(at(0.95)).toBeLessThan(400);
+  })), 120_000);
