@@ -29,7 +29,7 @@ function viewport({ wide }: { wide: boolean }) {
 function showRow(membership: RuntimeMachineRecord["membership"]) {
   const machine: RuntimeMachineRecord = {
     id: "1".repeat(32), name: "syd-1", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
-    buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion: "0.3.0", capabilities: [], membership,
+    buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion: "0.3.0", capabilities: [], poolCommittableBytes: null, membership,
     observedContainerCount: 0, observedAt: "2026-10-12T00:00:00Z",
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
