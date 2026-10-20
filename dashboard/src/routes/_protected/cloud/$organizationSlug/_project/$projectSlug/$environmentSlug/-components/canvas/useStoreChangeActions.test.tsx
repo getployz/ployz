@@ -4,12 +4,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import type { JsonValue, RowId } from "@ployz/sdk";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import * as lens from "#/modules/runtime/use-runtime-lens";
-import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
+import type { PlacementLoss, PlacementRow } from "#/modules/volume-placement/volume-placement";
+import * as placements from "#/modules/volume-placement/volume-placement.functions";
+import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
+import * as runs from "#/modules/volume-run/volume-run.functions";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 
 afterEach(() => {
@@ -254,6 +257,57 @@ it("titles the ask Data loss when Cloud refuses a Deploy whose staged restore dr
   await screen.findByText("pg-data");
   expect(screen.getByText("Data loss")).toBeTruthy();
   expect(screen.queryByText("Deletes data")).toBeNull();
+});
+
+describe("an open Data loss confirm across midnight", () => {
+  const point = new Date(2026, 9, 11, 23, 55);
+  const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  function StagedDeploy() {
+    const { loss } = useStagedPlacements("acme", ref, "env-1", [{ id: "vol-restored", name: "data-2355", change: null }]);
+    const { deploy, dialog } = useStoreChangeActions("acme", ref, "2:1:0", () => undefined, loss);
+    return <>
+      <button type="button" onClick={() => deploy(null)}>{`Deploy ${loss.items.length}`}</button>
+      {dialog}
+    </>;
+  }
+
+  it("dates a staged restore's point once the day turns", async () => {
+    const test = setup();
+    cleanup();
+    const restore: PlacementRow = {
+      volumeId: "vol-restored", environmentId: "env-1", mirrors: [], unreached: false, deploymentId: null,
+      staged: {
+        primary: "web-1".padEnd(32, "0") as never, mirrors: [], deletes: [],
+        seed: { sourceVolumeId: "vol-source", sourceName: "data", dockerVolume: "shop_vol-restored", point: { guid: "1", name: "p", at: point.getTime() / 1000 } },
+      },
+    };
+    vi.spyOn(placements, "listPlacementsServerFn").mockResolvedValue([restore] as never);
+    vi.spyOn(runs, "inspectVolumeCopiesServerFn").mockResolvedValue([] as never);
+    render(<QueryClientProvider client={test.queryClient}><StagedDeploy /></QueryClientProvider>);
+    fireEvent.click(await screen.findByText("Deploy 1"));
+
+    expect(await screen.findByText(`changes after ${clock.format(point)}`)).toBeTruthy();
+    act(() => vi.advanceTimersByTime(2 * 60_000));
+    expect(screen.getByText(`changes after ${dated.format(point)}`)).toBeTruthy();
+  });
+
+  it("dates the point of a restore Cloud refused once the day turns", async () => {
+    const test = setup();
+    const restore = { volumes: [{ name: "pg-data", deletes: [{ machine_id: "m1" }], loss: "writes", after: point.getTime() / 1000 }], accept: ["pg-data"], version: "9:1:0.1" };
+    test.write.mockResolvedValueOnce(refusal("confirmation_required", restore));
+    act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+
+    expect(await screen.findByText(`hetzner-1 · changes after ${clock.format(point)}`)).toBeTruthy();
+    act(() => vi.advanceTimersByTime(2 * 60_000));
+    expect(screen.getByText(`hetzner-1 · changes after ${dated.format(point)}`)).toBeTruthy();
+  });
 });
 
 it("discards a Setting by its Store path, through the Environment's queue", async () => {

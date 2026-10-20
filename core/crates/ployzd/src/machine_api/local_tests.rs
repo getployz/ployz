@@ -957,7 +957,7 @@ mod set_volume_copy {
         let raise = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
             "want":{"kind":"writer", "at":"7", "epoch":2, "start":{
                 "kind":"create", "namespace":"app", "resolved_spec":spec(),
-                "creation_key":"move-1"}}});
+                "creation_key":"move-1", "gen":1, "rotation":"pending"}}});
 
         let raised = reply(&set_copy(&service, raise).await);
 
@@ -1049,7 +1049,7 @@ mod set_volume_copy {
         let raise = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
             "want":{"kind":"writer", "at":"7", "epoch":2, "start":{
                 "kind":"create", "namespace":"app", "resolved_spec":spec(),
-                "creation_key":"move-1"}}});
+                "creation_key":"move-1", "gen":1, "rotation":"pending"}}});
 
         reply(&set_copy(&service, raise).await);
 
@@ -1881,7 +1881,7 @@ mod set_volume_copy {
             "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
             "want":{"kind":"writer", "at":"900", "epoch":1, "start":{
                 "kind":"create", "namespace":"app", "resolved_spec":spec(),
-                "creation_key":"move-1"}}});
+                "creation_key":"move-1", "gen":1, "rotation":"pending"}}});
         reply(&set_copy(&service, step_five.clone()).await);
         fake.named_containers
             .as_ref()
@@ -1965,7 +1965,7 @@ mod set_volume_copy {
         let request = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
             "want":{"kind":"writer", "at":"900", "epoch":1, "start":{
                 "kind":"create", "namespace":"app", "resolved_spec":spec(),
-                "creation_key":"move-1"}}});
+                "creation_key":"move-1", "gen":1, "rotation":"pending"}}});
 
         let first = reply(&set_copy(&service, request.clone()).await);
         let again = reply(&set_copy(&service, request).await);

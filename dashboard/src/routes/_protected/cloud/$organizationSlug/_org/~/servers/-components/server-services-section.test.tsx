@@ -50,13 +50,13 @@ const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boo
 };
 const resultRow = (key: string) => screen.getByText(key.split("/")[1] ?? key).closest('[role="listitem"]') as HTMLElement;
 
-const moved: ServiceDrain = { service: "shop/api", result: "moved", moves: [{ from: web2, to: web1 }] };
+const moved: ServiceDrain = { service: "shop/api", result: "moved", moves: [{ from: web2, to: web1, old: { kind: "stopped" } }] };
 const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason: { kind: "volume", server: web2 } };
 const retired: ServiceDrain = { service: "monitoring/node-exporter", result: "retired" };
 const failed: ServiceDrain = {
   service: "shop/worker",
   result: "failed",
-  moves: [{ from: web2, to: web1 }],
+  moves: [{ from: web2, to: web1, old: { kind: "stopped" } }],
   failure: { stage: "copy_image", from: web2, to: web1, detail: "disk full" },
 };
 

@@ -65,10 +65,11 @@ async fn dispatches_the_complete_algebra() {
         },
     ];
     let plan = operations.clone();
-    let older = DeploymentLogId::parse("older").unwrap();
     let client = Scripted::new(vec![
         created(Call::Run(first, ContainerKind::ServiceContainer), &new_run),
+        observed(Call::Inspect(first, old), running()),
         ok(Call::Stop(first, old)),
+        observed(Call::Inspect(first, bind_conflict), running()),
         ok(Call::Stop(first, bind_conflict)),
         created(
             Call::Run(first, ContainerKind::ServiceContainer),
@@ -83,17 +84,15 @@ async fn dispatches_the_complete_algebra() {
             machine_id: first,
             name: DockerVolumeName::parse("data").unwrap(),
         })),
+        observed(Call::Inspect(first, old), running()),
+        ok(Call::Remove(first, old)),
+        observed(Call::Inspect(first, removed), running()),
         ok(Call::Remove(first, removed)),
     ]);
-    client.pointers.lock().unwrap().insert(
-        QualifiedService::new(test_namespace(), ServiceName::parse("api").unwrap()),
-        ServingPointer {
-            deploy: older.clone(),
-            containers: vec![old, removed],
-            previous: None,
-            retiring: Vec::new(),
-            deciding: None,
-        },
+    let client = client.with_copy(&first, &old, CopyRotation::In).with_copy(
+        &first,
+        &removed,
+        CopyRotation::In,
     );
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -105,34 +104,12 @@ async fn dispatches_the_complete_algebra() {
             services: ended(&[("api", ServiceResult::New)]),
         }
     );
-    let pins = client.pins();
-    let [amendment] = pins.as_slice() else {
-        panic!("the stop of the pointed copy amends the admitted row");
-    };
-    assert_eq!(
-        amendment.pointer,
-        ServingPointer {
-            deploy: older.clone(),
-            containers: vec![removed],
-            previous: Some(older.clone()),
-            retiring: vec![old],
-            deciding: None,
-        }
-    );
-    let publications = client.publications();
-    let [publication] = publications.as_slice() else {
-        panic!("one pointer flip for the one Service");
-    };
-    assert_eq!(
-        publication.pointer,
-        ServingPointer {
-            deploy: run_id(),
-            containers: vec![new_run, replacement, nested],
-            previous: Some(older),
-            retiring: vec![old, removed],
-            deciding: None,
-        }
-    );
+    for copy in [new_run, replacement, nested] {
+        assert_eq!(client.rotation(&copy), Some(CopyRotation::In));
+    }
+    for copy in [old, removed] {
+        assert_eq!(client.rotation(&copy), None, "the old copies are removed");
+    }
     client.assert_done();
 }
 
@@ -200,10 +177,11 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
                 let DeployOperation::StopContainer { container_id, .. } = operation else {
                     unreachable!()
                 };
+                let inspect = observed(Call::Inspect(machine, *container_id), running());
                 if index == failed_index {
-                    vec![failed(Call::Stop(machine, *container_id), "boom")]
+                    vec![inspect, failed(Call::Stop(machine, *container_id), "boom")]
                 } else {
-                    vec![ok(Call::Stop(machine, *container_id))]
+                    vec![inspect, ok(Call::Stop(machine, *container_id))]
                 }
             })
             .collect();
@@ -319,9 +297,14 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
         stop(&machine, &suffix),
     ];
     let client = Scripted::new(vec![
-        Step(Call::Stop(machine, stopped), Reply::Error(missing.clone())),
+        Step(
+            Call::Inspect(machine, stopped),
+            Reply::Error(missing.clone()),
+        ),
+        observed(Call::Inspect(machine, removed), running()),
         ok(Call::Remove(machine, removed)),
         Step(Call::RemoveVolume(volume), Reply::Error(missing)),
+        observed(Call::Inspect(machine, suffix), running()),
         ok(Call::Stop(machine, suffix)),
     ]);
 
@@ -415,22 +398,64 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let requests = requests.clone();
             async move {
-                let RpcRequestBody::EnsureContainer(request) =
-                    rpc.into_inner().decode_request().unwrap().body
-                else {
-                    panic!("only ensure is expected");
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::InspectContainer(_) => {
+                        ployz_core::RpcResponse::from(ContainerDetails {
+                            container: observation(&machine('1'), &container('a'), running()),
+                            environment: None,
+                            image_id: None,
+                            last_check: None,
+                            run: None,
+                        })
+                    }
+                    RpcRequestBody::EnsureContainer(request) => {
+                        requests.lock().unwrap().push(request);
+                        ployz_core::RpcResponse::from(EnsuredContainer::Ensured {
+                            health: None,
+                            now: ContainerNow::Absent {
+                                of: ContainerLocator::Id(container('a')),
+                            },
+                        })
+                    }
+                    other @ (RpcRequestBody::DescribeContract(_)
+                    | RpcRequestBody::Inspect(_)
+                    | RpcRequestBody::Enroll(_)
+                    | RpcRequestBody::Register(_)
+                    | RpcRequestBody::SetManagementClient(_)
+                    | RpcRequestBody::SetPushTarget(_)
+                    | RpcRequestBody::SelectEndpoint(_)
+                    | RpcRequestBody::ListMachines(_)
+                    | RpcRequestBody::UpdateMachine(_)
+                    | RpcRequestBody::RequestMachineUpgrade(_)
+                    | RpcRequestBody::Leave(_)
+                    | RpcRequestBody::Forget(_)
+                    | RpcRequestBody::ListContainers(_)
+                    | RpcRequestBody::InspectStorage(_)
+                    | RpcRequestBody::PrepareVolumes(_)
+                    | RpcRequestBody::ListVolumes(_)
+                    | RpcRequestBody::RemoveVolume(_)
+                    | RpcRequestBody::InspectVolumeCopy(_)
+                    | RpcRequestBody::SeedVolume(_)
+                    | RpcRequestBody::SetVolumeCopy(_)
+                    | RpcRequestBody::SetVolumeSize(_)
+                    | RpcRequestBody::ListImages(_)
+                    | RpcRequestBody::PruneImages(_)
+                    | RpcRequestBody::EnsureImageIngest(_)
+                    | RpcRequestBody::PullImage(_)
+                    | RpcRequestBody::PullImageFromMachine(_)
+                    | RpcRequestBody::MintBuildGrant(_)
+                    | RpcRequestBody::InspectBuildGrant(_)
+                    | RpcRequestBody::PublishCertificateMaterial(_)
+                    | RpcRequestBody::PublishServingPointer(_)
+                    | RpcRequestBody::ReadRoutes(_)
+                    | RpcRequestBody::MetricHistory(_)
+                    | RpcRequestBody::LogHistory(_)
+                    | RpcRequestBody::TailLogs(_)
+                    | RpcRequestBody::RuntimeWatch(_)) => {
+                        panic!("only inspect and ensure are expected: {other:?}")
+                    }
                 };
-                requests.lock().unwrap().push(request);
-                Ok(Response::new(
-                    ployz_core::RpcResponse::from(EnsuredContainer::Ensured {
-                        health: None,
-                        now: ContainerNow::Absent {
-                            of: ContainerLocator::Id(container('a')),
-                        },
-                    })
-                    .encode()
-                    .unwrap(),
-                ))
+                Ok(Response::new(response.encode().unwrap()))
             }
         })
         .await;
@@ -583,10 +608,11 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
     service.mode = ployz_core::ServiceMode::Global;
     let client = Scripted {
         observations: Some(vec![serving(&machine, &old, None)]),
-        ..Scripted::new(vec![created(
-            Call::Run(machine, ContainerKind::ServiceContainer),
-            &new,
-        )])
+        ..Scripted::new(vec![
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Remove(machine, old)),
+        ])
     };
     let operation = DeployOperation::ReplaceContainer(ReplacementOperation {
         machine_id: machine,
@@ -598,16 +624,12 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
         execute_with(&[operation], &client, &CancellationToken::new()).await,
         DeployOutcome::Success { .. }
     ));
-    let publications = [client.pins(), client.publications()].concat();
-    let [pin, publication] = publications.as_slice() else {
-        panic!("a pin of what served, then one pointer flip");
-    };
-    assert_eq!(pin.pointer.containers, vec![old]);
+    assert_eq!(client.rotation(&new), Some(CopyRotation::In));
     assert_eq!(
-        publication.pointer.previous,
-        Some(pin.pointer.deploy.clone())
+        client.rotation(&old),
+        None,
+        "the old copy is retired explicitly"
     );
-    assert_eq!(publication.pointer.retiring, vec![old]);
     let slots = client.slots.lock().unwrap();
     let [slot] = slots.as_slice() else {
         panic!("expected one new Container");
@@ -671,16 +693,13 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     let keys = Arc::new(Mutex::new(Vec::new()));
     let captured = keys.clone();
     let listed_target = target.clone();
-    let row = Arc::new(Mutex::new(None));
     let (client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let remote = remote.clone();
             let captured = captured.clone();
             let fake_target = listed_target.clone();
-            let row = row.clone();
             async move {
                 let mut remote = remote.lock().unwrap();
-                let mut row = row.lock().unwrap();
                 #[expect(
                     clippy::wildcard_enum_match_arm,
                     reason = "fixture exercises only replacement failure and retry primitives"
@@ -707,15 +726,9 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         )],
                     }),
                     RpcRequestBody::ReadRoutes(_) => RpcResponse::from(RoutesRead {
-                        all_routed: row.is_some(),
-                        pointer: row.clone(),
-                        acks: BTreeMap::new(),
+                        complete: true,
                         ..RoutesRead::default()
                     }),
-                    RpcRequestBody::PublishServingPointer(publish) => {
-                        *row = Some(publish.pointer);
-                        RpcResponse::from(ServingPointerPublication::Published)
-                    }
                     RpcRequestBody::PullImage(_) => {
                         RpcResponse::from(ployz_core::ImagePulled::default())
                     }
@@ -863,4 +876,160 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
         "replay must not allocate a second v2"
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn proxy_copies_never_routed_always_removable() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old, new_first, new_second) = (container('a'), container('b'), container('c'));
+    let mut proxy = spec(None, None, None);
+    proxy.name = ServiceName::parse("ingress").unwrap();
+    let plan = vec![
+        DeployOperation::ReplaceContainer(ReplacementOperation {
+            machine_id: first,
+            old_container_id: old,
+            spec: proxy.clone(),
+            skip_health_monitor: true,
+        }),
+        run(&second, proxy, true),
+    ];
+    let client = Scripted::new(vec![
+        created(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            &new_first,
+        ),
+        created(
+            Call::Run(second, ContainerKind::ServiceContainer),
+            &new_second,
+        ),
+        observed_ingress(Call::Inspect(first, old), running()),
+        ok(Call::Remove(first, old)),
+    ]);
+
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, Namespace::system()),
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    for new in [new_first, new_second] {
+        assert_eq!(
+            client.rotation(&new),
+            Some(CopyRotation::Pending),
+            "a proxy copy stays Pending for life"
+        );
+    }
+    assert_eq!(
+        client.moves(),
+        [Move::Gone(old)],
+        "a proxy copy is never brought In or sent Out, and leaves by Gone"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn ingress_create_cleanup_never_names_a_sibling() {
+    use crate::deploy::{
+        DeployIntent, DeploySnapshot, PlanOptions, SlotAction, plan_ingress_repairs,
+    };
+    use ployz_core::{
+        Machine, MachineName, MachineObservation, MembershipObservation, WireGuardPublicKey,
+    };
+
+    let server = |hex: char| {
+        MachineObservation::new(
+            Machine {
+                id: machine(hex),
+                name: MachineName::parse(format!("server-{hex}")).unwrap(),
+                subnet: format!("10.210.{hex}.0/24").parse().unwrap(),
+                public_key: WireGuardPublicKey([hex as u8; 32]),
+                public_ip: None,
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                build_concurrency: None,
+            },
+            MembershipObservation::Up,
+        )
+    };
+    let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default());
+    let proxy = |hex: char, on: char| {
+        let mut observed = observation(&machine(on), &container(hex), healthy());
+        observed
+            .try_update(|parts| {
+                parts.namespace = Namespace::system();
+                parts.resolved_spec.name = ingress.name.clone();
+                parts.labels.insert(CREATION_KEY.into(), hex.to_string());
+            })
+            .unwrap();
+        observed
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![server('1'), server('2'), server('3')],
+        containers: vec![proxy('a', '1'), proxy('b', '2')],
+        ..Default::default()
+    };
+    let intent = DeployIntent::apply_all(Namespace::system(), [&ingress], PlanOptions::default());
+    let [repair] = plan_ingress_repairs(&intent, &snapshot).try_into().unwrap();
+    assert_eq!(repair.machine_id, machine('3'));
+    let SlotAction::Create(Ok(plan)) = repair.action else {
+        panic!(
+            "expected a create on the empty Server, got {:?}",
+            repair.action
+        );
+    };
+    let siblings = [
+        (machine('1'), container('a')),
+        (machine('2'), container('b')),
+    ];
+    let new = container('c');
+    let mut client = Scripted {
+        observations: Some(snapshot.containers.clone()),
+        ..Scripted::new(vec![created(
+            Call::Run(machine('3'), ContainerKind::ServiceContainer),
+            &new,
+        )])
+    };
+    for (machine_id, container_id) in &siblings {
+        client = client.with_copy_at(
+            &QualifiedService::system_ingress(),
+            machine_id,
+            container_id,
+            CopyRotation::Pending,
+            Gen::FIRST,
+        );
+    }
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        client.moves().is_empty(),
+        "no want reaches a running sibling proxy: {:?}",
+        client.moves()
+    );
+    for (_, sibling) in siblings {
+        assert_eq!(client.rotation(&sibling), Some(CopyRotation::Pending));
+    }
+    client.assert_done();
 }
