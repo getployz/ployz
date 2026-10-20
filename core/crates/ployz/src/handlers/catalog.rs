@@ -41,9 +41,11 @@ pub(super) fn schema(root: &ArgMatches) -> Result<(), Error> {
     let path = leaf_matches(root).get_one::<String>("path");
     let mut schema = catalog::schema(path.map(String::as_str)).map_err(|mut error| {
         let service = path.and_then(|path| path.split('.').next()).unwrap_or("SERVICE");
-        error.message = format!(
-            "{}. `ployz schema` takes SERVICE or SERVICE.SETTING; `ployz schema {service}` lists its Settings",
-            error.message.trim_end_matches('.')
+        error.message = crate::ui::then_sentence(
+            &error.message,
+            &format!(
+                "`ployz schema` takes SERVICE or SERVICE.SETTING; `ployz schema {service}` lists its Settings"
+            ),
         );
         error
     })?;

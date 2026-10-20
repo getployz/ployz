@@ -302,7 +302,8 @@ function useAltHeld() {
 function AttemptState({ deployment, storage, onDismiss }: { deployment: DeploymentSummary; storage: string | null; onDismiss?: () => void }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const deploys = deploysLabel(deployment);
-  const detail = storage ?? (deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys);
+  const upload = uploadLabel(deployment);
+  const detail = storage ?? (deploys && upload ? `${deploys} · ${upload}` : deploys);
   return (
     <Row icon={<DeploymentStatusIcon status={deploymentLight(deployment)} />}
       title={`${deploymentStatusLabel(deployment)} · Deployment ${deploymentLabel(deployment)}`} detail={detail}>
