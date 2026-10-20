@@ -120,14 +120,14 @@ async fn service_lifecycle_commands_change_each_named_service_container() {
     for (action, rpcs) in [("start", 2), ("stop", 4)] {
         let machine = machine('a', "one");
         let service = DeployService::new(machine.clone());
-        let mut api = running_container(&machine, &spec("api"));
+        let mut api = deployed_container(&machine, &spec("api"));
         api.try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
             .unwrap();
         service
             .listed_containers()
             .lock()
             .unwrap()
-            .extend([running_container(&machine, &spec("web")), api]);
+            .extend([deployed_container(&machine, &spec("web")), api]);
         let mutating_rpcs = service.mutating_rpcs();
         let (address, server) = listening(service).await;
 

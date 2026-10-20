@@ -164,7 +164,7 @@ async fn restart_reports_one_restart_or_the_start_that_failed() {
             .listed_containers()
             .lock()
             .unwrap()
-            .push(running_container(&machine, &spec("web")));
+            .push(deployed_container(&machine, &spec("web")));
         let (address, server) = listening(service).await;
 
         let (code, restarted) =
@@ -201,7 +201,7 @@ async fn restart_returns_once_a_slow_start_passes_its_healthcheck() {
         .listed_containers()
         .lock()
         .unwrap()
-        .push(running_container(&machine, &spec("web")));
+        .push(deployed_container(&machine, &spec("web")));
     let (address, server) = listening(service).await;
     let begun = std::time::Instant::now();
 
@@ -231,7 +231,7 @@ async fn restart_reports_a_start_that_never_passes_its_healthcheck() {
         .listed_containers()
         .lock()
         .unwrap()
-        .push(running_container(&machine, &spec("web")));
+        .push(deployed_container(&machine, &spec("web")));
     let (address, server) = listening(service).await;
 
     let (code, restarted) = ployz(None, &address.to_string(), &["service", "restart", "web"]).await;

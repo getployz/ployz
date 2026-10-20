@@ -1436,6 +1436,18 @@ pub(super) fn running_container(
     running_container_in(machine, spec, "app", '1')
 }
 
+/// A running Container of `spec` that a Deploy brought In.
+pub(super) fn deployed_container(
+    machine: &MachineObservation,
+    spec: &RequestedServiceSpec,
+) -> ployz_core::ContainerObservation {
+    let mut container = running_container(machine, spec);
+    container
+        .try_update(|parts| parts.rotation = Some(ployz_core::CopyRotation::In))
+        .unwrap();
+    container
+}
+
 /// A running Container of `spec` in `namespace`, its ID `id` repeated.
 pub(super) fn running_container_in(
     machine: &MachineObservation,
