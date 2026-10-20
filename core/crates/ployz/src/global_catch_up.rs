@@ -248,6 +248,7 @@ fn step_error(step: Step) -> Result<(), RpcError> {
             message: format!(
                 "{} did not confirm the copy left its routes",
                 machines
+                    .machines
                     .iter()
                     .map(MachineId::to_string)
                     .collect::<Vec<_>>()
@@ -677,6 +678,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                     Ok(Step::NotConfirmed(machines)) => Some(format!(
                         "{} did not confirm it left the routes",
                         machines
+                            .machines
                             .iter()
                             .map(MachineId::to_string)
                             .collect::<Vec<_>>()

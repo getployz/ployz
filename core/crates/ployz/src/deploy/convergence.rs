@@ -594,7 +594,7 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     let unconfirmed = match listed {
         Ok(Wait::Done) => None,
         Ok(Wait::TimedOut(machines)) => Some(Unconfirmed::Proxies {
-            servers: machines.iter().map(name).collect(),
+            servers: machines.machines.iter().map(name).collect(),
         }),
         Ok(Wait::Cancelled) => Some(Unconfirmed::Cancelled),
         Err(error) => Some(Unconfirmed::Failed {
@@ -629,7 +629,7 @@ pub(in crate::deploy) async fn retire_old<C: MachineOperations>(
             detail: refusal.message,
         },
         Ok(Step::NotConfirmed(machines)) => Unconfirmed::Proxies {
-            servers: machines.iter().map(name).collect(),
+            servers: machines.machines.iter().map(name).collect(),
         },
         Ok(Step::Cancelled) => Unconfirmed::Cancelled,
         Err(error) => Unconfirmed::Failed {
