@@ -7,7 +7,8 @@ import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
-  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createClusterDomainSyncRequestedEvent, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
+  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createClusterDomainSyncRequestedEvent, createConfigDeploymentRetireRequestedEvent,
+  createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType, inngestFunctionFinishedEventType, type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import {
@@ -80,6 +81,9 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
         await step.run("release-followed", () => runEffect(releaseFollowed(environmentId, runId, lanes)));
       }
       await step.run("finish-volumes", () => runEffect(finishDeployVolumes(runId, "done")));
+      if ("ran" in ran) {
+        await step.sendEvent("retire-old", createConfigDeploymentRetireRequestedEvent({ organizationId, environmentId, deploymentId, number: ran.ran.number }));
+      }
       const applied = "ran" in ran && ran.ran.status === "applied";
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.
