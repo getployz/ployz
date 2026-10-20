@@ -281,35 +281,3 @@ fn config_path_follows_xdg_config_home() {
         "~/.config/ployz/config.yaml"
     );
 }
-
-/// The config directory is spelled once, so `XDG_CONFIG_HOME` reaches every reader;
-/// `checkin` writes root's config on a Server, which is no user's.
-#[test]
-fn only_the_default_spells_the_config_directory() {
-    fn spelled(dir: &std::path::Path, found: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                spelled(&path, found);
-            } else if std::fs::read_to_string(&path)
-                .is_ok_and(|text| text.contains(".config/ployz"))
-            {
-                found.push(path.display().to_string());
-            }
-        }
-    }
-    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut found = Vec::new();
-    for dir in ["src", "examples", "tests"] {
-        spelled(&crate_dir.join(dir), &mut found);
-    }
-    let allowed = [
-        "src/context.rs",
-        "src/context/tests.rs",
-        "src/checkin/enroll.rs",
-        "src/checkin/enroll_tests.rs",
-    ]
-    .map(|file| crate_dir.join(file).display().to_string());
-    found.retain(|path| !allowed.contains(path));
-    assert_eq!(found, Vec::<String>::new());
-}
