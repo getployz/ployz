@@ -1,7 +1,7 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
-import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
+import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot, RuntimeWatchView } from "@ployz/sdk";
 import { registerRequestFromEnrollmentIdentity, rustMachineIdSchema } from "./enrollment";
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime, Result, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -41,7 +41,7 @@ import type { SetupReport } from "#/modules/machines/enrollment";
 import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { asTestDouble } from "#/lib/test-double";
 import { readCollection } from "#/collections/read.server";
-import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame, OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -97,6 +97,8 @@ function fakeSession(database: PostgresTestHarness["database"]) {
     beforeConnect: async (_options: ConnectOptions) => {},
     beforeRegister: async (_assignment: EnrollmentAssignment) => {},
   };
+  /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
+  const cluster = { frames: [] as Array<Array<[string, string]>> };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     await connection.beforeConnect(options);
@@ -111,10 +113,17 @@ function fakeSession(database: PostgresTestHarness["database"]) {
         if (fail.publish) throw new Error("Lost publication response");
         return { assigned_machine: assignment.machine, visible_peers: [], target_versions: {} };
       },
+      runtime: {
+        watch: async function* () {
+          for (const machines of cluster.frames) {
+            yield asTestDouble<RuntimeWatchView>()({ machines: machines.map(([id, name]) => ({ machine: { id, name } })) });
+          }
+        },
+      },
     });
   });
   return {
-    coordinator, connected, connection, published, fail,
+    coordinator, connected, connection, published, fail, cluster,
     closed: () => closed,
     observations: () => observations,
     registerCalls: () => registerCalls,
@@ -166,6 +175,18 @@ function enrollmentTestClient(
     open: (id = organizationId) => runtime.runPromise(Effect.scoped(
       Effect.gen(function* () { return yield* (yield* OrganizationRuntime).open(id); }),
     )),
+    firstFrame: (id = organizationId) => runtime.runPromise(firstRuntimeFrame(id)),
+    /** Every frame of one Runtime Watch, read through to its end. */
+    watchAll: (id = organizationId) => runtime.runPromise(Effect.scoped(Effect.gen(function* () {
+      const session = yield* (yield* OrganizationRuntime).open(id);
+      if (session.status !== "connected") throw new Error("Cluster not connected");
+      const frames = yield* session.connected.watch();
+      return yield* Effect.promise(async () => {
+        const read: RuntimeWatchView[] = [];
+        for await (const frame of frames) read.push(frame);
+        return read;
+      });
+    }))),
     enroll: (input: Parameters<typeof enrollMachine>[0]) =>
       runtime.runPromise(
         Effect.result(enrollMachine(input)),
@@ -843,6 +864,41 @@ describe("organization enrollment coordinator", () => {
       { management: "ployz1:replacement", machine_id: candidate.machineId },
       { management: capability, machine_id: founder.machineId },
     ] });
+  });
+
+  it("stores the name each Server enrolled with, and refreshes it from what the Cluster reports", async () => {
+    const fake = fakeSession(harness.database);
+    const names = async () => (await harness.pool.query<{ machine_id: string; machine_name: string | null }>(
+      "select machine_id, machine_name from organization_machine order by machine_id",
+    )).rows.map((row) => [row.machine_id, row.machine_name]);
+    const founder = await readyFounder(fake);
+    await fake.coordinator.enroll({ token: tokens[1] ?? "", identity: identity(1) });
+    const joiner = { token: tokens[1] ?? "", machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+    await fake.coordinator.publish({ ...joiner, capability: "ployz1:joining" });
+    // Claimed before Cloud kept names: nothing to store until the Cluster names it.
+    await harness.runEffect(reserveEnrollmentAssignment({
+      organizationId, pairing: founder.pairingCredential,
+      identity: registerRequestFromEnrollmentIdentity(identity(2)), snapshot,
+    }));
+    await fake.coordinator.publish({
+      ...founder, token: await issueToken(identity(2)), machineId: identity(2).machineId, capability: "ployz1:unnamed",
+    });
+    expect(await names()).toEqual([
+      [founder.machineId, "node-0"], [joiner.machineId, "node-1"], [identity(2).machineId, null],
+    ]);
+
+    // A Server the Cluster doesn't report keeps the name Cloud has.
+    fake.cluster.frames = [[[founder.machineId, "web-1"], [identity(2).machineId, "node-2"], [identity(9).machineId, "stranger"]]];
+    await fake.coordinator.firstFrame();
+    expect(await names()).toEqual([
+      [founder.machineId, "web-1"], [joiner.machineId, "node-1"], [identity(2).machineId, "node-2"],
+    ]);
+
+    fake.cluster.frames = [[[founder.machineId, "web-1"]], [[founder.machineId, "web-2"], [joiner.machineId, "db-1"]]];
+    expect(await fake.coordinator.watchAll()).toHaveLength(2);
+    expect(await names()).toEqual([
+      [founder.machineId, "web-2"], [joiner.machineId, "db-1"], [identity(2).machineId, "node-2"],
+    ]);
   });
 
   it("rejects unauthorized, stale, and wrong-Machine publications and completions before connecting", async () => {

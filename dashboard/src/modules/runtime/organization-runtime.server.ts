@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Connection, MachineId } from "@ployz/sdk";
+import type { Connection, MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { Context, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
 import {
   Ployz,
@@ -9,6 +9,7 @@ import {
 import {
   loadOrganizationConnections,
 } from "#/modules/machines/connections.server";
+import { recordMachineNames } from "#/modules/machines/machine-names.server";
 import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -71,9 +72,34 @@ export type PairingChanges = {
   ) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, OrganizationChangeLogFailure>;
 };
 
+/** What Cloud keeps from a Runtime Watch frame its Organization's session read. */
+export type RecordFrame = (organizationId: string, frame: RuntimeWatchView) => Effect.Effect<void, Error>;
+
+/** `session`, recording each frame read through it; a stream records only frames whose Machines changed name. */
+function recordingFrames(session: PloyzSession, record: (frame: RuntimeWatchView) => Effect.Effect<void, Error>): PloyzSession {
+  const recorded = (frame: RuntimeWatchView) => record(frame).pipe(Effect.ignoreCause({ log: true, message: "Runtime frame not recorded" }));
+  async function* recordEach(frames: AsyncIterable<RuntimeWatchView>) {
+    let named: string | undefined;
+    for await (const frame of frames) {
+      const names = JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name]));
+      if (names !== named) {
+        named = names;
+        await Effect.runPromise(recorded(frame));
+      }
+      yield frame;
+    }
+  }
+  return {
+    ...session,
+    watch: (options) => session.watch(options).pipe(Effect.map(recordEach)),
+    watchFirstFrame: (timeoutMs) => session.watchFirstFrame(timeoutMs).pipe(Effect.tap(recorded)),
+  };
+}
+
 export function makeOrganizationRuntimeLayer(
   loadConnections: LoadConnections,
   pairingChanges: PairingChanges,
+  recordFrame: RecordFrame = () => Effect.void,
 ) {
   return Layer.effect(
     OrganizationRuntime,
@@ -177,7 +203,7 @@ export function makeOrganizationRuntimeLayer(
               Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
-                connected,
+                connected: recordingFrames(connected, (frame) => recordFrame(organizationId, frame)),
               })),
               Effect.catch((error) => Effect.succeed(session.closed ? noConnection : ({
                 status: "unreachable" as const,
@@ -213,6 +239,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
           Effect.provideService(Database, database),
         ),
       },
+      (organizationId, frame) => recordMachineNames(organizationId, frame).pipe(Effect.provideService(Database, database)),
     );
   }),
 );
