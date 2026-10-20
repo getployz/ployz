@@ -99,8 +99,8 @@ changes, because it ships exactly what that deployment did.
 
 When a deploy or save would remove a running service, delete a volume, detach a volume from a
 service or remove a domain, the agent stops and shows a card. It does the same before it removes
-a server, cleans up after one, drains the last copy of a volume off one, or runs a volume
-command that deletes data. The card leads with what would be
+a server, cleans up after one, drains a server whose global service runs on no other server,
+or runs a volume command that deletes data. The card leads with what would be
 destroyed. Everything else the change does is folded under a count, like **2 other changes**;
 click it to see them. Under its name the card says when it was asked, like **9 minutes ago**.
 

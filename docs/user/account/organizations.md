@@ -122,9 +122,11 @@ How you answer depends on where the command runs:
   `ployz org rm`, and `ployz server forget` with no server named, ask for the organization's
   slug. Type it and the command carries on. Anything else, or Ctrl-C, leaves the approval
   pending and changes nothing.
-- Without a terminal, such as in a script, it prints the same list and waits until someone
-  approves or denies it in Ployz Cloud. It then carries on, or fails naming what was denied and
-  the reason given. Ctrl-C stops waiting and leaves the approval pending.
+- Without a terminal, such as in a script, it prints the same list, the approval's ID, a link to
+  the [Ployz agent](agent-sidebar.md) where it waits, and `ployz org approval approve ID`. It
+  waits until someone approves or denies it in Ployz Cloud, then carries on, or fails naming what
+  was denied and the reason given. Ctrl-C, or losing Ployz Cloud, stops waiting and leaves the
+  approval pending, and the error names the command to run again with `--approval ID`.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
 - In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
