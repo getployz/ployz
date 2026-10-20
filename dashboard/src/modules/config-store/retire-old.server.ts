@@ -52,8 +52,9 @@ export const endCleanup = Effect.fn("DeploymentCleanup.end")(function* (
 ) {
   const { drizzle } = yield* Database;
   const outcome = { runId, state: end.state, message: end.message ?? null, updatedAt: new Date() };
-  // An end that names no copies, a cancel or a failure, keeps the last ones the row named.
-  const ended = end.left === undefined ? outcome : { ...outcome, left: [...end.left] };
+  // A cancel or a failure that names no copies keeps the last ones the row named; Done leaves none.
+  const keepsLast = (end.state === "cancelled" || end.state === "failed") && end.left === undefined;
+  const ended = keepsLast ? outcome : { ...outcome, left: [...end.left ?? []] };
   const returning = { deploymentId: deploymentCleanup.deploymentId };
   const rows = Option.isNone(requested)
     ? yield* drizzle.update(deploymentCleanup).set(ended).where(ownWaitingRow(runId)).returning(returning)

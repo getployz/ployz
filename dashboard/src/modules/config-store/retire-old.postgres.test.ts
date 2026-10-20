@@ -1,8 +1,9 @@
-import { InngestTestEngine } from "@inngest/test";
+import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Option } from "effect";
 import { Inngest } from "inngest";
-import { afterAll, beforeAll, expect, it } from "vitest";
-import { createCancelRetireOld } from "#/modules/config-store/retire-old.inngest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { createCancelRetireOld, createRetireOld } from "#/modules/config-store/retire-old.inngest";
+import * as cleanupRows from "#/modules/config-store/retire-old.server";
 import {
   closeStaleCleanups, endCleanup, readDeploymentCleanup, recordCleanupWaiting,
 } from "#/modules/config-store/retire-old.server";
@@ -111,4 +112,22 @@ it("fails only a waiting cleanup whose Inngest run is gone, keeping what it left
   const waiting = { state: "waiting", left: [machine3], message: null };
   const states = await Promise.all([...statuses.keys()].map((runId) => harness.runEffect(readDeploymentCleanup(ORGANIZATION, runId))));
   expect(states).toEqual([lost, lost, waiting, waiting, waiting]);
+});
+
+it("ends done with nothing left once a retry retires the copy an earlier try left", async () => {
+  const machine3 = { machine: "machine-3", service: "web", reason: "machine-3 did not answer" };
+  const answers = [[machine3], []];
+  const retire = vi.spyOn(cleanupRows, "retireOldCopies").mockImplementation(() => Effect.succeed({ left: answers.shift() ?? [], kept: [] }));
+  try {
+    await new InngestTestEngine({
+      function: createRetireOld(new Inngest({ id: "ployz-cloud" }), makeInngestEffectRunner(harness.runEffect) as typeof runInngestEffect),
+      events: [{ name: configDeploymentRetireRequestedEvent, data: requested("retried") }],
+      transformCtx: (ctx) => ({ ...mockCtx(ctx), runId: "retried" }),
+      steps: [{ id: "pause-1", handler: () => undefined }],
+    }).execute();
+  } finally {
+    retire.mockRestore();
+  }
+  expect(answers).toEqual([]);
+  expect(await harness.runEffect(readDeploymentCleanup(ORGANIZATION, "retried"))).toEqual({ state: "done", left: [], message: null });
 });

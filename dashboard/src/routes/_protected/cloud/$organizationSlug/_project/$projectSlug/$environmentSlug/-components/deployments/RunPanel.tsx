@@ -129,7 +129,7 @@ function CleanupDetail({ cleanup }: { cleanup: DeploymentCleanupView }) {
   return (
     <>
       {cleanup.state === "failed" && cleanup.message ? <p className="break-words border-b p-4 text-sm text-destructive">{cleanup.message}</p> : null}
-      {cleanup.left.length ? (
+      {cleanup.state !== "done" && cleanup.left.length ? (
         <ul aria-label="Old copies still running" className="flex min-h-0 flex-col divide-y overflow-y-auto">
           {cleanup.left.map((left) => (
             <li key={`${left.service}@${left.machine}`} className="flex flex-col gap-1 px-4 py-2 text-sm">
