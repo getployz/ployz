@@ -283,3 +283,15 @@ export function publicErrorResponse(
     headers: init?.headers,
   });
 }
+
+/**
+ * The `ANY` handler of a route that takes only `methods`. Without it, another method falls through to the page and
+ * answers an API client with the app's HTML shell.
+ */
+export const onlyMethods = (...methods: readonly [string, ...string[]]) => () => {
+  const allow = methods.includes("GET") && !methods.includes("HEAD") ? [...methods, "HEAD"] : methods;
+  return publicErrorResponse(new NotFound({ message: `This path takes ${allow.join(", ")}.` }), {
+    status: 405,
+    headers: { Allow: allow.join(", ") },
+  });
+};

@@ -5,7 +5,7 @@ import { currentChangeCursor, readChangeWindow } from "#/modules/organization/ch
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { organizationSlugSchema } from "#/modules/organization/tables";
 import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
-import { publicErrorResponse, Validation } from "#/server/public-error";
+import { publicErrorResponse, Validation, onlyMethods } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 const OrgChangesSearch = Schema.Struct({ organizationSlug: organizationSlugSchema });
@@ -30,6 +30,7 @@ export const Route = createFileRoute("/api/org/changes")({
             ), { signal: request.signal }),
         });
       },
+      ANY: onlyMethods("GET"),
     },
   },
 });

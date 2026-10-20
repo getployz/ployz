@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { handleMachineEnrollmentCallback } from "#/routes/api/enroll/-handlers";
-import { publicErrorResponse } from "#/server/public-error";
+import { publicErrorResponse, onlyMethods } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 export const Route = createFileRoute("/api/enroll/callback")({
@@ -11,6 +11,7 @@ export const Route = createFileRoute("/api/enroll/callback")({
           handleMachineEnrollmentCallback(request),
           { signal: request.signal },
         ).catch(publicErrorResponse),
+      ANY: onlyMethods("POST"),
     },
   },
 });

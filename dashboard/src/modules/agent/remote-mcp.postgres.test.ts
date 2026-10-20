@@ -690,7 +690,7 @@ it.live("a self-hosted Cloud answers 404 on every remote agent route and method"
     const { run } = yield* cloudOf(false);
     const statuses = yield* Effect.promise(() => Promise.all([
       ...["GET", "POST", "DELETE", "OPTIONS"].map((method) => run(serveRemoteMcp(new Request(`${origin}/mcp`, { method })))),
-      ...["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/api/auth"]
+      ...["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/api/auth"]
         .flatMap((path) => ["GET", "OPTIONS"].map((method) => run(serveMcpMetadata(new Request(`${origin}${path}`, { method }))))),
       ...["/api/auth/oauth2/token", "/api/auth/oauth2/register", "/api/auth/oauth2/authorize", "/api/auth/jwks"]
         .map((path) => run(serveAuth(new Request(`${origin}${path}`, { method: path === "/api/auth/oauth2/authorize" || path === "/api/auth/jwks" ? "GET" : "POST" })))),
