@@ -377,7 +377,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
     }
     let mut failure = Failure::from(RpcError {
         code: RpcErrorCode::Internal,
-        message: reason,
+        message: crate::ui::sentence(reason),
         cause,
         details: serde_json::Value::Null,
     })

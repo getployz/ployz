@@ -397,10 +397,10 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
         } => (Some(&operation.spec.name), operation.machine_id, error),
     };
     let ployz_store::Failure { reason, cause } = ployz_store::Failure::of(error, &[]);
-    let message = match service {
+    let message = crate::ui::sentence(match service {
         Some(service) => format!("{service}: {reason}"),
         None => reason,
-    };
+    });
     let mut diagnostic = Diagnostic {
         failed_machine: Some(machine),
         logs: tails,

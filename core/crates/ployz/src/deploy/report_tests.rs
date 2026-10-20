@@ -801,7 +801,7 @@ fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
     assert_eq!(
         crate::ui::plain(&failure(&outcome, Vec::new())),
         format!(
-            "error: web: Image nginx:doesnotexist not found, or its registry needs credentials\n  cause: {docker}\n"
+            "error: web: Image nginx:doesnotexist not found, or its registry needs credentials.\n  cause: {docker}\n"
         )
     );
 }
