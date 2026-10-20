@@ -200,15 +200,16 @@ impl ContainerRuntime {
         body.labels
             .get_or_insert_default()
             .insert(super::LABEL_GEN.into(), r#gen.to_string());
-        if let ImagePull::Policy(registry_auth) = image {
-            prepare_image(
+        if let ImagePull::Policy(registry_auth) = image
+            && let Err(error) = prepare_image(
                 &self.docker.client,
                 &spec.container.image,
                 spec.container.pull_policy,
                 registry_auth,
             )
             .await
-            .map_err(Error::ImagePull)?;
+        {
+            return Err(self.pull_failure(error).await);
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.

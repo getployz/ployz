@@ -3,7 +3,10 @@
 //! through the real send server with every request replayed late.
 
 use std::{
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -1829,23 +1832,31 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
     }
 }
 
-/// A task of `name` that panics while `gate` holds its child, answered once its failure
-/// is published and the child is still alive.
+/// A task of `name` that panics while `gate` holds its child, answered once it panicked
+/// and the child is still alive. The test's runtime runs one task at a time, so the panic
+/// is recorded by then.
 async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName, gate: &Path) {
+    let panicked = Arc::new(AtomicBool::new(false));
     receives.spawn(name, |stop| {
         let child = held_child(&stop, gate);
+        let panicked = Arc::clone(&panicked);
         async move {
             let _child = child;
+            panicked.store(true, Ordering::SeqCst);
             panic!("the receive task broke");
         }
     });
     for _ in 0..500 {
-        if receives.failure(name).is_some() {
+        if panicked.load(Ordering::SeqCst) {
+            assert!(
+                receives.failure(name).is_none(),
+                "a failure was answered while its task's child is alive"
+            );
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("the panic was never published");
+    panic!("the task never panicked");
 }
 
 /// A same-target retry (copy.rs `copy_pull`) answers and forgets a failure only once the

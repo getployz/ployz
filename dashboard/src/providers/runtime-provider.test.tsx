@@ -17,6 +17,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { runtimeWatchFrameForTransport } from "#/modules/runtime/runtime-watch-frame";
 import {
   RuntimeProvider,
+  useClusterReleased,
   useRuntimeService,
   useRuntimeStatus,
 } from "./runtime-provider";
@@ -216,6 +217,28 @@ describe("RuntimeProvider", () => {
       expect(output.getAttribute("data-status")).toBe("unavailable");
       expect(output.getAttribute("data-containers")).toBe("1");
     });
+  });
+
+  it("shows no servers once Cloud lets go of the cluster, whatever the stream last said", async () => {
+    function Release() {
+      const released = useClusterReleased();
+      return <button type="button" onClick={released}>release</button>;
+    }
+    await renderRuntime(
+      <RuntimeProvider organizationSlug="runtime-provider-released">
+        <LensProbe organizationSlug="runtime-provider-released" />
+        <Release />
+      </RuntimeProvider>,
+    );
+    const eventSource = latestEventSource();
+    act(() => {
+      eventSource.emit("runtime.status", JSON.stringify({ status: "unreachable", error: null }));
+    });
+    await waitFor(() => expect(screen.getByTestId("lens").textContent).toBe("unreachable:0"));
+
+    act(() => screen.getByRole("button", { name: "release" }).click());
+
+    await waitFor(() => expect(screen.getByTestId("lens").textContent).toBe("no_connection:0"));
   });
 
   it("retains each organization's cached observation across switches and connection errors", async () => {

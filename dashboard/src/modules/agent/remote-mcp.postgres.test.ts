@@ -354,6 +354,20 @@ it.live("a Cloud command refuses a remote agent as a Store tool does: the field,
     });
   }).pipe(Effect.scoped), 30_000);
 
+it.live("a gated removal the Store refuses reaches a remote agent in the tool's shape: nothing written, the call to repeat and the read to make", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const refused = yield* agent.call("project_remove", { project: "nope" });
+    expect(refused).toMatchObject({
+      isError: true,
+      body: {
+        ok: false,
+        refusal: { code: "not_found", writes: "none", retry: { tool: "project_remove", input: { project: "nope" } }, next: [{ tool: "environment_show", input: {} }] },
+      },
+    });
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("a call missing an argument is refused in the tools' own shape, not the transport's", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
@@ -777,7 +791,7 @@ it.live("a self-hosted Cloud answers 404 on every remote agent route and method"
     const { run } = yield* cloudOf(false);
     const statuses = yield* Effect.promise(() => Promise.all([
       ...["GET", "POST", "DELETE", "OPTIONS"].map((method) => run(serveRemoteMcp(new Request(`${origin}/mcp`, { method })))),
-      ...["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/api/auth"]
+      ...["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/api/auth"]
         .flatMap((path) => ["GET", "OPTIONS"].map((method) => run(serveMcpMetadata(new Request(`${origin}${path}`, { method }))))),
       ...["/api/auth/oauth2/token", "/api/auth/oauth2/register", "/api/auth/oauth2/authorize", "/api/auth/jwks"]
         .map((path) => run(serveAuth(new Request(`${origin}${path}`, { method: path === "/api/auth/oauth2/authorize" || path === "/api/auth/jwks" ? "GET" : "POST" })))),
