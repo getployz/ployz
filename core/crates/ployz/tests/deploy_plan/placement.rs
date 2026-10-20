@@ -1823,3 +1823,38 @@ fn deploy_replaces_the_serving_container_and_removes_a_requested_one_that_never_
         }
     }
 }
+
+#[test]
+fn a_matching_copy_another_run_left_pending_is_replaced_not_counted_as_serving() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    let service = service_id('a');
+    let rotated = |hex, machine_hex, rotation| {
+        let mut copy = container(hex, machine_hex, &requested, &service);
+        copy.try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        copy
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            rotated('b', '1', ployz_core::CopyRotation::In),
+            rotated('c', '2', ployz_core::CopyRotation::Pending),
+        ],
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+
+    assert!(
+        matches!(
+            operations(&plan).as_slice(),
+            [DeployOperation::ReplaceContainer(replacement)]
+                if replacement.machine_id == machine_id('2')
+                    && replacement.old_container_id == container_id('c')
+        ),
+        "{:?}",
+        operations(&plan)
+    );
+}
