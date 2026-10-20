@@ -532,7 +532,6 @@ mod tests {
                 managed,
                 StorageChange::Resize(gb("10")),
             ),
-            // Asked for the restored Working size, which the Servers don't hold: a resize.
             (
                 true,
                 managed,

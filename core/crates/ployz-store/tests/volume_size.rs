@@ -881,7 +881,6 @@ fn a_replayed_intent_above_the_lock_deploys_at_the_held_size() {
     redeploy(&store, &who, 1, 2).unwrap();
     deploys_at(&store, &who, 2, 10);
 
-    // Restoring revision #1 stages the 20 GB it asked for; its Deploy holds 10 GB.
     restore(&store, &who, revision_of(&store, &who, 1)).unwrap();
     assert_eq!(
         storage_row(&store, &who),

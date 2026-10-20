@@ -1343,9 +1343,10 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     const lacks = (capability: string, kind: VolumeRunKind | undefined) => lackSentence(organizationId, capability, server, kind).pipe(
       Effect.map((lack): Member => ({ machine: ref, answered: false, lack })),
     );
+    /** Named by the verb, not the run, so a resize says which direction the Server lacks: "Volume shrink needs a newer Ployz on db-1." */
+    const lacksVerb = (requirement: Requirement) => lacks(requirement.capability, undefined);
     const capabilities = { capabilities: machine.runtime.capabilities ?? [] };
     const floorless = run !== undefined && serverSupports(capabilities, requirements.volumeFloor) === false;
-    // A resize asks every holder, so a holder that may not serve its direction, a Server listing no capabilities included, lacks it.
     const unsized = run?.kind === "resize"
       ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
       : undefined;
@@ -1356,8 +1357,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
         ? lacks(requirements.volumeFloor.capability, run?.kind)
         : unsized !== undefined && view.copy !== null
-        // No run kind, so the requirement's own feature names the direction: "Volume shrink needs a newer Ployz on db-1."
-        ? lacks(unsized.capability, undefined)
+        ? lacksVerb(unsized)
         : Effect.succeed<Member>({
           machine: ref,
           address: managementAddress(machine.public_key),

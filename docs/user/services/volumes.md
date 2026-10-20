@@ -72,7 +72,8 @@ Running `ployz volume set data --size 8` with the size the volume already has as
 to hold that size. That is how to finish a shrink a mirror refused or one that was interrupted:
 a copy still larger is shrunk to it. It only ever lowers a copy. If a server holds less than the
 volume's limit, Ployz refuses and tells you to run `ployz volume set` with the size that server
-holds, then again with the size you want, to grow it.
+holds, then again with the size you want, to grow it. If Ployz has no fresh reading of a server's copy,
+it refuses and asks you to try again in a moment.
 
 The dashboard doesn't show how full a volume is yet:
 
