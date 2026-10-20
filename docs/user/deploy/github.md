@@ -12,7 +12,9 @@ its Git branch. [How builds work](../builds/overview.md) covers what happens in 
    project you already have, click **Create** on that project's canvas instead.) The first time,
    click **Connect GitHub**, pick the account or organization, choose the repositories Ployz may
    use, and install the Ployz GitHub App. GitHub sends you back to **Settings → GitHub**, which
-   lists the account.
+   lists the account. It says "Repositories appear in a moment" until Ployz has listed them.
+   If the app is already installed on that account, for another Ployz organization, click
+   **Use existing** instead.
 2. Search for the repository, or paste its URL, and pick it.
 3. Before you deploy, set what your app needs to start:
    - To make it public, open **Settings → Networking** and click
@@ -86,9 +88,16 @@ changes whether the check passes.
 every environment that follows that Git branch. Turn **Auto-deploy** off under **Settings →
 Source** to deploy only when you choose. It applies at once, with no deploy.
 
-A push ships the new commit with the settings you last deployed or
-[saved](deployments.md#deploy-your-changes). Staged changes you haven't saved stay
-behind, and services the push doesn't touch keep running as they are.
+A push deploys like **Deploy**: it ships every change you
+[saved](deployments.md#deploy-your-changes) in the environment, and staged changes you haven't
+saved stay behind. The services that follow its repository and Git branch, have **Auto-deploy**
+on and match their [watch paths](#deploy-only-when-certain-files-change) build the new commit.
+Every other service keeps the commit it last built, and one with nothing new to ship keeps
+running as it is.
+
+A volume deletion you confirmed when you saved goes out with the push without asking again. If
+the data changed since, the push keeps it and your next deploy asks; see
+[Confirm a deploy that deletes data](deployments.md#confirm-a-deploy-that-deletes-data).
 
 ## Wait for CI
 
@@ -155,8 +164,8 @@ repositories, who connected it, and when. Only an owner or admin can connect or 
 members see the list.
 
 One installation can be connected to more than one organization. To connect one you already
-installed, open **Settings → GitHub** in the other organization and click **Use existing
-installation**. Ployz connects only GitHub accounts you own: your own user account, or a GitHub
+installed, click **Use existing** in the repository picker or in **Settings → GitHub** of the
+other organization. Ployz connects only GitHub accounts you own: your own user account, or a GitHub
 organization where you are an owner. Collaborating on one of its repositories is not enough. When
 you own several new ones, Ployz asks which to connect.
 
@@ -194,7 +203,8 @@ ployz github cat acme/web apps/web/package.json
 `--match` matches the whole path from the top of the repository, so `*.toml` finds only files at
 the top, and `**/*.toml` finds them in every folder. Quote the glob so your shell doesn't expand
 it. A listing stops at 500 files. When it's cut short, name a folder or a narrower `--match` to
-see the rest.
+see the rest. A folder or file the repository doesn't have fails with `No path` and exit code 1, as
+`github cat` does for a missing file.
 
 `github cat` prints text files up to 64 KiB. For a larger file or a binary one, it says so
 instead of printing it. Pass `--ref` to read a branch, tag or commit other than the default.

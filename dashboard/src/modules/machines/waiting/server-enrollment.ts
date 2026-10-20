@@ -9,7 +9,20 @@ export type EnrollmentStage = "installing" | "storage" | "enrolling" | "queued" 
 
 export const ENROLLMENT_STAGES: ReadonlyArray<EnrollmentStage> = ["installing", "enrolling", "queued", "storage", "joining", "publishing"];
 
-export const PAST_STORAGE: ReadonlySet<string | null> = new Set(ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexOf("storage") + 1));
+/** The stages a host reports once its daemon has committed the join. */
+export const COMMITTED_STAGES = ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexOf("storage") + 1);
+
+export const PAST_STORAGE: ReadonlySet<string | null> = new Set(COMMITTED_STAGES);
+
+/** The committed stages further along than `stage`. A report of `stage` arriving late must not replace them. */
+export const committedAfter = (stage: string | null): ReadonlyArray<EnrollmentStage> =>
+  COMMITTED_STAGES.slice(COMMITTED_STAGES.findIndex((known) => known === stage) + 1);
+
+/** Whether the host's daemon has committed this attempt's join, by the run's record or by the host's report on its waiting row. */
+export const joinCommitted = (
+  attempt: { readonly id: string; readonly stage: string | null },
+  row: { readonly reportedAttemptId: string | null; readonly reportedStage: string | null },
+) => PAST_STORAGE.has(attempt.stage) || (row.reportedAttemptId === attempt.id && PAST_STORAGE.has(row.reportedStage));
 
 export const OPEN_ENROLLMENT_STATES: ReadonlyArray<EnrollmentState> = ["awaiting_founder", "instructed", "running"];
 

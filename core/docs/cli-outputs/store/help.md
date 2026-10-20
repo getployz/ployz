@@ -11,50 +11,52 @@ $ ployz --help
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
-  ctx         Show where commands act, or manage local contexts
-  deploy      Deploy everything staged and follow the Deployment
-  deployment  Read, retry, start and cancel Deployments
-  diff        Show staged Service, Volume and Config changes
-  history     Show saved versions to undo or roll back to
-  discard     Undo staged Service, Volume, Config or Setting changes
-  docs        Search the Ployz docs, or print a page
+  deployment  Read, redeploy, start and cancel Deployments
   domain      Manage public domains
   env         Manage Environments and Branches
+  github      Connect GitHub so Services can build your repositories
+  org         List, make or switch Organizations
+  project     Manage Projects
+  server      Manage Servers
+  service     Manage services
+  token       Manage Organization Tokens and signed-in devices
+  volume      Manage Volumes
+  build       Build one Git Service and push it to a Server that granted the build
+  completion  Generate shell completion
+  ctx         Show where commands act, or manage local contexts
+  deploy      Deploy everything staged and follow the Deployment
+  diff        Show staged Service, Volume and Config changes
+  discard     Undo staged Service, Volume, Config or Setting changes
+  docs        Search the Ployz docs, or print a page
   exec        Run a command in a Service's container
   explain     Describe one Setting with an example, or list a Service's Settings
   get         Show Settings: every Service, one Service, or one Setting
+  history     Show saved versions to undo or roll back to
   link        Link this directory to a Project and Environment
-  github      Connect GitHub so Services can build your repositories
   login       Sign this device in to Ployz Cloud
   logout      End this device's Ployz Cloud sign-in
   logs        Show Service logs; every Service of the Environment when none is named
   mcp         Serve the agent tools to a coding agent as MCP tools over stdio
   metrics     Show CPU, memory, network and disk for a Service or a Server
-  org         List or switch Organizations
-  server      Manage Servers
-  service     Manage services
-  token       Manage Organization Tokens and signed-in devices
-  project     Manage Projects
   ps          List the Environment's containers across Servers
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
   unset       Return Settings to their defaults
   up          Deploy this directory: create and link its Project if needed, upload, build and deploy it
-  volume      Manage Volumes
-  completion  Generate shell completion
   help        Print this message or the help of the given subcommand(s)
 
 Options:
       --connect <connect>
+          Reach the Servers through this connection instead of Cloud or a context
+          
           [env: PLOYZ_CONNECT=]
 
       --ssh-timeout <SECONDS>
@@ -63,13 +65,15 @@ Options:
           [default: 20]
 
   -c, --context <context>
+          Act through this local context instead of the current one
+          
           [env: PLOYZ_CONTEXT=]
 
   -V, --version
           Print version
 
       --json
-          Print the result as one JSON object on stdout
+          Print the result as one JSON object on stdout; streams print one per line
 
       --color <WHEN>
           When to color output; overrides NO_COLOR and CLICOLOR
@@ -92,54 +96,54 @@ $ ployz -h
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
-  ctx         Show where commands act, or manage local contexts
-  deploy      Deploy everything staged and follow the Deployment
-  deployment  Read, retry, start and cancel Deployments
-  diff        Show staged Service, Volume and Config changes
-  history     Show saved versions to undo or roll back to
-  discard     Undo staged Service, Volume, Config or Setting changes
-  docs        Search the Ployz docs, or print a page
+  deployment  Read, redeploy, start and cancel Deployments
   domain      Manage public domains
   env         Manage Environments and Branches
+  github      Connect GitHub so Services can build your repositories
+  org         List, make or switch Organizations
+  project     Manage Projects
+  server      Manage Servers
+  service     Manage services
+  token       Manage Organization Tokens and signed-in devices
+  volume      Manage Volumes
+  build       Build one Git Service and push it to a Server that granted the build
+  completion  Generate shell completion
+  ctx         Show where commands act, or manage local contexts
+  deploy      Deploy everything staged and follow the Deployment
+  diff        Show staged Service, Volume and Config changes
+  discard     Undo staged Service, Volume, Config or Setting changes
+  docs        Search the Ployz docs, or print a page
   exec        Run a command in a Service's container
   explain     Describe one Setting with an example, or list a Service's Settings
   get         Show Settings: every Service, one Service, or one Setting
+  history     Show saved versions to undo or roll back to
   link        Link this directory to a Project and Environment
-  github      Connect GitHub so Services can build your repositories
   login       Sign this device in to Ployz Cloud
   logout      End this device's Ployz Cloud sign-in
   logs        Show Service logs; every Service of the Environment when none is named
   mcp         Serve the agent tools to a coding agent as MCP tools over stdio
   metrics     Show CPU, memory, network and disk for a Service or a Server
-  org         List or switch Organizations
-  server      Manage Servers
-  service     Manage services
-  token       Manage Organization Tokens and signed-in devices
-  project     Manage Projects
   ps          List the Environment's containers across Servers
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
   unset       Return Settings to their defaults
   up          Deploy this directory: create and link its Project if needed, upload, build and deploy it
-  volume      Manage Volumes
-  completion  Generate shell completion
   help        Print this message or the help of the given subcommand(s)
 
 Options:
-      --connect <connect>      [env: PLOYZ_CONNECT=]
+      --connect <connect>      Reach the Servers through this connection instead of Cloud or a context [env: PLOYZ_CONNECT=]
       --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
-  -c, --context <context>      [env: PLOYZ_CONTEXT=]
+  -c, --context <context>      Act through this local context instead of the current one [env: PLOYZ_CONTEXT=]
   -V, --version                Print version
-      --json                   Print the result as one JSON object on stdout
+      --json                   Print the result as one JSON object on stdout; streams print one per line
       --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
   -h, --help                   Print help (see more with '--help')
 
@@ -155,54 +159,54 @@ $ ployz
 
 stdout:
 ```
-Manage Ployz machines, services, and volumes
+Run Services on your Servers: deploy, inspect and manage them
 
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
-  ctx         Show where commands act, or manage local contexts
-  deploy      Deploy everything staged and follow the Deployment
-  deployment  Read, retry, start and cancel Deployments
-  diff        Show staged Service, Volume and Config changes
-  history     Show saved versions to undo or roll back to
-  discard     Undo staged Service, Volume, Config or Setting changes
-  docs        Search the Ployz docs, or print a page
+  deployment  Read, redeploy, start and cancel Deployments
   domain      Manage public domains
   env         Manage Environments and Branches
+  github      Connect GitHub so Services can build your repositories
+  org         List, make or switch Organizations
+  project     Manage Projects
+  server      Manage Servers
+  service     Manage services
+  token       Manage Organization Tokens and signed-in devices
+  volume      Manage Volumes
+  build       Build one Git Service and push it to a Server that granted the build
+  completion  Generate shell completion
+  ctx         Show where commands act, or manage local contexts
+  deploy      Deploy everything staged and follow the Deployment
+  diff        Show staged Service, Volume and Config changes
+  discard     Undo staged Service, Volume, Config or Setting changes
+  docs        Search the Ployz docs, or print a page
   exec        Run a command in a Service's container
   explain     Describe one Setting with an example, or list a Service's Settings
   get         Show Settings: every Service, one Service, or one Setting
+  history     Show saved versions to undo or roll back to
   link        Link this directory to a Project and Environment
-  github      Connect GitHub so Services can build your repositories
   login       Sign this device in to Ployz Cloud
   logout      End this device's Ployz Cloud sign-in
   logs        Show Service logs; every Service of the Environment when none is named
   mcp         Serve the agent tools to a coding agent as MCP tools over stdio
   metrics     Show CPU, memory, network and disk for a Service or a Server
-  org         List or switch Organizations
-  server      Manage Servers
-  service     Manage services
-  token       Manage Organization Tokens and signed-in devices
-  project     Manage Projects
   ps          List the Environment's containers across Servers
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
   unset       Return Settings to their defaults
   up          Deploy this directory: create and link its Project if needed, upload, build and deploy it
-  volume      Manage Volumes
-  completion  Generate shell completion
   help        Print this message or the help of the given subcommand(s)
 
 Options:
-      --connect <connect>      [env: PLOYZ_CONNECT=]
+      --connect <connect>      Reach the Servers through this connection instead of Cloud or a context [env: PLOYZ_CONNECT=]
       --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
-  -c, --context <context>      [env: PLOYZ_CONTEXT=]
+  -c, --context <context>      Act through this local context instead of the current one [env: PLOYZ_CONTEXT=]
   -V, --version                Print version
-      --json                   Print the result as one JSON object on stdout
+      --json                   Print the result as one JSON object on stdout; streams print one per line
       --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
   -h, --help                   Print help (see more with '--help')
 
@@ -219,7 +223,7 @@ $ ployz --version
 
 stdout:
 ```
-0.3.0-beta.2
+0.3.0-beta.6
 ```
 
 ### set --help
@@ -237,10 +241,12 @@ Usage: ployz set [OPTIONS] <PATH=VALUE>...
 
 Arguments:
   <PATH=VALUE>...
-          For example web.replicas=3 or web.env.LOG_LEVEL=info; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret
+          For example web.replicas=3, web.env.LOG_LEVEL=info, or setup.web='pnpm db:seed' for a Branch's Setup Command; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret
 
 Options:
       --connect <connect>
+          Reach the Servers through this connection instead of Cloud or a context
+          
           [env: PLOYZ_CONNECT=]
 
       --project <project>
@@ -268,7 +274,7 @@ Options:
           Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret
 
       --json
-          Print the result as one JSON object on stdout
+          Print the result as one JSON object on stdout; streams print one per line
 
       --rename <NAME>
           Rename the variable SERVICE.env.KEY to NAME; its value moves with it, and a secret stays sealed
@@ -287,6 +293,8 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+
+Docs: ployz docs services/settings.md
 ```
 
 ### env --help
@@ -303,23 +311,26 @@ Manage Environments and Branches
 Usage: ployz env [OPTIONS] [COMMAND]
 
 Commands:
-  new         Create an empty Environment
-  ls          List the Project's Environments
-  default     Make an Environment the Project's Default Environment
-  setup       Set the Setup Commands a new Branch of an Environment runs when it names none
-  rm          Remove an Environment: from the Servers first, then from Ployz
   branch      Make a Branch: copies of the nodes picked; what they use stays the Parent's
-  sync        Stage one Environment's changes in another of the Project
   copy        Make a Live Node the Branch's own copy; a Volume it mounts comes empty
+  default     Make an Environment the Project's Default Environment
   keep        Keep the Branch after syncing into its Parent and when idle
+  ls          List the Project's Environments
   never-sync  Mark settings Never sync: Sync never carries them into or out of the Environment
+  new         Create an empty Environment
   on-merge    Show what a PR Environment's pull request lands when it merges
-  shutdown    Take an Environment off the Servers, keeping its configuration
   pr          Show or change PR Environments for a repository
+  protect     Protect an Environment so it cannot be removed and only an owner or admin can change its repository or deploy branch
+  rm          Remove an Environment: from the Servers first, then from Ployz
+  setup       Set the Setup Commands a new Branch of an Environment runs when it names none
+  shutdown    Take an Environment off the Servers, keeping its configuration
+  sync        Stage one Environment's changes in another of the Project
   help        Print this message or the help of the given subcommand(s)
 
 Options:
       --connect <connect>
+          Reach the Servers through this connection instead of Cloud or a context
+          
           [env: PLOYZ_CONNECT=]
 
       --ssh-timeout <SECONDS>
@@ -328,7 +339,7 @@ Options:
           [default: 20]
 
       --json
-          Print the result as one JSON object on stdout
+          Print the result as one JSON object on stdout; streams print one per line
 
       --color <WHEN>
           When to color output; overrides NO_COLOR and CLICOLOR
@@ -354,14 +365,14 @@ Stage one Environment's changes in another of the Project
 Usage: ployz env sync [OPTIONS]
 
 Options:
-      --connect <connect>      [env: PLOYZ_CONNECT=]
+      --connect <connect>      Reach the Servers through this connection instead of Cloud or a context [env: PLOYZ_CONNECT=]
       --project <project>      Project [default: the only Project] [env: PLOYZ_PROJECT=]
       --env <env>              Environment [default: the Project's Default Environment] [env: PLOYZ_ENV=]
       --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
       --to [<ENV>]             Sync into ENV; with no value, the Branch's Parent
       --from <ENV>             Sync ENV's changes into this Environment
       --only <ROW>             Sync only this row (web.image), or every row under a prefix (web, web.env); repeatable
-      --json                   Print the result as one JSON object on stdout
+      --json                   Print the result as one JSON object on stdout; streams print one per line
       --skip <ROW>             Leave out this row, or every row under a prefix; repeatable
       --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
       --value <ROW>            Give a secret the receiver lacks its value, read as one line of stdin per --value, in order; repeatable
@@ -371,6 +382,8 @@ Options:
       --undo <SYNC>            Undo the Sync a sync printed
       --take <PARENT>          Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them
   -h, --help                   Print help (see more with '--help')
+
+Docs: ployz docs environments/preview-environments.md
 ```
 
 ### project rm --help
@@ -392,6 +405,8 @@ Arguments:
 
 Options:
       --connect <connect>
+          Reach the Servers through this connection instead of Cloud or a context
+          
           [env: PLOYZ_CONNECT=]
 
       --ssh-timeout <SECONDS>
@@ -400,6 +415,8 @@ Options:
           [default: 20]
 
   -c, --context <context>
+          Act through this local context instead of the current one
+          
           [env: PLOYZ_CONTEXT=]
 
       --confirm <PROJECT>
@@ -409,7 +426,7 @@ Options:
           Accept permanent deletion: repeat once per exact volume name in the full deletion list
 
       --json
-          Print the result as one JSON object on stdout
+          Print the result as one JSON object on stdout; streams print one per line
 
       --color <WHEN>
           When to color output; overrides NO_COLOR and CLICOLOR
@@ -428,6 +445,9 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+
+Needs project:delete
+Docs: ployz docs cli/overview.md
 ```
 
 ### get -h
@@ -444,17 +464,19 @@ Show Settings: every Service, one Service, or one Setting
 Usage: ployz get [OPTIONS] [path]
 
 Arguments:
-  [path]  SERVICE, SERVICE.SETTING or SERVICE.env.KEY
+  [path]  SERVICE, SERVICE.SETTING, SERVICE.env.KEY, or setup.SERVICE for a Branch's Setup Command
 
 Options:
-      --connect <connect>      [env: PLOYZ_CONNECT=]
+      --connect <connect>      Reach the Servers through this connection instead of Cloud or a context [env: PLOYZ_CONNECT=]
       --project <project>      Project [default: the only Project] [env: PLOYZ_PROJECT=]
       --env <env>              Environment [default: the Project's Default Environment] [env: PLOYZ_ENV=]
       --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
       --all                    Include Settings at their default across the Environment
-      --json                   Print the result as one JSON object on stdout
+      --json                   Print the result as one JSON object on stdout; streams print one per line
       --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
   -h, --help                   Print help (see more with '--help')
+
+Docs: ployz docs services/settings.md
 ```
 
 ### help service add
@@ -476,6 +498,8 @@ Arguments:
 
 Options:
       --connect <connect>
+          Reach the Servers through this connection instead of Cloud or a context
+          
           [env: PLOYZ_CONNECT=]
 
       --project <project>
@@ -500,7 +524,7 @@ Options:
           GitHub repository to build; Ployz checks it and the branch (default: its default branch)
 
       --json
-          Print the result as one JSON object on stdout
+          Print the result as one JSON object on stdout; streams print one per line
 
       --color <WHEN>
           When to color output; overrides NO_COLOR and CLICOLOR
@@ -510,6 +534,8 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+
+Docs: ployz docs account/try-without-an-account.md
 ```
 
 ### completion bash

@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { carriedInto } from "#/modules/approvals/approvals.server";
 import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
@@ -63,7 +64,7 @@ const noServers = (): ServersAnswer => {
 /** Why Cloud reached no Server: the Organization has none yet, or its Servers aren't answering. */
 const notConnected = Effect.fn("CallCloud.notConnected")(function* (organizationId: string) {
   return (yield* countOrganizationMachines(organizationId)) === 0
-    ? refusal("unavailable", NO_SERVERS_MESSAGE, CONNECT_SERVERS)
+    ? refusal("conflict", NO_SERVERS_MESSAGE, CONNECT_SERVERS)
     : unreachable();
 });
 
@@ -99,7 +100,7 @@ const copies = Effect.fn("CallCloud.copies")(function* (caller: Caller, namespac
   const loaded = yield* loadOrganizationConnections(organizationId);
   if (loaded.kind !== "ready" || loaded.connections.length === 0) return yield* notConnected(organizationId);
   const observed = yield* observeVolumeCopies(loaded.connections);
-  const names = yield* serverNames(organizationId);
+  const names = yield* serverNames(organizationId, [...observed.copies.map((copy) => copy.machine_id), ...observed.unanswered]);
   const server = (machine: MachineId) => ({ machine, name: names.get(machine) ?? machine });
   const now = Math.floor(Date.now() / 1000);
   return answer<CopiesAnswer>({
@@ -317,6 +318,9 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       const quickSync = action.run.run === "sync" && !action.run.full;
       const lacking = unpermitted(caller, quickSync ? OPERATIONS["volume.sync"].requires : VOLUME_OPERATIONS[volumeRunInput(action.run, "").kind].requires);
       if (lacking !== null) return lacking;
+      // A quick sync asks no one, and still refuses an approval carried into it that isn't for exactly this sync.
+      const carried = quickSync ? yield* carriedInto(caller, approvalId, { command: "sync", subject: `volume:${action.volume}` }) : null;
+      if (carried !== null) return { ok: false, refusal: carried } as const;
       const found = yield* beforeWrite(findVolume(organizationId, action.volume));
       if (found === null) return noSuch("Volume");
       if (quickSync) {

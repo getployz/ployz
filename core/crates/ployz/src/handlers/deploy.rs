@@ -18,9 +18,9 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeploymentId, DeploymentStatus,
-    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish,
-    RunnerId, Start, UploadBase, UploadedSource, VolumeName,
+    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, NodeStatus, PlanQuery,
+    Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Next, Store, environment, mint, next, scoped, store};
@@ -323,7 +323,8 @@ pub(super) fn open_events(
     Ok(Some(std::io::BufWriter::new(file)))
 }
 
-/// Run or follow a queued Deployment and report it. Exits 3 unless it applied.
+/// Run or follow a queued Deployment and report it. A failed Deploy exits 1; a failed
+/// removal or shutdown, or an applied one missing a Server, exits 3.
 fn ship(
     matches: &ArgMatches,
     store: &Store,
@@ -390,6 +391,7 @@ pub(super) fn execute(
             .map(|view| Followed {
                 view,
                 progress: None,
+                successor: None,
             })
     } else {
         follow(matches, store, admitted, events, runner.as_ref(), &signal)
@@ -465,6 +467,9 @@ pub(super) fn execute(
     };
     if !detached {
         finish_progress(&mut followed, disposition);
+        for builder in progress::builders(&followed.view) {
+            ui::note(builder);
+        }
     }
     for warning in progress::value_warnings(&followed.view)
         .into_iter()
@@ -472,13 +477,17 @@ pub(super) fn execute(
     {
         ui::warn(warning);
     }
-    let view = followed.view;
+    let Followed {
+        view, successor, ..
+    } = followed;
     let ran = if interrupted {
         Err(Error::cancelled())
     } else if detached {
         Ok(())
     } else {
-        progress::completion(&view, |args| super::rerun(matches, args))
+        progress::completion(&view, successor.as_ref(), |args| {
+            super::rerun(matches, args)
+        })
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(
@@ -607,6 +616,8 @@ impl Drop for OwnedRunner<'_, '_> {
 struct Followed {
     view: DeploymentView,
     progress: Option<Progress>,
+    /// The newer Deployment that superseded it without shipping all of its Services.
+    successor: Option<DeploymentSummary>,
 }
 
 fn finish_progress(followed: &mut Followed, disposition: Disposition) {
@@ -627,7 +638,13 @@ fn tap(
     events: &mut Option<std::io::BufWriter<std::fs::File>>,
     last: &mut Option<serde_json::Value>,
 ) {
-    let event = serde_json::json!({ "type": "deployment", "status": view.deployment.status, "nodes": view.nodes });
+    let event = serde_json::json!({
+        "type": "deployment",
+        "id": view.deployment.id,
+        "number": view.deployment.number,
+        "status": view.deployment.status,
+        "nodes": view.nodes,
+    });
     if last.as_ref() != Some(&event) {
         if let Some(file) = events.as_mut() {
             let _ = writeln!(file, "{event}");
@@ -677,6 +694,7 @@ fn follow(
                     followed = Some(Followed {
                         view,
                         progress: None,
+                        successor: None,
                     });
                 }
             }
@@ -693,7 +711,11 @@ fn follow(
             followed.view = view;
         } else {
             let progress = progress::visible(&view).then(|| Progress::start(frame));
-            followed = Some(Followed { view, progress });
+            followed = Some(Followed {
+                view,
+                progress,
+                successor: None,
+            });
         }
         let current = followed
             .as_ref()
@@ -717,13 +739,24 @@ fn follow(
                     ))
                     .hint(Hint::Inspect(next(matches, &["deployment", "ls"])))
             })?;
-            if let Some(newer) = newer {
-                id = newer.id.clone();
-                tracked = newer;
-                last = None;
-                continue;
+            match newer {
+                Some(Replacement::Follow(newer)) => {
+                    id = newer.id.clone();
+                    tracked = newer;
+                    last = None;
+                    continue;
+                }
+                Some(Replacement::Name(newer)) => {
+                    if let Some(followed) = followed.as_mut() {
+                        followed.successor = Some(newer);
+                    }
+                }
+                None => {}
             }
         }
+        let current = followed
+            .as_ref()
+            .expect("a successful read installed its view");
         tap(&current.view, &mut events, &mut last);
         if current.view.deployment.status != DeploymentStatus::Queued {
             unclaimed = None;
@@ -750,8 +783,15 @@ fn follow(
     }
 }
 
-/// The newest Deployment newer than superseded `view` that targets every Service `view` did, among the latest and those in flight.
-fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<DeploymentSummary>, Error> {
+/// What took superseded `view`'s place, among the latest and those in flight.
+enum Replacement {
+    /// The newest newer Deployment that ships every Service `view` targeted: follow it.
+    Follow(DeploymentSummary),
+    /// Else the newest newer one: name it.
+    Name(DeploymentSummary),
+}
+
+fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Replacement>, Error> {
     let page = store.read(&DeploymentsQuery {
         environment: EnvironmentRef {
             project: Some(view.environment.project.clone()),
@@ -760,12 +800,57 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
         limit: None,
         cursor: None,
     })?;
+    let ours = &view.deployment.services;
     // The latest may ship other Services while an older one in flight ships ours:
     // the latest, then the in-flight ones newest first, whatever page they fall on.
-    Ok(page.latest.into_iter().chain(page.in_flight).find(|newer| {
-        newer.number > view.deployment.number
-            && ships_all(&view.deployment.services, &newer.services)
-    }))
+    let latest = page.latest.as_ref().map(|latest| latest.id.clone());
+    let in_flight = page
+        .in_flight
+        .into_iter()
+        .filter(|newer| latest.as_ref() != Some(&newer.id));
+    let mut newest = None;
+    for newer in page.latest.into_iter().chain(in_flight) {
+        if newer.number <= view.deployment.number {
+            continue;
+        }
+        if newest.is_none() {
+            newest = Some(newer.clone());
+        }
+        // A narrowed one also ships, as Service nodes, the Services its named ones
+        // reference; a node it left unchanged or never reached ships nothing.
+        let carries = if newer.services.is_empty() || ours.is_empty() {
+            ships_all(ours, &newer.services)
+        } else {
+            let Ok(read) = store.read(&ployz_store::DeploymentQuery {
+                id: newer.id.clone(),
+            }) else {
+                continue;
+            };
+            let shipped: Vec<ServiceName> = read
+                .nodes
+                .into_iter()
+                .filter_map(|node| match (node.node, node.outcome) {
+                    (
+                        DeployedNode::Service { name, .. },
+                        NodeStatus::Pending
+                        | NodeStatus::Deployed
+                        | NodeStatus::Failed
+                        | NodeStatus::Unknown,
+                    ) => Some(name),
+                    (
+                        DeployedNode::Service { .. },
+                        NodeStatus::Unchanged | NodeStatus::NotAttempted | NodeStatus::Removed,
+                    )
+                    | (DeployedNode::Volume { .. } | DeployedNode::Config { .. }, _) => None,
+                })
+                .collect();
+            ours.iter().all(|service| shipped.contains(service))
+        };
+        if carries {
+            return Ok(Some(Replacement::Follow(newer)));
+        }
+    }
+    Ok(newest.map(Replacement::Name))
 }
 
 /// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.
@@ -845,14 +930,30 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 cause.trim_end_matches('.')
             ));
         }
-        if !plan.unresolved.is_empty() {
-            ui::stream(format_args!(
-                "Decided by the Servers when it runs: {}.",
-                plan.unresolved.join(", ")
-            ));
+        if let Some(undecided) = undecided(&plan.unresolved) {
+            ui::stream(format_args!("{undecided}"));
         }
         ui::hint(&Hint::Next(hint.clone()));
     })
+}
+
+/// The plan's line for what only the Servers decide, as people read it.
+fn undecided(unresolved: &[String]) -> Option<String> {
+    if unresolved.is_empty() {
+        return None;
+    }
+    let unresolved: Vec<_> = unresolved
+        .iter()
+        .map(|item| match item.as_str() {
+            "operations" => "which containers start and stop",
+            "volume data" => "which volume data is deleted",
+            other => other,
+        })
+        .collect();
+    Some(format!(
+        "Decided by the Servers when it runs: {}.",
+        unresolved.join(", ")
+    ))
 }
 
 fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, String> {
@@ -866,29 +967,37 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, S
         .block_on(async {
             let mut client = super::server::connect(matches, context)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| crate::ingress::unchecked(&error, None))?;
+            let server = client.server();
             crate::ingress::planned_slots(&mut client)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| crate::ingress::unchecked(&error, server))
         })
 }
 
-/// "uploaded by nick, base abc1234 + changes": where an upload came from.
-fn provenance(upload: &UploadedSource) -> String {
+/// "uploaded by nick, base abc1234 + changes": where `deployment`'s upload came from,
+/// and whether that may still change before it starts.
+fn provenance(deployment: &DeploymentSummary) -> Option<String> {
+    let upload = deployment.upload.as_ref()?;
     let who = upload
         .uploader
         .as_ref()
         .map_or("this device", ployz_store::Principal::as_str);
     let digest = upload.digest.as_str();
     let digest = digest.get(..12).unwrap_or(digest);
-    match &upload.base {
+    let source = match &upload.base {
         Some(base) => format!(
             "uploaded by {who}, base {}{}",
             base.commit.as_str().get(..7).unwrap_or_default(),
             if base.changed { " + changes" } else { "" }
         ),
         None => format!("uploaded by {who}, sha256 {digest}"),
-    }
+    };
+    Some(if deployment.chooses_upload_at_start {
+        format!("{source} for now; chosen again when it starts")
+    } else {
+        source
+    })
 }
 
 /// Why `dir` couldn't be read: its ignore rules are the user's input; a missing
@@ -1191,8 +1300,8 @@ pub(super) fn say_view(view: &DeploymentView) {
         view.environment.name,
         status_word(&view.deployment)
     ));
-    if let Some(upload) = &view.deployment.upload {
-        crate::ui::stream(format_args!("  {}", provenance(upload)));
+    if let Some(provenance) = provenance(&view.deployment) {
+        crate::ui::stream(format_args!("  {provenance}"));
     }
     if let Some(
         ployz_store::Outcome::NotExecuted { reason, cause, .. }
@@ -1230,11 +1339,18 @@ pub(super) fn say_view(view: &DeploymentView) {
             commit.as_str().get(..7).unwrap_or(commit.as_str())
         });
         let reason = build.message.as_deref().unwrap_or_default();
+        let on = build
+            .server
+            .as_deref()
+            .map_or_else(String::new, |server| format!(" on {server}"));
         crate::ui::stream(format_args!(
-            "  build {} from {commit}: {} {reason}",
+            "  build {} from {commit}: {}{on} {reason}",
             build.service,
             super::store::word(&build.status)
         ));
+        if let Some(why) = &build.github_skipped {
+            crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
+        }
     }
 }
 
@@ -1257,8 +1373,23 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{Tone, open_events, service_outcome_lines, ships_all, status_tone, status_word};
+    use super::{
+        Tone, open_events, provenance, service_outcome_lines, ships_all, status_tone, status_word,
+        undecided,
+    };
     use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn the_plan_says_what_the_servers_decide_in_plain_words() {
+        assert_eq!(undecided(&[]), None);
+        assert_eq!(
+            undecided(&["operations".to_owned(), "volume data".to_owned()]).as_deref(),
+            Some(
+                "Decided by the Servers when it runs: which containers start and stop, \
+                 which volume data is deleted."
+            )
+        );
+    }
 
     #[test]
     fn an_events_path_that_cannot_be_written_names_the_flag_and_the_path() {
@@ -1346,5 +1477,29 @@ mod tests {
             ("CI failed".to_owned(), Tone::Bad)
         );
         assert_eq!(read("queued", None), ("queued".to_owned(), Tone::Change));
+    }
+
+    #[test]
+    fn a_queued_deploy_without_an_upload_of_its_own_says_its_upload_may_change() {
+        let deployment = |status: &str, at_start: bool| -> ployz_store::DeploymentSummary {
+            serde_json::from_value(serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000101",
+                "environment_id": "00000000-0000-4000-8000-000000000002",
+                "number": 1, "status": status, "saved": 1, "services": [], "runner": null,
+                "upload": {"digest": "a".repeat(64), "base": null, "uploader": "nick"},
+                "chooses_upload_at_start": at_start, "remove": false, "admitted_by": null,
+                "admitted_at": 0, "started_at": null, "ended_at": null, "message": null,
+                "push": null, "ci": null, "in_flight": true, "outcome": null,
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            provenance(&deployment("queued", true)).as_deref(),
+            Some("uploaded by nick, sha256 aaaaaaaaaaaa for now; chosen again when it starts")
+        );
+        assert_eq!(
+            provenance(&deployment("running", false)).as_deref(),
+            Some("uploaded by nick, sha256 aaaaaaaaaaaa")
+        );
     }
 }

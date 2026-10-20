@@ -123,6 +123,7 @@ pub(super) struct ObservationSink {
     local: RecordOwner,
     plugin: crate::storage::Plugin,
     rescan_interval: Duration,
+    pool_committable_bytes: tokio::sync::watch::Sender<Option<u64>>,
 }
 
 impl ContainerRuntime {
@@ -138,8 +139,18 @@ impl ContainerRuntime {
             local,
             plugin,
             rescan_interval: RESCAN_INTERVAL,
+            pool_committable_bytes: tokio::sync::watch::Sender::new(None),
         });
         self
+    }
+
+    /// What this Machine's Pool could still commit, as of the last storage
+    /// observation.
+    pub(crate) fn pool_committable_bytes(&self) -> tokio::sync::watch::Receiver<Option<u64>> {
+        self.sink.as_ref().map_or_else(
+            || tokio::sync::watch::channel(None).1,
+            |sink| sink.pool_committable_bytes.subscribe(),
+        )
     }
 
     #[cfg(test)]
@@ -149,6 +160,12 @@ impl ContainerRuntime {
             sink.rescan_interval = interval;
         }
         self
+    }
+
+    /// Turns `true` once this process has published its container observations
+    /// while participating, and stays `true` across watch retries.
+    pub(crate) fn first_synced(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.first_synced.subscribe()
     }
 
     pub async fn publish_observations(&self, shutdown: CancellationToken) -> Result<(), Error> {
@@ -339,6 +356,8 @@ impl ContainerRuntime {
         publication
             .apply_container_rows(&machine_id, &changes.deletions, &changes.upserts)
             .await?;
+        self.first_synced
+            .send_if_modified(|synced| !std::mem::replace(synced, true));
         // The one Service Container the daemon starts unasked, and only while this Machine
         // participates and accepts ingress. It starts an existing container; it never
         // creates, replaces, moves or removes one.
@@ -366,17 +385,31 @@ impl ContainerRuntime {
         let VolumeInventory {
             mut volumes,
             failures,
-        } = self.list_volumes(&machine_id).await?;
-        match sink
+        } = match self.list_volumes(&machine_id).await {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                sink.pool_committable_bytes
+                    .send_if_modified(|current| current.take().is_some());
+                return Err(error);
+            }
+        };
+        let committable = match sink
             .plugin
             .call::<ployz_core::StorageCapacity>("Storage.Inspect", &())
             .await
         {
-            Ok(capacity) => observe_copies(&machine_id, &mut volumes, &capacity.copies),
-            Err(error) => {
-                eprintln!("Volume copies unobserved, Docker Volumes stay writers: {error}")
+            Ok(capacity) => {
+                observe_copies(&machine_id, &mut volumes, &capacity.copies);
+                // Whole GiB: each Machine row change rebuilds every peer's mesh routes.
+                capacity.committable_hint_bytes().ok()
             }
-        }
+            Err(error) => {
+                eprintln!("Volume copies unobserved, Docker Volumes stay writers: {error}");
+                None
+            }
+        };
+        sink.pool_committable_bytes
+            .send_if_modified(|current| std::mem::replace(current, committable) != committable);
         let mut live = LocalVolumeSnapshot::from_inventory(
             failures.into_iter().map(|failure| failure.id.name),
         );
@@ -410,8 +443,13 @@ fn observe_copies(
     copies: &std::collections::BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>,
 ) {
     for volume in volumes.iter_mut() {
-        if let DockerVolumeStorageObservation::Provisioned { role, .. } = &mut volume.storage {
-            *role = copies.get(&volume.id.name).map(|copy| copy.role);
+        if let DockerVolumeStorageObservation::Provisioned {
+            role, slot_role, ..
+        } = &mut volume.storage
+        {
+            let copy = copies.get(&volume.id.name);
+            *role = copy.map(|copy| copy.role);
+            *slot_role = copy.and_then(|copy| copy.slot_role);
         }
     }
     for (name, copy) in copies {
@@ -436,6 +474,7 @@ fn observe_copies(
                 bound_bytes,
                 used_bytes: copy.used_bytes,
                 role: Some(CopyRole::Slot),
+                slot_role: copy.slot_role,
             },
         });
     }
@@ -917,6 +956,7 @@ mod tests {
                 bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
                 used_bytes: 512,
                 role: None,
+                slot_role: None,
             },
         };
         let mut existing = LocalVolumeSnapshot::default();
@@ -949,6 +989,7 @@ mod tests {
                 bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
                 used_bytes: 512,
                 role,
+                slot_role: None,
             },
         };
         let plain = DockerVolume {
@@ -968,6 +1009,7 @@ mod tests {
                 std::num::NonZeroU64::new(1024).unwrap(),
             ),
             used_bytes,
+            slot_role: None,
         };
         let copies = BTreeMap::from([
             (name("data"), copy(CopyRole::Switching, 512)),
@@ -983,6 +1025,7 @@ mod tests {
             bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
             used_bytes: 300,
             role: Some(CopyRole::Slot),
+            slot_role: None,
         };
         assert_eq!(
             volumes,
@@ -993,12 +1036,107 @@ mod tests {
         assert_eq!(volumes.len(), 3, "a listed slot is not added twice");
     }
 
+    struct Replicating {
+        runtime: super::ContainerRuntime,
+        replicated: crate::corrosion::ReplicatedStore,
+        corrosion: tokio::task::JoinHandle<()>,
+        container_id: ContainerId,
+        data_dir: std::path::PathBuf,
+    }
+
     #[tokio::test]
-    async fn rotation_write_wakes_sync() {
+    async fn storage_inspect_sets_what_the_pool_could_still_commit() {
         use std::time::Duration;
 
-        use ployz_core::{AdvertisedEndpoint, CopyRotation, MachineId, MachineName};
+        use ployz_core::{
+            AdvertisedEndpoint, MachineId, MachineName, StorageBacking, StorageCapacity,
+        };
         use tokio_util::sync::CancellationToken;
+
+        use crate::corrosion::store_tests::{corrosion_db, identity_store};
+        use crate::docker::test_support::runtime_with_running_container;
+        use crate::machine::{LocalMachineStore, RecordOwner};
+        use crate::storage::test_support::FakePlugin;
+
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-committable-{}", MachineId::random()));
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        store
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
+                wireguard_mtu: None,
+                pinned: Default::default(),
+            })
+            .unwrap();
+        let owner = RecordOwner::spawn(store).unwrap();
+        let fake = FakePlugin::default();
+        let gib = ployz_core::STORAGE_GIB;
+        fake.reply(
+            "Storage.Inspect",
+            serde_json::json!({"Ok": StorageCapacity {
+                backing: StorageBacking::Fixed {
+                    pool_size_bytes: 10 * gib,
+                },
+                unmanaged_used_bytes: 1000,
+                slot_bound_bytes: 0,
+                volumes: BTreeMap::new(),
+                copies: BTreeMap::new(),
+            }}),
+        );
+        let (plugin, plugin_server) = fake.serve(&data_dir);
+        let (replicated, corrosion) = identity_store(corrosion_db()).await;
+        let (runtime, docker, _id) = runtime_with_running_container().await;
+        let runtime = runtime
+            .replicating(replicated, owner, plugin)
+            .with_rescan_interval(Duration::from_millis(50));
+        let committable = runtime.pool_committable_bytes();
+        let shutdown = CancellationToken::new();
+        let publisher = tokio::spawn({
+            let (runtime, shutdown) = (runtime.clone(), shutdown.clone());
+            async move { runtime.publish_observations(shutdown).await }
+        });
+        let observed = |expected: Option<u64>| {
+            let mut committable = committable.clone();
+            async move {
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    committable.wait_for(|value| *value == expected),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("{expected:?} was never observed"))
+                .unwrap();
+            }
+        };
+
+        observed(Some(8 * gib)).await;
+        docker
+            .reject_list
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        observed(None).await;
+        docker
+            .reject_list
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        observed(Some(8 * gib)).await;
+        fake.replies.lock().unwrap().remove("Storage.Inspect");
+        observed(None).await;
+
+        shutdown.cancel();
+        publisher.await.unwrap().unwrap();
+        plugin_server.abort();
+        corrosion.abort();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    async fn replicating(rescan: std::time::Duration) -> Replicating {
+        use ployz_core::{AdvertisedEndpoint, MachineId, MachineName};
 
         use crate::corrosion::store_tests::{corrosion_db, identity_store};
         use crate::docker::test_support::runtime_with_running_container;
@@ -1024,10 +1162,33 @@ mod tests {
             .unwrap();
         let owner = RecordOwner::spawn(store).unwrap();
         let (replicated, corrosion) = identity_store(corrosion_db()).await;
-        let (runtime, _fake, id) = runtime_with_running_container().await;
+        let (runtime, _fake, container_id) = runtime_with_running_container().await;
         let runtime = runtime
             .replicating(replicated.clone(), owner, crate::storage::Plugin::default())
-            .with_rescan_interval(Duration::from_secs(3600));
+            .with_rescan_interval(rescan);
+        Replicating {
+            runtime,
+            replicated,
+            corrosion,
+            container_id,
+            data_dir,
+        }
+    }
+
+    #[tokio::test]
+    async fn rotation_write_wakes_sync() {
+        use std::time::Duration;
+
+        use ployz_core::CopyRotation;
+        use tokio_util::sync::CancellationToken;
+
+        let Replicating {
+            runtime,
+            replicated,
+            corrosion,
+            container_id: id,
+            data_dir,
+        } = replicating(Duration::from_secs(3600)).await;
         let shutdown = CancellationToken::new();
         let publisher = tokio::spawn({
             let (runtime, shutdown) = (runtime.clone(), shutdown.clone());
@@ -1062,6 +1223,75 @@ mod tests {
 
         shutdown.cancel();
         publisher.await.unwrap().unwrap();
+        corrosion.abort();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn first_sync_signals_once() {
+        use std::time::Duration;
+
+        use tokio_util::sync::CancellationToken;
+
+        let Replicating {
+            runtime,
+            replicated,
+            corrosion,
+            container_id,
+            data_dir,
+        } = replicating(Duration::from_millis(20)).await;
+        let sink = runtime.sink.clone().unwrap();
+        let mut synced = runtime.first_synced();
+        let run_awhile = async |watcher: tokio::task::JoinHandle<()>,
+                                shutdown: CancellationToken| {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            shutdown.cancel();
+            watcher.await.unwrap();
+        };
+        let volumes = |shutdown: CancellationToken| {
+            let (runtime, sink) = (runtime.clone(), sink.clone());
+            tokio::spawn(async move {
+                runtime
+                    .watch_volume_observations(&sink, &shutdown)
+                    .await
+                    .unwrap();
+            })
+        };
+        let containers = |shutdown: CancellationToken| {
+            let (runtime, sink) = (runtime.clone(), sink.clone());
+            tokio::spawn(async move {
+                runtime.watch_observations(&sink, &shutdown).await.unwrap();
+            })
+        };
+
+        let shutdown = CancellationToken::new();
+        run_awhile(volumes(shutdown.clone()), shutdown).await;
+        assert!(
+            !*synced.borrow_and_update(),
+            "the Volume observer never signals"
+        );
+
+        let shutdown = CancellationToken::new();
+        let first = containers(shutdown.clone());
+        tokio::time::timeout(Duration::from_secs(5), synced.changed())
+            .await
+            .expect("the first sync signals")
+            .unwrap();
+        assert!(*synced.borrow_and_update());
+        assert!(
+            replicated.container(&container_id).await.unwrap().is_some(),
+            "the signal follows the published observation"
+        );
+        run_awhile(first, shutdown).await;
+
+        let shutdown = CancellationToken::new();
+        run_awhile(containers(shutdown.clone()), shutdown).await;
+        assert!(
+            !synced.has_changed().unwrap(),
+            "rescans and a retried watch leave the signal as it was"
+        );
+        assert!(*synced.borrow());
+
         corrosion.abort();
         let _ = std::fs::remove_dir_all(data_dir);
     }

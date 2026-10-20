@@ -85,7 +85,7 @@ impl PendingConnection {
         tokio::select! {
             biased;
             () = self.cancel.cancelled() => Err(rpc_to_napi(RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null, cause: Vec::new(), })),
-            result = sdk::connect_connections(connections, connector) => Ok(Client { inner: result.map_err(rpc_to_napi)? }),
+            result = sdk::connect_answered(connections, connector) => Ok(Client { inner: result.map_err(call_to_napi)? }),
         }
     }
 }
@@ -199,7 +199,7 @@ impl Client {
             .set_management_client(label)
             .await
             .map(|capability| capability.to_secret_string())
-            .map_err(rpc_to_napi)
+            .map_err(call_to_napi)
     }
 
     /// Point this Machine's crash pushes at `url`, or stop them with `null`.
@@ -583,7 +583,8 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when `request` is not a Volume
     /// switch request, the session is closed, or the Machine refuses; a fence refusal
-    /// carries its `SwitchError` in `details`.
+    /// carries its `SwitchError` in `details`. One no Machine sent is `unanswered`: the
+    /// Machine may have taken the request.
     #[napi(ts_return_type = "Promise<SetVolumeCopyReply | VolumeCopyView>")]
     pub async fn volume_switch(
         &self,
@@ -598,7 +599,7 @@ impl Client {
             .inner
             .volume_switch(&machine, whole_numbers(request))
             .await;
-        switched.map_err(rpc_to_napi)
+        switched.map_err(call_to_napi)
     }
 
     /// Container `container` on `machine` with its spec's real environment values.
@@ -972,6 +973,21 @@ fn rpc_to_napi(error: RpcError) -> Error {
     match serde_json::to_string(&error) {
         Ok(json) => Error::from_reason(format!("{RPC_ERROR_PREFIX}{json}")),
         Err(_) => Error::from_reason(error.to_string()),
+    }
+}
+
+/// [`rpc_to_napi`], marking with `unanswered` a failure no Machine sent.
+fn call_to_napi(failure: sdk::CallError) -> Error {
+    if !failure.unanswered {
+        return rpc_to_napi(failure.error);
+    }
+    match serde_json::to_value(&failure.error) {
+        Ok(serde_json::Value::Object(mut fields)) => {
+            fields.insert("unanswered".into(), serde_json::Value::Bool(true));
+            let json = serde_json::Value::Object(fields);
+            Error::from_reason(format!("{RPC_ERROR_PREFIX}{json}"))
+        }
+        _ => Error::from_reason(failure.error.to_string()),
     }
 }
 

@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { Client, ConfigCommand, MachineId } from "@ployz/sdk";
-import { Effect, Layer, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Schema } from "effect";
+import * as TestClock from "effect/testing/TestClock";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -12,7 +13,7 @@ import { member, user } from "#/modules/identity/tables";
 import { createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { CLUSTER_UNREACHABLE, enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
+import { checkForgetServers, FORGET_CLUSTER_BUDGET_MS, forgetServers } from "#/modules/machines/forget-servers.server";
 import {
   enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine,
 } from "#/modules/machines/tables";
@@ -31,12 +32,12 @@ const FOUNDER = "0".repeat(32);
 const here = { project: null, environment: null };
 const TOKEN = "pmet_fixture_forget";
 
-/** Cloud whose every connection attempt to a Server connects (`answers`) or fails. */
+/** Cloud whose every connection attempt to a Server connects (`answers`) or fails. One that answers is machine-1. */
 const cloud = (answers: boolean) => Effect.gen(function* () {
   const ployz = makePloyzLayer({
     connect: async () => {
       if (!answers) throw new Error("no route to the Server");
-      return asTestDouble<Client>()({ close: async () => undefined });
+      return asTestDouble<Client>()({ close: async () => undefined, inspect: async () => ({ machine: { name: "machine-1" } }) });
     },
   });
   return yield* Layer.build(Layer.merge(yield* storeTestCloud(), ployz));
@@ -69,13 +70,42 @@ it.live("Forget Servers refuses while a Server answers, and forgets nothing", ()
       ok: false,
       refusal: {
         code: "conflict",
-        message: `Your Servers are still reachable (${FOUNDER}). Remove them from the Servers page or with \`ployz server rm\` instead.`,
-        details: { answered: [FOUNDER] },
+        message: "Your Servers are still reachable (machine-1). Remove them from the Servers page or with `ployz server rm` instead.",
+        details: { answered: ["machine-1"] },
       },
     });
     const { drizzle } = yield* Database;
     expect(yield* drizzle.select().from(organizationPairing)).toHaveLength(1);
     expect(yield* drizzle.select().from(organizationMachine)).toHaveLength(1);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("Forget Servers answers within its Cluster time, and aborts the connection, while a Server that answered never closes its session", () => Effect.gen(function* () {
+  const closing = yield* Deferred.make<void>();
+  const signals: AbortSignal[] = [];
+  const services = yield* Layer.build(Layer.merge(yield* storeTestCloud(), makePloyzLayer({
+    connect: async ({ signal }) => {
+      if (signal) signals.push(signal);
+      return asTestDouble<Client>()({
+        close: () => {
+          Effect.runSync(Deferred.succeed(closing, undefined));
+          return new Promise<void>(() => {});
+        },
+        inspect: async () => ({ machine: { name: "machine-1" } }),
+      });
+    },
+  })));
+  yield* Effect.gen(function* () {
+    const { userId } = yield* seeded();
+    const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), 10_000); }));
+    const answer = yield* Effect.gen(function* () {
+      const fiber = yield* Effect.forkDetach(forgetServers({ userId, organizationId: ORGANIZATION }));
+      yield* Deferred.await(closing);
+      yield* TestClock.adjust(FORGET_CLUSTER_BUDGET_MS);
+      return yield* Effect.raceFirst(Fiber.join(fiber), held);
+    }).pipe(Effect.provide(TestClock.layer()));
+    expect(answer).toMatchObject({ ok: false, refusal: { code: "conflict", details: { answered: ["machine-1"] } } });
+    expect(signals.map((signal) => signal.aborted)).toEqual([true]);
   }).pipe(Effect.provide(services));
 }), 60_000);
 

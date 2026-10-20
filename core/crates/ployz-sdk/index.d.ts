@@ -62,7 +62,11 @@ export type Connection = (
   | { readonly ssh: string; readonly ssh_key_file?: string }
   | { readonly tcp: string }
   | { readonly unix: string }
-) & { readonly machine_id?: MachineId };
+) & {
+  readonly machine_id?: MachineId;
+  /** The Server's name, where Cloud knows it: a failed connection names the Server by it. */
+  readonly name?: string;
+};
 export type ConnectOptions = {
   readonly connections: readonly Connection[];
   /** Cancels connection establishment and closes the resulting session. */
@@ -118,8 +122,9 @@ export type ConfirmOptions = WatchOptions & {
 
 export type RunOptions = WatchOptions;
 
+/** `unanswered` holds when no Machine sent the failure: the dial failed, or the call went out and no status came back. */
 export declare const RpcError: {
-  new (error: RpcErrorPayload, options?: ErrorOptions): Error & RpcErrorPayload;
+  new (error: RpcErrorPayload & { unanswered?: boolean }, options?: ErrorOptions): Error & RpcErrorPayload & { readonly unanswered: boolean };
 };
 
 /** Private build evidence; never proof that content still exists on a Machine. */
@@ -251,7 +256,10 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewNamespaceRemoval(namespace: Namespace, destroy_volumes: boolean): Promise<PreparedDeploy>;
   run(intent: DeployIntent, options?: RunOptions): Promise<DeployOutcome<ExecutionError>>;
-  /** A `set_volume_copy` refusal rejects with an `RpcError` whose `details` is a `SetVolumeCopyRefused`. */
+  /**
+   * A `set_volume_copy` refusal rejects with an `RpcError` whose `details` is a `SetVolumeCopyRefused`. A rejection no
+   * Machine sent is `unanswered`: the Machine may have taken the request.
+   */
   volumeSwitch<R extends VolumeSwitchRequest>(machine: MachineTarget, request: R): Promise<VolumeSwitchReply<R["command"]>>;
   dataLossIfNamespaceDestroyed(namespace: Namespace, destroy_volumes?: boolean): Promise<ObservedDataLoss>;
   destroyNamespace(

@@ -1,3 +1,5 @@
+use ployz_core::ByteQuantity;
+
 use super::*;
 
 #[tokio::test(start_paused = true)]
@@ -70,11 +72,11 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
     let dependent = QualifiedService::parse("app/web").unwrap();
     let first_id = container('a');
     let second_id = container('b');
-    let mut first = observation(&machine('1'), &first_id, healthy());
+    let mut first = routed(&machine('1'), &first_id, healthy());
     first
         .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
         .unwrap();
-    let mut second = observation(&machine('2'), &second_id, starting());
+    let mut second = routed(&machine('2'), &second_id, starting());
     second
         .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
         .unwrap();
@@ -109,7 +111,7 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
 }
 
 #[tokio::test(start_paused = true)]
-async fn dependency_gate_ignores_a_copy_the_dependency_row_no_longer_names() {
+async fn dependency_gate_ignores_a_copy_out_of_rotation() {
     let dependency = QualifiedService::parse("app/api").unwrap();
     let dependent = QualifiedService::parse("app/web").unwrap();
     let serving_id = container('a');
@@ -134,28 +136,19 @@ async fn dependency_gate_ignores_a_copy_the_dependency_row_no_longer_names() {
     ];
     let client = Scripted {
         observations: Some(vec![serving, superseded]),
-        cancel_on_prepare: None,
         ..Scripted::new(vec![created(
             Call::Run(machine('1'), ContainerKind::ServiceContainer),
             &container('c'),
         )])
-    };
-    client.pointers.lock().unwrap().insert(
-        dependency,
-        ServingPointer {
-            deploy: run_id(),
-            containers: vec![serving_id],
-            previous: None,
-            retiring: vec![],
-            deciding: None,
-        },
-    );
+    }
+    .with_copy(&machine('1'), &serving_id, CopyRotation::In)
+    .with_copy(&machine('1'), &superseded_id, CopyRotation::Out);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(
         matches!(outcome, DeployOutcome::Success { .. }),
-        "a superseded copy awaiting unroute must not fail the dependent, got {outcome:?}"
+        "an Out copy awaiting removal must not fail the dependent, got {outcome:?}"
     );
     client.assert_done();
 }
@@ -163,7 +156,7 @@ async fn dependency_gate_ignores_a_copy_the_dependency_row_no_longer_names() {
 #[tokio::test(start_paused = true)]
 async fn a_dependency_wait_reports_its_elapsed_and_deadline_clocks() {
     let dependency = QualifiedService::parse("app/api").unwrap();
-    let mut observed = observation(&machine('1'), &container('a'), starting());
+    let mut observed = routed(&machine('1'), &container('a'), starting());
     observed
         .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
         .unwrap();
@@ -262,7 +255,7 @@ async fn dependency_gate_rejects_zero_service_containers_and_hooks() {
 async fn dependency_gate_accepts_a_container_that_passed_once_and_is_failing_now() {
     let dependency = QualifiedService::parse("app/api").unwrap();
     let id = container('a');
-    let mut observed = observation(&machine('1'), &id, failing());
+    let mut observed = routed(&machine('1'), &id, failing());
     observed
         .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
         .unwrap();
@@ -292,7 +285,7 @@ async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines
         (starting(), Some(3_000), 3, "timed_out"),
     ] {
         let id = container('a');
-        let mut observed = observation(&machine('1'), &id, runtime);
+        let mut observed = routed(&machine('1'), &id, runtime);
         observed
             .try_update(|parts| {
                 parts.resolved_spec.container.healthcheck = Some(
@@ -371,6 +364,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
                 HealthVerdict::Failed {
                     observation: unhealthy(),
                     last_check: Some(last_check.clone()),
+                    oom_killed: false,
                 },
             ),
         ),
@@ -392,6 +386,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
                 observation: unhealthy(),
                 last_check: Some(last_check),
             },
+            out_of_memory: None,
         }
     );
     assert!(
@@ -420,6 +415,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                 HealthVerdict::TimedOut {
                     deadline_millis: None,
                     last_check: None,
+                    oom_killed: false,
                 },
             ),
         ),
@@ -438,6 +434,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                         deadline_millis: None,
                         last_check: None,
                     },
+                    out_of_memory: None,
                 },
                 ..
             },
@@ -445,6 +442,63 @@ async fn a_timed_out_verdict_fails_the_start() {
         } if container_id == new
     ));
     client.assert_done();
+}
+
+#[tokio::test]
+async fn a_verdict_docker_killed_out_of_memory_fails_with_the_memory_limit() {
+    let machine = machine('1');
+    let new = container('a');
+    let limit = ByteQuantity::try_from(16 * 1024 * 1024).unwrap();
+    let last_check = LastHealthCheck::exited(1, "wget: can't connect to remote host");
+    for (memory_bytes, oom_killed, out_of_memory) in [
+        (
+            Some(limit),
+            true,
+            Some(OutOfMemory {
+                memory_bytes: Some(limit),
+            }),
+        ),
+        (None, true, Some(OutOfMemory { memory_bytes: None })),
+        (Some(limit), false, None),
+    ] {
+        let mut spec = spec(Some(0), Some(healthcheck()), None);
+        spec.container.resources.memory_bytes = memory_bytes;
+        let plan = vec![run(&machine, spec, false)];
+        let client = Scripted::new(vec![
+            Step(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                Reply::Settled(
+                    new,
+                    HealthVerdict::TimedOut {
+                        deadline_millis: Some(30_000),
+                        last_check: Some(last_check.clone()),
+                        oom_killed,
+                    },
+                ),
+            ),
+            ok(Call::Discard(machine, new)),
+        ]);
+
+        let DeployOutcome::Failed {
+            failed: FailedOperation::Operation { error, .. },
+            ..
+        } = execute_with(&plan, &client, &CancellationToken::new()).await
+        else {
+            panic!("the deploy should fail");
+        };
+        assert_eq!(
+            error,
+            ExecutionError::Health {
+                container_id: new,
+                failure: HealthFailure::TimedOut {
+                    deadline_millis: Some(30_000),
+                    last_check: Some(last_check.clone()),
+                },
+                out_of_memory,
+            }
+        );
+        client.assert_done();
+    }
 }
 
 #[tokio::test]
@@ -472,4 +526,171 @@ async fn skipping_the_health_monitor_answers_once_started() {
             .all(|answer| *answer == AnswerWhen::Started)
     );
     client.assert_done();
+}
+
+/// The copy this run starts is labelled by its create, not by the test, so the
+/// dependency wait finds it as production does.
+#[tokio::test(start_paused = true)]
+async fn dependency_prefers_this_runs_copies() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    let other = DeploymentLogId::parse("other").unwrap();
+    let copy = |hex: char, deploy: Option<&str>, runtime: ContainerRuntimeObservation| {
+        let mut observed = serving(&machine('1'), &container(hex), deploy);
+        observed
+            .try_update(|parts| {
+                parts.runtime = runtime;
+                parts.resolved_spec.container.healthcheck = Some(healthcheck());
+            })
+            .unwrap();
+        observed
+    };
+    let started = container('a');
+    let cases = [
+        (
+            "this run's copy is chosen over another run's In copy",
+            Some(started),
+            vec![
+                (copy('a', None, healthy()), None),
+                (copy('b', Some("other"), exited(1)), Some(CopyRotation::In)),
+            ],
+        ),
+        (
+            "the In copies are chosen when this run started none",
+            None,
+            vec![
+                (copy('a', Some("other"), healthy()), Some(CopyRotation::In)),
+                (
+                    copy('b', Some("other"), exited(1)),
+                    Some(CopyRotation::Pending),
+                ),
+                (
+                    copy('c', Some("other"), exited(1)),
+                    Some(CopyRotation::Held(other.clone())),
+                ),
+                (copy('d', Some("run"), exited(1)), Some(CopyRotation::Out)),
+            ],
+        ),
+    ];
+    for (case, started, copies) in cases {
+        let mut web = spec(Some(0), None, None);
+        web.name = ServiceName::parse("web").unwrap();
+        let mut plan = Vec::new();
+        let mut steps = Vec::new();
+        if let Some(started) = started {
+            plan.push(run(&machine('1'), spec(Some(0), None, None), true));
+            steps.push(created(
+                Call::Run(machine('1'), ContainerKind::ServiceContainer),
+                &started,
+            ));
+        }
+        plan.extend([
+            DeployOperation::WaitHealthy {
+                machine_id: machine('1'),
+                dependent: QualifiedService::parse("app/web").unwrap(),
+                dependency: dependency.clone(),
+            },
+            run(&machine('1'), web, true),
+        ]);
+        steps.push(created(
+            Call::Run(machine('1'), ContainerKind::ServiceContainer),
+            &container('e'),
+        ));
+        let mut client = Scripted {
+            observations: Some(
+                copies
+                    .iter()
+                    .map(|(observed, _)| observed.clone())
+                    .collect(),
+            ),
+            ..Scripted::new(steps)
+        };
+        for (observed, rotation) in copies {
+            if let Some(rotation) = rotation {
+                client = client.with_copy(&machine('1'), &observed.container_id, rotation);
+            }
+        }
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(
+            matches!(outcome, DeployOutcome::Success { .. }),
+            "{case}: {outcome:?}"
+        );
+        client.assert_done();
+    }
+}
+
+/// A stop-first replacement fails to start, and the old copy it restores is OOM-killed.
+/// The failure names the old copy's own memory limit, not the replacement's.
+async fn restored_oom_limit(replacement_mib: i64) {
+    let machine = machine('1');
+    let old = container('a');
+    let old_limit = ByteQuantity::try_from(16 * 1024 * 1024).unwrap();
+    let new_limit = ByteQuantity::try_from(replacement_mib * 1024 * 1024).unwrap();
+    let mut old_spec = spec(Some(0), Some(healthcheck()), None);
+    old_spec.container.resources.memory_bytes = Some(old_limit);
+    let mut operation = replacement(&machine, &old, UpdateOrder::StopFirst);
+    let DeployOperation::ReplaceContainer(ref mut replacement) = operation else {
+        panic!("expected a replacement");
+    };
+    replacement.spec.container.resources.memory_bytes = Some(new_limit);
+    let verdict = HealthVerdict::Failed {
+        observation: unhealthy(),
+        last_check: None,
+        oom_killed: true,
+    };
+    let client = Scripted {
+        observed_specs: BTreeMap::from([(old, old_spec)]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            failed(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                "new image creation failed",
+            ),
+            ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+            Step(
+                Call::Restart(machine, old),
+                Reply::Settled(old, verdict.clone()),
+            ),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+    let outcome = execute_with(&[operation], &client, &CancellationToken::new()).await;
+    let DeployOutcome::Failed {
+        failed:
+            FailedOperation::Replacement {
+                compensation:
+                    ReplacementCompensation::OldStopped {
+                        restore_old_container: RestoreAttempt::Failed { error },
+                        ..
+                    },
+                ..
+            },
+        ..
+    } = outcome
+    else {
+        panic!("expected a failed restore, got {outcome:?}");
+    };
+    assert_eq!(
+        error,
+        ExecutionError::Health {
+            container_id: old,
+            failure: verdict.into_failure().unwrap(),
+            out_of_memory: Some(OutOfMemory {
+                memory_bytes: Some(old_limit),
+            }),
+        }
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_restored_copy_killed_for_memory_names_its_own_limit() {
+    restored_oom_limit(64).await;
+}
+
+#[tokio::test]
+async fn a_restored_copy_killed_for_memory_under_an_unchanged_limit_names_it() {
+    restored_oom_limit(16).await;
 }

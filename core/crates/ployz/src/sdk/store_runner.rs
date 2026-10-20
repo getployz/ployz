@@ -15,8 +15,8 @@ use ployz_core::{
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, RowState, RowTracker, RunEvidence,
-    RunnerId,
+    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, ObservationFailure, RowState,
+    RowTracker, RunEvidence, RunnerId, VolumeObservation,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -72,10 +72,13 @@ enum Build {
         /// The Server the build tries first.
         preferred_machine: Option<ployz_core::MachineId>,
     },
-    /// An uploaded Service, from the upload when Cloud still holds it.
+    /// An uploaded Service, from its upload when Cloud still holds it and extracted it.
     Upload {
         digest: UploadDigest,
         source: Option<PathBuf>,
+        /// It builds from an earlier upload than the one its Deployment carries,
+        /// which is the one Cloud extracts.
+        earlier: bool,
         /// Its Build Order has GitHub, which can't build it.
         github_skipped: bool,
     },
@@ -154,7 +157,7 @@ pub async fn run_deployment(
             .await;
     }
     let session = match run
-        .connecting(connect_connections(
+        .connecting(super::dial(
             connections,
             Arc::new(SystemConnector::default()),
         ))
@@ -162,17 +165,14 @@ pub async fn run_deployment(
     {
         Ok(Some(session)) => session,
         Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
-        // Users read it on the Deployment: plain words and one action first, then
-        // what the connection said.
+        // Users read it on the Deployment: the connection's own sentence first, naming the
+        // Server where it knows which and saying whether a daemon answered, then what the
+        // connection said.
         Err(error) => {
-            let Failure { reason, mut cause } = Failure::from(&error);
-            cause.insert(0, reason);
             return run
                 .not_executed(Failure {
-                    reason:
-                        "Ployz couldn't reach your Servers. Check that they're online, then retry."
-                            .into(),
-                    cause,
+                    reason: error.to_string(),
+                    cause: ployz_core::error_chain::causes(&error),
                 })
                 .await;
         }
@@ -183,19 +183,52 @@ pub async fn run_deployment(
 }
 
 /// Which of `connections`' Servers hold each Docker Volume in `sought`: the
-/// evidence a Deploy that removes deployed Volumes is admitted with.
+/// evidence a Deploy that removes deployed Volumes is admitted with. A check that
+/// fails names each of `connections`' Servers unanswered, and says whether none
+/// could be reached or one answered with an error, naming that one only once its
+/// daemon confirmed which Server it is.
 ///
 /// # Errors
-/// Returns the connection's error when no Server can be reached, or listing the
-/// Machines fails.
+/// Returns `invalid_argument` when `connections` is empty.
 pub async fn observe_volumes(
     connections: Vec<Connection>,
     sought: Vec<ployz_core::DockerVolumeName>,
 ) -> Result<ployz_store::VolumeObservation, RpcError> {
-    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
-    let observed = session.observe_volumes(sought).await;
+    if connections.is_empty() {
+        return Err(super::invalid_argument(
+            "connections must not be empty".into(),
+        ));
+    }
+    let servers: Vec<MachineId> = connections
+        .iter()
+        .filter_map(Connection::machine_id)
+        .copied()
+        .collect();
+    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
+        Ok(session) => session,
+        Err(error) => {
+            let failure = if error.unreached() {
+                ObservationFailure::unreachable(error.into())
+            } else {
+                // The daemon that refused never confirmed which Server it is.
+                ObservationFailure::answered(None, error.into())
+            };
+            return Ok(VolumeObservation::failed(sought, servers, failure));
+        }
+    };
+    let observed = match session.observe_volumes(sought.clone()).await {
+        Ok(observed) => observed,
+        Err(error) => {
+            let server = session
+                .client()
+                .ok()
+                .and_then(|client| client.entry_machine());
+            let failure = ObservationFailure::answered(server, error);
+            VolumeObservation::failed(sought, servers, failure)
+        }
+    };
     session.close().await;
-    observed
+    Ok(observed)
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep
@@ -267,6 +300,7 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let scrub = Scrub::new(&claimed);
+        let earlier = earlier(&targets);
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.preview(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -285,7 +319,7 @@ impl Run {
             Ok(prepared) => prepared,
             Err(error) => {
                 return match needs_upload(&error) {
-                    Some(services) => self.unbuilt(Unbuilt::UploadNeeded(services)).await,
+                    Some(services) => self.unbuilt(upload_needed(&earlier, services)).await,
                     None => self.not_executed(Failure::from(&error)).await,
                 };
             }
@@ -339,14 +373,15 @@ impl Run {
     async fn fill_ingress(&self, session: &Session) {
         let filled = match session.client() {
             Ok(mut client) => {
+                let server = client.server();
                 let stop = CancellationToken::new();
                 self.renewing(crate::ingress::fill_slots(&mut client, &stop), || {
                     stop.cancel()
                 })
                 .await
-                .map_err(|failure| failure.to_string())
+                .map_err(|failure| crate::ingress::unchecked(&failure, server))
             }
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(crate::ui::row(&error)),
         };
         let evidence: Vec<_> = match filled {
             Ok(check) => (!check.repairs.is_empty())
@@ -399,7 +434,7 @@ impl Run {
             };
             builds.push((target, running));
             if let Err(error) = self
-                .report(service, BuildStatus::Building, None, String::new())
+                .report(service, BuildStatus::Building, None, String::new(), None)
                 .await
             {
                 return Err(stop_builds(&builds, error).await);
@@ -433,7 +468,7 @@ impl Run {
         }
         // A new upload is the one fix a user can act on first.
         if !uploads.is_empty() {
-            return Ok(Err(Unbuilt::UploadNeeded(uploads)));
+            return Ok(Err(upload_needed(&earlier(targets), uploads)));
         }
         if !failed.is_empty() {
             return Ok(Err(Unbuilt::Failed(format!(
@@ -465,6 +500,7 @@ impl Run {
         } else {
             String::new()
         };
+        let mut server = None;
         let mut flushed = tokio::time::Instant::now();
         loop {
             let next = if log.is_empty() {
@@ -475,7 +511,7 @@ impl Run {
                     () = tokio::time::sleep_until(flushed + LOG_FLUSH) => {
                         // ponytail: a failed flush keeps the output for the next one.
                         if self
-                            .report(service, BuildStatus::Building, None, log.clone())
+                            .report(service, BuildStatus::Building, None, log.clone(), server.clone())
                             .await
                             .is_ok()
                         {
@@ -487,6 +523,12 @@ impl Run {
                 }
             };
             let Some(event) = next else { break };
+            if let Some(name) = event
+                .pointer("/Selected/machine/name")
+                .and_then(Value::as_str)
+            {
+                server = Some(name.to_owned());
+            }
             log.push_str(&log_line(&event));
         }
         let (status, message, ended) = match running.finished().await {
@@ -512,7 +554,7 @@ impl Run {
                 Err(error),
             ),
         };
-        self.report(service, status, message, log).await?;
+        self.report(service, status, message, log, server).await?;
         let receipt = match ended {
             Ok(receipt) => receipt,
             Err(error) => return Ok(Err(error)),
@@ -654,10 +696,10 @@ impl Run {
         *warnings = unrecorded;
     }
 
-    async fn connecting<T>(
+    async fn connecting<T, E>(
         &self,
-        work: impl std::future::Future<Output = Result<T, RpcError>>,
-    ) -> Result<Option<T>, RpcError> {
+        work: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Result<Option<T>, E> {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
         loop {
@@ -700,12 +742,14 @@ impl Run {
         status: BuildStatus,
         message: Option<String>,
         log: String,
+        server: Option<String>,
     ) -> Result<DeploymentSummary, RpcError> {
         self.record(RunEvidence::Build(BuildReport {
             service: service.clone(),
             status,
             message,
             log,
+            server,
         }))
         .await
     }
@@ -952,22 +996,75 @@ fn targets(
             failed.join("; ")
         )));
     }
-    if claimed.uploads.is_empty() {
-        return Ok((targets, built));
+    let missing: Vec<ServiceName> = claimed
+        .uploads
+        .iter()
+        .filter(|(_, digest)| digest.is_none())
+        .map(|(service, _)| service.clone())
+        .collect();
+    if !missing.is_empty() {
+        return Err(Unbuilt::UploadNeeded(missing));
     }
-    let Some(upload) = &claimed.deployment.upload else {
-        return Err(Unbuilt::UploadNeeded(claimed.uploads.clone()));
-    };
-    let digest = upload.digest.clone();
-    targets.extend(claimed.uploads.iter().map(|service| Target {
-        service: service.clone(),
-        build: Build::Upload {
-            digest: digest.clone(),
-            source: sources.upload.clone(),
-            github_skipped: claimed.build_order.contains(&Builder::Github),
-        },
+    let carried = claimed
+        .deployment
+        .upload
+        .as_ref()
+        .map(|upload| &upload.digest);
+    targets.extend(claimed.uploads.iter().filter_map(|(service, digest)| {
+        let digest = digest.as_ref()?;
+        let earlier = carried != Some(digest);
+        Some(Target {
+            service: service.clone(),
+            build: Build::Upload {
+                digest: digest.clone(),
+                source: if earlier {
+                    None
+                } else {
+                    sources.upload.clone()
+                },
+                earlier,
+                github_skipped: claimed.build_order.contains(&Builder::Github),
+            },
+        })
     }));
     Ok((targets, built))
+}
+
+/// The uploaded Services among `targets` that build from an earlier upload than
+/// their Deployment carries.
+fn earlier(targets: &[Target]) -> BTreeSet<ServiceName> {
+    targets
+        .iter()
+        .filter(|target| matches!(target.build, Build::Upload { earlier: true, .. }))
+        .map(|target| target.service.clone())
+        .collect()
+}
+
+/// Why `needed`, uploaded Services with neither their upload nor a usable image,
+/// didn't build. One that builds from an earlier upload than its Deployment's may
+/// still have it: Cloud extracts only the Deployment's, so it builds again on its
+/// own. The rest need a new upload, the fix a user acts on first.
+fn upload_needed(earlier: &BTreeSet<ServiceName>, needed: Vec<ServiceName>) -> Unbuilt {
+    let (alone, rest): (Vec<_>, Vec<_>) = needed
+        .into_iter()
+        .partition(|service| earlier.contains(service));
+    if !rest.is_empty() || alone.is_empty() {
+        return Unbuilt::UploadNeeded(rest);
+    }
+    let names = alone
+        .iter()
+        .map(ServiceName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let deploys = alone
+        .iter()
+        .map(|service| format!("ployz deploy {service}"))
+        .collect::<Vec<_>>()
+        .join(", then ");
+    Unbuilt::Failed(format!(
+        "{names} must build again from an earlier upload than this Deployment's, and a \
+         Deployment builds from one upload. Deploy it on its own: {deploys}"
+    ))
 }
 
 /// `value` as a one-entry map for `service`, or an empty one.

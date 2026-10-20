@@ -8,22 +8,40 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::context::{
-    Config, ConnectionError, RemovedContext, expand_home, is_management_capability,
+    Config, ConnectionError, ContextError, RemovedContext, expand_home, is_management_capability,
 };
 
 use super::{Error, leaf_matches, required};
 
-/// Where a signed-in user with no contexts finds their Servers instead,
-/// keeping a config file named on the command line.
-fn no_contexts_next(leaf: &ArgMatches) -> String {
+/// The command that gets a user with no contexts past them, keeping a config file named on
+/// the command line. Signed out, that is `ployz login`: Cloud Servers need no context. Signed
+/// in, it is their Cloud Servers. `PLOYZ_CONTEXT` outlives both and sends them back here, so
+/// with it set no command does. Read from local state only: choosing a hint never asks Cloud.
+fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
+    if std::env::var_os(crate::cli::env::CONTEXT).is_some() {
+        return None;
+    }
+    let command: &[&str] = if super::server::signed_in_locally(leaf) {
+        &["server", "ls"]
+    } else {
+        &["login"]
+    };
     let mut args = vec!["ployz"];
     if leaf.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine)
         && let Some(path) = leaf.get_one::<String>("ployz-config")
     {
         args.extend(["--ployz-config", path]);
     }
-    args.extend(["server", "ls"]);
-    shell_words::join(args)
+    args.extend(command);
+    Some(shell_words::join(args))
+}
+
+/// Whatever command failed for want of a context gets the line `ctx ls` prints.
+pub(super) fn with_no_contexts_next(failure: Error, leaf: &ArgMatches) -> Error {
+    if !failure.has_no_contexts() {
+        return failure;
+    }
+    failure.hint(no_contexts_next(leaf).map(Hint::Next))
 }
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
@@ -85,7 +103,9 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     if !contexts.is_empty() {
         return ui::list(&json!({ "contexts": contexts }), &table);
     }
-    let next = no_contexts_next(leaf_matches(matches));
+    let Some(next) = no_contexts_next(leaf_matches(matches)) else {
+        return ui::list(&json!({ "contexts": contexts }), &table);
+    };
     ui::list(&json!({ "contexts": contexts, "next": next }), &table)?;
     ui::hint(&Hint::Next(next));
     Ok(())
@@ -108,11 +128,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
     let mut config = config(matches)?;
     if config.contexts.is_empty() {
-        return Err(Error::not_found(format!(
-            "no contexts found in Ployz config {}",
-            config.path().display()
-        ))
-        .hint(Hint::Next(no_contexts_next(leaf))));
+        return Err(ContextError::NoContexts(config.path().to_owned()).into());
     }
     let requested_connection = leaf.get_one::<String>("connection");
     let selected = match leaf.get_one::<String>("context-name") {
@@ -299,14 +315,18 @@ pub(super) fn select_command(command: Command) -> Command {
         command,
         "Select a context and optionally its default connection",
     )
-    .arg(positional("context-name", false))
+    .arg(
+        positional("context-name", false)
+            .help("The context to select; the current one when omitted"),
+    )
     .arg(
         value("connection", None).help("Connection label or 1-based index in the selected context"),
     )
 }
 
 pub(super) fn remove_command(command: Command) -> Command {
-    base(command, "Remove a local context").arg(positional("context-name", true))
+    base(command, "Remove a local context")
+        .arg(positional("context-name", true).help("The context to remove"))
 }
 
 #[cfg(test)]

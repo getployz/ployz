@@ -20,7 +20,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { toErrorMessage } from "#/lib/error-message";
-import type { ConnectNotice } from "#/modules/github/github-connect";
+import { type ConnectNotice, githubConnectHref } from "#/modules/github/github-connect";
 import { acceptGithubOfferServerFn, disconnectGithubAccountServerFn } from "#/modules/github/github-connect.functions";
 import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
 import { githubKeys } from "#/modules/github/github.queries";
@@ -34,19 +34,16 @@ const NOTICES = {
   failed: { title: "GitHub didn't finish", description: "Nothing was connected. Try again.", tone: "destructive" },
 } satisfies Record<ConnectNotice, { title: string; description: string; tone: "default" | "destructive" }>;
 
-function connectHref(organizationSlug: string, existing: boolean) {
-  const params = new URLSearchParams({ organization: organizationSlug });
-  if (existing) params.set("existing", "1");
-  return `/api/github/connect?${params.toString()}`;
-}
-
 export function GithubSettings({ organizationSlug, notice, offer, clearConnectSearch }: {
   organizationSlug: string;
   notice: ConnectNotice | undefined;
   offer: string | undefined;
   clearConnectSearch: () => void;
 }) {
-  const { data } = useSuspenseQuery(organizationGithubQueryOptions(organizationSlug));
+  const { data } = useSuspenseQuery({
+    ...organizationGithubQueryOptions(organizationSlug),
+    refetchInterval: (query) => query.state.data?.accounts.some(awaitsFirstSync) ? 2_500 : false,
+  });
   const offered = useQuery({ ...githubOfferQueryOptions(organizationSlug, offer ?? ""), enabled: offer !== undefined && data.canManage });
   const shown = notice === undefined ? null : NOTICES[notice];
   if (offer !== undefined && data.canManage && !offered.isError) {
@@ -101,12 +98,12 @@ export function GithubSettings({ organizationSlug, notice, offer, clearConnectSe
 function ConnectButtons({ organizationSlug, primary }: { organizationSlug: string; primary?: boolean }) {
   return (
     <>
-      <Button variant={primary ? "default" : "outline"} size="sm" nativeButton={false} render={<a href={connectHref(organizationSlug, false)} />}>
+      <Button variant={primary ? "default" : "outline"} size="sm" nativeButton={false} render={<a href={githubConnectHref(organizationSlug, false)} />}>
         <GitHubMarkIcon data-icon="inline-start" />
         Connect GitHub
       </Button>
-      <Button variant="ghost" size="sm" nativeButton={false} render={<a href={connectHref(organizationSlug, true)} />}>
-        Use existing installation
+      <Button variant="ghost" size="sm" nativeButton={false} render={<a href={githubConnectHref(organizationSlug, true)} />}>
+        Use existing
       </Button>
     </>
   );
@@ -116,9 +113,13 @@ type Account = {
   login: string;
   avatarUrl: string | null;
   repositories: number;
+  repositoriesSynced: boolean;
   connectedBy: string | null;
   connectedAt: string;
 };
+
+/** Linked before its first sync landed: zero cached repositories says nothing yet. */
+const awaitsFirstSync = (account: Account) => account.repositories === 0 && !account.repositoriesSynced;
 
 function AccountAvatar({ login, avatarUrl }: { login: string; avatarUrl: string | null }) {
   return (
@@ -157,7 +158,9 @@ function AccountRow({ organizationSlug, account, canManage }: { organizationSlug
       label={account.login}
       hint={(
         <>
-          {account.repositories === 1 ? "1 repository" : `${account.repositories} repositories`}
+          {awaitsFirstSync(account)
+            ? "Repositories appear in a moment"
+            : account.repositories === 1 ? "1 repository" : `${account.repositories} repositories`}
           {account.connectedBy ? <>, connected by {account.connectedBy}</> : null}
           {" "}<RelativeTime date={new Date(account.connectedAt)} />
         </>

@@ -7,7 +7,9 @@ Open a service on the canvas, then click **Settings**. Your changes are staged u
 [deploy](../deploy/deployments.md), except the few marked **Takes effect at once**.
 
 From the CLI, `ployz get web` prints each setting with its value and default, then the
-service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset. `ployz get
+service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset. An invisible
+character, such as a right-to-left override, prints as its code, like `\u{202e}`, so text
+reads as stored. `ployz get
 web.domains` prints only the domains; change them with the `ployz domain` commands, not
 `ployz set`. `ployz explain web` lists every setting a service takes, with its default.
 `ployz diff` shows what you staged, and `ployz discard` undoes it.
@@ -150,7 +152,8 @@ service with a volume runs one replica, and preview environments run one of each
 
 Empty by default, which means no limit. Set it in vCPUs, up to 64, to keep a busy service from
 slowing the others on its server. Ployz doesn't check that a server has room for it, so leave
-headroom. See [Scaling and multiple servers](scaling.md#run-more-replicas).
+headroom. Changes and `ployz diff` show it in vCPUs, such as `0.5 vCPUs → 2 vCPUs`. See
+[Scaling and multiple servers](scaling.md#run-more-replicas).
 
 ### Memory limit
 

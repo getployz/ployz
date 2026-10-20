@@ -5,6 +5,7 @@
 )]
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -18,9 +19,10 @@ use ployz::{
     sdk::{self, ContainerLogInput},
 };
 use ployz_core::{
-    ContainerLocator, ContainerWant, Drain, EnsureContainerRequest, MachineName, MachineRelease,
-    MachineTarget, MachineUpgradeAttemptId, MachineVersion, RequestMachineUpgradeRequest,
-    StopOptions, op,
+    ContainerLocator, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
+    EnsureContainerRequest, EnsuredContainer, MachineName, MachineRelease, MachineTarget,
+    MachineUpgradeAttemptId, MachineVersion, QualifiedService, ReadRoutesRequest,
+    RequestMachineUpgradeRequest, RunRotation, RunTarget, StopOptions, op,
 };
 use ployz_testkit::fake_fleet::{
     FakeFleet, FakeFleetError, FleetFile, LedgerEntry, Scenario, container_id,
@@ -47,8 +49,8 @@ fn start(scenario: Scenario) -> (FakeFleet, tempfile::TempDir) {
     (fleet, sockets)
 }
 
-async fn session(fleet: &FakeFleet, machine: &str) -> Result<sdk::Session, ployz_core::RpcError> {
-    sdk::connect_connections(
+async fn session(fleet: &FakeFleet, machine: &str) -> Result<sdk::Session, sdk::CallError> {
+    sdk::connect_answered(
         vec![Connection::unix(fleet.socket(&name(machine)).unwrap()).unwrap()],
         Arc::new(SystemConnector::default()),
     )
@@ -104,7 +106,10 @@ async fn online_machines_confirm_their_contract_and_offline_ones_have_no_socket(
         assert_eq!(about.daemon_version, "0.4.0");
     }
     assert!(!fleet.socket(&name("web-3")).unwrap().exists());
-    assert!(session(&fleet, "web-3").await.is_err());
+    let Err(offline) = session(&fleet, "web-3").await else {
+        panic!("an offline Machine has no socket to answer on");
+    };
+    assert!(offline.unanswered, "{offline}");
 
     fleet.online(&name("web-3")).unwrap();
     let about = session(&fleet, "web-3")
@@ -278,6 +283,133 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
     let last = fleet.ledger().unwrap().pop().unwrap();
     assert_eq!(last.command, "ensure_container:gone");
     assert_eq!(last.container.as_deref(), Some("app-staging-web-1"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
+    let mut file = fixture();
+    for machine in &mut file.machines {
+        for container in &mut machine.containers {
+            if container.name.starts_with("app-production-web-") {
+                container.rotation = CopyRotation::In;
+            }
+        }
+    }
+    let service = file.machines[0]
+        .containers
+        .iter()
+        .find(|container| container.name == "app-production-web-1")
+        .map(|container| {
+            QualifiedService::new(container.namespace.clone(), container.service.clone())
+        })
+        .unwrap();
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(file, Scenario::default(), sockets.path(), None).unwrap();
+    let mut client = client(&fleet, "web-1").await;
+    let on_web_1 = Some(MachineTarget::parse("web-1").unwrap());
+    let copy = container_id("app-production-web-1");
+    let sibling = container_id("app-production-web-2");
+    let routes = async |client: &mut Client| {
+        client
+            .call::<op::ReadRoutes>(
+                ReadRoutesRequest {
+                    service: service.clone(),
+                    routes_only: true,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+    };
+    let ensure = async |client: &mut Client, want| {
+        client
+            .call::<op::EnsureContainer>(EnsureContainerRequest { want }, on_web_1.as_ref())
+            .await
+            .unwrap()
+    };
+
+    let read = routes(&mut client).await;
+    assert!(read.complete);
+    assert_eq!(read.down, BTreeSet::from([fleet_id("web-3")]));
+    assert_eq!(
+        read.routes,
+        BTreeMap::from([
+            (fleet_id("web-1"), Some(BTreeSet::from([copy, sibling]))),
+            (fleet_id("web-2"), Some(BTreeSet::from([copy, sibling]))),
+        ])
+    );
+
+    let refused = ensure(&mut client, stop("app-production-web-1").want).await;
+    let EnsuredContainer::Refused { refusal, .. } = refused else {
+        panic!("a routed copy must not stop: {refused:?}");
+    };
+    assert_eq!(refusal.reason, ContainerRefusalReason::InRotation);
+    assert!(
+        fleet
+            .is_running(&name("web-1"), "app-production-web-1")
+            .unwrap()
+    );
+
+    let run = DeploymentLogId::parse("user-stop").unwrap();
+    ensure(
+        &mut client,
+        ContainerWant::Held {
+            container: ContainerLocator::Id(copy),
+            run: run.clone(),
+            expect: Some(CopyRotation::In),
+        },
+    )
+    .await;
+    let read = routes(&mut client).await;
+    assert!(
+        read.routes
+            .values()
+            .all(|routed| routed.as_ref() == Some(&BTreeSet::from([sibling]))),
+        "{read:?}"
+    );
+    ensure(&mut client, stop("app-production-web-1").want).await;
+    assert!(
+        !fleet
+            .is_running(&name("web-1"), "app-production-web-1")
+            .unwrap()
+    );
+
+    let other = ensure(
+        &mut client,
+        ContainerWant::Running {
+            container: RunTarget::Existing(ContainerLocator::Id(copy)),
+            rotation: RunRotation::In {
+                run: Some(DeploymentLogId::parse("another").unwrap()),
+                expect: Some(CopyRotation::Held(run.clone())),
+            },
+        },
+    )
+    .await;
+    let EnsuredContainer::Refused { refusal, .. } = other else {
+        panic!("only the holding run brings a copy back: {other:?}");
+    };
+    assert_eq!(refusal.reason, ContainerRefusalReason::HeldByOtherRun);
+    ensure(
+        &mut client,
+        ContainerWant::Running {
+            container: RunTarget::Existing(ContainerLocator::Id(copy)),
+            rotation: RunRotation::In {
+                run: Some(run.clone()),
+                expect: Some(CopyRotation::Held(run)),
+            },
+        },
+    )
+    .await;
+    assert!(
+        fleet
+            .is_running(&name("web-1"), "app-production-web-1")
+            .unwrap()
+    );
+    let read = routes(&mut client).await;
+    assert_eq!(
+        read.routes.get(&fleet_id("web-2")),
+        Some(&Some(BTreeSet::from([copy, sibling])))
+    );
 }
 
 #[test]

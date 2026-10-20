@@ -191,7 +191,6 @@ fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {
             .collect(),
         steps: Vec::new(),
         publish: true,
-        kept: Vec::new(),
     }
 }
 
@@ -221,6 +220,7 @@ fn row_state(state: &str) -> RowState {
             step: None,
             log: None,
             unanswered: false,
+            out_of_memory: None,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),
@@ -760,6 +760,7 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
     };
     let tail = LogTail {
         service: QualifiedService::parse("ployz-system/ingress").unwrap(),
+        name: QualifiedService::system_ingress().name,
         machine,
         server: "edge".into(),
         log: Some(shown("could not load configuration")),
@@ -801,6 +802,35 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
 }
 
 #[test]
+fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
+    let docker = "Docker responded with status code 404: nginx:doesnotexist: not found";
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: operation(0, MachineId::random(), OperationStatus::Pending).operation,
+            error: ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error: RpcError {
+                    code: RpcErrorCode::NotFound,
+                    message: "image pull failed".into(),
+                    details: serde_json::Value::Null,
+                    cause: vec![docker.into()],
+                }
+                .pulling("nginx:doesnotexist", ployz_core::PullPolicy::Missing),
+            },
+        },
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    assert_eq!(
+        crate::ui::plain(&failure(&outcome, Vec::new())),
+        format!(
+            "error: web: Image nginx:doesnotexist not found, or its registry needs credentials.\n  cause: {docker}\n"
+        )
+    );
+}
+
+#[test]
 fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     let machine = MachineId::random();
     let replacement = ployz_core::ReplacementOperation {
@@ -816,7 +846,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
             error: denied(),
             compensation: ReplacementCompensation::OldStopped {
                 stop_new_container: Some(StopAttempt::Stopped),
-                restart_old_container: RestartAttempt::Failed { error: denied() },
+                restore_old_container: RestoreAttempt::Failed { error: denied() },
             },
         },
         unexecuted: Vec::new(),
@@ -824,6 +854,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     };
     let tail = LogTail {
         service: QualifiedService::parse("shop/web").unwrap(),
+        name: ServiceName::parse("web").unwrap(),
         machine,
         server: "edge".into(),
         log: None,
@@ -839,7 +870,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
         },
     ));
     assert!(text.contains("Stopped the new Container."));
-    assert!(text.contains("Could not restart the old Container."));
+    assert!(text.contains("Could not restore the old Container."));
     assert_eq!(
         text.matches("cause: denied by registry").count(),
         2,
@@ -847,7 +878,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     );
     assert!(text.contains("inspect: ployz logs shop/web"));
     assert!(!text.contains("Last 0"));
-    assert!(!text.contains("Restarted the old"));
+    assert!(!text.contains("Restored the old"));
 }
 
 fn shown(text: &str) -> ployz_store::tools::LogText {
@@ -856,4 +887,38 @@ fn shown(text: &str) -> ployz_store::tools::LogText {
         &ployz_store::tools::SealedValues::none(),
         ployz_store::tools::LineCap::default(),
     ))
+}
+
+#[test]
+fn a_machine_away_during_cleanup_is_named_once_under_the_copies_left_on_it() {
+    let preview = DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("shop").unwrap());
+    let mut direct = Direct::new(&preview, "Deploying shop".into());
+    let web = QualifiedService::new(
+        Namespace::parse("shop").unwrap(),
+        ServiceName::parse("web").unwrap(),
+    );
+    for container_id in [old('a'), old('b')] {
+        direct.notice(ployz_core::DeployWarning::LeftRunning {
+            service: web.clone(),
+            container_id,
+            machine: "machine-3".into(),
+            reason: "proxy on machine-3 did not confirm".into(),
+        });
+        direct.notice(ployz_core::DeployWarning::MixedAfterReturn {
+            machine: "machine-3".into(),
+        });
+    }
+
+    let shown = crate::ui::progress::live_lines(&direct.frame(), 0, 400, 40, false);
+
+    assert_eq!(
+        shown
+            .get(shown.len() - 3..)
+            .expect("at least three lines shown"),
+        [
+            "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
+            "! Once machine-3 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.",
+            "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
+        ]
+    );
 }

@@ -80,6 +80,48 @@ describe("Details", () => {
     expect(lineOf("Primary").getByText("Not reached")).toBeTruthy();
   });
 
+  describe("restore points", () => {
+    const volume = { id: "v1", name: "pg-data" };
+    const now = new Date(2026, 9, 13, 12, 0);
+    const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+    const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    const seeded = (at: Date) => placementChanges(volume, [], {
+      volumeId: "v1", environmentId: "e1", mirrors: [], unreached: false, deploymentId: null,
+      staged: { primary: member("web-1", "empty").machine.id, mirrors: [], deletes: [], seed: {
+        sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
+      } },
+    });
+    const failedOver = (at: Date) => {
+      const mirror = member("web-2", "mirror");
+      if (!mirror.answered || mirror.view.copy === null) throw new Error("fixture");
+      const asOf = { ...mirror, view: { ...mirror.view, copy: { ...mirror.view.copy, newest: { name: "s", guid: "12", created_unix_seconds: at.getTime() / 1000 } } } };
+      return placementChanges(volume, [member("web-1", "unanswered"), asOf], {
+        volumeId: "v1", environmentId: "e1", mirrors: [mirror.machine.id], unreached: false, deploymentId: null,
+        staged: { primary: mirror.machine.id, mirrors: [], deletes: [] },
+      });
+    };
+
+    it("dates a restore point from another day, so an older point reads apart from today's", () => {
+      const at = new Date(2026, 9, 10, 9, 27);
+      review({ groups: [placementGroup(volume, seeded(at), now)] });
+      expect(screen.getByText(`Changes after ${dated.format(at)} are not in pg-data`)).toBeTruthy();
+      expect(screen.getByTitle(`data · ${dated.format(at)}`)).toBeTruthy();
+      cleanup();
+      review({ groups: [placementGroup(volume, failedOver(at), now)] });
+      expect(screen.getByText(`Changes after ${dated.format(at)} lost`)).toBeTruthy();
+    });
+
+    it("gives a restore point from today the time alone", () => {
+      const at = new Date(2026, 9, 13, 9, 27);
+      review({ groups: [placementGroup(volume, seeded(at), now)] });
+      expect(screen.getByText(`Changes after ${clock.format(at)} are not in pg-data`)).toBeTruthy();
+      expect(screen.getByTitle(`data · ${clock.format(at)}`)).toBeTruthy();
+      cleanup();
+      review({ groups: [placementGroup(volume, failedOver(at), now)] });
+      expect(screen.getByText(`Changes after ${clock.format(at)} lost`)).toBeTruthy();
+    });
+  });
+
   it("shows complete file text and metadata, distinguishing an empty file from a missing one", () => {
     const before = { content: "first line\nlast line\n", mode: "0444", uid: 0, gid: 0 };
     const after = { content: "new first line\nnew last line\n", mode: "0555", uid: 1000, gid: 1001 };

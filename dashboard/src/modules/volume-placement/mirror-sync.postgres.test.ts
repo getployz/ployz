@@ -74,6 +74,19 @@ describe("the mirror sync", () => {
     `);
   });
 
+  it("refreshes a CLI mirror on a restored Volume", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '[]'`);
+    expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+  });
+
+  it("leaves the old primary a move left alone", async () => {
+    await harness.pool.query(`delete from volume_placement`);
+    members = [member("web-1", "writer"), member("web-2", "old")];
+    expect((await sync()).lines).toEqual(["db has no mirror"]);
+    expect(asked).toEqual([]);
+  });
+
   it("takes one snapshot and makes one hand-off, with no run", async () => {
     expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);
     expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
@@ -157,12 +170,39 @@ describe("the mirror sync", () => {
       .toEqual([{ machine_id: web("web-2"), failure: "set_volume_copy on web-2: connection refused" }]);
   });
 
-  it("fails the sync when the cluster itself is gone, and blames no mirror for it", async () => {
-    const disconnected: CopyAsk = (asker, machine, expected, want) => want.kind === "mirror"
+  it("says it didn't ask a mirror whose session didn't open, asks the next one, and blames no mirror for it", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    const disconnected: CopyAsk = (asker, machine, expected, want) => want.kind === "mirror" && machine.name === "web-2"
       ? Effect.fail(new Error("The cluster is disconnected."))
       : ask(asker, machine, expected, want);
-    await expect(run(syncMirrors(organizationId, volume, () => Effect.succeed(members), disconnected))).rejects.toThrow("The cluster is disconnected.");
+    expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), disconnected))).lines).toEqual([
+      "didn't ask web-2 to pull db, Cloud couldn't reach the Cluster",
+      "db-web-3 is pulling w-1-5",
+    ]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-3"]);
     expect((await harness.pool.query(`select machine_id from volume_mirror_status where failure is not null`)).rows).toEqual([]);
+  });
+
+  it("answers with the round's pull failures when the sync fails after reporting them", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    await harness.pool.query(`alter table volume_run rename to volume_run_gone`);
+    const answer = await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), ask))
+      .finally(() => harness.pool.query(`alter table volume_run_gone rename to volume_run`));
+    expect(answer).toEqual({
+      reported: [{ mirror: "db-web-2", target: "w-1-4", failure: "no space" }],
+      sync: { kind: "failed" },
+      lines: ["db-web-2 could not receive w-1-4: no space", "db's sync failed before it finished; volume sync db tries again"],
+    });
+    expect(asked).toEqual([]);
+  });
+
+  it("answers with the round's pull failures when the writer refuses its snapshot", async () => {
+    members = [member("web-1", "writer"), member("web-2", "failed")];
+    const refused: CopyAsk = () => Effect.fail(new SwitchAttemptError(null, "set_volume_copy on web-1: internal: disk full"));
+    expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), refused))).lines).toEqual([
+      "db-web-2 could not receive w-1-4: no space",
+      "skipped db: set_volume_copy on web-1: internal: disk full",
+    ]);
   });
 
   it("takes no snapshot when a pull in flight can't be resent, and still resends the others", async () => {
@@ -176,6 +216,15 @@ describe("the mirror sync", () => {
       "still pulling w-1-4 on db-web-3",
     ]);
     expect(asked).toEqual(["mirror web-3"]);
+  });
+
+  it("takes no snapshot when no reply came back to a resent pull, since the mirror may still be pulling", async () => {
+    members = [member("web-1", "writer"), member("web-2", "pulling")];
+    const lost: CopyAsk = () => Effect.fail(new SwitchAttemptError(null, "set_volume_copy on web-2: unavailable: target Machine RPC timed out", true));
+    expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), lost))).lines).toEqual([
+      "web-2 didn't answer in time, so db's sync may have reached it; volume sync db again says where its mirrors got to",
+    ]);
+    expect(await status()).toEqual([]);
   });
 
   it("records no failure when a newer run fences the hand-off", async () => {

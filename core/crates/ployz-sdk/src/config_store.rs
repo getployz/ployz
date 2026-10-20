@@ -41,11 +41,12 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 
 /// Which of `connections`' Servers hold each Docker Volume named in `sought`: the
 /// evidence (`VolumeObservation`) Cloud admits a Deploy that removes deployed
-/// Volumes with. Servers that don't answer are named, never assumed empty.
+/// Volumes with. Servers that don't answer are named, never assumed empty, and when
+/// the check fails its `failure` says whether no Server was reached or which one
+/// answered with an error, and why.
 ///
 /// # Errors
-/// Returns `invalid_argument` for malformed input, or the connection's error when
-/// no Server can be reached.
+/// Returns `invalid_argument` for malformed input.
 #[napi(ts_return_type = "Promise<VolumeObservation>")]
 pub async fn observe_volumes(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
@@ -243,6 +244,35 @@ impl ConfigStore {
             )
             .await,
         )
+    }
+
+    /// Claim the Organization's queued Deployment `deployment` as `runner`, and
+    /// resolve to its summary. Its upload is the one it builds from now that the
+    /// Deployment ahead of it settled: the one Cloud extracts before `runDeployment`
+    /// runs it as the same runner. Claiming again as that runner changes nothing
+    /// until it runs. Only Cloud's worker calls this.
+    ///
+    /// # Errors
+    /// Returns `conflict` when this runner has nothing to run, or a storage error.
+    #[napi(ts_return_type = "Promise<DeploymentSummary>")]
+    pub async fn claim_deployment(
+        &self,
+        organization: String,
+        deployment: String,
+        runner: String,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let (deployment, runner) = ids(deployment, runner)?;
+        // Only a Deployment of this Organization runs here.
+        let owned = deployment.clone();
+        self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
+            .await?;
+        self.run(move |store| {
+            store
+                .claim(&deployment, &runner)
+                .map(|claimed| claimed.deployment)
+        })
+        .await
     }
 
     /// Record that `runner` stopped without finishing Deployment `deployment`: its

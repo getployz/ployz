@@ -8,13 +8,15 @@ import { expect } from "vitest";
 import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat } from "#/modules/agent/agent-chat.server";
+import { runAgentCall } from "#/modules/agent/agent-runner.server";
+import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
-import { invitation, member } from "#/modules/identity/tables";
+import { invitation, member, user } from "#/modules/identity/tables";
 import { createInvite } from "#/modules/organization/invitation.server";
 import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
 import { uptimeCheck } from "#/modules/uptime/tables";
@@ -35,7 +37,7 @@ const SERVES_500 = JSON.stringify({
 
 /** A tool result as the model reads it: a command's outcome, or the agent's word that no such tool exists. */
 const Heard = Schema.fromJsonString(Schema.Union([
-  Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown), refusal: Schema.optional(Schema.Struct({ code: Schema.String, message: Schema.String })) }),
+  Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown), refusal: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)) }),
   Schema.Struct({ error: Schema.String }),
 ]));
 
@@ -224,7 +226,7 @@ it.live("asks before changing a role, removing a member or revoking an invite th
     }
   }));
 
-it.live("refuses a bad input the same way through ployz and the sidebar, so the agent hears the error ployz prints", () =>
+it.live("refuses a bad input the same way through ployz and the sidebar, naming the field, what fits it and that nothing was written, as Store tools refuse", () =>
   Effect.gen(function* () {
     const { route, sidebar, rows } = yield* parity();
     const before = yield* rows;
@@ -232,9 +234,109 @@ it.live("refuses a bad input the same way through ployz and the sidebar, so the 
     const viaSidebar = yield* sidebar("server_upgrade_policy_set", { channel: "alpha" });
     expect(viaRoute.status).toBe(422);
     const error = asRecord(asRecord(viaRoute.body)?.["error"]);
-    expect(error).toMatchObject({ code: "invalid_input" });
-    expect(viaSidebar).toEqual({ ok: false, refusal: { code: error?.["code"], message: error?.["message"] } });
+    expect(error).toMatchObject({ code: "invalid_argument", field: "channel", expected: { enum: ["stable", "beta"] }, writes: "none" });
+    expect(viaSidebar).toEqual({ ok: false, refusal: { ...error, retry: { tool: "server_upgrade_policy_set", input: { channel: "alpha" } } } });
     expect(yield* rows).toEqual(before);
+  }));
+
+it.live("refuses an input a command doesn't take and a Service it can't find, saying nothing was written", () =>
+  Effect.gen(function* () {
+    const { route, sidebar } = yield* parity();
+    const secret = "ghp_s3cr3tTokenThatMustNotEcho";
+    const viaRoute = (yield* route("org_member_rm", { member: "Ada", [secret]: true })).body;
+    const unknown = asRecord(asRecord(viaRoute)?.["error"]);
+    expect(unknown).toMatchObject({ code: "invalid_argument", message: "This command takes only member.", expected: { properties: { member: {} }, additionalProperties: false }, writes: "none" });
+    expect(unknown).not.toHaveProperty("field");
+    expect(JSON.stringify(viaRoute)).not.toContain(secret);
+    const viaSidebar = yield* sidebar("org_member_rm", { member: "Ada", [secret]: true });
+    expect(viaSidebar).toMatchObject({ ok: false, refusal: { code: "invalid_argument", writes: "none", retry: { tool: "org_member_rm", input: { member: "Ada" } } } });
+    expect(JSON.stringify(viaSidebar)).not.toContain(secret);
+    expect(yield* sidebar("uptime_show", { project: "shop", service: "nope" })).toMatchObject({ ok: false, refusal: { writes: "none", retry: { tool: "uptime_show" } } });
+  }));
+
+/** An approved role change for the sole owner demoting themselves, which `run` refuses once it starts. */
+const approvedDemotion = Effect.fn(function* (provided: Effect.Success<ReturnType<typeof parity>>["provided"], userId: string, session: string) {
+  const email = "ada@example.test";
+  const asked = {
+    subject: `member:${userId}`,
+    verb: "set" as const,
+    preview: { email, from: "owner", to: "member" },
+    effects: [{ kind: "changes_role" as const, name: email, node: userId, path: `members/${userId}` }],
+  };
+  const [approved] = yield* provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return yield* drizzle.insert(operationApprovals).values({
+      organizationId: ORGANIZATION, subject: asked.subject, requestedByUserId: userId, via: "agent", credentialKind: "session", credentialId: session,
+      command: "set", digest: operationDigest(asked), status: "approved", decidedByUserId: userId, decidedAt: new Date(),
+      review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({ effects: asked.effects, operation: { verb: "set", name: email, preview: asked.preview } }),
+    }).returning({ id: operationApprovals.id });
+  }));
+  return { id: approved?.id ?? expect.fail("no approval"), input: { member: email, role: "member" } };
+});
+
+it.live("an approved call that refused once it ran hears its retry without the approval, which the caller holds and repeats it under", () =>
+  Effect.gen(function* () {
+    const { provided, userId } = yield* parity();
+    const { id, input } = yield* approvedDemotion(provided, userId, "session-1");
+    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
+    const call = (key: string) => provided(runAgentCall(agent, { tool: "org_member_role", input, key, approvalId: id, page: { at: "organization" } }));
+    const first = yield* call("role-first");
+    expect(first).toMatchObject({ outcome: { ok: false, refusal: { message: "An Organization needs an owner. Make someone else an owner first.", writes: "unknown" } } });
+    const retry = "outcome" in first && "refusal" in first.outcome && "retry" in first.outcome.refusal ? first.outcome.refusal.retry : undefined;
+    expect(retry).toEqual({ tool: "org_member_role", input });
+    expect(yield* call("role-retry")).toEqual(first);
+  }));
+
+// Catches an approved demotion that demotes again once the person is restored, under the approval already used.
+it.live("an approved role change runs once: repeating it after the role was restored asks again and changes nothing", () =>
+  Effect.gen(function* () {
+    const { provided, team, userId } = yield* parity();
+    const bob = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
+      const id = person?.id ?? expect.fail("no person");
+      yield* drizzle.insert(member).values({ userId: id, organizationId: ORGANIZATION, role: "owner" });
+      return id;
+    }));
+    const roleOf = Effect.map(team, ({ members }) => members.find((row) => row.userId === bob)?.role);
+    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
+    const input = { member: "bob@example.test", role: "member" };
+    const call = (key: string, approvalId: string | null) => provided(runAgentCall(agent, { tool: "org_member_role", input, key, approvalId, page: { at: "organization" } }));
+
+    const asked = yield* call("demote-ask", null);
+    const { refusal } = "asking" in asked ? asked.asking : expect.fail("the demotion ran without asking");
+    const { approval, approval_id } = Schema.decodeUnknownSync(Schema.Struct({ approval: Schema.String, approval_id: Schema.String }))(refusal.details);
+    yield* provided(decideApproval({ ...agent, via: "dashboard" }, approval_id, { approve: { digest: approval } }));
+    expect(yield* call("demote-run", approval_id)).toMatchObject({ outcome: { ok: true } });
+    expect(yield* roleOf).toBe("member");
+
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(member).set({ role: "owner" }).where(eq(member.userId, bob));
+    }));
+    expect(yield* call("demote-replay", approval_id)).toMatchObject({ asking: { refusal: { code: "approval_required" } } });
+    expect(yield* roleOf).toBe("owner");
+  }));
+
+// Catches an approval carried into a command that never asks, which skipped the gate and so every check of it.
+it.live("a command that never asks refuses an approval carried into it, and changes nothing", () =>
+  Effect.gen(function* () {
+    const { provided, rows, userId } = yield* parity();
+    const { id } = yield* approvedDemotion(provided, userId, "session-1");
+    const before = yield* rows;
+    const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
+    const ran = yield* provided(runAgentCall(agent, { tool: "server_upgrade_policy_set", input: { channel: "beta" }, key: "carried", approvalId: id, page: { at: "organization" } }));
+    expect(ran).toMatchObject({ outcome: { ok: false, refusal: { code: "forbidden", details: { approval_id: id } } } });
+    expect(yield* rows).toEqual(before);
+  }));
+
+it.live("a sidebar call that names an approval in its input does not pass the gate, even one approved for the same plan", () =>
+  Effect.gen(function* () {
+    const { provided, sidebar, userId } = yield* parity();
+    const { id, input } = yield* approvedDemotion(provided, userId, "session-other");
+    const heard = yield* sidebar("org_member_role", { ...input, approval: id });
+    expect(heard).toMatchObject({ ok: false, refusal: { code: "invalid_argument", writes: "none" } });
+    expect(JSON.stringify(heard)).not.toContain("needs an owner");
   }));
 
 it.live("answers approvals only through ployz, records who decided, and keeps them out of the sidebar, so the agent never approves its own request", () =>
@@ -266,7 +368,7 @@ it.live("refuses a ployz approve of a request an agent asked for, and still lets
     }));
     expect(yield* route("org_approval_approve", { id: data ?? "" })).toEqual({
       status: 403,
-      body: { error: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this.", details: expect.anything() } },
+      body: { error: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this.", details: expect.anything(), writes: "unknown" } },
     });
     expect(yield* route("org_approval_deny", { id: logs ?? "" })).toMatchObject({ status: 200, body: { output: { id: logs, status: "denied" } } });
     expect((yield* rows).decided.map(({ status }) => status)).toEqual(["pending", "denied"]);

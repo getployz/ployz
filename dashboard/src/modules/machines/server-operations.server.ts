@@ -9,7 +9,13 @@ import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { firstRuntimeFrame, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import {
+  clusterRead,
+  OrganizationRuntime,
+  operationRuntimeFrame,
+  RUNTIME_FRAME_TIMEOUT_MS,
+  withClusterBudget,
+} from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
 import { Conflict } from "#/server/public-error";
 
@@ -89,6 +95,8 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     subject: `server:${machineId}`,
     verb: "drain",
     name,
+    // Its attempt keeps the approval, so carrying it again answers that drain.
+    recorded: true,
     preview: { server: machineId, moves, stays, retires },
     effects,
     targets: [...moves, ...stays, ...retires].sort(byName),
@@ -138,6 +146,8 @@ export function cleanPlan(
     subject: `namespace:${namespace}`,
     verb: "clean",
     name: namespace,
+    // Its clean keeps the approval, so carrying it again answers that clean.
+    recorded: true,
     preview: {
       namespace,
       services: services.map(({ identity }) => identity).sort(byName),
@@ -185,7 +195,7 @@ export function removePlan(
   };
 }
 
-const observe = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
+const observe = (organizationId: string) => operationRuntimeFrame(organizationId).pipe(
   Effect.mapError(unreachable),
   Effect.flatMap((frame) => frame === null ? Effect.fail(unreachable()) : Effect.succeed(frame)),
 );
@@ -205,6 +215,9 @@ const ownedOrSystem = (organizationId: string, namespace: string) => namespace =
   ? Effect.succeed(true)
   : ownedNamespaces(organizationId).pipe(Effect.map((owned) => owned.includes(namespace)));
 
+/** How long a clean waits for the Cluster to say what destroying a Namespace would lose. */
+const DATA_LOSS_TIMEOUT = "10 seconds";
+
 /** A clean of `namespace` as it stands now; only of one no Environment owns, and never Ployz's own. */
 export const planClean = Effect.fn("ServerOperations.planClean")(function* (organizationId: string, namespace: string) {
   if (yield* ownedOrSystem(organizationId, namespace)) {
@@ -212,11 +225,12 @@ export const planClean = Effect.fn("ServerOperations.planClean")(function* (orga
   }
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") return yield* unreachable();
-  const lost = yield* session.connected.dataLossIfNamespaceDestroyed(namespace).pipe(Effect.mapError(unreachable));
-  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
-    Effect.timeout("5 seconds"),
+  const lost = yield* session.connected.dataLossIfNamespaceDestroyed(namespace).pipe(
+    clusterRead,
     Effect.mapError(unreachable),
+    Effect.timeoutOrElse({ duration: DATA_LOSS_TIMEOUT, orElse: () => Effect.fail(unreachable()) }),
   );
+  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead, Effect.mapError(unreachable));
   return cleanPlan(frame, namespace, lost.data_loss);
 }, Effect.scoped);
 
@@ -258,7 +272,8 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
 
 /**
  * An operation approval's preview recomputed on read, so a changed Cluster supersedes it. A Server no longer observed,
- * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read, the stored preview stands.
+ * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read within 5 seconds of Cluster
+ * time, the stored preview stands.
  */
 export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored, preview) => {
   const separator = subject.indexOf(":");
@@ -293,7 +308,7 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
         return stored;
     }
   });
-  return fresh.pipe(Effect.orElseSucceed(() => stored));
+  return fresh.pipe(withClusterBudget(5_000), Effect.orElseSucceed(() => stored));
 };
 
 /** Every approval still waiting in the Organization, each operation's preview recomputed against the Cluster first. */

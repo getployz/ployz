@@ -246,6 +246,52 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
     Ok(())
 }
 
+/// The source a new Service with ID `id` arrives with, as its node row's cell holds it.
+///
+/// # Errors
+/// When `node` isn't a Service's node cell.
+pub fn arriving_source(id: &str, node: &Value) -> Result<ServiceSource, serde_json::Error> {
+    let cell = |setting: Setting| {
+        node.get(At::Setting(setting).to_string())
+            .cloned()
+            .unwrap_or_default()
+    };
+    source_of(id, cell(Setting::Source), cell(Setting::Branch))
+}
+
+/// The source a Service with ID `id` holds as its `source` cell and its
+/// `source.branch` cell say.
+fn source_of(
+    id: &str,
+    mut source: Value,
+    branch: Value,
+) -> Result<ServiceSource, serde_json::Error> {
+    let fields = source
+        .as_object_mut()
+        .ok_or_else(|| serde::de::Error::custom("not a source"))?;
+    // A git source parses with the branch it carries, else none yet.
+    if fields.get("type") == Some(&json!("git")) {
+        if !branch.is_null() {
+            fields.insert("branch".to_owned(), branch);
+        }
+        fields.entry("branch").or_insert_with(|| {
+            json!(ServiceGitBranch::Disconnected {
+                previous_name: None
+            })
+        });
+    }
+    // Each Service's credential is its own: it is bound to the Service's id.
+    if let Some(credentials) = fields.get_mut("credentials") {
+        *credentials = match serde_json::from_value(credentials.take())? {
+            true => json!(ServiceImageCredentials::Configured {
+                credential_id: id.to_owned()
+            }),
+            false => json!(ServiceImageCredentials::None),
+        };
+    }
+    serde_json::from_value(source)
+}
+
 /// Write `setting` of `service` as `value` says it. Settings each Environment owns
 /// never move, so nothing writes their rows.
 pub(super) fn put_setting(
@@ -260,26 +306,8 @@ pub(super) fn put_setting(
         (Setting::Routes | Setting::ManagedHostnames, _) => {
             return Err(serde::de::Error::custom("never moves"));
         }
-        (Setting::Source, mut value) => {
-            let fields = value
-                .as_object_mut()
-                .ok_or_else(|| serde::de::Error::custom("not a source"))?;
-            // A git source parses with the branch it carries, else none yet.
-            if fields.get("type") == Some(&json!("git")) {
-                fields.entry("branch").or_insert_with(|| {
-                    json!(ServiceGitBranch::Disconnected {
-                        previous_name: None
-                    })
-                });
-            }
-            // Each Service's credential is its own: it is bound to the Service's id.
-            if let Some(credentials) = fields.get_mut("credentials") {
-                *credentials = match parse(credentials.take())? {
-                    true => json!(ServiceImageCredentials::Configured { credential_id: id }),
-                    false => json!(ServiceImageCredentials::None),
-                };
-            }
-            config.source = keep_branch(&config.source, parse(value)?);
+        (Setting::Source, value) => {
+            config.source = keep_branch(&config.source, source_of(&id, value, Value::Null)?);
         }
         (Setting::Branch, value) => {
             if let ServiceSource::Git { branch, .. } = &mut config.source

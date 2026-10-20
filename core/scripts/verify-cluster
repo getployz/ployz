@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import importlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -97,11 +98,12 @@ def build(run, commands, *, daemon):
     started = time.monotonic()
     destination = Path(run["manifest"]).parent / "artifacts"
     cargo_args = shlex.split(os.environ.get("PLOYZ_VERIFY_CARGO_ARGS", ""))
-    names = ["ployz", *(["ployzd"] if daemon == "checkout" else [])]
+    names = [*([] if run.get("cli") else ["ployz"]), *(["ployzd"] if daemon == "checkout" else [])]
     artifacts.binaries(destination, names, cargo_args, commands)
     if daemon == "main":
-        if not artifacts.fetch_main(artifacts.key("ployzd", shlex.join(cargo_args)), destination, "--daemon checkout to build"):
-            raise RuntimeError("--daemon main: no CI build of ployzd on main near this checkout's fork point")
+        if not artifacts.fetch_main(artifacts.key("ployzd", shlex.join(cargo_args)), destination, "--daemon checkout to build",
+                                    deep=True):
+            raise RuntimeError("--daemon main: no live CI build of ployzd on main at or before this checkout's fork point")
         names.append("ployzd")
     if daemon:
         shutil.copy2(CORE / "scripts" / "uninstall.sh", destination / "ployz-uninstall")
@@ -110,7 +112,8 @@ def build(run, commands, *, daemon):
     for name in names:
         (destination / name).chmod(0o755)
         hashes[name] = hashlib.sha256((destination / name).read_bytes()).hexdigest()
-    run["client_sha256"] = hashes["ployz"]
+    if "ployz" in hashes:
+        run["client_sha256"] = hashes["ployz"]
     if daemon:
         run["binaries"] = hashes
     run["timings"]["build"] = round(time.monotonic() - started, 3)
@@ -175,6 +178,17 @@ def select_daemons(run, commands, specs, *, default):
     save(run)
 
 
+def select_cli(run, commands):
+    """Pick the CLI that drives the run: this checkout's CLI asks for its own wire, which an older daemon can't serve,
+    so when every Machine runs one release, and none enrolled on the checkout daemon, that release's CLI drives it."""
+    versions = {node["daemon"]["version"] if node["daemon"]["source"] not in LOCAL else None for node in run["machines"]}
+    run["cli"] = next(iter(versions)) if len(versions) == 1 and None not in versions and not run.get("bridged") else None
+    if run["cli"]:
+        hashes = releases.acquire(run["cli"], commands, Path(run["manifest"]).parent / "artifacts" / "runtime" / run["cli"], "ployz")
+        run["client_sha256"] = hashes["ployz"]
+    save(run)
+
+
 def dashboard_state(dashboard):
     state = dashboard / ".verify" / "run"
     url = next(line.split("=", 1)[1] for line in (state / "env").read_text().splitlines() if line.startswith("APP_URL="))
@@ -201,7 +215,8 @@ def cli_environment(run):
         environment.update(PLOYZ_TOKEN=(directory / "private" / "cloud-token").read_text(), PLOYZ_CLOUD_URL=run["cloud"]["url"])
     else:
         environment.update(PLOYZ_CONTEXT="verify", PLOYZ_STORE="sqlite:" + str(directory / "private" / "store.sqlite"))
-    return str(directory / "artifacts" / "ployz"), environment, directory / "workspace"
+    ployz = Path(directory, "artifacts", *(["runtime", run["cli"]] if run.get("cli") else []), "ployz")
+    return str(ployz), environment, directory / "workspace"
 
 
 def cli(run, commands, args, **kwargs):
@@ -236,6 +251,12 @@ for table in iptables ip6tables; do
     $table -X PLOYZ-VERIFY-PARTITION 2>/dev/null || true
 done
 """
+
+
+def public_ip(address):
+    """The Server's public IP on a Machine's underlay address. A Boat sandbox's only IPv4 is private behind
+    NAT, so its routable IPv6 is the one the internet reaches; an Incus bridge address reaches nowhere."""
+    return address if ipaddress.ip_address(address).is_global else "none"
 
 
 def endpoint(address):
@@ -671,7 +692,10 @@ def up(args):
         run["bridged"] = [name for name, daemon in boot.items() if daemon is checkout]
         booted = {daemon["version"] if daemon["source"] not in LOCAL else None for daemon in boot.values()}
         run["bootstrap_release"] = next(iter(booted)) if len(booted) == 1 and None not in booted else "0.2.2"
-        save(run)
+        select_cli(run, commands)
+        if not run["cli"] and any(node["daemon"]["source"] not in LOCAL for node in run["machines"]):
+            print("This checkout's CLI needs daemons that serve its wire (ployz.serving.routes.v1), "
+                  "so release daemons in this mixed cluster may refuse it", file=sys.stderr)
         # The context joins compilation and the dashboard before failure cleanup can remove resources.
         with ThreadPoolExecutor(max_workers=2) as builder:
             binaries = builder.submit(build, run, commands, daemon=local_daemon(
@@ -732,33 +756,7 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
             return
         started = time.monotonic()
         for node in run["machines"]:
-            # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
-            # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
-            # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
-            result = cli(run, commands, ["--json", "server", "add", node["ssh"],
-                               *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
-                               "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
-                               "--public-ip", "none", "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
-            response = enrolled(node, result, commands.evidence)
-            follow_up = response.get("follow_up_error", {})
-            node["machine_id"] = response["server"]["machine"]["id"]
-            if result.returncode:
-                # Initialization committed, but the published daemon can serve
-                # before its Cluster network row is visible. Observe readiness;
-                # rerunning `add --yes` would reset the committed founder.
-                run.setdefault("setup_follow_up_errors", []).append({"machine": node["name"], **follow_up})
-                print(f"{node['name']}: enrollment committed with a follow-up failure; checking readiness. Evidence: {commands.evidence}", file=sys.stderr)
-                deadline = time.monotonic() + 30
-                while True:
-                    observed = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"], check=False, timeout=5)
-                    if not observed.returncode and any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up"
-                            for server in json.loads(observed.stdout)["servers"]):
-                        break
-                    if time.monotonic() >= deadline:
-                        raise RuntimeError(f"{node['name']}: committed enrollment never became ready; see {commands.evidence}")
-                    time.sleep(0.25)
-                # Complete the same Ingress Proxy follow-up offered by the CLI.
-                cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"])
+            enroll(run, commands, node, private)
             save(run)
         bridged = [node for node in run["machines"] if node["name"] in run["bridged"]]
         if bridged:
@@ -778,6 +776,41 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
         if args.cloud and "cloud" not in run:
             commands([DASHBOARD / "scripts" / "verify" / "down.sh"], check=False)
         raise
+
+
+def enroll(run, commands, node, private):
+    """Enroll one Machine and give its Server the public IP the internet reaches it on."""
+    # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
+    # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
+    # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
+    public = public_ip(node["address"])
+    result = cli(run, commands, ["--json", "server", "add", node["ssh"],
+                       *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
+                       "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
+                       "--public-ip", public, "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
+    response = enrolled(node, result, commands.evidence)
+    follow_up = response.get("follow_up_error", {})
+    node["machine_id"] = response["server"]["machine"]["id"]
+    if result.returncode:
+        # Initialization committed, but the published daemon can serve
+        # before its Cluster network row is visible. Observe readiness;
+        # rerunning `add --yes` would reset the committed founder.
+        run.setdefault("setup_follow_up_errors", []).append({"machine": node["name"], **follow_up})
+        print(f"{node['name']}: enrollment committed with a follow-up failure; checking readiness. Evidence: {commands.evidence}", file=sys.stderr)
+        deadline = time.monotonic() + 30
+        while True:
+            observed = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"], check=False, timeout=5)
+            if not observed.returncode and any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up"
+                    for server in json.loads(observed.stdout)["servers"]):
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"{node['name']}: committed enrollment never became ready; see {commands.evidence}")
+            time.sleep(0.25)
+        # Complete the same Ingress Proxy follow-up offered by the CLI.
+        cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"])
+    if "cloud" in run and public != "none":
+        # Cloud enrollment kept the address the daemon looked up, which on Boat is the node's shared NAT IPv4.
+        cli(run, commands, ["--json", "server", "set", node["machine_id"], "--public-ip", public])
 
 
 def enrolled(node, result, evidence):
@@ -821,8 +854,9 @@ def main():
     launch.add_argument("--provider", choices=PROVIDERS, default="boat",
                         help="Where Machines run: boat sandboxes (default), or incus VMs on this host")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
-    daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, main (main's CI build, stale), stable, beta or an exact release version; "
-                   "a bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
+    daemon_help = ("[MACHINE=]SOURCE, repeatable. SOURCE is checkout, main (main's CI build, stale), stable, beta or an exact release version. "
+                   "When every Machine runs one release, that release's CLI drives the run, otherwise this checkout's CLI. "
+                   "A bare SOURCE sets every Machine and MACHINE=SOURCE overrides one")
     launch.add_argument("--daemon", action="append", metavar="[MACHINE=]SOURCE", help=daemon_help + "; checkout by default")
     launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default; needs --provider incus")
     launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default; needs --provider incus")
@@ -960,6 +994,7 @@ def main():
             print(f"Removed cluster. Evidence: {commands.evidence}")
         else:
             select_daemons(run, commands, args.daemon or [], default="checkout")
+            select_cli(run, commands)
             build(run, commands, daemon=local_daemon([node["daemon"] for node in run["machines"]]))
             started = time.monotonic()
             if run.get("bare"):

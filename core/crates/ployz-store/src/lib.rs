@@ -97,7 +97,10 @@ pub use removal::{
     Waiting, docker_volume,
 };
 pub use review::history::{HistoryAction, SavedRevision};
-pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};
+pub use review::{
+    DataEffect, DestructiveEffect, DestructiveKind, DiffView, LostAfter, NodeChange,
+    introduced_source,
+};
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
@@ -109,7 +112,9 @@ pub use teardown::{
     OrganizationRemoved, ProjectListing, ProjectsQuery, ProjectsView, ProtectedView,
     RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
 };
-pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
+pub use trusted::{
+    Approval, Asks, ObservationFailure, ObservationStage, Trusted, VolumeObservation,
+};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,6 +220,7 @@ impl ConfigStore {
     ) -> Result<C::Written, RpcError> {
         let trusted = trusted.held_by(who);
         self.acting(&trusted, |tx| {
+            let trusted = trusted.naming(tx, who)?;
             command.apply(&mut Call {
                 tx,
                 who,
@@ -248,6 +254,7 @@ impl ConfigStore {
     ) -> Result<Committed, RpcError> {
         let trusted = trusted.held_by(who);
         self.acting(&trusted, |tx| {
+            let trusted = trusted.naming(tx, who)?;
             let written = command.apply(&mut Call {
                 tx,
                 who,

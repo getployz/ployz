@@ -1,9 +1,10 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { CloudIcon, HardDriveIcon, TriangleAlertIcon } from "lucide-react";
 import type { ReviewLifecycleKind } from "@ployz/sdk";
 import { Badge } from "#/components/ui/badge";
 import { Spinner } from "#/components/ui/spinner";
+import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import {
   cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
@@ -15,17 +16,6 @@ import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 
 const STAGED_LIFECYCLE = { new: "create", primary: "update", removing: "delete" } as const satisfies Record<StagedCopy, ReviewLifecycleKind>;
-
-const everyMinute = (tick: () => void) => {
-  const timer = setInterval(tick, 60_000);
-  return () => clearInterval(timer);
-};
-
-/** Ages read the clock, which moves between SSR and hydration, so they render only in the browser. */
-function useMinute(): Date | null {
-  const minute = useSyncExternalStore(everyMinute, () => Math.floor(Date.now() / 60_000), () => null);
-  return minute === null ? null : new Date();
-}
 
 function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy: MirrorCopy | OffsiteCopy; now: Date | null }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });

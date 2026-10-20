@@ -8,9 +8,9 @@ use ployz_core::metrics::{
     HostPoint, MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
 };
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerId, ContainerKind, HealthcheckCommand, HealthcheckSpec,
-    MachineFailure, MachineSuccess, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId,
-    ServiceName,
+    ConfiguredHealthcheck, ContainerId, ContainerKind, CopyRotation, DeploymentLogId,
+    HealthcheckCommand, HealthcheckSpec, MachineFailure, MachineSuccess, Namespace,
+    QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
@@ -20,7 +20,8 @@ use ployz_store::tools::{
 use tokio::time::Instant;
 
 use super::{
-    NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, start_one, summarize,
+    NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, remove_one, start_one,
+    stop_one, summarize,
 };
 use crate::global_fixtures::{container_id, machine, running_on};
 use crate::sdk::test_support as support;
@@ -301,7 +302,10 @@ fn a_server_answer_describes_only_the_readable_namespaces_and_keeps_host_totals(
     );
 }
 
-async fn started(service: support::DeployService) -> Started {
+async fn acted<T, F: std::future::Future<Output = Result<T, RpcError>>>(
+    service: support::DeployService,
+    act: impl FnOnce(crate::sdk::Session, ployz_core::MachineId) -> F,
+) -> Result<T, RpcError> {
     let machine = support::machine('a', "one").machine.id;
     let (address, server) = support::listening(service).await;
     let session = crate::sdk::connect_connections(
@@ -310,25 +314,146 @@ async fn started(service: support::DeployService) -> Started {
     )
     .await
     .unwrap();
-    let started = start_one(&session, machine, container_id('1'))
-        .await
-        .unwrap();
+    let acted = act(session.clone(), machine).await;
     session.close().await;
     server.abort();
-    started
+    acted
+}
+
+async fn started(service: support::DeployService) -> Started {
+    acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap()
+}
+
+fn run() -> DeploymentLogId {
+    DeploymentLogId::parse("stopped-by-you").unwrap()
 }
 
 #[tokio::test]
-async fn a_start_is_serving_once_its_health_wait_passes() {
+async fn a_start_never_routes_a_copy_no_deploy_brought_in() {
     let service = support::DeployService::new(support::machine('a', "one"));
+    let rotations = service.rotations();
+    let error = acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        error.message.contains("left Pending and not routed"),
+        "{error:?}"
+    );
+    assert_ne!(
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
+        Some(&CopyRotation::In)
+    );
+}
+
+#[tokio::test]
+async fn a_start_of_a_held_copy_brings_it_back_in() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()));
+    let rotations = service.rotations();
     assert_eq!(started(service).await, Started::Serving);
+    assert_eq!(
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
+        Some(&CopyRotation::In)
+    );
 }
 
 #[tokio::test]
 async fn a_start_whose_health_cannot_be_read_is_unconfirmed() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
+        .unread_health();
+    assert_eq!(started(service).await, Started::Unconfirmed);
+}
+
+#[tokio::test]
+async fn a_start_whose_copy_cannot_be_read_starts_nothing() {
     let service =
         support::DeployService::new(support::machine('a', "one")).fail_inspects("inspect failed");
-    assert_eq!(started(service).await, Started::Unconfirmed);
+    let mutations = service.mutating_rpcs();
+    let error = acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable, "{error:?}");
+    assert_eq!(mutations.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_start_of_an_out_copy_is_refused_and_says_to_deploy_again() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Out);
+    let mutations = service.mutating_rpcs();
+    let error = acted(service, |session, machine| async move {
+        start_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.contains("Deploy the Service again"),
+        "{error:?}"
+    );
+    assert_eq!(mutations.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_stop_of_an_in_copy_holds_it_so_a_start_can_bring_it_back() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::In);
+    let rotations = service.rotations();
+    let removed = service.removed_containers();
+    acted(service, |session, machine| async move {
+        stop_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
+        Some(CopyRotation::Held(_))
+    ));
+    assert!(removed.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_removal_of_a_stopped_in_copy_takes_it_out_then_removes_it() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .crash_containers()
+        .with_rotation(container_id('1'), CopyRotation::In);
+    let rotations = service.rotations();
+    let removed = service.removed_containers();
+    acted(service, |session, machine| async move {
+        remove_one(&session, machine, container_id('1')).await
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        rotations
+            .lock()
+            .unwrap()
+            .get(&container_id('1'))
+            .map(|rotated| &rotated.rotation),
+        Some(&CopyRotation::Out)
+    );
+    assert!(removed.lock().unwrap().contains(&container_id('1')));
 }
 
 // Real Machines are on the network, so these wait in real time with short healthchecks.
@@ -336,6 +461,7 @@ async fn a_start_whose_health_cannot_be_read_is_unconfirmed() {
 #[tokio::test]
 async fn a_start_returns_only_once_its_healthcheck_passes() {
     let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
         .turn_healthy_after(Duration::from_millis(1_500));
     let begun = Instant::now();
     assert_eq!(started(service).await, Started::Serving);
@@ -345,6 +471,7 @@ async fn a_start_returns_only_once_its_healthcheck_passes() {
 #[tokio::test]
 async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline() {
     let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::Held(run()))
         .hold_health()
         .with_effective_healthcheck(HealthcheckSpec::Configured(ConfiguredHealthcheck {
             test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),

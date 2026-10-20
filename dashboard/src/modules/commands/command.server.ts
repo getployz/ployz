@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema, SchemaIssue } from "effect";
-import { asRecord } from "#/lib/json";
-import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
-import { type StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
+import type { JsonObject } from "#/db/tables";
+import { asRecord, asString } from "#/lib/json";
+import { carriedInto, gateOperation, type OperationAsked, unspendApproval } from "#/modules/approvals/approvals.server";
+import { type CommandRefusal, type StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { lacks } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
@@ -12,6 +13,9 @@ import type { Database } from "#/server/database.server";
 
 /** A command's answer: its output and an optional line for a human, or the refusal `ployz` prints. */
 export type Ran<T> = { ok: true; output: T; message?: string } | { ok: false; refusal: StoreRefusal };
+
+/** What a call to a command answers: its output, or its refusal in the shape Store tools refuse. */
+export type Called<T> = { ok: true; output: T; message?: string } | { ok: false; refusal: CommandRefusal };
 
 /**
  * How one call arrived. `key` is the `x-ployz-request-key` the CLI sends; no attempt is recorded under it, because every
@@ -62,7 +66,7 @@ export type Command<N extends string = string, O extends Schema.Top = Schema.Top
   readonly positional: readonly string[];
   readonly input: Schema.Struct<Fields>;
   readonly output: O;
-  readonly invoke: (caller: Caller, raw: JsonValue, call: CommandCall) => Effect.Effect<Ran<O["Type"]>, Exclude<E, Refusable>, R | Database>;
+  readonly invoke: (caller: Caller, raw: JsonValue, call: CommandCall) => Effect.Effect<Called<O["Type"]>, Exclude<E, Refusable>, R | Database>;
 };
 
 export const refused = (code: string, message: string, details: JsonValue = null) =>
@@ -70,39 +74,90 @@ export const refused = (code: string, message: string, details: JsonValue = null
 
 const issues = SchemaIssue.makeFormatterStandardSchemaV1();
 
-const invalidInput = (problems: ReadonlyArray<{ readonly message: string; readonly path?: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }> | undefined }>) =>
-  refused("invalid_input", problems.map((problem) => problem.message).join("; "), {
-    issues: problems.map(({ message, path }) => ({
-      message,
-      path: (path ?? []).map((segment) => String(asRecord(segment)?.["key"] ?? segment)),
-    })),
-  });
+type Problem = { readonly message: string; readonly path?: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }> | undefined };
+
+/**
+ * `invalid_argument` at the first problem's field, `expected` the schema that fits there. An input that isn't an object,
+ * or names a field the command doesn't take, names no field it could fix: `expected` is the whole input's schema, whose
+ * `additionalProperties: false` says only its listed fields are allowed. A field the caller made up is never echoed.
+ */
+const invalidInput = (schema: JsonObject, problems: ReadonlyArray<Problem>) => {
+  const path = (problems[0]?.path ?? []).map((segment) => String(asRecord(segment)?.["key"] ?? segment));
+  const atField = path.reduce<JsonValue>((at, key) => asRecord(asRecord(at)?.["properties"] ?? null)?.[key] ?? null, schema);
+  const message = problems.map((problem) => problem.message).join("; ");
+  const field = path.length === 0 ? {} : { field: path.join(".") };
+  return { ok: false, refusal: { code: "invalid_argument", message, details: null, ...field, expected: atField ?? schema } } as const;
+};
+
+const takesOnly = (fields: Fields) => {
+  const names = Object.keys(fields);
+  return names.length === 0 ? "This command takes no input." : `This command takes only ${names.join(", ")}.`;
+};
+
+const EMPTY_INPUT: JsonObject = { type: "object", properties: {}, required: [], additionalProperties: false };
+
+/** `{anyOf: [{type: "string"}, {type: "null"}]}` as `{type: ["string", "null"]}`, the one form `ployz` reads. */
+function nullableAsTypes(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map(nullableAsTypes);
+  const node = asRecord(value);
+  if (node === null) return value;
+  const walked = Object.fromEntries(Object.entries(node).map(([key, item]) => [key, nullableAsTypes(item)]));
+  const [first, second, ...rest] = Array.isArray(walked["anyOf"]) ? walked["anyOf"] : [];
+  const nonNull = asRecord(first ?? null);
+  const isNull = asRecord(second ?? null);
+  const type = asString(nonNull?.["type"] ?? null);
+  if (rest.length > 0 || nonNull === null || isNull === null || type === null || Object.keys(nonNull).length !== 1) return walked;
+  if (Object.keys(isNull).length !== 1 || isNull["type"] !== "null") return walked;
+  const { anyOf: _anyOf, ...siblings } = walked;
+  return { ...siblings, type: [type, "null"] };
+}
+
+export function jsonSchema(schema: Schema.Top): JsonObject {
+  return asRecord(nullableAsTypes(asRecord(Schema.toJsonSchemaDocument(schema).schema))) ?? {};
+}
+
+/** Effect writes an empty struct as "object or array" and drops an empty `required`; `ployz` reads neither. */
+export function inputSchema(input: Schema.Struct<Fields>): JsonObject {
+  if (Object.keys(input.fields).length === 0) return EMPTY_INPUT;
+  const schema = jsonSchema(input);
+  return { ...schema, required: schema["required"] ?? [] };
+}
 
 export function defineCommand<const N extends string, F extends Fields, O extends Schema.Top, E = never, R = never>(def: CommandDef<N, F, O, E, R>): Command<N, O, E, R> {
   const { run, input, kind } = def;
   const gate = def.kind === "write" ? def.gate : "never";
   const decode = Schema.decodeUnknownEffect(input);
-  // SAFETY: the catchIfs below remove every NotFound and StoreRefused; TypeScript cannot subtract them from a generic `E`.
-  const invoke = (caller: Caller, raw: JsonValue, call: CommandCall): Effect.Effect<Ran<O["Type"]>, Exclude<E, Refusable>, R | Database> => Effect.gen(function* () {
-    const fields = asRecord(raw);
-    if (fields === null) return invalidInput([{ message: "Expected the input as an object" }]);
-    const unknown = Object.keys(fields).filter((key) => !Object.hasOwn(input.fields, key));
-    if (unknown.length > 0) return invalidInput(unknown.map((key) => ({ message: `Unknown input ${key}`, path: [key] })));
-    const decoded = yield* decode(fields).pipe(Effect.result);
-    if (decoded._tag === "Failure") return invalidInput(issues(decoded.failure.issue).issues);
-    // Every published write lands in the Organization (none names an Environment), so a token limited to Environments can't make one.
-    const lacking = lacks(caller, def.requires, kind === "read" ? "reads" : "organization");
-    if (lacking !== null) return refused("forbidden", lacking);
-    if (gate !== "never") {
-      const gated = yield* gateOperation(caller, call.approvalId, yield* gate.asked(caller, decoded.success));
-      if (!gated.ok) return gated;
-    }
-    return yield* run(caller, decoded.success);
-  }).pipe(
-    Effect.catchIf((failure) => failure instanceof NotFound, (missing) => Effect.succeed(refused("not_found", missing.message))),
-    Effect.catchIf((failure) => failure instanceof StoreRefused, (store) => Effect.succeed({ ok: false, refusal: store.refusal } as const)),
-    Effect.withSpan("Commands.invoke", { attributes: { command: def.name } }),
-  ) as Effect.Effect<Ran<O["Type"]>, Exclude<E, Refusable>, R | Database>;
+  const invoke = (caller: Caller, raw: JsonValue, call: CommandCall): Effect.Effect<Called<O["Type"]>, Exclude<E, Refusable>, R | Database> => {
+    let started = false;
+    // SAFETY: the catchIfs below remove every NotFound and StoreRefused; TypeScript cannot subtract them from a generic `E`.
+    return Effect.gen(function* () {
+      const fields = asRecord(raw);
+      if (fields === null) return invalidInput(inputSchema(input), [{ message: "Expected the input as an object" }]);
+      if (Object.keys(fields).some((key) => !Object.hasOwn(input.fields, key))) return invalidInput(inputSchema(input), [{ message: takesOnly(input.fields) }]);
+      const decoded = yield* decode(fields).pipe(Effect.result);
+      if (decoded._tag === "Failure") return invalidInput(inputSchema(input), issues(decoded.failure.issue).issues);
+      // Every published write lands in the Organization (none names an Environment), so a token limited to Environments can't make one.
+      const lacking = lacks(caller, def.requires, kind === "read" ? "reads" : "organization");
+      if (lacking !== null) return refused("forbidden", lacking);
+      // A command that never asks still refuses an approval carried into it.
+      const carried = gate === "never" ? yield* carriedInto(caller, call.approvalId, { command: def.name }) : null;
+      if (carried !== null) return { ok: false, refusal: carried } as const;
+      const gated = gate === "never" ? null : yield* gateOperation(caller, call.approvalId, yield* gate.asked(caller, decoded.success));
+      if (gated !== null && !gated.ok) return gated;
+      started = true;
+      // A run that refused hands back the approval it spent, so repeating it asks no one again.
+      const spent = gated?.approvalId ?? null;
+      const handBack = spent === null ? Effect.void : unspendApproval(caller.organization.id, spent);
+      const ran = yield* run(caller, decoded.success).pipe(Effect.tapError(() => handBack));
+      if (!ran.ok) yield* handBack;
+      return ran;
+    }).pipe(
+      Effect.catchIf((failure) => failure instanceof NotFound, (missing) => Effect.succeed(refused("not_found", missing.message))),
+      Effect.catchIf((failure) => failure instanceof StoreRefused, (store) => Effect.succeed({ ok: false, refusal: store.refusal } as const)),
+      Effect.map((ran): Called<O["Type"]> => ran.ok ? ran : { ok: false, refusal: { ...ran.refusal, writes: started && kind === "write" ? "unknown" : "none" } }),
+      Effect.withSpan("Commands.invoke", { attributes: { command: def.name } }),
+    ) as Effect.Effect<Called<O["Type"]>, Exclude<E, Refusable>, R | Database>;
+  };
   const { run: _run, ...shown } = def;
   return { ...shown, kind, gate: gate === "never" ? "never" : "ask", removes: def.kind === "write" && def.removes, invoke };
 }

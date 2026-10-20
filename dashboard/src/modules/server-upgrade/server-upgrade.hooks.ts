@@ -7,6 +7,8 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { type PendingFrom, type ReleaseChannel, serverUpgradeSettings } from "./server-upgrade";
 import { requestServerUpgradeServerFn, setServerUpgradeSettingsServerFn } from "./server-upgrade.functions";
 
+export const UPGRADE_REFUSED = "Only an owner or admin can upgrade servers.";
+
 /** How long a click reads as Upgrading before its attempt is recorded; a Busy Server records none. */
 const PENDING_MS = 60_000;
 

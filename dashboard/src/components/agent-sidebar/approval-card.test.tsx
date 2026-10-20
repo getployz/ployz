@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { DiffView } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
@@ -51,6 +51,48 @@ it("leads with what the plan destroys and folds the rest to a count", () => {
   expect(within(card).queryByText(/1 → 2/)).toBeNull();
   fireEvent.click(within(card).getByText("1 other change"));
   expect(within(card).getByText(/web .*1 → 2/)).toBeTruthy();
+});
+
+const restoreOf = (at: number) => ({ ...approval, review: { ...approval.review, effects: [{
+  kind: "detaches_volume" as const, name: "pg-data", node: "s1", path: "postgres.mounts.pg-data",
+  lost_after: { at, restored: "pg-data-0927" },
+}] } });
+
+function lossShownAt(at: number, now: number) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(now);
+  try {
+    const destroys = within(show(restoreOf(at)).card()).getByRole("list", { name: "Destroys" });
+    expect(within(destroys).getByText("from postgres", { exact: false })).toBeTruthy();
+    return within(destroys).getByText(/^Changes after /).textContent;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+it("says which changes a restore's detach leaves behind, in the approver's time", () => {
+  const at = Date.UTC(2026, 9, 8, 9, 27) / 1000;
+  const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" }).format(new Date(at * 1000));
+  expect(lossShownAt(at, at * 1000 + 60_000)).toBe(`Changes after ${time} are not in pg-data-0927`);
+});
+
+it("dates a restore point from another day, so an older point reads apart from today's", () => {
+  const at = Date.UTC(2026, 9, 8, 9, 27) / 1000;
+  const when = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(at * 1000));
+  expect(lossShownAt(at, at * 1000 + 3 * 86_400_000)).toBe(`Changes after ${when} are not in pg-data-0927`);
+});
+
+it("dates a restore point from today once midnight passes while the card is open", () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
+  try {
+    const destroys = within(show(restoreOf(new Date(2026, 9, 11, 23, 55).getTime() / 1000)).card()).getByRole("list", { name: "Destroys" });
+    expect(within(destroys).getByText(/^Changes after /).textContent).toBe("Changes after 23:55 are not in pg-data-0927");
+    act(() => vi.advanceTimersByTime(2 * 60_000));
+    expect(within(destroys).getByText(/^Changes after /).textContent).toBe("Changes after 11 Oct, 23:55 are not in pg-data-0927");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("names the Project, so two Deploys to production read apart", () => {

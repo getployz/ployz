@@ -64,8 +64,8 @@ pub struct Deploy {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub version: Option<String>,
-    /// A new upload for Services without a source of their own; none keeps the
-    /// Environment's latest.
+    /// A new upload for the target Services without a source of their own; without
+    /// one, each builds from the upload it last built from.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub upload: Option<UploadedSource>,
@@ -293,12 +293,12 @@ fn deploy(
         id,
         environment.working.clone(),
         review.saved.as_ref(),
-        (admit.message.as_deref(), &review::lost(losses.clone())),
+        (admit.message.as_deref(), &losses),
     )?;
     let mut frozen = deployment::freeze(
         id,
         &saved_intent,
-        &review.head.applied,
+        &deployment::Landing::of(&review.head),
         deployment::Scope::of(&admit.services, &losses),
         namespace,
         cluster_domain,

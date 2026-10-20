@@ -6,6 +6,7 @@
 
 pub(crate) mod admit;
 mod history;
+mod landing;
 mod lifecycle;
 mod lowering;
 pub(crate) mod query;
@@ -14,9 +15,12 @@ mod reference_tests;
 #[cfg(test)]
 mod retire_tests;
 mod rows;
+pub(crate) mod uploads;
 pub(crate) use history::*;
+pub(crate) use landing::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
+pub(crate) use rows::servers;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
     starts_container,
@@ -137,10 +141,21 @@ pub struct DeploymentSummary {
     pub saved: Revision,
     /// The Services it targets; empty targets every Service.
     pub services: Vec<ServiceName>,
+    /// Every Service it ships or takes down, as frozen at admission: the ones it
+    /// targets, the ones they reference and the ones it removes. Empty while it
+    /// waits for CI.
+    #[serde(default)]
+    pub ships: Vec<ServiceName>,
     /// The runner that claimed it.
     pub runner: Option<RunnerId>,
     /// What its Services without a source of their own build from.
     pub upload: Option<UploadedSource>,
+    /// Whether `upload` is chosen again as it starts: it sent none, so its Services
+    /// build from the upload each last ran then, which a Deployment ahead of it may
+    /// still change.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub chooses_upload_at_start: bool,
     /// Whether it removes the Environment from the Servers: it ships the empty
     /// Environment ([`NOTHING`]) and deletes the data it accepted.
     pub remove: bool,
@@ -399,6 +414,13 @@ impl NodeStatus {
     pub(crate) const fn advances(self) -> bool {
         matches!(self, Self::Deployed | Self::Removed)
     }
+
+    /// Whether Applied State takes the node from a Deployment that `succeeded` or
+    /// not: once it succeeded, an Unchanged node too, since the Deploy covered it
+    /// even when the runtime had nothing to do (a rename, a tag).
+    pub(crate) const fn applied(self, succeeded: bool) -> bool {
+        self.advances() || (succeeded && matches!(self, Self::Unchanged))
+    }
 }
 
 /// What a Deployment's runner recorded at its end.
@@ -418,6 +440,10 @@ pub enum Outcome {
         cause: Vec<String>,
         #[serde(default)]
         services: Vec<ServiceOutcome>,
+        /// What a failed replacement's compensation did to its new and old
+        /// Containers, one sentence each; users read it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        compensation: Vec<String>,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.
@@ -490,8 +516,8 @@ pub enum RunEvidence {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Claimed {
     pub deployment: DeploymentSummary,
-    /// Services without a source of their own are left out; they build from
-    /// `deployment.upload` through the SDK's preparation of `input`.
+    /// Services without a source of their own are left out; each builds from its
+    /// upload in `uploads` through the SDK's preparation of `input`.
     pub intent: DeployIntent,
     /// Every environment variable name under which any Container of the Environment,
     /// present or past, may hold a Sealed value. A failed Container's log is scrubbed
@@ -507,8 +533,10 @@ pub struct Claimed {
     /// The Docker Volumes to delete once the Deploy succeeds: exactly those whose
     /// loss admission accepted, each on its Server.
     pub deletes: Vec<DockerVolumeId>,
-    /// The Services it builds from `deployment.upload`, by runtime name.
-    pub uploads: Vec<ServiceName>,
+    /// Each target Service without a source of its own, by runtime name, and the
+    /// digest of the upload it builds from: `deployment.upload`'s, or an older one
+    /// it last built from; none when it has none.
+    pub uploads: BTreeMap<ServiceName, Option<ployz_core::UploadDigest>>,
     /// The Organization's Build Order as the build starts. Uploaded Services skip
     /// GitHub in it: GitHub can't build uploaded source, so they build on Servers.
     pub build_order: Vec<crate::Builder>,
@@ -539,6 +567,17 @@ pub(crate) enum TargetNode {
         id: ConfigId,
         name: ConfigName,
     },
+}
+
+/// The Services among `nodes`.
+pub(crate) fn shipped(nodes: &[TargetNode]) -> Vec<ServiceName> {
+    nodes
+        .iter()
+        .filter_map(|node| match node {
+            TargetNode::Service { name, .. } => Some(name.clone()),
+            TargetNode::Volume { .. } | TargetNode::Config { .. } => None,
+        })
+        .collect()
 }
 
 impl TargetNode {
@@ -734,6 +773,10 @@ pub(crate) struct Stored {
     /// Where it lists among its Environment's Deployments: taken once, at insert,
     /// and never moved, so a page cursor can hold it.
     pub(crate) listed: i64,
+    /// The digest of the upload each target Service without a source of its own
+    /// builds from, by lineage; none for one admitted before it was kept, whose
+    /// every such Service builds from its upload.
+    pub(crate) service_uploads: Option<uploads::ServiceUploads>,
 }
 
 impl Stored {
@@ -793,7 +836,7 @@ static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
              AND s.head = config_deployment.push_head AND s.status = '{completed}' \
              AND COALESCE(s.conclusion, '') NOT IN ({passing})) \
            THEN 'failed' ELSE 'pending' END \
-         END, listed"
+         END, listed, service_uploads"
     )
 });
 
@@ -947,6 +990,11 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     // Only a push holds, and a push that admitted a Deployment froze what it ships,
     // at least one node: a hold, cancelled or not, froze none.
     let held = push.is_some() && nodes.is_empty();
+    let service_uploads: Option<uploads::ServiceUploads> = row
+        .optional_text(23)?
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| error::corrupt("Deployment uploads"))?;
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
@@ -959,12 +1007,14 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             status,
             saved: row.number(4, "revision")?,
             services: row.json(5, "Deployment")?,
+            ships: shipped(&nodes),
             runner: row.parse_optional(11, "identity")?,
             upload: row
                 .optional_text(9)?
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|_| error::corrupt("Deployment upload"))?,
+            chooses_upload_at_start: chooses_upload_at_start(status, service_uploads.as_ref()),
             remove: row.number::<Revision>(4, "revision")? == NOTHING,
             admitted_by: row.parse_optional(13, "identity")?,
             admitted_at: row.int(14)?,
@@ -991,12 +1041,25 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         cluster_domain: row.parse_optional(10, "identity")?,
         lease,
         listed: row.int(22)?,
+        service_uploads,
     })
 }
 
-/// Write `stored`'s status and run, keeping `in_flight` in step with its status.
+/// Whether a Deployment in `status` chooses its upload again as it starts: it is
+/// queued, and admission chose `uploads` while one ahead of it could still move them.
+fn chooses_upload_at_start(
+    status: DeploymentStatus,
+    uploads: Option<&uploads::ServiceUploads>,
+) -> bool {
+    status == DeploymentStatus::Queued && uploads.is_some_and(|uploads| uploads.provisional)
+}
+
+/// Write `stored`'s status and run, keeping `in_flight` and
+/// `chooses_upload_at_start` in step with its status.
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
     stored.summary.in_flight = stored.summary.status.in_flight();
+    stored.summary.chooses_upload_at_start =
+        chooses_upload_at_start(stored.summary.status, stored.service_uploads.as_ref());
     tx.execute(
         "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
          started = ?6, ended = ?7 WHERE id = ?3",

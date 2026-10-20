@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
 import { type ConfigCommand, type ConfigQuery, type MachineId, RpcError } from "@ployz/sdk";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -11,6 +11,7 @@ import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
+import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { runAgentCall } from "#/modules/agent/agent-runner.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -25,7 +26,7 @@ import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
-import { receiveUpload, releaseUpload, UPLOAD_LIMIT } from "#/modules/config-store/upload.server";
+import { extractUpload, receiveUpload, releaseUploads, UPLOAD_LIMIT, uploadOwner } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import type { TokenGrant } from "#/modules/identity/token-grant";
@@ -290,7 +291,7 @@ it.live(
 );
 
 it.live(
-  "a member stages but can't delete an Environment or a Project; an admin can",
+  "a member stages but can't delete an Environment or a Project or set the Build Order; an admin can",
   () =>
     Effect.gen(function* () {
       const layer = yield* cloudLayer();
@@ -311,7 +312,8 @@ it.live(
 
         const deleteStaging: ConfigCommand = { command: "remove", project: "shop", environment: "staging" };
         const deleteShop: ConfigCommand = { command: "remove", project: "shop" };
-        for (const command of [deleteStaging, deleteShop]) {
+        const buildOrder: ConfigCommand = { command: "set_build_order", build_order: "servers-only" };
+        for (const command of [deleteStaging, deleteShop, buildOrder]) {
           const refused = yield* Effect.exit(writeStoreAsMember(bob, slug, command));
           const error = Exit.isFailure(refused) ? Cause.squash(refused.cause) : null;
           assert.deepInclude(error, { _tag: "Forbidden", message: "Only an owner or admin of this Organization can do this." });
@@ -320,6 +322,7 @@ it.live(
         yield* drizzle.update(member).set({ role: "admin" }).where(eq(member.userId, bobUser));
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteStaging)).ok, "an admin deletes the Environment");
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteShop)).ok, "an admin deletes the Project");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, buildOrder)).ok, "an admin sets the Build Order");
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -812,7 +815,9 @@ it.live(
           const code = surface === "sidebar"
             ? refusedCode(yield* runAgentCall(agent, { ...call, approvalId: asked.asking.approvalId }))
             : (yield* send("write", asAgent(session, asked.asking.approvalId), { command: "set_environment_protected", environment: here, protected: false })).json.error?.code;
-          assert.strictEqual(code, "conflict", surface);
+          // The sidebar's tool unprotects the Environment it reviewed, which moved; `ployz mcp`'s write names the default,
+          // now staging, which the production approval doesn't cover.
+          assert.strictEqual(code, surface === "sidebar" ? "conflict" : "forbidden", surface);
           assert.isTrue(moved());
           vi.restoreAllMocks();
           assert.deepStrictEqual(yield* listing(), [["production", false, true], ["staging", true, true]], surface);
@@ -1392,12 +1397,41 @@ it.live(
           const { drizzle } = yield* Database;
           return yield* drizzle.execute<{ name: string }>(sql`select name from organization_cluster_domain`, "objects");
         });
+        const planned = yield* request("read", alice, { query: "plan", environment: here, services: [] });
+        assert.strictEqual(planned.status, 200);
+        assert.strictEqual(reservations(), 0, "a plan reads the Cluster Domain and reserves none");
+        assert.lengthOf(yield* reserved(), 0);
+
         const generate: ConfigCommand = { ...custom, hostname: null };
+        hostedDns.state.failWith = 503;
+        const failed = yield* request("write", alice, generate);
+        hostedDns.state.failWith = null;
+        assert.strictEqual(failed.status, 503);
+        assert.deepStrictEqual(failed.json, {
+          error: { code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; try again.", details: null },
+        });
+        assert.lengthOf(yield* reserved(), 0, "a failed reserve keeps no Cluster Domain");
+
+        hostedDns.requests.length = 0;
+        hostedDns.state.reservesTogether = 2;
         const staged = yield* Effect.all([request("write", alice, generate), request("write", alice, generate)], { concurrency: "unbounded" });
+        hostedDns.state.reservesTogether = 1;
         const hostname = staged[0].json.domain?.hostname ?? "";
         assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/, "staging a generated domain names it in full");
         assert.strictEqual(staged[1].json.domain?.hostname, hostname, "two stages at once share one Cluster Domain");
         assert.lengthOf(yield* reserved(), 1);
+        const { drizzle } = yield* Database;
+        const [kept] = yield* drizzle.select().from(organizationClusterDomain);
+        assert.isDefined(kept);
+        const keptToken = (yield* SecretEncryption).decrypt(kept.encryptedToken);
+        // The fake grants token-N for the Nth request it records.
+        const granted = hostedDns.requests.flatMap((call, index) => call.method === "POST" ? [`token-${index + 1}`] : []);
+        assert.lengthOf(granted, 2, "both stages reached Hosted DNS");
+        assert.deepStrictEqual(
+          hostedDns.requests.filter((call) => call.method === "DELETE").map((call) => [call.path, call.authorization]),
+          granted.filter((token) => token !== keptToken).map((token) => [`/domains/${kept.name}`, `Bearer ${token}`]),
+          "the losing stage releases the name it was granted, and only that one",
+        );
         const listed = yield* request("read", alice, { query: "domains", environment: here, service: null });
         assert.deepStrictEqual(listed.json.domains?.map((domain) => [domain.hostname, domain.status, domain.action?.type]), [
           ["app.example.com", "setting_up", "deploy"],
@@ -1471,14 +1505,16 @@ it.live(
 );
 
 /** A gzipped tar of a source directory, as `ployz deploy --upload` sends it: everything under `source/`. */
-const sourceArchive = Effect.promise(async () => {
+const archiveOf = (dockerfile: string) => Effect.promise(async () => {
   const root = await mkdtemp(path.join(tmpdir(), "upload-test-"));
   await mkdir(path.join(root, "source"));
-  await writeFile(path.join(root, "source", "Dockerfile"), "FROM scratch\n");
+  await writeFile(path.join(root, "source", "Dockerfile"), dockerfile);
   const chunks: Buffer[] = [];
   for await (const chunk of tar.c({ gzip: true, cwd: root, portable: true }, ["source"])) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 });
+
+const sourceArchive = archiveOf("FROM scratch\n");
 
 const upload = Effect.fn(function* (deploymentId: string, session: string, body: Buffer) {
   const headers = signedIn(session);
@@ -1490,7 +1526,7 @@ const upload = Effect.fn(function* (deploymentId: string, session: string, body:
 });
 
 it.live(
-  "an upload belongs to the one Deployment it was sent for, names its uploader, and goes once that Deployment ends",
+  "an upload belongs to the one Deployment it was sent for, names its uploader, and stays until a newer one for its Service or its Service goes",
   () =>
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "config-store-test" });
@@ -1546,15 +1582,208 @@ it.live(
         const { drizzle } = yield* Database;
         const held = (deploymentId: string) => drizzle.select().from(uploadChunk).where(eq(uploadChunk.deploymentId, deploymentId))
           .pipe(Effect.map((rows) => rows.length));
+        const run = (deploymentId: string, environmentId = ENVIRONMENT) =>
+          runStoreDeployment({ organizationId, environmentId, deploymentId, trigger: "user" }, "cloud-test");
+        const servers = yield* drizzle.select().from(organizationMachine);
+        // Admitted while its Server is there, run once it left, so nothing runs.
+        const withServers = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.gen(function* () {
+          yield* drizzle.insert(organizationMachine).values(servers);
+          const result = yield* effect;
+          yield* drizzle.delete(organizationMachine);
+          return result;
+        });
+        const admit = (
+          id: string, environment: { project: null; environment: string | null }, upload: { digest: string; base: null; uploader: null } | null,
+          services: string[] = [],
+        ) => withServers(request("write", alice, {
+          command: "admit", admit: "deploy", id, environment, services, version: null, accept_volume_loss: [], upload,
+        }));
         // Kept while it may still run, so a replaced worker finds it.
-        yield* releaseUpload(store, organizationId, first);
+        yield* releaseUploads(store, organizationId);
         assert.strictEqual(yield* held(first), 1);
         // Its Server left: its upload was read, and nothing ran.
         yield* drizzle.delete(organizationMachine);
-        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first, trigger: "user" }, "cloud-test");
-        expect(ran).toMatchObject({ ran: { id: first, status: "failed" } });
+        expect(yield* run(first)).toMatchObject({ ran: { id: first, status: "failed" } });
+        // Ended, it stays: its Environment's newest Deployment builds from it. The upload not admitted yet stays too.
+        assert.strictEqual(yield* held(first), 1);
+        assert.strictEqual(yield* held(second), 1);
+
+        // A Deployment that only changes settings builds from the kept upload, and keeps it.
+        const settingsOnly = "00000000-0000-4000-8000-000000000205";
+        assert.strictEqual((yield* admit(settingsOnly, here, null)).status, 200);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, settingsOnly), first);
+        yield* run(settingsOnly);
+        assert.strictEqual(yield* held(first), 1);
+
+        // A newer upload replaces it.
+        assert.strictEqual((yield* admit(second, here, { digest: "e".repeat(64), base: null, uploader: null })).status, 200);
+        yield* run(second);
         assert.strictEqual(yield* held(first), 0);
         assert.strictEqual(yield* held(second), 1);
+
+        // Once no Service builds from an upload, it goes.
+        yield* request("write", alice, { command: "remove_service", environment: here, service: "app" });
+        const withoutApp = "00000000-0000-4000-8000-000000000206";
+        assert.strictEqual((yield* admit(withoutApp, here, null)).status, 200);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, withoutApp), undefined);
+        yield* run(withoutApp);
+        assert.strictEqual(yield* held(second), 0);
+
+        // An Environment's upload goes with the Environment: the Store's purge deletes its row, and its Deployments
+        // with it. Like an upload never admitted, it goes once a day has passed since it arrived.
+        const STAGING = "00000000-0000-4000-8000-000000000207";
+        const staging = { project: null, environment: "staging" };
+        yield* request("write", alice, { command: "create_environment", id: STAGING, project: "shop", name: "staging" });
+        yield* request("write", alice, {
+          command: "create_service", id: "00000000-0000-4000-8000-000000000208", environment: staging, name: "app", image: null,
+        });
+        const third = "00000000-0000-4000-8000-000000000209";
+        assert.strictEqual((yield* upload(third, alice, archive)).status, 200);
+        assert.strictEqual((yield* admit(third, staging, { digest: "f".repeat(64), base: null, uploader: null })).status, 200);
+        yield* run(third, STAGING);
+        yield* releaseUploads(store, organizationId);
+        assert.strictEqual(yield* held(third), 1);
+        yield* drizzle.execute(sql`DELETE FROM config_environment WHERE id = ${STAGING}`);
+        yield* drizzle.update(uploadChunk).set({ createdAt: sql`now() - interval '2 days'` }).where(eq(uploadChunk.deploymentId, third));
+        yield* releaseUploads(store, organizationId);
+        assert.strictEqual(yield* held(third), 0);
+
+        // Each Service keeps its own latest upload: one for api alone leaves web's.
+        for (const [id, name] of [["00000000-0000-4000-8000-000000000210", "api"], ["00000000-0000-4000-8000-000000000211", "web"]] as const) {
+          yield* request("write", alice, { command: "create_service", id, environment: here, name, image: null });
+        }
+        const deployment = (n: number) => `00000000-0000-4000-8000-000000000${n}`;
+        const [both, apiOnly, webOnly, together, retried] = [deployment(212), deployment(213), deployment(214), deployment(215), deployment(216)];
+        const digest = (c: string) => ({ digest: c.repeat(64), base: null, uploader: null });
+        assert.strictEqual((yield* upload(both, alice, archive)).status, 200);
+        assert.strictEqual((yield* admit(both, here, digest("1"))).status, 200);
+        yield* run(both);
+        assert.strictEqual((yield* upload(apiOnly, alice, archive)).status, 200);
+        assert.strictEqual((yield* admit(apiOnly, here, digest("2"), ["api"])).status, 200);
+        yield* run(apiOnly);
+        yield* releaseUploads(store, organizationId);
+        assert.deepStrictEqual([yield* held(both), yield* held(apiOnly)], [1, 1]);
+        // A settings-only Deploy of web builds from web's upload.
+        assert.strictEqual((yield* admit(webOnly, here, null, ["web"])).status, 200);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, webOnly), both);
+        yield* run(webOnly);
+        // A Deploy of both builds each from its own upload. Cloud extracts the newer one sent, api's, and keeps both.
+        assert.strictEqual((yield* admit(together, here, null)).status, 200);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, together), apiOnly);
+        yield* run(together);
+        yield* releaseUploads(store, organizationId);
+        assert.deepStrictEqual([yield* held(both), yield* held(apiOnly)], [1, 1]);
+        // A retry of an older Deployment ships its upload, and api's latest upload stays.
+        const retry = (id: string, of: string) => withServers(request("write", alice, {
+          command: "admit", admit: "retry", id, deployment: of,
+        }));
+        assert.strictEqual((yield* retry(retried, both)).status, 200);
+        yield* run(retried);
+        yield* releaseUploads(store, organizationId);
+        assert.deepStrictEqual([yield* held(both), yield* held(apiOnly)], [1, 1]);
+
+        // An upload sent again after a failed one stays when the failed one is retried after it: it's api's newest
+        // upload. The failed one's went when the newer one replaced it, so its retry needs a new upload, as before.
+        const [firstSent, failed, sentAgain, retriedFailed] = [deployment(217), deployment(218), deployment(219), deployment(220)];
+        for (const [id, c] of [[firstSent, "3"], [failed, "4"], [sentAgain, "3"]] as const) {
+          assert.strictEqual((yield* upload(id, alice, archive)).status, 200);
+          assert.strictEqual((yield* admit(id, here, digest(c), ["api"])).status, 200);
+          yield* run(id);
+        }
+        assert.strictEqual((yield* retry(retriedFailed, failed)).status, 200);
+        yield* run(retriedFailed);
+        yield* releaseUploads(store, organizationId);
+        assert.deepStrictEqual([yield* held(failed), yield* held(sentAgain)], [0, 1]);
+        // The same content sent twice is kept once: the newer copy.
+        assert.strictEqual(yield* held(firstSent), 0);
+        assert.strictEqual(yield* held(apiOnly), 0);
+
+        // Release takes no lock, so it may delete an upload as a run reads it, before or mid-read. Either way the
+        // run finds no upload, not a broken one: its Services reuse their images or need a new upload.
+        const raced = deployment(221);
+        assert.strictEqual((yield* upload(raced, alice, archive)).status, 200);
+        const select = drizzle.select.bind(drizzle);
+        let selects = 0;
+        const midRead = vi.spyOn(drizzle, "select").mockImplementation(((fields: Parameters<typeof select>[0]) => {
+          selects += 1;
+          const query = select(fields);
+          if (selects !== 2) return query;
+          return {
+            from: (table: typeof uploadChunk) => ({
+              where: (where: Parameters<ReturnType<typeof query.from>["where"]>[0]) =>
+                drizzle.delete(uploadChunk).where(eq(uploadChunk.deploymentId, raced)).pipe(Effect.andThen(query.from(table).where(where))),
+            }),
+          };
+        }) as never);
+        const extracted = yield* extractUpload(organizationId, raced);
+        midRead.mockRestore();
+        assert.strictEqual(selects, 2);
+        assert.strictEqual(extracted, undefined);
+        assert.strictEqual(yield* extractUpload(organizationId, raced), undefined);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped),
+  60_000,
+);
+
+it.live(
+  "a queued Deploy runs from the upload it claims once the Deployment ahead of it settled",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "config-store-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cloudLayer({}, inngest);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const { id: organizationId } = (yield* resolveCaller(signedIn(alice))).organization;
+        yield* enrollStoreServer(organizationId);
+        yield* request("write", alice, shop);
+        yield* request("write", alice, { command: "create_service", id: SERVICE, environment: here, name: "app", image: null });
+        const store = yield* cloudStore;
+        const { drizzle } = yield* Database;
+        const servers = yield* drizzle.select().from(organizationMachine);
+        // Admitted while its Server is there, run once it left, so nothing runs.
+        yield* drizzle.delete(organizationMachine);
+        const write = (command: ConfigCommand) => Effect.gen(function* () {
+          yield* drizzle.insert(organizationMachine).values(servers);
+          const written = yield* request("write", alice, command);
+          yield* drizzle.delete(organizationMachine);
+          assert.strictEqual(written.status, 200);
+        });
+        const run = (deploymentId: string) =>
+          runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId, trigger: "user" }, "cloud-test");
+        const deployment = (n: number) => `00000000-0000-4000-8000-000000000${n}`;
+        const [first, second, retried, settingsOnly] = [deployment(301), deployment(302), deployment(303), deployment(304)];
+        for (const [id, c] of [[first, "a"], [second, "b"]] as const) {
+          assert.strictEqual((yield* upload(id, alice, yield* archiveOf(`FROM scratch\nLABEL upload=${c}\n`))).status, 200);
+          yield* write({
+            command: "admit", admit: "deploy", id, environment: here, services: [], version: null, accept_volume_loss: [],
+            upload: { digest: c.repeat(64), base: null, uploader: null },
+          });
+          yield* run(id);
+        }
+        // A retry of the first runs, and a settings-only Deploy queues behind it, following it for now.
+        yield* write({ command: "admit", admit: "retry", id: retried, deployment: first });
+        yield* Effect.promise(() => store.claimDeployment(organizationId, retried, "cloud-retry"));
+        yield* write({
+          command: "admit", admit: "deploy", id: settingsOnly, environment: here, services: [], version: null, accept_volume_loss: [],
+        });
+        const queued = yield* Effect.promise(() => store.read(organizationId, { query: "deployment", id: settingsOnly }));
+        expect(queued).toMatchObject({ upload: { digest: "a".repeat(64) }, chooses_upload_at_start: true });
+        // The retry stops before it applies anything, so app stays on the second upload.
+        yield* Effect.promise(() => store.abandonDeployment(retried, "cloud-retry"));
+        let extracted: string | undefined;
+        const runDeployment = store.runDeployment.bind(store);
+        const handed = vi.spyOn(store, "runDeployment").mockImplementation(async (...args: Parameters<typeof runDeployment>) => {
+          const upload = args[4]?.upload;
+          extracted = upload === undefined ? undefined : await readFile(path.join(upload, "Dockerfile"), "utf8");
+          return runDeployment(...args);
+        });
+        yield* run(settingsOnly);
+        handed.mockRestore();
+        assert.strictEqual(extracted, "FROM scratch\nLABEL upload=b\n", "Cloud extracts the upload the Deployment claimed");
+        const ran = yield* Effect.promise(() => store.read(organizationId, { query: "deployment", id: settingsOnly }));
+        assert.strictEqual(ran.upload?.digest, "b".repeat(64));
+        assert.isUndefined(ran.chooses_upload_at_start);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped),
   60_000,

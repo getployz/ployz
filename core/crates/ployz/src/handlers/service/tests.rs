@@ -67,7 +67,7 @@ fn stop_options_are_only_read_for_stop_actions() {
 
     for (command, actions) in [
         ("stop", &[ContainerAction::Stop][..]),
-        ("restart", &[ContainerAction::Stop, ContainerAction::Start]),
+        ("restart", &[ContainerAction::Restart]),
     ] {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "service", command, "api"])
@@ -80,7 +80,7 @@ fn stop_options_are_only_read_for_stop_actions() {
 }
 
 #[test]
-fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
+fn ps_names_servers_and_shows_container_ids_on_every_row_once_two_rows_read_the_same() {
     let running = || ContainerRuntimeObservation::Running {
         health: HealthObservation::NotConfigured,
     };
@@ -95,7 +95,7 @@ fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
     let name = MachineName::parse("machine-1").unwrap();
     let names = HashMap::from([(MachineId::parse("b".repeat(32)).unwrap(), &name)]);
     let mut out = Vec::new();
-    process_table(&containers, true, &names, &HashSet::new())
+    process_table(&containers, Some(&scoped(&[])), &names, &HashSet::new())
         .write(&mut out, false)
         .unwrap();
     assert_eq!(
@@ -104,15 +104,20 @@ fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
             "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\n\
              web\tservice\tmachine-1\trunning\taaaaaaaaaaaa\n\
              web\tservice\tmachine-1\trunning\tcccccccccccc\n\
-             api\tservice\t{}\trunning\t-\n",
+             api\tservice\t{}\trunning\tdddddddddddd\n",
             "e".repeat(12)
         )
     );
 
     let mut out = Vec::new();
-    process_table(&containers[1..], true, &names, &HashSet::new())
-        .write(&mut out, false)
-        .unwrap();
+    process_table(
+        &containers[1..],
+        Some(&scoped(&[])),
+        &names,
+        &HashSet::new(),
+    )
+    .write(&mut out, false)
+    .unwrap();
     assert_eq!(
         String::from_utf8(out).unwrap(),
         format!(
@@ -121,6 +126,33 @@ fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
              api\tservice\t{}\trunning\n",
             "e".repeat(12)
         )
+    );
+}
+
+#[test]
+fn ps_names_a_renamed_service_by_its_name_now_not_its_private_name() {
+    let running = || ContainerRuntimeObservation::Running {
+        health: HealthObservation::NotConfigured,
+    };
+    let box_ = ServiceContainer::try_from(observation('a', 'b', "box", running())).unwrap();
+    let web = ServiceContainer::try_from(observation('c', 'b', "web", running())).unwrap();
+    let containers = [ContainerRef::Service(&box_), ContainerRef::Service(&web)];
+    let name = MachineName::parse("machine-1").unwrap();
+    let names = HashMap::from([(MachineId::parse("b".repeat(32)).unwrap(), &name)]);
+    let mut out = Vec::new();
+    process_table(
+        &containers,
+        Some(&scoped(&[("box2", "box"), ("web", "web")])),
+        &names,
+        &HashSet::new(),
+    )
+    .write(&mut out, false)
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "SERVICE\tKIND\tSERVER\tSTATE\n\
+         box2\tservice\tmachine-1\trunning\n\
+         web\tservice\tmachine-1\trunning\n"
     );
 }
 
@@ -149,7 +181,7 @@ fn ps_folds_a_services_superseded_containers_into_one_draining_row() {
     };
     let render = |retiring: &HashSet<ContainerId>| {
         let mut out = Vec::new();
-        process_table(&containers, true, &names, retiring)
+        process_table(&containers, Some(&scoped(&[])), &names, retiring)
             .write(&mut out, false)
             .unwrap();
         let json = serde_json::to_value(process_rows(&containers, retiring)).unwrap();
@@ -243,6 +275,19 @@ fn hook_observation(
     observation
 }
 
+/// The `app` Namespace, with each Service's name now and its runtime name.
+fn scoped(services: &[(&str, &str)]) -> crate::handlers::operator::Scoped {
+    crate::handlers::operator::Scoped {
+        environment: ployz_store::EnvironmentName::parse("production").unwrap(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        services: services
+            .iter()
+            .map(|(name, runtime)| (name.parse().unwrap(), runtime.parse().unwrap()))
+            .collect(),
+        authored: None,
+    }
+}
+
 fn observation(
     id: char,
     machine: char,
@@ -301,6 +346,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
             error: error.clone(),
         }],
         partial: true,
+        interrupted: false,
     };
     assert_eq!(
         serde_json::to_value(outcome.result(&live)).unwrap(),
@@ -317,113 +363,153 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
     );
 }
 
-#[derive(Clone, Default)]
-struct SlowRow {
-    row: crate::serving_publish::tests::FakeRow,
-    reads: std::sync::Arc<std::sync::Mutex<u32>>,
-}
-
-impl PointerClient for SlowRow {
-    async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError> {
-        self.row.pointer_publisher().await
-    }
-
-    async fn read_pointer_at(
-        &mut self,
-        at: &mut MachineTarget,
-        service: &QualifiedService,
-    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
-        *self.reads.lock().unwrap() += 1;
-        tokio::time::sleep(crate::connect::TARGET_RPC_TIMEOUT).await;
-        self.row.read_pointer_at(at, service).await
-    }
-
-    async fn publish_pointer_at(
-        &mut self,
-        at: &mut MachineTarget,
-        request: ployz_core::PublishServingPointerRequest,
-    ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
-        self.row.publish_pointer_at(at, request).await
-    }
-}
-
-fn up_machine(hex: char) -> MachineObservation {
-    ployz_core::MachineObservation::new(
-        ployz_core::Machine {
-            labels: Default::default(),
-            accepts_builds: true,
-            accepts_services: true,
-            accepts_ingress: true,
-            id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
-            name: MachineName::parse(format!("machine-{hex}")).unwrap(),
-            subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
-                .parse()
-                .unwrap(),
-            public_key: ployz_core::WireGuardPublicKey([hex as u8; 32]),
-            public_ip: None,
-            advertised_endpoints: Vec::new(),
-            runtime: Default::default(),
-            build_concurrency: None,
-        },
-        ployz_core::MembershipObservation::Up,
-    )
-}
-
-async fn retiring_with_publisher(
-    reached: bool,
-) -> (HashSet<ContainerId>, u32, std::time::Duration) {
-    use crate::serving_publish::tests::pointer;
-    let machines = [up_machine('a'), up_machine('b')];
-    let running = ContainerRuntimeObservation::Running {
+#[test]
+fn out_running_copy_is_draining() {
+    let running = || ContainerRuntimeObservation::Running {
         health: HealthObservation::Healthy,
     };
-    let publisher = machines[0].machine.id;
-    let failures = if reached {
-        Vec::new()
-    } else {
-        vec![MachineFailure {
-            machine_id: publisher,
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "ployzd is down".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
-        }]
+    let copy = |id, rotation, runtime| {
+        let mut copy = observation(id, 'f', "api", runtime);
+        copy.try_update(|parts| parts.rotation = rotation).unwrap();
+        ServiceContainer::try_from(copy).unwrap()
     };
-    let live = derive_live_services(PartialResult {
+    let copies = [
+        copy('a', Some(CopyRotation::In), running()),
+        copy('b', Some(CopyRotation::Out), running()),
+        copy(
+            'c',
+            Some(CopyRotation::Out),
+            ContainerRuntimeObservation::Exited { code: 0 },
+        ),
+        copy('d', None, running()),
+    ];
+    let live = derive_live_services(PartialResult::<_, RpcError> {
         successes: vec![ployz_core::MachineSuccess {
-            machine_id: machines[1].machine.id,
-            value: vec![observation('b', 'b', "api", running)],
+            machine_id: MachineId::parse("f".repeat(32)).unwrap(),
+            value: copies
+                .iter()
+                .map(ServiceContainer::as_observation)
+                .cloned()
+                .collect(),
         }],
-        failures,
+        failures: Vec::new(),
         omissions: Vec::new(),
     });
     let services = live.services();
     let services = services.iter().collect::<Vec<_>>();
-    let client = SlowRow::default();
-    let (serving, retiring_ids) = (['c'], ['b']);
-    *client.row.row.lock().unwrap() = Some(pointer('d', &serving, &retiring_ids));
-    let started = tokio::time::Instant::now();
-    let ids = retiring(&client, &machines, &live.containers, &services).await;
-    let reads = *client.reads.lock().unwrap();
-    (ids, reads, started.elapsed())
-}
-
-#[tokio::test(start_paused = true)]
-async fn ps_does_not_reread_a_publisher_the_listing_could_not_reach() {
-    let (ids, reads, elapsed) = retiring_with_publisher(false).await;
-    assert!(ids.is_empty());
-    assert_eq!(reads, 0);
-    assert!(elapsed < crate::connect::TARGET_RPC_TIMEOUT, "{elapsed:?}");
-}
-
-#[tokio::test(start_paused = true)]
-async fn ps_reads_retiring_ids_from_a_reached_publisher() {
-    let (ids, reads, _) = retiring_with_publisher(true).await;
+    let retiring = retiring(&services);
+    let out = |id: char| ContainerId::parse(id.to_string().repeat(64)).unwrap();
+    assert_eq!(retiring, HashSet::from([out('b'), out('c')]));
+    let containers = copies.iter().map(ContainerRef::Service).collect::<Vec<_>>();
+    let draining = process_rows(&containers, &retiring)
+        .iter()
+        .filter(|row| row.draining)
+        .map(|row| row.container.container_id)
+        .collect::<Vec<_>>();
     assert_eq!(
-        ids,
-        HashSet::from([crate::serving_publish::tests::container('b')])
+        draining,
+        [out('b')],
+        "only an Out copy that still runs drains"
     );
-    assert_eq!(reads, 1);
+}
+
+fn changed(partial: bool) -> ServiceActionOutcome {
+    ServiceActionOutcome {
+        containers: Vec::new(),
+        container_failures: Vec::new(),
+        partial,
+        interrupted: false,
+    }
+}
+
+#[tokio::test]
+async fn a_lifecycle_cancelled_before_its_first_step_exits_cancelled() {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let outcome = run_batches(
+        &[()],
+        &[ContainerAction::Stop],
+        &cancellation,
+        |(), _| async { Ok(changed(false)) },
+    )
+    .await
+    .unwrap();
+    assert!(outcome.partial);
+    assert_eq!(cancelled_exit(&outcome), 130);
+}
+
+#[tokio::test]
+async fn a_lifecycle_cancelled_between_batches_exits_cancelled() {
+    let cancellation = CancellationToken::new();
+    let mut steps = 0;
+    let outcome = run_batches(
+        &[(), ()],
+        &[ContainerAction::Restart],
+        &cancellation,
+        |(), _| {
+            steps += 1;
+            cancellation.cancel();
+            async { Ok(changed(false)) }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(steps, 1);
+    assert!(outcome.partial);
+    assert_eq!(cancelled_exit(&outcome), 130);
+}
+
+/// Ctrl-C during the last step ends no later step, but it still ends the command as cancelled.
+#[tokio::test]
+async fn a_lifecycle_cancelled_during_its_last_step_exits_cancelled() {
+    let cancellation = CancellationToken::new();
+    let outcome = run_batches(
+        &[()],
+        &[ContainerAction::Restart],
+        &cancellation,
+        |(), _| {
+            cancellation.cancel();
+            async { Ok(changed(true)) }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(cancelled_exit(&outcome), 130);
+}
+
+fn cancelled_exit(outcome: &ServiceActionOutcome) -> u8 {
+    crate::ui::after_result(&outcome.finish().unwrap_err())
+}
+
+/// `apply_service_action` marks a step partial for each copy it could not restart,
+/// or left Held or unrouted. One such step among later successes still exits partial.
+#[tokio::test]
+async fn a_restart_that_fails_a_copy_exits_partial() {
+    let failed = || ServiceActionOutcome {
+        container_failures: vec![ContainerFailure {
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            container_id: ContainerId::parse("c".repeat(64)).unwrap(),
+            error: RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "Container c is left Held and not routed".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }],
+        ..changed(true)
+    };
+    let mut steps = vec![failed(), changed(false), changed(false)].into_iter();
+    let outcome = run_batches(
+        &[(), (), ()],
+        &[ContainerAction::Restart],
+        &CancellationToken::new(),
+        |(), _| {
+            let step = steps.next().unwrap();
+            async { Ok(step) }
+        },
+    )
+    .await
+    .unwrap();
+    let error = outcome.finish().unwrap_err();
+    assert_eq!(error.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
 }

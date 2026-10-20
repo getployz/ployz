@@ -15,6 +15,7 @@ use ployzd::faults::{Identity, Want};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     process::{Child, Command},
+    time::Instant,
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
 
@@ -45,14 +46,34 @@ pub(super) const STOP_DEADLINE: Duration = Duration::from_secs(30);
 /// its tasks has a `zfs` child alive, whatever was forgotten or spawned since: that
 /// child can still write the slot or hold it busy, and only the entry lets the departure
 /// wait for it or name it.
-#[derive(Clone, Default)]
-pub(super) struct Receives(Arc<Mutex<BTreeMap<String, ReceiveTask>>>);
+#[derive(Clone)]
+pub(super) struct Receives {
+    tasks: Arc<Mutex<BTreeMap<String, ReceiveTask>>>,
+    /// How long a failure waits for the children its task dropped. One still alive after
+    /// the departure's own deadline for a stop is stuck, not writing.
+    hold: Duration,
+}
+
+impl Default for Receives {
+    fn default() -> Self {
+        Self {
+            tasks: Arc::default(),
+            hold: STOP_DEADLINE,
+        }
+    }
+}
 
 #[derive(Default)]
 struct ReceiveTask {
     /// The latest task's outcome, until it is forgotten or replaced.
-    outcome: Arc<Mutex<Option<Result<(), String>>>>,
+    outcome: Arc<Mutex<Option<Outcome>>>,
     lives: Vec<Life>,
+}
+
+#[derive(Clone)]
+struct Outcome {
+    at: Instant,
+    result: Result<(), String>,
 }
 
 /// One task's stop signal and its finish, which fires once the task returned and every
@@ -92,28 +113,40 @@ impl Stop {
 }
 
 impl Receives {
+    #[cfg(test)]
+    pub(super) fn holding(hold: Duration) -> Self {
+        Self {
+            hold,
+            ..Self::default()
+        }
+    }
+
     /// Whether a task of `name` has not finished, including one that answered but still
     /// waits for a child it dropped to exit.
     pub(super) fn running(&self, name: &DockerVolumeName) -> bool {
-        self.0
+        self.tasks
             .lock()
             .expect("receive registry is not poisoned")
             .get(&name.0)
             .is_some_and(ReceiveTask::running)
     }
 
+    /// The failure of `name`'s task once it has finished. A task that answered still runs
+    /// until the children it dropped exit, and those can still change the slot, so the
+    /// failure waits for them, but only for the hold.
     pub(super) fn failure(&self, name: &DockerVolumeName) -> Option<String> {
-        self.0
-            .lock()
-            .expect("receive registry is not poisoned")
-            .get(&name.0)
-            .and_then(|task| task.outcome.lock().expect("outcome lock").clone())
-            .and_then(Result::err)
+        let tasks = self.tasks.lock().expect("receive registry is not poisoned");
+        let task = tasks.get(&name.0)?;
+        let outcome = task.outcome.lock().expect("outcome lock").clone()?;
+        if task.running() && outcome.at.elapsed() < self.hold {
+            return None;
+        }
+        outcome.result.err()
     }
 
     /// Drops `name`'s outcome, and its entry once no task of it has a child alive.
     pub(super) fn forget(&self, name: &DockerVolumeName) {
-        let mut tasks = self.0.lock().expect("receive registry is not poisoned");
+        let mut tasks = self.tasks.lock().expect("receive registry is not poisoned");
         let Some(task) = tasks.get_mut(&name.0) else {
             return;
         };
@@ -142,7 +175,7 @@ impl Receives {
         let held = stop.clone();
         let work = work(stop);
         let outcome = {
-            let mut tasks = self.0.lock().expect("receive registry is not poisoned");
+            let mut tasks = self.tasks.lock().expect("receive registry is not poisoned");
             let task = tasks.entry(name.0.clone()).or_default();
             task.lives.retain(|life| !life.finished.is_cancelled());
             task.lives.push(life);
@@ -155,7 +188,10 @@ impl Receives {
                 .catch_unwind()
                 .await
                 .unwrap_or_else(|_| Err("the receive task panicked".to_owned()));
-            *outcome.lock().expect("outcome lock") = Some(result);
+            *outcome.lock().expect("outcome lock") = Some(Outcome {
+                at: Instant::now(),
+                result,
+            });
         });
     }
 
@@ -164,7 +200,7 @@ impl Receives {
     /// the names with a task still running once `deadline` passes.
     pub(super) async fn stop_all(&self, deadline: Duration) -> Vec<String> {
         let finished: Vec<(String, Vec<CancellationToken>)> = self
-            .0
+            .tasks
             .lock()
             .expect("receive registry is not poisoned")
             .iter()
@@ -180,7 +216,7 @@ impl Receives {
                 (name.clone(), finished)
             })
             .collect();
-        let deadline = tokio::time::Instant::now() + deadline;
+        let deadline = Instant::now() + deadline;
         let mut stuck = Vec::new();
         for (name, finished) in finished {
             for finished in finished {
@@ -410,30 +446,12 @@ impl VolumeStorage {
         Ok(())
     }
 
-    pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
-        let refquota = format!("refquota={bound}");
-        for property in ["readonly=on", &refquota] {
-            self.zfs(&["set", property, fs])
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        self.verify_copy(fs, bound).await
-    }
-
     /// The copy is read-only and carries the slot's bound, whatever the stream said.
-    /// `-p` keeps the bound in bytes; `zfs get` rounds it to `3G` otherwise.
-    async fn verify_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
-        for (property, expected) in [("readonly", "on"), ("refquota", bound.to_string().as_str())] {
-            let actual = self
-                .zfs(&["get", "-Hp", "-o", "value", property, fs])
+    pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
+        for (property, value) in [("readonly", "on"), ("refquota", bound.to_string().as_str())] {
+            self.set_verified(fs, property, value)
                 .await
                 .map_err(|error| error.to_string())?;
-            let actual = actual.trim_end_matches('\n');
-            if actual != expected {
-                return Err(format!(
-                    "{fs} has {property}={actual} after the receive; expected {expected}"
-                ));
-            }
         }
         Ok(())
     }

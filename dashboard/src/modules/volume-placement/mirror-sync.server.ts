@@ -1,13 +1,15 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef, MachineId, Snapshot, VolumeCopy } from "@ployz/sdk";
+import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
+import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
+import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
-import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
+import { askCopy, type CopyAnswer, DRAIN_MS, type MachineRef, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -23,7 +25,9 @@ export type MirrorStep =
   | { readonly kind: "handed_off"; readonly mirror: string; readonly target: string }
   | { readonly kind: "pulling"; readonly mirror: string; readonly target: string }
   | { readonly kind: "current"; readonly mirror: string; readonly snapshot: string }
-  | { readonly kind: "refused"; readonly mirror: string; readonly message: string };
+  | { readonly kind: "refused"; readonly mirror: string; readonly message: string }
+  | { readonly kind: "unknown"; readonly server: string }
+  | { readonly kind: "unasked"; readonly server: string; readonly why: string };
 
 /** What one sync of one Volume did. A sync never opens a lane except to demote a primary that came back. */
 export type MirrorSync =
@@ -36,6 +40,9 @@ export type MirrorSync =
   | { readonly kind: "cutting"; readonly server: string }
   | { readonly kind: "demoting"; readonly run: string }
   | { readonly kind: "refused"; readonly message: string }
+  | { readonly kind: "unknown"; readonly server: string }
+  | { readonly kind: "unasked"; readonly server: string; readonly why: string }
+  | { readonly kind: "failed" }
   | { readonly kind: "synced"; readonly mirrors: readonly MirrorStep[] };
 
 export type PullFailure = { readonly mirror: string; readonly target: string; readonly failure: string };
@@ -48,17 +55,26 @@ export type CopyAsk = typeof askCopy;
 type Slot = Extract<VolumeCopy, { kind: "slot" }>;
 type SlotMember = AnsweredMember & { readonly view: { readonly copy: Slot } };
 
-/** A mirror's answer, or why it couldn't be asked: that mirror skips the round and the others still get theirs. */
-type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached"; readonly copy: null; readonly message: string };
+/**
+ * A Server's answer, or why it couldn't be asked: a mirror skips the round and the others still get theirs. A request
+ * whose reply never came back is `unanswered`: the Server may have taken it. One never sent is `unasked`, its message
+ * saying why: the sync's Cluster time ran out, after which every later request is, or its session didn't open.
+ */
+type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached" | "unanswered" | "unasked"; readonly copy: null; readonly message: string };
 
 const isSlot = (member: Member): member is SlotMember => member.answered && member.view.copy?.kind === "slot";
 const pullingTo = (copy: Slot) => copy.pull !== null && copy.pull.failure === null ? copy.pull.target : null;
 
+export const failureLines = (reported: readonly PullFailure[]) =>
+  reported.map(({ mirror, target, failure }) => `${mirror} could not receive ${target}: ${failure}`);
+
 /** One line per thing the sync did or did not do, for the log and for whoever asked. */
 export function syncLines(name: string, { reported, sync }: Omit<MirrorSyncAnswer, "lines">): string[] {
-  const failures = reported.map(({ mirror, target, failure }) => `${mirror} could not receive ${target}: ${failure}`);
-  return [...failures, ...outcomeLines(name, sync)];
+  return [...failureLines(reported), ...outcomeLines(name, sync)];
 }
+
+const mayHaveReached = (name: string, server: string) =>
+  `${server} didn't answer in time, so ${name}'s sync may have reached it; volume sync ${name} again says where its mirrors got to`;
 
 function outcomeLines(name: string, sync: MirrorSync): string[] {
   switch (sync.kind) {
@@ -82,6 +98,12 @@ function outcomeLines(name: string, sync: MirrorSync): string[] {
       return [`${name} has two primaries; run ${sync.run} makes the older one read-only`];
     case "refused":
       return [`skipped ${name}: ${sync.message}`];
+    case "unknown":
+      return [mayHaveReached(name, sync.server)];
+    case "unasked":
+      return [`skipped ${name}, ${sync.why} before asking ${sync.server} for a snapshot`];
+    case "failed":
+      return [`${name}'s sync failed before it finished; volume sync ${name} tries again`];
     case "synced":
       return sync.mirrors.map((step) => {
         switch (step.kind) {
@@ -93,6 +115,10 @@ function outcomeLines(name: string, sync: MirrorSync): string[] {
             return `${step.mirror} already holds ${step.snapshot}`;
           case "refused":
             return `${step.mirror} refused the pull: ${step.message}`;
+          case "unknown":
+            return mayHaveReached(name, step.server);
+          case "unasked":
+            return `didn't ask ${step.server} to pull ${name}, ${step.why}`;
         }
       });
   }
@@ -165,118 +191,139 @@ const snapshotRound = Effect.fn("MirrorSync.snapshotRound")(function* () {
 
 /**
  * The one mirror sync: the 15-minute cron, a user's sync and Refresh now, and the refresh after a Deploy all run it.
- * It reports each failed pull once, before anything else, so an open lane never hides one. With a lane open it says
- * why it does nothing. Otherwise it snapshots the writer and hands each idle mirror the pull, without waiting for it.
+ * It reports each failed pull once, before anything else, so neither an open lane nor a failure later in the sync hides
+ * one. With a lane open it says why it does nothing. Otherwise it snapshots the writer and hands each idle mirror the
+ * pull, without waiting for it.
  */
 const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string, volume: SyncedVolume, observe: MemberObserver, ask: CopyAsk) {
   const { drizzle } = yield* Database;
   const answer = answerFor(organizationId, volume);
-
-  const members = yield* observe(organizationId, volume.dockerVolume);
-  const [placement] = yield* drizzle.select().from(volumePlacement)
-    .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.volumeId, volume.volumeId)));
-  const slots = members.filter(isSlot);
-  const mirrorIds = placement?.mirrors ?? slots.map((member) => member.machine.id);
-  const mirrors = slots.filter((member) => mirrorIds.includes(member.machine.id));
-
-  const statuses = mirrors.length === 0 ? [] : yield* drizzle.select().from(volumeMirrorStatus).where(and(
-    eq(volumeMirrorStatus.volumeId, volume.volumeId),
-    inArray(volumeMirrorStatus.machineId, mirrors.map((member) => member.machine.id)),
-  ));
   const reported: PullFailure[] = [];
-  for (const member of mirrors) {
-    const { pull } = member.view.copy;
-    if (pull?.failure == null) continue;
-    const status = statuses.find((row) => row.machineId === member.machine.id);
-    if (status?.failedSnapshot === pull.target && status.failure === pull.failure) continue;
-    yield* recordFailure(organizationId, volume.volumeId, member.machine.id, pull.target, pull.failure);
-    reported.push({ mirror: copyName(volume.name, member.machine.name), target: pull.target, failure: pull.failure });
-  }
+  return yield* Effect.gen(function* () {
+    const members = yield* observe(organizationId, volume.dockerVolume);
+    const [placement] = yield* drizzle.select().from(volumePlacement)
+      .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.volumeId, volume.volumeId)));
+    const mirrors = members.filter(isSlot).filter((member) => slotRole(member.view.copy) === "mirror");
 
-  // Read before the lane check, so a lane opened after that check carries a higher gen and fences this sync.
-  const gen = yield* newestGen(volume.volumeId);
-  const [lane] = yield* drizzle.select({ id: volumeRun.id, kind: volumeRun.kind }).from(volumeRun)
-    .where(and(eq(volumeRun.volumeId, volume.volumeId), inArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES]))).limit(1);
-  if (lane !== undefined) return yield* answer(reported, { kind: "covered", run: lane });
-  const claim = yield* deployClaim(organizationId, placement);
-  if (claim !== null) return yield* answer(reported, { kind: "deploying", message: claim.message });
+    const statuses = mirrors.length === 0 ? [] : yield* drizzle.select().from(volumeMirrorStatus).where(and(
+      eq(volumeMirrorStatus.volumeId, volume.volumeId),
+      inArray(volumeMirrorStatus.machineId, mirrors.map((member) => member.machine.id)),
+    ));
+    for (const member of mirrors) {
+      const { pull } = member.view.copy;
+      if (pull?.failure == null) continue;
+      const status = statuses.find((row) => row.machineId === member.machine.id);
+      if (status?.failedSnapshot === pull.target && status.failure === pull.failure) continue;
+      yield* recordFailure(organizationId, volume.volumeId, member.machine.id, pull.target, pull.failure);
+      reported.push({ mirror: copyName(volume.name, member.machine.name), target: pull.target, failure: pull.failure });
+    }
 
-  const silent = members.flatMap((member) => member.answered ? [] : [member.machine.name]);
-  if (silent.length > 0) return yield* answer(reported, { kind: "unanswered", servers: silent });
-  const answered = members.filter((member): member is AnsweredMember => member.answered);
-  const roots = answered.filter((member) => roleOf(member) === "writer" || roleOf(member) === "cutting");
-  if (roots.length > 1) {
-    const demote = yield* requestVolumeRun({ userId: null, organizationId }, {
-      volumeId: volume.volumeId, environment: volume.environment, kind: "sync", args: { full: false },
-    });
-    return yield* answer(reported, demote.ok ? { kind: "demoting", run: demote.run.id } : { kind: "refused", message: demote.refusal.message });
-  }
-  if (mirrors.length === 0) return yield* answer(reported, { kind: "no_mirror" });
-  const [writer] = roots;
-  if (writer?.view.copy?.kind !== "root") return yield* answer(reported, { kind: "no_writer" });
-  if (roleOf(writer) === "cutting") return yield* answer(reported, { kind: "cutting", server: writer.machine.name });
-  const epoch = writer.view.copy.epoch;
+    // Read before the lane check, so a lane opened after that check carries a higher gen and fences this sync.
+    const gen = yield* newestGen(volume.volumeId);
+    const [lane] = yield* drizzle.select({ id: volumeRun.id, kind: volumeRun.kind }).from(volumeRun)
+      .where(and(eq(volumeRun.volumeId, volume.volumeId), inArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES]))).limit(1);
+    if (lane !== undefined) return yield* answer(reported, { kind: "covered", run: lane });
+    const claim = yield* deployClaim(organizationId, placement);
+    if (claim !== null) return yield* answer(reported, { kind: "deploying", message: claim.message });
 
-  const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
-  const steps: MirrorStep[] = [];
-  const named = (member: Member) => copyName(volume.name, member.machine.name);
-  const pull = (member: SlotMember, copy: Slot, target: string) =>
-    ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }).pipe(
+    const silent = members.flatMap((member) => member.answered ? [] : [member.machine.name]);
+    if (silent.length > 0) return yield* answer(reported, { kind: "unanswered", servers: silent });
+    const answered = members.filter((member): member is AnsweredMember => member.answered);
+    const roots = answered.filter((member) => roleOf(member) === "writer" || roleOf(member) === "cutting");
+    if (roots.length > 1) {
+      const demote = yield* requestVolumeRun({ userId: null, organizationId }, {
+        volumeId: volume.volumeId, environment: volume.environment, kind: "sync", args: { full: false },
+      });
+      return yield* answer(reported, demote.ok ? { kind: "demoting", run: demote.run.id } : { kind: "refused", message: demote.refusal.message });
+    }
+    if (mirrors.length === 0) return yield* answer(reported, { kind: "no_mirror" });
+    const [writer] = roots;
+    if (writer?.view.copy?.kind !== "root") return yield* answer(reported, { kind: "no_writer" });
+    if (roleOf(writer) === "cutting") return yield* answer(reported, { kind: "cutting", server: writer.machine.name });
+    const epoch = writer.view.copy.epoch;
+
+    const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
+    const steps: MirrorStep[] = [];
+    const named = (member: Member) => copyName(volume.name, member.machine.name);
+    const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) => ask(asker, machine, expect, want).pipe(
+      Effect.catchIf(
+        (error) => error instanceof ClusterOutOfTime,
+        (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.inFlight ? "unanswered" : "unasked", copy: null, message: "the sync ran out of time" }),
+      ),
       Effect.catchIf(
         (error) => error instanceof SwitchAttemptError,
-        (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: "unreached", copy: null, message: error.message }),
+        (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.unanswered ? "unanswered" : "unreached", copy: null, message: error.message }),
       ),
+      Effect.catch((error) => Effect.logWarning(`could not open a session to ask ${machine.name}`, { organizationId, volumeId: volume.volumeId, error }).pipe(
+        Effect.as<MirrorAnswer>({ ok: false, reason: "unasked", copy: null, message: "Cloud couldn't reach the Cluster" }),
+      )),
     );
+    const pull = (member: SlotMember, copy: Slot, target: string) =>
+      setCopy(member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS });
 
-  // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
-  const busy: MirrorStep[] = [];
-  const idle: { readonly member: SlotMember; readonly copy: Slot }[] = [];
-  for (const member of mirrors) {
-    const { copy } = member.view;
-    const target = pullingTo(copy);
-    if (target === null) {
-      idle.push({ member, copy });
-      continue;
-    }
-    const resent = yield* pull(member, copy, target);
-    if (resent.ok && resent.copy?.kind === "slot" && resent.copy.pull === null) idle.push({ member, copy: resent.copy });
-    else if (resent.ok || resent.reason === "busy") busy.push({ kind: "pulling", mirror: named(member), target });
-    else busy.push({ kind: "refused", mirror: named(member), message: resent.message });
-  }
-  // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
-  if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
-
-  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
-  if (!snapshot.ok) return yield* answer(reported, { kind: "refused", message: snapshot.message });
-  const target: Snapshot | null = snapshot.copy?.newest ?? null;
-  if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
-
-  for (const { member, copy } of idle) {
-    if (copy.pull === null && copy.newest?.guid === target.guid) {
-      yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, target, true);
-      steps.push({ kind: "current", mirror: named(member), snapshot: target.name });
-      continue;
-    }
-    if (copy.pull === null && copy.newest !== null) {
-      const status = statuses.find((row) => row.machineId === member.machine.id);
-      if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest, false);
-    }
-    const handed = yield* pull(member, copy, target.name);
-    const pulling = handed.copy?.kind === "slot" ? pullingTo(handed.copy) : null;
-    if (handed.ok) {
-      steps.push({ kind: "handed_off", mirror: named(member), target: target.name });
-    } else if (handed.reason === "busy" || pulling !== null) {
-      steps.push({ kind: "pulling", mirror: named(member), target: pulling ?? target.name });
-    } else {
-      // A refused hand-off starts no pull, so no pull failure would ever say why this mirror skipped. A stale or mismatch
-      // refusal is a newer run moving the copy since this one observed it, not the mirror skipping.
-      if (handed.reason !== "stale" && handed.reason !== "mismatch") {
-        yield* recordFailure(organizationId, volume.volumeId, member.machine.id, target.name, handed.message);
+    // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
+    const busy: MirrorStep[] = [];
+    const idle: { readonly member: SlotMember; readonly copy: Slot }[] = [];
+    for (const member of mirrors) {
+      const { copy } = member.view;
+      const target = pullingTo(copy);
+      if (target === null) {
+        idle.push({ member, copy });
+        continue;
       }
-      steps.push({ kind: "refused", mirror: named(member), message: handed.message });
+      const resent = yield* pull(member, copy, target);
+      if (resent.ok && resent.copy?.kind === "slot" && resent.copy.pull === null) idle.push({ member, copy: resent.copy });
+      else if (resent.ok || resent.reason === "busy") busy.push({ kind: "pulling", mirror: named(member), target });
+      else if (resent.reason === "unanswered") busy.push({ kind: "unknown", server: member.machine.name });
+      else if (resent.reason === "unasked") busy.push({ kind: "unasked", server: member.machine.name, why: resent.message });
+      else busy.push({ kind: "refused", mirror: named(member), message: resent.message });
     }
-  }
-  return yield* answer(reported, { kind: "synced", mirrors: steps });
+    // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
+    if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
+
+    const snapshot = yield* setCopy(writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
+    if (!snapshot.ok) {
+      const server = writer.machine.name;
+      if (snapshot.reason === "unanswered") return yield* answer(reported, { kind: "unknown", server });
+      if (snapshot.reason === "unasked") return yield* answer(reported, { kind: "unasked", server, why: snapshot.message });
+      return yield* answer(reported, { kind: "refused", message: snapshot.message });
+    }
+    const target: Snapshot | null = snapshot.copy?.newest ?? null;
+    if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
+
+    for (const { member, copy } of idle) {
+      if (copy.pull === null && copy.newest?.guid === target.guid) {
+        yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, target, true);
+        steps.push({ kind: "current", mirror: named(member), snapshot: target.name });
+        continue;
+      }
+      if (copy.pull === null && copy.newest !== null) {
+        const status = statuses.find((row) => row.machineId === member.machine.id);
+        if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest, false);
+      }
+      const handed = yield* pull(member, copy, target.name);
+      const pulling = handed.copy?.kind === "slot" ? pullingTo(handed.copy) : null;
+      if (handed.ok) {
+        steps.push({ kind: "handed_off", mirror: named(member), target: target.name });
+      } else if (handed.reason === "busy" || pulling !== null) {
+        steps.push({ kind: "pulling", mirror: named(member), target: pulling ?? target.name });
+      } else if (handed.reason === "unanswered") {
+        steps.push({ kind: "unknown", server: member.machine.name });
+      } else if (handed.reason === "unasked") {
+        steps.push({ kind: "unasked", server: member.machine.name, why: handed.message });
+      } else {
+        // A refused hand-off starts no pull, so no pull failure would ever say why this mirror skipped. A stale or mismatch
+        // refusal is a newer run moving the copy since this one observed it, not the mirror skipping.
+        if (handed.reason !== "stale" && handed.reason !== "mismatch") {
+          yield* recordFailure(organizationId, volume.volumeId, member.machine.id, target.name, handed.message);
+        }
+        steps.push({ kind: "refused", mirror: named(member), message: handed.message });
+      }
+    }
+    return yield* answer(reported, { kind: "synced", mirrors: steps });
+  }).pipe(Effect.catch((error) => Effect.logWarning(`${volume.name}'s sync failed`, { organizationId, volumeId: volume.volumeId, error }).pipe(
+    Effect.andThen(answer(reported, { kind: "failed" })),
+  )));
 });
 
 /** Whether Volume `volumeId`'s sync lock was free, now held: false while another sync of it runs. */

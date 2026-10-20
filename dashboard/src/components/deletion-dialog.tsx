@@ -18,7 +18,9 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
+import { useMinute } from "#/hooks/use-minute";
 import { toErrorMessage } from "#/lib/error-message";
+import { lossMoment } from "#/modules/volume-placement/volume-placement";
 
 /** One thing a deletion takes with it, drawn with its canvas icon. */
 export type DeletionItem = {
@@ -30,6 +32,8 @@ export type DeletionItem = {
   bytes?: number;
   /** Muted text after the name, such as the server a volume is on. */
   detail?: string;
+  /** Changes after this are lost: a restore point, dated when it isn't from today, as the clock moves. */
+  lostAfter?: Date;
 };
 
 /** What the servers reported, and the evidence confirming exactly that takes. */
@@ -50,6 +54,8 @@ export type DeletionDialogProps<Evidence> = {
   /** Where it all is, and what the user types to confirm: "shop/staging". */
   place: string;
   confirmLabel: string;
+  /** The button while the deletion runs, such as "Removing". Defaults to `confirmLabel`. */
+  pendingLabel?: string;
   /** What Cloud knows goes, shown while the servers are asked; the servers' additions to it are new. None for a list only
    *  the servers know, such as a server's volumes. */
   items?: readonly DeletionItem[];
@@ -68,7 +74,7 @@ type Check<Evidence> = { status: "checking" } | { status: "ready"; evidence: Evi
 
 const FAILED = "Something went wrong. Try again.";
 
-function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel, items: known, sentence, callbacks }:
+function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel, pendingLabel = confirmLabel, items: known, sentence, callbacks }:
   Omit<DeletionDialogProps<Evidence>, "open">) {
   const inputId = useId();
   const [typed, setTyped] = useState("");
@@ -126,7 +132,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
   return (
     <AlertDialog open onOpenChange={onOpenChange}>
       <AlertDialogContent
-        render={<form onSubmit={(event) => { event.preventDefault(); void confirm(); }} />}
+        render={<form aria-busy={pending} onSubmit={(event) => { event.preventDefault(); void confirm(); }} />}
         className="sm:max-w-md"
       >
         <AlertDialogHeader>
@@ -170,7 +176,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
           <AlertDialogCancel type="button" disabled={pending}>Cancel</AlertDialogCancel>
           <AlertDialogAction type="submit" variant="destructive" disabled={check.status !== "ready" || typed !== place || pending}>
             {pending ? <Spinner data-icon="inline-start" /> : null}
-            {confirmLabel}
+            {pending ? pendingLabel : confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -188,7 +194,7 @@ const KIND_ICON = {
 } satisfies Record<DeletionItem["kind"], ReactNode>;
 
 export function deletionItemKey(item: DeletionItem) {
-  return `${item.kind}\0${item.name}\0${item.detail ?? ""}`;
+  return `${item.kind}\0${item.name}\0${item.detail ?? ""}\0${item.lostAfter?.getTime() ?? ""}`;
 }
 
 export type DeletionRow =
@@ -267,10 +273,16 @@ function ItemRow({ item, isNew }: { item: DeletionItem; isNew: boolean }) {
       <span className="flex text-muted-foreground [&_svg]:size-4">{item.icon ?? KIND_ICON[item.kind]}</span>
       <span className="min-w-0 flex-1 truncate font-mono">{item.name}</span>
       {isNew ? <Badge variant="outline" className="border-warning-border bg-warning-soft text-warning-foreground">New</Badge> : null}
-      {item.detail ? <span className="text-muted-foreground">{item.detail}</span> : null}
+      {item.lostAfter ? <LostAfter detail={item.detail} at={item.lostAfter} />
+        : item.detail ? <span className="text-muted-foreground">{item.detail}</span> : null}
       {item.bytes !== undefined ? <span className="font-mono text-muted-foreground">{formatBytes(item.bytes)}</span> : null}
     </li>
   );
+}
+
+function LostAfter({ detail, at }: { detail: string | undefined; at: Date }) {
+  const now = useMinute() ?? new Date();
+  return <span className="text-muted-foreground">{[detail, `changes after ${lossMoment(at, now)}`].filter(Boolean).join(" · ")}</span>;
 }
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;

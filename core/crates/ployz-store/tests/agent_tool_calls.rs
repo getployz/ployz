@@ -743,11 +743,16 @@ fn a_deploy_with_no_servers_says_nothing_deployed_and_leaves_the_change_staged()
     assert_eq!(refused.fix(), Some(Fix::ConnectServers));
     assert_eq!(
         refused.message,
-        "This Organization has no servers yet, so nothing deployed. Add one from a terminal, then deploy again."
+        "This Organization has no servers yet, so nothing deployed. Add one, then deploy again."
     );
     let review = call(&store, "review", json!({}), "review-1").ok();
     assert_eq!(review.get("saved"), Some(&Value::Null), "nothing was saved");
-    assert_eq!(review["staged"], 1, "the change stays Staged");
+    // The new Service and the image it runs.
+    assert_eq!(review["staged"], 2, "the change stays Staged");
+    assert_eq!(
+        review["lines"],
+        json!(["create service web", "  set web.image = \"traefik/whoami\""])
+    );
 }
 
 #[test]
@@ -1142,6 +1147,7 @@ fn with_volume() -> ConfigStore {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("pgdata").unwrap(),
@@ -1417,7 +1423,7 @@ fn a_name_checked_in_an_organization_with_no_servers_says_there_are_none() {
     let empty = "This Organization has no servers yet. Add one from a terminal; staging still works without one.";
     let mut cloud = |cloud: Cloud| match cloud {
         Cloud::Ask(CloudQuery::Servers { .. }) => Err(serde_json::from_value::<RpcError>(json!({
-            "code": "unavailable",
+            "code": "conflict",
             "message": empty,
             "details": { "fix": { "fix": "connect_servers" } },
         }))
@@ -1436,7 +1442,7 @@ fn a_name_checked_in_an_organization_with_no_servers_says_there_are_none() {
     )
     .refused();
 
-    assert_eq!(named.code.as_str(), "unavailable");
+    assert_eq!(named.code.as_str(), "conflict");
     assert_eq!(named.message, empty);
 }
 
@@ -2195,6 +2201,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),
@@ -2212,6 +2219,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
             &who(),
             &CreateVolume {
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("cache").unwrap(),
@@ -2281,6 +2289,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
                 name: docker(5),
             }],
             unanswered: Vec::new(),
+            failure: None,
         }),
         approval: ployz_store::Approval::Required,
         asks: ployz_store::Asks::EveryDeploy,
@@ -3254,6 +3263,25 @@ fn an_unknown_environment_lists_the_real_ones_instead_of_creating_it() {
         refusal.next,
         vec![Call::new("environment_show", json!({ "project": "shop" }))]
     );
+}
+
+#[test]
+fn an_unknown_project_points_at_the_read_that_lists_the_real_ones() {
+    let store = shop();
+    let refusal = call(
+        &store,
+        "project_remove",
+        json!({ "project": "nope" }),
+        "call-1",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.writes, Writes::None);
+    assert_eq!(
+        refusal.retry,
+        Call::new("project_remove", json!({ "project": "nope" }))
+    );
+    assert_eq!(refusal.next, vec![Call::new("environment_show", json!({}))]);
 }
 
 #[test]

@@ -4,6 +4,7 @@ use std::{
 };
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 
 use chrono::{DateTime, Local, SecondsFormat, Utc};
 use clap::{Arg, ArgAction, Command};
@@ -13,7 +14,8 @@ use futures_util::StreamExt;
 use ployz_core::{
     ContainerId, ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame,
     FanoutSelector, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
-    LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector, log_level, select_service,
+    LogOrigin, LogsOptions, Namespace, OpaquePayload, RpcErrorCode, ServiceSelector, log_level,
+    select_service,
 };
 use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
@@ -25,7 +27,7 @@ use crate::{
     context::Transport,
     operator::{
         ExecMode, OperatorError, PreparedHistory, ProxyPorts, ServiceArg, asked_machines,
-        exec_options,
+        exec_container_stopped, exec_options,
         history::{HistoryEvent, HistoryRecord, HistoryWindow, read_history},
         history_selectors, merge_logs, observe_service_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
@@ -41,7 +43,9 @@ use super::{
 
 pub(super) fn exec_command(command: Command) -> Command {
     scoped(base(command, "Run a command in a Service's container"))
-        .arg(value("container", None))
+        .arg(value("container", None).value_name("CONTAINER").help(
+            "Which of the Service's Containers, by name or ID prefix [default: a running one]",
+        ))
         .arg(switch("detach", Some('d')))
         .arg(switch("no-tty", Some('T')))
         .arg(positional("service", true))
@@ -80,6 +84,82 @@ pub(super) fn ps_command(command: Command) -> Command {
         value("sort", None)
             .default_value("service")
             .value_parser(["service", "machine", "health"]),
+    )
+}
+
+/// Flags other tools take for a container ID column. `ps` shows one only where two rows
+/// would read the same, so an ask for it names where every ID is instead.
+const CONTAINER_COLUMN_ASKS: [&str; 11] = [
+    "--container",
+    "--containers",
+    "--wide",
+    "-w",
+    "--output",
+    "-o",
+    "--format",
+    "--columns",
+    "--no-trunc",
+    "--quiet",
+    "-q",
+];
+
+/// `error` for `ployz ps` asked for a CONTAINER column, rewritten to say where the IDs are.
+/// clap's partial parse of `args` names the command that rejected the flag, and keeps
+/// clap's error when the flag stood where an option's value was due (`--sort --wide`).
+pub(super) fn container_column_asked(error: clap::Error, args: &[OsString]) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if error.kind() != ErrorKind::UnknownArgument {
+        return error;
+    }
+    let Some(ContextValue::String(invalid)) = error.get(ContextKind::InvalidArg) else {
+        return error;
+    };
+    let flag = invalid.split('=').next().unwrap_or_default();
+    if !CONTAINER_COLUMN_ASKS.contains(&flag) {
+        return error;
+    }
+    let argv = |words: &mut dyn Iterator<Item = &OsString>| {
+        std::iter::once(OsString::from("ployz"))
+            .chain(words.cloned())
+            .collect::<Vec<_>>()
+    };
+    let Ok(parsed) = crate::cli::compiled()
+        .ignore_errors(true)
+        .try_get_matches_from(argv(&mut args.iter()))
+    else {
+        return error;
+    };
+    let Some(("ps", ps)) = parsed.subcommand() else {
+        return error;
+    };
+    // After `--` the flag is a positional word. Nothing before `ps` takes a hyphen value,
+    // so the first bare `--` is ps's own: keep clap's error unless clap still rejects the
+    // flag in the words before it.
+    if args.iter().any(|arg| arg == "--") {
+        let before = crate::cli::compiled()
+            .try_get_matches_from(argv(&mut args.iter().take_while(|arg| *arg != "--")));
+        let rejected_before = before.err().is_some_and(|before| {
+            before.kind() == ErrorKind::UnknownArgument
+                && before.get(ContextKind::InvalidArg) == error.get(ContextKind::InvalidArg)
+        });
+        if !rejected_before {
+            return error;
+        }
+    }
+    let value_missing = ps.ids().any(|id| {
+        ps.value_source(id.as_str()) == Some(ValueSource::CommandLine)
+            && ps
+                .get_raw(id.as_str())
+                .is_some_and(|values| values.len() == 0)
+    });
+    if value_missing {
+        return error;
+    }
+    clap::Error::raw(
+        ErrorKind::UnknownArgument,
+        format!(
+            "ployz ps has no '{flag}': it shows a CONTAINER column only where two rows would read the same\n\n  tip: with server access, 'ployz ps --json' lists each container's container_id, which 'ployz exec --container' takes\n"
+        ),
     )
 }
 
@@ -139,6 +219,17 @@ impl From<ployz_store::NamespaceView> for Scoped {
 }
 
 impl Scoped {
+    /// The name a Service has now, for the runtime name its Containers carry.
+    pub(super) fn service_name<'a>(
+        &'a self,
+        runtime: &'a ployz_core::ServiceName,
+    ) -> &'a ployz_core::ServiceName {
+        self.services
+            .iter()
+            .find_map(|(name, other)| (other == runtime).then_some(name))
+            .unwrap_or(runtime)
+    }
+
     /// The bare Service Name in `selector` this Environment has neither deployed nor
     /// authored. A removed Service is one, and may still have retained logs.
     pub(super) fn unknown(&self, selector: &ServiceSelector) -> Option<ployz_core::ServiceName> {
@@ -200,12 +291,19 @@ pub(super) fn current(
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let service = ServiceSelector::parse(
-        leaf.get_one::<String>("service")
-            .cloned()
-            .ok_or_else(|| Error::usage("Service selector is required"))?,
+    let typed = leaf
+        .get_one::<String>("service")
+        .cloned()
+        .ok_or_else(|| Error::usage("Service selector is required"))?;
+    let service = current(
+        ServiceSelector::parse(typed.clone())?,
+        scope(root)?.as_ref(),
     )?;
-    let service = current(service, scope(root)?.as_ref())?;
+    let scope_flags: String = ["project", "env"]
+        .into_iter()
+        .filter(|id| leaf.value_source(id) == Some(ValueSource::CommandLine))
+        .filter_map(|id| Some(format!("--{id} {} ", leaf.get_one::<String>(id)?)))
+        .collect();
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
@@ -237,44 +335,70 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 (!detach && stdin_is_readable()).then(|| spawn_stdin(session.input.clone()));
             let resize_task = tty.then(|| spawn_resize(session.input.clone()));
             drop(session.input);
-            let mut exit = None;
-            while let Some(payload) = session.output.next().await {
-                match ExecResponseFrame::decode(&payload?)? {
-                    ExecResponseFrame::ExecId(_) => {
-                        if detach {
-                            exit = Some(0);
-                        }
-                    }
-                    ExecResponseFrame::Stdout(bytes) => {
-                        write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
-                    }
-                    ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
-                    ExecResponseFrame::Exit(code) => {
-                        exit = Some(code);
-                        break;
-                    }
-                    ExecResponseFrame::Error(error) => return Err(error.into()),
-                }
-            }
+            let ended = forward_exec(&mut session.output, detach).await;
             if let Some(task) = resize_task {
                 task.abort();
             }
-            let exit = exit.ok_or_else(|| {
-                Error::coded(
-                    RpcErrorCode::Unavailable,
-                    if detach {
-                        "Exec stream ended before command start was confirmed"
-                    } else {
-                        "Exec stream ended without an exit status"
-                    },
-                )
-            })?;
-            if !detach && exit != 0 {
-                return Err(Error::exit(u8::try_from(exit).unwrap_or(1)));
+            if detach {
+                return ended.map(drop);
             }
-            Ok(())
+            if !matches!(ended, Ok(0))
+                && let Ok(Ok(Some(stopped))) = tokio::time::timeout(
+                    EXEC_STOPPED_CHECK,
+                    exec_container_stopped(client, &session.target),
+                )
+                .await
+            {
+                let hint = if stopped.another_runs {
+                    Hint::Retry(format!(
+                        "ployz exec {scope_flags}{}",
+                        session.target.identity
+                    ))
+                } else {
+                    Hint::Inspect("ployz ps".into())
+                };
+                return Err(
+                    Error::from(OperatorError::ExecContainerStopped { service: typed }).hint(hint),
+                );
+            }
+            match ended? {
+                0 => Ok(()),
+                exit => Err(Error::exit(u8::try_from(exit).unwrap_or(1))),
+            }
         })
     })
+}
+
+/// How long a failed exec waits to learn whether its container stopped before it
+/// reports the command's own ending instead.
+const EXEC_STOPPED_CHECK: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Print an exec's output until it ends, and return its exit code; 0 once a
+/// detached command is confirmed started.
+async fn forward_exec(
+    output: &mut tonic::Streaming<OpaquePayload>,
+    detach: bool,
+) -> Result<i32, Error> {
+    while let Some(payload) = output.next().await {
+        match ExecResponseFrame::decode(&payload?)? {
+            ExecResponseFrame::ExecId(_) if detach => return Ok(0),
+            ExecResponseFrame::ExecId(_) => {}
+            ExecResponseFrame::Stdout(bytes) => {
+                write_stdout_frame(&mut crate::ui::stdout_bytes(), &bytes)?
+            }
+            ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
+            ExecResponseFrame::Exit(code) => return Ok(code),
+            ExecResponseFrame::Error(error) => return Err(error.into()),
+        }
+    }
+    Err(Error::coded(
+        RpcErrorCode::Unavailable,
+        if detach {
+            "Exec stream ended before command start was confirmed"
+        } else {
+            "Exec stream ended without an exit status"
+        },
+    ))
 }
 
 /// Stream Service logs; every Service of the Environment when none is named.
@@ -417,8 +541,10 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 {
                     Ok(inputs) => {
                         let entries = merge_logs(inputs, cancellation);
-                        print_logs(entries, utc, &deployments, |entry| printed.covers(entry))
-                            .await?;
+                        print_logs(entries, utc, &deployments, &mut gaps, |entry| {
+                            printed.covers(entry)
+                        })
+                        .await?;
                     }
                     // Nothing runs to follow; the history above is the whole log.
                     Err(
@@ -573,6 +699,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
                 merge_logs(inputs, cancellation),
                 utc,
                 &HashMap::new(),
+                &mut gaps,
                 |_| false,
             )
             .await?;
@@ -887,13 +1014,24 @@ impl Printed {
 }
 
 async fn print_logs(
-    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, String>>,
+    mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, crate::operator::LogFault>>,
     utc: bool,
     deployments: &HashMap<ContainerId, String>,
+    gaps: &mut crate::ui::Gaps,
     printed: impl Fn(&LogEntry) -> bool,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
-        let entry = entry.map_err(Error::unavailable)?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(crate::operator::LogFault::Error(error)) => return Err(Error::unavailable(error)),
+            Err(crate::operator::LogFault::Stalled(machine_id)) => {
+                gaps.stopped(machine_id);
+                if crate::ui::json() {
+                    crate::ui::emit_line(&*gaps)?;
+                }
+                continue;
+            }
+        };
         if printed(&entry) {
             continue;
         }
@@ -1350,6 +1488,31 @@ mod scope_tests {
         assert_eq!(gaps.failures.len(), 1);
         let partial = gaps.outcome().unwrap_err();
         assert_eq!(partial.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_followed_server_that_stops_answering_is_named_and_makes_the_follow_partial() {
+        let machine = ployz_core::MachineId::parse("1".repeat(32)).unwrap();
+        let name = ployz_core::MachineName::parse("web-1").unwrap();
+        let mut gaps = crate::ui::Gaps::default().named([(machine, &name)]);
+        let silent = crate::operator::LogInput {
+            identity: format!("dtest-production/web/ployz-create-{}", "06d0".repeat(16)),
+            machine,
+            stream: Box::pin(futures_util::stream::pending()),
+        };
+        let entries = merge_logs(vec![silent], tokio_util::sync::CancellationToken::new());
+        print_logs(entries, true, &HashMap::new(), &mut gaps, |_| false)
+            .await
+            .unwrap();
+        assert_eq!(gaps.omitted, [machine]);
+        assert_eq!(
+            gaps.stopped_answering(&machine),
+            "web-1 stopped answering; its lines are missing from here on."
+        );
+        assert_eq!(
+            gaps.outcome().unwrap_err().printed_exit(),
+            Some(crate::ui::PARTIAL_EXIT)
+        );
     }
 
     #[test]

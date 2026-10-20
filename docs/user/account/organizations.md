@@ -122,9 +122,18 @@ How you answer depends on where the command runs:
   `ployz org rm`, and `ployz server forget` with no server named, ask for the organization's
   slug. Type it and the command carries on. Anything else, or Ctrl-C, leaves the approval
   pending and changes nothing.
-- Without a terminal, such as in a script, it prints the same list and waits until someone
-  approves or denies it in Ployz Cloud. It then carries on, or fails naming what was denied and
-  the reason given. Ctrl-C stops waiting and leaves the approval pending.
+- Without a terminal, such as in a script, it prints the same list, the approval's ID, a link to
+  the [Ployz agent](agent-sidebar.md) where it waits, and `ployz org approval approve ID`. With
+  `PLOYZ_TOKEN`, when Cloud doesn't name the organization, the link is Ployz Cloud itself. It
+  waits until someone approves or denies it in Ployz Cloud, then carries on, or fails naming what
+  was denied and the reason given. Ctrl-C, or losing Ployz Cloud, stops waiting and leaves the
+  approval pending, and the error names the command to run again with `--approval ID`. If Ployz
+  Cloud answers with an error instead, the command fails saying it couldn't check the approval,
+  and names the command to run again only when the error is on Cloud's side. If Cloud refuses
+  your sign-in or token, or you've left the organization, it names no command to run again;
+  it says what to do instead, such as `ployz login`, a new token or `ployz logout`. Once you've
+  left, `ployz logout` forgets the sign-in here though Cloud refuses to sign it out, and warns
+  that Cloud didn't revoke it.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
 - In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
@@ -160,6 +169,23 @@ How you answer depends on where the command runs:
 
 A retry of a command you denied is still denied, even once it would destroy nothing. A retry of
 one still waiting for your answer still waits, unless it no longer destroys anything.
+
+An approval works only for the person who asked for it, from the same login or token they asked
+from, and only for the command and the target they asked about. Anyone else who sends it is
+refused with `forbidden`, and nothing changes. So is the same person from another login or
+token, or a different command or target, even one that wouldn't ask for an approval at all, such
+as a save into another environment that removes nothing, a quick `ployz volume sync`, or one
+already done, such as `ployz env protect --off` for an environment that isn't protected. The
+refusal says which. One exception: when an agent retries a tool that finds nothing left to write,
+such as a save that already landed, only the person and the login or token are checked. Run the
+command again without `--approval` to ask for an approval of your own. When two people, or one person from
+two logins, ask for the same thing, each gets an approval of their own to answer.
+
+An approval runs its command once. Sending it again for another run asks again, with a new
+approval to answer, even when the command and target are the same, such as changing a member back
+to a role you changed once already. A retry of the same deploy, or the same request sent again with
+its request key, answers what the first one started and runs nothing new. A save or deploy the
+Config Store refuses leaves its approval unused.
 
 You can answer from a terminal too. `ployz org approval ls` lists the approvals waiting,
 `ployz org approval show ID` shows what one would remove, and `ployz org approval approve ID` or
@@ -209,7 +235,8 @@ Deleting an organization removes it with its settings and tokens, and disconnect
 from it. It can't be undone. Only an owner can delete it. For anyone else **Delete organization**
 is disabled.
 
-1. Delete every project in it. **Delete organization** stays disabled until you do.
+1. [Delete every project](../environments/environments.md#delete-a-project) in it. **Delete
+   organization** stays disabled until you do.
 2. **Cancel Pro first.** Deleting the organization doesn't cancel it: go to
    **Organization → Billing → Manage billing**.
 3. Go to **Organization → General** and click **Delete organization**.
@@ -222,6 +249,10 @@ If a server is offline, the organization stays, disabled, until that server is b
 
 The dashboard then opens another of your organizations. With none left, it offers **Create an
 organization**.
+
+Once it's gone, its slug is free, and a new organization can take it. Old links and emails that
+name the slug open the new organization only for its members, and for Ployz support if it allows
+support access. Once its **Domain** has served your services, no organization gets it again.
 
 From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,

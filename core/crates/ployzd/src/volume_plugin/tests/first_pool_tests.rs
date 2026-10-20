@@ -424,8 +424,13 @@ async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
         "4294967296\n"
     );
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
-    assert!(!log.contains("referenced"));
-    assert!(!log.contains("available"));
+    let is_dataset_listing = |line: &&str| line.contains(" list -Hp -o name,refquota,");
+    assert!(
+        log.lines()
+            .filter(|line| !is_dataset_listing(line))
+            .all(|line| !line.contains("referenced") && !line.contains("available")),
+        "{log}"
+    );
     assert_eq!(log.matches("fallocate -l 4294967296 ").count(), 1);
     assert_eq!(log.matches("zpool online -e ployz ").count(), 1);
     assert_eq!(
@@ -435,7 +440,7 @@ async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
     );
 }
 
-async fn start_pool_with_data(
+pub(super) async fn start_pool_with_data(
     test: &TestDir,
 ) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
     let socket = test.0.join("plugin.sock");
@@ -841,6 +846,7 @@ pub(super) fn fake_first_pool(directory: &Path, physical_block_size: u64) -> Vol
     let mirror_root = directory.join("mirror-root");
     let slot = directory.join("slot");
     let slot_pull = directory.join("slot-pull");
+    let slot_role = directory.join("slot-role");
     let fail_slot_once = directory.join("fail-slot-once");
     let script_body = format!(
         r#"#!/bin/sh
@@ -923,13 +929,13 @@ case "$name" in
     ;;
   zfs)
     case "$*" in
-      'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r ployz')
-        printf 'ployz\t0\t0\t0\t/ployz\tyes\toff\n'
-        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
-        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
-        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
-        [ ! -e '{mirror_root}' ] || printf 'ployz/ployz-mirror\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
-        [ ! -e '{slot}' ] || printf 'ployz/ployz-mirror/data\t%s\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(cat '{slot}')"
+      'list -Hp -o name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly -r ployz')
+        printf 'ployz\t0\t0\t0\t0\t/ployz\tyes\toff\n'
+        [ ! -e '{root}' ] || printf 'ployz/ployz\t0\t0\t0\t0\t/var/lib/ployz-volumes\tno\toff\n'
+        [ ! -e '{volume}' ] || printf 'ployz/ployz/data\t%s\t0\t0\t0\t/var/lib/ployz-volumes/data\tno\toff\n' "$(cat '{volume_bound}')"
+        [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t0\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
+        [ ! -e '{mirror_root}' ] || printf 'ployz/ployz-mirror\t0\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
+        [ ! -e '{slot}' ] || printf 'ployz/ployz-mirror/data\t%s\t0\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(cat '{slot}')"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o refquota='*' ployz/ployz/data')
@@ -942,6 +948,8 @@ case "$name" in
         printf '%s\n' "${{3#refquota=}}" > '{volume_bound}'
         touch '{volume}'
         ;;
+      'set refquota='*' ployz/ployz/data') printf '%s\n' "${{2#refquota=}}" > '{volume_bound}' ;;
+      'get -Hp -o value refquota ployz/ployz/data') cat '{volume_bound}' ;;
       'create -o refquota='*' ployz/ployz/other')
         printf '%s\n' "${{3#refquota=}}" > '{other_bound}'
         touch '{other}'
@@ -958,6 +966,8 @@ case "$name" in
         printf '%s\n' "${{7#refquota=}}" > '{slot}'
         ;;
       'set ployz:pull='*' ployz/ployz-mirror/data') printf '%s\n' "${{2#ployz:pull=}}" > '{slot_pull}' ;;
+      'set ployz:role='*' ployz/ployz-mirror/data') printf '%s\n' "${{2#ployz:role=}}" > '{slot_role}' ;;
+      'get -H -o value ployz:role ployz/ployz-mirror/data') if [ -e '{slot_role}' ]; then cat '{slot_role}'; else echo '-'; fi ;;
       'get -H -o value ployz:pull ployz/ployz-mirror/data') if [ -e '{slot_pull}' ]; then cat '{slot_pull}'; else echo '-'; fi ;;
       'get -H -o value guid ployz/ployz-mirror/data') echo 42 ;;
       receive*) cat > /dev/null ;;
@@ -998,6 +1008,7 @@ esac
         mirror_root = mirror_root.display(),
         slot = slot.display(),
         slot_pull = slot_pull.display(),
+        slot_role = slot_role.display(),
         fail_slot_once = fail_slot_once.display(),
         backing = directory.join(POOL_BACKING_FILE).display(),
     );

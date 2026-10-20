@@ -298,9 +298,10 @@ pub(crate) const DOCS: Verb =
 pub(crate) const DOMAIN_ADD: Verb =
     Verb::cloud("domain add", Never, domain::add_command, domain::add).docs("services/domains.md");
 pub(crate) const DOMAIN_CHECK: Verb =
-    Verb::cloud("domain check", Never, domain::check_command, domain::check);
+    Verb::cloud("domain check", Never, domain::check_command, domain::check)
+        .docs("services/domains.md");
 pub(crate) const DOMAIN_LS: Verb =
-    Verb::cloud("domain ls", Never, domain::list_command, domain::list);
+    Verb::cloud("domain ls", Never, domain::list_command, domain::list).docs("services/domains.md");
 pub(crate) const DOMAIN_RM: Verb =
     Verb::cloud("domain rm", Never, domain::remove_command, domain::remove);
 pub(crate) const DOMAIN_SET: Verb =
@@ -311,7 +312,8 @@ pub(crate) const ENV_BRANCH: Verb = Verb::cloud(
     env::branch_command,
     env::branch::branch,
 )
-.needs(Permission::EnvironmentCreate);
+.needs(Permission::EnvironmentCreate)
+.docs("environments/environments.md");
 pub(crate) const ENV_COPY: Verb =
     Verb::cloud("env copy", Never, env::copy_command, env::branch::copy);
 pub(crate) const ENV_DEFAULT: Verb =
@@ -684,7 +686,8 @@ pub(crate) const TOKEN_RM: Verb = Verb::cloud(
     account::token_remove,
 )
 .docs("cli/overview.md");
-pub(crate) const UNSET: Verb = Verb::cloud("unset", Never, config::unset_command, config::unset);
+pub(crate) const UNSET: Verb = Verb::cloud("unset", Never, config::unset_command, config::unset)
+    .docs("environments/environments.md");
 pub(crate) const UP: Verb = Verb::cloud("up", Depends, up::command, up::up).docs("cli/overview.md");
 pub(crate) const VOLUME_ADD: Verb =
     Verb::cloud("volume add", Never, volume::add_command, volume::add);
@@ -964,14 +967,20 @@ pub(crate) fn find(path: &str) -> Option<&'static Verb> {
 pub(crate) fn tree(root: Command) -> Command {
     let groups = GROUPS
         .iter()
-        .map(|group| (group.path, group.command, Vec::new(), None));
-    let verbs = VERBS
-        .iter()
-        .map(|verb| (verb.path, verb.command, verb.marked_flags(), verb.help()));
+        .map(|group| (group.path, group.command, Vec::new(), None, Json::Result));
+    let verbs = VERBS.iter().map(|verb| {
+        (
+            verb.path,
+            verb.command,
+            verb.marked_flags(),
+            verb.help(),
+            verb.json,
+        )
+    });
     groups
         .chain(verbs)
-        .fold(root, |root, (path, command, flags, help)| {
-            insert(root, path, path, command, &flags, help)
+        .fold(root, |root, (path, command, flags, help, json)| {
+            insert(root, path, path, command, &flags, help, json)
         })
 }
 
@@ -1004,10 +1013,15 @@ fn insert(
     command: fn(Command) -> Command,
     flags: &[&'static str],
     added: Option<String>,
+    json: Json,
 ) -> Command {
     match rest.split_once(' ') {
         None => {
             let mut leaf = command(Command::new(rest));
+            if json == Json::Refused {
+                // The global `--json` stays parsed, so `dispatch` still refuses it.
+                leaf = leaf.arg(crate::cli::switch("json", None).global(true).hide(true));
+            }
             if let Some(added) = added {
                 let help = match leaf.get_after_help() {
                     Some(help) => format!("{help}\n\n{added}"),
@@ -1030,7 +1044,7 @@ fn insert(
                 "`{path}` needs its parent `{head}` listed first"
             );
             parent.mut_subcommand(head, |child| {
-                insert(child, path, rest, command, flags, added)
+                insert(child, path, rest, command, flags, added, json)
             })
         }
     }
@@ -1042,6 +1056,20 @@ mod tests {
     use ployz_store::{Claim, Command};
 
     use super::*;
+
+    #[test]
+    fn help_leaves_out_json_where_the_command_refuses_it() {
+        let mut tree = crate::cli::compiled();
+        tree.build();
+        let exec = tree.find_subcommand_mut("exec").unwrap();
+        assert!(!exec.render_help().to_string().contains("--json"));
+        let ps = tree.find_subcommand_mut("ps").unwrap();
+        assert!(ps.render_help().to_string().contains("--json"));
+        let matches = crate::cli::compiled()
+            .try_get_matches_from(["ployz", "exec", "web", "--json", "--", "true"])
+            .unwrap();
+        assert!(matches.get_flag("json"));
+    }
 
     fn names(content: &str, path: &str) -> bool {
         let call = format!("ployz {path}");

@@ -271,6 +271,68 @@ fn a_git_service_round_trips_get_edit_publish() {
 }
 
 #[test]
+fn a_new_git_service_diffs_with_the_repository_and_branch_it_builds() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", Some("dev")), &evidence())
+        .unwrap();
+    let rows = |store: &ConfigStore| {
+        let diff = store.read(&who, &DiffQuery::default()).unwrap();
+        let rows = diff.changes[0]
+            .settings
+            .iter()
+            .map(|row| {
+                (
+                    row.path.clone(),
+                    row.before.clone(),
+                    row.after.clone(),
+                    row.can_restore,
+                )
+            })
+            .collect::<Vec<_>>();
+        (rows, diff.total_count)
+    };
+    assert_eq!(
+        rows(&store),
+        (
+            vec![
+                (
+                    "web.repository".into(),
+                    Value::Null,
+                    json!("acme/web"),
+                    false
+                ),
+                ("web.branch".into(), Value::Null, json!("dev"), false),
+            ],
+            3
+        )
+    );
+    // A branch changed since it was added is that change, which discard takes.
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![set("web.branch", json!("main"))]),
+            &evidence(),
+        )
+        .unwrap();
+    assert_eq!(
+        rows(&store),
+        (
+            vec![
+                (
+                    "web.repository".into(),
+                    Value::Null,
+                    json!("acme/web"),
+                    false
+                ),
+                ("web.branch".into(), json!("dev"), json!("main"), true),
+            ],
+            3
+        )
+    );
+}
+
+#[test]
 fn push_policy_on_a_public_repository_applies_and_says_pushes_need_the_app() {
     let unheard = "Pushes reach Ployz only once the GitHub App is installed on acme/docs.";
     let notes = |store: &ConfigStore, who: &Actor| {
@@ -373,6 +435,7 @@ fn report(status: BuildStatus, message: Option<&str>, log: &str) -> RunEvidence 
         status,
         message: message.map(Into::into),
         log: log.into(),
+        server: None,
     })
 }
 
@@ -453,7 +516,8 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     assert_eq!(
         json!(view.builds),
         json!([{"service": "web", "commit": a, "status": "building", "message": null,
-                "started_at": started_at, "finished_at": null}])
+                "started_at": started_at, "finished_at": null, "server": null,
+                "github_skipped": null}])
     );
     store
         .record(
@@ -1036,6 +1100,108 @@ fn a_build_clock_starts_at_building_clears_when_skipped_and_reopens_for_a_later_
         (BuildStatus::Building, again, None),
         "a later Builder reopens the clock and keeps its start"
     );
+}
+
+#[test]
+fn a_build_names_the_server_that_built_it_and_why_github_passed_it_on() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+    store
+        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .unwrap();
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    let why = "acme/web has no .github/workflows/ployz-build.yml on its default branch";
+    store
+        .github_end(
+            &id,
+            None,
+            &GithubEnd::Skipped {
+                message: why.into(),
+            },
+        )
+        .unwrap();
+
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    store.claim(&deployment, &runner).unwrap();
+    for (status, server) in [
+        (BuildStatus::Building, None),
+        (BuildStatus::Building, Some("machine-1")),
+        (BuildStatus::Built, None),
+    ] {
+        store
+            .record(
+                &deployment,
+                &runner,
+                RunEvidence::Build(BuildReport {
+                    service: ServiceName::parse("web").unwrap(),
+                    status,
+                    message: None,
+                    log: String::new(),
+                    server: server.map(Into::into),
+                }),
+            )
+            .unwrap();
+    }
+    let build = store
+        .read(
+            &who,
+            &BuildLogQuery {
+                deployment,
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap()
+        .build;
+    assert_eq!(build.status, BuildStatus::Built);
+    assert_eq!(
+        build.server.as_deref(),
+        Some("machine-1"),
+        "a report that names no Server keeps the one that builds it"
+    );
+    assert_eq!(
+        build.github_skipped.as_deref(),
+        Some(why),
+        "the reason GitHub passed it on outlives the Server's reports"
+    );
+}
+
+#[test]
+fn a_build_github_takes_after_skipping_it_no_longer_says_github_skipped_it() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+    let skip = GithubEnd::Skipped {
+        message: "the run ran out of time".into(),
+    };
+    store.github_end(&id, Some(RUN), &skip).unwrap();
+    let skipped = || {
+        store
+            .read(
+                &who,
+                &BuildLogQuery {
+                    deployment: id.deployment.clone(),
+                    service: ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap()
+            .build
+            .github_skipped
+    };
+    assert_eq!(skipped().as_deref(), Some("the run ran out of time"));
+
+    store.github_dispatched(&id, &github_run(RUN + 1)).unwrap();
+    assert_eq!(skipped(), None, "a new GitHub run takes the build back");
+    store.github_check_in(&id, RUN + 1, &grant()).unwrap();
+    let receipt = json!({ "fingerprint": "f".repeat(64), "machine_id": grant().machine });
+    assert_eq!(
+        store
+            .github_end(&id, Some(RUN + 1), &GithubEnd::Built { receipt })
+            .unwrap(),
+        BuildStatus::Built
+    );
+    assert_eq!(skipped(), None, "GitHub built it");
 }
 
 fn source(store: &ConfigStore, who: &Actor) -> SourceKind {

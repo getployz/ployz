@@ -1,7 +1,14 @@
 //! Docker v1 Volume plugin backed by bounded ZFS datasets.
 
 use std::{
-    collections::BTreeMap, fmt, io, os::unix::net::UnixListener as StdUnixListener, str::FromStr,
+    collections::BTreeMap,
+    fmt, fs, io,
+    os::unix::{
+        fs::{FileTypeExt, MetadataExt, PermissionsExt},
+        net::UnixListener as StdUnixListener,
+    },
+    path::Path,
+    str::FromStr,
     time::Duration,
 };
 
@@ -27,6 +34,7 @@ mod mirror;
 mod pool;
 mod removal;
 mod seed;
+mod size;
 mod storage;
 mod transfer;
 
@@ -131,21 +139,68 @@ struct MountResponse {
     error: String,
 }
 
-/// Takes the one Unix listener supplied by systemd socket activation.
+/// The listener the plugin serves and, when it bound the path itself, its claim on it.
+#[derive(Debug)]
+pub(super) struct PluginSocket {
+    pub(super) claim: Option<fs::File>,
+    pub(super) listener: StdUnixListener,
+}
+
+/// Takes the listener `ployz-volume-plugin.socket` passed, or else claims and binds
+/// `path` here (the local testkit runs without systemd). A socket left at `path` is
+/// replaced only when nothing serves it and this user owns it.
 ///
 /// # Errors
 ///
-/// Returns an error unless systemd supplied exactly one valid Unix listener.
-pub(super) fn inherited_listener() -> io::Result<StdUnixListener> {
-    ployzd::socket_activation::inherited_unix_listener()?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "systemd did not pass the Volume plugin socket",
-        )
+/// Returns [`io::ErrorKind::AddrInUse`] when another process holds the claim or
+/// serves `path`, and an error when the inherited socket is invalid, `path` holds
+/// something this plugin must not replace, or binding fails.
+pub(super) fn listener(path: &Path) -> io::Result<PluginSocket> {
+    if let Some(listener) = ployzd::socket_activation::inherited_unix_listener()? {
+        return Ok(PluginSocket {
+            claim: None,
+            listener,
+        });
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let claim = ployzd::socket_activation::claim_socket_path(path)?;
+    remove_stale_socket(path)?;
+    let listener = StdUnixListener::bind(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
+    Ok(PluginSocket {
+        claim: Some(claim),
+        listener,
     })
 }
 
-/// Serves the Docker Volume plugin on an activated Unix listener.
+fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_socket() || metadata.uid() != fs::metadata("/proc/self")?.uid() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "refusing to replace {}: not a socket this user owns",
+                path.display()
+            ),
+        ));
+    }
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("another process serves {}", path.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path),
+        Err(error) => Err(error),
+    }
+}
+
+/// Serves the Docker Volume plugin on its Unix listener.
 ///
 /// # Errors
 ///
@@ -171,6 +226,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Demote", post(departure::demote))
         .route("/Volume.Inspect", post(inspect::inspect))
         .route("/Volume.Seed", post(seed::seed_volume))
+        .route("/Volume.Size.Set", post(size::set_volume_size))
         .route("/Volume.Copy.Inspect", post(copy::inspect))
         .route("/Volume.Copy.Cut", post(copy::cut))
         .route("/Volume.Copy.Snapshot", post(copy::snapshot))
@@ -370,6 +426,9 @@ mod tests {
     #[path = "inspect_tests.rs"]
     mod inspect_tests;
 
+    #[path = "inspect_race_tests.rs"]
+    mod inspect_race_tests;
+
     #[path = "slot_tests.rs"]
     mod slot_tests;
 
@@ -379,6 +438,7 @@ mod tests {
     #[path = "copy_tests.rs"]
     mod copy_tests;
     mod seed_tests;
+    mod size_tests;
 
     use fake_zfs::{USABLE_POOL, fake_zfs, fake_zfs_seeding};
 
@@ -417,6 +477,65 @@ mod tests {
         assert!(log.contains("zfs mount tank/ployz/data"));
         assert!(!log.contains("recordsize"));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn without_systemd_a_restarted_plugin_binds_its_socket_and_departs_a_machine_without_zfs()
+    {
+        let test = TestDir::new();
+        let socket = test.0.join("plugins/ployz.sock");
+        drop(listener(&socket).unwrap());
+        let PluginSocket {
+            claim: _claim,
+            listener,
+        } = listener(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let storage = VolumeStorage::with_programs(test.0.join("no-zpool"), test.0.join("no-zfs"));
+        let server = tokio::spawn(serve(UnixListener::from_std(listener).unwrap(), storage));
+
+        assert_eq!(
+            post(&socket, "/Storage.Demote", json!(null)).await,
+            json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn without_systemd_the_plugin_refuses_a_socket_another_process_still_serves() {
+        let test = TestDir::new();
+        let socket = test.0.join("ployz.sock");
+        let live = StdUnixListener::bind(&socket).unwrap();
+
+        let error = listener(&socket).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
+        let _client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        live.set_nonblocking(true).unwrap();
+        live.accept()
+            .expect("the live listener still owns the path");
+    }
+
+    #[test]
+    fn a_second_plugin_refuses_the_path_the_first_has_claimed() {
+        let test = TestDir::new();
+        let socket = test.0.join("ployz.sock");
+        let _first = listener(&socket).unwrap();
+
+        let error = listener(&socket).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
+        std::os::unix::net::UnixStream::connect(&socket).expect("the first plugin still serves");
+    }
+
+    #[test]
+    fn without_systemd_the_plugin_replaces_a_socket_nothing_serves() {
+        let test = TestDir::new();
+        let socket = test.0.join("ployz.sock");
+        drop(StdUnixListener::bind(&socket).unwrap());
+
+        let _claimed = listener(&socket).unwrap();
+
+        std::os::unix::net::UnixStream::connect(&socket).expect("the plugin serves the path");
     }
 
     #[tokio::test]
@@ -605,41 +724,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_is_idempotent_but_does_not_resize() {
+    async fn create_of_an_existing_volume_at_or_below_its_bound_is_idempotent_and_never_resizes() {
         let test = TestDir::new();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
-        let request = json!({"Name":"data","Opts":{"size":"1g"}});
+        let create = |size: &str| json!({"Name":"data","Opts":{"size":size}});
 
+        for size in ["1g", "1024m", "512m"] {
+            assert_eq!(
+                post(&socket, "/VolumeDriver.Create", create(size)).await,
+                json!({"Err":""}),
+                "{size}"
+            );
+        }
+        let larger = post(&socket, "/VolumeDriver.Create", create("2g")).await;
+        assert!(error(&larger).contains("never grows its bound"), "{larger}");
+        let commands = fs::read_to_string(test.0.join("commands")).unwrap();
         assert_eq!(
-            post(&socket, "/VolumeDriver.Create", request.clone()).await,
-            json!({"Err":""})
-        );
-        assert_eq!(
-            post(
-                &socket,
-                "/VolumeDriver.Create",
-                json!({"Name":"data","Opts":{"size":"1024m"}}),
-            )
-            .await,
-            json!({"Err":""})
-        );
-        let resized = post(
-            &socket,
-            "/VolumeDriver.Create",
-            json!({"Name":"data","Opts":{"size":"2g"}}),
-        )
-        .await;
-        assert!(error(&resized).contains("size is fixed once deployed"));
-        assert_eq!(
-            fs::read_to_string(test.0.join("commands"))
-                .unwrap()
+            commands
                 .matches("zfs create -o refquota=1073741824 tank/ployz/data")
                 .count(),
             1
         );
+        assert_eq!(commands.matches("refquota=").count(), 1, "{commands}");
         server.abort();
     }
 

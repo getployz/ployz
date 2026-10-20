@@ -1,14 +1,16 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, gt, gte, or, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { and, asc, eq, inArray, isNull, gt, gte, max, or, sql } from "drizzle-orm";
+import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
 import { insertEnrollmentToken, readJoinStatus } from "#/modules/machines/enrollment.server";
 import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPairing, shareOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
+import { organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import {
+  COMMITTED_STAGES,
   ENROLL_MIN_CLI_VERSION,
   type EnrollInput,
   type EnrollInstruction,
@@ -17,7 +19,9 @@ import {
   type EnrollStorage,
   isReadyFor,
 } from "#/modules/machines/waiting/server-enrollment";
-import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { serversOffline } from "#/modules/machines/waiting/servers-offline";
+import { fleetToken, fleetTokenAttempt, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -248,7 +252,24 @@ export const previewServerEnrollment = Effect.fn("ServerEnrollment.preview")(fun
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const { rows, skipped, spread } = yield* planEnrollment(organization.id, input, "preview");
-  return { rows, skipped, spread };
+  return { rows, skipped, spread, serversOffline: serversOffline(yield* serverContacts(organization.id), yield* Clock.currentTimeMillis) };
+});
+
+/** Each Server of the Organization with its last signed push on any stream. */
+const serverContacts = Effect.fn("ServerEnrollment.contacts")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  return yield* drizzle.select({
+    enrolledAt: organizationMachine.createdAt,
+    pushTarget: organizationMachine.pushTarget,
+    lastPushAt: max(observeIngestCursor.updatedAt),
+  })
+    .from(organizationMachine)
+    .leftJoin(observeIngestCursor, and(
+      eq(observeIngestCursor.organizationId, organizationMachine.organizationId),
+      eq(observeIngestCursor.machineId, organizationMachine.machineId),
+    ))
+    .where(eq(organizationMachine.organizationId, organizationId))
+    .groupBy(organizationMachine.organizationId, organizationMachine.machineId);
 });
 
 export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(function* (
@@ -306,9 +327,12 @@ const startPlannedEnrollment = Effect.fn("ServerEnrollment.startPlanned")(functi
 const usedOf = (tokenId: string) => sql<number>`(select count(*) from ${fleetTokenJoin} where ${fleetTokenJoin.fleetTokenId} = ${tokenId})
   + (select count(*) from ${serverEnrollment} where ${serverEnrollment.fleetTokenId} = ${tokenId} and ${serverEnrollment.endedAt} is null)`.mapWith(Number);
 
-// One arrival attempt per host per token: after a failed or cancelled one, the host waits for someone to enroll it again.
-const arrivalSpent = (tokenId: string) => sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id}
-  and (${serverEnrollment.fleetTokenId} = ${tokenId} or ${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`;
+// A host arrives once per token: after any attempt under it, even one whose waiting row has since gone, it waits for a person.
+// A trigger on server_enrollment writes fleet_token_attempt, so every attempt is recorded whichever app version started it.
+const arrivalSpent = (tokenId: string) => sql<boolean>`exists (select 1 from ${fleetTokenAttempt} where ${fleetTokenAttempt.fleetTokenId} = ${tokenId}
+  and ${fleetTokenAttempt.checkinKey} = ${waitingServer.checkinKey})
+  or exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id}
+  and (${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`;
 
 const arrivingHost = (token: { readonly id: string; readonly organizationId: string }, checkinKey: string) => and(
   eq(waitingServer.organizationId, token.organizationId), eq(waitingServer.checkinKey, checkinKey),
@@ -426,9 +450,17 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     .innerJoin(waitingServer, eq(waitingServer.id, serverEnrollment.waitingServerId))
     .where(and(
       eq(serverEnrollment.organizationId, organization.id),
-      input.id === undefined ? and(isNull(waitingServer.rejectedAt), or(
-        isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, new Date(Date.now() - RECENT_ENROLLMENT_MS)),
-      )) : eq(serverEnrollment.id, input.id),
+      input.id === undefined ? and(
+        or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, new Date(Date.now() - RECENT_ENROLLMENT_MS))),
+        // Reject spares the join it found committed, so that attempt stays in view like any other.
+        or(isNull(waitingServer.rejectedAt), and(
+          or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, waitingServer.rejectedAt)),
+          or(
+            inArray(serverEnrollment.stage, [...COMMITTED_STAGES]),
+            and(eq(waitingServer.reportedAttemptId, serverEnrollment.id), inArray(waitingServer.reportedStage, [...COMMITTED_STAGES])),
+          ),
+        )),
+      ) : eq(serverEnrollment.id, input.id),
     ))
     .orderBy(asc(serverEnrollment.requestedAt), asc(waitingServer.firstSeenAt), asc(waitingServer.id), asc(serverEnrollment.id));
   const { ahead, joining } = yield* readJoinStatus(organization.id);
