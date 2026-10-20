@@ -3101,7 +3101,7 @@ describe("volume runs", () => {
       expect(storeEvents).toEqual([]);
       expect(await rows()).toMatchObject([{
         state: "failed",
-        message: "fsn-1 has no room to grow data to 20 GB (it lacks 4 GB). data stays 10 GB. fsn-2, fsn-3 already hold 20 GB. Free space on fsn-1, then run ployz volume set data --size 20 again.",
+        message: "fsn-1 has no room to grow data to 20 GB. data stays 10 GB. fsn-2, fsn-3 already hold 20 GB. Free space on fsn-1, then run ployz volume set data --size 20 again.",
       }]);
     });
 
@@ -4069,6 +4069,7 @@ describe("volume runs", () => {
           { id: "placement-0", handler: () => ({ kind: "done" }) },
           { id: "refresh-mirrors", handler: () => undefined },
           { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status: "applied", remove: false } }) },
+          { id: "retire-old", handler: () => ({ ids: [] }) },
           { id: "sync-uptime", handler: () => undefined },
           { id: "forget-run", handler: () => undefined },
           { id: "delete-orphan-mirrors", handler: () => undefined },
@@ -4300,6 +4301,7 @@ describe("volume runs", () => {
             verbs.push("run-deployment");
             return { ran: { id: "d-1", status: "applied", remove: false } };
           } },
+          { id: "retire-old", handler: () => ({ ids: [] }) },
           { id: "sync-uptime", handler: () => undefined },
           { id: "forget-run", handler: () => undefined },
           { id: "delete-orphan-mirrors", handler: () => undefined },
@@ -4454,6 +4456,7 @@ describe("volume runs", () => {
         { id: "record-run", handler: () => undefined },
         { id: "plan-builds", handler: () => [] },
         { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status, remove: false } }) },
+        { id: "retire-old", handler: () => ({ ids: [] }) },
         { id: "sync-uptime", handler: () => undefined },
         { id: "forget-run", handler: () => undefined },
       ],

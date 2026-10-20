@@ -10,14 +10,14 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
-    NotPointerPublisher, OpaquePayload, PROTOCOL_MAJOR, RoutesRead, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
+    OpaquePayload, PROTOCOL_MAJOR, RoutesRead, Rpc, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, SelectEndpointRequest, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    corrosion::{AdminClient, CertificateMaterial, IngressRouteRow, ReplicatedStore},
+    corrosion::{AdminClient, CertificateMaterial, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
@@ -133,25 +133,6 @@ impl MachineService {
             return Err(unavailable("Machine is not participating"));
         }
         self.replicated()
-    }
-
-    async fn pointer_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
-        let replicated = self.ready_replicated()?;
-        let publisher = match self.local.pointer_publisher().await {
-            Ok(publisher) => publisher,
-            Err(LocalMachineError::Cluster(error)) => return Err(cluster_store_error(error)),
-            Err(
-                error @ (LocalMachineError::UnreadableLowerMachine(_)
-                | LocalMachineError::MissingPeerRow(_)),
-            ) => {
-                return Err(RpcError::caused(RpcErrorCode::Unavailable, &error));
-            }
-            Err(_) => return Err(unavailable("Cluster store is not available")),
-        };
-        if publisher != self.local_record().id() {
-            return Err(NotPointerPublisher { publisher }.rpc_error());
-        }
-        Ok(replicated)
     }
 
     /// Hand an operator's endpoint for a peer to this Machine's WireGuard. Only this
@@ -765,70 +746,22 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn publish_serving_pointer(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::PublishServingPointer>(request)?;
-        let replicated = match self.pointer_replicated().await {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
-        };
-        match replicated
-            .compare_and_set_serving_pointer(
-                &request.service,
-                request.read.as_ref(),
-                &request.pointer,
-            )
-            .await
-        {
-            Ok(publication) => respond(publication),
-            Err(error) => respond(cluster_store_error(error)),
-        }
-    }
-
     async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::ReadRoutes>(request)?;
-        let replicated = if request.routes_only {
-            self.ready_replicated()
-        } else {
-            self.pointer_replicated().await
-        };
-        let replicated = match replicated {
+        let replicated = match self.ready_replicated() {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
-        };
-        let pointer = match replicated.serving_pointer(&request.service).await {
-            Ok(pointer) => pointer,
-            Err(error) => return respond(cluster_store_error(error)),
         };
         let rows = match replicated.service_ingress_routes(&request.service).await {
             Ok(rows) => rows,
             Err(error) => return respond(cluster_store_error(error)),
         };
-        let acks: BTreeMap<_, _> = rows
-            .iter()
-            .filter_map(|((machine_id, _), row)| match row {
-                IngressRouteRow::Acked(ack) if routes_pointer(ack, pointer.as_ref()) => {
-                    Some((*machine_id, ack.deploy.clone()))
-                }
-                IngressRouteRow::Acked(_)
-                | IngressRouteRow::UnknownDeploy(_)
-                | IngressRouteRow::UnknownContainers => None,
-            })
-            .collect();
         let membership = match self.local.route_membership().await {
             Ok(membership) => membership,
             Err(error) => return local_error(error),
-        };
-        let all_routed = match &membership.ackers {
-            Ackers::Known(machines) if !machines.is_empty() => {
-                pointer.is_some() && machines.keys().all(|machine| acks.contains_key(machine))
-            }
-            Ackers::Known(_) | Ackers::Incomplete { .. } | Ackers::Unread => false,
         };
         let mut routed = routed(rows, &request.service);
         let routes = listed(&membership.ackers)
@@ -838,9 +771,6 @@ impl MachineRpc for MachineService {
             routes,
             complete: matches!(membership.ackers, Ackers::Known(_)),
             down: membership.down,
-            pointer,
-            acks,
-            all_routed,
         })
     }
 }
@@ -856,21 +786,6 @@ fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
         .flat_map(BTreeMap::keys)
         .chain(unnamed.into_iter().flatten())
         .copied()
-}
-
-/// The Machine routes the pointer's deploy and every Container it names; an ack
-/// for a fallback deploy or for a subset of the pointed copies proves nothing.
-fn routes_pointer(
-    ack: &crate::corrosion::IngressRouteAck,
-    pointer: Option<&ployz_core::ServingPointer>,
-) -> bool {
-    pointer.is_some_and(|pointer| {
-        ack.deploy == pointer.deploy
-            && pointer
-                .containers
-                .iter()
-                .all(|container| ack.containers.contains(container))
-    })
 }
 
 #[allow(clippy::result_large_err)]
@@ -893,9 +808,6 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
-        LocalMachineError::UnreadableLowerMachine(_) | LocalMachineError::MissingPeerRow(_) => {
-            respond(RpcError::caused(RpcErrorCode::Unavailable, &error))
-        }
         LocalMachineError::MissingAssignment | LocalMachineError::InvalidPushTarget(_) => {
             respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }

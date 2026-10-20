@@ -79,7 +79,7 @@ next: ployz deploy --project shop      a command to run now
 inspect: ployz logs worker --machine beta   a read-only command that shows more
 retry: ployz project rm blog --confirm blog
 undo: ployz env sync --undo s3 --project shop
-valid: did you mean restartPolicy?     the closest choice, before the list
+did you mean restartPolicy?           the closest choice, unlabeled, before the list
 valid: web, api, postgres, worker      choices, capped at 8 then "and 32 more"
 ```
 

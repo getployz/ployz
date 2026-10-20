@@ -29,6 +29,7 @@ import { createSweepExpiredVerifications } from "#/modules/identity/verification
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createWebAnalyticsFunctions } from "#/modules/web-analytics/postgres/web-analytics.inngest";
 import { createScheduleAnonymousSweep, createTearDownAnonymousOrganization } from "#/modules/anonymous/teardown.inngest";
+import { createRetireOldFunctions } from "#/modules/config-store/retire-old.inngest";
 
 describe("Inngest function policies", () => {
   it("pins the SDK-default retry count and domain-owned concurrency", () => {
@@ -58,6 +59,7 @@ describe("Inngest function policies", () => {
     ...createWebAnalyticsFunctions(inngest),
     createTearDownAnonymousOrganization(inngest),
     createScheduleAnonymousSweep(inngest),
+    ...createRetireOldFunctions(inngest),
     ];
 
     expect(
@@ -93,6 +95,9 @@ describe("Inngest function policies", () => {
       { id: "analytics-retention", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "tear-down-anonymous-organization", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "schedule-anonymous-sweep", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "retire-old", retries: 3, concurrency: [{ key: "event.data.environmentId", limit: 1 }] },
+      { id: "cancel-retire-old", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
+      { id: "close-stale-deployment-cleanups", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
 

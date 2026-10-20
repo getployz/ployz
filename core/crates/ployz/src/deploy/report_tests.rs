@@ -1042,6 +1042,47 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     assert!(!text.contains("Restored the old"));
 }
 
+#[test]
+fn a_deploy_a_newer_one_serves_shows_no_logs_and_no_logs_hint() {
+    let machine = MachineId::random();
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: operation(0, machine, OperationStatus::Pending).operation,
+            error: ExecutionError::NewerServing {
+                service: QualifiedService::parse("shop/web").unwrap(),
+            },
+        },
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    let tail = |log| LogTail {
+        service: QualifiedService::parse("shop/web").unwrap(),
+        name: ServiceName::parse("web").unwrap(),
+        machine,
+        server: "edge".into(),
+        log,
+    };
+    for log in [
+        Some(shown("listening on :8080")),
+        Some(ployz_store::tools::LogText::Withheld {
+            why: ployz_store::tools::Withheld::Unanswered,
+        }),
+    ] {
+        let text = crate::ui::plain(&crate::handlers::ingress_hints(
+            failure(&outcome, &[], vec![tail(log)]),
+            |args| shell_words::join(std::iter::once("ployz").chain(args.iter().copied())),
+        ));
+        assert!(
+            text.starts_with("error: web: A newer deploy is already serving shop/web."),
+            "{text}"
+        );
+        assert!(!text.contains("log lines"), "{text}");
+        assert!(!text.contains("Logs from"), "{text}");
+        assert!(!text.contains("ployz logs"), "{text}");
+    }
+}
+
 fn shown(text: &str) -> ployz_store::tools::LogText {
     ployz_store::tools::LogText::Shown(ployz_store::tools::LogExcerpt::scrub(
         [text.to_owned()],

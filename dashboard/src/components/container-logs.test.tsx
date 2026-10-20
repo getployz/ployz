@@ -348,7 +348,7 @@ const historyRefusal = { machineId: "old", machineName: "old", message: "unsuppo
 
 const runtimeMachine = (id: string, daemonVersion: string): RuntimeMachineRecord => ({
   id, name: id, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
-  buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion, capabilities: [], membership: "active",
+  buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion, capabilities: [], poolCommittableBytes: null, membership: "active",
   observedContainerCount: 0, observedAt: "2026-10-12T00:00:00Z",
 });
 

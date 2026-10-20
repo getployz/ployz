@@ -2,7 +2,7 @@ import type { BuildView, DeploymentView, NodeOutcome, RowPhase, ServerRow } from
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { machineId } from "#/test/ids";
-import { makeRunGraph, orderRows, rowLabel, rowLight, rowPhaseLabel, selectRunNode } from "./run-graph";
+import { cleanupLabel, makeRunGraph, orderRows, rowLabel, rowLight, rowPhaseLabel, selectRunNode } from "./run-graph";
 
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
   id: "d1", status: "running", in_flight: true, builds: [], nodes: [], runtime_names: {}, preview: null, ...fields,
@@ -200,5 +200,28 @@ describe("run graph", () => {
     const graph = makeRunGraph(deployment({ nodes: [volume] }));
     expect(graph.nodes[0]?.light).toBe("deployed");
     expect(graph.done).toBe(1);
+  });
+
+  it("shows Cloud's cleanup after the last Service only when Cloud ran one", () => {
+    expect(makeRunGraph(chain).nodes.some((node) => node.type === "cleanup")).toBe(false);
+    const cleanup = makeRunGraph(chain, { state: "done", left: [], message: null }).nodes.find((node) => node.type === "cleanup");
+    expect(cleanup).toMatchObject({ id: "cleanup", name: "Cleanup", column: 4, row: 0, light: "deployed" });
+  });
+
+  it("words and lights each way a cleanup goes, naming each Machine a copy was left running on once", () => {
+    const left = (machine: string) => ({ machine, service: "web", reason: "did not answer" });
+    const light = (state: "waiting" | "done" | "left_running" | "cancelled" | "failed") =>
+      makeRunGraph(deployment({}), { state, left: [], message: null }).nodes[0]?.light;
+    expect([light("waiting"), light("done"), light("left_running"), light("cancelled"), light("failed")])
+      .toEqual(["deploying", "deployed", "unknown", "not_applied", "failed"]);
+    expect(cleanupLabel({ state: "waiting", left: [left("machine-3")], message: null })).toBe("Waiting");
+    expect(cleanupLabel({ state: "done", left: [], message: null })).toBe("Done");
+    expect(cleanupLabel({ state: "left_running", left: [left("machine-3")], message: null })).toBe("Left running on machine-3");
+    expect(cleanupLabel({ state: "left_running", left: [left("machine-3"), { ...left("machine-1"), service: "api" }, left("machine-1")], message: null }))
+      .toBe("Left running on machine-3, machine-1");
+    expect(cleanupLabel({ state: "left_running", left: [{ ...left("machine-3"), service: null }], message: null }))
+      .toBe("Left running on machine-3");
+    expect(cleanupLabel({ state: "cancelled", left: [], message: null })).toBe("A newer Deployment took over");
+    expect(cleanupLabel({ state: "failed", left: [], message: "boom" })).toBe("Failed");
   });
 });
