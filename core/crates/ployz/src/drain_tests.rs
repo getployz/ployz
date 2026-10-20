@@ -1,10 +1,14 @@
 //! The Drain's wire contract and scope, and how execution sequences what it observes.
 
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use futures_util::FutureExt;
 
 use ployz_core::{
-    ContainerId, DeploymentLogId, Machine, MachineId, MachineName, Namespace, QualifiedService,
-    RpcError, RpcErrorCode, ServingPointer, WireGuardPublicKey,
+    CopyRotation, DeploymentLogId, Machine, MachineId, MachineName, Namespace, QualifiedService,
+    RpcError, WireGuardPublicKey,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -12,12 +16,11 @@ use tokio_util::sync::CancellationToken;
 use super::{
     DrainClient, DrainOutcome, DrainReport, DrainScope, DrainStop, Lost, MachineRef, Move,
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
-    publish_replacements_past_cancel,
 };
-use crate::deploy::{Converged, OldCopy, Replacement};
+use crate::deploy::cleanup::Copy;
+use crate::deploy::{Converged, LastIn, Moving, OldCopyEnd, Unconfirmed};
 use crate::drain::retirement::Retirement;
-use crate::serving_publish::Amendment;
-use crate::serving_publish::tests::{FakeRow, container, pointer, retired_from};
+use crate::global_fixtures::container_id;
 
 fn namespace(value: &str) -> Namespace {
     Namespace::parse(value).unwrap()
@@ -88,6 +91,7 @@ fn an_outcome_is_flat_on_result() {
             moves: vec![Move {
                 from: server('b', "web-2"),
                 to: server('a', "web-1"),
+                old: OldCopyEnd::Stopped,
             }],
             failure: MoveFailure::Refused {
                 reason: StayReason::MidRollout,
@@ -102,6 +106,7 @@ fn an_outcome_is_flat_on_result() {
             "moves": [{
                 "from": { "id": "b".repeat(32), "name": "web-2" },
                 "to": { "id": "a".repeat(32), "name": "web-1" },
+                "old": { "kind": "stopped" },
             }],
             "failure": { "stage": "refused", "reason": { "kind": "mid_rollout" } },
         })
@@ -123,11 +128,40 @@ struct Scripted {
     /// Cancelled once the first Service converges.
     cancel_after_converge: Option<CancellationToken>,
     retired: bool,
-    pointer: Option<ServingPointer>,
-    pointer_error: Option<RpcError>,
-    kept: Vec<Option<Vec<ContainerId>>>,
-    repointed: Vec<(QualifiedService, DeploymentLogId, Vec<Replacement>)>,
-    repoint_error: Option<RpcError>,
+    copies: VecDeque<Result<Vec<Copy>, RpcError>>,
+    ends: VecDeque<OldCopyEnd>,
+    let_go: Vec<Copy>,
+    retire_time: Duration,
+    last_in: Vec<QualifiedService>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl Scripted {
+    fn retiring(&self, service: &QualifiedService, moves: Vec<Move>) -> Vec<Moving> {
+        self.calls.lock().unwrap().push(format!("in {service}"));
+        moves
+            .into_iter()
+            .map(|Move { from, to, old }| {
+                let calls = Arc::clone(&self.calls);
+                let retire_time = self.retire_time;
+                let refused = self.last_in.contains(service);
+                let service = service.clone();
+                let old = async move {
+                    tokio::time::sleep(retire_time).await;
+                    if refused {
+                        return Err(LastIn);
+                    }
+                    calls.lock().unwrap().push(format!("gone {service}"));
+                    Ok(old)
+                };
+                Moving {
+                    from,
+                    to,
+                    old: old.boxed(),
+                }
+            })
+            .collect()
+    }
 }
 
 impl DrainClient for Scripted {
@@ -147,44 +181,48 @@ impl DrainClient for Scripted {
         std::mem::take(&mut self.retirements)
     }
 
-    async fn pointer(
-        &mut self,
-        _service: &QualifiedService,
-    ) -> Result<Option<ServingPointer>, RpcError> {
-        self.pointer_error
-            .clone()
-            .map_or_else(|| Ok(self.pointer.clone()), Err)
-    }
-
     async fn converge(
         &mut self,
-        _service: &QualifiedService,
-        old: OldCopy<'_>,
+        service: &QualifiedService,
         _cancellation: &CancellationToken,
-    ) -> Converged {
-        self.kept.push(match old {
-            OldCopy::Remove => None,
-            OldCopy::Keep { pointer } => Some(pointer.retiring.clone()),
-        });
+    ) -> Converged<Moving> {
         if let Some(cancellation) = &self.cancel_after_converge {
             cancellation.cancel();
         }
-        self.convergences
+        match self
+            .convergences
             .pop_front()
             .expect("one scripted convergence per Service")
+        {
+            Converged::Moved { moves } => Converged::Moved {
+                moves: self.retiring(service, moves),
+            },
+            Converged::Failed { moves, failure } => Converged::Failed {
+                moves: self.retiring(service, moves),
+                failure,
+            },
+            Converged::Stopped { moves, stop } => Converged::Stopped {
+                moves: self.retiring(service, moves),
+                stop,
+            },
+            Converged::NothingToMove => Converged::NothingToMove,
+            Converged::Stays { reason } => Converged::Stays { reason },
+        }
     }
 
-    async fn repoint(
+    async fn copies_on(
         &mut self,
-        service: &QualifiedService,
-        deploy: &DeploymentLogId,
-        replaced: &[Replacement],
-    ) -> Result<Amendment, RpcError> {
-        self.repointed
-            .push((service.clone(), deploy.clone(), replaced.to_vec()));
-        self.repoint_error
-            .clone()
-            .map_or(Ok(Amendment::Published { retries: 0 }), Err)
+        _server: &MachineId,
+        _service: &QualifiedService,
+    ) -> Result<Vec<Copy>, RpcError> {
+        self.copies.pop_front().unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    async fn let_go(&mut self, copy: &Copy, _cancellation: &CancellationToken) -> OldCopyEnd {
+        self.let_go.push(copy.clone());
+        self.ends
+            .pop_front()
+            .expect("one scripted end per Out copy")
     }
 }
 
@@ -216,14 +254,7 @@ fn one_move() -> Vec<Move> {
             id: MachineId::parse("a".repeat(32)).unwrap(),
             name: MachineName::parse("web-1").unwrap(),
         },
-    }]
-}
-
-fn one_replaced() -> Vec<Replacement> {
-    vec![Replacement {
-        old: container('1'),
-        new: container('9'),
-        deploy: DeploymentLogId::parse("dep-a").unwrap(),
+        old: OldCopyEnd::Stopped,
     }]
 }
 
@@ -280,6 +311,202 @@ fn nothing_left() -> Result<Vec<QualifiedService>, Lost> {
     Ok(Vec::new())
 }
 
+fn left_on_server(rotation: CopyRotation) -> Copy {
+    Copy {
+        machine_id: drained().id,
+        service: qualified("web"),
+        container_id: container_id('c'),
+        rotation,
+    }
+}
+
+fn running(unconfirmed: Unconfirmed) -> OldCopyEnd {
+    OldCopyEnd::Running { unconfirmed }
+}
+
+#[tokio::test]
+async fn a_copy_held_by_the_user_stays_and_leaves_the_drain_incomplete() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::NothingToMove].into(),
+        copies: [Ok(vec![left_on_server(CopyRotation::Held(
+            DeploymentLogId::parse("you").unwrap(),
+        ))])]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(outcomes(&report), [entry("web", DrainOutcome::Held)]);
+    assert!(
+        client.let_go.is_empty(),
+        "a Held copy is neither moved nor let go"
+    );
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn an_out_copy_left_on_the_server_is_let_go_and_never_moved() {
+    let out = left_on_server(CopyRotation::Out);
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::NothingToMove].into(),
+        copies: [Ok(vec![out.clone()])].into(),
+        ends: [OldCopyEnd::Stopped].into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry(
+            "web",
+            DrainOutcome::OldCopies {
+                ends: vec![OldCopyEnd::Stopped],
+            },
+        )]
+    );
+    assert_eq!(client.let_go, [out]);
+    assert!(report.complete());
+}
+
+#[tokio::test]
+async fn a_move_beside_an_out_copy_reports_the_move_then_the_old_copy() {
+    let proxies = Unconfirmed::Proxies {
+        servers: vec![MachineRef {
+            id: MachineId::parse("c".repeat(32)).unwrap(),
+            name: MachineName::parse("web-3").unwrap(),
+        }],
+    };
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
+        copies: [Ok(vec![left_on_server(CopyRotation::Out)])].into(),
+        ends: [running(proxies.clone())].into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [
+            entry("web", moved()),
+            entry(
+                "web",
+                DrainOutcome::OldCopies {
+                    ends: vec![running(proxies)],
+                },
+            ),
+        ]
+    );
+    assert!(
+        !report.complete(),
+        "an old copy left running keeps the drain open"
+    );
+}
+
+#[tokio::test]
+async fn a_move_whose_old_copy_is_still_in_leaves_the_drain_incomplete() {
+    let moves = vec![Move {
+        old: OldCopyEnd::In {
+            unconfirmed: Unconfirmed::Failed {
+                detail: "the Server did not answer".into(),
+            },
+        },
+        ..one_move().remove(0)
+    }];
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved {
+            moves: moves.clone(),
+        }]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry("web", DrainOutcome::Moved { moves })]
+    );
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn the_last_copy_in_rotation_stays_and_leaves_the_drain_incomplete() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Stays {
+            reason: StayReason::LastIn,
+        }]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry(
+            "web",
+            DrainOutcome::Stays {
+                reason: StayReason::LastIn,
+            },
+        )]
+    );
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn cancelled_after_the_move_leaves_the_out_copy_running_without_asking() {
+    let cancellation = CancellationToken::new();
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
+        copies: [Ok(vec![left_on_server(CopyRotation::Out)])].into(),
+        cancel_after_converge: Some(cancellation.clone()),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &cancellation).await;
+    assert_eq!(
+        outcomes(&report),
+        [
+            entry("web", moved()),
+            entry(
+                "web",
+                DrainOutcome::OldCopies {
+                    ends: vec![running(Unconfirmed::Cancelled)],
+                },
+            ),
+        ]
+    );
+    assert!(client.let_go.is_empty(), "a cancelled drain sends no Gone");
+    assert!(!report.complete());
+}
+
+#[tokio::test]
+async fn a_failed_copy_listing_leaves_the_leftovers_to_remaining() {
+    let mut client = Scripted {
+        observations: [Ok(vec![qualified("web")])].into(),
+        convergences: [Converged::NothingToMove].into(),
+        copies: [Err(RpcError {
+            code: ployz_core::RpcErrorCode::Unavailable,
+            message: "the Server did not answer".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        })]
+        .into(),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [entry("web", DrainOutcome::NothingToMove)]
+    );
+    assert!(client.let_go.is_empty());
+    assert_eq!(
+        report.remaining,
+        Remaining::Observed {
+            services: vec![qualified("web")],
+            unchosen: Vec::new(),
+        }
+    );
+}
+
 #[tokio::test]
 async fn cancelled_before_globals_attempts_nothing() {
     let mut client = Scripted {
@@ -333,11 +560,7 @@ async fn cancelled_between_services_keeps_the_moves_made() {
     let cancellation = CancellationToken::new();
     let mut client = Scripted {
         observations: [nothing_left()].into(),
-        convergences: [Converged::Moved {
-            moves: one_move(),
-            replaced: one_replaced(),
-        }]
-        .into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
         cancel_after_converge: Some(cancellation.clone()),
         ..Scripted::default()
     };
@@ -407,21 +630,13 @@ async fn losing_the_entry_after_globals_keeps_their_retirements_and_stops() {
 async fn losing_the_entry_mid_replicated_stops_at_that_service() {
     let lost = Converged::Stopped {
         moves: Vec::new(),
-        replaced: Vec::new(),
         stop: DrainStop::EntryUnreachable {
             detail: "timed out".into(),
         },
     };
     let mut client = Scripted {
         observations: [nothing_left()].into(),
-        convergences: [
-            Converged::Moved {
-                moves: one_move(),
-                replaced: one_replaced(),
-            },
-            lost,
-        ]
-        .into(),
+        convergences: [Converged::Moved { moves: one_move() }, lost].into(),
         ..Scripted::default()
     };
     let report = run(
@@ -466,11 +681,7 @@ async fn only_a_global_still_observed_undoes_its_retirement() {
             nothing_left(),
         ]
         .into(),
-        convergences: [Converged::Moved {
-            moves: one_move(),
-            replaced: one_replaced(),
-        }]
-        .into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
         ..Scripted::default()
     };
     let report = run(
@@ -500,11 +711,7 @@ async fn only_a_global_still_observed_undoes_its_retirement() {
     let mut client = Scripted {
         retirements: retirements(),
         observations: [Ok(vec![qualified("probe")]), Ok(vec![qualified("probe")])].into(),
-        convergences: [Converged::Moved {
-            moves: one_move(),
-            replaced: one_replaced(),
-        }]
-        .into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
         ..Scripted::default()
     };
     let report = run(
@@ -533,11 +740,7 @@ async fn a_full_drain_is_complete_and_names_the_user_services_its_scope_left_alo
     let blog = QualifiedService::parse("blog/web").unwrap();
     let mut client = Scripted {
         observations: [Ok(vec![blog.clone(), QualifiedService::system_ingress()])].into(),
-        convergences: [Converged::Moved {
-            moves: one_move(),
-            replaced: one_replaced(),
-        }]
-        .into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
         ..Scripted::default()
     };
     let scope = DrainScope::Owned {
@@ -560,265 +763,73 @@ async fn a_full_drain_is_complete_and_names_the_user_services_its_scope_left_alo
     );
 }
 
-#[tokio::test]
-async fn a_moved_service_is_repointed_and_one_with_nothing_to_move_is_not() {
+#[tokio::test(start_paused = true)]
+async fn old_copy_retires_overlap_the_next_move() {
     let mut client = Scripted {
         observations: [nothing_left()].into(),
         convergences: [
-            Converged::Moved {
-                moves: one_move(),
-                replaced: one_replaced(),
-            },
-            Converged::NothingToMove,
+            Converged::Moved { moves: one_move() },
+            Converged::Moved { moves: one_move() },
         ]
         .into(),
-        pointer: Some(pointer('a', &['1', '2'], &['3'])),
+        retire_time: Duration::from_secs(5),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    let calls = client.calls.lock().unwrap().clone();
+    let at = |call: &str| calls.iter().position(|seen| seen == call).unwrap();
+    assert!(
+        at("in app/api") < at("gone app/web"),
+        "the next move starts before the old copy is Gone: {calls:?}"
+    );
+    assert_eq!(
+        outcomes(&report),
+        [entry("web", moved()), entry("api", moved())]
+    );
+    assert!(report.complete());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_old_copy_refused_out_keeps_its_move_and_stays() {
+    let mut client = Scripted {
+        observations: [Ok(vec![qualified("web")])].into(),
+        convergences: [
+            Converged::Moved { moves: one_move() },
+            Converged::Moved { moves: one_move() },
+        ]
+        .into(),
+        retire_time: Duration::from_secs(5),
+        last_in: vec![qualified("web")],
         ..Scripted::default()
     };
     let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
     assert_eq!(
-        client.repointed,
-        [(
-            qualified("web"),
-            DeploymentLogId::parse("dep-a").unwrap(),
-            one_replaced()
-        )]
-    );
-    assert_eq!(
         outcomes(&report),
         [
-            entry("web", moved()),
-            entry("api", DrainOutcome::NothingToMove)
+            entry(
+                "web",
+                DrainOutcome::Failed {
+                    moves: one_move()
+                        .into_iter()
+                        .map(|step| Move {
+                            old: OldCopyEnd::In {
+                                unconfirmed: Unconfirmed::Failed {
+                                    detail: format!(
+                                        "{} still counted it as the last copy serving",
+                                        step.from.name
+                                    ),
+                                },
+                            },
+                            ..step
+                        })
+                        .collect(),
+                    failure: MoveFailure::Refused {
+                        reason: StayReason::LastIn,
+                    },
+                }
+            ),
+            entry("api", moved()),
         ]
-    );
-}
-
-#[tokio::test]
-async fn a_failed_repoint_reads_as_the_replacement_not_serving() {
-    let mut client = Scripted {
-        observations: [nothing_left()].into(),
-        convergences: [Converged::Moved {
-            moves: one_move(),
-            replaced: one_replaced(),
-        }]
-        .into(),
-        pointer: Some(pointer('a', &['1'], &[])),
-        repoint_error: Some(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "lost".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
-        ..Scripted::default()
-    };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    let outcomes = outcomes(&report);
-    let [(_, DrainOutcome::Failed { moves, failure })] = outcomes.as_slice() else {
-        panic!("{report:?}");
-    };
-    assert_eq!(*moves, one_move());
-    assert!(
-        matches!(failure, MoveFailure::NotServing { detail, replacement_removed: false, .. } if detail.contains("Serving Pointer")),
-        "{failure:?}"
     );
     assert!(!report.complete());
-}
-
-#[tokio::test]
-async fn a_failed_repoint_after_a_stop_reports_the_failure_and_the_stop() {
-    let stop = DrainStop::EntryUnreachable {
-        detail: "timed out".into(),
-    };
-    let mut client = Scripted {
-        observations: [nothing_left()].into(),
-        convergences: [Converged::Stopped {
-            moves: one_move(),
-            replaced: one_replaced(),
-            stop: stop.clone(),
-        }]
-        .into(),
-        pointer: Some(pointer('a', &['1'], &[])),
-        repoint_error: Some(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "lost".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
-        ..Scripted::default()
-    };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    let outcomes = outcomes(&report);
-    let [(_, DrainOutcome::Failed { moves, failure })] = outcomes.as_slice() else {
-        panic!("{report:?}");
-    };
-    assert_eq!(*moves, one_move());
-    assert!(
-        matches!(failure, MoveFailure::NotServing { detail, .. } if detail.contains("Serving Pointer")),
-        "{failure:?}"
-    );
-    assert_eq!(report.stopped, Some(stop));
-}
-
-#[tokio::test]
-async fn a_pointed_service_keeps_its_old_copies_and_an_unpointed_one_removes_them() {
-    let mut client = Scripted {
-        observations: [nothing_left()].into(),
-        convergences: [Converged::Moved {
-            moves: one_move(),
-            replaced: one_replaced(),
-        }]
-        .into(),
-        pointer: Some(pointer('a', &['1'], &['3'])),
-        ..Scripted::default()
-    };
-    run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    assert_eq!(client.kept, [Some(vec![container('3')])]);
-
-    let mut client = Scripted {
-        observations: [nothing_left()].into(),
-        convergences: [Converged::Moved {
-            moves: one_move(),
-            replaced: Vec::new(),
-        }]
-        .into(),
-        ..Scripted::default()
-    };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    assert_eq!(client.kept, [None]);
-    assert!(
-        client.repointed.is_empty(),
-        "nothing to publish without a pointer"
-    );
-    assert_eq!(outcomes(&report), [entry("web", moved())]);
-}
-
-#[tokio::test]
-async fn a_drain_publishes_its_replacements_by_id_and_retires_what_they_replaced() {
-    let fake = FakeRow::default();
-    *fake.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
-    let deploy = DeploymentLogId::parse("dep-a").unwrap();
-    let amended = publish_replacements_past_cancel(
-        &mut fake.clone(),
-        &qualified("web"),
-        &deploy,
-        &one_replaced(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(amended, Amendment::Published { retries: 0 });
-    assert_eq!(
-        *fake.row.lock().unwrap(),
-        Some(retired_from(pointer('a', &['2', '9'], &['1']), 'a')),
-        "the replacement serves though it carries no deploy label"
-    );
-}
-
-#[tokio::test]
-async fn a_drain_publishes_nothing_once_a_newer_deploy_owns_the_pointer() {
-    let fake = FakeRow::default();
-    *fake.row.lock().unwrap() = Some(pointer('a', &['1', '2'], &[]));
-    fake.interlopers
-        .lock()
-        .unwrap()
-        .push(pointer('b', &['7'], &['1', '2']));
-    let deploy = DeploymentLogId::parse("dep-a").unwrap();
-    let amended = publish_replacements_past_cancel(
-        &mut fake.clone(),
-        &qualified("web"),
-        &deploy,
-        &one_replaced(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(amended, Amendment::Outdated);
-    assert_eq!(
-        *fake.row.lock().unwrap(),
-        Some(pointer('b', &['7'], &['1', '2']))
-    );
-}
-
-#[tokio::test]
-async fn a_service_whose_pointer_cannot_be_read_stays_and_nothing_moves() {
-    let mut client = Scripted {
-        observations: [nothing_left()].into(),
-        pointer_error: Some(RpcError {
-            code: ployz_core::RpcErrorCode::Unavailable,
-            message: "timed out".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
-        ..Scripted::default()
-    };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    assert_eq!(
-        outcomes(&report),
-        [entry(
-            "web",
-            DrainOutcome::Stays {
-                reason: StayReason::PointerUnread {
-                    detail: "timed out".into()
-                }
-            }
-        )]
-    );
-    assert!(client.kept.is_empty() && client.repointed.is_empty());
-}
-
-#[tokio::test]
-async fn an_old_copy_a_first_pointer_named_before_removal_is_repointed_under_it() {
-    let mut client = Scripted {
-        observations: [nothing_left()].into(),
-        convergences: [Converged::Moved {
-            moves: one_move(),
-            replaced: one_replaced(),
-        }]
-        .into(),
-        ..Scripted::default()
-    };
-    run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    assert_eq!(client.kept, [None]);
-    assert_eq!(
-        client.repointed,
-        [(
-            qualified("web"),
-            DeploymentLogId::parse("dep-a").unwrap(),
-            one_replaced()
-        )]
-    );
-}
-
-#[tokio::test]
-async fn a_pointed_move_is_complete_while_its_old_copy_retires() {
-    let still_listed = || Ok(vec![qualified("web")]);
-    let mut client = Scripted {
-        observations: [still_listed(), still_listed(), nothing_left()].into(),
-        convergences: [
-            Converged::Moved {
-                moves: one_move(),
-                replaced: one_replaced(),
-            },
-            Converged::NothingToMove,
-            Converged::NothingToMove,
-        ]
-        .into(),
-        pointer: Some(pointer('a', &['1'], &[])),
-        ..Scripted::default()
-    };
-    let first = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    assert_eq!(outcomes(&first), [entry("web", moved())]);
-    assert!(
-        first.complete(),
-        "the old copy retires through its pointer: {first:?}"
-    );
-    let retry = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    assert_eq!(
-        outcomes(&retry),
-        [entry("web", DrainOutcome::NothingToMove)]
-    );
-    assert!(
-        !retry.complete(),
-        "a retry moved nothing and cannot vouch for the listed copy: {retry:?}"
-    );
-    let gone = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
-    assert!(gone.complete(), "{gone:?}");
 }

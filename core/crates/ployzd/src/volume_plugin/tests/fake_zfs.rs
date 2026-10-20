@@ -158,7 +158,7 @@ case "$*" in
     if [ -e '{volume}' ]; then
       if [ -e '{mounted}' ]; then state=yes; else state=no; fi
       if [ -e '{incompatible_volume}' ]; then volume_mountpoint=/srv/data; else volume_mountpoint=/var/lib/ployz-volumes/data; fi
-      if [ -e '{unbounded_volume}' ]; then refquota=none; else refquota=1073741824; fi
+      if [ -e '{unbounded_volume}' ]; then refquota=none; else refquota=$(prop tank/ployz/data refquota 1073741824); fi
       if [ -e '{readonly_volume}' ]; then volume_readonly=on; else volume_readonly=off; fi
       printf 'tank/ployz/data\t%s\t966367642\t966367642\t%s\t%s\t%s\n' "$refquota" "$volume_mountpoint" "$state" "$volume_readonly"
     fi
@@ -230,7 +230,7 @@ case "$*" in
     ;;
   'get -Hp -o value refquota tank/ployz/data')
     require "$6"
-    if [ -e '{unbounded_volume}' ]; then echo none; else echo 1073741824; fi
+    if [ -e '{unbounded_volume}' ]; then echo none; else prop "$6" "$5" 1073741824; fi
     ;;
   'get -Hp -o value refquota tank/ployz-mirror/data/fs')
     require "$6"
