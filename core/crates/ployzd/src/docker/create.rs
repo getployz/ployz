@@ -41,7 +41,8 @@ pub(crate) fn container_log_config() -> HostConfigLogConfig {
 ///
 /// A request written to a powered-off upstream waits for retransmits, which `dial_timeout`
 /// doesn't cover and the default 15 take about 15 minutes. `tcp_retries2=5` gives up in
-/// about 14s, and Caddy retries a GET on another upstream.
+/// about 14s, and Caddy retries a GET on another upstream. It covers Caddy's whole netns, so a
+/// public client whose link stalls with unacked data is reset then too, not after 15 minutes.
 pub(super) fn ingress_sysctls(
     body: &mut ContainerCreateBody,
     namespace: &Namespace,
