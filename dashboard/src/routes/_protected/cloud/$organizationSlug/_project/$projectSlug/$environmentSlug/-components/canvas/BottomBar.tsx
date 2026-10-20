@@ -42,6 +42,10 @@ const subscribeStorage = (onChange: () => void) => {
 type BottomBarProps = {
   groups: ChangeGroup[];
   totalChanges: number;
+  /** What the bar counts as changes: edits not yet saved. Defaults to `totalChanges`. */
+  stagedChanges?: number;
+  /** The latest Save when it is all there is to deploy: the Servers don't run it yet. */
+  notRunning?: number | null;
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
@@ -86,6 +90,8 @@ type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
 export function BottomBar({
   groups,
   totalChanges,
+  stagedChanges = totalChanges,
+  notRunning = null,
   canSave,
   onDeploy,
   onSave,
@@ -170,10 +176,13 @@ export function BottomBar({
   const created = groups.filter((group) => group.lifecycle === "create" && group.canDiscard).map((group) => group.nodeName);
 
   function discardAll() {
-    if (created.length > 0 && !confirmingDiscard) {
-      setConfirmingDiscard(true);
-      return;
-    }
+    if (created.length > 0) setConfirmingDiscard(true);
+    else onDiscardAll();
+  }
+
+  // The dialog stays up through its exit animation: a second click there neither reopens it nor discards again.
+  function confirmDiscard() {
+    if (!confirmingDiscard) return;
     setConfirmingDiscard(false);
     onDiscardAll();
   }
@@ -203,9 +212,12 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
+  // With only a Save left to deploy, Discard all returns to that Save: nothing would change.
+  const nothingToDiscard = stagedChanges === 0 && notRunning !== null;
+  const counted = stagedChanges > 0 ? plural(stagedChanges, "change") : notRunning === null ? null : `#${notRunning} not running`;
   const staged = hasChanges ? (
-    <Row staged title={busy.has("discarding") ? "Discarding…" : ((totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
-      shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
+    <Row staged title={busy.has("discarding") ? "Discarding…" : ((counted ?? "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
+      shortTitle={counted ?? "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
@@ -226,9 +238,11 @@ export function BottomBar({
           <DropdownMenuItem disabled={!saveable} onClick={save}>
             {busy.has("saving") ? <><Spinner />Saving…</> : "Save only"}
           </DropdownMenuItem>
-          <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
-            Discard all changes
-          </DropdownMenuItem>
+          {nothingToDiscard ? null : (
+            <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
+              Discard all changes
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
@@ -247,7 +261,7 @@ export function BottomBar({
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
-    onDiscardAll: discardAll,
+    onDiscardAll: nothingToDiscard ? undefined : discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
     ...proposals,
@@ -261,8 +275,8 @@ export function BottomBar({
       {bar && host ? createPortal(bar, host) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
       <ConfirmDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard} title="Discard all changes?"
-        description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Other changes return to their reviewed baseline.`}
-        actionLabel="Discard all" variant="destructive" onConfirm={discardAll} />
+        description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Other changes return to the latest saved version.`}
+        actionLabel="Discard all" variant="destructive" onConfirm={confirmDiscard} />
     </>
   );
 }

@@ -175,6 +175,7 @@ fn held_on_a() -> ployz_store::VolumeObservation {
             name,
         }],
         unanswered: Vec::new(),
+        failure: None,
     }
 }
 
@@ -195,6 +196,7 @@ fn saved_loss_of(orphaned: bool) -> (ConfigStore, Actor) {
             &ployz_store::CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -336,17 +338,283 @@ fn a_push_keeps_saved_loss_data_while_a_server_is_unanswered_or_unsought() {
 }
 
 #[test]
-fn a_push_that_leaves_out_the_service_mounting_the_volume_keeps_its_data() {
+fn a_push_that_builds_another_service_still_deletes_the_accepted_data() {
     let (store, who) = saved_volume_loss();
     set(&store, &who, "web.watchPaths", json!(["web/**"]));
-    system(&store, &push(None, Some(H1), None));
-    // Consent stays for a later push that ships web.
+    system(&store, &push(None, Some(H1), Some(&["web/main.rs"])));
     let narrow = push(Some(H1), Some(H2), Some(&["api/main.rs"]));
-    assert!(deletes_of(&store, &narrow, Some(held_on_a())).is_empty());
     assert_eq!(
-        deletes_of(&store, &push(Some(H2), Some(H3), None), Some(held_on_a())),
+        deletes_of(&store, &narrow, Some(held_on_a())),
         [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
     );
+}
+
+#[test]
+fn a_push_never_deletes_data_no_save_accepted() {
+    let (store, who) = shop();
+    let data = || ployz_store::VolumeName::parse("data").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data(),
+            },
+        )
+        .unwrap();
+    // No Server held it at Save, so the Save asked nothing and accepted no loss.
+    let mut empty = held_on_a();
+    empty.held.clear();
+    store
+        .write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                volumes: Some(empty),
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+    assert!(pushed_deletes(&store, Some(held_on_a())).is_empty());
+}
+
+#[test]
+fn a_push_removes_a_volume_the_servers_still_show_empty() {
+    let (store, who) = shop();
+    let data = || ployz_store::VolumeName::parse("data").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data(),
+            },
+        )
+        .unwrap();
+    let mut empty = held_on_a();
+    empty.held.clear();
+    store
+        .write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                volumes: Some(empty.clone()),
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+
+    let Written::Automated(automated) = store
+        .system(
+            &org(),
+            &push(None, Some(H1), None),
+            &Trusted {
+                volumes: Some(empty),
+                ..Trusted::default()
+            },
+        )
+        .unwrap()
+    else {
+        panic!("a system event writes Automated")
+    };
+    let nodes = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: automated.admitted[0].deployment.id.clone(),
+            },
+        )
+        .unwrap()
+        .nodes;
+    assert!(
+        nodes.iter().any(
+            |node| matches!(node.node, ployz_store::DeployedNode::Volume { .. })
+                && node.node.name() == "data"
+        ),
+        "{nodes:?}"
+    );
+}
+
+/// Deploy production, then add Volume `data` on `web` and admit a Deploy that
+/// creates it, left in flight, then remove `data` from Working State.
+fn volume_in_flight() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("data").unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    backend::admit(&store, &who, "production", 2);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: ployz_store::VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    (store, who)
+}
+
+fn save_dropping_data(
+    store: &ConfigStore,
+    who: &Actor,
+    version: Option<String>,
+) -> Result<ployz_store::Published, ployz_core::RpcError> {
+    store.write_trusted(
+        who,
+        &Publish {
+            id: None,
+            environment: EnvironmentRef::default(),
+            version,
+            message: None,
+            accept_volume_loss: vec![ployz_store::VolumeName::parse("data").unwrap()],
+        },
+        &Trusted {
+            volumes: Some(held_on_a()),
+            ..Trusted::default()
+        },
+    )
+}
+
+#[test]
+fn a_save_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
+    let (store, who) = volume_in_flight();
+    let removals = store
+        .read(&who, &ployz_store::RemovalsQuery::default())
+        .unwrap();
+    assert_eq!(
+        texts(
+            &removals
+                .volumes
+                .iter()
+                .map(|volume| &volume.name)
+                .collect::<Vec<_>>()
+        ),
+        ["data"]
+    );
+    let refused = save_dropping_data(&store, &who, None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    assert!(pushed_deletes(&store, Some(held_on_a())).is_empty());
+
+    let (store, who) = volume_in_flight();
+    let refused = save_dropping_data(&store, &who, None).unwrap_err();
+    save_dropping_data(
+        &store,
+        &who,
+        Some(refused.details["version"].as_str().unwrap().to_owned()),
+    )
+    .unwrap();
+    assert_eq!(
+        pushed_deletes(&store, Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+#[test]
+fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
+    let (store, who) = volume_in_flight();
+    let deploy = |version: Option<String>| {
+        store.write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000103")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version,
+                upload: None,
+                accept_volume_loss: vec![ployz_store::VolumeName::parse("data").unwrap()],
+                message: None,
+            }),
+            &Trusted {
+                volumes: Some(held_on_a()),
+                ..Trusted::default()
+            },
+        )
+    };
+    let refused = deploy(None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    deploy(Some(
+        refused.details["version"].as_str().unwrap().to_owned(),
+    ))
+    .unwrap();
+    let deletes: Vec<String> = store
+        .claim(
+            &ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap(),
+            &ployz_store::RunnerId::parse("runner").unwrap(),
+        )
+        .unwrap()
+        .deletes
+        .iter()
+        .map(|volume| format!("{}:{}", volume.machine_id, volume.name))
+        .collect();
+    assert_eq!(deletes, [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]);
 }
 
 #[test]
@@ -756,6 +1024,304 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
 }
 
 #[test]
+fn a_push_ships_every_saved_change_and_builds_only_what_it_selects() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    set(&store, &who, "api.watchPaths", json!(["api/**"]));
+    publish(&store, &who);
+    let first = system(&store, &push(None, Some(H1), None));
+    let first = &first.admitted[0].deployment.id;
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    store.claim(first, &runner).unwrap();
+    store
+        .record(
+            first,
+            &runner,
+            ployz_store::RunEvidence::Build(ployz_store::BuildReport {
+                service: ServiceName::parse("api").unwrap(),
+                status: ployz_store::BuildStatus::Built,
+                message: None,
+                log: String::new(),
+            }),
+        )
+        .unwrap();
+    set(&store, &who, "api.replicas", json!(3));
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    // api's Saved change ships too, on the commit it last built.
+    assert_eq!(
+        deployed(&store, &who, &automated),
+        vec![(vec!["web".to_owned(), "api".to_owned()], 2)]
+    );
+    assert_eq!(pinned(&store, &automated, "web").as_deref(), Some(H2));
+    assert_eq!(pinned(&store, &automated, "api").as_deref(), Some(H1));
+}
+
+#[test]
+fn a_push_tears_down_a_service_a_save_removed() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    publish(&store, &who);
+    system(&store, &push(None, Some(H1), None));
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    assert_eq!(
+        deployed(&store, &who, &automated),
+        vec![(vec!["web".to_owned(), "api".to_owned()], 2)]
+    );
+}
+
+#[test]
+fn a_push_tears_down_a_service_a_save_removed_while_its_first_deploy_ran() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    publish(&store, &who);
+    let first = system(&store, &push(None, Some(H1), None));
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    store
+        .claim(&first.admitted[0].deployment.id, &runner)
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    assert_eq!(
+        deployed(&store, &who, &automated),
+        vec![(vec!["web".to_owned(), "api".to_owned()], 2)]
+    );
+}
+
+#[test]
+fn a_push_ships_a_saved_config_nothing_mounts() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    backend::deploy(&store, &who, "production", 1);
+    system(&store, &push(None, Some(H1), None));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000025").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ConfigName::parse("extra").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    let nodes: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: automated.admitted[0].deployment.id.clone(),
+            },
+        )
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    assert!(nodes.contains(&"extra".to_owned()), "{nodes:?}");
+}
+
+#[test]
+fn a_push_removes_a_config_a_save_deleted_while_a_deploy_shipped_it() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    backend::deploy(&store, &who, "production", 1);
+    system(&store, &push(None, Some(H1), None));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000025").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ConfigName::parse("extra").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let shipping = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    store
+        .claim(&shipping.admitted[0].deployment.id, &runner)
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ployz_core::ConfigName::parse("extra").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H2), Some(H3), Some(&["web/src/main.rs"])),
+    );
+    let nodes: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: automated.admitted[0].deployment.id.clone(),
+            },
+        )
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    assert!(nodes.contains(&"extra".to_owned()), "{nodes:?}");
+}
+
+#[test]
+fn a_push_ships_a_config_a_save_restored_while_a_deploy_removed_it() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    let extra = || ployz_core::ConfigName::parse("extra").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000025").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: extra(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    let with_extra = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000101")
+                    .unwrap(),
+            },
+        )
+        .unwrap()
+        .deployment
+        .saved;
+    for admitted in system(&store, &push(None, Some(H1), None)).admitted {
+        backend::run(&store, &admitted.deployment.id);
+    }
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: extra(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let removing = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    let removing = removing.admitted[0].deployment.id.clone();
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&removing, &runner).unwrap();
+    // While the removal runs, a Save brings the Config back.
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: with_extra,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: with_extra,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let restoring = system(
+        &store,
+        &push(Some(H2), Some(H3), Some(&["web/src/main.rs"])),
+    );
+    let restoring = restoring.admitted[0].deployment.id.clone();
+    backend::finish(&store, &removing, claimed);
+    backend::run(&store, &restoring);
+
+    let nodes: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: restoring.clone(),
+            },
+        )
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    assert!(nodes.contains(&"extra".to_owned()), "{nodes:?}");
+    let configs = store
+        .read(&who, &ployz_store::ConfigsQuery::default())
+        .unwrap()
+        .configs;
+    let listed = configs
+        .iter()
+        .find(|listed| listed.config.name == extra())
+        .expect("Saved holds extra");
+    assert!(listed.deployed, "{listed:?}");
+    assert_eq!(listed.change, None, "{listed:?}");
+}
+
+#[test]
 fn policy_settings_apply_at_once_and_select_by_watch_paths() {
     let (store, who) = shop();
     publish(&store, &who);
@@ -784,6 +1350,7 @@ fn policy_settings_apply_at_once_and_select_by_watch_paths() {
         )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    backend::deploy(&store, &who, "production", 1);
 
     system(&store, &push(None, Some(H1), None));
     // Only docs changed: web doesn't watch them, and api doesn't auto-deploy.

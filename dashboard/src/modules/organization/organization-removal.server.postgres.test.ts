@@ -2,10 +2,16 @@ import { eq } from "drizzle-orm";
 import { Cause, Effect, Exit } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { readCollection } from "#/collections/read.server";
+import { currentChangeCursor } from "#/modules/organization/change-log.server";
+import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
+import { readOrganizationChanges } from "#/routes/api/org/-changes.server";
+import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
+import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, session, user } from "#/modules/identity/tables";
-import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
+import { requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { presetGrant } from "#/modules/identity/token-grant";
 import { removeOrganization, removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
 import { organization } from "#/modules/organization/tables";
@@ -13,6 +19,7 @@ import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/
 import { Ployz, type PloyzService } from "#/modules/runtime/ployz.server";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
+import { makeSecretEncryption } from "#/utils/encrypted-secret.server";
 import { seedAnonymousStoreOrganization, sendsNowhere } from "#/test/store-cloud";
 
 const LAB = "00000000-0000-4000-8000-00000000c001";
@@ -102,6 +109,39 @@ describe("removeOrganization", () => {
   const SHOP = "00000000-0000-4000-8000-00000000c003";
   const HOME = "00000000-0000-4000-8000-00000000c004";
   const LATER = "00000000-0000-4000-8000-00000000c005";
+  const NAMED = "00000000-0000-4000-8000-00000000c006";
+
+  const removeOwned = (ownerId: string, organizationId: string, slug: string) => harness.runEffect(Effect.gen(function* () {
+    const store = yield* openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret");
+    return yield* removeOrganization({ userId: ownerId, organization: { id: organizationId, slug }, role: "owner" }, organizationId).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    );
+  }));
+
+  it("releases its Cluster Domain at the Hosted DNS endpoint that granted it", async () => {
+    const hostedDns = await startFakeHostedDns();
+    try {
+      const [fay] = (await harness.db.insert(user).values({ email: "fay@example.test", name: "Fay" }).returning({ id: user.id }))
+        .map((row) => row.id) as [string];
+      await harness.db.insert(organization).values({ id: NAMED, name: "Named", slug: "named" });
+      await harness.db.insert(member).values({ userId: fay, organizationId: NAMED, role: "owner" });
+      const now = new Date();
+      await harness.db.insert(organizationClusterDomain).values({
+        organizationId: NAMED, endpoint: hostedDns.url, name: "named.ployz.test",
+        encryptedToken: makeSecretEncryption("test-encryption-secret").encrypt("named-token"), reservedAt: now, leaseRenewedAt: now,
+      });
+      expect(await removeOwned(fay, NAMED, "named")).toMatchObject({ ok: true, value: { removed: true } });
+      expect(hostedDns.requests).toEqual([
+        { method: "DELETE", path: "/domains/named.ployz.test", authorization: "Bearer named-token", body: null },
+      ]);
+      expect(await harness.db.select().from(organizationClusterDomain).where(eq(organizationClusterDomain.organizationId, NAMED))).toEqual([]);
+    } finally {
+      await hostedDns.close();
+    }
+  });
 
   it("moves each session acting in it to its user's next Organization, or none", async () => {
     const [dan, eve] = (await harness.db.insert(user).values([
@@ -125,13 +165,7 @@ describe("removeOrganization", () => {
       { userId: dan, token: "dan-later", expiresAt, activeOrganizationId: LATER, activeOrganizationSlug: "later" },
       { userId: eve, token: "eve-shop", expiresAt, activeOrganizationId: SHOP, activeOrganizationSlug: "shop" },
     ]);
-    const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
-    const result = await harness.runEffect(removeOrganization({ userId: dan, organization: { id: SHOP, slug: "shop" }, role: "owner" }, SHOP).pipe(
-      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
-      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
-      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
-      Effect.provideService(InngestClient, sendsNowhere()),
-    ));
+    const result = await removeOwned(dan, SHOP, "shop");
     expect(result).toMatchObject({ ok: true, value: { removed: true } });
     const sessions = await harness.db.select({ token: session.token, id: session.activeOrganizationId, slug: session.activeOrganizationSlug })
       .from(session).orderBy(session.token);
@@ -140,5 +174,99 @@ describe("removeOrganization", () => {
       { token: "dan-shop", id: HOME, slug: "home" },
       { token: "eve-shop", id: null, slug: null },
     ]);
+  });
+
+  it("frees the slug, and an old link to it opens the new Organization only for its members", async () => {
+    const KILN = "00000000-0000-4000-8000-00000000c00a";
+    const NEW_KILN = "00000000-0000-4000-8000-00000000c00b";
+    const [ivy, gus] = (await harness.db.insert(user).values([
+      { email: "ivy@example.test", name: "Ivy" },
+      { email: "gus@example.test", name: "Gus" },
+    ]).returning({ id: user.id })).map((row) => row.id) as [string, string];
+    await harness.db.insert(organization).values({ id: KILN, name: "Kiln", slug: "kiln" });
+    await harness.db.insert(member).values({ userId: ivy, organizationId: KILN, role: "owner" });
+    const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+    const result = await harness.runEffect(removeOrganization({ userId: ivy, organization: { id: KILN, slug: "kiln" }, role: "owner" }, KILN).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    ));
+    expect(result).toMatchObject({ ok: true, value: { removed: true } });
+
+    await harness.db.insert(organization).values({ id: NEW_KILN, name: "Kiln", slug: "kiln" });
+    await harness.db.insert(member).values({ userId: gus, organizationId: NEW_KILN, role: "owner" });
+    const open = (userId: string) => harness.runEffect(Effect.exit(requireAccess({ userId }, "kiln", "org:read").pipe(
+      Effect.map((access) => access.organization.id),
+      Effect.provideService(SupportStaff, supportStaffOf([])),
+    )));
+    const former = await open(ivy);
+    expect(Exit.isFailure(former) && Cause.pretty(former.cause)).toContain("The organization was not found.");
+    expect(await open(gus)).toEqual(Exit.succeed(NEW_KILN));
+  });
+
+  it("reads a new Organization on a reused slug in full from the deleted one's cursor", async () => {
+    const OVEN = "00000000-0000-4000-8000-00000000c00c";
+    const NEW_OVEN = "00000000-0000-4000-8000-00000000c00d";
+    const [hal] = (await harness.db.insert(user).values({ email: "hal@example.test", name: "Hal" }).returning({ id: user.id })).map((row) => row.id) as [string];
+    await harness.db.insert(organization).values({ id: OVEN, name: "Oven", slug: "oven" });
+    await harness.db.insert(member).values({ userId: hal, organizationId: OVEN, role: "owner" });
+    await harness.db.insert(organizationSupportAccess).values({ organizationId: OVEN, allowed: true });
+    const readSupport = (since?: string) => harness.runEffect(readCollection({ userId: hal }, {
+      table: "organization_support_access", userId: hal, organizationSlug: "oven", since,
+    }).pipe(Effect.provideService(SupportStaff, supportStaffOf([]))));
+    const cached = await readSupport();
+    expect(cached).toMatchObject({ full: true, rows: [{ id: OVEN, allowed: true }] });
+
+    const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+    const result = await harness.runEffect(removeOrganization({ userId: hal, organization: { id: OVEN, slug: "oven" }, role: "owner" }, OVEN).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    ));
+    expect(result).toMatchObject({ ok: true, value: { removed: true } });
+    await harness.db.insert(organization).values({ id: NEW_OVEN, name: "Oven", slug: "oven" });
+    await harness.db.insert(member).values({ userId: hal, organizationId: NEW_OVEN, role: "owner" });
+
+    expect(await readSupport(cached.cursor)).toMatchObject({ full: true, rows: [] });
+  });
+
+  it("ends a change stream still open on a removed Organization, so the client reconnects to the slug's new one", async () => {
+    const KETTLE = "00000000-0000-4000-8000-00000000c00e";
+    const NEW_KETTLE = "00000000-0000-4000-8000-00000000c00f";
+    const [jo] = (await harness.db.insert(user).values({ email: "jo@example.test", name: "Jo" }).returning({ id: user.id })).map((row) => row.id) as [string];
+    await harness.db.insert(organization).values({ id: KETTLE, name: "Kettle", slug: "kettle" });
+    await harness.db.insert(member).values({ userId: jo, organizationId: KETTLE, role: "owner" });
+    const response = await handleOrgChangesRequest(new Request("http://localhost/api/org/changes?organizationSlug=kettle"), "kettle", {
+      authorize: (slug) => harness.runEffect(requireAccess({ userId: jo }, slug, "org:read").pipe(
+        Effect.map((access) => ({ organizationId: access.organization.id })),
+        Effect.provideService(SupportStaff, supportStaffOf([])),
+      )),
+      currentCursor: () => harness.runEffect(currentChangeCursor()),
+      readChanges: (input) => harness.runEffect(readOrganizationChanges(input)),
+    });
+    expect(response.status).toBe(200);
+    const reader = response.body?.getReader();
+    const ended = (async () => {
+      while (!(await reader?.read())?.done);
+      return "ended";
+    })();
+
+    const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+    const result = await harness.runEffect(removeOrganization({ userId: jo, organization: { id: KETTLE, slug: "kettle" }, role: "owner" }, KETTLE).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    ));
+    expect(result).toMatchObject({ ok: true, value: { removed: true } });
+    await harness.db.insert(organization).values({ id: NEW_KETTLE, name: "Kettle", slug: "kettle" });
+    await harness.db.insert(member).values({ userId: jo, organizationId: NEW_KETTLE, role: "owner" });
+
+    const still = new Promise((resolve) => setTimeout(resolve, 2_000, "still open"));
+    const outcome = await Promise.race([ended, still]);
+    if (outcome !== "ended") await reader?.cancel();
+    expect(outcome).toBe("ended");
   });
 });

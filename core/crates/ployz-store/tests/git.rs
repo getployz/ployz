@@ -271,6 +271,68 @@ fn a_git_service_round_trips_get_edit_publish() {
 }
 
 #[test]
+fn a_new_git_service_diffs_with_the_repository_and_branch_it_builds() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", Some("dev")), &evidence())
+        .unwrap();
+    let rows = |store: &ConfigStore| {
+        let diff = store.read(&who, &DiffQuery::default()).unwrap();
+        let rows = diff.changes[0]
+            .settings
+            .iter()
+            .map(|row| {
+                (
+                    row.path.clone(),
+                    row.before.clone(),
+                    row.after.clone(),
+                    row.can_restore,
+                )
+            })
+            .collect::<Vec<_>>();
+        (rows, diff.total_count)
+    };
+    assert_eq!(
+        rows(&store),
+        (
+            vec![
+                (
+                    "web.repository".into(),
+                    Value::Null,
+                    json!("acme/web"),
+                    false
+                ),
+                ("web.branch".into(), Value::Null, json!("dev"), false),
+            ],
+            3
+        )
+    );
+    // A branch changed since it was added is that change, which discard takes.
+    store
+        .write_trusted(
+            &who,
+            &edit(vec![set("web.branch", json!("main"))]),
+            &evidence(),
+        )
+        .unwrap();
+    assert_eq!(
+        rows(&store),
+        (
+            vec![
+                (
+                    "web.repository".into(),
+                    Value::Null,
+                    json!("acme/web"),
+                    false
+                ),
+                ("web.branch".into(), json!("dev"), json!("main"), true),
+            ],
+            3
+        )
+    );
+}
+
+#[test]
 fn push_policy_on_a_public_repository_applies_and_says_pushes_need_the_app() {
     let unheard = "Pushes reach Ployz only once the GitHub App is installed on acme/docs.";
     let notes = |store: &ConfigStore, who: &Actor| {
@@ -1205,21 +1267,20 @@ fn every_setting_set_must_apply_to_the_source_the_whole_edit_leaves() {
         ],
         "buildCommand: needs a repository source, and web runs an image",
     );
-    // An image and a repository in one edit: the later one is the source, and the other
-    // no longer applies to it.
+    // An image and a repository in one edit is two sources, in either order.
     refused(
         vec![
             set("web.image", json!("nginx:2")),
             set("web.repository", json!("acme/web")),
         ],
-        "image: needs an image source, and web builds a repository",
+        "Set web.image or web.repository, not both",
     );
     refused(
         vec![
             set("web.repository", json!("acme/web")),
             set("web.image", json!("nginx:2")),
         ],
-        "repository: needs a repository source, and web runs an image",
+        "Set web.image or web.repository, not both",
     );
     // Unsetting is never refused.
     store

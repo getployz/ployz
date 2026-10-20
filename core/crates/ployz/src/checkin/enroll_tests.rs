@@ -269,6 +269,11 @@ impl Host for Scripted {
             }
             if let Some(pace) = self.pace {
                 tokio::time::sleep(pace).await;
+                if let Some(last) = self.stages.last() {
+                    tokio::time::timeout(HEARTBEAT / 2, self.cloud.told(*last))
+                        .await
+                        .unwrap();
+                }
             }
         }
         self.events.lock().unwrap().push("finished");
@@ -284,8 +289,8 @@ impl Host for Scripted {
         )
     }
 
-    async fn participating(&self) -> bool {
-        self.participating
+    async fn participating(&self) -> Option<String> {
+        self.participating.then(|| "web-1".to_owned())
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -434,8 +439,7 @@ async fn a_failed_enroll_goes_back_to_waiting_and_tells_cloud_where_it_failed() 
     assert_eq!(
         next,
         Next::Wait {
-            after: Duration::ZERO,
-            log: None
+            after: Duration::ZERO
         }
     );
     let status = fixture.status();
@@ -458,8 +462,7 @@ async fn a_failed_enroll_goes_back_to_waiting_and_tells_cloud_where_it_failed() 
     assert_eq!(
         next,
         Next::Wait {
-            after: Duration::from_secs(30),
-            log: None
+            after: Duration::from_secs(30)
         }
     );
     let last = cloud.bodies.lock().unwrap().last().cloned().unwrap();
@@ -501,6 +504,7 @@ async fn an_attempt_cut_short_is_sent_again_so_cloud_serves_it_to_resume() {
                 stage: EnrollStage::Joining,
                 failure: None,
             }),
+            no_cluster: false,
         },
         &fixture.paths,
     );
@@ -672,6 +676,7 @@ fn previous(fixture: &Fixture, answer: Seen, stage: EnrollStage) {
                 stage,
                 failure: None,
             }),
+            no_cluster: false,
         },
         &fixture.paths,
     );
@@ -859,8 +864,7 @@ async fn rejected_committed_resume_reports_its_actual_failure() {
     assert_eq!(
         next,
         Next::Wait {
-            after: Duration::ZERO,
-            log: None,
+            after: Duration::ZERO
         }
     );
     assert!(host.events().contains(&"finished"));
@@ -1108,8 +1112,7 @@ async fn replace_token(installing: bool) {
         assert_eq!(
             next,
             Next::Wait {
-                after: Duration::from_secs(30),
-                log: None
+                after: Duration::from_secs(30)
             },
             "{answer:?}, install {installing}"
         );
@@ -1128,8 +1131,7 @@ async fn replace_token(installing: bool) {
         assert_eq!(
             pass(&host, &mut client, &fixture.key, &fixture.paths, Utc::now()).await,
             Next::Wait {
-                after: Duration::from_secs(30),
-                log: None
+                after: Duration::from_secs(30)
             }
         );
     }
@@ -1274,7 +1276,7 @@ async fn an_enroll_instruction_closes_the_probe_ports_on_install_and_loop_passes
         assert!(std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok());
         assert!(probes.report().await.is_none());
         if installing {
-            assert!(matches!(next, Next::Wait { after, .. } if after.is_zero()));
+            assert_eq!(next, Next::Enrolling);
             assert!(host.events().is_empty());
         } else {
             assert_eq!(next, Next::Enrolled);

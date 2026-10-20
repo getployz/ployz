@@ -3,7 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
+import type { Client, DockerVolumeName, MachineId, MachineName, RuntimeWatchView } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -16,8 +16,8 @@ import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
 import type { JsonObject } from "#/db/tables";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
-import { machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
-import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
+import { enrollmentAllocation, machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
+import { makePloyzLayer, Ployz, RpcError } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
@@ -49,6 +49,7 @@ import { createOrganizationForSession } from "#/modules/organization/organizatio
 import { fakeGithubApi } from "#/test/fake-github";
 import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
 
 const origin = "http://localhost:3000";
 
@@ -72,18 +73,29 @@ const github = fakeGithubApi({
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
 
-/** Fake Servers keyed by Machine ID: each holds its Management Client slots, and can go offline or hang. */
+/**
+ * Fake Servers keyed by Machine ID: each holds its Management Client slots, and can go offline or hang, refuse a Set
+ * as a daemon does, or drop the Set's reply. Failures are the SDK's own RpcError, marked unanswered as it marks them.
+ */
 function fakeServers() {
-  const servers = new Map<string, { online: boolean | "hangs"; slots: Map<string, string> }>();
+  const servers = new Map<string, { online: boolean | "hangs" | "refuses" | "drops"; slots: Map<string, string> }>();
   let sets = 0;
   const layer = makePloyzLayer({
     connect: async (options) => {
       const [connection] = options.connections;
       const server = connection && "machine_id" in connection ? servers.get(connection.machine_id ?? "") : undefined;
       if (server?.online === "hangs") return new Promise<never>(() => undefined);
-      if (server === undefined || !server.online) throw new Error("Endpoint unavailable");
+      if (server === undefined || !server.online) {
+        throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null, unanswered: true });
+      }
       return asTestDouble<Client>()({
         setManagementClient: async (label: string) => {
+          if (server.online === "refuses") {
+            throw new RpcError({ code: "unavailable", message: "Cluster store is not available", details: null });
+          }
+          if (server.online === "drops") {
+            throw new RpcError({ code: "unavailable", message: "connection reset", details: null, unanswered: true });
+          }
           sets += 1;
           const capability = `ployz1:${connection?.machine_id}:${label}:${sets}`;
           server.slots.set(label, capability);
@@ -139,7 +151,7 @@ const cliLayer = Effect.fn(function* (
     configLayer,
     databaseLayer,
     Layer.succeed(Polar, { mode: "self_hosted" }),
-    Layer.succeed(InngestClient, overrides.inngest ?? new Inngest({ id: "cli-test" })),
+    Layer.succeed(InngestClient, overrides.inngest ?? sendsNowhere()),
     Layer.succeed(SecretEncryption, encryption),
     Layer.succeed(GithubApi, github.service),
     ployz,
@@ -157,6 +169,7 @@ const MadeOrganization = Schema.Struct({ id: Schema.String, slug: Schema.String,
 const Reply = Schema.Struct({
   run: Schema.optionalKey(Schema.Struct({ id: Schema.String, state: Schema.String })),
   organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
+  via: Schema.optionalKey(Schema.String),
   token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String, kind: Schema.String })),
   tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
     id: Schema.String, kind: Schema.String, current: Schema.Boolean, expired: Schema.Boolean,
@@ -170,6 +183,8 @@ const Reply = Schema.Struct({
   removed: Schema.optionalKey(Schema.Union([Schema.Boolean, Named])),
   connections: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, management: Schema.String }))),
   unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
+  refused: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, message: Schema.String }))),
+  names: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   servers: Schema.optionalKey(Schema.Union([
     Schema.Struct({ confirmed: Schema.Array(Schema.String), unconfirmed: Schema.Array(Schema.String) }),
     Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, reach: Schema.String })),
@@ -470,16 +485,32 @@ it.live(
         const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0] ?? assert.fail("no device");
         const asToken = { bearer: token.secret };
 
-        assert.strictEqual((yield* cli("POST", "tokens", asToken, { name: "child", expires_in_days: 365 })).status, 422);
+        // Refused for what it is, whatever it sent: a body it got wrong is never blamed instead.
+        const bodies: JsonObject[] = [{ name: "child", expires_in_days: 365 }, { name: "child", expiresInDays: 1, kind: "agent" }];
+        for (const body of bodies) {
+          const made = yield* cli("POST", "tokens", asToken, body);
+          assert.strictEqual(made.status, 403);
+          assert.deepStrictEqual(JSON.parse(made.text), {
+            error: { code: "forbidden", message: "Only a signed-in person can make tokens. No changes made.", details: { next: "ployz login" } },
+          });
+        }
         assert.lengthOf(yield* database.drizzle.select().from(organizationToken), 1);
-        assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, asToken)).status, 422);
-        assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, asToken)).status, 403);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 403);
         assert.strictEqual((yield* cli("GET", "tokens", asToken)).status, 200);
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 200);
 
         const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token ?? assert.fail("no fleet token");
-        assert.strictEqual((yield* cli("POST", "fleet-tokens", asToken, { expires_in: "30d" })).status, 422);
-        assert.strictEqual((yield* cli("DELETE", `fleet-tokens/${fleet.id}`, asToken)).status, 422);
+        for (const body of [{ expires_in: "30d" }, { expires_in: "2d" }]) {
+          const made = yield* cli("POST", "fleet-tokens", asToken, body);
+          assert.strictEqual(made.status, 403);
+          assert.deepStrictEqual(JSON.parse(made.text), {
+            error: { code: "forbidden", message: "Only a signed-in person can make Fleet Tokens. No changes made.", details: { next: "ployz login" } },
+          });
+        }
+        const revoked = yield* cli("DELETE", `fleet-tokens/${fleet.id}`, asToken);
+        assert.strictEqual(revoked.status, 403);
+        assert.deepStrictEqual(JSON.parse(revoked.text).error.details, { next: "ployz login" });
         assert.deepStrictEqual((yield* database.drizzle.select().from(fleetToken)).map((row) => [row.name, row.revokedAt]), [["rack-1", null]]);
         assert.strictEqual((yield* cli("GET", "fleet-tokens", asToken)).status, 200);
 
@@ -673,13 +704,13 @@ it.live(
         const ci = { bearer: token.secret };
 
         // Login needed no Server: nothing is paired yet.
-        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json, { connections: [], unreachable: [] });
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json, { connections: [], unreachable: [], refused: [], names: {} });
         yield* enroll(alice.organization.id, first, true);
         fake.servers.set(first, { online: true, slots: new Map() });
 
         const access = (yield* cli("POST", "server-access", alice)).json;
         const deviceKey = access.connections?.[0]?.management ?? assert.fail("no capability");
-        assert.deepStrictEqual(access, { connections: [{ machine_id: first, management: deviceKey }], unreachable: [] });
+        assert.deepStrictEqual(access, { connections: [{ machine_id: first, management: deviceKey }], unreachable: [], refused: [], names: {} });
         assert.strictEqual(fake.servers.get(first)?.slots.get(serverAccessLabel(device)), deviceKey);
         // Held, not re-provisioned; stored only encrypted.
         assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.connections, access.connections);
@@ -695,7 +726,26 @@ it.live(
         yield* enroll(alice.organization.id, later, false);
         const laterServer = { online: false, slots: new Map<string, string>() };
         fake.servers.set(later, laterServer);
-        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.unreachable, [later]);
+        yield* database.drizzle.insert(enrollmentAllocation).values({
+          organizationId: alice.organization.id,
+          clusterKey: createHash("sha256").update(pairingSecret).digest("hex"),
+          // The column admits any array: a name that isn't text stays out of the reply, and costs no connection.
+          assignments: [
+            { machine: { id: later, name: "box-node-2" } },
+            { machine: { id: "c".repeat(32), name: null } },
+            { machine: { id: "d".repeat(32), name: 7 } },
+          ] as never,
+        });
+        const offline = (yield* cli("POST", "server-access", alice)).json;
+        assert.deepStrictEqual(offline.unreachable, [later]);
+        assert.deepStrictEqual(offline.names, { [later]: "box-node-2" });
+        // The name a Server's Cluster last reported wins over enrollment's; one Cloud never learned stays out.
+        yield* database.drizzle.update(organizationMachine).set({ machineName: "box-node-09c8" as MachineName })
+          .where(eq(organizationMachine.machineId, later));
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.names, { [later]: "box-node-09c8" });
+        yield* database.drizzle.update(organizationMachine).set({ machineName: "box-node-1" as MachineName })
+          .where(eq(organizationMachine.machineId, first));
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.names, { [first]: "box-node-1", [later]: "box-node-09c8" });
         laterServer.online = true;
         const both = (yield* cli("POST", "server-access", alice)).json;
         assert.deepStrictEqual(both.connections?.map((row) => row.machine_id).sort(), [first, later]);
@@ -727,7 +777,7 @@ it.live(
         // Rerunning `token rm`, signed back in, retries once the Server is back.
         laterServer.online = true;
         const back = yield* signIn("alice");
-        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 403);
         const retried = (yield* cli("DELETE", `tokens/${device}`, back)).json;
         assert.deepStrictEqual(retried.removed, { id: device, kind: "device" });
         assert.deepStrictEqual(retried.servers, { confirmed: [later], unconfirmed: [] });
@@ -781,6 +831,33 @@ it.live(
       }).pipe(Effect.provide(layer));
     }),
   90_000,
+);
+
+it.live(
+  "Server access lists a Server that refused its holder with what it said, and only one that sent no reply as unreachable",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const refusing = ids.machineId("00000000000000000000000000001260");
+        const dropping = ids.machineId("00000000000000000000000000001261");
+        const offline = ids.machineId("00000000000000000000000000001262");
+        yield* enroll(alice.organization.id, refusing, true);
+        fake.servers.set(refusing, { online: "refuses", slots: new Map() });
+        yield* enroll(alice.organization.id, dropping, false);
+        fake.servers.set(dropping, { online: "drops", slots: new Map() });
+        yield* enroll(alice.organization.id, offline, false);
+        fake.servers.set(offline, { online: false, slots: new Map() });
+
+        const access = (yield* cli("POST", "server-access", alice)).json;
+        assert.deepStrictEqual(access.connections, []);
+        assert.deepStrictEqual(access.refused, [{ machine_id: refusing, message: "Cluster store is not available" }]);
+        assert.deepStrictEqual([...(access.unreachable ?? [])].sort(), [dropping, offline]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
 );
 
 it.live(
@@ -1338,6 +1415,15 @@ it.live(
         const byAgent = yield* cli("POST", "tokens", { ...alice, via: "agent" }, { name: "sneaky", expires_in_days: 30, kind: "cli" });
         assert.strictEqual(byAgent.json.token?.kind, "agent", byAgent.text);
 
+        // How Cloud hears the caller: `ployz` reads it to refuse an agent before asking for a typed name.
+        const via = Effect.fn(function* (as: As) {
+          return (yield* cli("GET", "organizations", as)).json.via;
+        });
+        assert.deepStrictEqual(
+          [yield* via(alice), yield* via({ bearer: ci }), yield* via({ bearer: agent }), yield* via({ bearer: ci, via: "agent" })],
+          ["cli", "cli", "agent", "agent"],
+        );
+
         const listed = yield* cli("GET", "tokens", alice);
         assert.deepStrictEqual(listed.json.tokens?.map(({ kind }) => kind).sort(), ["agent", "agent", "cli"]);
 
@@ -1447,7 +1533,7 @@ it.live(
           cli("POST", "tokens", alice, { name: "deploy", expires_in_days: 30, preset: "deploy", environment });
         assert.deepStrictEqual(refusedWith(yield* minted("Not An Environment")),
           [422, "No Project here has an Environment named Not An Environment."]);
-        assert.deepStrictEqual(refusedWith(yield* minted("")), [422, "A Deploy token needs an Environment; pass `--environment`."]);
+        assert.deepStrictEqual(refusedWith(yield* minted("")), [422, "A Deploy token needs an Environment; pass `--env`."]);
         const unknown = yield* minted("staging");
         assert.deepStrictEqual(refusedWith(unknown), [422, "No Project here has an Environment named staging."]);
         assert.lengthOf(yield* (yield* Database).drizzle.select().from(organizationToken), 0);

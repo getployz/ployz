@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
@@ -31,6 +31,9 @@ let latest: DeploymentSummary | null | undefined = null;
 let storage: (deploymentId: string) => string | null = () => null;
 /** Secrets without a value the next Deploy leaves out. */
 let notSet = 0;
+/** Edits not yet saved, and the latest Save when the Servers don't run it. */
+let stagedChanges: number | undefined;
+let notRunning: number | null = null;
 /** A write the Store hasn't answered for yet. */
 let busy: ReadonlySet<Busy> = new Set();
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
@@ -41,6 +44,8 @@ beforeEach(() => {
   latest = null;
   storage = () => null;
   notSet = 0;
+  stagedChanges = undefined;
+  notRunning = null;
   busy = new Set();
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
@@ -65,7 +70,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canSave
         <button type="button" onClick={() => setAgent(!agent)}>Agent</button>
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
-        <BottomBar groups={groups} totalChanges={totalChanges} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
+        <BottomBar groups={groups} totalChanges={totalChanges} stagedChanges={stagedChanges} notRunning={notRunning} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} latest={lists.latest} storage={storage} notes={{}} notSet={notSet} busy={busy}
           proposals={{ included: [] }} />
         <Outlet />
@@ -190,6 +195,70 @@ it("counts the secrets the Deploy leaves out beside the changes", async () => {
   notSet = 2;
   open(canvasUrl, [replicas], 1);
   expect((await bar()).getByText("1 change · 2 not set")).toBeTruthy();
+});
+
+it("names a Save the Servers don't run apart from staged changes, with Deploy", async () => {
+  stagedChanges = 0;
+  notRunning = 4;
+  open(canvasUrl, [replicas], 1);
+  const staged = await bar();
+  expect(staged.getAllByText("#4 not running")).toHaveLength(2);
+  expect(staged.queryByText("1 change")).toBeNull();
+  fireEvent.click(staged.getByRole("button", { name: /^Deploy/ }));
+  expect(onDeploy).toHaveBeenCalledOnce();
+});
+
+it("offers no Discard all while only a Save the Servers don't run is left", async () => {
+  stagedChanges = 0;
+  notRunning = 4;
+  open(canvasUrl, [replicas], 1);
+  await act(async () => { fireEvent.click((await bar()).getByRole("button", { name: "More change actions" })); });
+  expect(await screen.findByRole("menuitem", { name: "Save only" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Discard all changes" })).toBeNull();
+});
+
+it("leaves Discard all out of Details while only a Save the Servers don't run is left", async () => {
+  stagedChanges = 0;
+  notRunning = 4;
+  open(canvasUrl, [replicas], 1);
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  expect(await screen.findByRole("button", { name: "Save only" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Discard all" })).toBeNull();
+});
+
+it("counts only staged changes when a Save isn't running too", async () => {
+  stagedChanges = 2;
+  notRunning = 4;
+  open(canvasUrl, [replicas, cache], 3);
+  const staged = await bar();
+  expect(staged.getAllByText("2 changes")).toHaveLength(2);
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
+  expect(await screen.findByRole("menuitem", { name: "Discard all changes" })).toBeTruthy();
+});
+
+it("closes Discard all's confirm on a double click, discarding once", async () => {
+  onDiscardAll.mockClear();
+  const created = asTestDouble<ChangeGroup>()({ ...replicas, nodeId: "worker", nodeName: "worker", lifecycle: "create" });
+  open(canvasUrl, [created], 1);
+  fireEvent.click((await bar()).getByRole("button", { name: "More change actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Discard all changes" }));
+  const confirm = await screen.findByRole("alertdialog", { name: "Discard all changes?" });
+  const discard = within(confirm).getByRole("button", { name: "Discard all" });
+  // A browser keeps the dialog up through its exit animation, so the second click lands on it.
+  let exited = () => {};
+  const exit = new Promise<Animation>((resolve) => { exited = () => resolve(asTestDouble<Animation>()({})); });
+  let exiting = true;
+  HTMLElement.prototype.getAnimations = () => exiting ? [asTestDouble<Animation>()({ finished: exit, playState: "finished", pending: false })] : [];
+  try {
+    await act(async () => { fireEvent.click(discard); });
+    await act(async () => { fireEvent.click(discard); });
+    exiting = false;
+    exited();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  } finally {
+    Reflect.deleteProperty(HTMLElement.prototype, "getAnimations");
+  }
+  expect(onDiscardAll).toHaveBeenCalledOnce();
 });
 
 it("keeps the review open through Discard all so its inverse draft stays reviewable", async () => {

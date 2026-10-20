@@ -10,7 +10,7 @@ use crate::{
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
     Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
-    ReplacementCompensation, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
+    ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
 use ployz_store::tools::SealedValues;
 use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
@@ -98,7 +98,8 @@ pub(crate) fn service_row<'a>(
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
-    let removal = !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
+    let removal =
+        depth.is_none() && !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
     let served = !removal
         && replicas.iter().any(|replica| {
             replica.starts
@@ -372,6 +373,7 @@ impl Direct {
             };
             tails.push(LogTail {
                 service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
+                name: row.service.clone(),
                 machine: row.machine,
                 server: row.server.clone(),
                 log,
@@ -396,48 +398,42 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
             operation, error, ..
         } => (Some(&operation.spec.name), operation.machine_id, error),
     };
-    let stored = ployz_store::Failure::of(error, &[]);
-    let message = service.map_or_else(
-        || "Deployment failed.".to_owned(),
-        |service| format!("Deployment of {service} failed."),
-    );
-    let mut causes = vec![stored.reason];
-    causes.extend(stored.cause);
+    let ployz_store::Failure { reason, cause } = ployz_store::Failure::of(error, &[]);
+    let message = crate::ui::sentence(match service {
+        Some(service) => format!("{service}: {reason}"),
+        None => reason,
+    });
     let mut diagnostic = Diagnostic {
         failed_machine: Some(machine),
         logs: tails,
         ..Diagnostic::default()
     };
     if let FailedOperation::Replacement { compensation, .. } = failed {
-        let stop = |attempt: &StopAttempt<ExecutionError>| match attempt {
-            StopAttempt::Stopped => Detail {
-                message: "Stopped the new Container.".into(),
-                causes: Vec::new(),
-            },
-            StopAttempt::Failed { error } => Detail {
-                message: "Could not stop the new Container.".into(),
-                causes: failure_causes(error),
+        let stop = |attempt: &StopAttempt<ExecutionError>| Detail {
+            message: attempt.line().into(),
+            causes: match attempt {
+                StopAttempt::Stopped => Vec::new(),
+                StopAttempt::Failed { error } => failure_causes(error),
             },
         };
         match compensation {
             ReplacementCompensation::OldUntouched { stop_new_container } => {
-                diagnostic.compensation.push(stop(stop_new_container))
+                diagnostic.compensation.push(stop(stop_new_container));
             }
             ReplacementCompensation::OldStopped {
                 stop_new_container,
-                restart_old_container,
+                restore_old_container,
             } => {
                 diagnostic
                     .compensation
                     .extend(stop_new_container.iter().map(stop));
-                diagnostic.compensation.push(match restart_old_container {
-                    RestartAttempt::Restarted => Detail {
-                        message: "Restarted the old Container.".into(),
-                        causes: Vec::new(),
-                    },
-                    RestartAttempt::Failed { error } => Detail {
-                        message: "Could not restart the old Container.".into(),
-                        causes: failure_causes(error),
+                diagnostic.compensation.push(Detail {
+                    message: restore_old_container.line().into(),
+                    causes: match restore_old_container {
+                        RestoreAttempt::Failed { error } => failure_causes(error),
+                        RestoreAttempt::Restored
+                        | RestoreAttempt::LeftHeld
+                        | RestoreAttempt::NotServing => Vec::new(),
                     },
                 });
             }
@@ -446,7 +442,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
     Failure::from(RpcError {
         code: RpcErrorCode::Internal,
         message,
-        cause: causes,
+        cause,
         details: serde_json::json!({"outcome": outcome}),
     })
     .with_diagnostic(diagnostic)

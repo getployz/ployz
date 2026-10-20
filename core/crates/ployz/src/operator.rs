@@ -127,7 +127,7 @@ pub enum OperatorError {
     Container(#[from] ployz_core::ContainerSelectorError),
     #[error("Service has no regular containers")]
     NoRegularContainer,
-    #[error("Machine RPC failed.")]
+    #[error("Ployz's call to your Server's daemon failed.")]
     Rpc(#[source] TransportError),
     #[error("Stream protocol failed.")]
     Protocol(#[from] StreamProtocolError),
@@ -175,6 +175,8 @@ pub enum OperatorError {
         #[source]
         source: Box<OperatorError>,
     },
+    #[error("The container for {service} stopped; exec ended.")]
+    ExecContainerStopped { service: String },
     #[error("Could not start the command in {container}.")]
     StartExec {
         container: String,
@@ -407,11 +409,38 @@ pub fn select_proxy_container(
 pub struct ExecSession {
     pub input: mpsc::Sender<OpaquePayload>,
     pub output: Streaming<OpaquePayload>,
+    pub target: ExecTarget,
+}
+
+/// The container an exec session runs in.
+#[derive(Clone, Debug)]
+pub struct ExecTarget {
+    pub identity: QualifiedService,
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+}
+
+/// An exec's container stopped running while the exec ran.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContainerStopped {
+    /// Another container of the Service runs now, so exec can attach again.
+    pub another_runs: bool,
 }
 
 pub struct LogInput {
     pub identity: String,
+    /// The Server the stream comes from.
+    pub machine: ployz_core::MachineId,
     pub stream: LogSource,
+}
+
+/// Why the follow merger could not deliver a line.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LogFault {
+    /// A stream failed, or its Server sent an error.
+    Error(String),
+    /// A Server stopped answering; its stream sent nothing for the stall timeout.
+    Stalled(ployz_core::MachineId),
 }
 
 pub async fn open_exec(
@@ -460,7 +489,59 @@ pub async fn open_exec(
     Ok(ExecSession {
         input: sender,
         output,
+        target: ExecTarget {
+            identity: service.identity.clone(),
+            machine_id,
+            container_id: container.container_id,
+        },
     })
+}
+
+/// Observe whether `target`'s container stopped running, and whether another
+/// container of its Service runs. Only its own Machine's answer counts as proof:
+/// the container listed there as exited, dead or being removed, or absent from it.
+/// `None` for any other state, and when that Machine did not answer, since absence
+/// from a partial view proves nothing.
+///
+/// # Errors
+/// Returns the connect error when the Machines cannot be listed.
+pub async fn exec_container_stopped(
+    client: &mut Client,
+    target: &ExecTarget,
+) -> Result<Option<ContainerStopped>, OperatorError> {
+    use ployz_core::ContainerRuntimeObservation::{Dead, Exited, Removing, Running};
+    let machines = client.machines().await?;
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    let Some(answer) = live
+        .containers
+        .successes
+        .iter()
+        .find(|answer| answer.machine_id == target.machine_id)
+    else {
+        return Ok(None);
+    };
+    match answer
+        .value
+        .iter()
+        .find(|container| container.container_id == target.container_id)
+        .map(|container| &container.runtime)
+    {
+        None | Some(Exited { .. } | Dead | Removing) => {}
+        Some(_) => return Ok(None),
+    }
+    let another_runs = live
+        .services()
+        .iter()
+        .filter(|service| service.identity == target.identity)
+        .flat_map(|service| &service.containers)
+        .map(ServiceContainer::as_observation)
+        .any(|container| {
+            container.container_id != target.container_id
+                && matches!(container.runtime, Running { .. })
+        });
+    Ok(Some(ContainerStopped { another_runs }))
 }
 
 /// The label ployzd puts on each container a Deployment creates: its Deploy log ID.
@@ -613,51 +694,10 @@ pub async fn open_service_logs(
     cancellation: CancellationToken,
     deployment: Option<&str>,
 ) -> Result<Vec<LogInput>, OperatorError> {
-    let machine_ids = &scope.asked;
     let services = scope.live.services();
-    let mut every = Vec::new();
-    let args = if args.is_empty() {
-        every = services
-            .iter()
-            .filter(|service| {
-                namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
-            })
-            .map(|service| ServiceArg {
-                service: ServiceSelector::from(&service.identity),
-                containers: Vec::new(),
-            })
-            .collect::<Vec<_>>();
-        if every.is_empty() {
-            return Err(OperatorError::NoServices);
-        }
-        every.as_slice()
-    } else {
-        args
-    };
     let mut inputs = Vec::new();
-    for arg in args {
-        let service = select_service(&services, &arg.service)
-            .map_err(|error| not_running(&services, namespace, error))?;
-        let containers = select_log_containers(service, &arg.containers)?;
-        let containers = containers
-            .into_iter()
-            .filter(|container| {
-                let observation = container.as_observation();
-                machine_ids.contains(&observation.machine_id)
-                    && deployment.is_none_or(|id| {
-                        observation.labels.get(DEPLOYMENT_LABEL).map(String::as_str) == Some(id)
-                    })
-            })
-            .collect::<Vec<_>>();
-        if containers.is_empty() {
-            // Of every Service, only those the Deployment still has containers of.
-            if deployment.is_some() && !every.is_empty() {
-                continue;
-            }
-            return Err(OperatorError::NoContainersOnMachines {
-                service: arg.service.clone(),
-            });
-        }
+    for target in log_targets(&services, &scope.asked, args, namespace, deployment) {
+        let (service, containers) = target?;
         for container in containers {
             let observation = container.as_observation();
             let request = op::TailLogs::into_request(TailLogsRequest {
@@ -665,7 +705,7 @@ pub async fn open_service_logs(
                 options: options.clone(),
             })
             .encode()?;
-            let identity = format!("{}/{}", arg.service, observation.display_name);
+            let identity = format!("{service}/{}", observation.display_name);
             let target = MachineTarget::from(&observation.machine_id);
             // TODO: earlier Container log streams intentionally survive until the
             // parent cancellation token is cancelled.
@@ -673,7 +713,7 @@ pub async fn open_service_logs(
                 client
                     .tail_logs_stream(&target, request)
                     .await
-                    .map(|stream| stream_input(identity, stream))
+                    .map(|stream| stream_input(identity, observation.machine_id, stream))
             })
             .await
             {
@@ -694,10 +734,80 @@ pub async fn open_service_logs(
             }
         }
     }
-    if inputs.is_empty() {
-        return Err(OperatorError::NoDeploymentContainers);
-    }
     Ok(inputs)
+}
+
+/// The containers on the asked Servers each of `args` streams from, in argument
+/// order; none means every Service in `namespace`, and any of them with nothing
+/// there is skipped.
+fn log_targets<'a>(
+    services: &'a [ServiceObservation],
+    asked: &HashSet<ployz_core::MachineId>,
+    args: &[ServiceArg],
+    namespace: Option<&Namespace>,
+    deployment: Option<&str>,
+) -> Vec<Result<(ServiceSelector, Vec<ContainerRef<'a>>), OperatorError>> {
+    let every = args.is_empty();
+    let every_arg;
+    let args = if every {
+        every_arg = services
+            .iter()
+            .filter(|service| {
+                namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
+            })
+            .map(|service| ServiceArg {
+                service: ServiceSelector::from(&service.identity),
+                containers: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        if every_arg.is_empty() {
+            return vec![Err(OperatorError::NoServices)];
+        }
+        every_arg.as_slice()
+    } else {
+        args
+    };
+    let mut targets = Vec::new();
+    for arg in args {
+        let selected = select_service(services, &arg.service)
+            .map_err(|error| not_running(services, namespace, error))
+            .and_then(|service| select_log_containers(service, &arg.containers));
+        let containers = match selected {
+            Ok(containers) => containers,
+            Err(error) => {
+                targets.push(Err(error));
+                continue;
+            }
+        };
+        let containers = containers
+            .into_iter()
+            .filter(|container| {
+                let observation = container.as_observation();
+                asked.contains(&observation.machine_id)
+                    && deployment.is_none_or(|id| {
+                        observation.labels.get(DEPLOYMENT_LABEL).map(String::as_str) == Some(id)
+                    })
+            })
+            .collect::<Vec<_>>();
+        if containers.is_empty() {
+            if every {
+                continue;
+            }
+            targets.push(Err(OperatorError::NoContainersOnMachines {
+                service: arg.service.clone(),
+            }));
+            continue;
+        }
+        targets.push(Ok((arg.service.clone(), containers)));
+    }
+    if targets.is_empty() {
+        targets.push(Err(if deployment.is_some() {
+            OperatorError::NoDeploymentContainers
+        } else {
+            OperatorError::NoServices
+        }));
+    }
+    targets
 }
 
 fn not_running(
@@ -896,7 +1006,7 @@ pub async fn open_machine_logs(
                 client
                     .tail_logs_stream(&target, request)
                     .await
-                    .map(|stream| stream_input(identity, stream))
+                    .map(|stream| stream_input(identity, machine.machine.id, stream))
             })
             .await
             {
@@ -911,9 +1021,14 @@ pub async fn open_machine_logs(
     Ok(inputs)
 }
 
-pub(crate) fn stream_input(identity: String, stream: Streaming<OpaquePayload>) -> LogInput {
+pub(crate) fn stream_input(
+    identity: String,
+    machine: ployz_core::MachineId,
+    stream: Streaming<OpaquePayload>,
+) -> LogInput {
     LogInput {
         identity,
+        machine,
         stream: Box::pin(stream.map(|result| {
             result
                 .map_err(LogError::from)
@@ -1016,6 +1131,7 @@ enum LogState {
 
 struct LogInputState {
     identity: String,
+    machine: ployz_core::MachineId,
     watermark: i64,
     last_activity: tokio::time::Instant,
     state: LogState,
@@ -1054,7 +1170,7 @@ impl PartialOrd for QueuedLog {
 pub fn merge_logs(
     inputs: Vec<LogInput>,
     cancellation: CancellationToken,
-) -> mpsc::Receiver<Result<LogEntry, String>> {
+) -> mpsc::Receiver<Result<LogEntry, LogFault>> {
     merge_logs_with_options(inputs, cancellation, LOG_STALL_TIMEOUT, LOG_STALL_CHECK)
 }
 
@@ -1063,7 +1179,7 @@ fn merge_logs_with_options(
     cancellation: CancellationToken,
     stall_timeout: Duration,
     stall_check: Duration,
-) -> mpsc::Receiver<Result<LogEntry, String>> {
+) -> mpsc::Receiver<Result<LogEntry, LogFault>> {
     let (output_sender, output) = mpsc::channel(100);
     if inputs.is_empty() {
         return output;
@@ -1075,6 +1191,7 @@ fn merge_logs_with_options(
     for (index, input) in inputs.into_iter().enumerate() {
         sources.push(LogInputState {
             identity: input.identity,
+            machine: input.machine,
             watermark: 0,
             last_activity: now,
             state: LogState::Live,
@@ -1106,9 +1223,9 @@ fn merge_logs_with_options(
                             LogState::Live | LogState::Stalled => source.state = LogState::Live,
                         }
                         match entry {
-                            Err(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                            Err(error) => if output_sender.send(Err(LogFault::Error(format!("{}: {error}", source.identity)))).await.is_err() { return },
                             Ok(entry) => match &entry.body {
-                                LogBody::Error(error) => if output_sender.send(Err(format!("{}: {error}", source.identity))).await.is_err() { return },
+                                LogBody::Error(error) => if output_sender.send(Err(LogFault::Error(format!("{}: {error}", source.identity)))).await.is_err() { return },
                                 LogBody::Heartbeat => {
                                     source.watermark = source.watermark.max(entry.timestamp_unix_nanos);
                                 }
@@ -1127,16 +1244,7 @@ fn merge_logs_with_options(
                     }
                     Some(LogEvent { index, entry: None }) => {
                         if let Some(source) = sources.get_mut(index) { source.state = LogState::Closed; }
-                        if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
-                        if sources.iter().all(|source| match source.state {
-                            LogState::Closed => true,
-                            LogState::Live | LogState::Stalled => false,
-                        }) {
-                            while let Some(queued) = queue.pop() {
-                                if output_sender.send(Ok(queued.entry)).await.is_err() { return }
-                            }
-                            return;
-                        }
+                        if flush_ready(&sources, &mut queue, &output_sender).await.is_err() || !any_live(&sources) { return }
                     }
                     None => return,
                 },
@@ -1146,10 +1254,11 @@ fn merge_logs_with_options(
                             && now.duration_since(source.last_activity) > stall_timeout
                         {
                             source.state = LogState::Stalled;
-                            if output_sender.send(Err(format!("log stream {} stalled", source.identity))).await.is_err() { return }
+                            if output_sender.send(Err(LogFault::Stalled(source.machine))).await.is_err() { return }
                         }
                     }
-                    if flush_ready(&sources, &mut queue, &output_sender).await.is_err() { return }
+                    // Resuming a stalled stream is not supported, so with none live the follow is over.
+                    if flush_ready(&sources, &mut queue, &output_sender).await.is_err() || !any_live(&sources) { return }
                 }
             }
         }
@@ -1157,10 +1266,17 @@ fn merge_logs_with_options(
     output
 }
 
+fn any_live(sources: &[LogInputState]) -> bool {
+    sources.iter().any(|source| match source.state {
+        LogState::Live => true,
+        LogState::Stalled | LogState::Closed => false,
+    })
+}
+
 async fn flush_ready(
     sources: &[LogInputState],
     queue: &mut BinaryHeap<QueuedLog>,
-    output: &mpsc::Sender<Result<LogEntry, String>>,
+    output: &mpsc::Sender<Result<LogEntry, LogFault>>,
 ) -> Result<(), ()> {
     let watermark = sources
         .iter()

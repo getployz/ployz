@@ -10,17 +10,18 @@ use crate::ValueError;
 /// The only relay the management transport is configured with. Public relays are never used.
 pub const DEFAULT_RELAY_URL: &str = "https://relay.ployz.dev";
 
-/// ALPN of the Machine RPC stream on the management transport.
-pub const MANAGEMENT_ALPN: &[u8] = b"ployz/rpc/1";
+/// ALPN of the Machine RPC stream on the management transport. The client opens one
+/// bidirectional stream, writes its [`ManagementProof`], then speaks HTTP/2 on it.
+pub const MANAGEMENT_ALPN: &[u8] = b"ployz/rpc/2";
 
 /// ALPN of a port-forward tunnel on the management transport: one connection per TCP
 /// stream, admitted by the same Management Client keys as [`MANAGEMENT_ALPN`].
 ///
-/// The client opens one bidirectional stream and writes a one-byte length followed by
-/// the target `ip:port` in ASCII. The Machine answers [`TUNNEL_OPEN`] once it is
+/// The client opens one bidirectional stream and writes its [`ManagementProof`], then a
+/// one-byte length followed by the target `ip:port` in ASCII. The Machine answers [`TUNNEL_OPEN`] once it is
 /// connected, then relays bytes; otherwise it closes the connection with
 /// [`TUNNEL_FAILED`] and the reason.
-pub const TUNNEL_ALPN: &[u8] = b"ployz/tunnel/1";
+pub const TUNNEL_ALPN: &[u8] = b"ployz/tunnel/2";
 
 /// The byte a Machine writes once a tunnel's target accepted the TCP connection.
 pub const TUNNEL_OPEN: u8 = 0;
@@ -28,6 +29,53 @@ pub const TUNNEL_OPEN: u8 = 0;
 /// QUIC application close code on [`TUNNEL_ALPN`] for a target that is malformed,
 /// outside the Cluster network, or unreachable. The close reason says which.
 pub const TUNNEL_FAILED: u32 = 0x53;
+
+/// TLS exporter label for a [`ManagementProof`]. The exporter is unique to one
+/// connection's handshake, so a proof verifies on no other connection.
+pub const MANAGEMENT_PROOF_LABEL: &[u8] = b"ployz management client proof v1";
+
+/// A Management Client's proof that it holds its client key on one connection: the
+/// client public key and its Ed25519 signature over [`ManagementProof::message`].
+///
+/// Each process dials under a fresh transport key, so many processes holding one
+/// capability never share a relay identity. The Machine admits the key this proves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagementProof {
+    pub client: [u8; 32],
+    pub signature: [u8; 64],
+}
+
+impl ManagementProof {
+    /// Encoded size: the client public key, then the signature.
+    pub const LEN: usize = 96;
+    /// Bytes of keying material both ends export under [`MANAGEMENT_PROOF_LABEL`].
+    pub const EXPORTER_LEN: usize = 32;
+
+    /// What the client signs: the label, then the connection's exported keying material.
+    #[must_use]
+    pub fn message(exporter: &[u8; Self::EXPORTER_LEN]) -> Vec<u8> {
+        [MANAGEMENT_PROOF_LABEL, exporter.as_slice()].concat()
+    }
+
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::LEN] {
+        let mut bytes = [0; Self::LEN];
+        bytes[..32].copy_from_slice(&self.client);
+        bytes[32..].copy_from_slice(&self.signature);
+        bytes
+    }
+
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8; Self::LEN]) -> Self {
+        let (client, signature) = bytes.split_at(32);
+        Self {
+            client: client.try_into().expect("split at 32 of a 96-byte proof"),
+            signature: signature
+                .try_into()
+                .expect("split at 32 of a 96-byte proof"),
+        }
+    }
+}
 
 const PREFIX: &str = "ployz1:";
 const BODY_LEN: usize = 64;

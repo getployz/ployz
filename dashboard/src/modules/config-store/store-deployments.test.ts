@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
+  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shippedService, shownValue, uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -113,6 +113,28 @@ it("words a healthcheck by its path or command and timeout", () => {
 it("words a secret as Sealed, or as needing a value until it has one", () => {
   expect(shownValue({ secret: true })).toBe("Sealed");
   expect(shownValue({ secret: false })).toBe("Not set");
+});
+
+it("words a memory limit in the unit it was likely given", () => {
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
+    { path: "web.memLimit", kind: "update", before: 0.201326592, after: 0.5, canRestore: true, row: null },
+    { path: "web.memLimit", kind: "add", before: null, after: 1.073741824, canRestore: true, row: null },
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.label, row.currentValue, row.newValue])).toEqual([
+    ["Memory limit", "192 MiB", "0.5 GB"],
+    ["Memory limit", "", "1 GiB"],
+  ]);
+});
+
+it("words a CPU limit in vCPUs", () => {
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
+    { path: "web.cpuLimit", kind: "update", before: 0.5, after: 2, canRestore: true, row: null },
+    { path: "web.cpuLimit", kind: "add", before: null, after: 1, canRestore: true, row: null },
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.currentValue, row.newValue])).toEqual([
+    ["0.5 vCPUs", "2 vCPUs"],
+    ["", "1 vCPU"],
+  ]);
 });
 
 it("words a Volume's storage by its limit", () => {
@@ -234,8 +256,19 @@ it("words a Deployment that takes its Environment off the Servers as the Branch 
   expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "forgotten" } })).toBe("Left on old servers");
   expect(outcomeReason({ type: "forgotten" })).toContain("still there");
   expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "never_ran" } })).toBe("Off the servers");
-  expect(deploysLabel({ services: [], remove: true })).toBeNull();
-  expect(deploysLabel({ services: ["web", "api"], remove: false })).toBe("Deploys web, api");
+  expect(deploysLabel({ services: [], ships: ["web", "api"], remove: true })).toBeNull();
+});
+
+it("names a Deploy's targets in their order, then the Services it ships by reference alphabetically", () => {
+  expect(deploysLabel({ services: ["web"], ships: ["web", "postgres", "api"], remove: false })).toBe("Deploys web (+ api, postgres)");
+  expect(deploysLabel({ services: ["web"], ships: ["web"], remove: false })).toBe("Deploys web");
+  expect(deploysLabel({ services: ["web", "api"], ships: ["api", "web", "redis"], remove: false })).toBe("Deploys web, api (+ redis)");
+  expect(deploysLabel({ services: [], ships: ["web", "api", "postgres"], remove: false })).toBe("Deploys every service");
+  // Waiting for CI, nothing is frozen yet: it names only its targets.
+  expect(deploysLabel({ services: ["web"], ships: [], remove: false })).toBe("Deploys web");
+  // A rollback or retry reads its own ships, so it lists what it ships now, not what its source shipped.
+  const source = { services: ["web"], ships: ["web", "api", "postgres"], remove: false };
+  expect(deploysLabel({ ...source, ships: ["web", "api"] })).toBe("Deploys web (+ api)");
 });
 
 
@@ -373,4 +406,13 @@ it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and
   expect(showCancelling({ status: "running", in_flight: true }, true)).toEqual({ status: "cancelling", in_flight: true });
   expect(showCancelling({ status: "queued", in_flight: true }, false)).toEqual({ status: "queued", in_flight: true });
   expect(showCancelling({ status: "applied", in_flight: false }, true)).toEqual({ status: "applied", in_flight: false });
+});
+
+it("counts a Service as shipped by a full Deploy, one that names it, and one that ships it because a named one references it", () => {
+  const narrowed = { services: ["web"], ships: ["web", "db"] };
+  expect(shippedService(narrowed, "web")).toBe(true);
+  expect(shippedService(narrowed, "db")).toBe(true);
+  expect(shippedService(narrowed, "api")).toBe(false);
+  expect(shippedService({ services: [], ships: ["web"] }, "api")).toBe(true);
+  expect(shippedService({ services: ["web"], ships: [] }, "web")).toBe(true);
 });

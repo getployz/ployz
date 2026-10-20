@@ -10,7 +10,7 @@ import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { enrollMachine, hashEnrollmentToken, insertEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { forgetEmptiedPairing, revokeOrganizationPairing, seeCluster } from "#/modules/machines/pairing-removal.server";
-import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
+import type { CheckinRequest, HostReport } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import {
   cancelServerEnrollment,
@@ -19,8 +19,8 @@ import {
   readServerEnrollmentStatus,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
-import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
-import { listWaitingServers } from "#/modules/machines/waiting/waiting-servers.server";
+import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, recordStage, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
+import { listWaitingServers, showWaitingServer } from "#/modules/machines/waiting/waiting-servers.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
@@ -107,9 +107,9 @@ const host = (name: string): Host => {
   return { name, key: Buffer.from(x, "base64url").toString("hex"), privateKey };
 };
 
-const checkin = async (target: Host, prep?: Prep) => {
-  const base = { protocolVersion: 1, checkinKey: target.key, cliVersion: "0.3.0", report: { ...report, hostname: target.name } } as const;
-  const body = Buffer.from(JSON.stringify(prep === undefined ? base : { ...base, prep } satisfies CheckinRequest));
+const checkin = async (target: Host, extra: Pick<CheckinRequest, "prep" | "attempt"> = {}) => {
+  const request: CheckinRequest = { protocolVersion: 1, checkinKey: target.key, cliVersion: "0.3.0", report: { ...report, hostname: target.name }, ...extra };
+  const body = Buffer.from(JSON.stringify(request));
   const timestamp = BigInt(Math.floor(Date.now() / 1000));
   const signature = sign(null, checkinMessage(target.key, timestamp, body), target.privateKey).toString("base64url");
   const headers = new Headers({
@@ -196,10 +196,10 @@ it("answers enroll once the host is ready for its storage, and wait before then"
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
   const [started] = (await run(enroll([a], { storage: { kind: "zfs", useSpareDisk: false, fallbackToDocker: false } }))).attempts;
-  expect(await checkin(a, { docker: "ready", zfs: "installing" })).toEqual({ kind: "wait", retryAfter: 10 });
+  expect(await checkin(a, { prep: { docker: "ready", zfs: "installing" } })).toEqual({ kind: "wait", retryAfter: 10 });
   expect((await run(readServerEnrollments(ada, { organizationSlug: "ada" })))[0]?.queued).toBe(true);
 
-  const answer = await checkin(a, { docker: "ready", zfs: "ready" });
+  const answer = await checkin(a, { prep: { docker: "ready", zfs: "ready" } });
   expect(answer).toMatchObject({ kind: "enroll", attemptId: started?.id, role: "founder", name: "web-a", storage: { kind: "zfs" } });
   const token = answer.kind === "enroll" ? answer.token : "";
   const issued = await harness.pool.query("select 1 from machine_enrollment_token where token_hash = $1 and server_enrollment_id = $2", [
@@ -225,7 +225,7 @@ it.each(["installing", "enrolling", "queued", "storage"])("reports a failed ZFS 
   const [started] = (await run(enroll([a], { storage: { kind: "zfs", useSpareDisk: false, fallbackToDocker: false } }))).attempts;
   await harness.pool.query("update server_enrollment set state = 'running', stage = $1", [stage]);
   sent.mockClear();
-  expect(await checkin(a, { docker: "ready", zfs: "failed" })).toEqual({ kind: "wait", retryAfter: 10 });
+  expect(await checkin(a, { prep: { docker: "ready", zfs: "failed" } })).toEqual({ kind: "wait", retryAfter: 10 });
   expect(sent).toHaveBeenCalledWith(expect.objectContaining({
     name: serverEnrollmentReportedEvent,
     data: { attemptId: started?.id, stage: "storage", failure: { stage: "storage", message: ZFS_BUILD_FAILED } },
@@ -238,7 +238,7 @@ it("ignores a stale failed ZFS build once the host is past storage", async () =>
   await run(enroll([a], { storage: { kind: "zfs", useSpareDisk: false, fallbackToDocker: false } }));
   await harness.pool.query("update server_enrollment set state = 'running', stage = 'joining'");
   sent.mockClear();
-  expect(await checkin(a, { docker: "ready", zfs: "failed" })).toMatchObject({ kind: "enroll", role: "founder" });
+  expect(await checkin(a, { prep: { docker: "ready", zfs: "failed" } })).toMatchObject({ kind: "enroll", role: "founder" });
   expect(sent).not.toHaveBeenCalled();
 });
 
@@ -259,7 +259,140 @@ it("cancels a rejected host's open attempt", async () => {
   await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }));
   expect((await attempts()).map((row) => [row.state, row.ended_at !== null])).toEqual([["cancelled", true]]);
   expect(await outbox()).toContain("server/enrollment.cancel");
+  expect((await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }))).attempts).toEqual([]);
 });
+
+const committing = async (target: Host) => {
+  const answer = await checkin(target);
+  if (answer.kind !== "enroll") throw new Error(`expected enroll, got ${answer.kind}`);
+  await run(bindServerEnrollment({ attemptId: answer.attemptId, organizationId: adaOrg }, "run-1"));
+  await run(recordStage(answer.attemptId, "run-1", "storage"));
+  return answer.attemptId;
+};
+const stages = async () =>
+  (await harness.pool.query<{ state: string; stage: string | null; ended_at: Date | null }>("select state, stage, ended_at from server_enrollment")).rows;
+const reports = async () =>
+  (await harness.pool.query<{ reported_attempt_id: string | null; reported_stage: string | null }>("select reported_attempt_id, reported_stage from waiting_server")).rows;
+const statusRows = async () => (await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }))).attempts.map((row) => [row.name, row.state, row.stage]);
+
+it("spares a join the host reported committed before its run recorded it, and keeps it in the status poll", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  sent.mockClear();
+  expect(await checkin(a, { attempt: { attemptId, stage: "joining" } })).toMatchObject({ kind: "enroll", attemptId });
+  expect(sent).toHaveBeenCalledWith(expect.objectContaining({ name: serverEnrollmentReportedEvent, data: { attemptId, stage: "joining" } }));
+  expect(await reports()).toEqual([{ reported_attempt_id: attemptId, reported_stage: "joining" }]);
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }))).toEqual({ rejected: 1 });
+  expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
+  expect(await outbox()).not.toContain("server/enrollment.cancel");
+  expect(await checkin(a, { attempt: { attemptId, stage: "joining" } })).toMatchObject({ kind: "enroll", attemptId });
+  expect(await statusRows()).toEqual([["web-a", "running", "storage"]]);
+  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = now()");
+  expect(await statusRows()).toEqual([["web-a", "joined", "storage"]]);
+});
+
+it("drops a rejected host from the status poll while its run is still cancelling the attempt", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  await committing(a);
+  await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }));
+  expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
+  expect(await outbox()).toContain("server/enrollment.cancel");
+  expect((await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }))).attempts).toEqual([]);
+});
+
+it("drops an attempt that ended before its host was rejected from the status poll", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  await run(recordStage(attemptId, "run-1", "publishing"));
+  await harness.pool.query("update server_enrollment set state = 'failed', ended_at = now() - interval '1 minute', encrypted_token = null");
+  expect(await statusRows()).toEqual([["web-a", "failed", "publishing"]]);
+  await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }));
+  expect(await statusRows()).toEqual([]);
+});
+
+it("moves a committed stage only forward when the run hears reports out of order", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  await run(recordStage(attemptId, "run-1", "joining"));
+  await run(recordStage(attemptId, "run-1", "storage"));
+  expect(await stages()).toEqual([{ state: "running", stage: "joining", ended_at: null }]);
+  await run(recordStage(attemptId, "run-1", "publishing"));
+  await run(recordStage(attemptId, "run-1", "joining"));
+  expect(await stages()).toEqual([{ state: "running", stage: "publishing", ended_at: null }]);
+});
+
+it("keeps the furthest committed stage a host reported for its attempt", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  await checkin(a, { attempt: { attemptId, stage: "publishing" } });
+  await checkin(a, { attempt: { attemptId, stage: "joining" } });
+  await checkin(a, { attempt: { attemptId, stage: "storage" } });
+  expect(await reports()).toEqual([{ reported_attempt_id: attemptId, reported_stage: "publishing" }]);
+});
+
+it("reports a stage again until the run records it", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  sent.mockClear();
+  sent.mockRejectedValueOnce(new Error("Inngest unavailable"));
+  await checkin(a, { attempt: { attemptId, stage: "joining" } });
+  expect(sent).toHaveBeenCalledTimes(1);
+  sent.mockClear();
+  await checkin(a, { attempt: { attemptId, stage: "joining" } });
+  expect(sent).toHaveBeenCalledWith(expect.objectContaining({ data: { attemptId, stage: "joining" } }));
+  await run(recordStage(attemptId, "run-1", "joining"));
+  sent.mockClear();
+  await checkin(a, { attempt: { attemptId, stage: "joining" } });
+  expect(sent).not.toHaveBeenCalled();
+});
+
+it("makes Reject wait for a check-in reporting joining, then spare the attempt", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const attemptId = await committing(a);
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934129)");
+  await harness.pool.query(`
+    create function pause_report() returns trigger language plpgsql as $$ begin
+      if new.reported_attempt_id is distinct from old.reported_attempt_id then
+        perform pg_advisory_xact_lock(934129);
+      end if;
+      return new;
+    end $$;
+    create trigger pause_report before update on waiting_server for each row execute function pause_report();
+  `);
+  let checking: Promise<unknown> | undefined;
+  let rejecting: Promise<unknown> | undefined;
+  try {
+    checking = checkin(a, { attempt: { attemptId, stage: "joining" } });
+    await waitFor("advisory");
+    rejecting = run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }));
+    await waitFor("transactionid");
+    await gate.query("select pg_advisory_unlock(934129)");
+    expect(await checking).toMatchObject({ kind: "enroll", attemptId });
+    expect(await rejecting).toEqual({ rejected: 1 });
+  } finally {
+    await gate.query("select pg_advisory_unlock(934129)");
+    gate.release();
+    await Promise.allSettled([checking, rejecting]);
+    await harness.pool.query("drop trigger pause_report on waiting_server; drop function pause_report()");
+  }
+  expect(await stages()).toEqual([{ state: "running", stage: "storage", ended_at: null }]);
+  expect(await outbox()).not.toContain("server/enrollment.cancel");
+}, 15_000);
 
 const encryption = makeSecretEncryption("test-encryption-secret");
 const legacyMachine = "00000000000000000000000000000001";
@@ -1161,6 +1294,25 @@ it.each(["failed", "cancelled"] as const)("projects a %s return and its effectiv
   expect(Date.parse(returned?.arrivalAt ?? "")).toBeGreaterThan(Date.parse(result[0]?.arrivalAt ?? ""));
   expect(returned).not.toHaveProperty("probe");
   expect(returned?.report).not.toHaveProperty("kernel");
+});
+
+it("keeps a failed return across check-ins and replaces it with the next attempt", async () => {
+  const [first] = await waiting("first");
+  if (!first?.id) throw new Error("one host");
+  const id = first.id;
+  const returned = async () => ({
+    listed: (await run(listWaitingServers(ada, { organizationSlug: "ada" }))).find((row) => row.id === id)?.returned,
+    shown: (await run(showWaitingServer(ada, { organizationSlug: "ada", id }))).returned,
+  });
+  const started = await run(enroll([first], { first: id }));
+  await harness.pool.query("update server_enrollment set state = 'failed', ended_at = now(), stage = 'storage', failure = '{\"stage\":\"storage\",\"message\":\"Disk missing\"}' where id = $1", [started.attempts[0]?.id]);
+  await checkin(first);
+  const kept = { state: "failed", stage: "storage", message: "Disk missing" };
+  expect(await returned()).toEqual({ listed: kept, shown: kept });
+  await run(enroll([first], { first: id }));
+  expect((await run(listWaitingServers(ada, { organizationSlug: "ada" }))).map((row) => row.id)).toEqual([]);
+  await harness.pool.query("update server_enrollment set state = 'cancelled', ended_at = now(), stage = null, failure = null where ended_at is null");
+  expect(await returned()).toEqual({ listed: { state: "cancelled", stage: null, message: null }, shown: { state: "cancelled", stage: null, message: null } });
 });
 
 it("polls open attempts and one hour of ended attempts while preserving direct history reads", async () => {

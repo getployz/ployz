@@ -43,7 +43,8 @@ source to its restart policy: [Service settings](settings.md) explains each fiel
 
 The rename is staged. Other services keep reaching it at its private name, which stays the same,
 and [references](variables.md#reference-another-services-variable) to it keep working. To change
-the private name, see [Private Networking](settings.md#private-networking).
+the private name, see [Private Networking](settings.md#private-networking). Once you deploy, deploy
+progress, failure output and `ployz ps` show the new name.
 
 If an older environment has a service named `configs`, rename it before editing its settings:
 
@@ -100,4 +101,6 @@ either running or stopped.
 
 Restart and start wait for each container's healthcheck to pass, the same way a deploy does,
 before they return. A container that fails its healthcheck, or doesn't pass it before its
-deadline, is reported, and the command exits 3.
+deadline, is reported, and the command exits 3. So is a container a failed deploy left behind:
+restart and start run it, but never route it, because no deploy finished bringing it in. Deploy
+again to replace it.

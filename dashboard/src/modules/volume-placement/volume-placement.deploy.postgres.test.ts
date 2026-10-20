@@ -104,7 +104,7 @@ describe("deploying a Volume placement", () => {
     expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual(started);
 
     await endRun(started.wait.runId, "done");
-    members = [member("web-2", "writer"), member("web-1", "mirror")];
+    members = [member("web-2", "writer"), member("web-1", "old")];
     expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "done" });
     expect(await placement()).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
   });
@@ -130,7 +130,7 @@ describe("deploying a Volume placement", () => {
   });
 
   it("drops only the change that failed, returning the Volume's other changes", async () => {
-    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")];
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [web("web-3")] }, mirrors: [web("web-2")] }));
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
@@ -185,7 +185,7 @@ describe("deploying a Volume placement", () => {
     await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
 
     await endRun(started.wait.runId, "failed", "web-2 did not start");
-    members = [member("web-2", "writer"), member("web-1", "mirror")];
+    members = [member("web-2", "writer"), member("web-1", "old")];
     expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 did not start" });
     const rows = await run(listPlacements(organizationId));
     expect(rows.find((row) => row.volumeId === volumeId)).toEqual(expect.objectContaining({ staged: { primary: web("web-2"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null }));
@@ -329,14 +329,14 @@ describe("deploying a Volume placement", () => {
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested", data: expect.objectContaining({ runId: started.wait.runId, took: "move" }) }));
 
     await endRun(started.wait.runId, "done");
-    members = [member("web-2", "writer"), member("web-1", "mirror")];
+    members = [member("web-2", "writer"), member("web-1", "old")];
     expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "done" });
     expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "done"]);
   });
 
   describe("a staged move whose run took over a Move that had cut the primary", () => {
     const restoring = async (id = volumeId) => {
-      members = [member("web-1", "mirror"), member("web-2", "mirror")];
+      members = [member("web-1", "old"), member("web-2", "mirror")];
       const taken = (await land("move", '{"to":"web-2"}', "running", "warm", id)).rows[0].id;
       await stageMove("web-2", ["web-2"], id);
       const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
@@ -360,7 +360,7 @@ describe("deploying a Volume placement", () => {
       ]);
 
       await endRun(moving.wait.runId, "done");
-      members = [member("web-2", "writer"), member("web-1", "mirror")];
+      members = [member("web-2", "writer"), member("web-1", "old")];
       expect(await run(advancePlacement(organizationId, "dep-1", moving.wait, inspect, answered))).toEqual({ kind: "done" });
       expect(await placement()).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
     });
@@ -394,7 +394,7 @@ describe("deploying a Volume placement", () => {
       expect((await runRows()).find((row) => row.id === warm)).toMatchObject({ state: "yielded", message: "a Deploy took this run over" });
 
       await endRun(moving.wait.runId, "failed", "web-2 did not answer");
-      members = [member("web-1", "mirror"), member("web-2", "mirror")];
+      members = [member("web-1", "old"), member("web-2", "mirror")];
       expect(await run(advancePlacement(organizationId, "dep-1", moving.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 did not answer" });
       expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "failed", "yielded", "failed"]);
     });
@@ -441,7 +441,7 @@ describe("deploying a Volume placement", () => {
     await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: { primary: web("web-1"), mirrors: [web("web-2")], deletes: [] } }));
     await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
     expect(await run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))
-      .toEqual({ kind: "failed", message: "VolumeBusy: data is starting on web-2; it finishes there" });
+      .toEqual({ kind: "failed", message: "data is starting on web-2; it finishes there" });
     expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
     expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2")).toMatchObject({ staged: { mirrors: [web("web-2")] }, unreached: true, deploymentId: null });
     expect((await runRows()).map((row) => row.id)).toEqual([committed]);
@@ -465,7 +465,7 @@ describe("deploying a Volume placement", () => {
     await stageRestore();
     await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
     expect(await run(advancePlacement(organizationId, "dep-1", null, byVolume, answered)))
-      .toEqual({ kind: "failed", message: "VolumeBusy: data is starting on web-2; it finishes there" });
+      .toEqual({ kind: "failed", message: "data is starting on web-2; it finishes there" });
     expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2")).toMatchObject({ staged: { seed: { sourceVolumeId: volumeId } }, deploymentId: null });
     expect(await failedRestores()).toBe(0);
     expect((await runRows()).map((row) => row.kind)).toEqual(["move"]);
@@ -507,7 +507,7 @@ describe("deploying a Volume placement", () => {
       expect(moving).toMatchObject({ kind: "wait", wait: { volumeId, step: { change: { kind: "move" } } } });
       if (moving.kind !== "wait") throw new Error("expected a run");
       await endRun(moving.wait.runId, "done");
-      members = [member("web-2", "writer"), member("web-1", "mirror")];
+      members = [member("web-2", "writer"), member("web-1", "old")];
       const after: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? restored : members);
       expect(await run(advancePlacement(organizationId, "dep-1", moving.wait, after, answered))).toEqual({ kind: "done" });
       expect((await runRows()).map((row) => row.state)).toEqual(["yielded", "done", "done"]);
@@ -640,7 +640,7 @@ describe("deploying a Volume placement", () => {
 
     it("never refreshes a detached copy, and says the Volume has no mirror", async () => {
       await run(stagePlacement(organizationId, { environment, volumeId, staged: null, mirrors: [] }));
-      members = [member("web-2", "writer"), member("web-1", "mirror")];
+      members = [member("web-2", "writer"), member("web-1", "old")];
       expect(await refresh([copy("web-2", "writer"), copy("web-1", "slot")])).toMatchObject([{ lines: ["data has no mirror"] }]);
       expect(asked).toEqual([]);
     });

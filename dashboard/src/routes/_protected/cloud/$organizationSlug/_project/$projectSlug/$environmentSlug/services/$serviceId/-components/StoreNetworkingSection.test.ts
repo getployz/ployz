@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultPortHint, freePrefix } from "./StoreNetworkingSection";
+import { blankPortTarget, defaultPortHint, freePrefix } from "./StoreNetworkingSection";
 
 describe("defaultPortHint", () => {
   it("names Ployz's default PORT when a domain routes to PORT and the user set none", () => {
@@ -11,6 +11,20 @@ describe("defaultPortHint", () => {
     expect(defaultPortHint("80", [{ port: null }])).toBeNull();
     expect(defaultPortHint(undefined, [{ port: 80 }])).toBeNull();
     expect(defaultPortHint(undefined, [])).toBeNull();
+  });
+});
+
+describe("blankPortTarget", () => {
+  it("is the Service's PORT, else the one Ployz sets", () => {
+    expect(blankPortTarget("3000")).toBe(3000);
+    expect(blankPortTarget(3000)).toBe(3000);
+    expect(blankPortTarget(undefined)).toBe(8080);
+    expect(blankPortTarget(null)).toBe(8080);
+  });
+
+  it("is unknown when PORT holds something other than a port", () => {
+    expect(blankPortTarget("${{shared.PORT}}")).toBeNull();
+    expect(blankPortTarget("70000")).toBeNull();
   });
 });
 

@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
-import { type AgentCaller, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { actDenial, type AgentCaller, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -163,6 +163,21 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
     name: "project_create refuses a name another Project has",
     steps: [{ tool: "project_create", input: { name: "shop" }, hears: refused("conflict") }],
   },
+  {
+    name: "a removal of something that isn't there refuses as the tool does: nothing written, the call to repeat and the read to make",
+    steps: [
+      {
+        tool: "project_remove",
+        input: { project: "nope" },
+        hears: { ok: false, refusal: { code: "not_found", writes: "none", retry: { tool: "project_remove", input: { project: "nope" } }, next: [{ tool: "environment_show", input: {} }] } },
+      },
+      {
+        tool: "environment_remove",
+        input: { project: "shop", environment: "nope" },
+        hears: { ok: false, refusal: { code: "not_found", writes: "none", valid: ["production"], next: [{ tool: "environment_show", input: { project: "shop" } }] } },
+      },
+    ],
+  },
 ];
 
 const tools = Effect.fn(function* (seed: boolean) {
@@ -192,4 +207,15 @@ describe("agent runner", () => {
         }
       }));
   }
+});
+
+it("a denied Volume run names the Volume its approval named", () => {
+  const denied = (verb: string) => ({
+    code: "approval_denied",
+    message: `A human denied the request to ${verb} db: not now`,
+    details: { approval: { reason: "not now", review: { effects: [], operation: { verb, name: "db", preview: {} } } } },
+  });
+  const volume = (run: { run: "release" | "remove_mirror"; loss: null }) => ({ action: "volume", volume: "v".repeat(32), run }) as const;
+  expect(actDenial(volume({ run: "release", loss: null }), denied("release")).message).toBe("A human denied this release of db: not now");
+  expect(actDenial(volume({ run: "remove_mirror", loss: null }), denied("remove_mirror")).message).toBe("A human denied this mirror removal of db: not now");
 });

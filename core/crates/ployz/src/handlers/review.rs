@@ -2,14 +2,15 @@
 //! them.
 
 use clap::{ArgMatches, Command};
-use ployz_core::ServiceName;
 use ployz_core::config::{EnvironmentNodeType, ReviewLifecycleKind};
+use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{DiffQuery, DiffView, Discard, Discarded, SettingPath};
 use serde::Serialize;
 
-use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
+use super::store::{Next, environment, next, scoped, store, with_next, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
+use crate::ui::Table;
 
 pub(super) fn diff_command(command: Command) -> Command {
     scoped(command.about("Show staged Service, Volume and Config changes"))
@@ -60,7 +61,7 @@ pub(super) fn discard_command(command: Command) -> Command {
         )
         .arg(version())
         .arg(value("target", None).value_parser(["head", "saved", "review"])
-            .help("Head resets deploy changes; saved abandons draft reversals; review discards the displayed combined list [default: head, or saved for a path only saved lists]"))
+            .help("Head resets deploy changes; saved abandons draft reversals; review returns everything to the latest save [default: head, or saved for a path only saved lists]"))
 }
 
 /// `ployz diff --json`: the review, plus each staged domain change as people read it.
@@ -130,12 +131,20 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
         }
+        for setup in &view.setup {
+            crate::ui::stream(format_args!(
+                "setup.{} = {} (runs before {} first deploys)",
+                setup.service,
+                serde_json::Value::String(setup.command.clone()),
+                setup.service
+            ));
+        }
         for hint in &view.follow_hints {
             crate::ui::stream(format_args!(
                 "{} deployed {} = {}, not staged here; use it: {}",
                 hint.from,
                 hint.at,
-                hint.value,
+                super::store::shown(&hint.value),
                 next(
                     matches,
                     &[
@@ -216,8 +225,17 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         comes_back: &backs,
     };
     if !discarded.changed {
+        let runs = match &path {
+            Some(path) if backs.is_empty() => source_of_create(&store, matches, path)?,
+            _ => None,
+        };
         return crate::ui::finish(&Next::new(&result, None), || {
-            if backs.is_empty() {
+            if let (Some(path), Some(service)) = (&path, &runs) {
+                crate::ui::stream(format_args!(
+                    "{path} is what the new service {service} runs; it has no Discard of its own. Discard the service: {}",
+                    next(matches, &["discard", service])
+                ));
+            } else if backs.is_empty() {
                 crate::ui::stream(format_args!(
                     "Nothing staged{} in {where_}; nothing to discard.",
                     path.map_or_else(String::new, |path| format!(" at {path}"))
@@ -232,13 +250,50 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
     }
     let hint = next(matches, &["diff"]);
     crate::ui::finish(&Next::new(&result, Some(hint.clone())), || {
-        crate::ui::stream(format_args!(
-            "Discarded {} in {where_}.",
-            path.map_or_else(|| "every staged change".to_owned(), |path| path.to_string())
-        ));
+        match (&path, discarded.dropped.as_slice()) {
+            (Some(path), _) => crate::ui::stream(format_args!("Discarded {path} in {where_}.")),
+            (None, []) => {
+                crate::ui::stream(format_args!("Discarded every staged change in {where_}."))
+            }
+            (None, dropped) => crate::ui::stream(format_args!(
+                "Discarded {} staged {} in {where_}: {}.",
+                dropped.len(),
+                if dropped.len() == 1 {
+                    "change"
+                } else {
+                    "changes"
+                },
+                dropped.join(", ")
+            )),
+        }
         comes_back(&backs, saved);
         crate::ui::hint(&crate::ui::Hint::Inspect(hint));
     })
+}
+
+/// The new Service whose source row `path` names: a create's image, repository or
+/// branch row, which only discarding the Service takes.
+fn source_of_create(
+    store: &super::store::Store,
+    matches: &ArgMatches,
+    path: &SettingPath,
+) -> Result<Option<String>, Error> {
+    let view = store.read(&DiffQuery {
+        environment: environment(matches)?,
+    })?;
+    let path = path.to_string();
+    Ok(view
+        .changes
+        .iter()
+        .find(|change| {
+            change.lifecycle == ReviewLifecycleKind::Create
+                && change.node.node_type == EnvironmentNodeType::Service
+                && change
+                    .settings
+                    .iter()
+                    .any(|row| row.path == path && !row.can_restore && row.before.is_null())
+        })
+        .map(|change| change.name.clone()))
 }
 
 #[derive(Serialize)]
@@ -308,6 +363,37 @@ fn comes_back(backs: &[Back<'_>], saved: u64) {
     }
 }
 
+/// What a saved version changed, as a reader picks one: each changed Setting, or a
+/// node made or removed, cut after a few.
+fn summary(revision: &ployz_store::SavedRevision) -> String {
+    const SHOWN: usize = 3;
+    if revision.predecessor.is_none() {
+        return "first version".to_owned();
+    }
+    let changed: Vec<String> = revision
+        .changes
+        .iter()
+        .flat_map(|change| {
+            if change.lifecycle == ReviewLifecycleKind::Update && !change.settings.is_empty() {
+                change.settings.iter().map(|row| row.path.clone()).collect()
+            } else {
+                vec![format!(
+                    "{} ({})",
+                    change.name,
+                    super::store::word(&change.lifecycle)
+                )]
+            }
+        })
+        .collect();
+    match changed.get(..SHOWN) {
+        _ if changed.is_empty() => "nothing".to_owned(),
+        Some(shown) if changed.len() > SHOWN => {
+            format!("{} +{} more", shown.join(", "), changed.len() - SHOWN)
+        }
+        Some(_) | None => changed.join(", "),
+    }
+}
+
 pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
@@ -320,17 +406,32 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
             environment,
             limit: None,
         })?;
+        let mut table = Table::new(
+            ["VERSION", "SAVED", "BY", "CHANGES", "MESSAGE"],
+            "No saved versions.",
+        );
+        let now = chrono::Utc::now();
+        for revision in &view.revisions {
+            table.row([
+                match view.live == Some(revision.revision) {
+                    true => format!("#{} (live)", revision.revision),
+                    false => format!("#{}", revision.revision),
+                },
+                revision
+                    .saved_at
+                    .and_then(|at| chrono::DateTime::from_timestamp(at, 0))
+                    .map_or_else(|| "-".to_owned(), |at| crate::checkin::ago(at, now)),
+                revision
+                    .saved_by
+                    .as_ref()
+                    .map_or("-", ployz_store::Principal::as_str)
+                    .to_owned(),
+                summary(revision),
+                revision.message.clone().unwrap_or_else(|| "-".to_owned()),
+            ]);
+        }
         return crate::ui::finish(&view, || {
-            if view.revisions.is_empty() {
-                crate::ui::note("No saved versions.");
-            }
-            for revision in &view.revisions {
-                crate::ui::stream(format_args!(
-                    "#{}  {}",
-                    revision.revision,
-                    revision.message.as_deref().unwrap_or("Saved version")
-                ));
-            }
+            crate::ui::rows(&table);
             if view.more {
                 crate::ui::note("Older versions not shown.");
             }
@@ -387,7 +488,14 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                 .unwrap_or(preview.version),
             accept_overwrite: matches.get_flag("accept-overwrite"),
         })
-        .map_err(|error| store.fail(with_refresh_hint(error, matches, "history")))?;
+        .map_err(|error| {
+            let error = with_next(
+                error,
+                |refused| refused.code == RpcErrorCode::ConfirmationRequired,
+                || store.again(&[&revision.0.to_string(), "--accept-overwrite"]),
+            );
+            store.fail(with_refresh_hint(error, matches, "history"))
+        })?;
     if !staged.changed {
         return crate::ui::done(
             &staged,

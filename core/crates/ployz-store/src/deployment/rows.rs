@@ -6,13 +6,14 @@ use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
     ExecutionError, HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase,
-    OperationRow, OperationStatus, RpcError, ServiceName,
+    OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{DeploymentStatus, Stored, TargetNode, json_text, now, saved_at};
 use crate::error;
+use crate::id::OrganizationId;
 use crate::storage::{Row, Tx};
 use crate::tools::{LogText, Withheld};
 
@@ -44,6 +45,10 @@ pub enum RowState {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(as = "Option<bool>", optional)]
         unanswered: bool,
+        /// Docker OOM-killed a process of the failed Container.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        out_of_memory: Option<OutOfMemory>,
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
@@ -296,15 +301,44 @@ impl Failure {
             ExecutionError::Machine {
                 action: MachineAction::PullImage,
                 error,
-            } if let Some(image) = error.missing_image() => (
-                format!("Image {image} not found, or its registry needs credentials"),
+            } if let Some(missing) = error.missing_image() => (
+                match missing.policy {
+                    Some(PullPolicy::Never) => format!(
+                        "Image {} is not on this Server, and the pull policy is Never",
+                        missing.image
+                    ),
+                    _ => format!(
+                        "Image {} not found, or its registry needs credentials",
+                        missing.image
+                    ),
+                },
                 ployz_core::error_chain::causes(error),
             ),
+            ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
+            } if let Some(full) = error.disk_full() => {
+                (full.to_string(), ployz_core::error_chain::causes(error))
+            }
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
                 (format!("{action} failed"), cause)
             }
+            ExecutionError::Health {
+                out_of_memory: Some(OutOfMemory { memory_bytes }),
+                failure,
+                ..
+            } => (
+                match memory_bytes {
+                    Some(bytes) => format!(
+                        "The Container ran out of memory under its {} memLimit",
+                        crate::memory_size(bytes.get() as f64 / 1e9)
+                    ),
+                    None => "The Container ran out of memory".to_owned(),
+                },
+                vec![failure.to_string()],
+            ),
             ExecutionError::Health { failure, .. } => (
                 match failure {
                     HealthFailure::Runtime {
@@ -324,7 +358,19 @@ impl Failure {
                     | HealthFailure::Runtime { .. } => "The Container failed its health check",
                 }
                 .to_owned(),
-                vec![failure.to_string()],
+                // The reason already says it: `restarting` alone adds nothing.
+                if matches!(
+                    failure,
+                    HealthFailure::Runtime {
+                        observation: ContainerRuntimeObservation::Restarting
+                            | ContainerRuntimeObservation::Dead,
+                        last_check: None,
+                    }
+                ) {
+                    Vec::new()
+                } else {
+                    vec![failure.to_string()]
+                },
             ),
             ExecutionError::DependencyHealth {
                 dependency,
@@ -347,7 +393,7 @@ impl Failure {
                 },
             ),
             ExecutionError::Hook { failure, .. } => (
-                "The hook Container failed".to_owned(),
+                "The setup or pre-deploy command failed".to_owned(),
                 match failure {
                     HookFailure::Cancelled {
                         stop_error: Some(error),
@@ -541,6 +587,13 @@ fn state(
                 why: Withheld::Unanswered,
             }),
             unanswered: matches!(error, ExecutionError::Machine { error, .. } if error.target_unanswered()),
+            out_of_memory: match error {
+                ExecutionError::Health { out_of_memory, .. } => *out_of_memory,
+                ExecutionError::Machine { .. }
+                | ExecutionError::DependencyHealth { .. }
+                | ExecutionError::Hook { .. }
+                | ExecutionError::Cancelled => None,
+            },
         };
     }
     if let Some(phase) = running {
@@ -666,6 +719,27 @@ fn history(row: &Row, index: usize) -> Result<Option<Vec<RowTransition>>, RpcErr
         .transpose()
 }
 
+/// The name each Server `organization`'s Deployments ran on went by, as the newest
+/// of them knew it.
+pub(crate) fn servers(
+    tx: &mut dyn Tx,
+    organization: &OrganizationId,
+) -> Result<BTreeMap<MachineId, String>, RpcError> {
+    let found = tx.query(
+        "SELECT r.machine, r.server FROM config_deployment_row r \
+         JOIN config_deployment d ON d.id = r.deployment_id \
+         WHERE r.organization_id = ?1 ORDER BY d.admitted",
+        &[organization.as_str().into()],
+    )?;
+    found
+        .iter()
+        .map(|row| {
+            let machine: MachineId = row.parse(0, "Deployment row Machine")?;
+            Ok((machine, row.text(1)?.to_owned()))
+        })
+        .collect()
+}
+
 pub(super) fn of_nodes(
     tx: &mut dyn Tx,
     stored: &Stored,
@@ -789,8 +863,8 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, MachineAction,
-        OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, HookFailure,
+        MachineAction, OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
     };
 
     use super::{Failure, RowPhase, RowState};
@@ -840,6 +914,10 @@ mod tests {
     }
 
     fn reason(observation: ContainerRuntimeObservation) -> String {
+        failure(observation).reason
+    }
+
+    fn failure(observation: ContainerRuntimeObservation) -> Failure {
         Failure::of(
             &ExecutionError::Health {
                 container_id: ContainerId::parse("a".repeat(64)).unwrap(),
@@ -847,10 +925,10 @@ mod tests {
                     observation,
                     last_check: None,
                 },
+                out_of_memory: None,
             },
             &[],
         )
-        .reason
     }
 
     #[test]
@@ -886,6 +964,19 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_hook_names_both_commands_it_can_run() {
+        let failed = Failure::of(
+            &ExecutionError::Hook {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                failure: HookFailure::Exit { code: 3 },
+            },
+            &[],
+        );
+        assert_eq!(failed.reason, "The setup or pre-deploy command failed");
+        assert_eq!(failed.cause, ["exited with code 3"]);
+    }
+
+    #[test]
     fn a_container_that_stops_running_is_not_called_unhealthy() {
         assert_eq!(
             reason(ContainerRuntimeObservation::Restarting),
@@ -898,6 +989,19 @@ mod tests {
         assert_eq!(
             reason(ContainerRuntimeObservation::Dead),
             "The Container stopped"
+        );
+    }
+
+    #[test]
+    fn a_cause_that_repeats_the_reason_is_left_out() {
+        assert!(
+            failure(ContainerRuntimeObservation::Restarting)
+                .cause
+                .is_empty()
+        );
+        assert_eq!(
+            failure(ContainerRuntimeObservation::Exited { code: 1 }).cause,
+            ["exited with code 1"]
         );
     }
 }

@@ -57,10 +57,15 @@ exit or a stop, such as `ployz service restart`, a Deploy or a rollback, shows n
 the app exits non-zero on the stop signal, as with SIGTERM (143), SIGINT (130) or SIGKILL (137).
 When other issues share the card, the badge adds their count, as in **⚠ OOM +1**. The badge is
 amber, or red when the service is down. Click the ⚠ to open the service's Monitoring tab. A
-server that needs an upgrade or doesn't answer adds nothing to the card.
+server that needs an upgrade or doesn't answer adds nothing to the card. A failing uptime check
+shows **⚠ Unreachable**, and a failing healthcheck **⚠ Check failing**.
 
 A crash or OOM kill also emails the organization, as
-[Notifications](../account/notifications.md) describes.
+[Notifications](../account/notifications.md) describes. A crash that happened while the server's
+`ployz-observe` service was stopped or restarting counts once it is back, but only if
+`ployz-observe` on this version had already recorded a container start, kill, stop or exit before
+it went down, and only while Docker still holds the event. Docker keeps only its last 256 events
+and none from before it restarted.
 
 ## See a server's metrics
 
@@ -110,7 +115,9 @@ service, until its summaries age out.
   such as "web-2 didn't answer."
 - **A server on an older Ployz has no metrics to show.** The **Monitoring** tab names it, as in
   "web-2 needs an upgrade to show its metrics." When every server running the service needs one,
-  the charts give way to **Upgrade web-2 to see its metrics** with a link to the server. See
+  the charts give way to **Upgrade web-2 to see its metrics** with a link to the server. When
+  your releases are Stable and only Beta has a newer release, the server's page says **Metrics
+  need a Beta release** and opens **Upgrade settings**. See
   [Upgrade Ployz on a server](../servers/manage-servers.md#upgrade-ployz-on-a-server).
 - **Metrics share a CPU budget with logs.** Ployz caps its helper for both at 10% of one CPU core.
   See [Logs](logs.md).

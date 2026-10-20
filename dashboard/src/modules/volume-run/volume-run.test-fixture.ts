@@ -10,11 +10,12 @@ export const COPIES = {
   cut: { kind: "root", readonly: true, newest: snapshot, epoch: 1, seed: false },
   seed: { kind: "root", readonly: false, newest: null, epoch: 0, seed: true },
   rootWithoutSeed: { kind: "root", readonly: false, newest: null, epoch: 0 } as VolumeCopy,
-  mirror: { kind: "slot", slot: "1", readonly: true, newest: snapshot, resume_token: null, pull: null },
-  final: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null },
-  behind: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: null },
-  pulling: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: null } },
-  failed: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: "no space" } },
+  mirror: { kind: "slot", slot: "1", readonly: true, newest: snapshot, resume_token: null, pull: null, role: "mirror" },
+  final: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null, role: "mirror" },
+  old: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null, role: "old_copy" },
+  behind: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: null, role: "mirror" },
+  pulling: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: null }, role: "mirror" },
+  failed: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: "no space" }, role: "mirror" },
 } satisfies Record<string, VolumeCopy>;
 
 export type Copy = keyof typeof COPIES | "empty" | "unanswered";

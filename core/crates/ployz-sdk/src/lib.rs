@@ -11,7 +11,7 @@ use napi_derive::napi;
 use ployz::sdk;
 use ployz_core::{
     DataLossConfirmation, ManagementClientLabel, Namespace, RemoveVolumesRequest, RpcError,
-    RpcErrorCode, log_level,
+    RpcErrorCode,
 };
 
 /// One cancellable connection attempt.
@@ -85,7 +85,7 @@ impl PendingConnection {
         tokio::select! {
             biased;
             () = self.cancel.cancelled() => Err(rpc_to_napi(RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null, cause: Vec::new(), })),
-            result = sdk::connect_connections(connections, connector) => Ok(Client { inner: result.map_err(rpc_to_napi)? }),
+            result = sdk::connect_answered(connections, connector) => Ok(Client { inner: result.map_err(call_to_napi)? }),
         }
     }
 }
@@ -199,7 +199,7 @@ impl Client {
             .set_management_client(label)
             .await
             .map(|capability| capability.to_secret_string())
-            .map_err(rpc_to_napi)
+            .map_err(call_to_napi)
     }
 
     /// Point this Machine's crash pushes at `url`, or stop them with `null`.
@@ -284,35 +284,50 @@ impl Client {
         to_json(&description)
     }
 
-    /// Read one Container's output through its owning Machine.
+    /// Read one Container's output through its owning Machine, scrubbed of the Sealed values
+    /// `sealed` names.
     /// # Errors
     /// Returns malformed input and Machine transport failures.
-    #[napi]
-    pub async fn container_logs(
+    #[napi(ts_return_type = "Promise<ContainerLogStream>")]
+    pub fn container_logs(
         &self,
+        env: Env,
         #[napi(ts_arg_type = "unknown")] input: serde_json::Value,
-    ) -> Result<ContainerLogStream> {
-        let input = from_js(input).map_err(invalid_argument)?;
-        Ok(ContainerLogStream {
-            inner: self
-                .inner
-                .container_logs(input)
-                .await
-                .map_err(rpc_to_napi)?,
+        sealed: &SealedNames,
+    ) -> Result<napi::JsObject> {
+        let session = self.inner.clone();
+        let names = sealed.inner.clone();
+        env.spawn_future(async move {
+            let input = from_js(input).map_err(invalid_argument)?;
+            Ok(ContainerLogStream {
+                inner: session
+                    .scrubbed_logs(input, &names)
+                    .await
+                    .map_err(rpc_to_napi)?,
+            })
         })
     }
 
-    /// Read one page of one Machine's Log Store.
+    /// Read one page of one Machine's Log Store, scrubbed of the Sealed values `sealed` names.
     /// # Errors
     /// Returns malformed input and Machine transport failures.
-    #[napi]
-    pub async fn log_history(
+    #[napi(ts_return_type = "Promise<LogHistoryStream>")]
+    pub fn log_history(
         &self,
+        env: Env,
         #[napi(ts_arg_type = "unknown")] input: serde_json::Value,
-    ) -> Result<LogHistoryStream> {
-        let input = from_js(input).map_err(invalid_argument)?;
-        Ok(LogHistoryStream {
-            inner: self.inner.log_history(input).await.map_err(rpc_to_napi)?,
+        sealed: &SealedNames,
+    ) -> Result<napi::JsObject> {
+        let session = self.inner.clone();
+        let names = sealed.inner.clone();
+        env.spawn_future(async move {
+            let input = from_js(input).map_err(invalid_argument)?;
+            Ok(LogHistoryStream {
+                inner: session
+                    .scrubbed_history(input, &names)
+                    .await
+                    .map_err(rpc_to_napi)?,
+            })
         })
     }
 
@@ -960,6 +975,21 @@ fn rpc_to_napi(error: RpcError) -> Error {
     }
 }
 
+/// [`rpc_to_napi`], marking with `unanswered` a failure no Machine sent.
+fn call_to_napi(failure: sdk::CallError) -> Error {
+    if !failure.unanswered {
+        return rpc_to_napi(failure.error);
+    }
+    match serde_json::to_value(&failure.error) {
+        Ok(serde_json::Value::Object(mut fields)) => {
+            fields.insert("unanswered".into(), serde_json::Value::Bool(true));
+            let json = serde_json::Value::Object(fields);
+            Error::from_reason(format!("{RPC_ERROR_PREFIX}{json}"))
+        }
+        _ => Error::from_reason(failure.error.to_string()),
+    }
+}
+
 /// Run the shared allocation policy inside the caller's storage transaction.
 ///
 /// # Errors
@@ -1014,27 +1044,97 @@ pub fn ployz_version() -> String {
     sdk::VERSION.to_owned()
 }
 
+/// The Sealed names one log request scrubs under. Feed it every read of the Store's
+/// `sealed_names`; readers given it wait for the first read and hide while the newest read failed.
+#[napi]
+pub struct SealedNames {
+    inner: sdk::SealedNames,
+}
+#[napi]
+impl SealedNames {
+    #[napi(constructor)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: sdk::SealedNames::new(),
+        }
+    }
+    /// Start a read of the names. Ask the Store only after this returns.
+    #[napi]
+    #[must_use]
+    pub fn begin(&self) -> NamesRead {
+        NamesRead {
+            read: std::sync::Mutex::new(Some(self.inner.begin())),
+        }
+    }
+    /// Resolves once a reader needs names newer than the last read, or at once after `close`.
+    #[napi]
+    pub async fn wanted(&self) {
+        self.inner.wanted().await;
+    }
+    /// End the request: every `wanted`, pending or later, resolves at once.
+    #[napi]
+    pub fn close(&self) {
+        self.inner.close();
+    }
+}
+
+impl Default for SealedNames {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One read of the Sealed names in flight; it lands once.
+#[napi]
+pub struct NamesRead {
+    read: std::sync::Mutex<Option<sdk::PendingNames>>,
+}
+#[napi]
+impl NamesRead {
+    /// The names the Store holds Sealed, or null when it owns no such Namespace.
+    #[napi]
+    pub fn done(
+        &self,
+        #[napi(ts_arg_type = "readonly string[] | null")] names: Option<Vec<String>>,
+    ) {
+        if let Some(read) = self.take() {
+            read.done(names.map(|names| names.into_iter().collect()));
+        }
+    }
+    /// The Store could not be read: readers hide every line from now on.
+    #[napi]
+    pub fn failed(&self) {
+        if let Some(read) = self.take() {
+            read.failed();
+        }
+    }
+    fn take(&self) -> Option<sdk::PendingNames> {
+        self.read
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 /// Cancellable Container log reader.
 #[napi]
 pub struct ContainerLogStream {
-    inner: sdk::ContainerLogStream,
+    inner: sdk::ScrubbedLogStream,
 }
 #[napi]
 impl ContainerLogStream {
-    /// Next output with its level, or null at EOF/cancellation.
+    /// Next output, or null at EOF/cancellation.
     /// # Errors
     /// Returns Machine transport or encoding failures.
-    #[napi(ts_return_type = "Promise<(ContainerLogRecord & { level: LogLevel }) | null>")]
+    #[napi(ts_return_type = "Promise<LiveLogRecord | null>")]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
-        let Some(row) = self.inner.next().await.map_err(rpc_to_napi)? else {
-            return Ok(None);
-        };
-        let level = log_level(row.message.as_bytes());
-        let mut value = to_json(&row)?;
-        if let serde_json::Value::Object(fields) = &mut value {
-            fields.insert("level".into(), level.as_str().into());
-        }
-        Ok(Some(value))
+        self.inner
+            .next()
+            .await
+            .map_err(rpc_to_napi)?
+            .map(|row| to_json(&row))
+            .transpose()
     }
     /// Stop this reader without closing its session.
     #[napi]
@@ -1046,7 +1146,7 @@ impl ContainerLogStream {
 /// Cancellable reader of one Log Store page.
 #[napi]
 pub struct LogHistoryStream {
-    inner: sdk::LogHistoryStream,
+    inner: sdk::ScrubbedHistoryStream,
 }
 #[napi]
 impl LogHistoryStream {

@@ -95,7 +95,7 @@ impl VolumeStorage {
                 .rpc_error(format!("Volume {name} has no bound to seed {into} with")));
         }
         if Self::slot_fs(&datasets, &pool, &into).is_some()
-            && self.marked_written_here(&fs).await.map_err(internal)?
+            && self.written_here(&fs).await.map_err(internal)?
         {
             return Err(SwitchError::Precondition.rpc_error(format!(
                 "Volume {into} is held in slot {parent}; promote or restore it before seeding it"
@@ -132,8 +132,7 @@ impl VolumeStorage {
         pool: &ployzd::machine_pool::MachinePool,
         into: &super::DockerVolumeName,
     ) -> Result<VolumeCopyView, RpcError> {
-        let datasets = self.datasets(pool).await.map_err(internal)?;
-        let copy = self.copy(&datasets, pool, into).await.map_err(internal)?;
+        let copy = self.current_copy(pool, into).await.map_err(internal)?;
         Ok(VolumeCopyView { copy })
     }
 

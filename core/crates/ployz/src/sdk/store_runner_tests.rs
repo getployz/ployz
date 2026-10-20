@@ -5,9 +5,22 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 
 fn run() -> (Run, ployz_store::Actor) {
+    admitted(None)
+}
+
+/// A claimed Deploy of an uploaded `app` Service.
+fn uploaded() -> (Run, ployz_store::Actor) {
+    admitted(Some(ployz_store::UploadedSource {
+        digest: UploadDigest::parse("d".repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    }))
+}
+
+fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::Actor) {
     use ployz_store::{
-        Actor, Admit, CreateProject, Deploy, EnvironmentRef, OrganizationId, ProjectId,
-        ProjectName, SealingKey,
+        Actor, Admit, CreateProject, CreateService, Deploy, EnvironmentRef, OrganizationId,
+        ProjectId, ProjectName, SealingKey, ServiceLineageId,
     };
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap());
@@ -22,6 +35,20 @@ fn run() -> (Run, ployz_store::Actor) {
             },
         )
         .unwrap();
+    if upload.is_some() {
+        store
+            .write(
+                &actor,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("app").unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
     let deployment = DeploymentId::parse("00000000-0000-4000-8000-000000000003").unwrap();
     store
         .write_trusted(
@@ -31,7 +58,7 @@ fn run() -> (Run, ployz_store::Actor) {
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
-                upload: None,
+                upload,
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
@@ -248,6 +275,61 @@ async fn a_launch_or_initial_report_failure_settles_all_started_builds_and_keeps
             .map(|entry| entry.get("service").unwrap().as_str().unwrap())
             .collect::<Vec<_>>(),
         ["web", "worker"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_queued_build_says_so_in_its_log_while_it_waits() {
+    let (run, actor) = uploaded();
+    let target = Target {
+        service: ServiceName::parse("app").unwrap(),
+        build: Build::Upload {
+            digest: UploadDigest::parse("d".repeat(64)).unwrap(),
+            source: None,
+            earlier: false,
+            github_skipped: false,
+        },
+    };
+    run.report(&target.service, BuildStatus::Building, None, String::new())
+        .await
+        .unwrap();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let running =
+        super::super::running::Running::spawn(CancellationToken::new(), |reporter| async move {
+            reporter.report(super::super::prepare::Progress::Build(
+                ployz_build::Progress::Stage(ployz_build::Stage::Queued),
+            ));
+            let _ = released.await;
+            Err(internal("released"))
+        });
+    let log = || {
+        run.store
+            .read(
+                &actor,
+                &ployz_store::BuildLogQuery {
+                    deployment: run.deployment.clone(),
+                    service: target.service.clone(),
+                },
+            )
+            .unwrap()
+            .log
+    };
+    let watch = async {
+        let shown = tokio::time::timeout(Duration::from_secs(30), async {
+            while !log().contains("Waiting for a build slot") {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        release.send(()).unwrap();
+        shown
+    };
+    let (followed, shown) = tokio::join!(run.follow(&target, &running), watch);
+    assert!(followed.unwrap().is_err());
+    assert!(
+        shown.is_ok(),
+        "the log said nothing while queued: {:?}",
+        log()
     );
 }
 
@@ -491,4 +573,151 @@ async fn an_image_supplied_value_sealed_after_the_claim_is_scrubbed_from_a_faile
         ),
         "{unreadable:?}"
     );
+}
+
+/// Two uploaded Services, `front` and `back`, each sent its own upload, then a full
+/// Deploy of both: claimed.
+fn separately_uploaded() -> Claimed {
+    use ployz_store::{
+        Actor, Admit, CreateProject, CreateService, Deploy, EnvironmentRef, OrganizationId,
+        ProjectId, ProjectName, SealingKey, ServiceLineageId, UploadedSource,
+    };
+    let store = ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap();
+    let actor = Actor::system(OrganizationId::parse("test").unwrap());
+    store
+        .write(
+            &actor,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("test").unwrap(),
+                default_environment: environment(),
+            },
+        )
+        .unwrap();
+    for (n, name) in [(5, "front"), (6, "back")] {
+        store
+            .write(
+                &actor,
+                &CreateService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    let runner = RunnerId::parse("owner").unwrap();
+    let deploy = |n: u8, services: &[&str], digest: Option<char>| {
+        let deployment =
+            DeploymentId::parse(format!("00000000-0000-4000-8000-00000000010{n}")).unwrap();
+        store
+            .write_trusted(
+                &actor,
+                &Admit::Deploy(Deploy {
+                    id: deployment.clone(),
+                    environment: EnvironmentRef::default(),
+                    services: services
+                        .iter()
+                        .map(|name| ServiceName::parse(*name).unwrap())
+                        .collect(),
+                    version: None,
+                    upload: digest.map(|digest| UploadedSource {
+                        digest: UploadDigest::parse(digest.to_string().repeat(64)).unwrap(),
+                        base: None,
+                        uploader: None,
+                    }),
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &ployz_store::Trusted::default(),
+            )
+            .unwrap();
+        store.claim(&deployment, &runner).unwrap()
+    };
+    let end = |claimed: &Claimed| {
+        store
+            .record(
+                &claimed.deployment.id,
+                &runner,
+                ployz_store::RunEvidence::NotExecuted("stopped".into()),
+            )
+            .unwrap();
+    };
+    end(&deploy(1, &["back"], Some('b')));
+    end(&deploy(2, &["front"], Some('f')));
+    deploy(3, &[], None)
+}
+
+#[test]
+fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
+    let claimed = separately_uploaded();
+    let extracted = PathBuf::from("/extracted");
+    let (targets, _) = match targets(
+        &claimed,
+        Sources {
+            checkouts: BTreeMap::new(),
+            upload: Some(extracted.clone()),
+        },
+    ) {
+        Ok(targets) => targets,
+        Err(_) => panic!("both Services build"),
+    };
+    let builds: Vec<_> = targets
+        .iter()
+        .map(|target| match &target.build {
+            Build::Upload {
+                digest,
+                source,
+                earlier,
+                ..
+            } => (
+                target.service.as_str(),
+                digest.as_str().chars().next().unwrap(),
+                source.clone(),
+                *earlier,
+            ),
+            Build::Git { .. } => panic!("no Git Service"),
+        })
+        .collect();
+    // Cloud extracts the newer upload, front's; back builds from its own b, from its
+    // image unless it must build again.
+    assert_eq!(
+        builds,
+        [
+            ("back", 'b', None, true),
+            ("front", 'f', Some(extracted), false)
+        ]
+    );
+    let mut input = PreparationInput::default();
+    for target in &targets {
+        target.input(&mut input);
+    }
+    assert_eq!(
+        input
+            .uploads
+            .values()
+            .map(|digest| digest.as_str().chars().next().unwrap())
+            .collect::<Vec<_>>(),
+        ['b', 'f']
+    );
+    // back must build again: it needs its own Deployment, not a new upload.
+    let back = ServiceName::parse("back").unwrap();
+    let Unbuilt::Failed(why) = upload_needed(&earlier(&targets), vec![back.clone()]) else {
+        panic!("back still has its upload");
+    };
+    assert!(
+        why.ends_with("Deploy it on its own: ployz deploy back"),
+        "{why}"
+    );
+    // front's upload is gone: that needs a new upload, first.
+    let front = ServiceName::parse("front").unwrap();
+    let Unbuilt::UploadNeeded(services) =
+        upload_needed(&earlier(&targets), vec![back, front.clone()])
+    else {
+        panic!("front needs a new upload");
+    };
+    assert_eq!(services, [front]);
 }

@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
+import { getAuthSessionEffect } from "#/auth/auth.server";
 import { type CommandName, runCommand } from "#/modules/commands/commands.server";
 import type { Caller } from "#/modules/identity/actor";
 import { dashboardCaller } from "#/modules/identity/caller.server";
@@ -27,7 +28,10 @@ const ranAs = <N extends CommandName>(caller: Caller, name: N, input: JsonValue)
 const ran = <N extends CommandName>(headers: Headers, organizationSlug: string, name: N, input: JsonValue) =>
   dashboardCaller(headers, organizationSlug).pipe(Effect.flatMap((caller) => ranAs(caller, name, input)));
 
-/** Pending invites name who was invited, so only owners and admins see them. */
+/**
+ * Pending invites name who was invited, so only owners and admins see them. `support` marks a support visit, which has
+ * no row of its own.
+ */
 export const listMembersServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Slug })))
@@ -37,6 +41,7 @@ export const listMembersServerFn = createServerFn({ method: "GET" })
       members: ranAs(caller, "org_member_ls", {}),
       invites: manages(caller) ? ranAs(caller, "org_invite_ls", {}) : Effect.succeed([]),
       mail: Effect.map(AppConfig, (config) => config.mail !== null),
+      support: Effect.succeed(caller.support !== null),
     }))));
   });
 
@@ -78,7 +83,10 @@ export const leaveOrganizationServerFn = createServerFn({ method: "POST" })
 export const readInviteServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware])
   .validator(strictValidator(Schema.Struct({ token: Schema.String })))
-  .handler(({ data }) => runActor({ signal: getRequest().signal }, readInvite(data.token)));
+  .handler(({ data }) => {
+    const { headers, signal } = getRequest();
+    return runActor({ signal }, getAuthSessionEffect(headers).pipe(Effect.flatMap((session) => readInvite(data.token, session?.user.id ?? null))));
+  });
 
 export const acceptInviteServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])

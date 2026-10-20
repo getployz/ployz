@@ -399,6 +399,12 @@ impl UploadListing {
         })
     }
 
+    /// Whether the listing holds no path at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+
     /// The Uploaded Source's content digest: lowercase hex sha256 over every listed
     /// path, byte, mode and link.
     ///

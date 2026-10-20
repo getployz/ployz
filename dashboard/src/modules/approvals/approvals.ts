@@ -45,6 +45,12 @@ export function approvalSubject(command: string, review: ApprovalReview) {
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
 }
 
+/** An approval's verb and name for a list, a Store write's Environment under its Project: "Deploy" "shop/production". */
+export function approvalTarget(command: string, review: ApprovalReview) {
+  const { verb, name, project } = approvalSubject(command, review);
+  return { verb, name: project === null ? name : `${project}/${name}` };
+}
+
 const rollsBack = (review: ApprovalReview) => "diff" in review && (review.redeploy?.rolls_back.length ?? 0) > 0;
 
 /** What a redeploy's card says it ships: "Back to #4. Undoes #5 and #6.", or "Ships #4 again."; null for anything else. */

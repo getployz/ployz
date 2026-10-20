@@ -1,4 +1,5 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Cause, Effect, Exit, Random, Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
@@ -886,6 +887,7 @@ it("reads status from the last check-in and the report", () => {
 
 const readyAuto = { cliVersion: "0.3.1", prep: { docker: "ready", zfs: "ready" } } as const;
 const arrivalWait = { kind: "wait", retryAfter: 2 };
+const noCluster = { ...wait, noCluster: true };
 const autoToken = (maxServers = 2) => run(createFleetToken(ada, { organizationSlug: "ada", name: "auto", expiresIn: "30d", autoEnroll: { maxServers } }));
 const foundOrganization = () => harness.pool.query(`insert into organization_pairing (organization_id, founder_machine_id, founder_claim_machine_id, founder_public_key, encrypted_pairing_secret)
   values ($1, repeat('a', 32), repeat('a', 32), repeat('b', 64), '{}')`, [adaOrg]);
@@ -926,16 +928,28 @@ it("revokes an arrival token mid-burst without deadlock and keeps every started 
 it("never founds on arrival, including while the first server is still founding", async () => {
   const { token } = await autoToken();
   const host = newHost();
-  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await send(token, host, readyAuto)).toEqual(noCluster);
   expect(await autoAttempts()).toHaveLength(0);
   await foundOrganization();
   await harness.pool.query("update organization_pairing set founder_machine_id = null");
-  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await send(token, host, readyAuto)).toEqual(noCluster);
   expect(await autoAttempts()).toHaveLength(0);
   await harness.pool.query("update organization_pairing set founder_machine_id = repeat('a', 32)");
   expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
   expect(await send(token, host, readyAuto)).toMatchObject({ kind: "enroll", role: "joiner", name: "web-1" });
   expect(await autoAttempts()).toHaveLength(1);
+});
+
+it("says an arrival host waits on a first server only while the Organization has none", async () => {
+  const plain = await fleetToken("review");
+  const { token } = await autoToken();
+  const host = newHost();
+  expect(await send(plain.token, newHost(), { ...readyAuto, hostname: "first" })).toEqual(wait);
+  expect(await send(token, host, readyAuto)).toEqual(noCluster);
+  const first = (await rows()).find((row) => row.report.hostname === "first")?.id ?? "";
+  await run(startServerEnrollment(ada, { organizationSlug: "ada", ids: [first], names: { kind: "hostnames" }, storage: { kind: "none" }, runs: { services: true, ingress: true, builds: true } }));
+  expect(await autoAttempts()).toMatchObject([{ role: "founder" }]);
+  expect(await send(token, host, readyAuto)).toEqual(wait);
 });
 
 it("keeps plain tokens and older clients waiting in a founded Organization", async () => {
@@ -1000,6 +1014,88 @@ it.each(["failed", "cancelled"] as const)("keeps a host whose arrival attempt %s
   await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
   expect(await send(token, host, readyAuto)).toMatchObject({ kind: "enroll", role: "joiner" });
   expect(await autoAttempts()).toMatchObject([{ state }, { state: "instructed" }]);
+});
+
+it.each(["revoked", "expired"] as const)("keeps a host's spent arrival after it moves to a token that is then %s", async (end) => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const other = await run(createFleetToken(ada, { organizationSlug: "ada", name: "other", expiresIn: "30d", autoEnroll: null }));
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[0]?.id ?? "", "failed");
+  expect(await send(other.token, host, readyAuto)).toEqual(wait);
+  if (end === "revoked") await run(revokeFleetToken(ada, { organizationSlug: "ada", id: other.id }));
+  else {
+    await harness.pool.query("update fleet_token set expires_at = now() - interval '1 second' where id = $1", [other.id]);
+    expect(await send(other.token, host, readyAuto)).toMatchObject({ kind: "stop", reason: "token_expired" });
+  }
+  expect(await rows()).toHaveLength(0);
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+});
+
+it("refuses a second arrival to a joined host that returns on its token after the seven-day sweep", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[0]?.id ?? "", "joined");
+  await harness.pool.query("update server_enrollment set ended_at = now() - interval '8 days'");
+  expect(await run(closeStaleServerEnrollments())).toEqual({ failed: 0, removed: 1 });
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+});
+
+it.each(["revoked", "expired", "swept"] as const)("refuses a second arrival after an attempt an older app inserted, once the host's row is %s", async (end) => {
+  await foundOrganization();
+  const { token, id } = await autoToken(5);
+  const other = await run(createFleetToken(ada, { organizationSlug: "ada", name: "other", expiresIn: "30d", autoEnroll: null }));
+  const host = newHost();
+  expect(await send(token, host, { ...readyAuto, report: { blockers: [{ code: "disk_too_small", message: "Disk too small" }] } })).toEqual(wait);
+  await harness.pool.query(
+    `insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state, ended_at)
+     values ($1, $2, $3, 'joiner', '{}', gen_random_uuid(), $4, now() - interval '8 days')`,
+    [adaOrg, (await one()).id, id, end === "swept" ? "joined" : "failed"],
+  );
+  if (end === "swept") expect(await run(closeStaleServerEnrollments())).toEqual({ failed: 0, removed: 1 });
+  else {
+    expect(await send(other.token, host, readyAuto)).toEqual(wait);
+    if (end === "revoked") await run(revokeFleetToken(ada, { organizationSlug: "ada", id: other.id }));
+    else {
+      await harness.pool.query("update fleet_token set expires_at = now() - interval '1 second' where id = $1", [other.id]);
+      expect(await send(other.token, host, readyAuto)).toMatchObject({ kind: "stop", reason: "token_expired" });
+    }
+  }
+  expect(await rows()).toHaveLength(0);
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+});
+
+it("backfills the attempt markers the trigger writes, under each attempt's own token, from the enrollments already there", async () => {
+  await foundOrganization();
+  const { token, id: tokenId } = await autoToken(5);
+  const retried = newHost();
+  expect(await send(token, retried, readyAuto)).toEqual(arrivalWait);
+  expect(await send(token, newHost(), readyAuto)).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[0]?.id ?? "", "failed");
+  const [row] = (await harness.pool.query<{ id: string }>("select id from waiting_server where checkin_key = $1", [retried.key])).rows;
+  const input = { ids: [row?.id ?? ""], names: { kind: "hostnames" }, storage: { kind: "none" }, runs: { services: true, ingress: true, builds: true } } as const;
+  await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  const other = await run(createFleetToken(ada, { organizationSlug: "ada", name: "other", expiresIn: "30d", autoEnroll: null }));
+  const moved = newHost();
+  expect(await send(token, moved, readyAuto)).toEqual(arrivalWait);
+  await endAuto((await autoAttempts())[3]?.id ?? "", "failed");
+  expect(await send(other.token, moved, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(4);
+  const markers = async () => (await harness.pool.query("select * from fleet_token_attempt order by checkin_key")).rows;
+  const written = await markers();
+  expect(written).toHaveLength(3);
+  expect(written.every((marker) => marker.fleet_token_id === tokenId)).toBe(true);
+  const migration = await readFile(new URL("../../../../drizzle/20261020084557_fleet_token_attempt/migration.sql", import.meta.url), "utf8");
+  const backfill = migration.split("--> statement-breakpoint").find((statement) => statement.includes('INSERT INTO "fleet_token_attempt"')) ?? "";
+  await harness.pool.query("delete from fleet_token_attempt");
+  await harness.pool.query(backfill);
+  expect(await markers()).toEqual(written);
 });
 
 it("keeps joined usage after the seven-day sweep and refuses another arrival", async () => {

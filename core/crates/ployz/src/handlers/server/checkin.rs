@@ -36,7 +36,7 @@ pub(crate) fn command(command: Command) -> Command {
             value("token-file", None)
                 .value_parser(clap::value_parser!(PathBuf))
                 .default_value(Paths::TOKEN_FILE)
-                .help("Read the Fleet Token from this file"),
+                .help("Read the Fleet Token from this file. The running check-in loop deletes it once Cloud enrolls or rejects this host, or the token is revoked or expires; an --install that ends with an error keeps it"),
         )
         .arg(
             switch("token-stdin", None)
@@ -219,6 +219,7 @@ enum Token {
 #[derive(Debug, PartialEq, Eq)]
 enum Answered {
     Waiting,
+    Enrolling,
     Held(Hold, String),
     Unconfirmed(String),
 }
@@ -245,6 +246,7 @@ async fn install(
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     crate::ui::stream("Checking in");
     let pass = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
+    let no_cluster = pass.seen.as_ref().is_some_and(|seen| seen.no_cluster);
     let answered = answer_install(pass, client, paths, install_with)?;
     write_unit(unit::CHECKIN, &checkin_unit)?;
     write_unit(unit::PREPARE, &prepare_unit)?;
@@ -253,7 +255,13 @@ async fn install(
     systemd(&["enable", unit::CHECKIN]).await?;
     // A loop already running checks in with the old token until it starts over.
     systemd(&["restart", unit::CHECKIN]).await?;
-    if answered == Answered::Waiting {
+    if answered == Answered::Waiting && no_cluster {
+        crate::ui::stream(format!(
+            "{}. {}",
+            checkin::NO_CLUSTER,
+            checkin::NO_CLUSTER_WHY
+        ));
+    } else if answered == Answered::Waiting {
         crate::ui::stream("Waiting for approval");
     }
     Ok(())
@@ -290,7 +298,7 @@ fn keep_answered_token(
 ) -> Result<Answered, Error> {
     let answered = install_outcome(next, install_with)?;
     let unconfirmed = match &answered {
-        Answered::Waiting => None,
+        Answered::Waiting | Answered::Enrolling => None,
         Answered::Unconfirmed(why) | Answered::Held(_, why) => Some(why),
     };
     match install_with.token {
@@ -359,11 +367,10 @@ fn lock_token_file(token_file: &Path) -> Result<TokenFileLock, Error> {
 fn install_outcome(next: Next, install_with: Install<'_>) -> Result<Answered, Error> {
     let cloud_url = install_with.cloud_url;
     match next {
-        Next::Wait { log, .. } => {
-            if let Some(line) = log {
-                crate::ui::note(line);
-            }
-            Ok(Answered::Waiting)
+        Next::Wait { .. } => Ok(Answered::Waiting),
+        Next::Enrolling => {
+            crate::ui::note("Cloud is ready to enroll this server. The check-in loop runs it.");
+            Ok(Answered::Enrolling)
         }
         Next::Enrolled => unreachable!("an install pass leaves enrolling to the loop"),
         Next::Held { hold, why, .. } => Ok(Answered::Held(hold, why)),

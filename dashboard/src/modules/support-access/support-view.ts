@@ -102,7 +102,8 @@ function redactions(shows: SupportShows) {
     config: <T extends ConfigItemView>(view: T): T => shows.configs ? view : { ...view, contents: {} },
     summary,
     environments: <T extends EnvironmentsView>(view: T): T =>
-      ({ ...view, environments: view.environments.map((listing) => ({ ...listing, removal: maybeSummary(listing.removal) })) }),
+      ({ ...view, environments: view.environments.map((listing) =>
+        ({ ...listing, removal: listing.removal?.kind === "deployment" ? summary(listing.removal) : listing.removal })) }),
     removal: <T extends Removal>(view: T): T =>
       view.removal === "removing" ? { ...view, left: view.left.map((left) => ({ ...left, deployment: maybeSummary(left.deployment) })) } : view,
     automated: <T extends Automated>(view: T): T =>
@@ -154,6 +155,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     projects: same,
     due: same,
     consented: same,
+    uploads: same,
     pr_plans: same,
   };
 }

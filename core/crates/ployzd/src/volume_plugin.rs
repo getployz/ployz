@@ -27,6 +27,7 @@ mod mirror;
 mod pool;
 mod removal;
 mod seed;
+mod size;
 mod storage;
 mod transfer;
 
@@ -171,6 +172,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Demote", post(departure::demote))
         .route("/Volume.Inspect", post(inspect::inspect))
         .route("/Volume.Seed", post(seed::seed_volume))
+        .route("/Volume.Size.Set", post(size::set_volume_size))
         .route("/Volume.Copy.Inspect", post(copy::inspect))
         .route("/Volume.Copy.Cut", post(copy::cut))
         .route("/Volume.Copy.Snapshot", post(copy::snapshot))
@@ -370,6 +372,9 @@ mod tests {
     #[path = "inspect_tests.rs"]
     mod inspect_tests;
 
+    #[path = "inspect_race_tests.rs"]
+    mod inspect_race_tests;
+
     #[path = "slot_tests.rs"]
     mod slot_tests;
 
@@ -379,6 +384,7 @@ mod tests {
     #[path = "copy_tests.rs"]
     mod copy_tests;
     mod seed_tests;
+    mod size_tests;
 
     use fake_zfs::{USABLE_POOL, fake_zfs, fake_zfs_seeding};
 
@@ -605,41 +611,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_is_idempotent_but_does_not_resize() {
+    async fn create_of_an_existing_volume_at_or_below_its_bound_is_idempotent_and_never_resizes() {
         let test = TestDir::new();
         let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
         let socket = test.0.join("plugin.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
-        let request = json!({"Name":"data","Opts":{"size":"1g"}});
+        let create = |size: &str| json!({"Name":"data","Opts":{"size":size}});
 
+        for size in ["1g", "1024m", "512m"] {
+            assert_eq!(
+                post(&socket, "/VolumeDriver.Create", create(size)).await,
+                json!({"Err":""}),
+                "{size}"
+            );
+        }
+        let larger = post(&socket, "/VolumeDriver.Create", create("2g")).await;
+        assert!(error(&larger).contains("never grows its bound"), "{larger}");
+        let commands = fs::read_to_string(test.0.join("commands")).unwrap();
         assert_eq!(
-            post(&socket, "/VolumeDriver.Create", request.clone()).await,
-            json!({"Err":""})
-        );
-        assert_eq!(
-            post(
-                &socket,
-                "/VolumeDriver.Create",
-                json!({"Name":"data","Opts":{"size":"1024m"}}),
-            )
-            .await,
-            json!({"Err":""})
-        );
-        let resized = post(
-            &socket,
-            "/VolumeDriver.Create",
-            json!({"Name":"data","Opts":{"size":"2g"}}),
-        )
-        .await;
-        assert!(error(&resized).contains("size is fixed once deployed"));
-        assert_eq!(
-            fs::read_to_string(test.0.join("commands"))
-                .unwrap()
+            commands
                 .matches("zfs create -o refquota=1073741824 tank/ployz/data")
                 .count(),
             1
         );
+        assert_eq!(commands.matches("refquota=").count(), 1, "{commands}");
         server.abort();
     }
 

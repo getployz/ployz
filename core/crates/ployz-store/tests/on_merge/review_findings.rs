@@ -254,6 +254,8 @@ fn a_deploy_warns_only_about_the_services_it_ships() {
         );
         save(store, who, "production");
     });
+    // Production runs what it saved, so only what lands is a Saved change.
+    backend::deploy(&store, &who, "production", 1);
     watching(&store, &who);
     set(
         &store,
@@ -276,14 +278,14 @@ fn a_deploy_warns_only_about_the_services_it_ships() {
     let not_set = json!([{ "service": "db", "variable": "TOKEN" }]);
     assert_eq!(warnings(&landed), not_set);
 
-    // A push under web/ names web alone, but web reads db, so it ships db's Saved
-    // change too and warns of its Not set secret.
+    // A push under web/ selects web, and ships db's Saved change, which the queued
+    // merge Deploy it supersedes held, and warns of its Not set secret.
     let pushed = system(
         &store,
         &who,
         &push(Some(MERGE), LATER, Some(&["web/app.rs"])),
     );
-    assert_eq!(deployed_services(&pushed), ["web"]);
+    assert_eq!(deployed_services(&pushed), ["db", "web"]);
     assert_eq!(warnings(&pushed), not_set);
 }
 
@@ -398,6 +400,8 @@ fn merges_from_two_branches_into_one_environment_each_deploy() {
         "production",
         &[("worker.watchPaths", json!(["worker/**"]))],
     );
+    // Production runs what it saved, so only what lands is a Saved change.
+    backend::deploy(&store, &who, "production", 1);
     watching(&store, &who);
     system(&store, &who, &push_on("release", None, HEAD, &[]));
     system(
@@ -422,13 +426,15 @@ fn merges_from_two_branches_into_one_environment_each_deploy() {
         ),
     );
     let main = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(deployed(&main), [["web"]]);
+    // A push ships every Saved change, so release's merge goes out with main's.
+    assert_eq!(deployed(&main), [["web", "worker"]]);
     let release = system(
         &store,
         &who,
         &push_on("release", Some(HEAD), LATER, &["README.md"]),
     );
-    assert_eq!(deployed(&release), [["worker"]]);
+    // It supersedes main's, still queued, so it ships what that one would.
+    assert_eq!(deployed(&release), [["worker", "web"]]);
 }
 
 #[test]
@@ -754,13 +760,15 @@ fn two_merges_before_their_pushes_each_deploy_with_their_own_commit() {
         &pull_request(6, "fix", "main", Some(LATER), false, "2026-09-29T11:00:00Z"),
     );
     let first = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(deployed_services(&first), ["api"]);
+    // A push ships every Saved change: both merges, and web, which never ran.
+    assert_eq!(deployed_services(&first), ["api", "db", "web"]);
     let second = system(
         &store,
         &who,
         &push(Some(MERGE), LATER, Some(&["README.md"])),
     );
-    assert_eq!(deployed_services(&second), ["db"]);
+    // It supersedes the first, still queued, so it ships what that one would.
+    assert_eq!(deployed_services(&second), ["api", "db", "web"]);
 }
 
 #[test]

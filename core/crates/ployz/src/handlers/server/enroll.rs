@@ -9,9 +9,10 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
-use ployz_core::{CloudEnrollToken, MachineId, RpcErrorCode, StoragePreparation};
+use ployz_core::{CloudEnrollToken, MachineId, MachineName, RpcErrorCode, StoragePreparation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -30,8 +31,8 @@ pub(crate) use waiting::{command as waiting_command, enroll as enroll_waiting};
 
 pub(crate) fn command(command: Command) -> Command {
     super::provisioning_flags(
-        base(command, "Add a Server to your Organization's Cluster")
-            .long_about("Add a Server to your Organization's Cluster through Cloud; the first Server founds it. With DESTINATION, installs Ployz over SSH; without one, adds the Server this runs on. Signed in, it asks Cloud for an enrollment token; signed out, it asks for one at a hidden prompt, or reads --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN. --command prints one line to paste on the Server and the token beside it, then waits until it joins; with --json it returns both at once, and --wait ENROLLMENT waits."),
+        base(command, "Add a Server to your Organization")
+            .long_about("Add a Server to your Organization through Cloud.\n\nWith DESTINATION, installs Ployz over SSH; without one, adds the Server this runs on.\n\nSigned in, it asks Cloud for an enrollment token. Signed out, it asks for one at a hidden prompt, or reads --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN.\n\n--command prints one line to paste on the Server and the token beside it, then waits until it joins. With --json it returns both at once; --wait ENROLLMENT waits."),
     )
     .arg(positional("destination", false))
     .arg(
@@ -99,7 +100,8 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
             if !matches.get_flag("command") && matches.get_one::<String>("wait").is_none() =>
         {
             drop(runtime);
-            return super::super::cloud::enroll(root, prompted_token()?, cloud);
+            let remote = matches.get_one::<String>("destination").is_some();
+            return super::super::cloud::enroll(root, prompted_token(remote)?, cloud);
         }
         credential => credential?,
     };
@@ -113,10 +115,11 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Some(enrollment) = matches.get_one::<String>("wait") {
         return runtime.block_on(wait_joined(&acting, enrollment));
     }
+    // Before Cloud mints a token, so a bad flag costs none.
+    let shape = shaping_args(matches)?;
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
-        let storage = matches.get_one::<StoragePreparation>("storage").cloned();
-        return runtime.block_on(paste(&acting, &minted, storage));
+        return runtime.block_on(paste(&acting, &minted, &shape));
     }
     drop(runtime);
     super::super::cloud::enroll(
@@ -124,6 +127,54 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         CloudEnrollToken::parse(minted.token)?,
         acting.credential.cloud(),
     )
+}
+
+/// `server add` switches and values that shape the Server, which a pasted line repeats.
+const SHAPING_SWITCHES: [&str; 2] = ["reset", "yes"];
+const SHAPING_VALUES: [&str; 12] = [
+    "name",
+    "storage",
+    "public-ip",
+    "wg-endpoint",
+    "wg-mtu",
+    "label-add",
+    "accepts-builds",
+    "accepts-services",
+    "accepts-ingress",
+    "network",
+    "ingress-image",
+    "version",
+];
+
+/// The flags given here that shape the Server, as `server add` arguments, once each
+/// parses as enrollment will read it.
+fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
+    super::enrollment_policy(matches)?;
+    super::helpers::token_request(matches)?;
+    if let Some(name) = matches.get_one::<String>("name") {
+        MachineName::parse(name)?;
+    }
+    let given = |id: &str| {
+        matches!(
+            matches.value_source(id),
+            Some(ValueSource::CommandLine | ValueSource::EnvVariable)
+        )
+    };
+    let switches = SHAPING_SWITCHES
+        .into_iter()
+        .filter(|id| given(id) && matches.get_flag(id))
+        .map(|id| format!("--{id}"));
+    let values = SHAPING_VALUES
+        .into_iter()
+        .filter(|id| given(id))
+        .flat_map(|id| {
+            matches
+                .get_raw(id)
+                .into_iter()
+                .flatten()
+                .flat_map(move |raw| [format!("--{id}"), raw.to_string_lossy().into_owned()])
+        });
+    Ok(values.chain(switches).collect())
 }
 
 /// The enrollment token from its one source: `--token-stdin`, `--token-file` or
@@ -152,9 +203,9 @@ pub(in crate::handlers) fn enroll_token(
                 env::ENROLL_TOKEN
             )));
         }
-        return Ok(Some(CloudEnrollToken::parse(from_env.trim())?));
+        return parse_enroll_token(&from_env, env::ENROLL_TOKEN).map(Some);
     }
-    let raw = if from_stdin {
+    let (raw, from) = if from_stdin {
         let mut line = String::new();
         std::io::stdin()
             .lock()
@@ -166,9 +217,9 @@ pub(in crate::handlers) fn enroll_token(
                     error,
                 )
             })?;
-        line
+        (line, "--token-stdin")
     } else if let Some(path) = from_file {
-        std::fs::read_to_string(path).map_err(|error| {
+        let raw = std::fs::read_to_string(path).map_err(|error| {
             Error::caused(
                 RpcErrorCode::InvalidArgument,
                 format!(
@@ -177,29 +228,70 @@ pub(in crate::handlers) fn enroll_token(
                 ),
                 error,
             )
-        })?
+        })?;
+        (raw, "--token-file")
     } else {
         return Ok(None);
     };
-    Ok(Some(CloudEnrollToken::parse(raw.trim())?))
+    parse_enroll_token(&raw, from).map(Some)
 }
 
-fn prompted_token() -> Result<CloudEnrollToken, Error> {
+/// Tokens Cloud mints for other jobs, by prefix, and where each belongs.
+const OTHER_TOKENS: [(&str, &str); 3] = [
+    (
+        "pflt_",
+        "a Fleet Token. Set PLOYZ_FLEET_TOKEN instead: the installer reads it there",
+    ),
+    (
+        "ployz_",
+        "an Organization Token. Set PLOYZ_TOKEN instead: Cloud commands read it there",
+    ),
+    ("ppair_", "a pairing secret, which no command takes"),
+];
+
+/// `raw`, read from `from`, as an enrollment token. A token of another kind is refused
+/// here, before anything reaches a Server or Cloud.
+fn parse_enroll_token(raw: &str, from: &str) -> Result<CloudEnrollToken, Error> {
+    let raw = raw.trim();
+    if let Some((_, kind)) = OTHER_TOKENS
+        .into_iter()
+        .find(|(prefix, _)| raw.starts_with(prefix))
+    {
+        return Err(Error::usage(format!(
+            "{from} holds {kind}. ployz server add takes the enrollment token that ployz server add --command prints."
+        )));
+    }
+    Ok(CloudEnrollToken::parse(raw)?)
+}
+
+fn prompted_token(remote: bool) -> Result<CloudEnrollToken, Error> {
     let token = crate::ui::secret(
         "Enrollment token",
-        || {
-            Error::coded(
-                RpcErrorCode::Unauthenticated,
-                format!(
-                    "Not signed in to Cloud. Pass the enrollment token with --token-stdin, --token-file or {}.",
-                    env::ENROLL_TOKEN
-                ),
-            )
-            .hint(Hint::Next("ployz login".into()))
-        },
+        || no_terminal_for_token(remote),
         "Cancelled. Nothing was enrolled.",
     )?;
-    Ok(CloudEnrollToken::parse(token.trim())?)
+    parse_enroll_token(&token, "What you pasted")
+}
+
+/// Run from a script, nothing can answer the prompt. Adding a remote Server, signing in
+/// here is the way on; on the Server itself, `sudo` drops an exported
+/// `PLOYZ_ENROLL_TOKEN`, so name the form that survives it.
+fn no_terminal_for_token(remote: bool) -> Error {
+    Error::coded(
+        RpcErrorCode::Unauthenticated,
+        format!(
+            "No terminal to ask for the enrollment token. Pass it with --token-stdin, --token-file or {}.",
+            env::ENROLL_TOKEN
+        ),
+    )
+    .hint(Hint::Next(
+        if remote {
+            "ployz login"
+        } else {
+            "sudo ployz server add --token-stdin"
+        }
+        .into(),
+    ))
 }
 
 /// What a Cloud enrollment acts with, and the Organization it enrolls into.
@@ -241,12 +333,8 @@ struct PendingReport<'a> {
     next: String,
 }
 
-async fn paste(
-    acting: &Acting,
-    minted: &Minted,
-    storage: Option<StoragePreparation>,
-) -> Result<(), Error> {
-    let line = pasted_command(acting.credential.cloud(), storage);
+async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(), Error> {
+    let line = pasted_command(acting.credential.cloud(), shape);
     if crate::ui::json() {
         return crate::ui::emit(&PendingReport {
             status: "pending",
@@ -258,28 +346,32 @@ async fn paste(
         });
     }
     crate::ui::note(format_args!(
-        "Run this on the Server, and paste the token when it asks (expires {}):\n\n  {line}\n\n  {}\n",
-        minted.expires_at, minted.token
+        "Run this on the Server, and paste the token when it asks (expires {}). From a script, export {} with the token first; the line keeps it through sudo.\n\n  {line}\n\n  {}\n",
+        minted.expires_at,
+        env::ENROLL_TOKEN,
+        minted.token
     ));
-    crate::ui::note("Waiting for the Server to join...");
     wait_joined(acting, &minted.id).await
 }
 
 /// One line that installs exactly this CLI's release, so the Server speaks the same
-/// enrollment, keeping an explicit `--storage` choice. It carries no token: `server add`
-/// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin.
-fn pasted_command(cloud: &str, storage: Option<StoragePreparation>) -> String {
+/// enrollment, keeping every flag that shapes the Server. It carries no token: `server add`
+/// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin, or reads
+/// an exported `PLOYZ_ENROLL_TOKEN`, which plain `sudo` would drop.
+fn pasted_command(cloud: &str, shape: &[String]) -> String {
     let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
     } else {
         format!(" --cloud-url '{cloud}'")
     };
-    let storage_flag = storage.map_or(String::new(), |storage| {
-        format!(" --storage {}", shell_words::quote(&storage.to_string()))
-    });
+    let shape_flags: String = shape
+        .iter()
+        .map(|arg| format!(" {}", shell_words::quote(arg)))
+        .collect();
     format!(
-        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add{cloud_flag}{storage_flag}",
-        env!("CARGO_PKG_VERSION")
+        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo --preserve-env={} ployz server add{cloud_flag}{shape_flags}",
+        env!("CARGO_PKG_VERSION"),
+        env::ENROLL_TOKEN
     )
 }
 
@@ -295,25 +387,35 @@ enum Enrollment {
 }
 
 async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
+    crate::ui::note("Waiting for the Server to join...");
     loop {
-        match acting
+        let read = acting
             .post("servers/enrollment", json!({ "id": enrollment }))
-            .await?
-        {
-            Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
-            Enrollment::Expired => {
+            .await;
+        match read {
+            Err(LoginError::Status { status: 404, .. }) => {
                 return Err(Error::coded(
-                    RpcErrorCode::Conflict,
-                    "the enrollment expired before a Server joined",
+                    RpcErrorCode::NotFound,
+                    "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token",
                 )
                 .hint(Hint::Retry("ployz server add --command".into())));
             }
-            Enrollment::Joined { machine_id } => {
-                crate::ui::stream("The Server joined.");
-                return crate::ui::emit(
-                    &json!({ "server": { "id": machine_id }, "status": "joined" }),
-                );
-            }
+            read => match read? {
+                Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
+                Enrollment::Expired => {
+                    return Err(Error::coded(
+                        RpcErrorCode::Conflict,
+                        "the enrollment expired before a Server joined",
+                    )
+                    .hint(Hint::Retry("ployz server add --command".into())));
+                }
+                Enrollment::Joined { machine_id } => {
+                    crate::ui::stream("The Server joined.");
+                    return crate::ui::emit(
+                        &json!({ "server": { "id": machine_id }, "status": "joined" }),
+                    );
+                }
+            },
         }
     }
 }
@@ -344,20 +446,152 @@ pub(in crate::handlers) fn requested_storage(matches: &ArgMatches) -> StoragePre
 mod tests {
     use super::*;
 
+    fn add_matches(argv: &[&str]) -> ArgMatches {
+        crate::cli::command().try_get_matches_from(argv).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_enrollment_voided_by_forgetting_the_servers_ends_the_wait() {
+        let cloud = crate::cloud_login::tests::fake_cloud(|route, _| match route {
+            "POST /api/cli/servers/enrollment" => (
+                404,
+                json!({ "_tag": "PublicError", "code": "NOT_FOUND", "message": "The requested resource was not found." }),
+            ),
+            _ => (500, json!({})),
+        });
+        let acting = Acting {
+            credential: Credential::Token {
+                cloud,
+                token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
+            },
+            organization: Organization {
+                id: "o1".to_owned(),
+                slug: "acme".to_owned(),
+            },
+        };
+        let error = wait_joined(&acting, "e1").await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token"
+        );
+        assert_eq!(
+            error.hints(),
+            [Hint::Retry("ployz server add --command".into())]
+        );
+    }
+
     #[test]
     fn pasted_command_pins_this_release_and_names_a_non_default_cloud() {
         let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            pasted_command("https://ployz.dev", None),
-            format!("curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo ployz server add")
+            pasted_command("https://ployz.dev", &[]),
+            format!(
+                "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add"
+            )
         );
         assert!(
-            pasted_command("http://localhost:3000", None)
-                .ends_with("sudo ployz server add --cloud-url 'http://localhost:3000'")
+            pasted_command("http://localhost:3000", &[])
+                .ends_with("ployz server add --cloud-url 'http://localhost:3000'")
+        );
+    }
+
+    #[test]
+    fn the_pasted_line_carries_only_the_flags_given() {
+        let matches = add_matches(&["ployz", "server", "add", "--command"]);
+        assert_eq!(
+            shaping_args(leaf_matches(&matches)).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_pasted_line_parses_to_the_same_server() {
+        let given = [
+            "--name",
+            "web-1",
+            "--storage",
+            "zfs:/dev/disk/by-id/virtio data",
+            "--public-ip",
+            "192.0.2.9",
+            "--wg-endpoint",
+            "192.0.2.1,[2001:db8::1]:6000",
+            "--wg-mtu",
+            "1380",
+            "--label-add",
+            "region=eu",
+            "--label-add",
+            "rack=r1",
+            "--accepts-builds",
+            "false",
+            "--accepts-services=false",
+            "--accepts-ingress",
+            "false",
+            "--network",
+            "10.9.0.0/16",
+            "--ingress-image",
+            "caddy:2.10",
+            "--version",
+            "0.3.0",
+            "--reset",
+            "--yes",
+        ];
+        let original =
+            add_matches(&[["ployz", "server", "add", "--command"].as_slice(), &given].concat());
+        let original = leaf_matches(&original);
+        let line = pasted_command("https://ployz.dev", &shaping_args(original).unwrap());
+        let argv = shell_words::split(line.split_once(" && ").unwrap().1).unwrap();
+        let replayed = crate::cli::command()
+            .try_get_matches_from(argv.iter().skip_while(|arg| *arg != "ployz"))
+            .unwrap();
+        let replayed = leaf_matches(&replayed);
+
+        assert!(!replayed.get_flag("command"));
+        let raw = |matches: &ArgMatches, id: &str| -> Vec<String> {
+            matches
+                .get_raw(id)
+                .into_iter()
+                .flatten()
+                .map(|raw| raw.to_string_lossy().into_owned())
+                .collect()
+        };
+        for id in SHAPING_VALUES {
+            assert_eq!(raw(replayed, id), raw(original, id), "--{id}");
+            assert_eq!(
+                replayed.value_source(id),
+                Some(ValueSource::CommandLine),
+                "--{id}"
+            );
+        }
+        for id in SHAPING_SWITCHES {
+            assert!(replayed.get_flag(id), "--{id}");
+        }
+        assert_eq!(
+            super::super::enrollment_policy(replayed).unwrap(),
+            super::super::enrollment_policy(original).unwrap()
+        );
+        assert_eq!(
+            super::super::helpers::token_request(replayed).unwrap(),
+            super::super::helpers::token_request(original).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_missing_terminal_names_the_scripted_token_sources() {
+        let refusal = no_terminal_for_token(false);
+        let message = refusal.to_string();
+        assert!(!message.contains("Not signed in"), "{message}");
+        assert!(message.contains("--token-stdin"), "{message}");
+        assert!(message.contains(env::ENROLL_TOKEN), "{message}");
+        assert!(
+            refusal
+                .hints()
+                .iter()
+                .all(|hint| *hint != Hint::Next("ployz login".into()))
         );
         assert!(
-            pasted_command("https://ployz.dev", Some(StoragePreparation::None))
-                .ends_with("sudo ployz server add --storage none")
+            no_terminal_for_token(true)
+                .hints()
+                .contains(&Hint::Next("ployz login".into()))
         );
     }
 }

@@ -1,5 +1,6 @@
 //! Linux daemon runtime for one Ployz Machine.
 
+pub(crate) mod boot_pass;
 mod build;
 
 /// Numeric status returned by the Ployz Docker Volume plugin.

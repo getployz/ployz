@@ -44,9 +44,14 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   };
   // Scrolled up, live lines wait so the ones being read stay put; past the limit the oldest waiting go.
   let following = true;
-  let overflowed = false;
+  // The next lines to land replace the log: waiting lines overflowed, or the stream closed while no viewer was on screen.
+  let replace = false;
   let land = () => {};
   let controller = new AbortController();
+  // A browser holds few connections to one host, so the stream is open only while a viewer is on screen.
+  let viewers = 0;
+  let closing: ReturnType<typeof setTimeout> | undefined;
+  let link = { open: () => {}, close: () => {} };
   const query = new URLSearchParams(Object.entries(selection).filter((entry): entry is [string, string] => entry[1] !== undefined)).toString();
   const options = localOnlyCollectionOptions({ id, getKey: (row: ContainerLogRow) => row.id, initialData: [] });
   const collection = createCollection({
@@ -66,14 +71,14 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
             // Servers' lines interleave out of order, so the ones kept are the newest by time, not the last to arrive.
             if (pending.length > LIVE_LOG_LIMIT) {
               pending = [...pending].sort((a, b) => (BigInt(a.timestamp) < BigInt(b.timestamp) ? -1 : BigInt(a.timestamp) > BigInt(b.timestamp) ? 1 : 0)).slice(-LIVE_LOG_LIMIT);
-              overflowed = true;
+              replace = true;
             }
             return;
           }
-          if (overflowed) {
+          if (replace) {
             restartContainerLogs(collection, pending);
             resetHistory();
-            overflowed = false;
+            replace = false;
           } else appendContainerLogs(collection, pending, stored);
           pending = [];
           // The oldest lines go first, so a trim takes the scrollback and the Log Store reads again from the new oldest.
@@ -89,8 +94,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           publish({ ...snapshot, missing: { ...snapshot.missing, live: Object.keys(failed).length ? { ...live, [machineId]: { ...server, failed } } : live } });
         };
         const machines = getRuntimeCollections(selection.organizationSlug, scope).machines;
-        controller = new AbortController();
-        const stop = liveStream(`/api/runtime/logs?${query}`, {
+        const open = () => liveStream(`/api/runtime/logs?${query}`, {
           onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
           // Any loss says so, so a first connection that fails never sits on the loading skeleton; only a refused one
           // also ends its history reads.
@@ -109,8 +113,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
             },
             offline: () => publish({ ...snapshot, opened: true, offline: true, refused: false }),
             hidden: () => {
-              stop();
-              controller.abort();
+              link.close();
               publish({ ...snapshot, opened: true, hidden: true, refused: false });
             },
             log: (event) => {
@@ -130,13 +133,29 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
             },
           },
         });
-        const close = () => { clearTimeout(flush); flush = undefined; pending = []; stop(); controller.abort(); };
+        let stop: (() => void) | null = null;
+        link = {
+          open: () => {
+            if (stop || viewers === 0 || snapshot.hidden) return;
+            controller = new AbortController();
+            stop = open();
+          },
+          // Lines written while it's closed aren't replayed past the tail, so the reopened stream's lines replace the log.
+          close: () => {
+            if (!stop) return;
+            clearTimeout(flush); flush = undefined; pending = []; stop(); stop = null; controller.abort();
+            replace = collection.size > 0;
+            if (snapshot.historyPending) publish({ ...snapshot, historyPending: false });
+          },
+        };
+        link.open();
         return () => {
           pending = [];
           land = () => {};
           following = true;
-          overflowed = false;
-          close();
+          link.close();
+          link = { open: () => {}, close: () => {} };
+          replace = false;
           resetHistory();
           publish(INITIAL);
           // The library explicitly returns a cleanup function or a cleanup handle.
@@ -188,6 +207,17 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   }
   return {
     collection, loadOlder,
+    /** A viewer on screen keeps the stream open; it closes once the last one leaves. Returns the leave. */
+    view() {
+      viewers++;
+      clearTimeout(closing);
+      link.open();
+      return () => {
+        viewers--;
+        // Deferred, so a viewer remounting at once keeps the connection.
+        if (viewers === 0) closing = setTimeout(() => { if (viewers === 0) link.close(); });
+      };
+    },
     /** Whether the viewer is at the newest line; live lines land only then. */
     follow(at: boolean) {
       if (at === following) return;

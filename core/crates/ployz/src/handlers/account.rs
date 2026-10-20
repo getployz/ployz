@@ -36,12 +36,12 @@ pub(super) fn token_new_command(command: Command) -> Command {
                 .help("What it may do: full acts as you, read only reads, deploy stages and deploys one Environment"),
         )
         .arg(
-            value("environment", None)
+            value("env", None)
                 .value_name("ENVIRONMENT")
                 .required_if_eq("preset", "deploy")
                 .help("The one Environment a deploy token may change, by name"),
         )
-        .after_help("Examples:\n  ployz token new ci\n  ployz token new ci --preset deploy --environment staging")
+        .after_help("Examples:\n  ployz token new ci\n  ployz token new ci --preset deploy --env staging")
 }
 
 pub(super) fn token_list_command(command: Command) -> Command {
@@ -148,12 +148,12 @@ pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
         .expect("expires-in has a default");
     let preset = match (
         matches.get_one::<String>("preset").map(String::as_str),
-        matches.get_one::<String>("environment").cloned(),
+        matches.get_one::<String>("env").cloned(),
     ) {
         (Some("deploy"), Some(environment)) => TokenPreset::Deploy { environment },
         (Some("read"), None) => TokenPreset::Read,
         (Some("full") | None, None) => TokenPreset::Full,
-        _ => return Err(Error::usage("only --preset deploy takes --environment")),
+        _ => return Err(Error::usage("only --preset deploy takes --env")),
     };
     let token = in_cloud(root, async |_, credential| {
         cloud_account::new_token(credential, name, TokenKind::Cli, &preset, days).await
@@ -203,8 +203,11 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
         table.row([
             Cell::from("device"),
             Cell::from(&device.id),
-            Cell::from(""),
-            Cell::from(""),
+            Cell::from(format!(
+                "ployz login {}",
+                device.created_at.get(..10).unwrap_or(&device.created_at)
+            )),
+            Cell::from("Full as you"),
             Cell::from(device.expires_at.to_string()),
             current(device.current),
         ]);
@@ -550,13 +553,17 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         };
         Ok::<_, Error>((credential, removing, others))
     })?;
+    let mut approved = None;
     let removal = approval::approved(
         &runtime,
         &credential,
         approval::Verb::Remove,
         matches.get_one::<String>("approval").cloned(),
         |id| super::server::approved_rerun(matches, &again, id),
-        async |approval| cloud_account::remove_organization(&credential, &removing, approval).await,
+        async |approval| {
+            approved = approval.map(str::to_owned);
+            cloud_account::remove_organization(&credential, &removing, approval).await
+        },
     )?;
     let acting = runtime.block_on(async {
         match others.first() {
@@ -573,14 +580,17 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             _ => None,
         }
     });
-    let next = (!removal.removed).then_some(retry.as_str());
+    let next = (!removal.removed).then(|| match &approved {
+        Some(id) => super::server::approved_rerun(matches, &again, id),
+        None => retry,
+    });
     let value = serde_json::json!({
             "organization": removal.organization,
             "removed": removal.removed,
             "servers": removal.servers,
         "acting": acting.as_ref().and_then(|acting| acting.as_ref().ok()),
     });
-    let report = Next::new(&value, next.map(str::to_owned));
+    let report = Next::new(&value, next.clone());
     ui::finish(&report, || {
         if !removal.servers.confirmed.is_empty() {
             ui::note(format_args!(
@@ -588,7 +598,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                 removal.servers.confirmed.len()
             ));
         }
-        match next {
+        match &next {
             None => {
                 ui::stream(format_args!(
                     "Removed Organization {}.",
@@ -617,7 +627,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                     "{} did not confirm unpairing.",
                     super::joined(&removal.servers.unconfirmed)
                 ));
-                ui::hint(&Hint::Retry(next.to_owned()));
+                ui::hint(&Hint::Retry(next.clone()));
             }
         }
     })?;

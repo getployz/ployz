@@ -348,7 +348,7 @@ async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
     // A changed build input needs a new upload.
     ployz(&["set", "app.dockerfilePath=Dockerfile.alt"]);
     let (code, refused) = attempt(address, &store, &["deploy"]);
-    assert_eq!(code, Some(3), "{refused}");
+    assert_eq!(code, Some(1), "{refused}");
     assert_eq!(refused["outcome"]["type"], json!("not_executed"));
     assert_eq!(
         refused["next"],

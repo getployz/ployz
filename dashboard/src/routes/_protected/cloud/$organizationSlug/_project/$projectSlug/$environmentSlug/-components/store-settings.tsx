@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
-import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Navigate, useNavigate } from "@tanstack/react-router";
 import { CodeIcon, EllipsisIcon } from "lucide-react";
 import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
@@ -17,8 +16,7 @@ import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config
 import { useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
-import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { can } from "#/modules/organization/permissions";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
@@ -28,8 +26,8 @@ type Place = { organizationSlug: string; projectSlug: string; environmentSlug: s
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
-  // Deleted (here, or elsewhere) while open: nothing to show while the page moves on.
-  if (!listing.ok) return null;
+  // A Project deleted here or elsewhere opens Projects; any other refusal leaves the page empty.
+  if (!listing.ok) return listing.refusal.code === "not_found" ? <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace /> : null;
   const { environments } = listing.value;
   const environment = environments.find((row) => row.name === environmentSlug);
   const branches = environments.filter((row) => row.parent === environmentSlug).map((row) => row.name);
@@ -68,19 +66,16 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
 function StoreProtection({ organizationSlug, projectSlug, environmentSlug, saved }: Place & { saved: boolean }) {
   const writer = useStoreWriter(organizationSlug);
   const [checked, hold] = useCommitHold(saved);
-  // Support has no row here; Cloud still checks it. Until the members load, the role is unknown, so it waits.
-  const members = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members;
-  const yourRole = members?.find((row) => row.you)?.role;
-  const refused = yourRole !== undefined && !can(yourRole, "environments:protect");
+  const gate = useRoleGate(organizationSlug, "environments:protect", "Only an owner or admin can change this.");
   return (
     <SettingsSection id="protected" title="Protected"
       description="Only an owner or admin can change its repository, deploy branch or protection, and it can't be deleted.">
       <SettingsRow
         label="Protect this environment"
-        hint={refused ? "Only an owner or admin can change this." : undefined}
+        hint={gate.reason}
         commit="change"
         control={(
-          <Switch id="environment-protected" aria-label="Protected" checked={checked} disabled={refused}
+          <Switch id="environment-protected" aria-label="Protected" checked={checked} disabled={!gate.allowed}
             onCheckedChange={(next) => {
               if (next !== checked) {
                 hold(next, writer.commit({ command: "set_environment_protected",
@@ -111,8 +106,8 @@ function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, save
   // A new command runs where the last one does.
   const last = services.find((service) => service.lineageId === setup.commands.at(-1)?.lineageId) ?? services[0];
   return (
-    <SettingsSection id="branch-setup" title={`Branches of ${environmentSlug}`}
-      description="Runs once in each new branch.">
+    <SettingsSection id="branch-setup" title="Branch setup"
+      description={`Commands that run once in each new branch of ${environmentSlug}.`}>
       {!last ? <SettingsEmpty title="Add a service first." /> : <>
         {setup.commands.length === 0 ? <SettingsEmpty title="No setup commands" /> : (
           <SettingsList label="Setup commands">
@@ -192,8 +187,9 @@ function SetupCommandForm({ submitLabel, services, initial, onSubmit, onCancel }
 }
 
 /** A Project's name: one DNS label, as the Store checks it; renaming it changes its URLs. */
-function ProjectNameRow({ project, onRename }: { project: string; onRename: (name: string) => void }) {
+export function ProjectNameRow({ project, onRename }: { project: string; onRename: (name: string) => Promise<void> }) {
   const [draft, setDraft] = useState(project);
+  const [saving, setSaving] = useState(false);
   const name = draft.trim();
   const error = name === project ? null : dnsLabelError(name);
   return (
@@ -203,8 +199,13 @@ function ProjectNameRow({ project, onRename }: { project: string; onRename: (nam
       commit="confirm"
       control={(
         <ConfirmableInput id="project-name" aria-label="Name" commit="check" value={draft} onValueChange={setDraft} error={error}
-          isDirty={draft !== project} onCancel={() => setDraft(project)}
-          onConfirm={() => { if (name !== project && !error) onRename(name); }} />
+          disabled={saving} status={saving ? { phase: "saving" } : undefined}
+          isDirty={!saving && draft !== project} onCancel={() => setDraft(project)}
+          onConfirm={() => {
+            if (name === project || error) return;
+            setSaving(true);
+            void onRename(name).finally(() => setSaving(false));
+          }} />
       )}
     />
   );
@@ -216,15 +217,15 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const writer = useStoreWriter(organizationSlug);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
   const [defaultEnvironment, holdDefault] = useCommitHold(listing.ok ? listing.value.environments.find((row) => row.default)?.name ?? null : null);
-  // Deleted while open: nothing to show while the page moves on.
-  if (!listing.ok) return null;
+  // A Project deleted here or elsewhere opens Projects; any other refusal leaves the page empty.
+  if (!listing.ok) return listing.refusal.code === "not_found" ? <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace /> : null;
   const { environments } = listing.value;
   return (
     <div className="flex flex-col gap-6">
       <SettingsSection id="project" title="Project">
         <ProjectNameRow project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
-          void writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
+          return writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
             navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
         }} />
         <SettingsRow

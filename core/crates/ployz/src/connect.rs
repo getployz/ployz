@@ -2,7 +2,7 @@ mod build_grant;
 mod management;
 
 pub use build_grant::{GrantRegistry, open_grant_registry};
-pub use management::ManagementRelay;
+pub use management::{ManagementRelay, management_proof};
 use management::{connect_management, dial_tunnel};
 
 use std::{
@@ -19,8 +19,8 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FramingError, MachineId, MachineTarget, Retry, RoutingMetadataError, RpcError,
-    RpcErrorCode, apply_one_target,
+    CodecError, FramingError, MachineId, MachineTarget, ResolvedServiceSpec, Retry,
+    RoutingMetadataError, RpcError, RpcErrorCode, apply_one_target, settle_deadline,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -59,6 +59,12 @@ pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<u16>, queued: u32) -> Option<Duration> {
     grace_period_seconds
         .map(|seconds| TARGET_RPC_TIMEOUT + Duration::from_secs(u64::from(seconds)) * queued.max(1))
+}
+
+/// The deadline of an In RPC: the owner settles the copy's health before it
+/// writes In, so the ask waits out the copy's settle deadline on top of the RPC.
+pub(crate) fn in_rpc_timeout(spec: &ResolvedServiceSpec) -> Duration {
+    TARGET_RPC_TIMEOUT + settle_deadline(spec)
 }
 
 pub trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -421,7 +427,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             ..
         } if matches!(
             *error,
-            ConnectError::ClientRefused | ConnectError::ClientCleared
+            ConnectError::ClientRefused | ConnectError::ClientCleared | ConnectError::OlderMachine
         ) =>
         {
             rpc_error(*error)
@@ -434,6 +440,12 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         },
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
+        error @ ConnectError::OlderMachine => RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: error.to_string(),
+            details: json!({ "management_protocol": "older" }),
+            cause: Vec::new(),
+        },
         error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClientRefused) => RpcError {
             code: RpcErrorCode::Unauthenticated,
             message: error.to_string(),
@@ -508,6 +520,7 @@ pub async fn connect_selected_with(
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
     let mut last_error = None;
+    let mut server = None;
     let mut retry = Retry::Never;
     let mut reached = false;
     for (index, connection) in selected.connections.iter().enumerate() {
@@ -530,12 +543,14 @@ pub async fn connect_selected_with(
                 }
                 reached |= !error.unreached();
                 last_error = Some(error);
+                server = connection.server();
             }
         }
     }
     Err(ConnectError::AllFailed {
         selection: selected.source,
         attempts: selected.connections.len(),
+        server,
         retry,
         reached,
         last: last_error.map(Box::new),
@@ -549,7 +564,7 @@ pub(crate) async fn connect_one(
     connector: &Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
     let channel = connector.connect(connection).await?;
-    let client = Client::new(
+    let mut client = Client::new(
         channel,
         connection.clone(),
         source.clone(),
@@ -582,6 +597,12 @@ pub fn resolve_connections(
         }
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(ConnectError::Config(error)),
+    }
+    if let Some(name) = context_override {
+        return Err(ConnectError::Context(ContextError::ContextNotFound {
+            name: name.to_owned(),
+            path: config_path.to_owned(),
+        }));
     }
     // A socket this user can't even see is not one it can use: fall through
     // to Cloud, whose sign-in hint is the useful one.
@@ -654,9 +675,9 @@ pub enum ConnectError {
         CONNECT_CONFIRM_TIMEOUT
     )]
     EntryNotReady,
-    #[error("Could not connect to the Machine.")]
+    #[error("Couldn't open a connection to the Server.")]
     Io(#[from] io::Error),
-    #[error("Could not connect to the Machine.")]
+    #[error("Couldn't open a connection to the Server.")]
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
@@ -664,6 +685,14 @@ pub enum ConnectError {
     ClientRefused,
     #[error("Machine confirmed this Management Client was cleared")]
     ClientCleared,
+    /// The Machine speaks the management protocol of Ployz 0.3.0-beta.6 or earlier, which
+    /// this release does not; only its own upgrade reaches it, over SSH.
+    #[error(
+        "This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay. \
+         Upgrade it over SSH: ployz server upgrade beta SERVER --connect ssh://USER@HOST. \
+         Docs: ployz docs servers/manage-servers.md"
+    )]
+    OlderMachine,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing,
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}{}", failure.hint())]
@@ -689,10 +718,12 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("All {attempts} connections from {selection} failed.")]
+    #[error("{}", all_failed(*attempts, selection, *reached, server.as_deref(), last.as_deref()))]
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
+        /// The Server the last connection tried enters, by name or else Machine ID.
+        server: Option<String>,
         /// [`Retry::AfterRestart`] when any connection may still come up.
         retry: Retry,
         /// A daemon answered at least one connection, even if `last` did not reach one.
@@ -700,7 +731,7 @@ pub enum ConnectError {
         #[source]
         last: Option<Box<ConnectError>>,
     },
-    #[error("Machine RPC failed.")]
+    #[error("Ployz's call to your Server's daemon failed.")]
     Rpc(#[source] TransportError),
     #[error("Machine RPC payload failed.")]
     Codec(#[from] CodecError),
@@ -710,6 +741,53 @@ pub enum ConnectError {
     Framing(#[from] FramingError),
     #[error("Machine RPC identity failed.")]
     Value(#[from] ployz_core::ValueError),
+}
+
+const NOT_ANSWERING_NEXT: &str = "Check that its Ployz daemon is running, then retry.";
+
+/// `server`, by name or Machine ID, gave no answer to a connection this process made.
+pub(crate) fn not_answering(server: &str) -> String {
+    format!("Server {server} isn't answering. {NOT_ANSWERING_NEXT}")
+}
+
+/// Say a daemon answered when one did: a refusal is not an unreachable Server. Name the
+/// Server tried last where the connection says which it is, and how `last` failed there.
+fn all_failed(
+    attempts: usize,
+    selection: &ConnectionSource,
+    reached: bool,
+    server: Option<&str>,
+    last: Option<&ConnectError>,
+) -> String {
+    match (attempts, reached, server) {
+        (1, false, Some(server)) => not_answering(server),
+        (1, false, None) => "Ployz couldn't reach your Server's daemon.".into(),
+        (1, true, Some(server)) => {
+            format!("Server {server}'s daemon answered, but the connection was refused.")
+        }
+        (1, true, None) => "Your Server's daemon answered, but the connection was refused.".into(),
+        (_, false, Some(server)) => format!(
+            "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}. \
+             Server {server}, tried last, isn't answering. {NOT_ANSWERING_NEXT}"
+        ),
+        (_, false, None) => format!(
+            "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
+        ),
+        (_, true, Some(server)) => {
+            let how = if last.is_some_and(|last| !last.unreached()) {
+                "refused the connection.".into()
+            } else {
+                format!("isn't answering. {NOT_ANSWERING_NEXT}")
+            };
+            format!(
+                "A Server's daemon answered, but the {attempts} connections from {selection} all failed. \
+                 Server {server}, tried last, {how}"
+            )
+        }
+        (_, true, None) => format!(
+            "A Server's daemon answered, but the {attempts} connections from {selection} all failed."
+        ),
+    }
 }
 
 impl From<tonic::Status> for ConnectError {
@@ -748,6 +826,7 @@ impl ConnectError {
             | Self::Remote(_)
             | Self::IdentityMismatch { .. }
             | Self::ClientRefused
+            | Self::OlderMachine
             | Self::ClientCleared
             | Self::MissingMachineDetails
             | Self::SshClientMissing
@@ -804,6 +883,7 @@ impl ConnectError {
             Self::IdentityMismatch { .. }
             | Self::MissingMachineDetails
             | Self::ClientRefused
+            | Self::OlderMachine
             | Self::ClientCleared
             | Self::Routing(_)
             | Self::Join(_)
@@ -823,8 +903,15 @@ impl ConnectError {
 
     /// A daemon sent this status itself, so the target was not silent.
     pub(crate) fn target_replied(&self) -> bool {
+        matches!(self, Self::Rpc(_)) && !self.unreplied()
+    }
+
+    /// The call went out and no status came back: the client's connection dropped, its
+    /// deadline elapsed, or the entry's router heard nothing from the target. Whether the
+    /// target acted on it is unknown.
+    pub(crate) fn unreplied(&self) -> bool {
         matches!(self, Self::Rpc(error)
-            if !error.unanswered && !error.budget_expired && !error.routed_unanswered)
+            if error.unanswered || error.budget_expired || error.routed_unanswered)
     }
 }
 

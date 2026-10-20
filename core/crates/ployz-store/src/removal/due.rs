@@ -11,8 +11,8 @@ use ts_rs::TS;
 use super::mark::{self, Accepted, Closed, Evidence, Mark, State};
 use super::review::held;
 use super::{
-    Fix, Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, latest,
-    members, next, on_servers, purge, teardown_order,
+    Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, latest, members,
+    next, on_servers, purge, teardown_order,
 };
 use crate::automation::{Automated, Skipped};
 use crate::deployment::admit::{AdmitRemoval, ShutDown};
@@ -349,6 +349,29 @@ pub(crate) fn admit(
             json!({ "next": next("remove", json!({ "project": summary.project, "environment": summary.name })) }),
         ));
     };
+    // Two sweeps can find it due at once: the mark admits its removal once. A
+    // removal whose row is gone neither runs nor ran.
+    let before = match mark
+        .evidence
+        .get(&summary.id)
+        .map(|before| deployment::load(tx, &before.deployment))
+    {
+        Some(Err(error)) if error.code == RpcErrorCode::NotFound => None,
+        loaded => loaded.transpose()?,
+    };
+    if let Some(removal) = before.map(|before| before.summary) {
+        let already = if removal.status == DeploymentStatus::Applied {
+            Some("removed")
+        } else {
+            removal.status.in_flight().then_some("is removing")
+        };
+        if let Some(already) = already {
+            return Err(error::conflict(
+                format!("Deployment {} {already} {}", removal.label(), summary.name),
+                json!({ "deployment": removal.id }),
+            ));
+        }
+    }
     if let Standing::Unknown = standing(tx, &mark, &environment)? {
         return Err(error::conflict(unknown(&environment), json!({})));
     }
@@ -389,13 +412,20 @@ fn admit_member(
         Some(_) => Vec::new(),
         None => {
             let removed = super::removed(&review.head.applied, &empty, &namespace)?;
-            losses(environment, removed, mark.accepted.get(id), trusted)?
+            losses(
+                tx,
+                who,
+                environment,
+                removed,
+                mark.accepted.get(id),
+                trusted,
+            )?
         }
     };
     let frozen = deployment::freeze(
         id,
         &empty,
-        &review.head.applied,
+        &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::All { losses: &losses },
         namespace,
         None,
@@ -437,14 +467,18 @@ fn admit_member(
     Ok(admitted)
 }
 
-/// The Servers that didn't answer Cloud now, or None when Cloud didn't look.
+/// The Servers that didn't answer Cloud now, or None when Cloud didn't look. A
+/// failed observation that names no Server didn't look either.
 fn unanswered(trusted: &Trusted) -> Option<BTreeSet<ployz_core::MachineId>> {
-    if trusted.volumes.is_none() && trusted.unanswered.is_none() {
+    let volumes = trusted
+        .volumes
+        .as_ref()
+        .filter(|observed| observed.failure.is_none() || !observed.unanswered.is_empty());
+    if volumes.is_none() && trusted.unanswered.is_none() {
         return None;
     }
     Some(
-        trusted
-            .volumes
+        volumes
             .iter()
             .flat_map(|observed| &observed.unanswered)
             .chain(trusted.unanswered.iter().flatten())
@@ -523,6 +557,8 @@ fn stalled(
 /// The Docker Volumes this member's removal deletes, held to what its remover
 /// accepted against what the Servers report now.
 fn losses(
+    tx: &mut dyn Tx,
+    who: &Actor,
     environment: &Environment,
     removed: Vec<super::RemovedVolume>,
     accepted: Option<&Accepted>,
@@ -553,7 +589,7 @@ fn losses(
             let (losses, unanswered) = held(removed, observed)?;
             refuse_unaccepted(name, &losses, |loss| names.contains(&loss.volume.name))?;
             if !unanswered.is_empty() {
-                return Err(unobserved(&unanswered));
+                return Err(unobserved(tx, who, &unanswered)?);
             }
             Ok(losses)
         }
@@ -565,7 +601,7 @@ fn losses(
             };
             let (losses, unanswered) = held(removed, observed)?;
             if !unanswered.is_empty() {
-                return Err(unobserved(&unanswered));
+                return Err(unobserved(tx, who, &unanswered)?);
             }
             refuse_unaccepted(name, &losses, |loss| {
                 loss.deletes.iter().all(|delete| confirmed.contains(delete))
@@ -597,21 +633,26 @@ fn refuse_unaccepted(
     ))
 }
 
-fn unobserved(unanswered: &[ployz_core::MachineId]) -> RpcError {
+fn unobserved(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    unanswered: &[ployz_core::MachineId],
+) -> Result<RpcError, RpcError> {
+    let names = deployment::server_names(tx, who, unanswered.iter().copied())?;
     let waiting_on: Vec<Waiting> = unanswered
         .iter()
-        .map(|server| Waiting {
-            server: server.to_string(),
-            why: "It didn't answer whether it holds this data".to_owned(),
-            fix: Fix::ServerRemove {
-                server: server.to_string(),
-            },
+        .map(|server| {
+            Waiting::on(
+                &names,
+                *server,
+                "It didn't answer whether it holds this data".to_owned(),
+            )
         })
         .collect();
-    error::unobserved(
+    Ok(error::unobserved(
         "Some Servers didn't answer whether they hold this data",
         json!({ "waiting_on": waiting_on }),
-    )
+    ))
 }
 
 /// Take an Environment off the Servers and keep it: a Server's shutdown. It
@@ -671,7 +712,7 @@ pub(crate) fn shut_down(
     let frozen = deployment::freeze(
         id,
         &empty,
-        &review.head.applied,
+        &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::All { losses: &losses },
         namespace,
         None,

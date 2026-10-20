@@ -102,6 +102,40 @@ fn completion_at_deadline_wins_over_stale_heartbeat() {
 }
 
 #[test]
+fn a_removed_service_counts_as_removed_in_the_summary() {
+    let removal = |state| {
+        crate::deploy::service_row(
+            QualifiedService::parse("shop/web").unwrap(),
+            None,
+            [crate::deploy::Replica {
+                machine: MachineId::random(),
+                state,
+                timing: Timing::Unavailable,
+                starts: false,
+            }],
+        )
+    };
+    let frame = |row| Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![row],
+        notices: Vec::new(),
+    };
+    let text = plain(
+        frame(removal(&ployz_store::RowState::Pending)),
+        vec![(
+            1,
+            Message::Finish(
+                frame(removal(&ployz_store::RowState::Completed)),
+                Disposition::Settled,
+            ),
+        )],
+    );
+    assert!(text.contains("1 removed · across 1 server"), "{text}");
+    assert!(!text.contains("deployed"), "{text}");
+}
+
+#[test]
 fn phase_and_detail_changes_are_preserved_and_restart_quiet_period() {
     let initial = frame(State::Pending);
     let mut starting = initial.clone();
@@ -626,6 +660,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         step: None,
         log: None,
         unanswered: false,
+        out_of_memory: None,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
@@ -660,6 +695,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         step: None,
         log: None,
         unanswered: false,
+        out_of_memory: None,
     };
     let mut rows: Vec<_> = (0..12)
         .map(|n| Row {
@@ -767,4 +803,61 @@ fn a_notice_raised_mid_deploy_shows_under_the_live_rows_and_in_plain_output() {
         ],
     );
     assert_eq!(text.matches(line).count(), 1, "{text}");
+}
+
+#[test]
+fn heartbeat_pairs_each_waiting_row_with_its_state() {
+    let mut initial = frame(State::Pending);
+    let mut api = initial.rows.first().unwrap().clone();
+    api.subject = Subject::ServiceOnServer {
+        service: QualifiedService::parse("shop/api").unwrap(),
+        machine: MachineId::random(),
+        server: "beta".into(),
+    };
+    api.state = State::Running(RowPhase::WaitingForHealth);
+    initial.rows.push(api);
+    let text = plain(initial, vec![(30_001, Message::Abandon)]);
+    assert!(
+        text.contains("still waiting: web on alpha (pending), api on beta (waiting for health)\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the_summary() {
+    let web = QualifiedService::parse("shop/web").unwrap();
+    let left = |container: char, reason: &str| DeployWarning::LeftRunning {
+        service: web.clone(),
+        container_id: ployz_core::ContainerId::parse(container.to_string().repeat(64)).unwrap(),
+        machine: "alpha".into(),
+        reason: reason.into(),
+    };
+    let frame = Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![service("web", 0, 3, &ployz_store::RowState::Completed)],
+        notices: vec![left('a', "interrupted"), left('b', "interrupted")],
+    };
+    let mut written = Vec::new();
+    finish(
+        &mut written,
+        &frame,
+        &frame,
+        Disposition::LocalInterrupted,
+        true,
+        80,
+        false,
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    let row = text
+        .lines()
+        .find(|line| line.contains("switched"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(!row.contains('✔'), "{text}");
+    assert!(row.contains("switched 3/3, 2 left running"), "{text}");
+    assert!(
+        text.contains("1 deployed · 2 copies left running · across 3 servers"),
+        "{text}"
+    );
 }

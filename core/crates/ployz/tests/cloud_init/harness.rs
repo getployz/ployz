@@ -11,12 +11,12 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerDetails, ContainerId, ContainerKind, ContainerList,
     ContainerLocator, ContainerNow, ContainerObservation, ContainerRuntimeObservation,
-    ContainerWant, ContractDescription, CreationKey, DESCRIBE_CONTRACT_CAPABILITY, EnrollAs,
-    EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
+    ContainerWant, ContractDescription, CopyRotation, CreationKey, DESCRIBE_CONTRACT_CAPABILITY,
+    EnrollAs, EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
     LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
     MachineNow, MachineObservation, MachineToken, MembershipObservation, NewContainer,
     OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Registered, RoutesRead, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget, ServingPointer,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RunRotation, RunTarget, ServingPointer,
     ServingPointerPublication, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
 };
 
@@ -368,7 +368,7 @@ impl JoinDaemon {
             .get(&new.slot.creation_key)
             .copied();
         let container = match existing {
-            Some(container_id) => self.set_running(container_id)?,
+            Some(container_id) => self.set_running(container_id, &RunRotation::Pending)?,
             None => {
                 let mut containers = self.inner.containers.lock().unwrap();
                 let n = containers.len() + 1;
@@ -413,7 +413,11 @@ impl JoinDaemon {
         clippy::result_large_err,
         reason = "MachineRpc uses tonic::Status as the error type"
     )]
-    fn set_running(&self, container_id: ContainerId) -> Result<ContainerObservation, Status> {
+    fn set_running(
+        &self,
+        container_id: ContainerId,
+        rotation: &RunRotation,
+    ) -> Result<ContainerObservation, Status> {
         let mut containers = self.inner.containers.lock().unwrap();
         let container = containers
             .iter_mut()
@@ -431,6 +435,11 @@ impl JoinDaemon {
                 })
                 .unwrap();
             self.record("deploy_ingress");
+        }
+        if matches!(rotation, RunRotation::In { .. }) {
+            container
+                .try_update(|parts| parts.rotation = Some(CopyRotation::In))
+                .unwrap();
         }
         Ok(container.clone())
     }
@@ -878,9 +887,9 @@ impl FakeMachine for JoinDaemon {
             } => self.run_new(new),
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Id(container_id)),
-                ..
+                rotation,
             } => {
-                let container = self.set_running(container_id)?;
+                let container = self.set_running(container_id, &rotation)?;
                 ensured(ContainerNow::Present(container))
             }
             ContainerWant::Gone {

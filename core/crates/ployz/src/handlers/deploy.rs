@@ -18,9 +18,9 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeploymentId, DeploymentStatus,
-    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish,
-    RunnerId, Start, UploadBase, UploadedSource, VolumeName,
+    Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, NodeStatus, PlanQuery,
+    Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Next, Store, environment, mint, next, scoped, store};
@@ -129,7 +129,10 @@ pub(super) fn redeploy_command(command: Command) -> Command {
     )))
     .arg(id())
     .arg(switch("yes", Some('y')).env(crate::cli::env::AUTO_CONFIRM))
-    .arg(crate::cli::volume_acceptance())
+    .arg(crate::cli::volume_acceptance().help(format!(
+        "{}; --yes cannot bypass this",
+        crate::cli::VOLUME_ACCEPTANCE
+    )))
     .arg(crate::cli::reviewed_version())
 }
 
@@ -295,14 +298,33 @@ pub(super) fn refuse_local_detach(matches: &ArgMatches, store: &Store) -> Result
 pub(super) fn open_events(
     matches: &ArgMatches,
 ) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
-    Ok(matches
-        .get_one::<String>("events")
-        .map(std::fs::File::create)
-        .transpose()?
-        .map(std::io::BufWriter::new))
+    let Some(path) = matches.get_one::<String>("events") else {
+        return Ok(None);
+    };
+    let file = std::fs::File::create(path).map_err(|error| {
+        use std::io::ErrorKind;
+        let kind = error.kind();
+        let reason = if kind == ErrorKind::NotFound {
+            "no such directory"
+        } else if kind == ErrorKind::IsADirectory {
+            "it is a directory"
+        } else if kind == ErrorKind::PermissionDenied {
+            "permission denied"
+        } else {
+            "it can't be created"
+        };
+        Error::detailed_caused(
+            RpcErrorCode::InvalidArgument,
+            format!("Can't write --events file {path}: {reason}"),
+            serde_json::Value::Null,
+            Some(error),
+        )
+    })?;
+    Ok(Some(std::io::BufWriter::new(file)))
 }
 
-/// Run or follow a queued Deployment and report it. Exits 3 unless it applied.
+/// Run or follow a queued Deployment and report it. A failed Deploy exits 1; a failed
+/// removal or shutdown, or an applied one missing a Server, exits 3.
 fn ship(
     matches: &ArgMatches,
     store: &Store,
@@ -369,6 +391,7 @@ pub(super) fn execute(
             .map(|view| Followed {
                 view,
                 progress: None,
+                successor: None,
             })
     } else {
         follow(matches, store, admitted, events, runner.as_ref(), &signal)
@@ -451,13 +474,17 @@ pub(super) fn execute(
     {
         ui::warn(warning);
     }
-    let view = followed.view;
+    let Followed {
+        view, successor, ..
+    } = followed;
     let ran = if interrupted {
         Err(Error::cancelled())
     } else if detached {
         Ok(())
     } else {
-        progress::completion(&view, |args| super::rerun(matches, args))
+        progress::completion(&view, successor.as_ref(), |args| {
+            super::rerun(matches, args)
+        })
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(
@@ -586,16 +613,20 @@ impl Drop for OwnedRunner<'_, '_> {
 struct Followed {
     view: DeploymentView,
     progress: Option<Progress>,
+    /// The newer Deployment that superseded it without shipping all of its Services.
+    successor: Option<DeploymentSummary>,
 }
 
 fn finish_progress(followed: &mut Followed, disposition: Disposition) {
     let frame = progress::frame(&followed.view);
+    let up_to_date = matches!(disposition, Disposition::UpToDate);
     if let Some(progress) = followed.progress.take() {
         progress.finish(frame, disposition);
-    } else if matches!(disposition, Disposition::UpToDate) {
-        ui::note("Everything is up to date.");
-    } else {
+    } else if !up_to_date {
         Progress::start(frame.clone()).finish(frame, disposition);
+    }
+    if up_to_date {
+        ui::note(progress::up_to_date(&followed.view));
     }
 }
 
@@ -604,7 +635,13 @@ fn tap(
     events: &mut Option<std::io::BufWriter<std::fs::File>>,
     last: &mut Option<serde_json::Value>,
 ) {
-    let event = serde_json::json!({ "type": "deployment", "status": view.deployment.status, "nodes": view.nodes });
+    let event = serde_json::json!({
+        "type": "deployment",
+        "id": view.deployment.id,
+        "number": view.deployment.number,
+        "status": view.deployment.status,
+        "nodes": view.nodes,
+    });
     if last.as_ref() != Some(&event) {
         if let Some(file) = events.as_mut() {
             let _ = writeln!(file, "{event}");
@@ -654,6 +691,7 @@ fn follow(
                     followed = Some(Followed {
                         view,
                         progress: None,
+                        successor: None,
                     });
                 }
             }
@@ -670,7 +708,11 @@ fn follow(
             followed.view = view;
         } else {
             let progress = progress::visible(&view).then(|| Progress::start(frame));
-            followed = Some(Followed { view, progress });
+            followed = Some(Followed {
+                view,
+                progress,
+                successor: None,
+            });
         }
         let current = followed
             .as_ref()
@@ -694,13 +736,24 @@ fn follow(
                     ))
                     .hint(Hint::Inspect(next(matches, &["deployment", "ls"])))
             })?;
-            if let Some(newer) = newer {
-                id = newer.id.clone();
-                tracked = newer;
-                last = None;
-                continue;
+            match newer {
+                Some(Replacement::Follow(newer)) => {
+                    id = newer.id.clone();
+                    tracked = newer;
+                    last = None;
+                    continue;
+                }
+                Some(Replacement::Name(newer)) => {
+                    if let Some(followed) = followed.as_mut() {
+                        followed.successor = Some(newer);
+                    }
+                }
+                None => {}
             }
         }
+        let current = followed
+            .as_ref()
+            .expect("a successful read installed its view");
         tap(&current.view, &mut events, &mut last);
         if current.view.deployment.status != DeploymentStatus::Queued {
             unclaimed = None;
@@ -727,8 +780,15 @@ fn follow(
     }
 }
 
-/// The newest Deployment newer than superseded `view` that targets every Service `view` did, among the latest and those in flight.
-fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<DeploymentSummary>, Error> {
+/// What took superseded `view`'s place, among the latest and those in flight.
+enum Replacement {
+    /// The newest newer Deployment that ships every Service `view` targeted: follow it.
+    Follow(DeploymentSummary),
+    /// Else the newest newer one: name it.
+    Name(DeploymentSummary),
+}
+
+fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Replacement>, Error> {
     let page = store.read(&DeploymentsQuery {
         environment: EnvironmentRef {
             project: Some(view.environment.project.clone()),
@@ -737,12 +797,57 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
         limit: None,
         cursor: None,
     })?;
+    let ours = &view.deployment.services;
     // The latest may ship other Services while an older one in flight ships ours:
     // the latest, then the in-flight ones newest first, whatever page they fall on.
-    Ok(page.latest.into_iter().chain(page.in_flight).find(|newer| {
-        newer.number > view.deployment.number
-            && ships_all(&view.deployment.services, &newer.services)
-    }))
+    let latest = page.latest.as_ref().map(|latest| latest.id.clone());
+    let in_flight = page
+        .in_flight
+        .into_iter()
+        .filter(|newer| latest.as_ref() != Some(&newer.id));
+    let mut newest = None;
+    for newer in page.latest.into_iter().chain(in_flight) {
+        if newer.number <= view.deployment.number {
+            continue;
+        }
+        if newest.is_none() {
+            newest = Some(newer.clone());
+        }
+        // A narrowed one also ships, as Service nodes, the Services its named ones
+        // reference; a node it left unchanged or never reached ships nothing.
+        let carries = if newer.services.is_empty() || ours.is_empty() {
+            ships_all(ours, &newer.services)
+        } else {
+            let Ok(read) = store.read(&ployz_store::DeploymentQuery {
+                id: newer.id.clone(),
+            }) else {
+                continue;
+            };
+            let shipped: Vec<ServiceName> = read
+                .nodes
+                .into_iter()
+                .filter_map(|node| match (node.node, node.outcome) {
+                    (
+                        DeployedNode::Service { name, .. },
+                        NodeStatus::Pending
+                        | NodeStatus::Deployed
+                        | NodeStatus::Failed
+                        | NodeStatus::Unknown,
+                    ) => Some(name),
+                    (
+                        DeployedNode::Service { .. },
+                        NodeStatus::Unchanged | NodeStatus::NotAttempted | NodeStatus::Removed,
+                    )
+                    | (DeployedNode::Volume { .. } | DeployedNode::Config { .. }, _) => None,
+                })
+                .collect();
+            ours.iter().all(|service| shipped.contains(service))
+        };
+        if carries {
+            return Ok(Some(Replacement::Follow(newer)));
+        }
+    }
+    Ok(newest.map(Replacement::Name))
 }
 
 /// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.
@@ -822,14 +927,30 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 cause.trim_end_matches('.')
             ));
         }
-        if !plan.unresolved.is_empty() {
-            ui::stream(format_args!(
-                "Decided by the Servers when it runs: {}.",
-                plan.unresolved.join(", ")
-            ));
+        if let Some(undecided) = undecided(&plan.unresolved) {
+            ui::stream(format_args!("{undecided}"));
         }
         ui::hint(&Hint::Next(hint.clone()));
     })
+}
+
+/// The plan's line for what only the Servers decide, as people read it.
+fn undecided(unresolved: &[String]) -> Option<String> {
+    if unresolved.is_empty() {
+        return None;
+    }
+    let unresolved: Vec<_> = unresolved
+        .iter()
+        .map(|item| match item.as_str() {
+            "operations" => "which containers start and stop",
+            "volume data" => "which volume data is deleted",
+            other => other,
+        })
+        .collect();
+    Some(format!(
+        "Decided by the Servers when it runs: {}.",
+        unresolved.join(", ")
+    ))
 }
 
 fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, String> {
@@ -843,10 +964,10 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, S
         .block_on(async {
             let mut client = super::server::connect(matches, context)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| crate::ui::row(&error))?;
             crate::ingress::planned_slots(&mut client)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| crate::ui::row(&error))
         })
 }
 
@@ -1234,8 +1355,47 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{Tone, service_outcome_lines, ships_all, status_tone, status_word};
-    use ployz_core::ServiceName;
+    use super::{
+        Tone, open_events, service_outcome_lines, ships_all, status_tone, status_word, undecided,
+    };
+    use ployz_core::{RpcErrorCode, ServiceName};
+
+    #[test]
+    fn the_plan_says_what_the_servers_decide_in_plain_words() {
+        assert_eq!(undecided(&[]), None);
+        assert_eq!(
+            undecided(&["operations".to_owned(), "volume data".to_owned()]).as_deref(),
+            Some(
+                "Decided by the Servers when it runs: which containers start and stop, \
+                 which volume data is deleted."
+            )
+        );
+    }
+
+    #[test]
+    fn an_events_path_that_cannot_be_written_names_the_flag_and_the_path() {
+        let refused = |path: &str| {
+            let root = crate::cli::command()
+                .try_get_matches_from(["ployz", "deploy", "--events", path])
+                .unwrap();
+            open_events(super::leaf_matches(&root))
+                .unwrap_err()
+                .report()
+        };
+        let missing = refused("/nonexistent/dir/ev.ndjson");
+        assert_eq!(missing.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(missing.cause.len(), 1, "{missing:?}");
+        assert_eq!(
+            missing.message,
+            "Can't write --events file /nonexistent/dir/ev.ndjson: no such directory"
+        );
+        let directory = std::env::temp_dir();
+        let directory = directory.to_str().unwrap();
+        assert_eq!(
+            refused(directory).message,
+            format!("Can't write --events file {directory}: it is a directory")
+        );
+    }
 
     #[test]
     fn each_service_reads_where_it_ended() {

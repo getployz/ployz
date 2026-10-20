@@ -61,7 +61,8 @@ $ ployz get --project shop --env nope
 stderr:
 ```
 error: No Environment named nope in Project shop
-next: ployz env new nope --project shop
+next: ployz env ls --project shop
+valid: production
 ```
 
 ### completion: unknown shell
@@ -293,6 +294,7 @@ $ timeout 30 ployz ps --project shop
 stderr:
 ```
 error: no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
+next: ployz login
 ```
 
 ### cluster command --json (ps)
@@ -304,25 +306,25 @@ $ timeout 30 ployz --json ps --project shop
 
 stdout:
 ```
-{"error":{"cause":[],"code":"not_found","details":null,"message":"no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz login"},"message":"no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml"}}
 ```
 
 ### deploy without a cluster
 
 ```console
 $ timeout 30 ployz deploy --project shop
-# exit 3
+# exit 1
 ```
 
 stderr:
 ```
 Deploying #1 of shop/production
-  db: not attempted
-  web: not attempted
+  web: not started
+  db: not started
   Volume pgdata: not attempted
 ───────────────
 3 not attempted
-error: No Server is enrolled in this Organization
+error: No Server is enrolled in this Organization.
 retry: ployz deploy --project shop --env production
 ```
 
@@ -336,6 +338,7 @@ $ timeout 30 ployz service restart web --project shop
 stderr:
 ```
 error: no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
+next: ployz login
 ```
 
 ### logs without a cluster
@@ -348,5 +351,6 @@ $ timeout 30 ployz logs web --project shop
 stderr:
 ```
 error: no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
+next: ployz login
 ```
 

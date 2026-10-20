@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService};
+use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService, ServiceName};
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
@@ -520,7 +520,7 @@ fn drive(
                     .rows
                     .iter()
                     .filter(|row| row.state.active())
-                    .map(|row| format!("{}, {}", label(&row.subject, &frame), word(row)))
+                    .map(|row| format!("{} ({})", label(&row.subject, &frame), word(row, &frame)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = writeln!(writer, "  still waiting: {waiting}");
@@ -593,13 +593,57 @@ fn paint(text: &str, tone: Tone, color: bool) -> String {
     }
 }
 
-fn word(row: &Row) -> String {
+fn word(row: &Row, frame: &Frame) -> String {
     match &row.subject {
-        Subject::Service(graph) => graph.word(&row.state),
+        Subject::Service(graph) => match left_running(row, frame) {
+            0 => graph.word(&row.state),
+            left => format!("{}, {left} left running", graph.word(&row.state)),
+        },
         Subject::ServiceOnServer { .. }
         | Subject::Unlocated(_)
         | Subject::Operation { .. }
         | Subject::Node { .. } => row.state.word().to_owned(),
+    }
+}
+
+/// Copies a switched Service's cleanup left running: its Deploy did not finish.
+fn left_running(row: &Row, frame: &Frame) -> usize {
+    let Subject::Service(graph) = &row.subject else {
+        return 0;
+    };
+    if row.state != State::Completed {
+        return 0;
+    }
+    frame
+        .notices
+        .iter()
+        .filter_map(|warning| match warning {
+            DeployWarning::LeftRunning {
+                service,
+                container_id,
+                ..
+            } if *service == graph.service => Some(container_id),
+            DeployWarning::LeftRunning { .. }
+            | DeployWarning::StorageHeadroom { .. }
+            | DeployWarning::UnbudgetedDiskUsage
+            | DeployWarning::ObservationFailed { .. }
+            | DeployWarning::ObservationOmitted { .. }
+            | DeployWarning::StorageObservationUnknown { .. }
+            | DeployWarning::IngressHostname { .. }
+            | DeployWarning::ObserverRelativeHostnameConflict
+            | DeployWarning::SkippedDependencyHealth { .. }
+            | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::MixedAfterReturn { .. } => None,
+        })
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn tone(row: &Row, frame: &Frame) -> Tone {
+    if left_running(row, frame) > 0 {
+        Tone::Change
+    } else {
+        row.state.tone()
     }
 }
 
@@ -611,7 +655,13 @@ fn row_text(row: &Row, frame: &Frame, tick: usize, width: usize) -> String {
         | Subject::Operation { .. }
         | Subject::Node { .. } => None,
     }
-    .unwrap_or_else(|| mark(&row.state, tick));
+    .unwrap_or_else(|| {
+        if left_running(row, frame) > 0 {
+            "!"
+        } else {
+            mark(&row.state, tick)
+        }
+    });
     let elapsed = match row.timing {
         Timing::Unavailable => String::new(),
         Timing::Started(at) => format!("  {:.1}s", at.elapsed().unwrap_or_default().as_secs_f64()),
@@ -622,7 +672,7 @@ fn row_text(row: &Row, frame: &Frame, tick: usize, width: usize) -> String {
         .as_deref()
         .map(|detail| format!(" ({detail})"))
         .unwrap_or_default();
-    let rest = format!("  {}{detail}{elapsed}", word(row));
+    let rest = format!("  {}{detail}{elapsed}", word(row, frame));
     let room = width.saturating_sub(mark.width() + 1 + rest.width()).max(1);
     format!("{mark} {}{rest}", clip(&label(&row.subject, frame), room))
 }
@@ -636,7 +686,7 @@ fn body<'a>(
 ) -> Vec<(String, Tone)> {
     let mut lines: Vec<_> = others
         .into_iter()
-        .map(|row| (row_text(row, frame, tick, width), row.state.tone()))
+        .map(|row| (row_text(row, frame, tick, width), tone(row, frame)))
         .collect();
     let mut graph: Vec<_> = frame
         .rows
@@ -661,7 +711,7 @@ fn body<'a>(
         }
         lines.push((
             format!("  {}", row_text(row, frame, tick, width.saturating_sub(2))),
-            row.state.tone(),
+            tone(row, frame),
         ));
         if let Some(draining) = graph.draining_line() {
             lines.push((format!("    {draining}"), Tone::Change));
@@ -832,7 +882,7 @@ fn changes(
             format!(
                 "  {}{depth}: {}{detail}",
                 label(&row.subject, frame),
-                paint(&word(row), row.state.tone(), color)
+                paint(&word(row, frame), tone(row, frame), color)
             )
         };
         if old.is_none_or(|(old, previous)| line(old, previous, false) != line(row, frame, false)) {
@@ -907,7 +957,9 @@ fn notices(frame: &Frame) -> Vec<String> {
                     | DeployWarning::IngressHostname { .. }
                     | DeployWarning::ObserverRelativeHostnameConflict
                     | DeployWarning::SkippedDependencyHealth { .. }
-                    | DeployWarning::ImagePortMismatch { .. } => None,
+                    | DeployWarning::ImagePortMismatch { .. }
+                    | DeployWarning::LeftRunning { .. }
+                    | DeployWarning::MixedAfterReturn { .. } => None,
                 })
                 .collect::<BTreeSet<_>>();
             Some(format!(
@@ -916,6 +968,27 @@ fn notices(frame: &Frame) -> Vec<String> {
             ))
         })
         .collect()
+}
+
+/// The footer word a settled row counts under.
+fn outcome(row: &Row) -> Option<&'static str> {
+    match row.state {
+        State::Completed => Some(
+            if matches!(&row.subject, Subject::Service(graph) if graph.work == Work::Remove) {
+                "removed"
+            } else {
+                "deployed"
+            },
+        ),
+        State::ObservedRunning => Some("running"),
+        State::Unchanged => Some("unchanged"),
+        State::Failed => Some("failed"),
+        State::Warned => Some("warning"),
+        State::NotAttempted => Some("not attempted"),
+        State::Unknown => Some("unknown"),
+        State::Excluded => Some("excluded"),
+        State::Pending | State::Running(_) => None,
+    }
 }
 
 fn finish(
@@ -928,7 +1001,7 @@ fn finish(
     color: bool,
 ) -> io::Result<()> {
     if matches!(disposition, Disposition::UpToDate) {
-        return writeln!(writer, "Everything is up to date.");
+        return Ok(());
     }
     if interactive {
         writeln!(writer, "{}", frame.title)?;
@@ -961,19 +1034,32 @@ fn finish(
             if gaps == 1 { "gap" } else { "gaps" }
         ));
     }
-    for (state, word) in [
-        (State::Completed, "deployed"),
-        (State::ObservedRunning, "running"),
-        (State::Unchanged, "unchanged"),
-        (State::Failed, "failed"),
-        (State::Warned, "warning"),
-        (State::NotAttempted, "not attempted"),
-        (State::Unknown, "unknown"),
-        (State::Excluded, "excluded"),
+    for word in [
+        "deployed",
+        "removed",
+        "running",
+        "unchanged",
+        "failed",
+        "warning",
+        "not attempted",
+        "unknown",
+        "excluded",
     ] {
-        let count = frame.rows.iter().filter(|row| row.state == state).count();
+        let count = frame
+            .rows
+            .iter()
+            .filter(|row| outcome(row) == Some(word))
+            .count();
         if count > 0 {
             counts.push(format!("{count} {word}"));
+        }
+        if word == "deployed" {
+            let left: usize = frame.rows.iter().map(|row| left_running(row, frame)).sum();
+            match left {
+                0 => {}
+                1 => counts.push("1 copy left running".into()),
+                left => counts.push(format!("{left} copies left running")),
+            }
         }
     }
     let servers: BTreeSet<_> = frame
@@ -1039,7 +1125,10 @@ pub(crate) struct Detail {
 /// to show or withhold.
 #[derive(Debug)]
 pub(crate) struct LogTail {
+    /// The runtime identity, which a rename keeps; JSON reports it.
     pub service: QualifiedService,
+    /// The Service's name now, which the human header shows.
+    pub name: ServiceName,
     pub machine: MachineId,
     pub server: String,
     pub log: Option<LogText>,
@@ -1056,7 +1145,7 @@ impl Diagnostic {
             )?;
         }
         for tail in &self.logs {
-            let (service, server) = (&tail.service.name, &tail.server);
+            let (service, server) = (&tail.name, &tail.server);
             match &tail.log {
                 None => {}
                 Some(LogText::Shown(excerpt)) if excerpt.lines().is_empty() => {}

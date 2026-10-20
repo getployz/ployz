@@ -45,6 +45,14 @@ it("lets pointer users submit a valid image and blocks invalid or pending select
   expect(select).toHaveBeenCalledTimes(1);
 });
 
+it("starts from the current image, with the caret at its end", () => {
+  render(<ImageSelector initialImage="redis:7-alpine" onSelectImage={vi.fn()} />);
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Container image" });
+  expect(input.value).toBe("redis:7-alpine");
+  expect(document.activeElement).toBe(input);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([14, 14]);
+});
+
 it.each([false, true])("shows an initial read failure and recovers (empty snapshot: %s)", async (empty) => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("scrollTo", () => {});
@@ -142,6 +150,29 @@ it("offers a public URL without a GitHub installation", async () => {
   try {
     render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
     expect(await screen.findByRole("option", { name: "Deploy owner/repo" })).toBeTruthy();
+  } finally {
+    cleanup(); await getDbClient(queryClient).cleanup(); queryClient.clear();
+  }
+});
+
+it("links an existing GitHub installation from the picker without installing the app again", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("scrollTo", () => {});
+  Element.prototype.scrollIntoView ??= () => {};
+  const open = vi.fn(() => ({ closed: false }) as Window);
+  vi.stubGlobal("open", open);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const scope = { queryClient, organizationSlug: "fresh-org", sessionId: "fresh-session" };
+  getGithubReposCollection(scope);
+  queryClient.setQueryData(githubReposQueryKey(scope), []);
+  queryClient.setQueryData(githubKeys.access("fresh-org"), { hasInstallations: false });
+  queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com" });
+  const routeTree = selectorRoutes(scope, () => <Command><CommandList><GitRepoSelector organizationSlug="fresh-org" query="" onSelectRepo={() => {}} /></CommandList></Command>);
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/"] }) });
+  try {
+    render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Use existing" }));
+    expect(open).toHaveBeenCalledExactlyOnceWith("/api/github/connect?organization=fresh-org&existing=1", "_blank", "width=1020,height=680");
   } finally {
     cleanup(); await getDbClient(queryClient).cleanup(); queryClient.clear();
   }

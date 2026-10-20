@@ -63,10 +63,11 @@ const organizationOwnedWithoutChangeLog = {
   uptime_alert: "The uptime alert outbox, read only by the alert sender; no view reads it, so it needs no change log.",
   uptime_result: "Probe results, read as a Remote Read; growing history that would flood the change log.",
   uptime_result_hourly: "Hourly probe rollups, read as a Remote Read; growing history that would flood the change log.",
-  observe_ingest_cursor: "The last observe push each Machine stream delivered, read only to refuse a replay; no view reads it, so it needs no change log.",
+  observe_ingest_cursor: "The last observe push each Machine stream delivered, read to refuse a replay and, by its push time, to warn the Enroll sheet that every Server is offline; no view reads it, so it needs no change log.",
   crash_event: "Crashes a Machine pushed, read only by the crash mailer; growing history no view reads, so it needs no change log.",
   server_enrollment: "One host's Server Enrollment, read by its run, the host's check-in and the enrollments route; no view reads it, so it needs no change log.",
   fleet_token_join: "A Fleet Token's joined hosts, kept past the enrollment sweep and read only to count its used total; no view reads it, so it needs no change log.",
+  fleet_token_attempt: "The hosts a Fleet Token has started an enrollment for, kept past their waiting rows and read only to refuse a second arrival; no view reads it, so it needs no change log.",
   anonymous_teardown: "How long a lapsed agent sandbox has waited on its Servers, read only by its teardown; no view reads it, so it needs no change log.",
 } satisfies Record<string, string>;
 

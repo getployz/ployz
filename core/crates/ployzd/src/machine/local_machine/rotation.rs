@@ -171,7 +171,7 @@ impl LocalMachine {
             .ensure_docker(ContainerWant::Running {
                 container,
                 rotation: RunRotation::In {
-                    run,
+                    run: run.clone(),
                     expect: expect.clone(),
                 },
             })
@@ -189,6 +189,13 @@ impl LocalMachine {
         let id = ContainerLocator::Id(observed.container_id);
         let health = match health {
             Some(settled) => settled.clone(),
+            None if expect.is_some()
+                && self
+                    .settled_by(&observed.container_id, run.as_ref())
+                    .await? =>
+            {
+                HealthVerdict::Healthy
+            }
             None => {
                 let ContainerNow::Present(observed) = self.container_now(&id).await? else {
                     return Ok(refused(
@@ -196,7 +203,7 @@ impl LocalMachine {
                         not_found_refusal(&id),
                     ));
                 };
-                self.settle_health(&observed.container_id, &observed.resolved_spec)
+                self.settle_health(&observed.container_id, &observed.resolved_spec, run)
                     .await?
             }
         };
@@ -284,6 +291,7 @@ impl LocalMachine {
                 health: Some(HealthVerdict::Failed {
                     observation,
                     last_check: None,
+                    oom_killed: false,
                 }),
             },
             Written::Refused(refusal) => refused(now, refusal),

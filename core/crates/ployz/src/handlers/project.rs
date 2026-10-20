@@ -22,7 +22,7 @@ pub(super) fn group(command: Command) -> Command {
 pub(super) fn new_command(command: Command) -> Command {
     command
         .about("Create a Project with its Default Environment, production")
-        .arg(positional("name", true))
+        .arg(positional("name", true).help("The new Project's name, unique in the Organization"))
 }
 
 pub(super) fn ls_command(command: Command) -> Command {
@@ -109,6 +109,15 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     // Resolved before the write, so a failed lookup cannot strand a done rename.
     let acting = super::link::identity(&store)?.organization;
     let renamed = store.write(&rename)?;
+    if renamed.name == rename.project {
+        return crate::ui::done(
+            &json!({ "project": renamed, "links": 0 }),
+            format_args!(
+                "Nothing changed; Project {} already has that name.",
+                renamed.name
+            ),
+        );
+    }
     crate::ui::stream(format_args!(
         "Renamed Project {} to {}.",
         rename.project, renamed.name

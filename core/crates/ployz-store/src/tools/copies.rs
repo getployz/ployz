@@ -115,6 +115,9 @@ impl Tool for VolumeShow {
             }
         };
         let namespace = cx.view::<NamespaceQuery>(answers.next())?;
+        if volumes.is_empty() {
+            return Ok(json!({ "at": at(&place), "volumes": [], "seen": null }));
+        }
         let mut asks = vec![Ask::Cloud(CloudQuery::Copies {
             namespace: namespace.namespace,
             volume: self.volume.clone(),

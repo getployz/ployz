@@ -13,9 +13,12 @@ $ ployz token new ci
 
 stdout:
 ```
-Made token ci (a261eda1-8592-433b-b55f-21aaad1f75cf) in Organization ada, expiring 2027-01-03T01:12:26.123Z.
-Its secret is shown only now; set it as PLOYZ_TOKEN:
 ployz_<redacted>
+```
+
+stderr:
+```
+Made token ci (Full as you) in Organization ada, expiring 2027-01-18T09:50:28.004Z. Its secret is shown only now; set it as PLOYZ_TOKEN:
 ```
 
 ### token new deploy --expires-in 7 --json
@@ -29,10 +32,12 @@ stdout:
 ```
 {
   "token": {
-    "expires_at": "2026-10-12T01:12:26.241Z",
-    "id": "3b320fee-0a08-47d8-b8d9-a6b9eb4a4d31",
+    "expires_at": "2026-10-27T09:50:28.335Z",
+    "id": "1148f999-2026-4479-a2f8-0b2139304f02",
+    "kind": "cli",
     "name": "deploy",
     "organization": "ada",
+    "scope": "Full as you",
     "secret": "ployz_<redacted>"
   }
 }
@@ -61,10 +66,13 @@ $ ployz token ls
 
 stdout:
 ```
-KIND	ID	NAME	EXPIRES
-token	a261eda1-8592-433b-b55f-21aaad1f75cf	ci	2027-01-03T01:12:26.123Z
-token	3b320fee-0a08-47d8-b8d9-a6b9eb4a4d31	deploy	2026-10-12T01:12:26.241Z
-device	54b92009-ff80-402e-a3a0-25cf1b1c702d	- *	2026-10-12T01:12:24.965Z
+KIND	ID	NAME	SCOPE	EXPIRES	STATE
+cli	6ba09df9-b90c-419d-84cf-db76edb8a0c0	verify	Full as you	2026-11-19T09:49:16.980Z	-
+cli	7275ddd9-19c8-4f49-9cce-ef35a5d3f60f	verify	Full as you	2026-11-19T09:49:17.016Z	-
+cli	87f85b1d-838d-41f7-87a7-dc970dd1424e	verify	Full as you	2026-11-19T09:49:17.034Z	-
+cli	eaf5a551-4ef7-4b40-a6c4-b906216ee3da	ci	Full as you	2027-01-18T09:50:28.004Z	-
+cli	1148f999-2026-4479-a2f8-0b2139304f02	deploy	Full as you	2026-10-27T09:50:28.335Z	-
+device	6fde175d-6df2-4d2e-ae64-4b9fbffb1dec	ployz login 2026-10-20	Full as you	2026-10-27T09:50:26.117Z	current
 ```
 
 ### token ls --json
@@ -79,29 +87,63 @@ stdout:
 {
   "devices": [
     {
-      "created_at": "2026-10-05T01:12:24.965Z",
+      "created_at": "2026-10-20T09:50:26.117Z",
       "current": true,
-      "expires_at": "2026-10-12T01:12:24.965Z",
-      "id": "54b92009-ff80-402e-a3a0-25cf1b1c702d"
+      "expires_at": "2026-10-27T09:50:26.117Z",
+      "id": "6fde175d-6df2-4d2e-ae64-4b9fbffb1dec"
     }
   ],
   "revoking": [],
   "tokens": [
     {
-      "created_at": "2026-10-05T01:12:26.124Z",
+      "created_at": "2026-10-20T09:49:16.983Z",
       "current": false,
       "expired": false,
-      "expires_at": "2027-01-03T01:12:26.123Z",
-      "id": "a261eda1-8592-433b-b55f-21aaad1f75cf",
-      "name": "ci"
+      "expires_at": "2026-11-19T09:49:16.980Z",
+      "id": "6ba09df9-b90c-419d-84cf-db76edb8a0c0",
+      "kind": "cli",
+      "name": "verify",
+      "scope": "Full as you"
     },
     {
-      "created_at": "2026-10-05T01:12:26.242Z",
+      "created_at": "2026-10-20T09:49:17.017Z",
       "current": false,
       "expired": false,
-      "expires_at": "2026-10-12T01:12:26.241Z",
-      "id": "3b320fee-0a08-47d8-b8d9-a6b9eb4a4d31",
-      "name": "deploy"
+      "expires_at": "2026-11-19T09:49:17.016Z",
+      "id": "7275ddd9-19c8-4f49-9cce-ef35a5d3f60f",
+      "kind": "cli",
+      "name": "verify",
+      "scope": "Full as you"
+    },
+    {
+      "created_at": "2026-10-20T09:49:17.035Z",
+      "current": false,
+      "expired": false,
+      "expires_at": "2026-11-19T09:49:17.034Z",
+      "id": "87f85b1d-838d-41f7-87a7-dc970dd1424e",
+      "kind": "cli",
+      "name": "verify",
+      "scope": "Full as you"
+    },
+    {
+      "created_at": "2026-10-20T09:50:28.005Z",
+      "current": false,
+      "expired": false,
+      "expires_at": "2027-01-18T09:50:28.004Z",
+      "id": "eaf5a551-4ef7-4b40-a6c4-b906216ee3da",
+      "kind": "cli",
+      "name": "ci",
+      "scope": "Full as you"
+    },
+    {
+      "created_at": "2026-10-20T09:50:28.336Z",
+      "current": false,
+      "expired": false,
+      "expires_at": "2026-10-27T09:50:28.335Z",
+      "id": "1148f999-2026-4479-a2f8-0b2139304f02",
+      "kind": "cli",
+      "name": "deploy",
+      "scope": "Full as you"
     }
   ]
 }
@@ -110,19 +152,19 @@ stdout:
 ### token rm ID
 
 ```console
-$ ployz token rm a261eda1-8592-433b-b55f-21aaad1f75cf
+$ ployz token rm eaf5a551-4ef7-4b40-a6c4-b906216ee3da
 # exit 0
 ```
 
 stdout:
 ```
-Revoked token a261eda1-8592-433b-b55f-21aaad1f75cf.
+Revoked token eaf5a551-4ef7-4b40-a6c4-b906216ee3da.
 ```
 
 ### token rm ID --json
 
 ```console
-$ ployz token rm 3b320fee-0a08-47d8-b8d9-a6b9eb4a4d31 --json
+$ ployz token rm 1148f999-2026-4479-a2f8-0b2139304f02 --json
 # exit 0
 ```
 
@@ -130,7 +172,7 @@ stdout:
 ```
 {
   "removed": {
-    "id": "3b320fee-0a08-47d8-b8d9-a6b9eb4a4d31",
+    "id": "1148f999-2026-4479-a2f8-0b2139304f02",
     "kind": "token"
   },
   "servers": {
@@ -143,13 +185,13 @@ stdout:
 ### token rm, already revoked ID
 
 ```console
-$ ployz token rm a261eda1-8592-433b-b55f-21aaad1f75cf
+$ ployz token rm eaf5a551-4ef7-4b40-a6c4-b906216ee3da
 # exit 1
 ```
 
 stderr:
 ```
-no token or signed-in device a261eda1-8592-433b-b55f-21aaad1f75cf in this Organization
+error: no token or signed-in device eaf5a551-4ef7-4b40-a6c4-b906216ee3da in this Organization
 next: ployz token ls
 ```
 
@@ -162,7 +204,7 @@ $ ployz token rm 00000000-0000-0000-0000-000000000000
 
 stderr:
 ```
-no token or signed-in device 00000000-0000-0000-0000-000000000000 in this Organization
+error: no token or signed-in device 00000000-0000-0000-0000-000000000000 in this Organization
 next: ployz token ls
 ```
 
@@ -175,7 +217,7 @@ $ ployz token rm 00000000-0000-0000-0000-000000000000 --json
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"next":"ployz token ls"},"message":"no token or signed-in device 00000000-0000-0000-0000-000000000000 in this Organization"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz token ls"},"message":"no token or signed-in device 00000000-0000-0000-0000-000000000000 in this Organization"}}
 ```
 
 ### token rm, not a UUID
@@ -187,7 +229,7 @@ $ ployz token rm ci
 
 stderr:
 ```
-no token or signed-in device ci in this Organization
+error: no token or signed-in device ci in this Organization
 next: ployz token ls
 ```
 
@@ -202,12 +244,15 @@ $ ployz status
 
 stdout:
 ```
-Cloud: http://localhost:34733
-Organization ada (token).
-Environment shop/production.
-2 staged changes.
-Deployment 1 is queued.
-next: ployz diff
+cloud = http://localhost:35249
+organization = ada
+signed in as = token
+needs attention = Name a Project: this Organization has more than one
+```
+
+stderr:
+```
+next: ployz link --project PROJECT
 ```
 
 ### status with PLOYZ_TOKEN --json
@@ -220,52 +265,30 @@ $ ployz status --json
 stdout:
 ```
 {
-  "attention": [],
-  "deploying": [
+  "attention": [
     {
-      "admitted_at": 1791162709,
-      "admitted_by": "Ada Lovelace",
-      "ended_at": null,
-      "environment_id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
-      "id": "939f4f20-8e4a-40a5-a812-52c2c614d9f6",
-      "in_flight": true,
-      "message": "Ship everything",
-      "number": 1,
-      "outcome": null,
-      "remove": false,
-      "runner": null,
-      "saved": 1,
-      "services": [],
-      "started_at": null,
-      "status": "queued",
-      "upload": null
+      "message": "Name a Project: this Organization has more than one",
+      "next": "ployz link --project PROJECT",
+      "reason": "ambiguous"
     }
   ],
-  "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
-    "name": "production",
-    "project": "shop",
-    "revision": 9
-  },
+  "deploying": [],
+  "environment": null,
   "identity": {
-    "cloud": "http://localhost:34733",
+    "cloud": "http://localhost:35249",
     "credential": "token",
     "organization": {
-      "id": "a52ce0da-943d-4bfb-adfb-9da76e128533",
+      "id": "5e293990-09ad-45c1-b636-6444de4fb848",
       "slug": "ada"
     }
   },
-  "next": "ployz diff",
+  "next": "ployz link --project PROJECT",
   "scope": {
     "environment": null,
     "link": null,
     "project": null
   },
-  "staged": {
-    "changes": 2,
-    "saved": false,
-    "version": "9:1:1.0"
-  }
+  "staged": null
 }
 ```
 
@@ -278,9 +301,12 @@ $ ployz token ls
 
 stdout:
 ```
-KIND	ID	NAME	EXPIRES
-token	3d4d8a57-5de6-4a3a-b01e-eb0083a224f1	env-test *	2027-01-03T01:12:27.992Z
-device	54b92009-ff80-402e-a3a0-25cf1b1c702d	-	2026-10-12T01:12:24.965Z
+KIND	ID	NAME	SCOPE	EXPIRES	STATE
+cli	6ba09df9-b90c-419d-84cf-db76edb8a0c0	verify	Full as you	2026-11-19T09:49:16.980Z	-
+cli	7275ddd9-19c8-4f49-9cce-ef35a5d3f60f	verify	Full as you	2026-11-19T09:49:17.016Z	-
+cli	87f85b1d-838d-41f7-87a7-dc970dd1424e	verify	Full as you	2026-11-19T09:49:17.034Z	-
+cli	3dc76578-e096-4e00-9b6b-12f30b6a70c8	env-test	Full as you	2027-01-18T09:50:31.503Z	current
+device	6fde175d-6df2-4d2e-ae64-4b9fbffb1dec	ployz login 2026-10-20	Full as you	2026-10-27T09:50:26.117Z	-
 ```
 
 ### org ls with PLOYZ_TOKEN
@@ -292,34 +318,33 @@ $ ployz org ls
 
 stdout:
 ```
-ORGANIZATION	NAME
-ada *	Ada Lovelace's Projects
+ORGANIZATION	NAME	CURRENT
+ada	Ada Lovelace's Projects	current
 ```
 
 ### org use with PLOYZ_TOKEN (refused)
 
 ```console
 $ ployz org use babbage
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-PLOYZ_TOKEN acts only in the Organization it was made in
+error: PLOYZ_TOKEN acts only in the Organization it was made in
 ```
 
 ### token new with PLOYZ_TOKEN
 
 ```console
 $ ployz token new nested
-# exit 0
+# exit 1
 ```
 
-stdout:
+stderr:
 ```
-Made token nested (ce5f9a6e-43f9-4817-9189-ec59fae88396) in Organization ada, expiring 2027-01-03T01:12:29.603Z.
-Its secret is shown only now; set it as PLOYZ_TOKEN:
-ployz_<redacted>
+error: Only a signed-in person can make tokens. No changes made.
+next: unset PLOYZ_TOKEN && ployz login
 ```
 
 ### status with a revoked PLOYZ_TOKEN
@@ -331,8 +356,8 @@ $ ployz status
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
-next: ployz token new
+error: Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+next: unset PLOYZ_TOKEN && ployz login
 ```
 
 ### token ls with a revoked PLOYZ_TOKEN --json
@@ -344,6 +369,6 @@ $ ployz token ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 

@@ -6,20 +6,20 @@ use futures_util::future::join_all;
 use crate::cli::{base, positional, value};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId, MachineName,
-    MachineObservation, MachineTarget, PartialResult, QualifiedService, RpcError, RpcErrorCode,
-    ServiceObservation, ServiceSelector, select_service,
+    CopyRotation, HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId,
+    MachineName, QualifiedService, RpcError, RpcErrorCode, ServiceContainer, ServiceObservation,
+    ServiceSelector, select_service,
 };
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     cluster::HealthWaitError,
-    serving_publish::PointerClient,
     ui::{Cell, Gaps, Table, Tone},
 };
 use ployz_core::EnvironmentValues;
 
-use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_reader};
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_lister};
 
 /// List observed Service and hook Containers.
 ///
@@ -34,8 +34,9 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .ok_or_else(|| Error::usage("sort order is required"))?;
     let scoped = super::operator::scope(root)?;
     let namespace = scoped.as_ref().map(|scoped| scoped.namespace.clone());
+    let labels = scoped.clone();
     let order = sort.clone();
-    let credential = with_reader(root, |client| {
+    let credential = with_lister(root, no_processes, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
             let live = client
@@ -54,7 +55,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                         .is_none_or(|namespace| service.identity.namespace == *namespace)
                 })
                 .collect::<Vec<_>>();
-            let retiring = retiring(client, &machines, &live.containers, &services).await;
+            let retiring = retiring(&services);
             let mut containers = services
                 .iter()
                 .flat_map(|service| service.members())
@@ -63,7 +64,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             let observations = process_rows(&containers, &retiring);
             let gaps = Gaps::of(&live.containers)
                 .named(names.iter().map(|(machine_id, name)| (*machine_id, *name)));
-            let table = process_table(&containers, namespace.is_some(), &names, &retiring);
+            let table = process_table(&containers, labels.as_ref(), &names, &retiring);
             crate::ui::finish_fanout("containers", &observations, &gaps, || {
                 crate::ui::rows(&table);
             })
@@ -74,35 +75,26 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-async fn retiring<C: PointerClient + Clone, E>(
-    client: &C,
-    machines: &[MachineObservation],
-    listing: &PartialResult<Vec<ContainerObservation>, E>,
-    services: &[&ServiceObservation],
-) -> HashSet<ContainerId> {
-    let Some(publisher) = crate::serving_publish::publisher_among(machines) else {
-        return HashSet::new();
-    };
-    let publisher_unreached = listing
-        .failures
+/// What `ps` lists for an Organization with no Servers yet.
+fn no_processes() -> Result<(), Error> {
+    let table = process_table(&[], None, &HashMap::new(), &HashSet::new());
+    crate::ui::finish_fanout(
+        "containers",
+        &Vec::<Process>::new(),
+        &Gaps::default(),
+        || {
+            crate::ui::rows(&table);
+        },
+    )
+}
+
+fn retiring(services: &[&ServiceObservation]) -> HashSet<ContainerId> {
+    services
         .iter()
-        .map(|failure| &failure.machine_id)
-        .chain(&listing.omissions)
-        .any(|machine| MachineTarget::from(machine) == publisher);
-    if publisher_unreached {
-        return HashSet::new();
-    }
-    let reads = services.iter().map(|service| {
-        let mut client = client.clone();
-        let mut at = publisher.clone();
-        async move { client.read_pointer_at(&mut at, &service.identity).await }
-    });
-    join_all(reads)
-        .await
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|pointer| pointer.retiring)
+        .flat_map(|service| &service.containers)
+        .map(ServiceContainer::as_observation)
+        .filter(|copy| *copy.rotation() == CopyRotation::Out)
+        .map(|copy| copy.container_id)
         .collect()
 }
 
@@ -186,7 +178,7 @@ fn collapse_draining<'a>(
 
 fn process_table(
     containers: &[ContainerRef<'_>],
-    scoped: bool,
+    scoped: Option<&super::operator::Scoped>,
     names: &HashMap<MachineId, &MachineName>,
     retiring: &HashSet<ContainerId>,
 ) -> Table {
@@ -197,11 +189,10 @@ fn process_table(
             let container = entry.container();
             let observation = container.as_observation();
             // Scoped to one Environment, its Namespace on every row says nothing.
-            let service = if scoped {
-                observation.service_name().to_string()
-            } else {
-                observation.identity().to_string()
-            };
+            let service = scoped.map_or_else(
+                || observation.identity().to_string(),
+                |scoped| scoped.service_name(observation.service_name()).to_string(),
+            );
             [
                 service,
                 process_kind(container).to_owned(),
@@ -232,14 +223,9 @@ fn process_table(
             ),
             Row::Container(container) => {
                 let observation = container.as_observation();
-                let id = if seen.get(row).is_some_and(|count| *count > 1) {
-                    Cell::from(crate::ui::short_id(observation.container_id.as_str()))
-                } else {
-                    Cell::from("")
-                };
                 (
                     Cell::status(process_state(&observation.runtime), state_tone(container)),
-                    id,
+                    Cell::from(crate::ui::short_id(observation.container_id.as_str())),
                 )
             }
         };
@@ -348,10 +334,10 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
     }
 }
 
-/// Stop, then start, the addressed Environment's Services. Every Container is started
-/// again even when stopping one failed, so a failed restart never leaves a Service down.
+/// Restart the addressed Environment's Services. Every Container is started again
+/// even when stopping one failed, so a failed restart never leaves a Service down.
 pub(super) fn restart(root: &ArgMatches) -> Result<(), Error> {
-    lifecycle(root, &[ContainerAction::Stop, ContainerAction::Start])
+    lifecycle(root, &[ContainerAction::Restart])
 }
 
 pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
@@ -386,58 +372,88 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             let services = select_services(&observed, &selectors)?;
             // A restart rolls: each Container is stopped, then started and serving, before the next one stops,
             // so a Service with more than one replica keeps serving throughout.
-            let rolling: Vec<ServiceObservation> =
-                if actions == [ContainerAction::Stop, ContainerAction::Start] {
-                    services
-                        .iter()
-                        .flat_map(|service| {
-                            service
-                                .containers
-                                .iter()
-                                .map(|container| ServiceObservation {
-                                    containers: vec![container.clone()],
-                                    hook_containers: Vec::new(),
-                                    ..(*service).clone()
-                                })
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+            let rolling: Vec<ServiceObservation> = if actions == [ContainerAction::Restart] {
+                services
+                    .iter()
+                    .flat_map(|service| {
+                        service
+                            .containers
+                            .iter()
+                            .map(|container| ServiceObservation {
+                                containers: vec![container.clone()],
+                                hook_containers: Vec::new(),
+                                ..(*service).clone()
+                            })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let batches: Vec<Vec<&ServiceObservation>> = if rolling.is_empty() {
                 vec![services]
             } else {
                 rolling.iter().map(|one| vec![one]).collect()
             };
-            let mut outcome: Option<ServiceActionOutcome> = None;
-            for services in &batches {
-                for &action in actions {
-                    let (signal, timeout) = match action {
-                        ContainerAction::Stop => (signal.clone(), timeout),
-                        ContainerAction::Start | ContainerAction::Remove => (None, None),
-                    };
-                    let step = apply_service_action(
-                        client, &live, &names, services, action, signal, timeout,
+            let cancellation = cancellation_on_ctrl_c();
+            let _cancel_listener = cancellation.clone().drop_guard();
+            let client = &*client;
+            let outcome = run_batches(&batches, actions, &cancellation, |services, action| {
+                let (signal, timeout) = match action {
+                    ContainerAction::Stop | ContainerAction::Restart => (signal.clone(), timeout),
+                    ContainerAction::Start | ContainerAction::Remove => (None, None),
+                };
+                let (live, names, cancellation) = (&live, &names, &cancellation);
+                async move {
+                    apply_service_action(
+                        client,
+                        live,
+                        names,
+                        services,
+                        (action, signal, timeout),
+                        cancellation,
                     )
-                    .await?;
-                    outcome = Some(match outcome {
-                        Some(before) => before.then(step),
-                        None => step,
-                    });
+                    .await
                 }
-            }
-            let outcome = outcome.expect("a lifecycle command has an action");
+            })
+            .await?;
             crate::ui::emit(&ServiceActionResult {
-                next: outcome.partial.then_some(hint.as_str()),
+                next: outcome.finish().is_err().then_some(hint.as_str()),
                 ..outcome.result(&live)
             })?;
-            if outcome.partial {
-                Err(Error::partial())
-            } else {
-                Ok(())
-            }
+            outcome.finish()
         })
     })
+}
+
+/// Run each action on each batch in turn. A run `cancellation` cut short ends as
+/// cancelled.
+async fn run_batches<'a, B, F, Fut>(
+    batches: &'a [B],
+    actions: &[ContainerAction],
+    cancellation: &CancellationToken,
+    mut step: F,
+) -> Result<ServiceActionOutcome, Error>
+where
+    F: FnMut(&'a B, ContainerAction) -> Fut,
+    Fut: Future<Output = Result<ServiceActionOutcome, Error>>,
+{
+    let mut outcome = ServiceActionOutcome {
+        containers: Vec::new(),
+        container_failures: Vec::new(),
+        partial: false,
+        interrupted: false,
+    };
+    'batches: for services in batches {
+        for &action in actions {
+            if cancellation.is_cancelled() {
+                outcome.partial = true;
+                break 'batches;
+            }
+            outcome = outcome.then(step(services, action).await?);
+        }
+    }
+    outcome.interrupted = cancellation.is_cancelled();
+    Ok(outcome)
 }
 
 struct ServiceActionOutcome {
@@ -446,6 +462,8 @@ struct ServiceActionOutcome {
     /// One entry per Container the action failed on.
     container_failures: Vec<ContainerFailure>,
     partial: bool,
+    /// Ctrl-C ended the command.
+    interrupted: bool,
 }
 
 #[derive(Serialize)]
@@ -487,6 +505,16 @@ impl ServiceActionOutcome {
         }
     }
 
+    fn finish(&self) -> Result<(), Error> {
+        if self.interrupted {
+            Err(Error::partial().interrupted())
+        } else if self.partial {
+            Err(Error::partial())
+        } else {
+            Ok(())
+        }
+    }
+
     /// This step's outcome followed by `later`'s.
     fn then(mut self, later: Self) -> Self {
         self.containers.extend(later.containers);
@@ -501,9 +529,8 @@ async fn apply_service_action(
     live: &LiveServices<RpcError>,
     names: &HashMap<MachineId, &MachineName>,
     services: &[&ServiceObservation],
-    action: ContainerAction,
-    signal: Option<String>,
-    timeout: Option<u16>,
+    (action, signal, timeout): (ContainerAction, Option<String>, Option<u16>),
+    cancellation: &CancellationToken,
 ) -> Result<ServiceActionOutcome, Error> {
     let service_container_ids = services
         .iter()
@@ -517,7 +544,7 @@ async fn apply_service_action(
     let mut partial = false;
     for service in services {
         let outcomes = client
-            .change_observed_service(service, action, signal.clone(), timeout)
+            .change_observed_service(service, action, signal.clone(), timeout, cancellation)
             .await;
         for success in outcomes.successes {
             crate::ui::stream(format_args!(
@@ -553,13 +580,11 @@ async fn apply_service_action(
             partial = true;
         }
     }
-    let cancellation = cancellation_on_ctrl_c();
-    let _parent = cancellation.clone().drop_guard();
-    if action == ContainerAction::Start {
+    if matches!(action, ContainerAction::Start | ContainerAction::Restart) {
         // A start waits for each healthcheck the way a Deploy does.
         let waits = join_all(changed.iter().map(|(machine_id, container_id)| async {
             client
-                .wait_until_ready(machine_id, container_id, &cancellation)
+                .wait_until_ready(machine_id, container_id, cancellation)
                 .await
         }))
         .await;
@@ -591,6 +616,7 @@ async fn apply_service_action(
         containers: rows,
         container_failures,
         partial,
+        interrupted: false,
     })
 }
 
@@ -635,7 +661,10 @@ fn stop_options(
     matches: &ArgMatches,
     actions: &[ContainerAction],
 ) -> Result<(Option<String>, Option<u16>), Error> {
-    if !actions.contains(&ContainerAction::Stop) {
+    if !actions
+        .iter()
+        .any(|action| matches!(action, ContainerAction::Stop | ContainerAction::Restart))
+    {
         return Ok((None, None));
     }
     let signal = matches.get_one::<String>("signal").cloned();
@@ -658,6 +687,7 @@ const fn past(action: ContainerAction) -> &'static str {
     match action {
         ContainerAction::Start => "Started",
         ContainerAction::Stop => "Stopped",
+        ContainerAction::Restart => "Restarted",
         ContainerAction::Remove => "Removed",
     }
 }

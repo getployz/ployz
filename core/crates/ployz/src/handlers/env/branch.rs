@@ -3,14 +3,15 @@
 
 use clap::ArgMatches;
 use ployz_core::ServiceName;
+use ployz_core::config::{ChangeKind, ServiceSettingChange};
 use ployz_store::{
     Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
-    EnvironmentRef, HintSource, KeepBranch, RowRef, SetupCommand, SyncChanges, SyncId, SyncQuery,
-    SyncView, Synced, Take, Taken, UndoSync, Undone,
+    EnvironmentRef, HintSource, KeepBranch, RowRef, ServicesQuery, SetupCommand, SourceKind,
+    SyncChanges, SyncId, SyncQuery, SyncView, Synced, Take, Taken, UndoSync, Undone,
 };
 
 use super::super::config::expected;
-use super::super::store::{self, Next, mint, project, store};
+use super::super::store::{self, Next, Store, mint, project, store};
 use super::super::{Error, leaf_matches, required};
 use crate::cloud_account::StoreCallError;
 
@@ -43,9 +44,31 @@ pub(crate) fn branch(root: &ArgMatches) -> Result<(), Error> {
         keep: matches.get_flag("keep"),
         fix,
     };
-    let made = store(root)?.write(&create)?;
-    let deploy = store::next(matches, &["deploy", "--env", create.name.as_str()]);
+    let store = store(root)?;
+    let made = store.write(&create)?;
+    let branch = &made.branch.environment;
+    let ship = ship(
+        &store,
+        EnvironmentRef {
+            project: Some(branch.project.clone()),
+            environment: Some(branch.name.clone()),
+        },
+    );
+    let deploy = store::next(matches, &[ship, "--env", create.name.as_str()]);
     finish(&made, Some(deploy), "Made Branch")
+}
+
+/// `deploy`, or `up` when a Service the next Deploy ships has no source, as a copy of
+/// one `ployz up` uploaded has: only a new upload gives it something to run.
+fn ship(store: &Store<'_>, environment: EnvironmentRef) -> &'static str {
+    let sourceless = store
+        .try_read(&ServicesQuery { environment })
+        .is_ok_and(|view| {
+            view.services
+                .iter()
+                .any(|listing| listing.source == SourceKind::Empty && listing.change.is_some())
+        });
+    if sourceless { "up" } else { "deploy" }
 }
 
 /// `env sync`: with `--plan` the rows and their version, else the Sync of the rows
@@ -275,12 +298,9 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 true => String::new(),
                 false => format!(" ({})", notes.join(", ")),
             };
-            crate::ui::stream(format_args!(
-                "  {}: {} → {}{notes}",
-                row.at,
-                store::shown(&row.into),
-                store::shown(&row.from)
-            ));
+            for line in store::changed(&setting_change(row)) {
+                crate::ui::stream(format_args!("  {line}{notes}"));
+            }
         }
         for row in &view.never_synced {
             let sides: std::collections::BTreeSet<_> = row
@@ -295,6 +315,25 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             ));
         }
     })
+}
+
+/// A Sync row as the change it stages in the receiver, so it reads as a diff does.
+fn setting_change(row: &ployz_store::SyncRow) -> ServiceSettingChange {
+    let kind = match (row.into.is_null(), row.from.is_null()) {
+        (true, _) => ChangeKind::Add,
+        (_, true) => ChangeKind::Remove,
+        _ => ChangeKind::Update,
+    };
+    ServiceSettingChange {
+        path: row.at.to_string(),
+        config_name: None,
+        hostnames: None,
+        kind,
+        before: row.into.clone(),
+        after: row.from.clone(),
+        can_restore: false,
+        row: None,
+    }
 }
 
 /// What a Sync did, and `deploy` of where it landed when it staged something.

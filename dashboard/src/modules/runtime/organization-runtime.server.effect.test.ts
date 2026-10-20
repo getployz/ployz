@@ -1,23 +1,44 @@
-import type { Client, Connection, MachineId } from "@ployz/sdk";
+import type { Client, Connection, MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import {
+  ClusterOutOfTime,
+  clusterRead,
+  firstRuntimeFrame,
   makeOrganizationRuntimeLayer,
   ORGANIZATION_CONNECT_TIMEOUT,
   PAIRING_CHANGE_POLL,
   PAIRING_CHECK_FAILURE_LIMIT,
   OrganizationRuntime,
+  withClusterBudget,
 } from "#/modules/runtime/organization-runtime.server";
 import { OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { namedMachines } from "#/modules/volume-run/volume-run.server";
 
 const connections: Connection[] = [
   { management: "ployz1:preferred" },
   { management: "ployz1:spare" },
 ];
+
+/** A Runtime Watch frame reporting one Machine, `machine-1`, named `name`. */
+const named = (name: string) => asTestDouble<RuntimeWatchView>()({ machines: [{ machine: { id: "machine-1", name } }] });
+
+/** A runtime whose one Cluster streams what `frames` returns on each watch, recording each frame with `recordFrame`. */
+const streamingRuntime = (
+  frames: () => readonly RuntimeWatchView[],
+  recordFrame: Parameters<typeof makeOrganizationRuntimeLayer>[2],
+) => makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections }), noPairingChanges, recordFrame)
+  .pipe(Layer.provide(makePloyzLayer({
+    connect: async () => asTestDouble<Client>()({
+      close: async () => {},
+      runtime: { watch: async function* () { yield* frames(); } },
+    }),
+  })));
 
 it.effect("passes ordered candidates to one SDK connection and finalizes the session", () =>
   Effect.gen(function* () {
@@ -400,5 +421,198 @@ it.effect("lets an in-flight pairing check finish when the caller's scope closes
       assert.isTrue(finished);
       assert.isFalse(interrupted);
     }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("returns a frame by the caller's deadline without waiting on its write, and the write still lands", () =>
+  Effect.gen(function* () {
+    const writing = yield* Deferred.make<void>();
+    const landed = yield* Deferred.make<void>();
+    const runtime = streamingRuntime(() => [named("web-1")], () => Deferred.succeed(writing, undefined).pipe(
+      // Longer than every deadline on the read.
+      Effect.andThen(Effect.sleep("6 seconds")),
+      Effect.andThen(Deferred.succeed(landed, undefined)),
+    ));
+    yield* Effect.gen(function* () {
+      const read = yield* firstRuntimeFrame("org-1").pipe(Effect.timeout("1 second"), Effect.forkChild);
+      yield* Deferred.await(writing);
+      // No time has passed, so the read finished without the write.
+      assert.deepStrictEqual(yield* Fiber.join(read), named("web-1"));
+      assert.isFalse(yield* Deferred.isDone(landed));
+      yield* TestClock.adjust("6 seconds");
+      yield* Deferred.await(landed);
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.live("records a rename a direct frame read sees, with no live watch open", () =>
+  Effect.gen(function* () {
+    let reported = named("web-1");
+    const written = yield* Queue.unbounded<string>();
+    const runtime = streamingRuntime(() => [reported], (_organizationId, frame) =>
+      Queue.offer(written, frame.machines[0]?.machine.name ?? "").pipe(Effect.asVoid));
+    const nextWrite = Queue.take(written).pipe(Effect.timeout("1 second"));
+    yield* Effect.gen(function* () {
+      assert.deepStrictEqual(yield* namedMachines("org-1"), [{ id: "machine-1", name: "web-1" }]);
+      assert.strictEqual(yield* nextWrite, "web-1");
+      reported = named("web-2");
+      assert.deepStrictEqual(yield* namedMachines("org-1"), [{ id: "machine-1", name: "web-2" }]);
+      assert.strictEqual(yield* nextWrite, "web-2");
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.live("retries a failed name write on the next frame until it lands, then skips the names it wrote", () =>
+  Effect.gen(function* () {
+    let reported = named("one");
+    let failuresLeft = 2;
+    const attempts = yield* Queue.unbounded<string>();
+    const runtime = streamingRuntime(() => [reported], (_organizationId, frame) => Effect.suspend(() => {
+      const name = frame.machines[0]?.machine.name ?? "";
+      Queue.offerUnsafe(attempts, name);
+      if (name === "two" && failuresLeft > 0) {
+        failuresLeft -= 1;
+        return Effect.fail(new Error("database unavailable"));
+      }
+      return Effect.void;
+    }));
+    const nextAttempt = Queue.take(attempts).pipe(Effect.timeout("1 second"));
+    yield* Effect.gen(function* () {
+      // A failed write never fails the read that carried the frame.
+      assert.deepStrictEqual(yield* firstRuntimeFrame("org-1"), named("one"));
+      assert.strictEqual(yield* nextAttempt, "one");
+      reported = named("two");
+      for (let read = 0; read < 3; read += 1) {
+        assert.deepStrictEqual(yield* firstRuntimeFrame("org-1"), named("two"));
+        assert.strictEqual(yield* nextAttempt, "two");
+      }
+      // `two` landed on the third try, so reading it again writes nothing: the next write is `three`.
+      yield* firstRuntimeFrame("org-1");
+      reported = named("three");
+      yield* firstRuntimeFrame("org-1");
+      assert.strictEqual(yield* nextAttempt, "three");
+    }).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("coalesces the frames a slow write outlasts, writing only the latest next", () =>
+  Effect.gen(function* () {
+    const started = yield* Queue.unbounded<string>();
+    const landed = yield* Queue.unbounded<string>();
+    const writing = yield* Deferred.make<void>();
+    const later = ["b", "c", "d", "e", "f"].map(named);
+    const runtime = makeOrganizationRuntimeLayer(
+      () => Effect.succeed({ kind: "ready", generation: "current", connections }),
+      noPairingChanges,
+      (_organizationId, frame) => Effect.gen(function* () {
+        const name = frame.machines[0]?.machine.name ?? "";
+        yield* Queue.offer(started, name);
+        yield* Deferred.succeed(writing, undefined);
+        yield* Effect.sleep("6 seconds");
+        yield* Queue.offer(landed, name);
+      }),
+    ).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({
+        close: async () => {},
+        runtime: {
+          watch: async function* () {
+            yield named("a");
+            // The other five frames arrive while `a` is being written.
+            await Effect.runPromise(Deferred.await(writing));
+            yield* later;
+          },
+        },
+      }),
+    })));
+    yield* Effect.scoped(Effect.gen(function* () {
+      const session = yield* (yield* OrganizationRuntime).open("org-1");
+      if (session.status !== "connected") throw new Error("Cluster not connected");
+      const watched = yield* session.connected.watch();
+      const frames = yield* Effect.promise(async () => {
+        const read: RuntimeWatchView[] = [];
+        for await (const frame of watched) read.push(frame);
+        return read;
+      });
+      assert.strictEqual(frames.length, 6);
+      for (const name of ["a", "f"]) {
+        assert.strictEqual(yield* Queue.take(started), name);
+        yield* TestClock.adjust("6 seconds");
+        assert.strictEqual(yield* Queue.take(landed), name);
+      }
+      assert.strictEqual(yield* Queue.size(started), 0);
+    })).pipe(Effect.provide(runtime));
+  }),
+);
+
+/** A Cluster whose connections query waits for the test to answer it, and whose first frame comes once `framed` resolves. */
+const slowQuery = Effect.gen(function* () {
+  const queries = yield* Queue.unbounded<() => void>();
+  let interrupted = 0;
+  let finished = 0;
+  const layer = (framed: Promise<void>) => makeOrganizationRuntimeLayer(
+    () => Effect.callback<void>((resume) => { Queue.offerUnsafe(queries, () => resume(Effect.void)); }).pipe(
+      Effect.tap(() => Effect.sync(() => { finished += 1; })),
+      Effect.onInterrupt(() => Effect.sync(() => { interrupted += 1; })),
+      Effect.as({ kind: "ready" as const, generation: "current", connections }),
+    ),
+    noPairingChanges,
+  ).pipe(Layer.provide(makePloyzLayer({
+    connect: async () => asTestDouble<Client>()({
+      close: async () => {},
+      runtime: {
+        watch: async function* (): AsyncGenerator<RuntimeWatchView> {
+          await framed;
+          yield runtimeWatchFrameFixture();
+        },
+      },
+    }),
+  })));
+  return { layer, queries, interrupted: () => interrupted, finished: () => finished };
+});
+
+it.effect("a look-once frame whose connections query takes 8 seconds lets the query finish and reads the frame", () =>
+  Effect.gen(function* () {
+    const cluster = yield* slowQuery;
+    const looking = yield* firstRuntimeFrame("org-1").pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
+    const query = yield* Queue.take(cluster.queries);
+    yield* TestClock.adjust("8 seconds");
+    query();
+    assert.deepStrictEqual(yield* Fiber.join(looking), runtimeWatchFrameFixture());
+    assert.strictEqual(cluster.finished(), 1);
+    assert.strictEqual(cluster.interrupted(), 0);
+  }),
+);
+
+it.effect("a look-once frame that never comes fails after 5 seconds of Cluster time, however long the query took", () =>
+  Effect.gen(function* () {
+    const cluster = yield* slowQuery;
+    const looking = yield* firstRuntimeFrame("org-1").pipe(
+      Effect.provide(cluster.layer(new Promise<void>(() => {}))),
+      Effect.flip,
+      Effect.forkChild,
+    );
+    const query = yield* Queue.take(cluster.queries);
+    yield* TestClock.adjust("8 seconds");
+    query();
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    yield* TestClock.adjust("5 seconds");
+    assert.isTrue((yield* Fiber.join(looking)) instanceof ClusterOutOfTime);
+    assert.strictEqual(cluster.interrupted(), 0);
+  }),
+);
+
+it.effect("Cluster reads in flight together spend their budget once, and time between reads spends none of it", () =>
+  Effect.gen(function* () {
+    const reading = Effect.gen(function* () {
+      yield* Effect.all([clusterRead(Effect.sleep("6 seconds")), clusterRead(Effect.sleep("6 seconds"))], { concurrency: "unbounded" });
+      yield* Effect.sleep("100 seconds");
+      return yield* clusterRead(Effect.never);
+    }).pipe(withClusterBudget(10_000), Effect.flip, Effect.forkChild);
+    const read = yield* reading;
+    yield* TestClock.adjust("106 seconds");
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    assert.isUndefined(read.pollUnsafe());
+    yield* TestClock.adjust("4 seconds");
+    assert.isTrue((yield* Fiber.join(read)) instanceof ClusterOutOfTime);
   }),
 );

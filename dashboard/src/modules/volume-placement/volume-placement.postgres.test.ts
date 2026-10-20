@@ -1,17 +1,19 @@
 import { type ConfigCommand, type ConfigCommitted, type ConfigStore, type MachineId, RpcError } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer } from "effect";
-import { Inngest } from "inngest";
+import { ConfigProvider, Effect, Fiber, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime, clusterRead, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import {
-  deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
+  deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
+import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -19,6 +21,7 @@ import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
 
 type StoreWrites = AppConfig | GithubApi | InngestClient | OrganizationRuntime | SecretEncryption;
 
@@ -26,6 +29,11 @@ const organizationId = "00000000-0000-4000-8000-000000000f01";
 const volumeId = "vol1";
 const environment = { project: "shop", environment: "production" };
 const web = (name: string) => name.padEnd(32, "0") as MachineId;
+
+/** Polls until `ready`, on the real clock, so a test's TestClock stays where the test put it. */
+const until = (ready: () => Promise<boolean>) => Effect.promise(async () => {
+  while (!(await ready())) await new Promise((resolve) => setTimeout(resolve, 10));
+});
 
 /** Polls until `ready`, or until `settled` ends first. */
 const waitFor = async (ready: () => Promise<boolean>, settled: Promise<unknown>) => {
@@ -47,7 +55,7 @@ describe("volume placement", () => {
   const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore | StoreWrites>) => harness.runEffect(operation.pipe(
     Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))))),
     Effect.provideService(GithubApi, fakeGithubApi().service),
-    Effect.provideService(InngestClient, new Inngest({ id: "volume-placement-test" })),
+    Effect.provideService(InngestClient, sendsNowhere()),
     Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("no Cluster") }),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
@@ -158,7 +166,7 @@ describe("volume placement", () => {
 
   it("deletes only an old copy at once, never the writer or a mirror", async () => {
     await stage("web-1", ["web-2", "web-4"]);
-    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror"), member("web-4", "mirror")];
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old"), member("web-4", "mirror")];
     const deleting = (server: string) => run(deleteOldCopy(organizationId, null, { volumeId, environment, server }, () => Effect.succeed(members)));
     for (const server of ["web-1", "web-2", "web-4"]) {
       expect(await deleting(server)).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
@@ -177,9 +185,132 @@ describe("volume placement", () => {
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
   });
 
+  describe("an old copy its Server reports", () => {
+    const deleting = { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } } as const;
+    const request = (inspect: () => Effect.Effect<Member[], Error>) =>
+      requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null }, inspect);
+    const recorded = (mirrors: string[]) => harness.pool.query(
+      "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ($1, $2, 'env-1', $3, null) on conflict (volume_id) do update set mirrors = excluded.mirrors",
+      [volumeId, organizationId, JSON.stringify(mirrors.map(web))],
+    );
+    const runs = async () => (await harness.pool.query("select count(*)::int as runs from volume_run")).rows;
+    const events = async () => (await harness.pool.query("select count(*)::int as events from operation_outbox")).rows;
+    let copies: Member[];
+    beforeEach(() => { copies = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")]; });
+
+    it("deletes it though the dashboard still records it as a mirror", async () => {
+      await recorded(["web-2", "web-3"]);
+      expect(await run(request(() => Effect.succeed(copies)))).toMatchObject({ ok: true });
+      expect(await runs()).toEqual([{ runs: 1 }]);
+    });
+
+    it.each([["the dashboard and its Server record", ["web-2", "web-3"]], ["its Server records", ["web-2"]]])(
+      "refuses deleting it once a Deploy makes it a mirror between the check and the run, as %s",
+      async (_, mirrors) => {
+        await recorded(["web-2"]);
+        between = { query: "volumes", run: async () => {
+          await recorded(mirrors);
+          copies = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+        } };
+        expect(await run(request(() => Effect.succeed(copies)))).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
+        expect(between).toBeNull();
+        expect(await runs()).toEqual([{ runs: 0 }]);
+      },
+    );
+
+    it("refuses a mirror run that would adopt it while its Server's answer is on the way", async () => {
+      await recorded(["web-2"]);
+      const adopt = async () => {
+        const admitted = await run(requestVolumeRun({ userId: null, organizationId }, { volumeId, environment, kind: "mirror", args: { to: "web-3" } }));
+        if (admitted.ok) {
+          await harness.pool.query("update volume_run set state = 'done' where id = $1", [admitted.run.id]);
+          copies = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+        }
+        return admitted;
+      };
+      let adopting: ReturnType<typeof adopt> | undefined;
+      const deleted = await run(request(() => Effect.promise(async () => {
+        const answered = copies;
+        adopting = adopt();
+        await waitFor(async () => (await harness.pool.query(
+          "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like 'insert into \"volume_run\"%'",
+        )).rowCount === 1, adopting);
+        return answered;
+      })));
+      const adopted = await adopting;
+      expect({ deleted: deleted.ok, adopted: adopted?.ok, web3: copies[2] }).toEqual({ deleted: true, adopted: false, web3: member("web-3", "old") });
+      expect(adopted).toMatchObject({ refusal: { message: expect.stringContaining("busy with a mirror removal") } });
+      expect((await harness.pool.query("select kind, state from volume_run")).rows).toEqual([{ kind: "delete_mirror", state: "requested" }]);
+    });
+
+    it.each([
+      ["its Server doesn't answer", () => Effect.succeed([member("web-1", "writer"), member("web-3", "unanswered")])],
+      ["the Cluster can't be reached", () => Effect.fail(new ClusterUnreachable({ message: "The cluster is unreachable." }))],
+      ["the Cluster sends no frame in time", () => Effect.fail(new RuntimeConnectionFailure({ cause: "no frame", waitable: true }))],
+      ["the Cluster time runs out", () => Effect.fail(new ClusterOutOfTime())],
+    ])("refuses deleting it when %s", async (_, inspect) => {
+      await recorded(["web-2"]);
+      const before = await events();
+      expect(await run(request(inspect))).toEqual({ ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+      expect(await events()).toEqual(before);
+    });
+
+    it("refuses deleting it when its pairing was removed before its Server is asked", async () => {
+      await recorded(["web-2"]);
+      const before = await events();
+      const unpaired = { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) };
+      const deleted = requestUnclaimedRun({ userId: null, organizationId }, deleting, { server: web("web-3"), point: null })
+        .pipe(Effect.provideService(OrganizationRuntime, unpaired));
+      expect(await run(deleted)).toEqual({ ok: false, refusal: { code: "unavailable", message: "Cloud has no connection to your servers. Try again once one is connected.", details: null } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+      expect(await events()).toEqual(before);
+    });
+
+    it("fails with what failed, not as servers not answering, when asking fails for another reason", async () => {
+      await recorded(["web-2"]);
+      await expect(run(request(() => Effect.fail(new Error("The cluster is pairing."))))).rejects.toThrow("The cluster is pairing.");
+      expect(await runs()).toEqual([{ runs: 0 }]);
+    });
+
+    it("refuses deleting it when its Server never answers, once the Cluster time is spent", async () => {
+      await recorded(["web-2"]);
+      const answer = await run(Effect.gen(function* () {
+        let asked = false;
+        const fiber = yield* Effect.forkDetach(request(() => Effect.sync(() => { asked = true; }).pipe(Effect.andThen(clusterRead(Effect.never)))));
+        yield* until(async () => asked);
+        yield* TestClock.adjust(OLD_COPY_CLUSTER_BUDGET_MS);
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestClock.layer())));
+      expect(answer).toMatchObject({ ok: false, refusal: { code: "unavailable" } });
+      expect(await runs()).toEqual([{ runs: 0 }]);
+    });
+
+    it("spends no Cluster time waiting for the placement's lock", async () => {
+      await recorded(["web-2"]);
+      const holder = await harness.pool.connect();
+      try {
+        await holder.query("begin");
+        await holder.query("select 1 from volume_placement for update");
+        const answer = await run(Effect.gen(function* () {
+          const fiber = yield* Effect.forkDetach(request(() => clusterRead(Effect.succeed(copies))));
+          yield* until(async () => (await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 1);
+          yield* TestClock.adjust(2 * OLD_COPY_CLUSTER_BUDGET_MS);
+          yield* Effect.promise(() => holder.query("commit"));
+          return yield* Fiber.join(fiber);
+        }).pipe(Effect.provide(TestClock.layer())));
+        expect(answer).toMatchObject({ ok: true });
+      } finally {
+        holder.release();
+      }
+      expect(await runs()).toEqual([{ runs: 1 }]);
+    }, 30_000);
+  });
+
   describe("an old copy a staged restore reads", () => {
     const deleting = () => run(requestUnclaimedRun({ userId: null, organizationId },
-      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }, { server: web("web-3"), point: "10" }));
+      { volumeId, environment, kind: "delete_mirror", args: { slot: "web-3", confirmed_name: null } }, { server: web("web-3"), point: "10" },
+      () => Effect.succeed([member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")])));
     const restoring = (guid: string, deploymentId: string | null = null) => harness.pool.query(
       "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged, deployment_id) values ('vol3', $1, 'env-1', '[]', $2, $3)",
       [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed: {
@@ -297,7 +428,7 @@ describe("volume placement", () => {
     });
 
     it("refuses an acceptance of a loss the Volume no longer has, and stamps nothing", async () => {
-      const old = () => Effect.succeed([...members, member("web-3", "mirror")]);
+      const old = () => Effect.succeed([...members, member("web-3", "old")]);
       await stage("web-1");
       const shown = await admission(admit([]), old);
       if (shown.ok) throw new Error("expected a refusal");

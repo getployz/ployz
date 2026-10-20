@@ -1,9 +1,11 @@
 import { it } from "@effect/vitest";
 import { eq, sql } from "drizzle-orm";
 import { Effect, Exit, Layer, Redacted } from "effect";
+import { Client } from "pg";
 import { expect } from "vitest";
 import { organizationBillingState } from "#/modules/billing/tables";
 import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { readStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
 import { signUpAnonymous } from "#/modules/identity/anonymous-signup.server";
@@ -428,7 +430,74 @@ it.live("two people claiming at once: one keeps the sandbox, the other hears it 
     expect(yield* drizzle.select().from(user).where(eq(user.isAnonymous, true))).toEqual([]);
   })));
 
-it.live("a claim back from the claim page's sign-in has a p95 under 200 ms", () =>
+/**
+ * Counts what the server runs in this test's database, so the native Store's own pool counts too. Call it before
+ * anything connects: only sessions opened after it are tracked, and its own session is not.
+ */
+const countStatements = Effect.fn(function* () {
+  const { database } = yield* AppConfig;
+  const counter = yield* Effect.acquireRelease(
+    Effect.promise(async () => {
+      const client = new Client({ connectionString: database.url.href });
+      await client.connect();
+      return client;
+    }),
+    (client) => Effect.promise(() => client.end()),
+  );
+  const run = <T extends object>(text: string, values: ReadonlyArray<unknown> = []) =>
+    Effect.promise(() => counter.query<T>(text, [...values])).pipe(Effect.map((result) => result.rows));
+  const [here] = yield* run<{ dbid: number; others: number }>(`select
+    (select oid from pg_database where datname = current_database())::int as dbid,
+    (select count(*)::int from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()) as others`);
+  expect(here?.others, "no session predates the count").toBe(0);
+  const dbid = here?.dbid;
+  yield* run("create extension if not exists pg_stat_statements");
+  yield* run(`alter database ${counter.escapeIdentifier(counter.database ?? "")} set pg_stat_statements.track = 'top'`);
+  /** Every statement `program` sends to PostgreSQL, from any pool, transaction control included: one round trip each. */
+  return <A, E, R>(program: Effect.Effect<A, E, R>) => Effect.gen(function* () {
+    yield* run("select pg_stat_statements_reset(0, $1, 0)", [dbid]);
+    yield* program;
+    const rows = yield* run<{ query: string; calls: number }>(
+      "select query, calls::int from pg_stat_statements where dbid = $1 order by query", [dbid]);
+    return rows.flatMap(({ query, calls }) => Array.from({ length: calls }, () => query));
+  });
+});
+
+it.live("a claim back from the claim page's sign-in takes at most 21 round trips, however many tables name an Organization", () =>
+  inCloud(Effect.scoped(Effect.gen(function* () {
+    const statementsOf = yield* countStatements();
+    const claimOnce = Effect.fn(function* (i: number) {
+      const agent = yield* sandbox();
+      const claimer = yield* claimSignUp(`Person ${i}`, `person-${i}@example.test`, agent.secret);
+      return yield* statementsOf(claimOrganization(claimer.actor, agent.secret));
+    });
+    // The first claim opens the Store, which makes its tables.
+    yield* claimOnce(0);
+    const claimed = yield* claimOnce(1);
+    expect(claimed.length).toBeLessThanOrEqual(21);
+    const { drizzle } = yield* Database;
+    for (let i = 0; i < 5; i++) yield* drizzle.execute(sql.raw(`create table claim_cost_${i} (organization_id text)`));
+    expect(yield* claimOnce(2)).toHaveLength(claimed.length);
+    expect(yield* organizationIds()).toHaveLength(3);
+  }))));
+
+it.live("the claim's round-trip budget counts the native Store's statements too", () =>
+  inCloud(Effect.scoped(Effect.gen(function* () {
+    const statementsOf = yield* countStatements();
+    const claimOnce = Effect.fn(function* (i: number, readsStore: boolean) {
+      const agent = yield* sandbox();
+      const claimer = yield* claimSignUp(`Person ${i}`, `person-${i}@example.test`, agent.secret);
+      const read = readsStore ? readStore(agent.organization.id, { query: "projects" }) : Effect.void;
+      return yield* statementsOf(claimOrganization(claimer.actor, agent.secret).pipe(Effect.andThen(read)));
+    });
+    yield* claimOnce(0, false);
+    const claimed = yield* claimOnce(1, false);
+    const withStoreRead = yield* claimOnce(2, true);
+    expect(withStoreRead.length).toBeGreaterThan(claimed.length);
+  }))));
+
+// A loose ceiling for what round trips miss; the statement budget above is the tight bound.
+it.live("a claim back from the claim page's sign-in has a p95 under 400 ms", () =>
   inCloud(Effect.gen(function* () {
     const warmup = 5;
     const measured = 60;
@@ -447,5 +516,5 @@ it.live("a claim back from the claim page's sign-in has a p95 under 200 ms", () 
     const sorted = [...timings].sort((a, b) => a - b);
     const at = (q: number) => sorted[Math.ceil(sorted.length * q) - 1] ?? 0;
     console.log(`claim timings ms: p50=${at(0.5).toFixed(1)} p95=${at(0.95).toFixed(1)} max=${at(1).toFixed(1)}`);
-    expect(at(0.95)).toBeLessThan(200);
+    expect(at(0.95)).toBeLessThan(400);
   })), 120_000);
