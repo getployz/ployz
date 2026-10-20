@@ -3,8 +3,10 @@
 //! mounts and what the next Deploy does to it. And the Volumes a full Deploy
 //! removes, which callers observe the Servers for before admitting it.
 
-use ployz_core::config::{ReviewLifecycleKind, SavedEnvironmentIntent, SavedVolumeIntent};
-use ployz_core::{Namespace, RpcError, ServiceName};
+use ployz_core::config::{
+    ReviewLifecycleKind, SavedEnvironmentIntent, SavedVolumeIntent, VolumeKind,
+};
+use ployz_core::{Namespace, ProvisionedVolumeMaximumBytes, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -46,6 +48,12 @@ pub struct VolumeListing {
     pub deployed: bool,
     /// An admitted attempt fixes the storage choice, even if it fails.
     pub storage_locked: bool,
+    /// The size its Servers hold, for a deployed Managed Volume: what a resize moves
+    /// and a Deploy accepts at most. Absent for a Docker Volume or before the first
+    /// Deploy; `storage` is Working State's, which a staged restore may set lower.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recorded_storage: Option<ProvisionedVolumeMaximumBytes>,
     /// What the next Deploy does to it; none when it is deployed as it is.
     pub change: Option<ReviewLifecycleKind>,
 }
@@ -217,6 +225,10 @@ fn listed(
             let listing = VolumeListing {
                 volume: volume_summary(&node)?,
                 storage_locked: locked.contains_key(&node.resource_id),
+                recorded_storage: match locked.get(&node.resource_id) {
+                    Some(VolumeKind::Provisioned { maximum_bytes }) => Some(*maximum_bytes),
+                    Some(VolumeKind::Docker {}) | None => None,
+                },
                 mounts: mounts(working, &node.resource_id)?,
                 deployed: review
                     .head
