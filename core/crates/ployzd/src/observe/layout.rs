@@ -335,6 +335,13 @@ pub struct RunExit {
     pub oom_killed: bool,
 }
 
+/// The exits `exits.jsonl` holds. A line that does not parse is skipped.
+pub fn run_exits(bytes: &[u8]) -> impl Iterator<Item = RunExit> + '_ {
+    bytes
+        .split(|&byte| byte == b'\n')
+        .filter_map(|line| serde_json::from_slice(line).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{LogFileName, SegmentName, StoreRoot};

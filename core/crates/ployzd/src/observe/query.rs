@@ -32,7 +32,7 @@ use super::{
     frame::{self, Event, Frames, Reassembler, Stream},
     layout::{
         ContainerKind, ContainerMeta, EXITS_FILE, GAPS_FILE, Gap, GapReason, LogFileName,
-        META_FILE, RunExit, StoreRoot,
+        META_FILE, RunExit, StoreRoot, run_exits,
     },
 };
 
@@ -295,11 +295,8 @@ impl Stored {
     /// Each run's exit the harvester kept, and the exit `meta.json` holds
     /// when the harvester missed it, as while `ployz observe` was down.
     fn read_exits(&self, best: &mut Best<'_>) {
-        let kept: Vec<RunExit> = fs::read_to_string(self.dir.join(EXITS_FILE))
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
-            .collect();
+        let kept: Vec<RunExit> =
+            run_exits(&fs::read(self.dir.join(EXITS_FILE)).unwrap_or_default()).collect();
         let finished = self
             .meta
             .finished_at
