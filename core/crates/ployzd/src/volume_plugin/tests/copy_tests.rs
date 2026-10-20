@@ -248,6 +248,30 @@ async fn a_pull_into_an_old_copy_makes_it_a_mirror() {
     server.abort();
 }
 
+/// The old primary re-added as the mirror before any further write already holds the
+/// target, so the pull sends nothing, and still makes it the mirror.
+#[tokio::test]
+async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
+    let source = Source::start(Some(BOUND), "").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
+    set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
+    post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("f-1")).await;
+    assert_eq!(reply.pointer("/Ok/role"), Some(&json!("mirror")), "{reply}");
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("mirror"), json!("mirror"))
+    );
+    server.abort();
+}
+
 /// Docker drops a Volume's labels and options when Get says it does not exist.
 #[tokio::test]
 async fn docker_still_gets_a_root_cut_into_its_slot() {
