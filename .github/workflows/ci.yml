@@ -164,7 +164,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: tests-${{ matrix.shard }}
+          cache-key: workspace-tests
       - uses: actions/setup-node@v4
         if: startsWith(matrix.shard, 'cli')
         with:
