@@ -786,6 +786,82 @@ fn a_branch_is_planned_by_name_before_it_is_created() {
 }
 
 #[test]
+fn a_branch_of_nothing_offers_no_preset_that_copies_the_same() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("empty").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+        from: at("production"),
+        ..Default::default()
+    });
+    let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
+        panic!("a branch plan");
+    };
+    // Every preset copies nothing, so "Everything" would be a choice that changes nothing.
+    assert_eq!(json!(plan.presets), json!(["only"]));
+}
+
+#[test]
+fn a_branch_plan_presses_the_offered_preset_its_preset_copies_the_same_as() {
+    // Nothing deployed: Only web already copies db, so Uses is no choice and All copies the same.
+    let (store, who) = shop();
+    let plan = |preset: &str| {
+        let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+            from: at("production"),
+            focus: vec![node("web")],
+            preset: Some(serde_json::from_value(json!(preset)).unwrap()),
+            ..Default::default()
+        });
+        let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
+            panic!("a branch plan");
+        };
+        (json!(plan.preset), json!(plan.presets))
+    };
+    for preset in ["only", "uses", "all"] {
+        let (pressed, offered) = plan(preset);
+        assert_eq!(offered, json!(["only"]), "{preset}");
+        assert_eq!(pressed, json!("only"), "{preset}");
+    }
+}
+
+#[test]
+fn a_branch_plan_presses_uses_for_all_when_everything_is_what_web_uses() {
+    // Deployed: Only web leaves db live, and web uses everything else, so All copies the same as Uses.
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, true);
+    let plan = |preset: Option<&str>, copy: &[&str]| {
+        let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+            from: at("production"),
+            focus: vec![node("web")],
+            copy: copy.iter().map(|name| node(name)).collect(),
+            preset: preset.map(|preset| serde_json::from_value(json!(preset)).unwrap()),
+        });
+        let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
+            panic!("a branch plan");
+        };
+        (json!(plan.preset), json!(plan.presets))
+    };
+    for (preset, pressed) in [("only", "only"), ("uses", "uses"), ("all", "uses")] {
+        assert_eq!(
+            plan(Some(preset), &[]),
+            (json!(pressed), json!(["only", "uses"])),
+            "{preset}"
+        );
+    }
+    // Picks that match no preset press none.
+    assert_eq!(plan(None, &["db"]), (Value::Null, json!(["only", "uses"])));
+}
+
+#[test]
 fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
     let (store, who) = shop();
     let setup = |service: &str, command: &str| SetupCommand {

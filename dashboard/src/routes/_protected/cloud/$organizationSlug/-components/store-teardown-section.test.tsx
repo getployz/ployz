@@ -1,13 +1,38 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { EnvironmentListing } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { StoreTeardownSection } from "./store-teardown-section";
+import { OfflineServers, StoreTeardownSection } from "./store-teardown-section";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+async function show(servers: readonly { id: string; name: string }[]) {
+  const router = createRouter({
+    routeTree: createRootRoute({ component: () => <p>Deployment #20 failed.<OfflineServers organizationSlug="ada" servers={servers} /></p> }),
+    history: createMemoryHistory(),
+  });
+  await router.load();
+  render(<RouterProvider router={router} />);
+  return (await screen.findByText(/Deployment #20 failed/)).textContent;
+}
+
+it("names an offline Server and links to where it can be forgotten", async () => {
+  expect(await show([{ id: "m1", name: "machine-1" }])).toBe("Deployment #20 failed. machine-1 is offline. Bring it back or forget it, then try again.");
+  expect(screen.getByRole("link", { name: "machine-1" }).getAttribute("href")).toBe("/cloud/ada/~/servers/m1#remove-server");
+});
+
+it("names every offline Server", async () => {
+  expect(await show([{ id: "m1", name: "machine-1" }, { id: "m2", name: "machine-2" }]))
+    .toBe("Deployment #20 failed. machine-1, machine-2 are offline. Bring them back or forget them, then try again.");
+});
+
+it("adds nothing while every Server is online", async () => {
+  expect(await show([])).toBe("Deployment #20 failed.");
+});
 
 it("shows a close waiting for the sweep as deleting, and can delete it again", () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
@@ -25,6 +50,6 @@ it("shows a close waiting for the sweep as deleting, and can delete it again", (
     </QueryClientProvider>,
   );
   expect(screen.getByText("Deleting feat…")).toBeTruthy();
-  expect(screen.getByText("Ployz takes it off your servers at its next hourly sweep. If that hasn't started, delete it again.")).toBeTruthy();
+  expect(screen.getByText("Ployz starts taking it off your servers shortly, or at its next hourly sweep if it can't start yet. If it hasn't started by then, delete it again.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Delete feat" }).hasAttribute("disabled")).toBe(false);
 });

@@ -174,6 +174,16 @@ pub(super) fn noop(view: &DeploymentView) -> bool {
             .is_some_and(|preview| preview.noop() && !preview.has_observation_gaps())
 }
 
+/// Said for a Deployment that changed nothing on the Servers: it still recorded the
+/// saved version it shipped.
+pub(super) fn up_to_date(view: &DeploymentView) -> String {
+    format!(
+        "Nothing changed on the Servers; Deployment {} shipped version #{}.",
+        view.deployment.label(),
+        view.deployment.saved
+    )
+}
+
 pub(super) fn ingress_verb(action: IngressAction) -> &'static str {
     match action {
         IngressAction::Create => "create",
@@ -645,6 +655,10 @@ mod tests {
         ));
         assert!(completion(&view, command).is_ok());
         assert!(noop(&view));
+        assert_eq!(
+            up_to_date(&view),
+            "Nothing changed on the Servers; Deployment #7 shipped version #1."
+        );
         let warning = DeployWarning::ObservationOmitted {
             kind: ObservationKind::Container,
             machine_id: MachineId::random(),

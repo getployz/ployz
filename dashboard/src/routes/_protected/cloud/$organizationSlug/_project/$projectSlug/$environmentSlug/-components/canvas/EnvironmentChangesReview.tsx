@@ -153,7 +153,7 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
                 discardNode={(!row.canDiscard || firstConfig) && discardNode ? { name: group.nodeName, run: discardNode } : undefined}
                 onNeverSync={neverSync}>
                 <p className="flex min-w-0 items-baseline gap-2">
-                  <span className="shrink-0 text-muted-foreground">{group.nodeName}</span>
+                  <span className="max-w-1/2 shrink-0 truncate text-muted-foreground">{group.nodeName}</span>
                   <span className={cn("truncate", row.variable && "font-mono")}>{row.name}</span>
                   {group.unreached ? <span className="shrink-0 text-muted-foreground">Not reached</span> : null}
                 </p>
@@ -284,7 +284,7 @@ function ConfigFileValue({ before, after }: NonNullable<ChangeRow["configFile"]>
 export function Value({ kind, before, after }: { kind: ChangeKind; before: string; after: string }) {
   const shown = kind === "remove" ? before : after;
   return (
-    <span className="ph-no-capture flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs" title={shown}>
+    <span className="ph-no-capture flex max-w-[min(15rem,40vw)] min-w-0 items-center justify-end gap-1.5 font-mono text-xs" title={shown}>
       {kind === "update" && before ? (
         <><span className="truncate text-muted-foreground">{before}</span><ArrowRightIcon className="size-3 shrink-0 text-muted-foreground" /></>
       ) : null}

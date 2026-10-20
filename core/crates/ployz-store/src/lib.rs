@@ -101,6 +101,7 @@ pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeC
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
+pub use settings::size::memory_size;
 pub use settings::{Apply, NodeName, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
@@ -288,8 +289,9 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, `conflict` when another runner
-    /// owns it, a newer one replaced it, it was cancelled or ended, or this runner
-    /// already prepared it, or a storage error.
+    /// owns it, a newer one replaced it, it was cancelled or ended, this runner
+    /// already prepared it, or its unsealed values can't deploy, which fails it with
+    /// why; or a storage error.
     pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
         self.storage
             .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))
