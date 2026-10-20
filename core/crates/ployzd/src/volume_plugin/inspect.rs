@@ -2,8 +2,8 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, RpcError, RpcErrorCode, SlotId, Snapshot, SnapshotGuid,
-    SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
+    InspectVolumeCopyRequest, Pull, RpcError, RpcErrorCode, SlotId, SlotRole, Snapshot,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
 };
 use ployzd::machine_pool::MachinePool;
 
@@ -208,6 +208,7 @@ impl VolumeStorage {
             newest,
             resume_token,
             pull: self.pull(slot, name).await?,
+            role: SlotRole::Mirror,
         }))
     }
 

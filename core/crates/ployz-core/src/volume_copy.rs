@@ -492,7 +492,7 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Pull, Snapshot};
+    use crate::{Pull, SlotRole, Snapshot};
 
     fn snapshot(name: &str, guid: u64) -> Snapshot {
         Snapshot {
@@ -527,6 +527,7 @@ mod tests {
             newest,
             resume_token: None,
             pull,
+            role: SlotRole::Mirror,
         }
     }
 

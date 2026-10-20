@@ -98,6 +98,7 @@ impl VolumeStorage {
                         role,
                         maximum_bytes: maximum,
                         used_bytes: dataset.active_used_bytes,
+                        slot_role: None,
                     },
                 );
             }

@@ -60,6 +60,10 @@ pub struct ProvisionedCopy {
     pub role: CopyRole,
     pub maximum_bytes: ProvisionedVolumeMaximumBytes,
     pub used_bytes: u64,
+    /// What a slot's Machine recorded it as; unset on every other role and from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub slot_role: Option<crate::SlotRole>,
 }
 
 /// Fresh storage evidence, including commitments whose Docker metadata may be missing.
