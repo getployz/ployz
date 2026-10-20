@@ -564,17 +564,16 @@ async fn several_refusing_daemons_name_the_server_tried_last() {
     for socket in &sockets {
         refusing_daemon(socket, || tonic::Status::unauthenticated("not authorized")).await;
     }
-    let ids = ["a", "b"].map(|digit| MachineId::parse(&digit.repeat(32)).unwrap());
-    let refused = |name: fn(usize) -> Option<&'static str>| {
+    let ids = ["a", "b"].map(|digit| MachineId::parse(digit.repeat(32)).unwrap());
+    let [_, last] = ids;
+    let refused = |names: [Option<&'static str>; 2]| {
         let connections = sockets
             .iter()
-            .zip(&ids)
-            .enumerate()
-            .map(|(index, (socket, id))| {
-                let connection = Connection::unix(socket)
-                    .unwrap()
-                    .with_machine_id(id.clone());
-                match name(index) {
+            .zip(ids)
+            .zip(names)
+            .map(|((socket, id), name)| {
+                let connection = Connection::unix(socket).unwrap().with_machine_id(id);
+                match name {
                     Some(name) => connection.with_name(name),
                     None => connection,
                 }
@@ -596,17 +595,17 @@ async fn several_refusing_daemons_name_the_server_tried_last() {
     };
 
     assert_eq!(
-        refused(|index| Some(["web-1", "web-2"][index])).await,
+        refused([Some("web-1"), Some("web-2")]).await,
         "A Server's daemon answered, but the 2 connections from Cloud all failed. \
          Server web-2, tried last, refused the connection."
     );
     // Cloud never learned their names: the Machine ID says which.
     assert_eq!(
-        refused(|_| None).await,
+        refused([None, None]).await,
         format!(
             "A Server's daemon answered, but the 2 connections from Cloud all failed. \
              Server {}, tried last, refused the connection.",
-            ids[1]
+            last
         )
     );
     // A connection that says no Server, as `--connect` gives, names none.
