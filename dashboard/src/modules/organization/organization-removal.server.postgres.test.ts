@@ -3,6 +3,9 @@ import { Cause, Effect, Exit } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { readCollection } from "#/collections/read.server";
+import { currentChangeCursor } from "#/modules/organization/change-log.server";
+import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
+import { readOrganizationChanges } from "#/routes/api/org/-changes.server";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
@@ -227,5 +230,43 @@ describe("removeOrganization", () => {
     await harness.db.insert(member).values({ userId: hal, organizationId: NEW_OVEN, role: "owner" });
 
     expect(await readSupport(cached.cursor)).toMatchObject({ full: true, rows: [] });
+  });
+
+  it("ends a change stream still open on a removed Organization, so the client reconnects to the slug's new one", async () => {
+    const KETTLE = "00000000-0000-4000-8000-00000000c00e";
+    const NEW_KETTLE = "00000000-0000-4000-8000-00000000c00f";
+    const [jo] = (await harness.db.insert(user).values({ email: "jo@example.test", name: "Jo" }).returning({ id: user.id })).map((row) => row.id) as [string];
+    await harness.db.insert(organization).values({ id: KETTLE, name: "Kettle", slug: "kettle" });
+    await harness.db.insert(member).values({ userId: jo, organizationId: KETTLE, role: "owner" });
+    const response = await handleOrgChangesRequest(new Request("http://localhost/api/org/changes?organizationSlug=kettle"), "kettle", {
+      authorize: (slug) => harness.runEffect(requireAccess({ userId: jo }, slug, "org:read").pipe(
+        Effect.map((access) => ({ organizationId: access.organization.id })),
+        Effect.provideService(SupportStaff, supportStaffOf([])),
+      )),
+      currentCursor: () => harness.runEffect(currentChangeCursor()),
+      readChanges: (input) => harness.runEffect(readOrganizationChanges(input)),
+    });
+    expect(response.status).toBe(200);
+    const reader = response.body?.getReader();
+    const ended = (async () => {
+      while (!(await reader?.read())?.done);
+      return "ended";
+    })();
+
+    const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+    const result = await harness.runEffect(removeOrganization({ userId: jo, organization: { id: KETTLE, slug: "kettle" }, role: "owner" }, KETTLE).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    ));
+    expect(result).toMatchObject({ ok: true, value: { removed: true } });
+    await harness.db.insert(organization).values({ id: NEW_KETTLE, name: "Kettle", slug: "kettle" });
+    await harness.db.insert(member).values({ userId: jo, organizationId: NEW_KETTLE, role: "owner" });
+
+    const still = new Promise((resolve) => setTimeout(resolve, 2_000, "still open"));
+    const outcome = await Promise.race([ended, still]);
+    if (outcome !== "ended") await reader?.cancel();
+    expect(outcome).toBe("ended");
   });
 });
