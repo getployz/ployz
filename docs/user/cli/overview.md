@@ -304,7 +304,8 @@ and exits with code 3. Its `cause` lists every underlying error, outermost first
 `details` holds the next command to run when there is one. When a Ployz Cloud command such as
 `ployz org member rm` refuses, `details` also says whether it wrote anything (`writes`), and for
 an input it can't take, the JSON Schema `expected`. `field` names the input that is wrong. It is
-left out when the input has a name the command doesn't take, because Cloud never repeats that name.
+left out when the input isn't a JSON object, and when it has a name the command doesn't take,
+because Cloud never repeats that name.
 
 Scripts can tell failures apart by exit code:
 

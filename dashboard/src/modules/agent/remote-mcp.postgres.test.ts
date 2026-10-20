@@ -415,6 +415,28 @@ it.live("a destroying Deploy waits on a person; an early retry only asks again, 
     expect(admitted(writes)).toEqual([{ approved: approval?.digest }]);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("an approved Cloud command that refused once it ran hands back a retry naming its approval, which repeats without asking again", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update member set role = 'member' where user_id = ${shop.ada.userId}`);
+    }));
+    const demote = { member: "bo@example.test", role: "member" };
+    const asked = yield* agent.call("org_member_role", demote);
+    const approvalId = asked.body.approval_required?.approval_id ?? expect.fail("the role change did not ask for approval");
+    const [approval] = yield* shop.provided(pendingApprovals(ORGANIZATION));
+    const bo: Caller = { ...shop.ada, userId: shop.boId, credential: { kind: "session", id: "session-bo" } };
+    yield* shop.provided(decideApproval(bo, approvalId, { approve: { digest: approval?.digest ?? "" } }));
+
+    const refused = yield* agent.call("org_member_role", { ...demote, approval: approvalId });
+    const retry = { tool: "org_member_role", input: { ...demote, approval: approvalId } };
+    expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { writes: "unknown", retry } } });
+    expect(yield* agent.call("org_member_role", retry.input)).toMatchObject({ isError: true, body: { ok: false, refusal: { retry } } });
+    expect(yield* shop.provided(pendingApprovals(ORGANIZATION))).toEqual([]);
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("a keyed create replays under the same request key, which the result and the response header name", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
