@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "c889560f-ffd0-4aa4-a62b-2a123100db7d",
+  "id": "c5307845-ce80-4a6f-9851-6388ee408e0f",
   "prevIds": [
-    "f55f9aec-39c8-4168-90fc-378bd8bbf1ba"
+    "a77e832a-ff9f-448b-b8b7-23334cfa7dd5"
   ],
   "ddl": [
     {
@@ -3298,6 +3298,19 @@
       "table": "machine_enrollment_token"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "claimed_name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_enrollment_token"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": false,
@@ -3865,6 +3878,19 @@
       "generated": null,
       "identity": null,
       "name": "push_target",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_machine"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "machine_name",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_machine"
