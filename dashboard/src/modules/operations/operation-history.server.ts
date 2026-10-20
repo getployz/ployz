@@ -3,6 +3,7 @@ import type { MachineId, Operation, RunState, Subject } from "@ployz/sdk";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
+import { cleanupEndMessage } from "#/modules/machines/namespace-cleanup.server";
 import { drainEndMessage } from "#/modules/machines/server-drain.server";
 import { machineEnrollmentToken, machineRemoveAttempt, namespaceCleanup, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
@@ -137,7 +138,7 @@ const leftoverOperations = Effect.fn("OperationHistory.leftover")(function* (org
     attempt === null ? undefined : eq(namespaceCleanup.id, attempt),
   )).orderBy(desc(namespaceCleanup.requestedAt)).limit(limit);
   return rows.map((row) => operation({
-    attempt: row.id, run: `clean ${namespace}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: row.endMessage,
+    attempt: row.id, run: `clean ${namespace}`, state: row.state, requestedAt: row.requestedAt, endedAt: row.endedAt, reason: cleanupEndMessage(row),
   }));
 });
 

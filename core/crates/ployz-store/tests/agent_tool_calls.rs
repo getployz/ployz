@@ -3341,26 +3341,30 @@ fn shown_with_runs(runs: &[(&str, &str, Option<&str>)]) -> Value {
 // Server reads as not draining with no word on why.
 #[test]
 fn server_show_keeps_a_failed_drain_a_later_run_hides() {
-    let never = Some("The drain never started.");
+    let never = "The drain never started.";
 
     let hidden = shown_with_runs(&[
         ("upgrade web-1", "done", None),
         ("clean shop-old", "done", None),
-        ("drain web-1", "failed", never),
+        ("drain web-1", "failed", Some(never)),
     ]);
     assert_eq!(hidden["latest"]["run"], "upgrade web-1");
     assert_eq!(hidden["failed_drain"]["run"], "drain web-1", "{hidden}");
     assert_eq!(hidden["failed_drain"]["state"], "failed");
-    assert_eq!(hidden["failed_drain"]["reason"], never.unwrap());
+    assert_eq!(hidden["failed_drain"]["reason"], never);
 
-    let latest = shown_with_runs(&[("drain web-1", "failed", never)]);
-    assert_eq!(latest["latest"]["reason"], never.unwrap());
+    let latest = shown_with_runs(&[("drain web-1", "failed", Some(never))]);
+    assert_eq!(latest["latest"]["reason"], never);
     assert_eq!(latest["failed_drain"], Value::Null, "{latest}");
 
     let drained_since = shown_with_runs(&[
         ("upgrade web-1", "done", None),
         ("drain web-1", "done", None),
-        ("drain web-1", "failed", never),
+        ("drain web-1", "failed", Some(never)),
     ]);
-    assert_eq!(drained_since["failed_drain"], Value::Null, "{drained_since}");
+    assert_eq!(
+        drained_since["failed_drain"],
+        Value::Null,
+        "{drained_since}"
+    );
 }
