@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { createdAt, type EncryptedSecretValue, type MachineId } from "#/db/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import type {
@@ -105,6 +105,15 @@ export const fleetTokenJoin = pgTable("fleet_token_join", {
   fleetTokenId: uuid("fleet_token_id").notNull().references(() => fleetToken.id, { onDelete: "cascade" }),
   createdAt,
 }, (table) => [index("fleet_token_join_token_idx").on(table.fleetTokenId)]);
+
+/** The hosts a Fleet Token has started an enrollment for, by Check-in Key, kept after their waiting rows go. */
+export const fleetTokenAttempt = pgTable("fleet_token_attempt", {
+  organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
+  // No key on the token: its share lock would wait on a revoke that waits on the enrolling host's row.
+  fleetTokenId: uuid("fleet_token_id").notNull(),
+  checkinKey: text("checkin_key").notNull(),
+  createdAt,
+}, (table) => [primaryKey({ columns: [table.fleetTokenId, table.checkinKey] })]);
 
 export const rateLimitEvent = pgTable(
   "rate_limit_event",
