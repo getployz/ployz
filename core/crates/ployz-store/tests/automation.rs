@@ -595,6 +595,32 @@ fn the_diff_marks_deleted_a_volume_a_deploy_in_flight_creates() {
 }
 
 #[test]
+fn the_diff_does_not_say_a_volume_it_deletes_keeps_its_data() {
+    let (store, who) = volume_in_flight();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let data = |name: &str| {
+        diff.changes
+            .iter()
+            .find(|change| change.name == name)
+            .unwrap()
+            .data
+    };
+    assert_eq!(data("data"), Some(ployz_store::DataEffect::Deleted));
+    assert_eq!(data("web"), None);
+}
+
+#[test]
 fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
     let (store, who) = volume_in_flight();
     let deploy = |version: Option<String>| {

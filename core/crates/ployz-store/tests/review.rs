@@ -4092,6 +4092,20 @@ fn deleting_a_deployed_volume_is_destructive() {
 }
 
 #[test]
+fn removing_a_deployed_service_keeps_the_data_of_a_volume_that_stays() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let web = diff(&store, &who)
+        .changes
+        .into_iter()
+        .find(|change| change.name == "web")
+        .unwrap();
+    assert_eq!(web.data, Some(DataEffect::Kept));
+}
+
+#[test]
 fn detaching_a_volume_from_a_deployed_service_is_destructive_and_keeps_its_data() {
     let (store, who) = shop();
     mount_data(&store, &who);
