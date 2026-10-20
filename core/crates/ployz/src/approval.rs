@@ -13,6 +13,7 @@ use reqwest::Method;
 use serde::Deserialize;
 
 use crate::cloud_account::{self, Credential, StoreCallError};
+use crate::cloud_login::LoginError;
 use crate::failure::Failure;
 
 const POLL: Duration = Duration::from_secs(1);
@@ -300,27 +301,101 @@ pub(crate) fn settle(
     }
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
+    crate::ui::note(where_to_approve(
+        credential,
+        &asked.id,
+        asked.organization.as_deref(),
+    ));
+    crate::ui::hint(&crate::ui::Hint::Next(format!(
+        "ployz org approval approve {}",
+        asked.id
+    )));
     crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
     let settled = runtime.block_on(async {
         tokio::select! {
-            () = interrupted.cancelled() => Err(StoreCallError::Stopped(
-                Failure::coded(
-                    RpcErrorCode::Internal,
-                    "Stopped waiting; the approval stays pending in Ployz Cloud.",
-                )
-                .interrupted()
-                .hint(crate::ui::Hint::Retry(retry)),
-            )),
-            settled = decided(credential, &asked.id) => settled,
+            () = interrupted.cancelled() => None,
+            settled = decided(credential, &asked.id) => Some(settled),
         }
     });
     crate::ui::note(match &settled {
-        Ok(Status::Approved) => "approved.",
-        Ok(Status::Denied) => "denied.",
-        Ok(Status::Superseded) => "superseded; asking again.",
-        Ok(Status::Pending) | Err(_) => "",
+        Some(Ok(Status::Approved)) => "approved.",
+        Some(Ok(Status::Denied)) => "denied.",
+        Some(Ok(Status::Superseded)) => "superseded; asking again.",
+        Some(Ok(Status::Pending) | Err(_)) | None => "",
     });
-    settled.map(|_| asked.id.clone())
+    // Ctrl-C or losing Cloud ends the wait, not the approval: it is still there to answer.
+    let stopped = match settled {
+        Some(Ok(_)) => return Ok(asked.id.clone()),
+        Some(Err(StoreCallError::Cloud(error))) if unanswered(&error) => Failure::from(error)
+            .context(format!(
+                "Stopped waiting for approval {}; it stays pending in Ployz Cloud.",
+                asked.id
+            )),
+        // Cloud answered, but not with the approval: nothing says it is still pending.
+        Some(Err(StoreCallError::Cloud(error))) => {
+            let transient = matches!(error, LoginError::Status { status, .. } if status >= 500);
+            let failure =
+                Failure::from(error).context(format!("Couldn't check approval {}.", asked.id));
+            if !transient {
+                return Err(StoreCallError::Stopped(failure));
+            }
+            failure
+        }
+        Some(Err(error)) => return Err(error),
+        None => Failure::coded(
+            RpcErrorCode::Internal,
+            "Stopped waiting; the approval stays pending in Ployz Cloud.",
+        )
+        .interrupted(),
+    };
+    Err(StoreCallError::Stopped(
+        stopped.hint(crate::ui::Hint::Retry(retry)),
+    ))
+}
+
+/// Where a human answers approval `id`: the Ployz agent's panel, where it waits under
+/// Waiting on you, in the Organization the approval names, else the one this device acts
+/// in. A token's approval that names none points at Cloud itself.
+fn where_to_approve(credential: &Credential, id: &str, organization: Option<&str>) -> String {
+    let cloud = credential.cloud().trim_end_matches('/');
+    let organization = organization.or(match credential {
+        Credential::Device(signed_in) => Some(signed_in.organization.slug.as_str()),
+        Credential::Token { .. } => None,
+    });
+    match organization {
+        Some(organization) => format!(
+            "Approve {id} under Waiting on you in the Ployz agent at {cloud}/cloud/{organization}?chat={}",
+            uuid::Uuid::new_v4()
+        ),
+        None => format!("Approve {id} in Ployz Cloud at {cloud}"),
+    }
+}
+
+/// Whether Cloud never answered the approval's read: only then is the approval as it was.
+fn unanswered(error: &LoginError) -> bool {
+    match error {
+        LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => true,
+        // Cloud refused the credential, so nothing says the approval is still pending, and
+        // a retry with that credential fails again. The local ones can't follow `settle()`
+        // having a credential, but would mean the same.
+        LoginError::Store { .. }
+        | LoginError::Corrupt { .. }
+        | LoginError::TokenCloudUnreadable(_)
+        | LoginError::OtherCloud { .. }
+        | LoginError::SignedOut
+        | LoginError::Ended
+        | LoginError::TokenRefused
+        | LoginError::NotMember(_)
+        | LoginError::Unsupported(_)
+        | LoginError::Status { .. }
+        | LoginError::Reply(_)
+        | LoginError::Expired
+        | LoginError::Denied
+        | LoginError::AwaitingApproval { .. }
+        | LoginError::TokenBound
+        | LoginError::UnknownOrganization(_)
+        | LoginError::UnknownCredential(_) => false,
+    }
 }
 
 /// Run `attempt` with `approval` until Cloud stops asking for one: each time it asks,

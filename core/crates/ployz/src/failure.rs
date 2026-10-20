@@ -166,6 +166,22 @@ impl Failure {
         self
     }
 
+    /// A Server's daemon answered before this connection failed: a refusal, not an
+    /// unreachable Server.
+    pub(crate) fn daemon_answered(&self) -> bool {
+        let Inner::Command { error, .. } = &self.inner else {
+            return false;
+        };
+        let mut next: Option<&(dyn Error + 'static)> = Some(error.as_ref());
+        while let Some(error) = next {
+            if let Some(error) = error.downcast_ref::<ConnectError>() {
+                return !error.unreached();
+            }
+            next = error.source();
+        }
+        false
+    }
+
     pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
         self.diagnostic.as_deref()
     }
@@ -1227,6 +1243,7 @@ mod tests {
         let failure = Failure::from(ConnectError::AllFailed {
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
+            server: None,
             retry: ployz_core::Retry::AfterRestart,
             reached: false,
             last: Some(Box::new(ConnectError::Io(io::Error::from(
@@ -1245,10 +1262,28 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_connections_name_the_server_tried_last() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 3,
+            server: Some("box-node-09c8".into()),
+            retry: ployz_core::Retry::AfterRestart,
+            reached: false,
+            last: None,
+        });
+        assert_eq!(
+            failure.to_string(),
+            "Ployz couldn't reach a Server's daemon through any of the 3 connections from Cloud. \
+             Server box-node-09c8, tried last, isn't answering. Check that its Ployz daemon is running, then retry."
+        );
+    }
+
+    #[test]
     fn exhausted_connections_say_a_daemon_answered_when_one_did() {
         let failure = Failure::from(ConnectError::AllFailed {
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 2,
+            server: None,
             retry: ployz_core::Retry::Never,
             reached: true,
             last: Some(Box::new(ConnectError::Io(io::Error::from(
@@ -1258,6 +1293,25 @@ mod tests {
         assert_eq!(
             failure.to_string(),
             "A Server's daemon answered, but the 2 connections from context prod all failed."
+        );
+    }
+
+    #[test]
+    fn exhausted_connections_say_the_server_tried_last_did_not_answer_after_one_refused() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Cloud,
+            attempts: 2,
+            server: Some("web-2".into()),
+            retry: ployz_core::Retry::AfterRestart,
+            reached: true,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            failure.to_string(),
+            "A Server's daemon answered, but the 2 connections from Cloud all failed. \
+             Server web-2, tried last, isn't answering. Check that its Ployz daemon is running, then retry."
         );
     }
 

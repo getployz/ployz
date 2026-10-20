@@ -90,7 +90,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -202,7 +202,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 34
@@ -265,7 +265,8 @@ $ ployz link --project shop --env nope
 stderr:
 ```
 error: No Environment named nope in Project shop
-next: ployz env new nope --project shop
+next: ployz env ls --project shop
+valid: fix-web, long, production, staging
 ```
 
 ### status with --env override

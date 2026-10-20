@@ -16,7 +16,7 @@ mod serving;
 pub use eligibility::{
     ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
 };
-pub use serving::{ServingContainer, SlotOccupancy, serving_containers};
+pub use serving::{ProxyRoutes, ServingContainer, SlotOccupancy, proxy_routes, serving_containers};
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -87,13 +87,13 @@ impl ServiceObservation {
         })
     }
 
-    /// Service Containers for Start; both roles for Stop and Remove.
+    /// Service Containers for Start and Restart; both roles for Stop and Remove.
     pub fn containers_for(
         &self,
         action: ContainerAction,
     ) -> impl Iterator<Item = ContainerRef<'_>> {
         let hooks = match action {
-            ContainerAction::Start => &[][..],
+            ContainerAction::Start | ContainerAction::Restart => &[][..],
             ContainerAction::Stop | ContainerAction::Remove => self.hook_containers.as_slice(),
         };
         self.containers
@@ -157,6 +157,7 @@ impl ObservedGlobalSlotSpec {
 pub enum ContainerAction {
     Start,
     Stop,
+    Restart,
     Remove,
 }
 
@@ -165,6 +166,7 @@ impl fmt::Display for ContainerAction {
         f.write_str(match self {
             Self::Start => "start",
             Self::Stop => "stop",
+            Self::Restart => "restart",
             Self::Remove => "remove",
         })
     }

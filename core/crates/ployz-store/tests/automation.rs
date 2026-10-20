@@ -175,6 +175,7 @@ fn held_on_a() -> ployz_store::VolumeObservation {
             name,
         }],
         unanswered: Vec::new(),
+        failure: None,
     }
 }
 

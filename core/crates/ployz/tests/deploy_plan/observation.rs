@@ -204,3 +204,28 @@ fn old_warning_payloads_stay_generic_and_new_facts_roundtrip() {
             .any(|warning| warning.to_string().contains("unobserved"))
     );
 }
+
+#[test]
+fn a_machine_the_deploy_could_not_observe_is_named_as_one_that_can_serve_old_copies_on_return() {
+    let requested = spec("web");
+    let preview = plan_deploy([&requested], &snapshot(), PlanOptions::default()).unwrap();
+    assert!(
+        preview.warnings.contains(&DeployWarning::MixedAfterReturn {
+            machine: "unobserved".into(),
+        }),
+        "{:?}",
+        preview.warnings
+    );
+
+    let mut legacy = snapshot();
+    legacy.machines.get_mut(1).unwrap().membership_evidence = None;
+    let preview = plan_deploy([&requested], &legacy, PlanOptions::default()).unwrap();
+    assert!(
+        !preview
+            .warnings
+            .iter()
+            .any(|warning| matches!(warning, DeployWarning::MixedAfterReturn { .. })),
+        "only a qualified gap names the Machine: {:?}",
+        preview.warnings
+    );
+}

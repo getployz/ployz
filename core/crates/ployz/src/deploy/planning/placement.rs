@@ -4,9 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
-    ContainerId, HookContainer, HostBind, MachineId, PortPublication, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, SpecChange, UpdateOrder, compare_specs,
+    ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind, MachineId, Namespace,
+    PortPublication, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, SpecChange,
+    UpdateOrder, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -752,7 +753,19 @@ pub(super) fn is_up_to_date(
     let observation = container.as_observation();
     !options.force_recreate
         && observation.runtime.may_serve()
+        && serving_rotation(observation)
         && compare_specs(&observation.resolved_spec, requested) == SpecChange::UpToDate
+}
+
+/// A copy another run left Pending, Held or Out is not routed, so it is no
+/// replica until replaced. A copy with no recorded rotation predates rotation.
+fn serving_rotation(observation: &ContainerObservation) -> bool {
+    match &observation.rotation {
+        None | Some(CopyRotation::In) => true,
+        Some(CopyRotation::Pending | CopyRotation::Held(_) | CopyRotation::Out) => {
+            observation.namespace == Namespace::system()
+        }
+    }
 }
 
 fn reserve_replicated_service_demand(

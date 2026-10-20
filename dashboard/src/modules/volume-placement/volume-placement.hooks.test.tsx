@@ -91,6 +91,36 @@ it("leaves a Volume the Deploy deletes out of the copy loss, so only the Store's
   expect(result.current.count).toBe(1);
 });
 
+it("dates a staged restore's point in Details once the day turns, with the Servers' answer unchanged", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  try {
+    vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
+    const at = new Date(2026, 9, 11, 23, 55);
+    const restore: PlacementRow = {
+      volumeId: "vol-restored", environmentId: "env-1", mirrors: [], unreached: false, deploymentId: null,
+      staged: {
+        primary: "web-1".padEnd(32, "0") as never, mirrors: [], deletes: [],
+        seed: { sourceVolumeId: "vol-source", sourceName: "data", dockerVolume: "shop_vol-restored", point: { guid: "1", name: "p", at: at.getTime() / 1000 } },
+      },
+    };
+    vi.spyOn(functions, "listPlacementsServerFn").mockResolvedValue([restore] as never);
+    vi.spyOn(runs, "inspectVolumeCopiesServerFn").mockResolvedValue([] as never);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => useStagedPlacements("acme", environment, "env-1", [{ id: "vol-restored", name: "data-2355", change: null }]), { wrapper });
+    const shown = () => result.current.groups[0]?.rows[0]?.loss;
+    for (let tick = 0; tick < 20 && shown() === undefined; tick++) await act(() => vi.advanceTimersByTimeAsync(10));
+
+    const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+    expect(shown()).toBe(`Changes after ${clock.format(at)} are not in data-2355`);
+    await act(() => vi.advanceTimersByTimeAsync(2 * 60_000));
+    const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    expect(shown()).toBe(`Changes after ${dated.format(at)} are not in data-2355`);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 const runView = (id: string, state: string, message: string | null = null) => ({ id, state, message }) as never;
 
 it("Delete copy toasts only once the delete run ends, with the Server's words when it fails", async () => {

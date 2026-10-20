@@ -23,7 +23,7 @@ Initialised Server alpha (d7bb999f0d454dbcacc63d085021de34)
 
 stderr:
 ```
-WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+! Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
 ```
 
 ### server add: join a second Server (TTY)
@@ -34,7 +34,7 @@ $ ployz server add --standalone --no-install root@172.19.0.3 --name beta
 
 TTY rendering (ANSI stripped; carriage-return redraws shown as separate lines; raw in .ansi):
 ```
-Storage preparation [zfs/none] (none is Docker only, not recommended): WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+! Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
 Added Server beta (3ba1dcbd6b854ea699b76f6ef296576d)
 Waiting for ssh://root@172.19.0.3 to participate: connection attempt failed: Server phase is joining; retrying for up to 299s. Check outbound firewall access if this connection is blocked.
 # exit 0
@@ -87,7 +87,7 @@ stdout:
 
 stderr:
 ```
-WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+! Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
 Added Server gamma (0523a6681d894d128f69ea28b7ed62d5)
 Waiting for ssh://root@172.19.0.4 to participate: connection attempt failed: Server phase is joining; retrying for up to 298s. Check outbound firewall access if this connection is blocked.
 ```
@@ -100,7 +100,7 @@ $ ployz server add --standalone --no-install root@172.19.0.5 --name solo --ployz
 
 TTY rendering (ANSI stripped; carriage-return redraws shown as separate lines; raw in .ansi):
 ```
-Storage preparation [zfs/none] (none is Docker only, not recommended): WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+! Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
 Switched context to 'default'
 Initialised Server solo (11b07efcce8e4822b59ca72d20433f1a)
 Waiting for ssh://root@172.19.0.5 to participate: connection attempt failed: Server is not yet published in the Cluster store; retrying for up to 298s. Check outbound firewall access if this connection is blocked.
@@ -143,7 +143,7 @@ $ ployz server add --standalone --no-install root@10.255.255.1 --ssh-timeout 3
 
 stderr:
 ```
-WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+! Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
 error: Ployz couldn't reach your Server's daemon.
   cause: SSH connection to root@10.255.255.1 timed out after 3 seconds; a slow or distant Server may need --ssh-timeout 60
 ```

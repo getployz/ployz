@@ -199,7 +199,13 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     let services = live.services();
     let service = select_service(&services, &ServiceSelector::from(&service_id)).unwrap();
     client
-        .change_observed_service(service, ContainerAction::Remove, None, None)
+        .change_observed_service(
+            service,
+            ContainerAction::Remove,
+            None,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .await;
     assert_eq!(created.len(), 3);
 }

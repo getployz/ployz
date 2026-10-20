@@ -298,9 +298,10 @@ pub(crate) const DOCS: Verb =
 pub(crate) const DOMAIN_ADD: Verb =
     Verb::cloud("domain add", Never, domain::add_command, domain::add).docs("services/domains.md");
 pub(crate) const DOMAIN_CHECK: Verb =
-    Verb::cloud("domain check", Never, domain::check_command, domain::check);
+    Verb::cloud("domain check", Never, domain::check_command, domain::check)
+        .docs("services/domains.md");
 pub(crate) const DOMAIN_LS: Verb =
-    Verb::cloud("domain ls", Never, domain::list_command, domain::list);
+    Verb::cloud("domain ls", Never, domain::list_command, domain::list).docs("services/domains.md");
 pub(crate) const DOMAIN_RM: Verb =
     Verb::cloud("domain rm", Never, domain::remove_command, domain::remove);
 pub(crate) const DOMAIN_SET: Verb =
