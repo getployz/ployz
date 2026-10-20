@@ -284,6 +284,7 @@ impl LocalMachine {
                 health: Some(HealthVerdict::Failed {
                     observation,
                     last_check: None,
+                    oom_killed: false,
                 }),
             },
             Written::Refused(refusal) => refused(now, refusal),

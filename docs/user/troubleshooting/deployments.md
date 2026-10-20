@@ -90,6 +90,17 @@ or a command's exit code and output.
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
+## My new version runs out of memory
+
+**The Container ran out of memory under its 16 MiB memLimit**, with the health check's last
+result as the cause, and `next: ployz set 'web.memLimit=32MiB' …`
+
+Docker killed a process in the new replica for going over the service's **memLimit**. Ployz
+stopped the replica and kept the old version serving. The `next:` command doubles the limit,
+up to the most **memLimit** allows, 1024 GB; set the size your app needs. A service already at
+1024 GB gets no `next:` command: it has to use less memory. Nor does a service without a
+**memLimit**.
+
 ## My running service fails its healthcheck
 
 A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the
@@ -200,6 +211,19 @@ doesn't exist and for a private image you have no access to.
   published on the registry.
 - If the image is private, add **Registry credentials**, or replace a token that expired. See
   [Use a private image](../deploy/docker-image.md#use-a-private-image).
+
+## My server's disk is full
+
+**Failed at pull**, with `The Server's disk is full: 48 MB free under /var/lib/docker`
+
+The server ran out of disk space while it downloaded the image, so the deploy stopped before it
+changed anything. A version that was already running keeps running. The cause line under it is
+Docker's own error.
+
+- Free space on that server: remove files you don't need, or remove old images with
+  `docker image prune`.
+- Give the server a bigger disk if it fills up again.
+- Run the deploy again.
 
 ## Deploy says a service has nothing to run
 

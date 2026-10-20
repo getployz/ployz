@@ -256,8 +256,19 @@ it("words a Deployment that takes its Environment off the Servers as the Branch 
   expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "forgotten" } })).toBe("Left on old servers");
   expect(outcomeReason({ type: "forgotten" })).toContain("still there");
   expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "never_ran" } })).toBe("Off the servers");
-  expect(deploysLabel({ services: [], remove: true })).toBeNull();
-  expect(deploysLabel({ services: ["web", "api"], remove: false })).toBe("Deploys web, api");
+  expect(deploysLabel({ services: [], ships: ["web", "api"], remove: true })).toBeNull();
+});
+
+it("names a Deploy's targets in their order, then the Services it ships by reference alphabetically", () => {
+  expect(deploysLabel({ services: ["web"], ships: ["web", "postgres", "api"], remove: false })).toBe("Deploys web (+ api, postgres)");
+  expect(deploysLabel({ services: ["web"], ships: ["web"], remove: false })).toBe("Deploys web");
+  expect(deploysLabel({ services: ["web", "api"], ships: ["api", "web", "redis"], remove: false })).toBe("Deploys web, api (+ redis)");
+  expect(deploysLabel({ services: [], ships: ["web", "api", "postgres"], remove: false })).toBe("Deploys every service");
+  // Waiting for CI, nothing is frozen yet: it names only its targets.
+  expect(deploysLabel({ services: ["web"], ships: [], remove: false })).toBe("Deploys web");
+  // A rollback or retry reads its own ships, so it lists what it ships now, not what its source shipped.
+  const source = { services: ["web"], ships: ["web", "api", "postgres"], remove: false };
+  expect(deploysLabel({ ...source, ships: ["web", "api"] })).toBe("Deploys web (+ api)");
 });
 
 

@@ -205,7 +205,9 @@ pub(crate) fn publish(
     review::guard_saving(tx, &environment.summary.id, review.saved.as_ref(), &target)?;
     let gate = review::Gate::new(tx, &environment.summary.id, trusted)?;
     review::approve(who, &review, (&target, review::Shipping::Publish), &gate)?;
-    let lost = review::lost(losses);
+    // Saved as the next Deploy's consent, a loss that deletes nothing too: the
+    // Servers held no data, so a push removes it while they still hold none.
+    let lost = losses;
     let (saved, created) = review::publish(
         tx,
         who,

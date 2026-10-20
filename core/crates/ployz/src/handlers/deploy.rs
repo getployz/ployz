@@ -908,10 +908,10 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, S
         .block_on(async {
             let mut client = super::server::connect(matches, context)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| crate::ui::row(&error))?;
             crate::ingress::planned_slots(&mut client)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| crate::ui::row(&error))
         })
 }
 

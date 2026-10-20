@@ -423,10 +423,10 @@ pub enum ConnectionSource {
 impl fmt::Display for ConnectionSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Direct => f.write_str("the explicit connection"),
+            Self::Direct => f.write_str("the given connection"),
             Self::Context(name) => write!(f, "context {}", name.escape_debug()),
             Self::LocalSocket => f.write_str("the local socket"),
-            Self::Cloud => f.write_str("Cloud Server Access"),
+            Self::Cloud => f.write_str("Cloud"),
         }
     }
 }

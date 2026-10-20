@@ -742,7 +742,11 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
 }
 
 mod settled {
-    use std::{collections::BTreeMap, sync::Mutex, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        sync::{Mutex, atomic::Ordering},
+        time::Duration,
+    };
 
     use ployz_core::{
         ConfiguredHealthcheck, ContainerNow, ContainerRuntimeObservation, ContainerWant,
@@ -1161,6 +1165,117 @@ mod settled {
         );
         assert!(
             waited >= Duration::from_millis(1_500) && waited < Duration::from_millis(2_500),
+            "waited {waited:?}"
+        );
+    }
+
+    /// The settle's polls see a starting Container until `after` past the settle's
+    /// start, then `state`. Docker stalls every inspect after the first to show an OOM
+    /// kill, so a verdict that answers read the kill from the poll that decided it.
+    /// Answers the verdict and how long after the settle began it came.
+    async fn ensure_stalling_after_oom(
+        want: ContainerWant,
+        after: Duration,
+        state: Value,
+    ) -> (HealthVerdict, Duration) {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        fake.stall_after_oom.store(true, Ordering::SeqCst);
+        let ensure = tokio::spawn({
+            let local = local.clone();
+            async move { local.ensure_container(want).await }
+        });
+        let starting = json!({"Status":"running", "Health":{"Status":"starting"}});
+        report_once_started(&fake, starting).await;
+        let id = fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values()
+            .find_map(|container| container.get("Id")?.as_str().map(str::to_owned))
+            .unwrap();
+        let id = ployz_core::ContainerId::parse(id).unwrap();
+        while local.settles_for_test(&id) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let settling_since = std::time::Instant::now();
+        tokio::time::sleep(after).await;
+        report_once_started(&fake, state).await;
+        let reply = tokio::time::timeout(Duration::from_secs(10), ensure)
+            .await
+            .expect("a Settled ensure answers by its deadline")
+            .unwrap()
+            .unwrap();
+        let waited = settling_since.elapsed();
+        std::fs::remove_dir_all(data_dir).unwrap();
+        let EnsuredContainer::Ensured {
+            health: Some(health),
+            ..
+        } = reply
+        else {
+            panic!("expected a verdict, got {reply:?}");
+        };
+        (health, waited)
+    }
+
+    #[tokio::test]
+    async fn ensure_settled_says_docker_killed_the_exited_container_out_of_memory() {
+        for (state, oom_killed) in [
+            (
+                json!({"Status":"exited", "ExitCode":137, "OOMKilled":true}),
+                true,
+            ),
+            (
+                json!({"Status":"exited", "ExitCode":137, "OOMKilled":false}),
+                false,
+            ),
+            (
+                json!({"Status":"running", "Health":{"Status":"unhealthy"}}),
+                false,
+            ),
+        ] {
+            // Between the polls at 0s and 1s, so the one at 1s decides.
+            let (health, waited) = ensure_stalling_after_oom(
+                settled_run(60_000),
+                Duration::from_millis(500),
+                state.clone(),
+            )
+            .await;
+
+            assert!(
+                matches!(health, HealthVerdict::Failed { .. }),
+                "{state}: {health:?}"
+            );
+            assert_eq!(health.oom_killed(), oom_killed, "{state}: {health:?}");
+            assert!(
+                waited >= Duration::from_millis(900) && waited < Duration::from_secs(2),
+                "{state}: waited {waited:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_settled_times_out_on_time_for_a_container_killed_out_of_memory() {
+        // Polls land at 0s, 1s and the 1.9s deadline; the kill shows between the last two.
+        let (health, waited) = ensure_stalling_after_oom(
+            settled_run(1_900),
+            Duration::from_millis(1_450),
+            json!({"Status":"running", "OOMKilled":true, "Health":{"Status":"starting"}}),
+        )
+        .await;
+
+        assert!(
+            matches!(health, HealthVerdict::TimedOut { .. }),
+            "{health:?}"
+        );
+        assert!(health.oom_killed(), "{health:?}");
+        assert!(
+            waited >= Duration::from_millis(1_800) && waited < Duration::from_millis(2_900),
             "waited {waited:?}"
         );
     }
