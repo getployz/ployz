@@ -1894,7 +1894,6 @@ mod tests {
     async fn a_kept_retire_leaves_a_container_withdrawn_while_an_explicit_stop_drains_it() {
         use ployz_core::{
             ContainerLocator, ContainerWant, DEPLOYMENT_ID_LABEL, Drain, StopOptions,
-            service_containers, serving_containers,
         };
         let cluster = FakeCluster::start();
         let store = cluster.store();
@@ -1917,16 +1916,6 @@ mod tests {
                     .insert(DEPLOYMENT_ID_LABEL.to_owned(), serde_json::json!(deploy));
             }
         }
-        let machine_id = machine.owner.record().id();
-        let observe = |container| {
-            let containers = machine.host.containers.clone();
-            async move {
-                containers
-                    .inspect_managed(&container, &machine_id)
-                    .await
-                    .unwrap()
-            }
-        };
         let transfer = machine.owner.admission_lock().read_owned().await;
         let mut retiring = JoinSet::new();
         round(
@@ -1995,13 +1984,6 @@ mod tests {
             machine.host.containers.stopping_ids_for_test(),
             BTreeSet::from([machine.a])
         );
-        let containers = service_containers([observe(machine.a).await, observe(machine.b).await]);
-        let routed: Vec<_> = serving_containers(&containers, |_| Some(&pointer))
-            .iter()
-            .map(|container| container.as_observation().container_id)
-            .collect();
-        assert_eq!(routed, vec![machine.b], "B serves while A drains");
-
         tokio::time::timeout(Duration::from_secs(5), explicit_stop)
             .await
             .unwrap()

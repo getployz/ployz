@@ -834,27 +834,22 @@ impl VolumeStorage {
             return Ok(bound);
         }
         match self
-            .ensure_commitment(&scope.pool, &scope.datasets, writer - bound)
+            .grow_bound(&scope.pool, &scope.datasets, parent, bound, writer)
             .await
         {
-            Ok(()) => {}
-            Err(VolumeError::Capacity(_)) => {
-                return Err(self
-                    .refuse_found(
-                        scope,
-                        CopyRefusal::NoCapacity,
-                        format!(
-                            "this Machine has no room for a {writer} byte copy of {}",
-                            scope.name
-                        ),
-                    )
-                    .await);
-            }
-            Err(error) => return Err(internal(error)),
+            Ok(()) => Ok(writer),
+            Err(VolumeError::Capacity(_)) => Err(self
+                .refuse_found(
+                    scope,
+                    CopyRefusal::NoCapacity,
+                    format!(
+                        "this Machine has no room for a {writer} byte copy of {}",
+                        scope.name
+                    ),
+                )
+                .await),
+            Err(error) => Err(internal(error)),
         }
-        self.z(&["set", &format!("refquota={writer}"), parent])
-            .await?;
-        Ok(writer)
     }
 
     /// The writer's bound for the Volume, from its send port.

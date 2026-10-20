@@ -50,7 +50,12 @@ pub(crate) struct FakeDocker {
     /// Named mode: a stop lands and the next inspect sees it, then a restart policy
     /// brings the Container back for every inspect after that.
     pub(crate) restart_after_stop: Arc<AtomicBool>,
+    /// Named mode: every start lands, then the process exits at once.
+    pub(crate) exit_on_start: Arc<AtomicBool>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
+    /// Named mode: each start of a stopped Container stamps a new `StartedAt`, as
+    /// Docker does.
+    pub(crate) stamp_starts: bool,
     /// Every stop waits while a test holds this for writing; the request is recorded first.
     pub(crate) stop_gate: Arc<tokio::sync::RwLock<()>>,
     /// Every inspect of this Container waits while a test holds `inspect_gate` for writing.
@@ -229,8 +234,27 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     }
                     "exited"
                 };
+                let (status, code) =
+                    if status == "running" && fake.exit_on_start.load(Ordering::SeqCst) {
+                        ("exited", 1)
+                    } else {
+                        (status, 0)
+                    };
                 let container = containers.get_mut(&name).unwrap();
-                container["State"] = serde_json::json!({"Status": status, "ExitCode": 0});
+                let previous = container["State"].take();
+                let mut state = serde_json::json!({"Status": status, "ExitCode": code});
+                if fake.stamp_starts && status == "running" {
+                    let started_at = if previous.get("Status") == Some(&"running".into()) {
+                        previous.get("StartedAt").cloned().unwrap_or_default()
+                    } else {
+                        chrono::Utc::now().to_rfc3339().into()
+                    };
+                    state
+                        .as_object_mut()
+                        .expect("a literal object")
+                        .insert("StartedAt".into(), started_at);
+                }
+                container["State"] = state;
                 return StatusCode::NO_CONTENT.into_response();
             }
             panic!("unexpected implicit lifecycle action: {method} {path}");

@@ -1,4 +1,6 @@
 //! Session-level preview/confirm/run behaviour against a fake Machine.
+#[path = "deploy_client/cleanup_report.rs"]
+mod cleanup_report;
 #[path = "deploy_client/operate.rs"]
 mod operate;
 #[path = "deploy_client/runner_cancellation.rs"]
@@ -114,17 +116,18 @@ async fn deploy_returns_success_for_a_completed_run() {
 
 #[tokio::test]
 async fn service_lifecycle_commands_change_each_named_service_container() {
-    for action in ["start", "stop"] {
+    // A stop holds each In copy out of rotation before it stops it.
+    for (action, rpcs) in [("start", 2), ("stop", 4)] {
         let machine = machine('a', "one");
         let service = DeployService::new(machine.clone());
-        let mut api = running_container(&machine, &spec("api"));
+        let mut api = deployed_container(&machine, &spec("api"));
         api.try_update(|parts| parts.container_id = ContainerId::parse("2".repeat(64)).unwrap())
             .unwrap();
         service
             .listed_containers()
             .lock()
             .unwrap()
-            .extend([running_container(&machine, &spec("web")), api]);
+            .extend([deployed_container(&machine, &spec("web")), api]);
         let mutating_rpcs = service.mutating_rpcs();
         let (address, server) = listening(service).await;
 
@@ -140,7 +143,7 @@ async fn service_lifecycle_commands_change_each_named_service_container() {
             "{action}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), 2, "{action}");
+        assert_eq!(mutating_rpcs.load(Ordering::SeqCst), rpcs, "{action}");
         server.abort();
     }
 }
@@ -587,6 +590,8 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::StorageHeadroom { .. }
             | DeployWarning::UnbudgetedDiskUsage
             | DeployWarning::StorageObservationUnknown { .. }
+            | DeployWarning::LeftRunning { .. }
+            | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. } => false,
@@ -1885,4 +1890,117 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         "Build failed. web: acme/web has no build workflow. No other Builder in your Build Order can take it"
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn a_runner_that_cannot_reach_its_server_names_it() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
+        ProjectName, RunnerId, SealingKey, ServiceLineageId,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                image: Some("nginx".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let outcome = |deployment: &str, connection: serde_json::Value| {
+        let (store, who) = (Arc::clone(&store), who.clone());
+        let id = DeploymentId::parse(deployment).unwrap();
+        async move {
+            store
+                .write_trusted(
+                    &who,
+                    &Admit::Deploy(Deploy {
+                        id: id.clone(),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload: None,
+                        accept_volume_loss: Vec::new(),
+                        message: None,
+                    }),
+                    &ployz_store::Trusted::default(),
+                )
+                .unwrap();
+            // As Cloud hands them over: the same descriptors the SDK parses.
+            let connections = serde_json::from_value(serde_json::json!([connection])).unwrap();
+            let summary = ployz::sdk::run_deployment(
+                Arc::clone(&store),
+                id.clone(),
+                RunnerId::parse("cloud-run-1").unwrap(),
+                connections,
+                Ok(Default::default()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(summary.status, DeploymentStatus::Failed);
+            match store
+                .read(&who, &ployz_store::DeploymentQuery { id })
+                .unwrap()
+                .deployment
+                .outcome
+            {
+                Some(Outcome::NotExecuted { reason, cause, .. }) => (reason, cause),
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    let machine = "0123456789abcdef0123456789abcdef";
+    let (reason, cause) = outcome(
+        "00000000-0000-4000-8000-000000000101",
+        serde_json::json!({ "tcp": closed, "machine_id": machine, "name": "box-node-09c8" }),
+    )
+    .await;
+    assert_eq!(
+        reason,
+        "Server box-node-09c8 isn't answering. Check that its Ployz daemon is running, then retry."
+    );
+    assert!(
+        cause.iter().all(|line| !line.contains("isn't answering")),
+        "{cause:?}"
+    );
+    assert!(!cause.is_empty(), "the transport detail stays as the cause");
+
+    // Cloud never learned its name: the Machine ID says which.
+    let (reason, _) = outcome(
+        "00000000-0000-4000-8000-000000000102",
+        serde_json::json!({ "tcp": closed, "machine_id": machine }),
+    )
+    .await;
+    assert_eq!(
+        reason,
+        format!(
+            "Server {machine} isn't answering. Check that its Ployz daemon is running, then retry."
+        )
+    );
 }

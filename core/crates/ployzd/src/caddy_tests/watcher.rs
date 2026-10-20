@@ -2,7 +2,7 @@
 
 use super::{ingress, observation, reserved};
 use crate::{
-    corrosion::{ApiClient, ReplicatedStore, fake_cluster::events},
+    corrosion::{ApiClient, Error as CorrosionError, ReplicatedStore, fake_cluster::events},
     ingress::caddy::{CONFIG_FILE, CaddyAdmin, Error as CaddyError, run},
     ingress::watch_caddy,
 };
@@ -16,12 +16,13 @@ use axum::{
 };
 use futures_util::StreamExt;
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, ContainerObservation, DeploymentLogId, HttpProtocol,
-    MACHINE_API_PORT, Machine, MachineId, MachineName, ServingPointer, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerId, ContainerObservation, CopyRotation, HttpProtocol,
+    MACHINE_API_PORT, Machine, MachineId, MachineName, WireGuardPublicKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     convert::Infallible,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -54,8 +55,10 @@ async fn reconciles_resnapshots_and_retries_protocol_failures() {
     let watcher = tokio::spawn(run(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         caddyfile.clone(),
         directory.join("missing-admin.sock"),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
     ));
 
@@ -147,7 +150,9 @@ async fn first_snapshot_loads_immediately_and_bursts_load_only_the_latest_snapsh
     let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         config_file,
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -305,7 +310,9 @@ async fn replacing_the_local_caddy_process_reloads_an_unchanged_projection() {
     let watcher = tokio::spawn(watch_caddy(
         machine,
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -343,7 +350,9 @@ async fn periodic_resnapshot_recovers_a_missed_change_notification() {
     let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -436,7 +445,9 @@ async fn transient_apply_failure_retries_without_a_replicated_event() {
     let watcher = tokio::spawn(watch_caddy(
         machine,
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -454,7 +465,7 @@ async fn transient_apply_failure_retries_without_a_replicated_event() {
 }
 
 #[tokio::test]
-async fn pointer_change_reloads_caddy_with_pointed_upstreams() {
+async fn rotation_flips_reload_caddy_with_in_upstreams() {
     let WatcherFixture {
         machine,
         state,
@@ -462,54 +473,85 @@ async fn pointer_change_reloads_caddy_with_pointed_upstreams() {
         server,
         directory,
     } = watcher_fixture().await;
-    let pointed = observation(
-        1,
-        &machine.id,
-        "api",
-        Some([10, 210, 1, 2]),
-        vec![ingress("example.com", 80, HttpProtocol::Http)],
-    );
-    let mut newer = observation(
+    let first = state.api_container();
+    let mut second = observation(
         2,
         &machine.id,
         "api",
         Some([10, 210, 1, 3]),
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     );
-    newer
-        .try_update(|parts| {
-            parts.created_at_unix_nanos = 1;
-            parts.resolved_spec.container.image = "example.test/image:next".into();
-        })
+    second
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
         .unwrap();
-    state.containers.lock().unwrap().push(newer);
+    state.containers.lock().unwrap().push(second.clone());
     let caddyfile = directory.join(CONFIG_FILE);
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(run(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         caddyfile.clone(),
         directory.join("missing-admin.sock"),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
     ));
-    let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.3:80").await;
-    assert!(!caddy.contains("10.210.1.2:80"), "{caddy}");
-
-    let key = ServingPointer::key(&pointed.identity());
-    let pointer = ServingPointer {
-        deploy: DeploymentLogId::parse("d1").unwrap(),
-        containers: vec![pointed.container_id],
-        previous: None,
-        retiring: Vec::new(),
-        deciding: None,
-    };
-    state.write_pointer(&key, serde_json::to_string(&pointer).unwrap());
     let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
     assert!(!caddy.contains("10.210.1.3:80"), "{caddy}");
 
-    state.write_pointer(&key, "{\"deploy\":".into());
+    state.set_rotation(second.container_id, CopyRotation::In);
     let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.3:80").await;
-    assert!(!caddy.contains("10.210.1.2:80"), "{caddy}");
+    assert!(caddy.contains("10.210.1.2:80"), "{caddy}");
+
+    state.set_rotation(first.container_id, CopyRotation::Out);
+    wait_for_caddyfile_without(&caddyfile, "10.210.1.2:80").await;
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn a_down_machine_leaves_caddy_while_another_copy_serves() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let remote = MachineId::parse("b".repeat(32)).unwrap();
+    state.containers.lock().unwrap().push(observation(
+        2,
+        &remote,
+        "api",
+        Some([10, 210, 2, 2]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    let down = Arc::new(Mutex::new(BTreeSet::new()));
+    let load_down = {
+        let down = Arc::clone(&down);
+        move || std::future::ready(Ok(down.lock().unwrap().clone()))
+    };
+    let caddyfile = directory.join(CONFIG_FILE);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(run(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        load_down,
+        caddyfile.clone(),
+        directory.join("missing-admin.sock"),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+    ));
+    let caddy = wait_for_caddyfile(&caddyfile, "10.210.2.2:80").await;
+    assert!(caddy.contains("10.210.1.2:80"), "{caddy}");
+
+    down.lock().unwrap().insert(remote);
+    state.send(b"{\"change\":{}}\n");
+    let caddy = wait_for_caddyfile_without(&caddyfile, "10.210.2.2:80").await;
+    assert!(caddy.contains("10.210.1.2:80"), "{caddy}");
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
@@ -527,22 +569,22 @@ async fn ingress_never_reads_or_subscribes_to_ingress_routes() {
         directory,
     } = watcher_fixture().await;
     let first = state.api_container();
-    let key = ServingPointer::key(&first.identity());
-    state.write_pointer(&key, pointer("d1", &first));
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
 
     next_load(&mut load_rx).await;
     state.wait_for_ack_transactions(1).await;
-    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
 
     let second = observation(
         2,
@@ -552,11 +594,12 @@ async fn ingress_never_reads_or_subscribes_to_ingress_routes() {
         vec![ingress("example.com", 80, HttpProtocol::Http)],
     );
     state.containers.lock().unwrap().push(second.clone());
-    state.write_pointer(&key, pointer("d2", &second));
+    state.set_rotation(first.container_id, CopyRotation::Out);
     let flipped = next_load(&mut load_rx).await;
     assert!(flipped.contains("10.210.1.3:80"), "{flipped}");
+    assert!(!flipped.contains("10.210.1.2:80"), "{flipped}");
     state.wait_for_ack_transactions(2).await;
-    assert_eq!(state.last_acks(), vec![ack(&machine, "d2", &second)]);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&second])]);
 
     state.write_certificate("example.com", CHALLENGE);
     let challenged = next_load(&mut load_rx).await;
@@ -608,18 +651,15 @@ async fn certificate_only_reload_writes_no_ack() {
         server,
         directory,
     } = watcher_fixture().await;
-    let first = state.api_container();
-    state.write_pointer(
-        &ServingPointer::key(&first.identity()),
-        pointer("d1", &first),
-    );
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
         machine,
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -639,7 +679,7 @@ async fn certificate_only_reload_writes_no_ack() {
 }
 
 #[tokio::test]
-async fn ack_written_when_deploy_changes_with_same_routed_set() {
+async fn empty_route_writes_empty_ack() {
     let WatcherFixture {
         machine,
         state,
@@ -648,24 +688,26 @@ async fn ack_written_when_deploy_changes_with_same_routed_set() {
         directory,
     } = watcher_fixture().await;
     let first = state.api_container();
-    let key = ServingPointer::key(&first.identity());
-    state.write_pointer(&key, pointer("d1", &first));
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
     next_load(&mut load_rx).await;
     state.wait_for_ack_transactions(1).await;
 
-    state.write_pointer(&key, pointer("d2", &first));
+    state.set_rotation(first.container_id, CopyRotation::Out);
+    let emptied = next_load(&mut load_rx).await;
+    assert!(emptied.contains("error NOT_RUNNING 503"), "{emptied}");
     state.wait_for_ack_transactions(2).await;
-    assert_eq!(state.last_acks(), vec![ack(&machine, "d2", &first)]);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[])]);
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
@@ -674,7 +716,7 @@ async fn ack_written_when_deploy_changes_with_same_routed_set() {
 }
 
 #[tokio::test]
-async fn removed_service_pointer_deletes_its_ack() {
+async fn removed_service_deletes_its_ack() {
     let WatcherFixture {
         machine,
         state,
@@ -683,24 +725,27 @@ async fn removed_service_pointer_deletes_its_ack() {
         directory,
     } = watcher_fixture().await;
     let first = state.api_container();
-    state.write_pointer(
-        &ServingPointer::key(&first.identity()),
-        pointer("d1", &first),
-    );
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
     next_load(&mut load_rx).await;
     state.wait_for_ack_transactions(1).await;
 
-    state.remove_pointers();
+    state
+        .containers
+        .lock()
+        .unwrap()
+        .retain(|container| container.container_id != first.container_id);
+    state.send(b"{\"change\":{}}\n");
     state.wait_for_ack_transactions(2).await;
     let transactions = state.transactions.lock().unwrap().clone();
     let [_, deletes] = transactions.as_slice() else {
@@ -726,7 +771,7 @@ async fn removed_service_pointer_deletes_its_ack() {
 }
 
 #[tokio::test]
-async fn committed_ack_with_a_lost_response_is_rewritten_when_the_pointer_returns() {
+async fn committed_ack_with_a_lost_response_is_rewritten_when_the_route_returns() {
     let WatcherFixture {
         machine,
         state,
@@ -735,15 +780,26 @@ async fn committed_ack_with_a_lost_response_is_rewritten_when_the_pointer_return
         directory,
     } = watcher_fixture().await;
     let first = state.api_container();
-    let key = ServingPointer::key(&first.identity());
-    state.write_pointer(&key, pointer("d1", &first));
+    let mut second = observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    );
+    second
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
+        .unwrap();
+    state.containers.lock().unwrap().push(second.clone());
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = TestAdmin { loads: load_tx };
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -753,13 +809,13 @@ async fn committed_ack_with_a_lost_response_is_rewritten_when_the_pointer_return
     state
         .lose_next_transaction_response
         .store(true, Ordering::SeqCst);
-    state.write_pointer(&key, pointer("d2", &first));
+    state.set_rotation(second.container_id, CopyRotation::In);
     state.wait_for_ack_transactions(2).await;
-    assert_eq!(state.last_acks(), vec![ack(&machine, "d2", &first)]);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first, &second])]);
 
-    state.write_pointer(&key, pointer("d1", &first));
+    state.set_rotation(second.container_id, CopyRotation::Out);
     state.wait_for_ack_transactions(3).await;
-    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
@@ -777,23 +833,21 @@ async fn ack_written_without_a_caddy_admin() {
         directory,
     } = watcher_fixture().await;
     let first = state.api_container();
-    state.write_pointer(
-        &ServingPointer::key(&first.identity()),
-        pointer("d1", &first),
-    );
     let caddyfile = directory.join(CONFIG_FILE);
     let shutdown = CancellationToken::new();
     let watcher = tokio::spawn(run(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         caddyfile.clone(),
         directory.join("missing-admin.sock"),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
     ));
 
     wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
     state.wait_for_ack_transactions(1).await;
-    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
@@ -811,10 +865,6 @@ async fn no_ack_when_the_caddy_load_fails() {
         directory,
     } = watcher_fixture().await;
     let first = state.api_container();
-    state.write_pointer(
-        &ServingPointer::key(&first.identity()),
-        pointer("d1", &first),
-    );
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let attempts = Arc::new(AtomicUsize::new(0));
     let admin = RetryAdmin {
@@ -825,7 +875,9 @@ async fn no_ack_when_the_caddy_load_fails() {
     let watcher = tokio::spawn(watch_caddy(
         machine.clone(),
         ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
         directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
         shutdown.clone(),
         move || std::future::ready(Ok(Some(admin.clone()))),
     ));
@@ -845,7 +897,96 @@ async fn no_ack_when_the_caddy_load_fails() {
         .expect("failed load was not retried")
         .unwrap();
     state.wait_for_ack_transactions(1).await;
-    assert_eq!(state.last_acks(), vec![ack(&machine, "d1", &first)]);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn route_publishes_count_only_this_process() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let first = state.api_container();
+    let stale = observation(
+        3,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 4]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    );
+    state.transactions.lock().unwrap().push(vec![Statement {
+        query: "INSERT INTO ingress_routes (machine_id, service, deploy, containers) VALUES (?, ?, ?, ?)"
+            .into(),
+        params: ack(&machine, &[&stale]),
+    }]);
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let admin = RetryAdmin {
+        attempts: Arc::clone(&attempts),
+        loads: load_tx,
+    };
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        route_publishes,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    timeout(Duration::from_millis(500), async {
+        while attempts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first load was not attempted");
+    assert_eq!(state.ack_transactions(), 1, "only the stale row exists");
+    assert_eq!(
+        *published.borrow_and_update(),
+        crate::ingress::PublishedRoutes::default(),
+        "a stale row is not this process's publish"
+    );
+
+    timeout(Duration::from_secs(2), load_rx.recv())
+        .await
+        .expect("failed load was not retried")
+        .unwrap();
+    timeout(Duration::from_secs(5), published.changed())
+        .await
+        .expect("the first publish counts")
+        .unwrap();
+    let first_count = published.borrow_and_update().count;
+    assert!(first_count >= 1);
+    assert_eq!(
+        published.borrow().routes,
+        BTreeMap::from([(first.identity(), BTreeSet::from([first.container_id]))]),
+        "the publish carries what this process acked"
+    );
+    assert_eq!(state.ack_transactions(), 2);
+    assert_eq!(state.last_acks(), vec![ack(&machine, &[&first])]);
+
+    state.set_rotation(first.container_id, CopyRotation::Out);
+    state.wait_for_ack_transactions(3).await;
+    timeout(
+        Duration::from_secs(5),
+        published.wait_for(|published| published.count > first_count),
+    )
+    .await
+    .expect("a later publish counts again")
+    .unwrap();
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
@@ -855,23 +996,21 @@ async fn no_ack_when_the_caddy_load_fails() {
 
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
-fn pointer(deploy: &str, container: &ContainerObservation) -> String {
-    serde_json::to_string(&ServingPointer {
-        deploy: DeploymentLogId::parse(deploy).unwrap(),
-        containers: vec![container.container_id],
-        previous: None,
-        retiring: Vec::new(),
-        deciding: None,
-    })
-    .unwrap()
+fn no_down() -> std::future::Ready<Result<BTreeSet<MachineId>, CorrosionError>> {
+    std::future::ready(Ok(BTreeSet::new()))
 }
 
-fn ack(machine: &Machine, deploy: &str, container: &ContainerObservation) -> Vec<Value> {
+fn ack(machine: &Machine, routed: &[&ContainerObservation]) -> Vec<Value> {
+    let mut ids: Vec<_> = routed
+        .iter()
+        .map(|container| container.container_id)
+        .collect();
+    ids.sort_unstable();
     vec![
         json!(machine.id),
-        json!(container.identity().to_string()),
-        json!(deploy),
-        json!(serde_json::to_string(&[&container.container_id]).unwrap()),
+        json!("app/api"),
+        json!("rotation"),
+        json!(serde_json::to_string(&ids).unwrap()),
     ]
 }
 
@@ -922,8 +1061,6 @@ async fn watcher_fixture() -> WatcherFixture {
         stall_container: Arc::new(AtomicBool::new(false)),
         container_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
-        pointers: Arc::new(Mutex::new(Vec::new())),
-        pointer_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificates: Arc::new(Mutex::new(Vec::new())),
         statements: Arc::new(Mutex::new(Vec::new())),
         transactions: Arc::new(Mutex::new(Vec::new())),
@@ -1011,8 +1148,6 @@ struct WatchState {
     stall_container: Arc<AtomicBool>,
     container_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificate_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
-    pointers: Arc<Mutex<Vec<(String, String)>>>,
-    pointer_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificates: Arc<Mutex<Vec<(String, String)>>>,
     statements: Arc<Mutex<Vec<(Sent, String)>>>,
     transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
@@ -1065,25 +1200,16 @@ impl WatchState {
             .retain(|subscription| subscription.send(Bytes::from_static(event)).is_ok());
     }
 
-    fn write_pointer(&self, key: &str, value: String) {
-        *self.pointers.lock().unwrap() = vec![(key.to_owned(), value)];
-        self.notify_pointers();
-    }
-
-    fn remove_pointers(&self) {
-        self.pointers.lock().unwrap().clear();
-        self.notify_pointers();
-    }
-
-    fn notify_pointers(&self) {
-        self.pointer_subscriptions
+    fn set_rotation(&self, container_id: ContainerId, rotation: CopyRotation) {
+        self.containers
             .lock()
             .unwrap()
-            .retain(|subscription| {
-                subscription
-                    .send(Bytes::from_static(b"{\"change\":{}}\n"))
-                    .is_ok()
-            });
+            .iter_mut()
+            .find(|container| container.container_id == container_id)
+            .expect("watch fixture has the Container")
+            .try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        self.send(b"{\"change\":{}}\n");
     }
 
     fn write_certificate(&self, hostname: &str, body: &str) {
@@ -1180,16 +1306,6 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Bytes {
                 .iter()
                 .map(|(hostname, body)| vec![json!(hostname), json!(body)]),
         )
-    } else if statement.query
-        == "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'"
-    {
-        let pointers = state.pointers.lock().unwrap();
-        events(
-            &["serving_key", "value"],
-            pointers
-                .iter()
-                .map(|(key, value)| vec![json!(key), json!(value)]),
-        )
     } else {
         panic!("unexpected query {}", statement.query);
     }
@@ -1214,14 +1330,6 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
             (
                 &["hostname", "body"][..],
                 &state.certificate_subscriptions,
-                false,
-            )
-        } else if statement.query
-            == "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'"
-        {
-            (
-                &["serving_key", "value"][..],
-                &state.pointer_subscriptions,
                 false,
             )
         } else {
@@ -1260,6 +1368,21 @@ async fn transact(State(state): State<WatchState>, body: Bytes) -> Response {
     serde_json::to_vec(&json!({ "results": results, "time": 0.0 }))
         .unwrap()
         .into_response()
+}
+
+async fn wait_for_caddyfile_without(path: &Path, gone: &str) -> String {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(caddyfile) = std::fs::read_to_string(path)
+                && !caddyfile.contains(gone)
+            {
+                return caddyfile;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("Caddyfile still contained {gone}"))
 }
 
 async fn wait_for_caddyfile(path: &Path, expected: &str) -> String {

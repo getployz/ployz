@@ -34,7 +34,8 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
 - A move or mirror deletes the old copies on other servers first. Details says so. An old copy on
   the server you move or mirror onto stays, so Ployz sends only what changed since.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
-  changes are lost from, for example "Changes after 10:36 lost". **Use mirror**, or **Make
+  changes are lost from, for example "Changes after 10:36 lost", or "Changes after 8 Oct, 10:36
+  lost" when that was on an earlier day. **Use mirror**, or **Make
   primary** on the mirror, moves the volume there at the next deploy, which asks you to confirm
   **Data loss**.
 - **Drain** on a server page also moves each primary there off at the next deploy, to its mirror
