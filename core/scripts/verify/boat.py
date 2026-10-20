@@ -61,6 +61,7 @@ command -v zstd >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y 
     { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null; }
 sync
 """
+OPEN_WEB = "ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"
 # A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
 # port 22 in use. Kill only listeners, so open SSH sessions survive.
 LISTENER = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
@@ -791,6 +792,9 @@ class Provider:
         if self.run["image"] in (SNAPSHOT, None):
             self.install_key(node, sandbox)
         self.wait_agent(node)
+        # Boat's image enables UFW at every boot, a clone of BAKE included, and UFW drops inbound IPv6,
+        # the only address a sandbox serves the internet on.
+        self.exec(node, ["sh", "-ec", OPEN_WEB])
         if self.run.get("bare"):
             if self.run.get("distro") == "debian-12":
                 key = (self.private / "id_ed25519.pub").read_text().strip()
@@ -798,9 +802,6 @@ class Provider:
                 self.mark(node["name"], guest=True)
                 # The guest's first boot runs cloud-init before sshd answers.
                 self.wait_agent(node, 600)
-            else:
-                # The plain image's UFW drops inbound IPv6, the only address a sandbox serves the internet on.
-                self.exec(node, ["sh", "-ec", "ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"])
             return
         # A baked sandbox already holds BAKE's result; it keeps its own ployz install for reset to restore.
         bake = BAKE if self.run["image"] == SNAPSHOT else KEEP_INSTALL + (RECORD_IMAGES if POOL_SIZE else "")
