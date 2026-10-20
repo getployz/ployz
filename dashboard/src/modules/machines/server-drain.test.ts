@@ -34,8 +34,22 @@ const report = (
   remaining,
   // As the Engine derives it.
   complete: stopped === null && remaining.kind === "observed"
-    && services.every((entry) => ["moved", "nothing_to_move", "retired"].includes(entry.result)),
+    && services.every(serviceComplete),
 });
+// As `DrainOutcome::complete` derives it: a move or a leftover counts only once its old container is stopped.
+const serviceComplete = (entry: ServiceDrain) => {
+  switch (entry.result) {
+    case "moved":
+      return entry.moves.every((move) => move.old.kind === "stopped");
+    case "old_copies":
+      return entry.ends.every((end) => end.kind === "stopped");
+    case "nothing_to_move":
+    case "retired":
+      return true;
+    default:
+      return false;
+  }
+};
 const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null): LatestDrain => ({
   attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report(services, stopped),
 });
@@ -53,6 +67,8 @@ describe("Drain result", () => {
     expect(drainSummary(report([moved, retired]), "web-2")).toBe("Everything moved off web-2");
     expect(drainSummary(report([]), "web-2")).toBe("Nothing was running here");
     expect(drainSummary(report([{ service: "shop/api", result: "nothing_to_move" }]), "web-2")).toBe("Nothing needed to move");
+    expect(drainSummary(report([{ service: "shop/cron", result: "old_copies", ends: [{ kind: "stopped" }] }]), "web-2")).toBe("Everything moved off web-2");
+    expect(drainSummary(report([{ service: "shop/cron", result: "old_copies", ends: [{ kind: "running", unconfirmed: { kind: "proxies", servers: [web1] } }] }]), "web-2")).toBe("1 stopped");
   });
 
   it("counts what it left alone and never says nothing ran here while something does", () => {
