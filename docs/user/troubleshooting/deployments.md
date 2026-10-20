@@ -19,7 +19,10 @@ while the deploy removes Containers it no longer needs, which waits until every 
 replacement leaves behind drain on each Server after the switch, so they show in
 `ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
 then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service
-the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. The block
+the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. When the
+deploy leaves old copies running, the row reads like `switched 3/3, 2 left running` and the
+summary adds `2 copies left running`; see
+[Old and new versions answer at once](#old-and-new-versions-answer-at-once). The block
 ends with a summary that counts the Servers involved. In CI or redirected output,
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
@@ -213,6 +216,58 @@ Every replica of the service is on a server that's **Offline**, so the service i
 [When a server goes down](../services/scaling.md#when-a-server-goes-down). A service with replicas
 on other servers keeps serving from them, and reads **Degraded** while fewer serve than it asks
 for.
+
+## Old and new versions answer at once
+
+`my-app-production/web left running on web-2 (proxy on web-2 did not confirm). The next deploy cleans it up.`,
+then `Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.`
+
+A deploy couldn't reach web-2 to retire its old replica, because web-2 was cut off or powered
+off. Once web-2 is back, that replica can answer beside the new ones, so visitors get either
+version, and an old worker still takes jobs. A server that restarts takes its old replica out of
+traffic on its own within a few minutes, but the replica keeps running.
+
+1. Wait until web-2 shows online on the **Servers** page.
+2. Deploy again. With nothing staged, click **Redeploy** on the newest deployment, or run:
+
+   ```sh
+   ployz deploy web
+   ```
+
+The deploy stops the old replica, and the warning doesn't come back.
+
+## A server hasn't picked up the new version
+
+`web  web-2 has not picked up the new copies. Check its network.`
+
+`ployz status` prints this when web-2 is up but still sends `web`'s requests to the old
+replicas. Visitors who reach web-2 get the old version.
+
+- **Check web-2's network.** Your servers need UDP port 51820 open between them. See
+  [Troubleshooting servers](servers.md).
+- **Wait for it to rejoin.** Once web-2 catches up, the line goes away. A server that's down
+  shows as **Down** instead, and catches up once it's back.
+
+Signed in to Ployz Cloud, `ployz status` doesn't show this line yet.
+
+## A newer deploy is already serving
+
+`error: web: A newer deploy is already serving my-app-production/web.`
+
+Another deploy brought a newer version of `web` online while yours ran. Yours removed the
+replicas it had started for `web`, and the newer version keeps serving. If you want your version,
+deploy again.
+
+## A stopped replica won't start
+
+`Container … is out of rotation and cannot start again. Deploy the Service again.`
+
+`ployz service start` brings back only replicas you stopped. A deploy retired this one, so it
+can't serve again. Deploy the service instead:
+
+```sh
+ployz deploy web
+```
 
 ## My deployment stays Queued
 
