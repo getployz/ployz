@@ -1109,8 +1109,6 @@ pub enum ExecutionError {
         container_id: ContainerId,
         failure: HookFailure,
     },
-    /// A newer Deploy's copy of `service` was already In, so this Deploy's copies
-    /// were discarded.
     #[error("a newer deploy is already serving {service}")]
     NewerServing { service: QualifiedService },
     #[error("deploy cancelled")]
