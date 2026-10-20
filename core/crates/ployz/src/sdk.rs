@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -315,16 +315,24 @@ impl Session {
         }
     }
 
-    /// [`Self::until_closed`] for a call that may already be out: a close ends the wait,
-    /// not the call, so the Machine may still take it.
+    /// [`Self::until_closed`] for a call the Machine may take: a close once the call has
+    /// started ends the wait, not the call, so it is `unanswered`. A close seen before the
+    /// call starts sends nothing.
     async fn until_closed_answered<T>(
         &self,
         work: impl std::future::Future<Output = Result<T, CallError>>,
     ) -> Result<T, CallError> {
+        let started = AtomicBool::new(false);
         tokio::select! {
             biased;
-            () = self.inner.cancel.cancelled() => Err(CallError { error: closed(), unanswered: true }),
-            result = work => result,
+            () = self.inner.cancel.cancelled() => Err(CallError {
+                error: closed(),
+                unanswered: started.load(Ordering::Relaxed),
+            }),
+            result = async {
+                started.store(true, Ordering::Relaxed);
+                work.await
+            } => result,
         }
     }
 
