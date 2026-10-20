@@ -492,6 +492,9 @@ servers, except for services whose volume was on it (see
 server stops everything; your projects and settings stay, and the bottom bar shows **Add servers**
 until you [add one](add-a-server.md).
 
+On a server that joined from a Fleet Token, `sudo ployz status` then says
+`this server = Not in a Cluster`.
+
 The reset first stops every copy in progress on the server. If one doesn't stop within 30 seconds,
 the removal fails and names its volume; remove the server again.
 

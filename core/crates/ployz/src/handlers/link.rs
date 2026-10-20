@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
-use ployz_core::RpcErrorCode;
+use ployz_core::{LocalMachinePhase, RpcErrorCode};
 use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
     EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, ProjectName,
@@ -26,7 +26,7 @@ use super::store::{
     Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
 };
 use super::{Error, config_path, leaf_matches};
-use crate::checkin::{LocalCheckin, Paths};
+use crate::checkin::{LocalCheckin, Paths, Seen};
 use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
@@ -735,6 +735,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
+/// How long `status` waits for this host's daemon to say whether it still runs a Machine.
+const LOCAL_INSPECT: Duration = Duration::from_secs(3);
+
 fn this_server() -> Option<ThisServer> {
     let path = Path::new(Paths::CHECKIN_DIR).join("status.json");
     let checkin = LocalCheckin::read(&path)
@@ -743,21 +746,34 @@ fn this_server() -> Option<ThisServer> {
         })
         .ok()
         .flatten()?;
-    Some(ThisServer {
-        checkin,
-        left: false,
-    })
+    let left = checkin.answer == Seen::Joined
+        && super::runtime().is_ok_and(|runtime| {
+            runtime
+                .block_on(crate::checkin::local_machine(LOCAL_INSPECT))
+                .is_some_and(|details| {
+                    matches!(
+                        details.phase,
+                        LocalMachinePhase::Uninitialized | LocalMachinePhase::Resetting
+                    )
+                })
+        });
+    Some(ThisServer { checkin, left })
 }
 
 fn status_record(status: &Status) -> Fields {
     let mut record = Fields::new();
-    if let Some(ThisServer { checkin, .. }) = &status.this_server {
+    if let Some(ThisServer { left: true, .. }) = &status.this_server {
+        record.push(
+            "this server",
+            Cell::status("Not in a Cluster", Tone::Change),
+        );
+    } else if let Some(ThisServer { checkin, .. }) = &status.this_server {
         let crate::checkin::Headline {
             title: headline,
             ended,
         } = checkin.headline();
         let tone = match (checkin.answer, ended) {
-            (crate::checkin::Seen::Joined, _) => Tone::Good,
+            (Seen::Joined, _) => Tone::Good,
             (_, true) => Tone::Bad,
             (_, false) => Tone::Change,
         };

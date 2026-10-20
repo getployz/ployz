@@ -312,7 +312,9 @@ A single record, such as
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
 `Building ZFS`, `Waiting for approval`, `No cluster yet`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
 `Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
-it as `blocked` lines. With `--json` this is the `this_server` object.
+it as `blocked` lines. With `--json` this is the `this_server` object. After `ployz server rm`
+resets a server that joined from a Fleet Token, its **this server** line says `Not in a Cluster`
+and `this_server` adds `"left": true`.
 
 `ployz server enroll 'host-*' --name 'web-{n}'` prints Cloud's enrollment plan and asks before
 starting. Add `--yes` to accept it without a prompt, including with `--json`. `--status` follows
