@@ -201,11 +201,22 @@ pub struct RunningDeploy {
 
 /// A failure, and whether no Machine sent it: the dial failed, or the call went out and
 /// no status came back. A Machine's own refusal is `unanswered: false`.
-#[derive(Debug, thiserror::Error)]
-#[error("{error}")]
+#[derive(Debug)]
 pub struct CallError {
     pub error: RpcError,
     pub unanswered: bool,
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for CallError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
 }
 
 impl From<ConnectError> for CallError {
