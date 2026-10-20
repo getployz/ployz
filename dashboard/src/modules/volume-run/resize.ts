@@ -27,6 +27,9 @@ export const RESIZE_ORDER = {
   grow: { holders: (writer, mirrors) => [...mirrors, writer], record: "last", requires: [requirements.volumeSize] },
 } as const satisfies Record<SizeDirection, Order>;
 
+/** What a Server holding a copy must serve before any direction asks it. */
+export const RESIZE_REQUIREMENTS: readonly Requirement[] = [...new Set(Object.values(RESIZE_ORDER).flatMap((order) => order.requires))];
+
 /** One thing the run does, in order: ask one Machine for the size, or tell the Store every copy holds it. */
 export type ResizeStep =
   | { readonly kind: "set"; readonly member: AnsweredMember; readonly role: "mirror" | "primary" }
@@ -95,7 +98,10 @@ export type SizeRefusalReason = "switching" | "no_capacity" | "not_found" | "not
 export type SizeOutcome =
   | { readonly kind: "holds"; readonly boundBytes: Bytes }
   | { readonly kind: "retry" }
-  | { readonly kind: "refused"; readonly reason: SizeRefusalReason; readonly message: string; readonly boundBytes?: Bytes; readonly capacity?: unknown };
+  | { readonly kind: "refused"; readonly reason: SizeRefusalReason; readonly message: string; readonly boundBytes: Bytes | null; readonly capacity: PoolShortfall | null };
+
+/** What a Pool lacked on a `no_capacity` refusal, as `StorageCapacityError` names it; only an `insufficient_storage` one sizes it. */
+export type PoolShortfall = { readonly code: string; readonly required_growth_bytes?: number };
 
 /**
  * Whether a refusal undoes a record already made: only while no copy has answered `holds`. Once one has, some copy

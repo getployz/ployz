@@ -523,7 +523,7 @@ describe("volume runs", () => {
     return found;
   };
   const context = (id: string): RunContext => ({
-    id, organizationId, volumeId, volumeName: "data", dockerVolume, kind: "sync", args: { full: false }, orphan: false, refquotaBytes: 0, gen: 0, phase: "warm", current: null,
+    id, organizationId, environmentId: "env-1", volumeId, volumeName: "data", dockerVolume, kind: "sync", args: { full: false }, orphan: false, refquotaBytes: 0, recordedBytes: 0, gen: 0, phase: "warm", current: null,
   });
   const running = async (id: string) =>
     harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [id]);
@@ -1760,7 +1760,7 @@ describe("volume runs", () => {
 
     describe("a committed Move whose release failed", () => {
       const A = idOf("fsn-1");
-      const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+      const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
       const finishes = "data finishes on fsn-2; ployz volume release data finishes it now";
       const changed = "data changed since this release was planned; release it again";
       let G: Snapshot;
@@ -3531,7 +3531,7 @@ describe("volume runs", () => {
       it("protects B by the id its plan observed: removing its mirror by the new name is refused while the Cluster stops answering", async () => {
         await failedCommit();
         machines = machines.map((fake) => fake.name === "fsn-2" ? { ...fake, name: "web-2", id: idOf("fsn-2") } : fake);
-        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
         const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, role: "any" } }));
         expect(planned).toMatchObject({ ok: false, refusal: { message: "data finishes on web-2; ployz volume release data finishes it now" } });
         frameFault = () => true;
@@ -3545,7 +3545,7 @@ describe("volume runs", () => {
       it("admits removing another mirror by the id its plan observed, reading no Server inside the admission", async () => {
         const cut = await failedCommit();
         machines.push({ name: "fsn-3", pool: true, copy: slotCopy(cut) });
-        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
         const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: "data", role: "any" } }));
         if (!planned.ok) throw new Error(planned.refusal.message);
         expect(planned.input).toMatchObject({ kind: "delete_mirror", args: { slot: "fsn-3", machine: idOf("fsn-3") } });
@@ -3707,7 +3707,7 @@ describe("volume runs", () => {
         const settled = await requested({ kind: "release", args: {} });
         await harness.pool.query("update volume_run set state = $2, finished_at = now(), phase = 'committed', current = $3 where id = $1", [settled.id, state, idOf(current)]);
 
-        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000 };
+        const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
         const follow = { volumeId, kind: "release" as const, args: { follows: idOf("fsn-2") } };
 
         expect(await runEffect(releaseFollowed("env-1", DEPLOY, placed))).toEqual([]);

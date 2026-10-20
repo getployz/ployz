@@ -162,7 +162,8 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     ...listed.mounts.map((mount): BatchCommand => ({ command: "edit", environment: input.environment, expect: null, changes: [mountChange(mount.service, listed.name, null)] })),
     {
       command: "create_volume", id, environment: input.environment, name,
-      storage: listed.storage, storage_locked: true, shared_writes: listed.shared_writes, mounts: listed.mounts,
+      storage: listed.recorded_storage === undefined ? listed.storage : { kind: "provisioned", maximumBytes: listed.recorded_storage },
+      storage_locked: true, shared_writes: listed.shared_writes, mounts: listed.mounts,
       restored_from: { volume: input.volumeId, at: input.at },
     },
   ];

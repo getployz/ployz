@@ -348,7 +348,7 @@ describe("the mirror sync", () => {
     await harness.pool.query(`update volume_run set state = 'done', finished_at = now() where id = $1`, [move.run.id]);
     await run(holdDeployLane({ userId: null, organizationId }, {
       input: { volumeId, kind: "deploy", args: { deployment: "dep-1", resume: null, hold: true } },
-      volume: { environmentId: "env-1", volumeName: "db", dockerVolume: volume.dockerVolume, refquotaBytes: 1 },
+      volume: { environmentId: "env-1", volumeName: "db", dockerVolume: volume.dockerVolume, refquotaBytes: 1, recordedBytes: 0 },
       id: crypto.randomUUID(),
     }, "deploy-1"));
     await harness.pool.query(`update volume_run set state = 'lost', finished_at = now() where kind = 'deploy'`);
