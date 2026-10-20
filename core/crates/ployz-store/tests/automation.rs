@@ -401,6 +401,87 @@ fn a_push_never_deletes_data_no_save_accepted() {
 }
 
 #[test]
+fn a_push_removes_a_volume_the_servers_still_show_empty() {
+    let (store, who) = shop();
+    let data = || ployz_store::VolumeName::parse("data").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data(),
+            },
+        )
+        .unwrap();
+    let mut empty = held_on_a();
+    empty.held.clear();
+    store
+        .write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                volumes: Some(empty.clone()),
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+
+    let Written::Automated(automated) = store
+        .system(
+            &org(),
+            &push(None, Some(H1), None),
+            &Trusted {
+                volumes: Some(empty),
+                ..Trusted::default()
+            },
+        )
+        .unwrap()
+    else {
+        panic!("a system event writes Automated")
+    };
+    let nodes = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: automated.admitted[0].deployment.id.clone(),
+            },
+        )
+        .unwrap()
+        .nodes;
+    assert!(
+        nodes.iter().any(
+            |node| matches!(node.node, ployz_store::DeployedNode::Volume { .. })
+                && node.node.name() == "data"
+        ),
+        "{nodes:?}"
+    );
+}
+
+#[test]
 fn a_narrow_push_deletes_saved_loss_data_no_service_mounts() {
     let (store, who) = saved_loss_of(true);
     set(&store, &who, "web.watchPaths", json!(["web/**"]));
@@ -925,6 +1006,62 @@ fn a_push_ships_a_saved_config_nothing_mounts() {
     let automated = system(
         &store,
         &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    let nodes: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: automated.admitted[0].deployment.id.clone(),
+            },
+        )
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    assert!(nodes.contains(&"extra".to_owned()), "{nodes:?}");
+}
+
+#[test]
+fn a_push_removes_a_config_a_save_deleted_while_a_deploy_shipped_it() {
+    let (store, who) = shop();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    backend::deploy(&store, &who, "production", 1);
+    system(&store, &push(None, Some(H1), None));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000025").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ConfigName::parse("extra").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let shipping = system(
+        &store,
+        &push(Some(H1), Some(H2), Some(&["web/src/main.rs"])),
+    );
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    store
+        .claim(&shipping.admitted[0].deployment.id, &runner)
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ployz_core::ConfigName::parse("extra").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+
+    let automated = system(
+        &store,
+        &push(Some(H2), Some(H3), Some(&["web/src/main.rs"])),
     );
     let nodes: Vec<String> = store
         .read(
