@@ -235,6 +235,8 @@ struct Scripted {
     /// A Held ask on this copy lands, but no reply to it, or to a resend,
     /// ever arrives.
     unanswered_held: BTreeSet<ContainerId>,
+    /// The reason an unanswered In or Held ask fails with.
+    unanswered_reason: &'static str,
     /// This many route reads fail before the next one answers.
     failed_route_reads: Mutex<usize>,
     /// A route read takes a scheduler turn, as an RPC does.
@@ -291,6 +293,7 @@ impl Scripted {
             unanswered_in: BTreeSet::new(),
             answered_error_after_in: BTreeSet::new(),
             unanswered_held: BTreeSet::new(),
+            unanswered_reason: "no answer before the deadline",
             failed_route_reads: Mutex::new(0),
             read_latency: false,
             moved: Mutex::new(BTreeMap::new()),
@@ -757,7 +760,7 @@ impl Scripted {
             {
                 return Err(RpcError::unanswered_target(
                     RpcErrorCode::Unavailable,
-                    "no answer before the deadline".into(),
+                    self.unanswered_reason.into(),
                 ));
             }
             Decision::Met => {
@@ -826,7 +829,7 @@ impl Scripted {
         {
             return Err(RpcError::unanswered_target(
                 RpcErrorCode::Unavailable,
-                "no answer before the deadline".into(),
+                self.unanswered_reason.into(),
             ));
         }
         Ok(EnsuredContainer::Ensured {
