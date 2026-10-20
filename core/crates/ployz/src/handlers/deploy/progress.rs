@@ -447,7 +447,13 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         match fault {
             Some(Fault::Build) => hints.push(Hint::Inspect(command(
                 &[
-                    &["logs", "--deployment", deployment.as_str(), "--build", name.as_str()][..],
+                    &[
+                        "logs",
+                        "--deployment",
+                        deployment.as_str(),
+                        "--build",
+                        name.as_str(),
+                    ][..],
                     &scope,
                 ]
                 .concat(),
@@ -583,7 +589,7 @@ mod tests {
     }
 
     fn failed_build(view: &mut DeploymentView) {
-        view.nodes[0].rows.clear();
+        view.nodes.first_mut().unwrap().rows.clear();
         view.builds = vec![
             serde_json::from_value(json!({
                 "service": "web", "commit": null, "status": "failed", "message": "exit code: 7"
@@ -605,9 +611,8 @@ mod tests {
     #[test]
     fn a_failed_upload_retries_with_up_since_a_deploy_ships_the_last_one_that_built() {
         let mut view = view();
-        view.deployment.upload = Some(
-            serde_json::from_value(json!({"digest": "a".repeat(64)})).unwrap(),
-        );
+        view.deployment.upload =
+            Some(serde_json::from_value(json!({"digest": "a".repeat(64)})).unwrap());
         failed_build(&mut view);
         assert_eq!(
             hints(&failure(&view, command)),
@@ -621,7 +626,7 @@ mod tests {
     #[test]
     fn an_image_that_wont_pull_says_to_undo_it_not_to_read_old_logs_or_retry() {
         let mut view = view();
-        for row in &mut view.nodes[0].rows {
+        for row in &mut view.nodes.first_mut().unwrap().rows {
             if let RowState::Failed { step, .. } = &mut row.state {
                 *step = Some(FailedAt::Pull);
             }
