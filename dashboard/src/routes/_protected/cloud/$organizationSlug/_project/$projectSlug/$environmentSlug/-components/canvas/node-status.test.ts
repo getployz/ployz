@@ -1,4 +1,4 @@
-import type { BuildView, DeployPreview, DomainRow, NodeOutcome, RowId, ServiceListing } from "@ployz/sdk";
+import type { BuildView, DeploymentView, DeployPreview, DomainRow, NodeOutcome, RowId, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
 import { asTestDouble } from "#/lib/test-double";
@@ -246,9 +246,9 @@ describe("deployChip", () => {
   const deployment = (status: "queued" | "running", services: string[]) => ({ status, services, started_at: status === "running" ? 100 : null, admitted_at: 90 });
 
   it("puts a Deploy in flight first: running, else queued, when it targets the Service or every Service", () => {
-    expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", []), deployment("running", ["web"])])).toEqual({ kind: "deploying", since: 100 });
+    expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", []), deployment("running", ["web"])], new Set(["web"]))).toEqual({ kind: "deploying", since: 100 });
     expect(deployChip(service, 0, [deployment("queued", ["web"])])).toEqual({ kind: "queued" });
-    expect(deployChip(service, 0, [deployment("running", ["api"])])).toBeNull();
+    expect(deployChip(service, 0, [deployment("running", ["api"])], new Set(["api"]))).toBeNull();
   });
 
   it("says what the next Deploy does otherwise", () => {
@@ -265,7 +265,27 @@ describe("deployChip", () => {
     expect(deployChip(service, 0, running, new Set(["api"]))).toBeNull();
     expect(deployChip({ ...service, change: "update" }, 1, running, new Set())).toEqual({ kind: "staged", label: "1 change", variant: "info" });
     expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], new Set())).toEqual({ kind: "queued" });
-    expect(deployChip(service, 0, running, null)).toEqual({ kind: "deploying", since: 100 });
+  });
+
+  it("waits for the running Deploy's plan before it shows Deploying", () => {
+    const running = [deployment("running", [])];
+    expect(deployChip(service, 0, running, null)).toBeNull();
+    expect(deployChip({ ...service, change: "update" }, 1, running, null)).toEqual({ kind: "staged", label: "1 change", variant: "info" });
+    expect(deployChip(service, 0, [...running, deployment("queued", ["web"])], null)).toEqual({ kind: "queued" });
+  });
+
+  it("never takes Deploying off a card to bring it back, from the running summary through its view, builds and plan", () => {
+    const running = [deployment("running", [])];
+    const node = (outcome: string) => asTestDouble<NodeOutcome>()({ type: "service", id: "web", name: "web", outcome, rows: [] });
+    const build = (status: string) => asTestDouble<BuildView>()({ service: "web", status });
+    const planned = asTestDouble<DeployPreview>()({ operations: [] });
+    const chip = (view: Pick<DeploymentView, "nodes" | "preview" | "builds"> | null) =>
+      deployChip({ ...service, change: "update" }, 1, running, view === null ? null : restartedServices(view))?.kind === "deploying";
+    const built = [null, { nodes: [node("pending")], preview: null, builds: [build("building")] },
+      { nodes: [node("pending")], preview: null, builds: [build("built")] }, { nodes: [node("pending")], preview: planned, builds: [build("built")] }];
+    expect(built.map(chip)).toEqual([false, false, true, true]);
+    const configOnly = [null, { nodes: [node("pending")], preview: null, builds: [] }, { nodes: [node("pending")], preview: planned, builds: [] }];
+    expect(configOnly.map(chip)).toEqual([false, false, true]);
   });
 
   it("shows Deploying on a Service a narrowed Deploy restarts though it didn't select it", () => {
