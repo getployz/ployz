@@ -1,6 +1,10 @@
 //! The Drain's wire contract and scope, and how execution sequences what it observes.
 
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use futures_util::FutureExt;
 
 use ployz_core::{
     CopyRotation, DeploymentLogId, Machine, MachineId, MachineName, Namespace, QualifiedService,
@@ -14,7 +18,7 @@ use super::{
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
 };
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Converged, OldCopyEnd, Unconfirmed};
+use crate::deploy::{Converged, LastIn, Moving, OldCopyEnd, Unconfirmed};
 use crate::drain::retirement::Retirement;
 use crate::global_fixtures::container_id;
 
@@ -130,6 +134,42 @@ struct Scripted {
     /// How each Out copy ends once let go, in order.
     ends: VecDeque<OldCopyEnd>,
     let_go: Vec<Copy>,
+    /// How long each moved Service's old copy takes to retire.
+    retire_time: Duration,
+    /// Services whose old copy is refused Out as the last copy In.
+    last_in: Vec<QualifiedService>,
+    /// `in <service>` as each Service's new copy comes In, `gone <service>` as its old one
+    /// is removed.
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl Scripted {
+    /// `moves` as the client hands them back: each old copy still to retire.
+    fn retiring(&self, service: &QualifiedService, moves: Vec<Move>) -> Vec<Moving> {
+        self.calls.lock().unwrap().push(format!("in {service}"));
+        moves
+            .into_iter()
+            .map(|Move { from, to, old }| {
+                let calls = Arc::clone(&self.calls);
+                let retire_time = self.retire_time;
+                let refused = self.last_in.contains(service);
+                let service = service.clone();
+                let old = async move {
+                    tokio::time::sleep(retire_time).await;
+                    if refused {
+                        return Err(LastIn);
+                    }
+                    calls.lock().unwrap().push(format!("gone {service}"));
+                    Ok(old)
+                };
+                Moving {
+                    from,
+                    to,
+                    old: old.boxed(),
+                }
+            })
+            .collect()
+    }
 }
 
 impl DrainClient for Scripted {
@@ -151,15 +191,31 @@ impl DrainClient for Scripted {
 
     async fn converge(
         &mut self,
-        _service: &QualifiedService,
+        service: &QualifiedService,
         _cancellation: &CancellationToken,
-    ) -> Converged {
+    ) -> Converged<Moving> {
         if let Some(cancellation) = &self.cancel_after_converge {
             cancellation.cancel();
         }
-        self.convergences
+        match self
+            .convergences
             .pop_front()
             .expect("one scripted convergence per Service")
+        {
+            Converged::Moved { moves } => Converged::Moved {
+                moves: self.retiring(service, moves),
+            },
+            Converged::Failed { moves, failure } => Converged::Failed {
+                moves: self.retiring(service, moves),
+                failure,
+            },
+            Converged::Stopped { moves, stop } => Converged::Stopped {
+                moves: self.retiring(service, moves),
+                stop,
+            },
+            Converged::NothingToMove => Converged::NothingToMove,
+            Converged::Stays { reason } => Converged::Stays { reason },
+        }
     }
 
     async fn copies_on(
@@ -714,4 +770,62 @@ async fn a_full_drain_is_complete_and_names_the_user_services_its_scope_left_alo
         json.pointer("/remaining/unchosen"),
         Some(&json!(["blog/web"]))
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn old_copy_retires_overlap_the_next_move() {
+    let mut client = Scripted {
+        observations: [nothing_left()].into(),
+        convergences: [
+            Converged::Moved { moves: one_move() },
+            Converged::Moved { moves: one_move() },
+        ]
+        .into(),
+        retire_time: Duration::from_secs(5),
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    let calls = client.calls.lock().unwrap().clone();
+    let at = |call: &str| calls.iter().position(|seen| seen == call).unwrap();
+    assert!(
+        at("in app/api") < at("gone app/web"),
+        "the next move starts before the old copy is Gone: {calls:?}"
+    );
+    assert_eq!(
+        outcomes(&report),
+        [entry("web", moved()), entry("api", moved())]
+    );
+    assert!(report.complete());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_old_copy_refused_out_after_the_next_move_still_stays() {
+    let mut client = Scripted {
+        observations: [Ok(vec![qualified("web")])].into(),
+        convergences: [
+            Converged::Moved { moves: one_move() },
+            Converged::Moved { moves: one_move() },
+        ]
+        .into(),
+        retire_time: Duration::from_secs(5),
+        last_in: vec![qualified("web")],
+        ..Scripted::default()
+    };
+    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    assert_eq!(
+        outcomes(&report),
+        [
+            entry(
+                "web",
+                DrainOutcome::Failed {
+                    moves: Vec::new(),
+                    failure: MoveFailure::Refused {
+                        reason: StayReason::LastIn,
+                    },
+                }
+            ),
+            entry("api", moved()),
+        ]
+    );
+    assert!(!report.complete());
 }

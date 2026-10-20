@@ -4,7 +4,7 @@ use ployz_core::{DeploymentLogId, Gen, MachineName};
 
 use super::*;
 use crate::deploy::cleanup::Copy;
-use crate::deploy::convergence::{RelocateError, relocate};
+use crate::deploy::convergence::{LastIn, RelocateError, Relocated, relocate, retire_old};
 use crate::deploy::{MachineRef, OldCopyEnd, Unconfirmed};
 
 const FROM: char = '1';
@@ -55,11 +55,12 @@ fn name(id: &MachineId) -> MachineRef {
     }
 }
 
+/// The whole move: the new copy brought In, then the old one retired once it is listed.
 async fn relocate_with(
     client: &Scripted,
     cancellation: &CancellationToken,
-) -> Result<OldCopyEnd, RelocateError> {
-    relocate(
+) -> Result<Result<OldCopyEnd, LastIn>, RelocateError> {
+    let relocated = relocate(
         client,
         &test_namespace(),
         &spec(Some(0), None, None),
@@ -68,7 +69,11 @@ async fn relocate_with(
         &name,
         cancellation,
     )
-    .await
+    .await?;
+    Ok(match relocated {
+        Relocated::Listed => retire_old(client, &old_copy(), &name, cancellation).await,
+        Relocated::Unlisted(unconfirmed) => Ok(OldCopyEnd::In { unconfirmed }),
+    })
 }
 
 #[tokio::test]
@@ -78,6 +83,7 @@ async fn a_move_brings_the_new_copy_in_and_retires_the_old_one() {
     let client = moving(steps).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
     let end = relocate_with(&client, &CancellationToken::new())
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(end, OldCopyEnd::Stopped);
     assert_eq!(client.rotation(&container('b')), Some(CopyRotation::In));
@@ -116,6 +122,7 @@ async fn an_unconfirmed_listing_leaves_both_copies_in() {
     client.acks.insert(machine('3'), Ack::Never);
     let end = relocate_with(&client, &CancellationToken::new())
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(
         end,
@@ -137,7 +144,7 @@ async fn the_last_copy_in_rotation_stays() {
         (container('a'), Ask::Out),
         (container('b'), CopyRotation::Out),
     );
-    let Err(RelocateError::LastIn) = relocate_with(&client, &CancellationToken::new()).await else {
+    let Ok(Err(LastIn)) = relocate_with(&client, &CancellationToken::new()).await else {
         panic!("Out on the last In copy is refused");
     };
     assert_eq!(client.rotation(&container('a')), Some(CopyRotation::In));
@@ -152,7 +159,10 @@ async fn a_cancel_between_in_and_out_leaves_both_copies_in() {
         Move::To(container('b'), CopyRotation::In),
         cancellation.clone(),
     ));
-    let end = relocate_with(&client, &cancellation).await.unwrap();
+    let end = relocate_with(&client, &cancellation)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         end,
         OldCopyEnd::In {
