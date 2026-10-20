@@ -183,19 +183,44 @@ pub async fn run_deployment(
 }
 
 /// Which of `connections`' Servers hold each Docker Volume in `sought`: the
-/// evidence a Deploy that removes deployed Volumes is admitted with.
+/// evidence a Deploy that removes deployed Volumes is admitted with. When no
+/// Server can be reached, or listing the Machines fails, the observation names
+/// each of `connections`' Servers unanswered, with why.
 ///
 /// # Errors
-/// Returns the connection's error when no Server can be reached, or listing the
-/// Machines fails.
+/// Returns `invalid_argument` when `connections` is empty.
 pub async fn observe_volumes(
     connections: Vec<Connection>,
     sought: Vec<ployz_core::DockerVolumeName>,
 ) -> Result<ployz_store::VolumeObservation, RpcError> {
-    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
-    let observed = session.observe_volumes(sought).await;
+    let servers: Vec<MachineId> = connections
+        .iter()
+        .filter_map(Connection::machine_id)
+        .copied()
+        .collect();
+    let session = match connect_connections(connections, Arc::new(SystemConnector::default())).await
+    {
+        Ok(session) => session,
+        Err(error) if error.code == RpcErrorCode::InvalidArgument => return Err(error),
+        Err(error) => return Ok(failed(sought, servers, &error)),
+    };
+    let observed = session.observe_volumes(sought.clone()).await;
     session.close().await;
-    observed
+    Ok(observed.unwrap_or_else(|error| failed(sought, servers, &error)))
+}
+
+fn failed(
+    sought: Vec<ployz_core::DockerVolumeName>,
+    servers: Vec<MachineId>,
+    error: &RpcError,
+) -> ployz_store::VolumeObservation {
+    let Failure { reason, cause } = Failure::from(error);
+    let why = std::iter::once(reason)
+        .chain(cause)
+        .map(|part| part.trim_end_matches('.').to_owned())
+        .collect::<Vec<_>>()
+        .join(": ");
+    ployz_store::VolumeObservation::failed(sought, servers, why)
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep

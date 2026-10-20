@@ -1043,6 +1043,29 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
 }
 
 #[tokio::test]
+async fn observing_a_server_that_cannot_be_reached_names_it_and_why() {
+    use ployz_core::{DockerVolumeName, MachineId};
+
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = closed.local_addr().unwrap();
+    drop(closed);
+    let server = MachineId::parse("a".repeat(32)).unwrap();
+    let sought = vec![DockerVolumeName::parse("shop-production_data").unwrap()];
+
+    let observed = ployz::sdk::observe_volumes(
+        vec![ployz::context::Connection::tcp(address).with_machine_id(server)],
+        sought.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(observed.sought, sought);
+    assert!(observed.held.is_empty());
+    assert_eq!(observed.unanswered, [server]);
+    assert!(observed.failure.is_some_and(|why| !why.is_empty()));
+}
+
+#[tokio::test]
 async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
     use ployz_core::{CopyRole, DockerVolumeId, DockerVolumeName, ProvisionedCopy};
     use std::sync::Arc;

@@ -41,11 +41,11 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 
 /// Which of `connections`' Servers hold each Docker Volume named in `sought`: the
 /// evidence (`VolumeObservation`) Cloud admits a Deploy that removes deployed
-/// Volumes with. Servers that don't answer are named, never assumed empty.
+/// Volumes with. Servers that don't answer are named, never assumed empty, and when
+/// none can be reached its `failure` says why.
 ///
 /// # Errors
-/// Returns `invalid_argument` for malformed input, or the connection's error when
-/// no Server can be reached.
+/// Returns `invalid_argument` for malformed input.
 #[napi(ts_return_type = "Promise<VolumeObservation>")]
 pub async fn observe_volumes(
     #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,

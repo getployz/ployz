@@ -297,8 +297,8 @@ impl<'m> Store<'m> {
     }
 
     /// Which Servers hold the data of the Volumes each of `queries` removes: a
-    /// Deploy, removal or rollback. A Cluster this can't reach leaves the evidence
-    /// out, so the Store refuses.
+    /// Deploy, removal or rollback. A Cluster this can't reach is a failed
+    /// observation that says why, so the Store refuses with it.
     fn observe(
         &self,
         queries: impl IntoIterator<Item = RemovalsQuery>,
@@ -326,10 +326,16 @@ impl<'m> Store<'m> {
         let Ok(runtime) = runtime() else {
             return Ok(None);
         };
-        Ok(runtime.block_on(async {
-            let mut client = super::server::connect(self.matches, context).await.ok()?;
-            client.observe_volumes(sought).await.ok()
-        }))
+        Ok(Some(runtime.block_on(async {
+            let observed = match super::server::connect(self.matches, context).await {
+                Ok(mut client) => client
+                    .observe_volumes(sought.clone())
+                    .await
+                    .map_err(|error| error.message),
+                Err(error) => Err(error.to_string()),
+            };
+            observed.unwrap_or_else(|why| VolumeObservation::failed(sought, Vec::new(), why))
+        })))
     }
 
     /// Hand Cloud the archive of `listing`, read from `dir`, the source Deployment
