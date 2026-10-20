@@ -217,6 +217,7 @@ impl Fleet {
                 },
                 dir.join("Caddyfile"),
                 dir.join("admin.sock"),
+                tokio::sync::watch::channel(Default::default()).0,
                 self.shutdown.clone(),
             ));
         }

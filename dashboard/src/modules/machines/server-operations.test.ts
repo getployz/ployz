@@ -55,6 +55,7 @@ describe("drainPlan", () => {
       subject: `server:${here}`,
       verb: "drain",
       name: "fra-1",
+      recorded: true,
       preview: { server: here, moves: ["shop/web"], stays: ["shop/db"], retires: ["shop/edge", "shop/metrics"] },
       effects: [{ kind: "removes_service", name: "shop/metrics", node: "metrics", path: "services/shop/metrics" }],
       targets: ["shop/db", "shop/edge", "shop/metrics", "shop/web"],

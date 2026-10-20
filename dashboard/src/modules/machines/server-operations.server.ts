@@ -95,6 +95,8 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     subject: `server:${machineId}`,
     verb: "drain",
     name,
+    // Its attempt keeps the approval, so carrying it again answers that drain.
+    recorded: true,
     preview: { server: machineId, moves, stays, retires },
     effects,
     targets: [...moves, ...stays, ...retires].sort(byName),
@@ -144,6 +146,8 @@ export function cleanPlan(
     subject: `namespace:${namespace}`,
     verb: "clean",
     name: namespace,
+    // Its clean keeps the approval, so carrying it again answers that clean.
+    recorded: true,
     preview: {
       namespace,
       services: services.map(({ identity }) => identity).sort(byName),

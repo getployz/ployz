@@ -26,6 +26,11 @@ fn every_volume_copy_verb_is_sent_on_its_own_path() {
             json!({ "name": "data", "expect": { "kind": "none" }, "want": { "kind": "forget" } }),
             "SetVolumeCopy",
         ),
+        (
+            "set_volume_size",
+            json!({ "name": "data", "maximum_bytes": 2147483648u64 }),
+            "SetVolumeSize",
+        ),
     ];
     for (command, payload, route) in cases {
         let path = volume_switch_path(&body(command, payload))
@@ -77,4 +82,17 @@ fn a_set_volume_copy_reply_and_its_refusal_pass_through_as_the_machine_sent_them
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(error.details["reason"], json!("behind"));
     assert_eq!(error.details["copy"], copy);
+}
+
+#[test]
+fn a_set_volume_size_reply_passes_through_as_the_machine_sent_it() {
+    let reply = RpcResponseBody::SetVolumeSizeReply(ployz_core::SetVolumeSizeReply {
+        bound_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+            std::num::NonZeroU64::new(2_147_483_648).unwrap_or_else(|| unreachable!()),
+        ),
+    });
+    assert_eq!(
+        volume_switch_payload("set_volume_size", reply).unwrap_or_else(|error| panic!("{error:?}")),
+        json!({ "bound_bytes": 2_147_483_648u64 })
+    );
 }
