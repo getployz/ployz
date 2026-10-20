@@ -3101,7 +3101,7 @@ describe("volume runs", () => {
       expect(storeEvents).toEqual([]);
       expect(await rows()).toMatchObject([{
         state: "failed",
-        message: "fsn-1 has no room to grow data to 20 GB (it lacks 4 GB). data stays 10 GB. fsn-2, fsn-3 already hold 20 GB. Free space on fsn-1, then run ployz volume set data --size 20 again.",
+        message: "fsn-1 has no room to grow data to 20 GB. data stays 10 GB. fsn-2, fsn-3 already hold 20 GB. Free space on fsn-1, then run ployz volume set data --size 20 again.",
       }]);
     });
 

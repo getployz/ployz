@@ -18,9 +18,9 @@ describe("sizeRefusalOf", () => {
     ["a shrink refusal below the size is final", refused({ reason: "shrink", bound_bytes: 15 * GB }), { kind: "refused", reason: "shrink", boundBytes: 15 * GB, capacity: null, message: "db-1 refused to resize data (shrink)" }],
     ["a switching copy retries", refused({ reason: "switching" }), { kind: "retry" }],
     [
-      "no capacity names what the Pool lacks",
+      "no capacity names the Server and the size, not the Pool's growth",
       refused({ reason: "no_capacity", bound_bytes: 10 * GB, capacity: lacking }),
-      { kind: "refused", reason: "no_capacity", boundBytes: 10 * GB, capacity: lacking, message: "db-1 has no room to grow data to 20 GB (it lacks 4 GB)" },
+      { kind: "refused", reason: "no_capacity", boundBytes: 10 * GB, capacity: lacking, message: "db-1 has no room to grow data to 20 GB" },
     ],
     [
       "no capacity on a Pool that cannot grow names only the Server",
