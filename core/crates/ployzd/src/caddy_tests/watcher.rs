@@ -480,6 +480,11 @@ async fn a_failed_admin_probe_on_a_loaded_input_neither_reloads_nor_holds_back_a
         load_rx.try_recv().is_err(),
         "an unchanged, loaded input was posted to /load again"
     );
+    assert_eq!(
+        probes.load(Ordering::SeqCst),
+        1,
+        "an unchanged, loaded input probed the admin"
+    );
 
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
