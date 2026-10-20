@@ -150,6 +150,12 @@ pub struct DeploymentSummary {
     pub runner: Option<RunnerId>,
     /// What its Services without a source of their own build from.
     pub upload: Option<UploadedSource>,
+    /// Whether `upload` is chosen again as it starts: it sent none, so its Services
+    /// build from the upload each last ran then, which a Deployment ahead of it may
+    /// still change.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub chooses_upload_at_start: bool,
     /// Whether it removes the Environment from the Servers: it ships the empty
     /// Environment ([`NOTHING`]) and deletes the data it accepted.
     pub remove: bool,
@@ -984,6 +990,11 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     // Only a push holds, and a push that admitted a Deployment froze what it ships,
     // at least one node: a hold, cancelled or not, froze none.
     let held = push.is_some() && nodes.is_empty();
+    let service_uploads: Option<uploads::ServiceUploads> = row
+        .optional_text(23)?
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| error::corrupt("Deployment uploads"))?;
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
@@ -1003,6 +1014,10 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|_| error::corrupt("Deployment upload"))?,
+            chooses_upload_at_start: status == DeploymentStatus::Queued
+                && service_uploads
+                    .as_ref()
+                    .is_some_and(|uploads| uploads.provisional),
             remove: row.number::<Revision>(4, "revision")? == NOTHING,
             admitted_by: row.parse_optional(13, "identity")?,
             admitted_at: row.int(14)?,
@@ -1029,11 +1044,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         cluster_domain: row.parse_optional(10, "identity")?,
         lease,
         listed: row.int(22)?,
-        service_uploads: row
-            .optional_text(23)?
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|_| error::corrupt("Deployment uploads"))?,
+        service_uploads,
     })
 }
 
