@@ -746,6 +746,30 @@ async fn an_unanswered_held_ask_whose_re_read_fails_brings_the_copy_back_in() {
     }
 }
 
+/// A restart whose stop fails reads as two sentences, however the stop's error
+/// ended: the reason, then where the copy was left.
+#[tokio::test(start_paused = true)]
+async fn a_failed_restart_stop_and_its_outcome_read_as_two_sentences() {
+    for reason in [
+        "target Machine RPC timed out",
+        "target Machine RPC timed out.",
+    ] {
+        let fake = Scripted::new(vec![
+            inspected(),
+            failed(Call::Stop(machine('a'), container('1')), reason),
+        ])
+        .with_copy(&machine('a'), &container('1'), CopyRotation::In);
+        let ran = run_command(Command::Restart, Recording::of(fake)).await;
+        let error = ran.answer.unwrap_err();
+        assert!(
+            error
+                .message
+                .ends_with("target Machine RPC timed out. It is back In."),
+            "{reason:?}: {error:?}"
+        );
+    }
+}
+
 /// A gen 3 copy left Pending beside an In gen 4 copy is restarted, and named left
 /// unrouted with the reason, as start names it.
 #[tokio::test(start_paused = true)]
