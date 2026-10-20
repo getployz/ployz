@@ -61,7 +61,8 @@ $ ployz get --project shop --env nope
 stderr:
 ```
 error: No Environment named nope in Project shop
-next: ployz env new nope --project shop
+next: ployz env ls --project shop
+valid: production
 ```
 
 ### completion: unknown shell
@@ -312,18 +313,18 @@ stdout:
 
 ```console
 $ timeout 30 ployz deploy --project shop
-# exit 3
+# exit 1
 ```
 
 stderr:
 ```
 Deploying #1 of shop/production
-  db: not attempted
-  web: not attempted
+  web: not started
+  db: not started
   Volume pgdata: not attempted
 ───────────────
 3 not attempted
-error: No Server is enrolled in this Organization
+error: No Server is enrolled in this Organization.
 retry: ployz deploy --project shop --env production
 ```
 

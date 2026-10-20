@@ -92,6 +92,13 @@ impl Client {
 
     /// The Service's Serving Pointer and the Machines that acked a deploy of it,
     /// as the publishing Machine holds them.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the drain moves in R4 and R7 deletes the publisher"
+        )
+    )]
     pub(crate) async fn serving_pointer_read(
         &mut self,
         service: &QualifiedService,
@@ -287,6 +294,10 @@ pub(crate) enum Applied {
 /// `retiring`, and `admitted`'s own retiring ids stay there until a complete listing
 /// proves them absent. With no admitted row nothing retires: no row names the old
 /// copies, so a read before each stop or removal finds them unnamed.
+#[expect(
+    dead_code,
+    reason = "the drain moves in R4 and R7 deletes the publisher"
+)]
 pub(crate) fn succession(
     admitted: Option<&ServingPointer>,
     deploy: DeploymentLogId,

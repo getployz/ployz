@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
@@ -9,6 +9,9 @@ import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { type CopyServer, VolumeCopiesPanel } from "./StoreVolumeCopies";
 
 const NOW = new Date("2026-10-12T12:00:00Z");
+const DAY = 86_400_000;
+const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 const id = (server: string) => server.padEnd(32, "0") as MachineId;
 const volume = { id: "v1", name: "data", mounts: [{ service: "postgres" }] };
 const pooled = (server: string) => member(server, "empty");
@@ -20,11 +23,13 @@ const row = (mirrors: string[], staged: { primary: string; mirrors?: string[]; d
   unreached: false,
   deploymentId: null,
 });
-const mirrorAsOf = (server: string, when: Date): Member => {
-  const base = member(server, "mirror");
+const copyAsOf = (copy: "mirror" | "old") => (server: string, when: Date): Member => {
+  const base = member(server, copy);
   if (!base.answered || base.view.copy === null) throw new Error("fixture");
-  return { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: { name: "s", guid: server, created_unix_seconds: when.getTime() / 1000 } } } };
+  return { ...base, view: { ...base.view, copy: { ...COPIES[copy], newest: { name: "s", guid: server, created_unix_seconds: when.getTime() / 1000 } } } };
 };
+const mirrorAsOf = copyAsOf("mirror");
+const oldAsOf = copyAsOf("old");
 const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServer => ({ id: id(name), name, storage });
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
@@ -41,11 +46,17 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
-    open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
+    open={options.open ? id(options.open) : null} onOpen={onOpen} />);
   return { stage, deleteCopy, restore, onOpen, refresh };
 }
 const group = (label: string) => within(screen.getByRole("list", { name: label }));
 const rows = (label: string) => group(label).queryAllByRole("listitem").map((item) => item.textContent);
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+afterEach(() => vi.useRealTimers());
 
 describe("VolumeCopiesPanel", () => {
   afterEach(cleanup);
@@ -72,7 +83,7 @@ describe("VolumeCopiesPanel", () => {
   });
 
   it("lists the mirror and the old copy elsewhere, and hides Add copy once a mirror exists", () => {
-    const { onOpen } = panel([member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000)), member("web-3", "mirror")], row(["web-2"]));
+    const { onOpen } = panel([member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000)), member("web-3", "old")], row(["web-2"]));
     expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^web-2Mirror · 15 min · 5 min/), expect.stringMatching(/^web-3Old copy · /)]);
     expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Mirror on web-2" }));
@@ -81,15 +92,15 @@ describe("VolumeCopiesPanel", () => {
 
   it("offers Delete on an old copy once the Deploy that stamped the Volume has ended, and not while it runs", () => {
     const stamped = { ...row([]), deploymentId: "dep-1" };
-    panel([member("web-1", "writer"), member("web-3", "mirror")], stamped);
+    panel([member("web-1", "writer"), member("web-3", "old")], stamped);
     expect(screen.getByRole("button", { name: "Delete copy on web-3" }).hasAttribute("disabled")).toBe(false);
     cleanup();
-    panel([member("web-1", "writer"), member("web-3", "mirror")], stamped, { deploying: true });
+    panel([member("web-1", "writer"), member("web-3", "old")], stamped, { deploying: true });
     expect(screen.getByRole("button", { name: "Delete copy on web-3" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("deletes an old copy at once after a plain confirm, not staged", async () => {
-    const { stage, deleteCopy } = panel([member("web-1", "writer"), member("web-3", "mirror")], row([]));
+    const { stage, deleteCopy } = panel([member("web-1", "writer"), member("web-3", "old")], row([]));
     fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText("Delete copy")).toBeTruthy();
@@ -101,7 +112,7 @@ describe("VolumeCopiesPanel", () => {
   });
 
   it("closes the delete confirm at once, without waiting for Cloud", async () => {
-    const { deleteCopy } = panel([member("web-1", "writer"), member("web-3", "mirror")], row([]));
+    const { deleteCopy } = panel([member("web-1", "writer"), member("web-3", "old")], row([]));
     deleteCopy.mockReturnValue(new Promise(() => undefined));
     fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
@@ -110,7 +121,7 @@ describe("VolumeCopiesPanel", () => {
   });
 
   it("restores from an old copy's latest point, as from a mirror's", () => {
-    const { restore } = panel([member("web-1", "writer"), mirrorAsOf("web-3", new Date(NOW.getTime() - 3_600_000))], row([]));
+    const { restore } = panel([member("web-1", "writer"), oldAsOf("web-3", new Date(NOW.getTime() - 3_600_000))], row([]));
     fireEvent.click(screen.getByRole("button", { name: "Restore from web-3" }));
     expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-3" }));
   });
@@ -125,7 +136,7 @@ describe("VolumeCopiesPanel", () => {
   });
 
   it("only shows while a Server needs a newer Ployz", () => {
-    panel([member("web-1", "writer"), member("web-3", "mirror"), pooled("web-2")], row([]), { upgrade: ["web-2"] });
+    panel([member("web-1", "writer"), member("web-3", "old"), pooled("web-2")], row([]), { upgrade: ["web-2"] });
     expect(screen.getByText("Upgrade web-2 to a newer Ployz")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete copy on web-3" })).toBeNull();
@@ -140,6 +151,38 @@ describe("VolumeCopiesPanel", () => {
     panel(silent, row(["web-2"]), { owed: true });
     expect(screen.getByText("web-1 is not answering")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
+  });
+
+  it("dates an old copy's and a silent Primary's restore point from another day", async () => {
+    const at = new Date(NOW.getTime() - 3 * DAY);
+    panel([member("web-1", "writer"), oldAsOf("web-3", at)], row([]));
+    expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${dated.format(at)}`)]);
+    fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
+    expect(within(await screen.findByRole("alertdialog")).getByText(`web-3 · data · ${dated.format(at)}`)).toBeTruthy();
+    cleanup();
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"]));
+    expect(screen.getByText(`Changes after ${dated.format(at)} lost`)).toBeTruthy();
+  });
+
+  it("dates an old copy's restore point once the day turns, with the Servers' answer unchanged", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
+    const at = new Date(2026, 9, 11, 23, 55);
+    panel([member("web-1", "writer"), oldAsOf("web-3", at)], row([]));
+    expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${clock.format(at)}`)]);
+    act(() => vi.advanceTimersByTime(2 * 60_000));
+    expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${dated.format(at)}`)]);
+  });
+
+  it("gives an old copy's and a silent Primary's restore point from today the time alone", async () => {
+    const at = new Date(NOW.getTime() - 5 * 60_000);
+    panel([member("web-1", "writer"), oldAsOf("web-3", at)], row([]));
+    expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${clock.format(at)}`)]);
+    fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
+    expect(within(await screen.findByRole("alertdialog")).getByText(`web-3 · data · ${clock.format(at)}`)).toBeTruthy();
+    cleanup();
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"]));
+    expect(screen.getByText(`Changes after ${clock.format(at)} lost`)).toBeTruthy();
   });
 });
 
@@ -169,6 +212,27 @@ describe("mirror detail", () => {
     const { restore } = panel(fresh(), row(["web-2"]), { open: "web-2" });
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
     expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-2" }));
+  });
+
+  it("gives a restore point from today the time alone", () => {
+    panel(fresh(), row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(clock.format(new Date(NOW.getTime() - 5 * 60_000)))).toBeTruthy();
+  });
+
+  it("dates a restore point from another day, so an older point reads apart from today's", () => {
+    const at = new Date(NOW.getTime() - 3 * DAY);
+    panel([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(dated.format(at))).toBeTruthy();
+  });
+
+  it("dates the restore point once the day turns, with the Servers' answer unchanged", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date(2026, 9, 11, 23, 59));
+    const at = new Date(2026, 9, 11, 23, 55);
+    panel([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(clock.format(at))).toBeTruthy();
+    act(() => vi.advanceTimersByTime(2 * 60_000));
+    expect(screen.getByText(dated.format(at))).toBeTruthy();
   });
 
   const silent = () => [member("web-1", "writer"), member("web-2", "unanswered")];

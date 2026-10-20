@@ -110,6 +110,43 @@ impl Trusted {
         Ok(())
     }
 
+    /// This evidence with the Servers a failed Volume check couldn't check named from
+    /// `who`'s Deployments: the Server that answered with an error, else those the check
+    /// meant to ask. A Server no Deployment ran on keeps its ID.
+    pub(crate) fn naming(
+        &self,
+        tx: &mut dyn Tx,
+        who: &crate::Actor,
+    ) -> Result<Cow<'_, Self>, RpcError> {
+        let Some((observed, failure)) = self
+            .volumes
+            .as_ref()
+            .and_then(|observed| Some((observed, observed.failure.as_ref()?)))
+        else {
+            return Ok(Cow::Borrowed(self));
+        };
+        let deployed = crate::deployment::servers(tx, &who.organization)?;
+        let named = |server: &MachineId| {
+            deployed
+                .get(server)
+                .cloned()
+                .unwrap_or_else(|| server.to_string())
+        };
+        let servers = match &failure.stage {
+            ObservationStage::Answered { server } => server.iter().map(named).collect(),
+            ObservationStage::Unreachable => observed.unanswered.iter().map(named).collect(),
+        };
+        let mut trusted = self.clone();
+        if let Some(failure) = trusted
+            .volumes
+            .as_mut()
+            .and_then(|observed| observed.failure.as_mut())
+        {
+            failure.servers = servers;
+        }
+        Ok(Cow::Owned(trusted))
+    }
+
     /// Cloud counted no Server: nothing runs, and nothing is left on one.
     pub(crate) const fn no_servers(&self) -> bool {
         matches!(self.servers, Some(0))
@@ -226,4 +263,94 @@ pub struct VolumeObservation {
     pub held: Vec<DockerVolumeId>,
     /// Servers that did not answer, or were not asked: what they hold is unknown.
     pub unanswered: Vec<MachineId>,
+    /// Why the observer couldn't check the Servers at all: then nothing was checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure: Option<ObservationFailure>,
+}
+
+impl VolumeObservation {
+    /// The observation of a check of `sought` that failed: `unanswered` names each
+    /// Server it meant to ask, when the observer knows them.
+    #[must_use]
+    pub fn failed(
+        sought: Vec<DockerVolumeName>,
+        unanswered: Vec<MachineId>,
+        failure: ObservationFailure,
+    ) -> Self {
+        Self {
+            sought,
+            held: Vec::new(),
+            unanswered,
+            failure: Some(failure),
+        }
+    }
+}
+
+/// Why an observer couldn't check the Servers, and where the check stopped.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationFailure {
+    pub stage: ObservationStage,
+    /// The observer's sentence for what failed.
+    pub reason: String,
+    /// Each source below `reason`, outermost first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub cause: Vec<String>,
+    /// The endpoint the check dialed, as the user gave it, when the observer doesn't
+    /// know which Server it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub endpoint: Option<String>,
+    /// The Servers it couldn't check, by name: the Store fills them from its
+    /// Deployments before it reviews ([`Trusted::naming`]).
+    #[serde(skip)]
+    #[ts(skip)]
+    pub(crate) servers: Vec<String>,
+}
+
+/// Where a Volume check stopped.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ObservationStage {
+    /// No Server could be reached.
+    Unreachable,
+    /// A Server answered the check with an error: `server`, when the observer knows
+    /// which.
+    Answered {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        server: Option<MachineId>,
+    },
+}
+
+impl ObservationFailure {
+    /// `error`, from reaching the Servers.
+    #[must_use]
+    pub fn unreachable(error: RpcError) -> Self {
+        Self::at(ObservationStage::Unreachable, error)
+    }
+
+    /// `error`, the answer of `server` (when known) to the check.
+    #[must_use]
+    pub fn answered(server: Option<MachineId>, error: RpcError) -> Self {
+        Self::at(ObservationStage::Answered { server }, error)
+    }
+
+    /// This failure, from dialing `endpoint`.
+    #[must_use]
+    pub fn at_endpoint(self, endpoint: Option<String>) -> Self {
+        Self { endpoint, ..self }
+    }
+
+    fn at(stage: ObservationStage, error: RpcError) -> Self {
+        Self {
+            stage,
+            reason: error.message,
+            cause: error.cause,
+            endpoint: None,
+            servers: Vec::new(),
+        }
+    }
 }
