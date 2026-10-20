@@ -3025,6 +3025,25 @@ fn a_member_reaching_a_server_is_told_to_ask_an_admin() {
 }
 
 #[test]
+fn a_member_names_a_preferred_builder_for_cloud_to_resolve() {
+    let linus = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_linus",
+    };
+    ok(&linus, &["project", "new", "shop"]);
+    ok(&linus, &["service", "add", "web", "--repo", "acme/web@dev"]);
+    // Cloud resolves a name from the Servers it keeps; this fake Cloud is the bare Store,
+    // which takes only an ID, so its refusal shows the name reached it as typed.
+    let refused = error(&linus, &["set", "web.preferredBuilder=machine-1"]);
+    assert_eq!(refused["code"], json!("invalid_argument"), "{refused}");
+    assert_eq!(
+        refused["message"],
+        json!("preferredBuilder: expected \"github\" or a Server's Machine ID"),
+        "{refused}"
+    );
+}
+
+#[test]
 fn deployment_text_shows_the_deepest_cause_and_json_keeps_the_chain() {
     fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
         let Written::Deployment(admitted) = written else {
