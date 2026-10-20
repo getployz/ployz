@@ -1,9 +1,12 @@
 //! Running one published command: the parsed arguments go back to Cloud as the
 //! entry's input, and the reply prints as the entry's render says.
 
+use std::ffi::OsString;
+use std::path::Path;
+
 use clap::ArgMatches;
 use clap::parser::ValueSource;
-use ployz_core::RpcError;
+use ployz_core::{RpcError, RpcErrorCode};
 use reqwest::Method;
 use serde_json::{Map, Value};
 
@@ -24,7 +27,8 @@ pub(crate) fn run(
     setup: &Setup,
 ) -> Result<(), Failure> {
     let leaf = leaf(root);
-    let input = input(leaf, command);
+    let mut input = input(leaf, command);
+    scope(&mut input, command, &setup.config)?;
     let approval = leaf
         .try_get_one::<String>("approval")
         .ok()
@@ -40,22 +44,29 @@ pub(crate) fn run(
         .ok_or_else(|| Failure::from(crate::cloud_login::LoginError::SignedOut))?;
     setup.acts_with(&credential).map_err(Failure::command)?;
     if command.typed == Some(Typed::Organization) {
-        if !ui::can_prompt() {
-            return Err(Failure::command(PublishError::NeedsTerminal {
+        let needs_terminal = || {
+            Failure::command(PublishError::NeedsTerminal {
+                path: command.path(),
+            })
+            .hint(Hint::Next(format!("{}/", setup.cloud)))
+        };
+        // A command agents may run needs no word from Cloud to refuse for want of a terminal.
+        // One kept for people asks first, so an agent hears `forbidden` in every mode.
+        if command.agents && !ui::can_prompt() {
+            return Err(needs_terminal());
+        }
+        let acting = runtime
+            .block_on(cloud_account::acting_as(&credential))
+            .map_err(Failure::from)?;
+        if acting.agent && !command.agents {
+            return Err(Failure::command(PublishError::AgentRefused {
                 path: command.path(),
             })
             .hint(Hint::Next(format!("{}/", setup.cloud))));
         }
-        let organization = runtime
-            .block_on(cloud_account::acting_in(&credential))
-            .map_err(Failure::from)?;
         ui::confirm_name(
-            &organization.slug,
-            || {
-                Failure::command(PublishError::NeedsTerminal {
-                    path: command.path(),
-                })
-            },
+            &acting.organization.slug,
+            needs_terminal,
             "Cancelled. Nothing changed.",
         )?;
     }
@@ -67,7 +78,7 @@ pub(crate) fn run(
                 &credential,
                 cloud_account::Via::Cli,
                 &command.name,
-                input.clone(),
+                Value::Object(input.clone()),
                 approval.as_deref(),
                 &key,
             ))
@@ -125,6 +136,12 @@ fn refused(
                 path: command.path(),
             })
             .hint(Hint::Inspect("ployz --help".to_owned()))
+        }
+        StoreCallError::Refused(refusal)
+            if refusal.code == RpcErrorCode::Ambiguous
+                && refusal.details.get("projects").is_some() =>
+        {
+            Failure::from(refusal).hint(Hint::Next("ployz link --project PROJECT".to_owned()))
         }
         StoreCallError::Refused(refusal) => match crate::approval::Asked::of(&refusal) {
             Some(asked) => {
@@ -193,7 +210,7 @@ fn leaf(mut matches: &ArgMatches) -> &ArgMatches {
 
 /// The entry's input from what was typed, as its schema shapes it. An argument left
 /// out stays out, so Cloud applies its own default.
-fn input(leaf: &ArgMatches, command: &PublishedCommand) -> Value {
+fn input(leaf: &ArgMatches, command: &PublishedCommand) -> Map<String, Value> {
     let mut input = Map::new();
     for arg in &command.args {
         let value = match &arg.kind {
@@ -210,7 +227,47 @@ fn input(leaf: &ArgMatches, command: &PublishedCommand) -> Value {
             input.insert(arg.name.clone(), value);
         }
     }
-    Value::Object(input)
+    input
+}
+
+/// Fill the Project and Environment the entry takes and the command line left out
+/// from `PLOYZ_PROJECT`, `PLOYZ_ENV` and the directory link, as a compiled command
+/// fills them.
+fn scope(
+    input: &mut Map<String, Value>,
+    command: &PublishedCommand,
+    config: &Path,
+) -> Result<(), Failure> {
+    let takes = |name: &str| command.args.iter().any(|arg| arg.name == name);
+    if !takes("project") {
+        return Ok(());
+    }
+    let given = |name| input.get(name).and_then(Value::as_str);
+    let at =
+        crate::handlers::link::scope_given(config, given("project"), given("environment"))?.at();
+    if let Some(project) = at.project {
+        input.insert("project".to_owned(), project.as_str().into());
+    }
+    if let Some(environment) = at.environment.filter(|_| takes("environment")) {
+        input.insert("environment".to_owned(), environment.as_str().into());
+    }
+    Ok(())
+}
+
+/// Refuse a bad `PLOYZ_PROJECT` or `PLOYZ_ENV` before fetching the manifest that a
+/// command line the cache lacks needs, as [`scope`] would once the command is known.
+/// A typed `--project` or `--env` still wins over its variable.
+pub(crate) fn check_scope_env(args: &[OsString]) -> Result<(), Failure> {
+    let typed = |flag: &str| {
+        args.iter()
+            .take_while(|arg| *arg != "--")
+            .filter_map(|arg| arg.to_str())
+            .any(|arg| {
+                arg.strip_prefix(flag)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
+            })
+    };
+    crate::handlers::link::check_env(typed("--project"), typed("--env"))
 }
 
 fn print(

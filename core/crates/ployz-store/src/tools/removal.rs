@@ -99,8 +99,11 @@ fn waiting(waiting: &[Waiting], names: &BTreeMap<String, ServerName>) -> Vec<Val
     waiting
         .iter()
         .map(|waiting| {
+            let id = waiting
+                .server_id
+                .map_or_else(|| waiting.server.clone(), |id| id.to_string());
             let server = names
-                .get(&waiting.server)
+                .get(&id)
                 .map_or(waiting.server.as_str(), ServerName::as_str);
             let mut shown = json!({ "server": server, "why": waiting.why });
             if let (Some(fix), Value::Object(shown)) = (fix(&waiting.fix, names), &mut shown) {

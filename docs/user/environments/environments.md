@@ -253,4 +253,13 @@ hour after that. A volume whose copies Ployz couldn't all check is
 deleted only if you chose to delete every copy. Then a mirror of it made after the delete started
 goes too.
 
+### Delete a project
+
+1. Open **Settings → Project**.
+2. Click **Delete project**. Ployz lists what goes: every environment, with its services and data.
+3. Type `my-app` and click **Delete**.
+
+Only an owner or admin can delete a project. Like an environment, it stays listed until every
+server that ran it has taken it off.
+
 **Next:** [give every pull request its own copy of your app](preview-environments.md).

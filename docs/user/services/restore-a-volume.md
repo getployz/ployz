@@ -22,6 +22,10 @@ change. Nothing runs on click. Details shows the new volume, named after the ori
 point's time, for example `pg-data-1027`, and says in red what you give up: "Changes after 10:27
 are not in pg-data-1027". To drop the restore, discard it in Details.
 
+When an agent deploys a restore, its approval card says the same under the detach, like
+**Detaches volume pg-data from postgres**, then "Changes after 10:27 are not in pg-data-1027".
+The time is in your own time zone. Approving accepts that loss for this restore point only.
+
 Deploy runs it before your services. Ployz copies the point to the original's server, makes it the
 new volume, and starts your service on it. The original keeps its data and its mirror; it shows as
 not mounted. Delete it from its **Settings** tab when you no longer need it.

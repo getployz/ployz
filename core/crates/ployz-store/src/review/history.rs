@@ -241,7 +241,10 @@ pub(crate) fn stage(
             change: command.change.clone(),
         };
         return Err(error::confirmation_required(
-            "This History action overwrites draft changes",
+            format!(
+                "This History action overwrites draft changes to {}",
+                prepared.overwritten().join(", ")
+            ),
             json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, &query) }),
         ));
     }
