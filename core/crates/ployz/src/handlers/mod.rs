@@ -203,7 +203,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     if context_above_leaf(matches) {
         // Store commands address a Project and Environment, never a context.
-        let takes = |id| leaf_matches(matches).try_get_one::<String>(id).is_ok();
+        let takes = |id| takes_value(path.split(' '), id);
         return Err(Error::usage(if takes("context") {
             format!("--context goes after the command: ployz {path} --context NAME")
         } else if takes("project") {
@@ -213,6 +213,22 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         }));
     }
     (verb.run)(matches)
+}
+
+/// Whether the compiled command at `words` takes a value for `id`. Read from the
+/// command tree: `ArgMatches` refuses unknown ids only in debug builds.
+fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str) -> bool {
+    let root = crate::cli::compiled();
+    let mut command = &root;
+    for word in words {
+        let Some(child) = command.find_subcommand(word) else {
+            break;
+        };
+        command = child;
+    }
+    command
+        .get_arguments()
+        .any(|arg| arg.get_id() == id && arg.get_action().takes_values())
 }
 
 /// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
@@ -551,6 +567,31 @@ mod tests {
         ])));
         assert!(!context_above_leaf(&parsed(&["ployz", "ps", "-c", "prod"])));
         assert!(!context_above_leaf(&parsed(&["ployz", "ps"])));
+    }
+
+    #[test]
+    fn a_context_above_the_leaf_names_where_the_leaf_takes_its_scope() {
+        let mut command = command();
+        for (args, expected) in [
+            (
+                &["ps"][..],
+                "--context goes after the command: ployz ps --context NAME",
+            ),
+            (
+                &["config", "ls"],
+                "ployz config ls doesn't use a context; it takes --project and --env",
+            ),
+            (&["org", "ls"], "ployz org ls doesn't use a context"),
+        ] {
+            let matches = command
+                .clone()
+                .try_get_matches_from(["ployz", "-c", "prod"].iter().chain(args))
+                .unwrap();
+            assert_eq!(
+                dispatch(&matches, &mut command).unwrap_err().to_string(),
+                expected,
+            );
+        }
     }
 
     fn command() -> Command {
