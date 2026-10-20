@@ -7,17 +7,23 @@
 //! own Project. Links live beside the Ployz config, never in the directory, so
 //! nothing needs ignoring or uploading.
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
-use ployz_core::RpcErrorCode;
+use ployz_core::{
+    ContainerId, EnvironmentValues, MachineId, MachineName, Namespace, QualifiedService,
+    RoutesRead, RpcErrorCode, ServiceObservation, serving_containers,
+};
 use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
-    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, ProjectName,
-    ProjectsQuery,
+    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery,
+    ProjectName, ProjectsQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -37,7 +43,8 @@ pub(super) fn link_command(command: Command) -> Command {
 }
 
 pub(super) fn status_command(command: Command) -> Command {
-    scoped(command.about(
+    scoped(crate::cli::base(
+        command,
         "Show who you are, where commands act, and what is staged, deploying or needs attention",
     ))
 }
@@ -578,13 +585,23 @@ struct Staged {
 /// Something that needs someone to act, with the command that acts.
 #[derive(Serialize)]
 struct Attention {
-    /// An error code, `deployment_failed` or `deployment_unknown`.
+    /// An error code, `deployment_failed`, `deployment_unknown`, `broken_reference` or `routes_not_acked`.
     reason: String,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     deployment: Option<DeploymentId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next: Option<String>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    unrouted: Option<Unrouted>,
+}
+
+/// A Service whose In copies some live Machine's proxy has not acked.
+#[derive(Serialize)]
+struct Unrouted {
+    service: QualifiedService,
+    /// Each such Machine by name, else by ID when the Machine list lacks it.
+    machines: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -631,6 +648,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     message: crate::ui::row(&error),
                     deployment: None,
                     next,
+                    unrouted: None,
                 });
                 None
             }
@@ -673,6 +691,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     message: format!("Deployment {} did not complete", ended.label()),
                     deployment: Some(ended.id.clone()),
                     next: Some(super::deploy::hint_for(matches, ended)),
+                    unrouted: None,
                 });
             }
         }
@@ -684,7 +703,16 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             message: reference.to_string(),
             deployment: None,
             next: Some(super::store::fix_broken(matches, reference)),
+            unrouted: None,
         });
+    }
+    if let (Some(store), Some(_)) = (&store, &diff) {
+        match store.try_read(&NamespaceQuery {
+            environment: scope.at(),
+        }) {
+            Ok(view) => attention.extend(unrouted(root, &view.namespace)),
+            Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),
+        }
     }
     let staged = diff.as_ref().map(|diff| Staged {
         changes: diff.review_count(),
@@ -732,6 +760,125 @@ fn this_server() -> Option<LocalCheckin> {
         })
         .ok()
         .flatten()
+}
+
+const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
+
+/// The Services in `namespace` whose new copies some live Machine has not picked
+/// up. None, after one warning, when a Machine read fails.
+fn unrouted(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
+    let found = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&found);
+    let reached = Rc::new(std::cell::Cell::new(false));
+    let dialed = Rc::clone(&reached);
+    let namespace = namespace.clone();
+    let read = super::with_reader(root, |client| {
+        Box::pin(async move {
+            dialed.set(true);
+            let machines = client.machines().await?;
+            let live = client
+                .live_services_from(&machines, EnvironmentValues::Redacted)
+                .await?;
+            let names = machines
+                .into_iter()
+                .map(|observed| (observed.machine.id, observed.machine.name))
+                .collect();
+            let mut reads = Vec::new();
+            if let Some(reader) = live
+                .containers
+                .successes
+                .first()
+                .map(|answered| answered.machine_id)
+            {
+                for service in live.services() {
+                    if service.identity.namespace != namespace
+                        || serving_containers(&service.containers).is_empty()
+                    {
+                        continue;
+                    }
+                    let routes = crate::deploy::MachineOperations::read_routes(
+                        &*client,
+                        &reader,
+                        &service.identity,
+                    )
+                    .await
+                    .map_err(|error| {
+                        Error::caused(
+                            error.code.clone(),
+                            "A Server did not say which copies it routes.",
+                            error,
+                        )
+                    })?;
+                    reads.push((service, routes));
+                }
+            }
+            *sink.borrow_mut() = not_picked_up(&reads, &names);
+            Ok(())
+        })
+    });
+    match read {
+        // Ployz Cloud's CLI never dials Machines for status, and Cloud has no acks query.
+        Ok(_) => found.take(),
+        // No Server is set up to reach, so there is no proxy to ask.
+        Err(error) if !reached.get() && error.report().code == RpcErrorCode::NotFound => Vec::new(),
+        Err(error) => {
+            crate::ui::warn_cause(UNCHECKED, &error);
+            Vec::new()
+        }
+    }
+}
+
+/// One row per Service naming each live Machine whose proxy acks no route, or a
+/// route that lacks a Serving Container on a Machine not reported Down.
+fn not_picked_up(
+    reads: &[(ServiceObservation, RoutesRead)],
+    names: &HashMap<MachineId, MachineName>,
+) -> Vec<Attention> {
+    reads
+        .iter()
+        .filter_map(|(service, read)| {
+            let serving: BTreeSet<ContainerId> = serving_containers(&service.containers)
+                .iter()
+                .map(|serving| serving.as_observation())
+                .filter(|copy| !read.down.contains(&copy.machine_id))
+                .map(|copy| copy.container_id)
+                .collect();
+            if serving.is_empty() {
+                return None;
+            }
+            let waiting =
+                crate::deploy::cleanup::still_waiting(read, &|routed| serving.is_subset(routed));
+            if waiting.machines.is_empty() {
+                return None;
+            }
+            let machines: Vec<String> = waiting
+                .machines
+                .iter()
+                .map(|machine| {
+                    names
+                        .get(machine)
+                        .map_or_else(|| machine.to_string(), ToString::to_string)
+                })
+                .collect();
+            let (have, its) = match machines.as_slice() {
+                [_] => ("has", "its"),
+                _ => ("have", "their"),
+            };
+            Some(Attention {
+                reason: "routes_not_acked".to_owned(),
+                message: format!(
+                    "{} {have} not picked up the new copies. Check {its} network.",
+                    machines.join(", ")
+                ),
+                deployment: None,
+                next: None,
+                unrouted: Some(Unrouted {
+                    service: service.identity.clone(),
+                    machines,
+                }),
+            })
+        })
+        .collect()
 }
 
 fn status_record(status: &Status) -> Fields {
@@ -813,10 +960,13 @@ fn status_record(status: &Status) -> Fields {
         );
     }
     for attention in &status.attention {
-        record.push(
-            "needs attention",
-            Cell::status(&attention.message, Tone::Bad),
-        );
+        let label = attention
+            .unrouted
+            .as_ref()
+            .map_or(Cow::Borrowed("needs attention"), |unrouted| {
+                Cow::Owned(unrouted.service.name.to_string())
+            });
+        record.push(label, Cell::status(&attention.message, Tone::Bad));
     }
     record
 }
@@ -1048,5 +1198,146 @@ mod tests {
             ..linked_in("org_globex", "globex")
         };
         check_acting_in("org_acme", "/src/shop", &link).unwrap();
+    }
+
+    mod routes {
+        use std::net::Ipv4Addr;
+
+        use ployz_core::{
+            ContainerAddress, ContainerObservation, CopyRotation, Machine, service_containers,
+        };
+
+        use super::*;
+        use crate::global_fixtures::{container_id, machine, qualified, running_on, service_id};
+
+        fn machines() -> [Machine; 3] {
+            [
+                machine('a', "machine-1"),
+                machine('b', "machine-2"),
+                machine('c', "machine-3"),
+            ]
+        }
+
+        fn routed_on(machine: &Machine, hex: char) -> ContainerObservation {
+            let mut copy = running_on(machine, hex);
+            copy.try_update(|parts| {
+                parts.rotation = Some(CopyRotation::In);
+                parts.address = Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 1)));
+            })
+            .unwrap();
+            copy
+        }
+
+        fn web(copies: [ContainerObservation; 2]) -> ServiceObservation {
+            ServiceObservation {
+                identity: qualified("app", "web"),
+                service_id: service_id('a'),
+                containers: service_containers(copies),
+                hook_containers: Vec::new(),
+            }
+        }
+
+        /// As ployzd's `read_routes` answers: a row per Machine not reported Down.
+        fn read(acked: &[(&Machine, &[char])], down: &[&Machine]) -> RoutesRead {
+            RoutesRead {
+                routes: acked
+                    .iter()
+                    .map(|(machine, copies)| {
+                        let copies = copies.iter().copied().map(container_id).collect();
+                        (machine.id, Some(copies))
+                    })
+                    .collect(),
+                complete: true,
+                down: down.iter().map(|machine| machine.id).collect(),
+            }
+        }
+
+        fn names(machines: &[Machine]) -> HashMap<MachineId, MachineName> {
+            machines
+                .iter()
+                .map(|machine| (machine.id, machine.name.clone()))
+                .collect()
+        }
+
+        fn rendered(attention: Vec<Attention>) -> String {
+            let status = Status {
+                this_server: None,
+                identity: Some(Identity {
+                    credential: "local",
+                    cloud: None,
+                    account: None,
+                    organization: None,
+                }),
+                scope: Scope {
+                    project: None,
+                    environment: None,
+                    link: None,
+                },
+                environment: None,
+                staged: None,
+                deploying: Vec::new(),
+                attention,
+            };
+            let mut out = Vec::new();
+            status_record(&status).write(&mut out, true).unwrap();
+            anstream::adapter::strip_str(&String::from_utf8(out).unwrap()).to_string()
+        }
+
+        #[test]
+        fn status_names_no_machine_when_every_proxy_acks_the_new_copies() {
+            let [one, two, three] = machines();
+            let reads = [(
+                web([routed_on(&one, '1'), routed_on(&two, '2')]),
+                read(
+                    &[
+                        (&one, &['1', '2']),
+                        (&two, &['1', '2']),
+                        (&three, &['1', '2']),
+                    ],
+                    &[],
+                ),
+            )];
+
+            assert!(not_picked_up(&reads, &names(&[one, two, three])).is_empty());
+        }
+
+        #[test]
+        fn status_names_a_live_machine_whose_proxy_lacks_a_new_copy() {
+            let [one, two, three] = machines();
+            let reads = [(
+                web([routed_on(&one, '1'), routed_on(&two, '2')]),
+                read(
+                    &[(&one, &['1', '2']), (&two, &['1', '2']), (&three, &['0'])],
+                    &[],
+                ),
+            )];
+
+            let attention = not_picked_up(&reads, &names(&[one, two, three]));
+
+            assert_eq!(
+                serde_json::to_value(&attention).unwrap(),
+                json!([{
+                    "reason": "routes_not_acked",
+                    "message": "machine-3 has not picked up the new copies. Check its network.",
+                    "service": "app/web",
+                    "machines": ["machine-3"],
+                }])
+            );
+            assert_eq!(
+                rendered(attention),
+                "organization  ?\nsigned in as  local\nweb           machine-3 has not picked up the new copies. Check its network.\n"
+            );
+        }
+
+        #[test]
+        fn status_names_no_down_machine_or_a_copy_on_one() {
+            let [one, two, three] = machines();
+            let reads = [(
+                web([routed_on(&one, '1'), routed_on(&three, '3')]),
+                read(&[(&one, &['1']), (&two, &['1'])], &[&three]),
+            )];
+
+            assert!(not_picked_up(&reads, &names(&[one, two, three])).is_empty());
+        }
     }
 }

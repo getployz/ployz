@@ -193,7 +193,7 @@ where
     }
 }
 
-fn still_waiting(
+pub(crate) fn still_waiting(
     read: &RoutesRead,
     satisfied: &impl Fn(&BTreeSet<ContainerId>) -> bool,
 ) -> Unconfirmed {
