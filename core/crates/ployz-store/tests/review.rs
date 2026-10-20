@@ -155,7 +155,11 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000003", "name": "web",
                 "row": "00000000-0000-4000-8000-000000000003:node",
                 "lifecycle": "create", "comparison": "introduction",
+                // What it runs, though the introduction already holds it.
                 "settings": [{
+                    "path": "web.image", "kind": "add", "before": null, "after": "nginx:1", "canRestore": false,
+                    "row": "00000000-0000-4000-8000-000000000003:source",
+                }, {
                     "path": "web.replicas", "kind": "update", "before": 1, "after": 3, "canRestore": true,
                     "row": "00000000-0000-4000-8000-000000000003:replicas",
                 }],
@@ -163,11 +167,16 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
             },
             {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000004", "name": "api",
-                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null, "restarts": [],
+                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction",
+                "settings": [{
+                    "path": "api.image", "kind": "add", "before": null, "after": "caddy:2", "canRestore": false,
+                    "row": "00000000-0000-4000-8000-000000000004:source",
+                }],
+                "data": null, "restarts": [],
             },
         ])
     );
-    assert_eq!(view.total_count, 3);
+    assert_eq!(view.total_count, 5);
 }
 
 #[test]
@@ -267,8 +276,11 @@ fn edits_to_a_published_service_never_deployed_are_changes_that_discard_resets()
         .unwrap();
     assert_eq!(web.lifecycle, ReviewLifecycleKind::Create);
     assert_eq!(web.comparison, Some(ReviewComparisonRole::Introduction));
-    assert_eq!(changed(&store, &who, "web"), ["web.preDeployCommand"]);
-    assert_eq!(view.total_count, 3);
+    assert_eq!(
+        changed(&store, &who, "web"),
+        ["web.image", "web.preDeployCommand"]
+    );
+    assert_eq!(view.total_count, 5);
     // Discard targets it; Saved State never held the edit.
     let discarded = discard(&store, &who, Some("web.preDeployCommand"), None).unwrap();
     assert_eq!(discarded.saved, Some(Revision(1)));
@@ -276,16 +288,16 @@ fn edits_to_a_published_service_never_deployed_are_changes_that_discard_resets()
         value(&store, &who, "web.preDeployCommand"),
         Some(Value::Null)
     );
-    assert!(changed(&store, &who, "web").is_empty());
+    assert_eq!(changed(&store, &who, "web"), ["web.image"]);
     set(&store, &who, "web.replicas", json!(4));
     publish(&store, &who, None).unwrap();
-    assert_eq!(changed(&store, &who, "web"), ["web.replicas"]);
+    assert_eq!(changed(&store, &who, "web"), ["web.image", "web.replicas"]);
     let discarded = discard(&store, &who, Some("web.replicas"), None).unwrap();
     assert_eq!(discarded.saved, Some(Revision(2)));
     assert_eq!(value(&store, &who, "web.replicas"), Some(json!(1)));
     let view = diff(&store, &who);
     assert!(!view.published);
-    assert!(changed(&store, &who, "web").is_empty());
+    assert_eq!(changed(&store, &who, "web"), ["web.image"]);
 }
 
 #[test]
