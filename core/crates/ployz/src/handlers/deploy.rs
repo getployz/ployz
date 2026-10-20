@@ -1422,6 +1422,7 @@ mod tests {
         let services: Vec<ployz_core::ServiceOutcome> = serde_json::from_value(serde_json::json!([
             {"service": "web", "result": "new"},
             {"service": "api", "result": "old"},
+            {"service": "cache", "result": "updated"},
             {"service": "db", "result": "not_started"},
             {"service": "worker", "result": "unconfirmed"},
         ]))
@@ -1431,6 +1432,7 @@ mod tests {
             [
                 "  web: serves its new copies",
                 "  api: not switched to its new copies",
+                "  cache: serves its copies with their new limits",
                 "  db: not started",
                 "  worker: may serve its new copies: the switch was not confirmed",
             ]

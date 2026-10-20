@@ -97,6 +97,10 @@ pub(crate) struct GraphService {
     pub ready: usize,
     /// Servers this Deploy works on; 0 before any work is recorded.
     pub total: usize,
+    /// Servers among `total` whose copy keeps serving and takes new limits in place.
+    pub in_place: usize,
+    /// Servers among `ready` whose copy took its new limits in place.
+    pub in_place_ready: usize,
     /// Servers stopping or removing an old Container.
     pub draining: usize,
     pub work: Work,
@@ -166,6 +170,17 @@ impl GraphService {
             word.to_owned()
         } else if matches!(state, State::Failed | State::Cancelled) {
             format!("{word} ({}/{} ready)", self.ready, self.total)
+        } else if word == "switched" && self.in_place == self.total {
+            format!("updated limits {}/{}", self.ready, self.total)
+        } else if word == "switched" && self.in_place > 0 {
+            // No new copy serves for a Server that updated in place, so say which did what.
+            format!(
+                "{word} {}/{}, updated limits {}/{}",
+                self.ready - self.in_place_ready,
+                self.total - self.in_place,
+                self.in_place_ready,
+                self.in_place
+            )
         } else {
             format!("{word} {}/{}", self.ready, self.total)
         }

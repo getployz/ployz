@@ -62,6 +62,8 @@ pub(crate) struct Replica<'a> {
     pub machine: MachineId,
     pub state: &'a RowState,
     pub starts: bool,
+    /// The copy keeps serving under its own id and takes new limits in place.
+    pub updates: bool,
     pub timing: Timing,
 }
 
@@ -74,6 +76,18 @@ pub(crate) fn starts(
         row.machine_id == machine
             && row.service_name() == Some(service)
             && starts_container(&row.operation)
+    })
+}
+
+pub(crate) fn updates(
+    operations: &[OperationRow],
+    service: &ServiceName,
+    machine: MachineId,
+) -> bool {
+    operations.iter().any(|row| {
+        row.machine_id == machine
+            && row.service_name() == Some(service)
+            && matches!(row.operation, DeployOperation::UpdateContainer(_))
     })
 }
 
@@ -125,20 +139,23 @@ pub(crate) fn service_row<'a>(
         .filter(|replica| removal || replica.starts)
         .collect();
     // A failure cancels the switch, so a copy waiting on it will never serve.
-    let ready = counted
+    let is_ready = |replica: &Replica<'_>| match replica.state {
+        RowState::Completed | RowState::Running { serving: true, .. } => true,
+        RowState::Running {
+            phase: RowPhase::WaitingForSwitch,
+            ..
+        } => failed == 0,
+        RowState::Running { .. }
+        | RowState::Pending
+        | RowState::Failed { .. }
+        | RowState::NotAttempted
+        | RowState::Unknown => false,
+    };
+    let ready = counted.iter().filter(|replica| is_ready(replica)).count();
+    let in_place = counted.iter().filter(|replica| replica.updates).count();
+    let in_place_ready = counted
         .iter()
-        .filter(|replica| match replica.state {
-            RowState::Completed | RowState::Running { serving: true, .. } => true,
-            RowState::Running {
-                phase: RowPhase::WaitingForSwitch,
-                ..
-            } => failed == 0,
-            RowState::Running { .. }
-            | RowState::Pending
-            | RowState::Failed { .. }
-            | RowState::NotAttempted
-            | RowState::Unknown => false,
-        })
+        .filter(|replica| replica.updates && is_ready(replica))
         .count();
     let switching = failed == 0 && ready == counted.len();
     let work = |replica: &Replica<'_>| match replica.state {
@@ -246,6 +263,8 @@ pub(crate) fn service_row<'a>(
             depth,
             ready,
             total: counted.len(),
+            in_place,
+            in_place_ready,
             draining,
             work: if removal {
                 Work::Remove
@@ -335,6 +354,7 @@ impl Direct {
                             machine: row.machine,
                             state: &row.state,
                             starts: starts(&self.operations, service, row.machine),
+                            updates: updates(&self.operations, service, row.machine),
                             timing: timing.clone(),
                         }),
                 )

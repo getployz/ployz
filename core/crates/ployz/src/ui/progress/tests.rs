@@ -112,6 +112,7 @@ fn a_removed_service_counts_as_removed_in_the_summary() {
                 state,
                 timing: Timing::Unavailable,
                 starts: false,
+                updates: false,
             }],
         )
     };
@@ -648,6 +649,7 @@ fn service(name: &str, depth: u32, servers: usize, state: &ployz_store::RowState
             state,
             timing: Timing::Finished(Duration::from_secs(5)),
             starts: true,
+            updates: false,
         }),
     )
 }
