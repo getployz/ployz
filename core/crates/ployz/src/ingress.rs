@@ -158,16 +158,20 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
     })
 }
 
-/// Why the ingress check through `server` failed, on one line: the Server named where
-/// it is known, and when no daemon replied, that it isn't answering and the
-/// transport's last word.
+/// Why the ingress check through `server` failed, on one line. A connection failure
+/// names the Server it went to, and when no daemon replied, says it isn't answering
+/// with the transport's last word. Any other failure, such as the image lookup this
+/// process makes itself, is about no Server and keeps its whole line.
 pub(crate) fn unchecked(failure: &Failure, server: Option<String>) -> String {
-    let connect = failure.connect_error();
-    let named = match connect {
-        Some(ConnectError::AllFailed { server, .. }) => server.clone(),
-        _ => None,
+    let Some(connect) = failure.connect_error() else {
+        return crate::ui::row(failure);
     };
-    let unanswered = connect.is_some_and(|error| error.unreached() || error.unreplied());
+    let named = if let ConnectError::AllFailed { server, .. } = connect {
+        server.clone()
+    } else {
+        None
+    };
+    let unanswered = connect.unreached() || connect.unreplied();
     match (named, server) {
         (Some(server), _) | (None, Some(server)) if unanswered => {
             match ployz_core::error_chain::causes(failure).pop() {
@@ -422,6 +426,15 @@ mod tests {
         assert_eq!(
             unchecked(&answered, Some("box-node-09c8".into())),
             "Docker is down (on Server box-node-09c8)"
+        );
+
+        // A failure this process had itself, like the image lookup, names no Server.
+        let local = Failure::from(IngressImageError::Timeout(
+            "Docker Hub didn't answer".into(),
+        ));
+        assert_eq!(
+            unchecked(&local, Some("box-node-09c8".into())),
+            crate::ui::row(&local)
         );
 
         // A connection that failed names its own Server, over the one the caller passed.
