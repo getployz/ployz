@@ -658,7 +658,14 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         .flatten()
                         .map(|replacement| replacement.old_container_id)
                         .collect();
-                    let pointer = proposed(current.as_ref(), run, &spec, &new, &stopped_old);
+                    let pointer = proposed(
+                        current.as_ref(),
+                        run,
+                        &spec,
+                        plan.adds_only(),
+                        &new,
+                        &stopped_old,
+                    );
                     Either::Right(async move {
                         let result = if cancellation.is_cancelled() {
                             Err(ExecutionError::Cancelled)
@@ -1213,13 +1220,18 @@ fn proposed(
     current: Option<&ServingPointer>,
     run: &DeploymentLogId,
     group: &ServiceGroup,
+    adds_only: bool,
     started: &[(MachineId, ContainerId)],
     stopped_old: &[ContainerId],
 ) -> ServingPointer {
     let mut containers = group.kept.clone();
-    for (_, id) in started {
-        if !containers.contains(id) {
-            containers.push(*id);
+    let serving = current
+        .filter(|_| adds_only)
+        .into_iter()
+        .flat_map(|current| current.containers.iter().copied());
+    for id in serving.chain(started.iter().map(|(_, id)| *id)) {
+        if !containers.contains(&id) {
+            containers.push(id);
         }
     }
     let mut pointer = succession(current, run.clone(), containers);

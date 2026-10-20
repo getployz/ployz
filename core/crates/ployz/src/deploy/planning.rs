@@ -77,6 +77,10 @@ pub struct DeployPlan {
     preview: DeployPreview,
     /// The intent's pull credentials, for execution only; never in the preview.
     registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
+    /// The plan only adds copies, so each flip also keeps everything the pointer it
+    /// replaces serves, including copies another Deploy published after this plan's
+    /// snapshot.
+    adds_only: bool,
 }
 
 impl DeployPlan {
@@ -119,6 +123,10 @@ impl DeployPlan {
             .collect()
     }
 
+    pub(super) const fn adds_only(&self) -> bool {
+        self.adds_only
+    }
+
     pub(super) fn prepend_warnings(&mut self, warnings: Vec<DeployWarning>) {
         self.preview.warnings.splice(0..0, warnings);
     }
@@ -144,6 +152,7 @@ impl DeployPlan {
             groups,
             preview: DeployPreview::new(rows, Vec::new(), namespace),
             registry_auth: std::collections::BTreeMap::new(),
+            adds_only: false,
         }
     }
 }
@@ -534,7 +543,9 @@ fn plan_create(
             group.kept = kept_containers(snapshot, &identity, &planned.operations);
         }
     }
-    Ok(admit(intent, &only, planned))
+    let mut plan = admit(intent, &only, planned);
+    plan.adds_only = true;
+    Ok(plan)
 }
 
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {
@@ -582,6 +593,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         groups: planned.groups,
         preview,
         registry_auth: std::collections::BTreeMap::new(),
+        adds_only: false,
     }
 }
 
