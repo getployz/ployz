@@ -1,6 +1,6 @@
 import type { Client, Connection, RuntimeWatchView } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Exit, Fiber, Layer, Queue } from "effect";
+import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
@@ -125,8 +125,8 @@ it.effect("a release whose two reads each take 35 seconds is reported as not ans
     // The keptOn read dials at 35 seconds; the deadline ends it at 50, before its own 35 seconds are up.
     yield* Queue.take(dials);
     yield* TestClock.adjust("15 seconds");
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
-    assert.deepStrictEqual(planning.pollUnsafe(), Exit.succeed(unanswered));
+    // The test clock stands still from here, so a plan that settles at all settled by 50 seconds.
+    assert.deepStrictEqual(yield* Fiber.join(planning), unanswered);
   }),
 );
 
