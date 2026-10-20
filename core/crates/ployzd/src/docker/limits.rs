@@ -1,6 +1,6 @@
 //! In-place CPU and memory limit updates of a running Service Container.
 
-use bollard::models::{ContainerUpdateBody, HostConfig};
+use bollard::models::{ContainerInspectResponse, ContainerUpdateBody, HostConfig};
 use ployz_core::{
     ByteQuantity, ContainerId, ContainerKind, ContainerLimits, ContainerLimitsUpdated, CpuNanos,
     ResolvedServiceSpec, SpecChange, compare_specs,
@@ -17,6 +17,8 @@ pub enum LimitsRefusal {
     UpToDate,
     /// The change needs a new Container.
     NeedsRecreate,
+    /// The Container is not running, so there is nothing serving to keep.
+    NotRunning,
 }
 
 impl std::fmt::Display for LimitsRefusal {
@@ -25,6 +27,7 @@ impl std::fmt::Display for LimitsRefusal {
             Self::OtherService => "the spec names another Service",
             Self::UpToDate => "the spec is already current",
             Self::NeedsRecreate => "the change needs a new Container",
+            Self::NotRunning => "the Container is not running",
         })
     }
 }
@@ -58,8 +61,8 @@ impl ContainerRuntime {
     /// # Errors
     ///
     /// Refuses a Container without a stored spec, one that is not a Service
-    /// Container, a spec that differs in more than limits, and limits Docker does
-    /// not report back after the update.
+    /// Container, one that is not running, a spec that differs in more than
+    /// limits, and limits Docker does not report back after the update.
     pub async fn update_limits(
         &self,
         container_id: &ContainerId,
@@ -86,18 +89,23 @@ impl ContainerRuntime {
         if ManagedLabels::parse(labels)?.kind != ContainerKind::ServiceContainer {
             return Err(Error::NotAServiceContainer(*container_id));
         }
+        // A stopped Container would take the limits but serve nothing; the Deploy
+        // promised a serving copy, so the caller must replace it instead.
+        refuse_unless_running(container_id, &inspected)?;
         let requested = spec.container.resources.limits();
         self.docker
             .client
             .update_container(container_id.as_str(), update_body(requested))
             .await
             .map_err(|error| docker_error(container_id, error))?;
-        let observed = self
+        let inspected = self
             .docker
             .client
             .inspect_container(container_id.as_str(), None)
             .await
-            .map_err(|error| docker_error(container_id, error))?
+            .map_err(|error| docker_error(container_id, error))?;
+        refuse_unless_running(container_id, &inspected)?;
+        let observed = inspected
             .host_config
             .as_ref()
             .map(observed_limits)
@@ -129,6 +137,28 @@ fn refusal(stored: &ResolvedServiceSpec, spec: &ResolvedServiceSpec) -> Option<L
         SpecChange::UpToDate => Some(LimitsRefusal::UpToDate),
         SpecChange::NeedsRecreate => Some(LimitsRefusal::NeedsRecreate),
     }
+}
+
+fn refuse_unless_running(
+    container_id: &ContainerId,
+    inspected: &ContainerInspectResponse,
+) -> Result<(), Error> {
+    if is_running(inspected) {
+        Ok(())
+    } else {
+        Err(Error::LimitsRefused {
+            container_id: *container_id,
+            refusal: LimitsRefusal::NotRunning,
+        })
+    }
+}
+
+fn is_running(inspected: &ContainerInspectResponse) -> bool {
+    inspected
+        .state
+        .as_ref()
+        .and_then(|state| state.running)
+        .unwrap_or(false)
 }
 
 fn update_body(limits: ContainerLimits) -> ContainerUpdateBody {
@@ -223,6 +253,32 @@ mod tests {
         assert_eq!(body.memory_swap, Some(128));
         assert_eq!(body.nano_cpus, None);
         assert_eq!(body.memory_reservation, None);
+    }
+
+    #[test]
+    fn a_stopped_container_is_refused() {
+        let container_id = ContainerId::parse("c".repeat(64)).unwrap();
+        let running = |running: Option<bool>| ContainerInspectResponse {
+            state: Some(bollard::models::ContainerState {
+                running,
+                ..bollard::models::ContainerState::default()
+            }),
+            ..ContainerInspectResponse::default()
+        };
+        assert!(refuse_unless_running(&container_id, &running(Some(true))).is_ok());
+        for stopped in [
+            running(Some(false)),
+            running(None),
+            ContainerInspectResponse::default(),
+        ] {
+            assert!(matches!(
+                refuse_unless_running(&container_id, &stopped),
+                Err(Error::LimitsRefused {
+                    container_id: id,
+                    refusal: LimitsRefusal::NotRunning,
+                }) if id == container_id
+            ));
+        }
     }
 
     #[test]

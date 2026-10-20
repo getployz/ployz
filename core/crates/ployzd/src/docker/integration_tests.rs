@@ -325,6 +325,28 @@ async fn update_limits_changes_a_running_container_in_place() {
         ),
         "{refused:?}"
     );
+    assert_eq!(
+        specs.get(&container_id).await.unwrap(),
+        Some(updated.clone())
+    );
+
+    runtime.stop(&container_id, None, Some(1)).await.unwrap();
+    let mut raised = updated.clone();
+    raised.container.resources.memory_bytes = Some(ByteQuantity::try_from(256 << 20).unwrap());
+    let refused = runtime
+        .update_limits(&container_id, &raised)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Error::LimitsRefused {
+                refusal: LimitsRefusal::NotRunning,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
     assert_eq!(specs.get(&container_id).await.unwrap(), Some(updated));
 
     runtime.remove(&container_id, true, true).await.unwrap();
