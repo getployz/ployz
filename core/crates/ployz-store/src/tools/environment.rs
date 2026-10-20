@@ -202,6 +202,12 @@ impl Tool for EnvironmentPr {
         let repository = match (self.repository, plans.plans.as_slice()) {
             (Some(repository), _) => repository,
             (None, [only]) => only.repository.clone(),
+            (None, []) if !self.enabled => {
+                return Ok(json!({
+                    "at": at(&services.environment),
+                    "pull_request_environments": false,
+                }));
+            }
             (None, []) => {
                 return Err(Refusal::invalid(
                     "No repository is connected to this Project yet",

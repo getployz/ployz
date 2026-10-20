@@ -583,6 +583,12 @@ pub fn resolve_connections(
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(ConnectError::Config(error)),
     }
+    if let Some(name) = context_override {
+        return Err(ConnectError::Context(ContextError::ContextNotFound {
+            name: name.to_owned(),
+            path: config_path.to_owned(),
+        }));
+    }
     // A socket this user can't even see is not one it can use: fall through
     // to Cloud, whose sign-in hint is the useful one.
     let socket_available = match local_socket.try_exists() {

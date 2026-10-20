@@ -587,7 +587,8 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
     if (replacing) set(other(picked), null);
   };
   const dialogs = <>
-    <ImageSelectorDialog open={picking?.kind === "image"} onOpenChange={close} onSelectImage={(image) => pick("image", image)} />
+    <ImageSelectorDialog open={picking?.kind === "image"} initialImage={kind === "image" ? value : undefined} onOpenChange={close}
+      onSelectImage={(image) => pick("image", image)} />
     <GitRepoSelectorDialog open={picking?.kind === "repository"} onOpenChange={close} organizationSlug={state.organizationSlug}
       onSelectRepo={({ fullName }) => pick("repository", fullName)} />
   </>;

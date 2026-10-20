@@ -8,8 +8,8 @@ $ ployz volume add data --docker --mount web:/data
 stderr:
 ```
 WARNING: Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.
-data is attached to web; set replicas to 1, or allow shared writes: ployz volume set data --shared-writes
-next: ployz volume set data --shared-writes --env production --project shop
+data would be attached to web; set replicas to 1, or add it with shared writes on
+next: ployz volume add data --mount web:/data --docker --shared-writes --env production --project shop
 ```
 
 ### volume add --docker

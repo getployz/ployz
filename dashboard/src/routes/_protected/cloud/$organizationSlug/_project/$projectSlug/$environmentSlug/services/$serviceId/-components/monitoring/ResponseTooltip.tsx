@@ -16,7 +16,7 @@ const PHASE_COLORS = {
 function stepLabel(at: number, end: number, timeZone: string) {
   const start = atFormat(timeZone).format(at);
   if (end - at <= 5 * 60_000) return start;
-  return `${start} – ${new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone }).format(end)}`;
+  return `${start} – ${new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone }).format(end)}`;
 }
 
 function checksLabel(regions: readonly UptimePoint[]) {

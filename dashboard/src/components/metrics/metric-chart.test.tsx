@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MetricChart, useMetricCursor } from "./metric-chart";
+import { atFormat, MetricChart, useMetricCursor } from "./metric-chart";
 
 beforeEach(() => vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -40,4 +40,8 @@ it("raises an OOM above a restart at the same moment", async () => {
   await open();
   const top = (label: string) => parseFloat(screen.getByRole("img", { name: label }).style.top);
   expect(top("Out of memory")).toBeLessThan(top("Restarted"));
+});
+
+it("stamps moments on the 24-hour clock the rest of the dashboard uses", () => {
+  expect(atFormat("UTC").format(Date.UTC(2026, 9, 13, 15, 14))).toBe("Oct 13, 15:14");
 });

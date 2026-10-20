@@ -225,15 +225,12 @@ impl Fields {
             .unwrap_or_default();
         for (label, value) in &self.fields {
             let value = if value.is_empty() { "-" } else { value };
+            let painted = Tone::Muted.paint(label.as_ref());
             if aligned {
                 let padding = " ".repeat(width - label.width());
-                writeln!(
-                    out,
-                    "{}{padding}  {value}",
-                    Tone::Muted.paint(label.as_ref())
-                )?;
+                writeln!(out, "{painted}{padding}  {value}")?;
             } else {
-                writeln!(out, "{label} = {value}")?;
+                writeln!(out, "{painted} = {value}")?;
             }
         }
         Ok(())
