@@ -767,16 +767,16 @@ async fn a_failed_restart_or_stop_and_its_outcome_read_as_sentences() {
     ] {
         let stop_failed = Scripted::new(vec![
             inspected(),
-            failed(Call::Stop(machine('a'), copy.clone()), reason),
+            failed(Call::Stop(machine('a'), copy), reason),
         ])
         .with_copy(&machine('a'), &copy, CopyRotation::In);
         let held_unread = || {
             Scripted {
-                unanswered_held: BTreeSet::from([copy.clone()]),
+                unanswered_held: BTreeSet::from([copy]),
                 unanswered_reason: reason,
                 ..Scripted::new(vec![
                     inspected(),
-                    failed(Call::Inspect(machine('a'), copy.clone()), "no answer"),
+                    failed(Call::Inspect(machine('a'), copy), "no answer"),
                 ])
             }
             .with_copy(&machine('a'), &copy, CopyRotation::In)
