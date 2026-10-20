@@ -8,12 +8,13 @@
 //! `<pointer>` is pointer JSON. `<read>` is the pointer JSON the write assumes, `none` for a
 //! first publish, or `current` to read it first. Prints `Published` or
 //! `Superseded <current>`. Connects like the CLI: `PLOYZ_CONNECT`, else `PLOYZ_CONTEXT`,
-//! else the local daemon, with `PLOYZ_CONFIG` (default `~/.config/ployz/config.yaml`).
+//! else the local daemon, with `PLOYZ_CONFIG`, else the CLI's default config.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ployz::connect::connect;
+use ployz::context::{default_config_path, expand_home};
 use ployz_core::{
     PublishServingPointerRequest, QualifiedService, ServingPointer, ServingPointerPublication,
 };
@@ -36,10 +37,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("usage: publish_pointer <namespace/service> [<pointer> <read>]")?,
     )?;
     let config = std::env::var("PLOYZ_CONFIG").map_or_else(
-        |_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                .join(".config/ployz/config.yaml")
-        },
+        |_| expand_home(Path::new(&default_config_path())),
         PathBuf::from,
     );
     let mut client = connect(

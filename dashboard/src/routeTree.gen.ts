@@ -28,6 +28,7 @@ import { Route as ClaimSecretRouteImport } from './routes/claim/$secret'
 import { Route as DevSettingsRowsRouteImport } from './routes/dev.settings-rows'
 import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as DotwellKnownOauthAuthorizationServerIndexRouteImport } from './routes/[.]well-known/oauth-authorization-server/index'
+import { Route as DotwellKnownOauthProtectedResourceIndexRouteImport } from './routes/[.]well-known/oauth-protected-resource/index'
 import { Route as DotwellKnownOauthProtectedResourceMcpRouteImport } from './routes/[.]well-known/oauth-protected-resource/mcp'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
@@ -182,6 +183,12 @@ const DotwellKnownOauthAuthorizationServerIndexRoute =
   DotwellKnownOauthAuthorizationServerIndexRouteImport.update({
     id: '/.well-known/oauth-authorization-server/',
     path: '/.well-known/oauth-authorization-server/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const DotwellKnownOauthProtectedResourceIndexRoute =
+  DotwellKnownOauthProtectedResourceIndexRouteImport.update({
+    id: '/.well-known/oauth-protected-resource/',
+    path: '/.well-known/oauth-protected-resource/',
     getParentRoute: () => rootRouteImport,
   } as any)
 const DotwellKnownOauthProtectedResourceMcpRoute =
@@ -600,6 +607,7 @@ export interface FileRoutesByFullPath {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  '/.well-known/oauth-protected-resource/': typeof DotwellKnownOauthProtectedResourceIndexRoute
   '/cloud/': typeof ProtectedCloudIndexRoute
   '/api/checkin/': typeof ApiCheckinIndexRoute
   '/api/enroll/': typeof ApiEnrollIndexRoute
@@ -674,6 +682,7 @@ export interface FileRoutesByTo {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server': typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  '/.well-known/oauth-protected-resource': typeof DotwellKnownOauthProtectedResourceIndexRoute
   '/cloud': typeof ProtectedCloudIndexRoute
   '/api/checkin': typeof ApiCheckinIndexRoute
   '/api/enroll': typeof ApiEnrollIndexRoute
@@ -750,6 +759,7 @@ export interface FileRoutesById {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  '/.well-known/oauth-protected-resource/': typeof DotwellKnownOauthProtectedResourceIndexRoute
   '/_protected/cloud/': typeof ProtectedCloudIndexRoute
   '/api/checkin/': typeof ApiCheckinIndexRoute
   '/api/enroll/': typeof ApiEnrollIndexRoute
@@ -831,6 +841,7 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
+    | '/.well-known/oauth-protected-resource/'
     | '/cloud/'
     | '/api/checkin/'
     | '/api/enroll/'
@@ -905,6 +916,7 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server'
+    | '/.well-known/oauth-protected-resource'
     | '/cloud'
     | '/api/checkin'
     | '/api/enroll'
@@ -980,6 +992,7 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
+    | '/.well-known/oauth-protected-resource/'
     | '/_protected/cloud/'
     | '/api/checkin/'
     | '/api/enroll/'
@@ -1058,6 +1071,7 @@ export interface RootRouteChildren {
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
   DotwellKnownOauthAuthorizationServerIndexRoute: typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  DotwellKnownOauthProtectedResourceIndexRoute: typeof DotwellKnownOauthProtectedResourceIndexRoute
   ApiCheckinIndexRoute: typeof ApiCheckinIndexRoute
   ApiEnrollIndexRoute: typeof ApiEnrollIndexRoute
   DotwellKnownOauthAuthorizationServerApiAuthRoute: typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
@@ -1206,6 +1220,13 @@ declare module '@tanstack/react-router' {
       path: '/.well-known/oauth-authorization-server'
       fullPath: '/.well-known/oauth-authorization-server/'
       preLoaderRoute: typeof DotwellKnownOauthAuthorizationServerIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/.well-known/oauth-protected-resource/': {
+      id: '/.well-known/oauth-protected-resource/'
+      path: '/.well-known/oauth-protected-resource'
+      fullPath: '/.well-known/oauth-protected-resource/'
+      preLoaderRoute: typeof DotwellKnownOauthProtectedResourceIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/.well-known/oauth-protected-resource/mcp': {
@@ -1878,6 +1899,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
   DotwellKnownOauthAuthorizationServerIndexRoute:
     DotwellKnownOauthAuthorizationServerIndexRoute,
+  DotwellKnownOauthProtectedResourceIndexRoute:
+    DotwellKnownOauthProtectedResourceIndexRoute,
   ApiCheckinIndexRoute: ApiCheckinIndexRoute,
   ApiEnrollIndexRoute: ApiEnrollIndexRoute,
   DotwellKnownOauthAuthorizationServerApiAuthRoute:

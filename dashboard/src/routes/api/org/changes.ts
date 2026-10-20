@@ -1,11 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
-import { collectionsOf } from "#/collections/change-sources";
-import { currentChangeCursor, readChangeWindow } from "#/modules/organization/change-log.server";
+import { currentChangeCursor } from "#/modules/organization/change-log.server";
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { organizationSlugSchema } from "#/modules/organization/tables";
 import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
-import { publicErrorResponse, Validation } from "#/server/public-error";
+import { readOrganizationChanges } from "#/routes/api/org/-changes.server";
+import { publicErrorResponse, Validation, methodNotAllowed } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 const OrgChangesSearch = Schema.Struct({ organizationSlug: organizationSlugSchema });
@@ -24,12 +24,10 @@ export const Route = createFileRoute("/api/org/changes")({
               Effect.map((access) => ({ organizationId: access.organization.id })),
             ), { signal: request.signal }),
           currentCursor: () => runAppEffect(currentChangeCursor(), { signal: request.signal }),
-          readChanges: (input) =>
-            runAppEffect(readChangeWindow(input).pipe(
-              Effect.map((window) => ({ cursor: window.cursor, collections: collectionsOf(window.sourceTables) })),
-            ), { signal: request.signal }),
+          readChanges: (input) => runAppEffect(readOrganizationChanges(input), { signal: request.signal }),
         });
       },
+      ANY: (): Response => methodNotAllowed(Route),
     },
   },
 });

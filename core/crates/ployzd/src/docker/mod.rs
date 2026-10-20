@@ -1164,6 +1164,13 @@ pub enum Error {
     SlotNameOccupied(String),
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
+    /// A pull failed while the Docker root had almost no free space.
+    #[error("{full}")]
+    DiskFull {
+        full: ployz_core::DiskFull,
+        #[source]
+        source: bollard::errors::Error,
+    },
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
     #[error("container duration exceeds Docker's range")]
@@ -1234,6 +1241,7 @@ impl Error {
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
+            | Self::DiskFull { .. }
             | Self::Io(_)
             | Self::Json(_)
             | Self::Network(_)
@@ -1261,6 +1269,7 @@ impl From<&Error> for RpcError {
             Error::VolumeInUse { services, .. } if !services.is_empty() => {
                 serde_json::json!({ "in_use_by": services })
             }
+            Error::DiskFull { full, .. } => full.details(),
             _ => serde_json::Value::Null,
         };
         let code = error.rpc_code();

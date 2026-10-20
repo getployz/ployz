@@ -14,7 +14,25 @@ use ployz_core::{MachineId, ManagementCapability};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
-pub(crate) fn expand_home(path: &Path) -> PathBuf {
+/// Where the Ployz config lives when `PLOYZ_CONFIG` names nowhere: under
+/// `$XDG_CONFIG_HOME` when that is an absolute path, else `~/.config`.
+#[must_use]
+pub fn default_config_path() -> String {
+    config_path_under(std::env::var_os("XDG_CONFIG_HOME").as_deref())
+}
+
+fn config_path_under(xdg_config_home: Option<&std::ffi::OsStr>) -> String {
+    xdg_config_home
+        .map(Path::new)
+        .filter(|dir| dir.is_absolute())
+        .map_or_else(
+            || "~/.config/ployz/config.yaml".to_owned(),
+            |dir| dir.join("ployz/config.yaml").display().to_string(),
+        )
+}
+
+#[must_use]
+pub fn expand_home(path: &Path) -> PathBuf {
     path.strip_prefix("~").map_or_else(
         |_| path.to_owned(),
         |suffix| {
@@ -405,10 +423,10 @@ pub enum ConnectionSource {
 impl fmt::Display for ConnectionSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Direct => f.write_str("the explicit connection"),
+            Self::Direct => f.write_str("the given connection"),
             Self::Context(name) => write!(f, "context {}", name.escape_debug()),
             Self::LocalSocket => f.write_str("the local socket"),
-            Self::Cloud => f.write_str("Cloud Server Access"),
+            Self::Cloud => f.write_str("Cloud"),
         }
     }
 }

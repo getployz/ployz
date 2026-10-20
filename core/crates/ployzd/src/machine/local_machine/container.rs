@@ -1348,7 +1348,9 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | Docker::StorageUnobservable,
         ) => ContainerRefusalReason::NotEligible,
         Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
-        Error::Docker(Docker::ImagePull(_)) => ContainerRefusalReason::ImagePullFailed,
+        Error::Docker(Docker::ImagePull(_) | Docker::DiskFull { .. }) => {
+            ContainerRefusalReason::ImagePullFailed
+        }
         Error::Docker(Docker::ExternalVolumeNotFound(_) | Docker::VolumeShapeMismatch { .. }) => {
             ContainerRefusalReason::VolumesNotPrepared
         }

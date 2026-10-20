@@ -1273,6 +1273,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     const floorless = run !== undefined && serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.volumeFloor) === false;
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
+      Effect.timeout(OBSERVE_TIMEOUT),
       Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
         ? lacks(requirements.volumeFloor.capability)
         : Effect.succeed<Member>({
@@ -1282,7 +1283,6 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           view,
           floorless,
         })),
-      Effect.timeout(OBSERVE_TIMEOUT),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
@@ -1302,8 +1302,7 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
   const feature: Requirement = kind === undefined ? required : { capability: required.capability, feature: RUN_FEATURES[kind] };
   const line = releaseLine(server.daemonVersion);
   const release = line === null ? null : yield* organizationReleaseChannel(organizationId).pipe(
-    Effect.flatMap((channel) => channelRelease(channel, line)),
-    Effect.timeout(OBSERVE_TIMEOUT),
+    Effect.flatMap((channel) => channelRelease(channel, line).pipe(Effect.timeout(OBSERVE_TIMEOUT))),
     Effect.orElseSucceed(() => null),
   );
   const needs = `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}.`;

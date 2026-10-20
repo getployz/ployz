@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/com
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
-import { cliLifetimeLabel, installLines } from "#/modules/machines/waiting/install-lines";
+import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
 import { ADD_SERVERS_REFUSED, useMintFleetToken } from "./use-waiting";
@@ -27,7 +27,7 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
       <p className="text-sm text-muted-foreground">Add servers to queue more here.</p>
     ) : (
       <div className="flex flex-col gap-3">
-        <InstallTabs lines={installLines(mint.data)} />
+        <InstallTabs target={mint.data} />
         <p className="text-sm text-muted-foreground">Run it on more servers and they queue above.</p>
       </div>
     );
@@ -54,7 +54,7 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
           </Button>
         ) : (
           <div className="flex flex-col gap-3">
-            <InstallTabs lines={installLines(mint.data)} />
+            <InstallTabs target={mint.data} />
             <p className="text-sm text-warning">Shown once. Expires in {cliLifetimeLabel("7d")}.</p>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Spinner />

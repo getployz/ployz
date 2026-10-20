@@ -313,6 +313,12 @@ impl Failure {
                 },
                 ployz_core::error_chain::causes(error),
             ),
+            ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
+            } if let Some(full) = error.disk_full() => {
+                (full.to_string(), ployz_core::error_chain::causes(error))
+            }
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));

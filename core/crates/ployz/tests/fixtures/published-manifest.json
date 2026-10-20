@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "55469fe0a0be",
+  "revision": "1a8585c2c438",
   "permissions": [
     "org:read",
     "org:settings",
@@ -875,7 +875,7 @@
       "about": "Show a Service's uptime: whether visitors reach it, what each region's check got back, and its incidents",
       "examples": [
         "ployz uptime show web",
-        "ployz uptime show web --project shop --environment staging --from 6h"
+        "ployz uptime show web --project shop --env staging --from 6h"
       ],
       "requires": "project:read",
       "kind": "read",
@@ -1128,7 +1128,7 @@
       "about": "Check a Service's public address now, from every region, and show what each got back. Changes no setting",
       "examples": [
         "ployz uptime check web",
-        "ployz uptime check web --project shop --environment staging"
+        "ployz uptime check web --project shop --env staging"
       ],
       "requires": "project:read",
       "kind": "read",

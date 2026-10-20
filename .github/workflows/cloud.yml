@@ -7,10 +7,6 @@ on:
         description: Build this release tag and publish ghcr.io/getployz/ployz-cloud:<tag>
         type: string
         default: ''
-      runner:
-        description: Linux runner label; release builds keep the GitHub-hosted default
-        type: string
-        default: ubuntu-24.04
     secrets:
       KACHE_S3_ACCESS_KEY_ID:
         required: false
@@ -59,7 +55,7 @@ jobs:
   # download and a runner queue. Later checks run after an earlier one fails, so each still reports.
   check:
     name: Build and test
-    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
