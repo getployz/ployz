@@ -972,22 +972,29 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, S
         })
 }
 
-/// "uploaded by nick, base abc1234 + changes": where an upload came from.
-fn provenance(upload: &UploadedSource) -> String {
+/// "uploaded by nick, base abc1234 + changes": where `deployment`'s upload came from,
+/// and whether that may still change before it starts.
+fn provenance(deployment: &DeploymentSummary) -> Option<String> {
+    let upload = deployment.upload.as_ref()?;
     let who = upload
         .uploader
         .as_ref()
         .map_or("this device", ployz_store::Principal::as_str);
     let digest = upload.digest.as_str();
     let digest = digest.get(..12).unwrap_or(digest);
-    match &upload.base {
+    let source = match &upload.base {
         Some(base) => format!(
             "uploaded by {who}, base {}{}",
             base.commit.as_str().get(..7).unwrap_or_default(),
             if base.changed { " + changes" } else { "" }
         ),
         None => format!("uploaded by {who}, sha256 {digest}"),
-    }
+    };
+    Some(if deployment.chooses_upload_at_start {
+        format!("{source} for now; chosen again when it starts")
+    } else {
+        source
+    })
 }
 
 /// Why `dir` couldn't be read: its ignore rules are the user's input; a missing
@@ -1290,8 +1297,8 @@ pub(super) fn say_view(view: &DeploymentView) {
         view.environment.name,
         status_word(&view.deployment)
     ));
-    if let Some(upload) = &view.deployment.upload {
-        crate::ui::stream(format_args!("  {}", provenance(upload)));
+    if let Some(provenance) = provenance(&view.deployment) {
+        crate::ui::stream(format_args!("  {provenance}"));
     }
     if let Some(
         ployz_store::Outcome::NotExecuted { reason, cause, .. }
@@ -1357,7 +1364,8 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::{
-        Tone, open_events, service_outcome_lines, ships_all, status_tone, status_word, undecided,
+        Tone, open_events, provenance, service_outcome_lines, ships_all, status_tone, status_word,
+        undecided,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
 
@@ -1459,5 +1467,29 @@ mod tests {
             ("CI failed".to_owned(), Tone::Bad)
         );
         assert_eq!(read("queued", None), ("queued".to_owned(), Tone::Change));
+    }
+
+    #[test]
+    fn a_queued_deploy_without_an_upload_of_its_own_says_its_upload_may_change() {
+        let deployment = |status: &str, at_start: bool| -> ployz_store::DeploymentSummary {
+            serde_json::from_value(serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000101",
+                "environment_id": "00000000-0000-4000-8000-000000000002",
+                "number": 1, "status": status, "saved": 1, "services": [], "runner": null,
+                "upload": {"digest": "a".repeat(64), "base": null, "uploader": "nick"},
+                "chooses_upload_at_start": at_start, "remove": false, "admitted_by": null,
+                "admitted_at": 0, "started_at": null, "ended_at": null, "message": null,
+                "push": null, "ci": null, "in_flight": true, "outcome": null,
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            provenance(&deployment("queued", true)).as_deref(),
+            Some("uploaded by nick, sha256 aaaaaaaaaaaa for now; chosen again when it starts")
+        );
+        assert_eq!(
+            provenance(&deployment("running", false)).as_deref(),
+            Some("uploaded by nick, sha256 aaaaaaaaaaaa")
+        );
     }
 }
