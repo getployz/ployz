@@ -1,6 +1,6 @@
 # Waiting Server enrollment: check in, wait, enroll in bulk
 
-Status: architect package, not built. No code or PRs exist for it. The UI and CLI copy follow `dashboard/src/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/waiting-servers.prototype.html`.
+Status: built. The code on main is the source of truth, and this spec records the design. `dashboard/src/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/waiting-servers.prototype.html` is a design reference. Where it differs from main, main wins.
 
 In short. The user mints a Fleet Token with a two-word name and an expiry. Each host runs one line that installs the Ployz CLI, writes the token, and starts a small `ployz server checkin` loop under systemd. The loop checks in at once, so the host shows in Cloud as a Waiting Server within seconds. Host preparation runs in the background while the host waits. It installs Docker and builds ZFS ahead of time, without installing ZFS. Each check-in reports how far preparation has got. When the user enrolls the host, or the token enrolls on arrival, Cloud waits until the host is ready. The next check-in then answers `enroll` with a per-attempt Cloud Enroll Token bound to the founder or joiner role. The loop runs today's `ployz server add` path in-process. Cloud picks the founder, joins the rest 8 at a time under the existing pairing lock, and owns each attempt with one Inngest run per Server Enrollment. The daemon does not change.
 
@@ -8,7 +8,8 @@ In short. The user mints a Fleet Token with a two-word name and an expiry. Each 
  user_data / shell        waiting host (no ployzd yet)                       Cloud
  -----------------        ----------------------------                       -----
  curl ployz.sh |          install CLI, write /etc/ployz/fleet-token
-   PLOYZ_ENROLL_TOKEN=pflt_ sh   ployz server checkin --install
+   sh -s -- VERSION --enroll  ployz server checkin --install
+   (or PLOYZ_FLEET_TOKEN=pflt_)
                             writes ployz-checkin.service + ployz-prepare.service
                             starts the loop, exits 0 (seconds, no Docker yet)
                           loop: ployzd install --probe --json -> HostReport
@@ -61,22 +62,30 @@ Constraints traced in code.
 The user opens Add servers. Cloud fills in a name such as `swift-heron`. The user can change it before creating. Expiry defaults to 1 day, with 7 days and 30 days on offer. One switch, Enroll on arrival, reveals one field, Maximum servers. Create shows the token once with three tabs.
 
 ```sh
-curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
+curl -fsSL https://ployz.sh | sudo sh -s -- VERSION --enroll
 ```
+
+The Shell line carries no token. `install.sh` asks for it on the terminal with echo off, so it stays out of shell history and `ps`. cloud-init and Terraform have no terminal, so they pass it in `PLOYZ_FLEET_TOKEN` (`dashboard/src/modules/machines/waiting/install-lines.ts`). Every line pins the release this Cloud speaks.
 
 ```yaml
 #cloud-config
 runcmd:
-  - curl -fsSL https://ployz.sh | PLOYZ_ENROLL_TOKEN=pflt_… sh
+  - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_… sh -s -- VERSION
 ```
 
 ```hcl
+variable "ployz_fleet_token" {
+  type      = string
+  sensitive = true
+  default   = "pflt_…"
+}
+
 resource "hcloud_server" "web" {
   count     = 200
   user_data = <<-EOT
     #cloud-config
     runcmd:
-      - curl -fsSL https://ployz.sh | PLOYZ_ENROLL_TOKEN=${var.ployz_enroll_token} sh
+      - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=${var.ployz_fleet_token} sh -s -- VERSION
   EOT
 }
 ```
@@ -269,7 +278,7 @@ Copy is two words where it can be. "First one, then 8 at a time." "N rejected. T
 |---|---|---|
 | Host facts, blockers | `ployzd` installer, `installer/assess.rs`, run as `ployzd install --probe --json` | The refusals already live there. It is a one-shot process, not the daemon. |
 | Host preparation (Docker install, ZFS build) | `ployzd install --prepare`, run as `ployz-prepare.service`, which the loop starts | Same installer and the same install functions. A systemd unit outlives a loop restart and runs once at a time. |
-| Install line | `core/install.sh` reading `PLOYZ_ENROLL_TOKEN` | The script already ships on `ployz.sh`. |
+| Install line | `core/install.sh` reading `PLOYZ_FLEET_TOKEN`, or prompting for it with `--enroll` | The script already ships on `ployz.sh`. |
 | Check-in loop, systemd unit, in-process enroll, host status | CLI, `ployz/src/checkin/` | It ships everywhere already and reuses `server add`. |
 | Fleet Token, Waiting Server, Server Enrollment | Cloud Postgres | Bookkeeping about non-members. |
 | Founder choice, naming, storage resolution | `planServerEnrollment`, pure | Cloud acts as the operator (bet 6). |
@@ -281,7 +290,7 @@ Copy is two words where it can be. "First one, then 8 at a time." "N rejected. T
 ### Host side (Rust)
 
 ```rust
-// core/crates/ployzd/src/installer/assess.rs (new): the single source of every refusal
+// core/crates/ployzd/src/installer/assess.rs: the single source of every refusal
 pub struct HostFacts {
     pub os: OsRelease, pub kernel: String, pub arch: String,
     pub virt: Virtualization,              // Vm | BareMetal | OpenVz | Lxc { privileged }
@@ -309,19 +318,20 @@ pub struct Blocker { pub code: &'static str, pub message: String }
 The installer refuses on `assess` for the requested storage, and check-in reports the whole value. Both run the same function, so the list and the refusal can't drift.
 
 ```rust
-// core/crates/ployz/src/checkin/mod.rs (new)
-pub async fn run(args: CheckinArgs) -> Result<CheckinEnd, Error>;      // `ployz server checkin`
-pub enum CheckinEnd { Enrolled, Stopped(StopReason), TokenChanged }   // TokenChanged: the token file changed, restart with it
-pub enum StopReason { Rejected, TokenExpired, TokenRevoked }
+// core/crates/ployz/src/checkin/mod.rs
+async fn run<H: Host>(host: &H, client: &mut CheckinClient, key: &CheckinKey, paths: &Paths) -> CheckinEnd;  // `ployz server checkin`
+enum CheckinEnd { Stopped(StopReason), TokenChanged, Enrolled }    // TokenChanged: the token file changed, restart with it
+enum StopReason { Rejected, TokenExpired, TokenRevoked }            // checkin/wire.rs
 
-async fn pass(state: &mut LocalCheckin, cloud: &CheckinClient) -> Result<Next, Error>;  // probe, post, act
-enum Next { Sleep(Duration), Probe(ProbeRequest), Enroll(Box<Instruction>), Stop(CheckinEnd) }
+async fn pass<H: Host>(host: &H, client: &mut CheckinClient, key: &CheckinKey, paths: &Paths, now) -> Next;  // probe, post, act
+enum Next { Wait { after }, Enrolling, Retry { after, why }, RefusedOnce { after }, Held { after, hold, why },
+            Stop(StopReason, String), ClockOff(String), NotCloud(String), Enrolled }
 
 // status.json, the last answer for `ployz status`; the key lives in its own file
 struct LocalCheckin { answer: Seen, at, token_fingerprint, reason, message, prep, blockers,
                       prepare_retries, prepare_started, refused, attempt: Option<Attempt>, no_cluster }
 //   /var/lib/ployz-checkin/{key,status.json,probe.json}
-async fn enroll(instruction: Instruction) -> Result<MachineId, StageFailure>;  // today's server add body, in-process
+// Host::enroll(&self, instruction: &EnrollInstruction, progress) -> Result<Committed, String>: today's server add body, in-process
 ```
 
 `checkin --install` writes `ployz-checkin.service` and `ployz-prepare.service`, starts the loop and exits 0. It doesn't install Docker and doesn't wait for anything. It reuses an existing key file. A rerun of the install line on the same host keeps its identity, so a rejected host stays rejected under the same token and comes back under a new one.
@@ -337,7 +347,7 @@ Preparation is one background job per host. The loop owns starting it. `ployz-pr
 Preparation is on by default. It always installs Docker, because every enroll needs it. The one opt-out is the ZFS build, for power users who know they won't use ZFS: `PLOYZ_SKIP_ZFS=1` on the install line passes `--skip-zfs` through `checkin --install` to `ployzd install --prepare --skip-zfs`. The install line copy in the dashboard never shows it. An opted-out host reports `zfs: "off"`, which counts as ready. ZFS eligibility in `report.zfs` is unchanged, so an enroll with storage `zfs` still works and builds ZFS at enroll time, as today.
 
 ```rust
-// core/crates/ployzd/src/installer/prepare.rs (new)
+// core/crates/ployzd/src/installer/prepare.rs
 pub fn prepare(paths: &InstallPaths) -> Result<(), Error>;   // `ployzd install --prepare`
 //   flock /var/lib/ployz/prepare/lock (non-blocking; held: exit 0, the other run owns it)
 //   step docker: assess for storage none, refuse on a blocker, install Docker through today's path
@@ -623,12 +633,12 @@ Expiry is bookkeeping. It never touches a Cluster.
 
 ```
 core/
-  install.sh                                       PLOYZ_ENROLL_TOKEN: write token file, run checkin --install
-  crates/ployzd/src/installer/assess.rs            new: HostFacts, read_facts, assess
+  install.sh                                       --enroll prompt or PLOYZ_FLEET_TOKEN: write token file, run checkin --install
+  crates/ployzd/src/installer/assess.rs            HostFacts, read_facts, assess
   crates/ployzd/src/installer/{host,storage}.rs    refusals call assess; reuse or discard the ZFS build; zfs on device (last unit)
-  crates/ployzd/src/installer/prepare.rs           new: `--prepare`, lock, state.json, Docker step, ZFS build ahead
+  crates/ployzd/src/installer/prepare.rs           `--prepare`, lock, state.json, Docker step, ZFS build ahead
   crates/ployzd/src/installer/mod.rs               `--probe --json`, `--prepare`
-  crates/ployz/src/checkin/{mod,client,probe}.rs   new: loop, signed client, prep in the report, bounded probe window, unit text
+  crates/ployz/src/checkin/{mod,client,probe}.rs   loop, signed client, prep in the report, bounded probe window, unit text
   crates/ployz/src/cloud_enroll.rs                 not_yet.reason/ahead; StorageChoice device
   crates/ployz/src/handlers/server/*.rs            checkin, token, ls --waiting, show, reject, enroll
   crates/ployz/src/handlers/link.rs                `ployz status` This server block
@@ -646,7 +656,7 @@ dashboard/src/
   modules/machines/enrollment.server.ts            joiner guard, join gate, completed event
   modules/machines/tables.ts                       two nullable token columns
   routes/…/servers/-components/                    add-servers dialog, tokens page, waiting list, enroll sheet, enrolling list
-docs/user/servers/add-many-servers.md              new
+docs/user/servers/add-many-servers.md
 core/CONTEXT.md, dashboard/CONTEXT.md              glossary
 ```
 
@@ -721,7 +731,7 @@ Rejected from B. A persisted `state` column. A derives the state, which avoids a
   - `machine_enrollment_token` gains nullable columns.
   - There is no daemon RPC change.
   - `/api/checkin` is new and frozen from birth.
-  - `ployz.sh` keeps working with no `PLOYZ_ENROLL_TOKEN`.
+  - `ployz.sh` keeps working with no `PLOYZ_FLEET_TOKEN` and no `--enroll`.
 - **Bet 3, bounded commands.** Red flag crossed. The check-in loop outlives `--install`. It is a host-local loop that observes and reports, it states its bound, and its one effect (`server add`) is a bounded command the user asked for in Cloud. Preparation also runs after `--install` exits. It is one oneshot unit with a lock and a fixed list of steps, and it ends on its own.
 - **Bet 6, Machine-local authority.** Cloud acts as the operator for founder, names and join slots. The host still refuses any storage its own `assess` rejects. The join gate is operator patience, not a safety wait.
 - **Bet 7, Cloud drives, never owns.** Red flag adjacent. Cloud steers a host over HTTP pull rather than Machine RPC. A waiting host isn't a Machine and holds no Cluster state, and the instruction is one closed, typed verb. If Cloud vanishes, the host waits and no Cluster is touched.
@@ -749,7 +759,7 @@ Each unit is one PR with its own check. Units run in this order. A unit may star
 | D1 | `fleet_token` table, two-word names, expiry, `createFleetToken`, `listFleetTokens`, `revokeFleetToken`, and the CLI API routes. | dashboard | none | A Postgres vitest shows an expired token refused, a name collision retried, and revoke deleting only waiting rows with no open attempt. |
 | D2 | `waiting_server` table, `POST /api/checkin` answering `wait` and `stop`, signature check, the optional `prep` field, `rejectWaitingServers`. | dashboard | D1 | Route tests cover a bad signature (401), an expired token (`stop{token_expired}`), a rejected key (`stop{rejected}`), the same key back under a new token (`wait`), and a request with and without `prep`. |
 | C3 | `ployz server checkin` loop, signed client, both systemd units, starting preparation, `prep` in each check-in, `status.json`, and the This server block in `ployz status`. | core | C1, C2, D2 | On Boat against `SERVERS=1` Cloud, a host shows in the waiting list within 10 s of `checkin --install` exiting, its status moves from Installing Docker to Ready, and reject stops both units. |
-| C4 | `install.sh` reads `PLOYZ_ENROLL_TOKEN` and `PLOYZ_SKIP_ZFS`, writes the token file and runs `checkin --install`. Without it, behavior is unchanged. | core | C3 | `core/scripts/test-cli-installer.sh` covers both paths, and one `curl \| sh` on Boat lands a waiting row. |
+| C4 | `install.sh` reads `PLOYZ_FLEET_TOKEN`, or prompts for it on the terminal with `--enroll`, writes the token file and runs `checkin --install`, which reads `PLOYZ_SKIP_ZFS`. Without either, behavior is unchanged. A Fleet Token in `PLOYZ_ENROLL_TOKEN` is refused. | core | C3 | `core/scripts/test-cli-installer.sh` covers both paths, and one `curl \| sh` on Boat lands a waiting row. |
 | C5 | `ployz server token create\|ls\|revoke` with `--name`, `--auto --max`, `--expires`. | core | D1 | A `cli_shape.rs` case per verb, and the revoke output reports the removed count against `SERVERS=1`. |
 | C6 | `ployz server ls --waiting`, `server show` (renamed from `server inspect`, covering waiting rows), `server reject` with glob and confirm. | core | D2 | `cli_shape.rs` cases, and a glob reject on two Boat hosts confirms then stops both. |
 | D3 | UI for the Add servers dialog with Shell, cloud-init and Terraform tabs, the Tokens page, and the Waiting list with filters, detail sheet, reject, and preparation in the status cell. | dashboard | D1, D2 | verify-dashboard with `SERVERS=1` shows a minted token, a host arriving live, its status moving from Installing Docker to Ready with no row or column moving, and fixed columns with the 10-row box. |

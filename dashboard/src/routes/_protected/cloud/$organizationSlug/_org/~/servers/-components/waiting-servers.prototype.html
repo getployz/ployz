@@ -190,6 +190,7 @@ select.input { appearance: auto; }
 .badge.ok { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
 .badge.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent); }
 .badge.off { color: var(--destructive); background: color-mix(in srgb, var(--destructive) 12%, transparent); }
+.badge.info { color: var(--info); background: color-mix(in srgb, var(--info) 12%, transparent); }
 /* tokens */
 .trow { display: grid; grid-template-columns: minmax(0,1fr) 150px 200px 130px 110px 90px; gap: 16px; align-items: center; padding: 11px 14px; border-top: 1px solid var(--border); font-size: 13px; }
 .trow.head { border-top: 0; color: var(--muted-foreground); font-size: 12px; padding: 8px 14px; background: color-mix(in srgb, var(--muted) 45%, transparent); }
@@ -517,12 +518,16 @@ function enrRow(e) {
 
 // Open attempts, and joined ones for an hour after they end. Failed and cancelled ones show back in Waiting.
 const RECENT_ENROLLMENT_MS = 60 * 60 * 1000;
+let expiryTimer = null;
 function renderEnrolling() {
   const rows = st.enr.filter((e) => !e.end || (e.end === "joined" && Date.now() - e.endedAt < RECENT_ENROLLMENT_MS));
+  // Main polls every 5 s, so a joined row drops out without a click. Render again when the oldest one expires.
+  clearTimeout(expiryTimer);
+  const ends = rows.filter((e) => e.end === "joined").map((e) => e.endedAt + RECENT_ENROLLMENT_MS);
+  if (ends.length) expiryTimer = setTimeout(render, Math.max(0, Math.min(...ends) - Date.now()) + 50);
   if (!rows.length) return "";
   const joined = rows.filter((e) => e.end === "joined").length;
-  return `<div class="shead"><h2>Enrolling</h2><span class="count" style="font-variant-numeric:tabular-nums">${joined} of ${rows.length} joined</span>
-      <button class="btn sm" id="cancel-all" style="margin-left:auto">Cancel all</button></div>
+  return `<div class="shead"><h2>Enrolling</h2><span class="count" style="font-variant-numeric:tabular-nums">${joined} of ${rows.length} joined</span></div>
     <div class="list ebox" style="margin-bottom:28px">${rows.map(enrRow).join("")}</div>`;
 }
 
@@ -624,7 +629,6 @@ document.addEventListener("click", (e) => {
   const pt = t.closest(".ptab"); if (pt) { st.page = pt.dataset.page; render(); return; }
   const f = t.closest("[data-filter]"); if (f) { st.filter = f.dataset.filter; render(); return; }
   if (t.id === "add-btn" || t.id === "add-btn2" || t.id === "new-token") { openMint(); return; }
-  if (t.id === "cancel-all") { cancelEnr(st.enr.filter((x) => !x.end).map((x) => x.id)); return; }
   const c = t.closest("[data-cancel]"); if (c) { cancelEnr([c.dataset.cancel]); return; }
   const rv = t.closest("[data-revoke]"); if (rv) { revoke(rv.dataset.revoke); return; }
   const sh = t.closest("[data-show-token]"); if (sh) { e.preventDefault(); st.page = "servers"; st.tokenFilter = sh.dataset.showToken; render(); return; }
@@ -676,7 +680,9 @@ function probeRow(label, v, who) {
 function openDetail(s) {
   st.detail = s;
   const c = classify(s);
-  const badge = c === "offline" ? `<span class="badge off">Offline</span>` : c === "blocked" ? `<span class="badge warn">${esc(s.block)}</span>` : s.failed ? `<span class="badge off">Failed</span>` : `<span class="badge ok">Ready</span>`;
+  // The badge is the status cell's bold line, as main's detail sheet reads statusCell.
+  const [, tone, bold] = statusCell(s).match(/<b class="t-(\w+)">(.*?)<\/b>/);
+  const badge = `<span class="badge ${tone}">${bold}</span>`;
   const blockers = [s.block && [`<b class="t-warn">${esc(s.block)}</b>`, s.blockWhy], s.warn && [`<span class="t-warn">cgroup v1</span>`, "Works, with looser memory limits."], s.returned === "failed" && s.failed && [`<b class="t-off">Failed at ${STAGE_LABEL[s.failed.stage]}</b>`, s.failed.msg],
     s.returned === "cancelled" && [`<b>Cancelled</b>`, "Its last enroll was cancelled."]].filter(Boolean);
   $("detail-body").innerHTML = `
@@ -724,11 +730,13 @@ $("d-enroll").onclick = () => { st.sel.clear(); st.sel.add(st.detail.id); closeA
 
 // ---------- mint ----------
 const TOKEN = "pflt_Kq7v2HxR9mLt4Wn8bZ3cYp6D";
+const VERSION = "0.4.2";
 function cmds(tok) {
   return {
-    shell: `curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=${tok} sh`,
-    cloud: `#cloud-config\nruncmd:\n  - curl -fsSL https://ployz.sh | PLOYZ_TOKEN=${tok} sh`,
-    tf: `resource "hcloud_server" "web" {\n  count       = 200\n  server_type = "cpx41"\n  image       = "ubuntu-24.04"\n  user_data   = <<-EOT\n    #cloud-config\n    runcmd:\n      - curl -fsSL https://ployz.sh | PLOYZ_TOKEN=\${var.ployz_token} sh\n  EOT\n}`,
+    // As install-lines.ts: the Shell line asks for the token on the terminal; the others have none, so pass it.
+    shell: `curl -fsSL https://ployz.sh | sudo sh -s -- ${VERSION} --enroll`,
+    cloud: `#cloud-config\nruncmd:\n  - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=${tok} sh -s -- ${VERSION}`,
+    tf: `variable "ployz_fleet_token" {\n  type      = string\n  sensitive = true\n  default   = "${tok}"\n}\n\nresource "hcloud_server" "web" {\n  count       = 200\n  server_type = "cpx41"\n  image       = "ubuntu-24.04"\n  user_data   = <<-EOT\n    #cloud-config\n    runcmd:\n      - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=\${var.ployz_fleet_token} sh -s -- ${VERSION}\n  EOT\n}`,
   };
 }
 let mintAuto = false, mintExp = "1 day";
@@ -772,7 +780,7 @@ $("live-go").onclick = () => { closeAll(); st.page = "servers"; render(); };
 function simulateArrivals(n, done, tokenName) {
   let i = 0;
   const src = FLEET.filter((s) => !s.block && !s.offline && !s.failed).slice(60, 60 + n);
-  const auto = tokenName && mintAuto && st.founded;
+  const auto = tokenName && mintAuto; // arrive() waits for the founder, then these enroll on its next pass
   clearInterval(arrivalTimer);
   arrivalTimer = setInterval(() => {
     if (i >= n) { clearInterval(arrivalTimer); if (done) done(); return; }
@@ -869,6 +877,7 @@ function startEnroll(sel, o, isAuto) {
   const base = st.enr.length;
   ordered.forEach((r, i) => {
     const founder = !!o.founderId && i === 0;
+    r.s.autoOnReady = false; // one enroll on arrival per host per token, whichever path started it
     st.enr.push({
       id: r.s.id, w: r.s, name: o.pattern ? o.pattern.replace("{n}", base + i + 1) : r.s.host, ip: r.s.ip, zfs: r.vol !== "none", founder, auto: isAuto,
       stage: !st.founded && !founder ? "awaiting_founder" : "instructed", t: 1 + Math.floor(rnd() * 8),
@@ -949,7 +958,6 @@ function arrive() {
   for (const s of st.waiting.filter((w) => w.autoOnReady && !w.prep && !w.block && !w.offline)) {
     const token = st.tokens.find((t) => t.name === s.token);
     if (!token?.max || token.revoked || used(token) >= token.max) continue;
-    s.autoOnReady = false;
     startEnroll([s], { storage: "zfs", emptyDisk: true, fallback: true }, true);
   }
 }
@@ -972,12 +980,12 @@ const SCRIPTS = {
     { id: "tok-create", title: "Create a token", cmd: "ployz server token create", out: [
       "@400 [g]✓[/] Created [b]amber-falcon[/] [d]· expires in 24h[/]", "",
       "  Run this on every server you want to add:", "",
-      "  [m]curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_Kq7v2HxR9mLt4Wn8bZ3cYp6D sh[/]", "",
+      "  [m]curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll[/]", "",
       "[d]Shown once. They'll show up at[/] cloud.ployz.dev/acme/servers"] },
     { id: "tok-auto", title: "Join on arrival", cmd: "ployz server token create --auto --max 50 --expires 7d", out: [
       "@400 [g]✓[/] Created [b]swift-heron[/] [d]· expires in 7 days[/]", "",
       "  Servers join on their own, up to 50.", "",
-      "  [m]curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_Wb4nT8xQ2vLc9Rk3mZ7hJp1F sh[/]", "",
+      "  [m]curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll[/]", "",
       "[y]Anyone with this token can add servers. Keep it secret.[/]"] },
     { id: "tok-ls", title: "List tokens", cmd: "ployz server token ls", out: [
       "@200 [d]NAME           JOINS           SERVERS              EXPIRES[/]",
@@ -1051,7 +1059,9 @@ const SCRIPTS = {
   ],
   host: [
     { group: "Install" },
-    { id: "install", title: "Paste the line", who: HOST, cmd: "curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_… sh", out: [
+    { id: "install", title: "Paste the line", who: HOST, cmd: "curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll", out: [
+      "Installs Docker and Ployz.",
+      "Fleet Token (from Servers in Ployz Cloud): ",
       "@500 [g]✓[/] Ployz 0.4.2",
       "@500 [c]⠋[/] Installing Docker",
       "~@1600 [g]✓[/] Docker 29.4.1 [d](38s)[/]",
@@ -1059,7 +1069,9 @@ const SCRIPTS = {
       "@600 [g]✓[/] Connected to [b]Acme[/] as hz-fsn1-001", "",
       "Waiting for approval in Ployz Cloud…",
       "[d]cloud.ployz.dev/acme/servers[/]"] },
-    { id: "auto", title: "With an auto token", who: HOST, cmd: "curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_… sh", out: [
+    { id: "auto", title: "With an auto token", who: HOST, cmd: "curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll", out: [
+      "Installs Docker and Ployz.",
+      "Fleet Token (from Servers in Ployz Cloud): ",
       "@500 [g]✓[/] Ployz 0.4.2",
       "@500 [g]✓[/] Docker 29.4.1 [d](already installed)[/]",
       "@500 [g]✓[/] Connected to [b]Acme[/] as ip-10-0-1-4", "",
@@ -1067,7 +1079,9 @@ const SCRIPTS = {
       "~@1100 [c]⠙[/] Joining",
       "~@900 [c]⠹[/] Going live",
       "~@600 [g]✓[/] Live [d](1m 21s)[/]"] },
-    { id: "blocked", title: "On a server that's too small", who: "root@hz-fsn1-005:~#", cmd: "curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_… sh", out: [
+    { id: "blocked", title: "On a server that's too small", who: "root@hz-fsn1-005:~#", cmd: "curl -fsSL https://ployz.sh | sudo sh -s -- 0.4.2 --enroll", out: [
+      "Installs Docker and Ployz.",
+      "Fleet Token (from Servers in Ployz Cloud): ",
       "@500 [g]✓[/] Ployz 0.4.2",
       "@500 [c]⠋[/] Installing Docker",
       "~@1200 [g]✓[/] Docker 29.4.1 [d](41s)[/]",

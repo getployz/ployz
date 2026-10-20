@@ -44,7 +44,7 @@ count past N. Revoke stops new arrivals while open enrollments finish.
    For user data, use the cloud-init or Terraform example instead; it has no terminal to ask at.
    The line returns once check-in is running.
 5. Return to **Servers**. Hosts appear under **Waiting to join** in arrival order. **Installing Docker**
-   shows preparation. **Ready** means Docker is installed and the host can be enrolled. Where the
+   shows preparation. **Ready** means Docker is installed. Where the
    host builds its own ZFS module, **Building ZFS** shows under **Ready** until the build finishes.
    An enrollment with ZFS volumes, and Enroll on arrival, wait for that build.
 
