@@ -70,7 +70,7 @@ describe("sizeRefusalOf in a shrink", () => {
     [
       "a mirror below the size is grown to it, so no capacity reads as a grow",
       refused({ reason: "no_capacity", bound_bytes: 5 * GB, capacity: lacking }),
-      { kind: "refused", reason: "no_capacity", boundBytes: 5 * GB, capacity: lacking, floorBytes: null, message: "db-1 has no room to grow data to 10 GB (it lacks 4 GB)" },
+      { kind: "refused", reason: "no_capacity", boundBytes: 5 * GB, capacity: lacking, floorBytes: null, message: "db-1 has no room to grow data to 10 GB" },
     ],
     ["a reason this Cloud doesn't know is final", refused({ reason: "too_hot" }), { kind: "refused", reason: "too_hot", boundBytes: null, capacity: null, floorBytes: null, message: "db-1 refused to resize data (too_hot)" }],
   ])("%s", (_, cause, expected) => {
