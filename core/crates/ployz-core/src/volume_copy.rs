@@ -531,6 +531,17 @@ mod tests {
         }
     }
 
+    fn old_copy(newest: Option<Snapshot>) -> VolumeCopy {
+        VolumeCopy::Slot {
+            slot: SLOT,
+            readonly: true,
+            newest,
+            resume_token: None,
+            pull: None,
+            role: SlotRole::OldCopy,
+        }
+    }
+
     fn writer(at: u64, epoch: u32, start: bool) -> WantedCopy {
         WantedCopy::Writer {
             at: SnapshotGuid::new(at),
@@ -743,6 +754,22 @@ mod tests {
                 false,
                 ExpectedCopy::None,
                 mirror(true, "f-1"),
+                AtWant,
+            ),
+            (
+                "old copy at the mirror's target becomes the mirror whatever expect",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                ExpectedCopy::None,
+                mirror(true, "f-1"),
+                Transition(MirrorToMirror),
+            ),
+            (
+                "cut resent to the old copy it left",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                WRITER_1,
+                mirror(false, "f-1"),
                 AtWant,
             ),
             (
