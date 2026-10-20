@@ -802,6 +802,7 @@ mod tests {
 
     struct Restorable {
         runtime: crate::docker::ContainerRuntime,
+        fake: crate::docker::test_support::FakeDocker,
         containers:
             std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
         machine: ployz_core::MachineId,
@@ -817,7 +818,7 @@ mod tests {
         use ployz_core::{ContainerKind, CopyRotation, DeploymentLogId, Namespace};
 
         let containers = std::sync::Arc::default();
-        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
             named_containers: Some(std::sync::Arc::clone(&containers)),
             list_named: true,
             ..Default::default()
@@ -848,6 +849,7 @@ mod tests {
             .unwrap();
         Restorable {
             runtime,
+            fake,
             containers,
             machine: machine.id,
             id,
@@ -889,6 +891,95 @@ mod tests {
             .unwrap();
         assert_eq!(store.get(&restored).await.unwrap(), Some(copy.spec));
         assert_eq!(store.get(&copy.id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_scan_listed_before_a_replacement_leaves_the_replacements_records() {
+        use crate::docker::test_support::{container_request, machine};
+        use ployz_core::{ContainerKind, Namespace};
+
+        let copy = keyed_copy_in_rotation().await;
+        let restored = other_id(&copy.id);
+        for container in copy.containers.lock().unwrap().values_mut() {
+            container
+                .as_object_mut()
+                .unwrap()
+                .insert("Id".into(), restored.as_str().into());
+        }
+        let listed = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        *copy.fake.listed_hold.lock().unwrap() = Some(std::sync::Arc::clone(&listed));
+        let stale = tokio::spawn({
+            let (runtime, machine) = (copy.runtime.clone(), copy.machine);
+            async move { runtime.list_managed(&machine).await }
+        });
+        listed.wait().await;
+
+        copy.runtime.list_managed(&copy.machine).await.unwrap();
+        copy.runtime.remove(&restored, false, true).await.unwrap();
+        let mut machine = machine();
+        machine.id = copy.machine;
+        let namespace = Namespace::parse("app").unwrap();
+        let mut request = container_request(
+            ContainerKind::ServiceContainer,
+            &namespace,
+            &copy.spec,
+            std::future::ready(None),
+        );
+        request.creation_key = Some("restore-1");
+        let replacement = copy
+            .runtime
+            .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
+            .await
+            .unwrap()
+            .container_id;
+        listed.wait().await;
+        let _ = stale.await.unwrap();
+
+        let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&replacement).await.unwrap(), Some(copy.spec));
+        assert_eq!(store.get(&restored).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_stale_listing_never_points_a_slot_away_from_a_container_with_a_spec() {
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-machine-db-{}",
+            ployz_core::MachineId::random()
+        ));
+        let store = MachineSpecStore::open(root.join("machine.db"))
+            .await
+            .unwrap();
+        let spec = crate::docker::test_support::spec_with_sources(Vec::new());
+        let slot = super::CreationSlot::new(
+            &ployz_core::Namespace::parse("app").unwrap(),
+            ployz_core::ContainerKind::ServiceContainer,
+            "restore-1",
+        );
+        let live = ContainerId::parse("a".repeat(64)).unwrap();
+        let stale = ContainerId::parse("b".repeat(64)).unwrap();
+        let restored = ContainerId::parse("c".repeat(64)).unwrap();
+        let mut operation = store.config_operation().await;
+        operation.put(&live, Some(&slot), &spec).await.unwrap();
+        operation.put(&stale, None, &spec).await.unwrap();
+        drop(operation);
+
+        store
+            .record_creations(vec![(stale, Some(slot.clone()))])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .config_operation()
+                .await
+                .adopt_restored(vec![(restored, Some(slot))])
+                .await
+                .unwrap(),
+            vec![(live.to_string(), restored)]
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
