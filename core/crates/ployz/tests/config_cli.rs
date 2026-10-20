@@ -5208,6 +5208,103 @@ fn history_names_a_config_and_its_mount_by_name() {
     assert!(!preview.contains("configs.@"), "{preview}");
 }
 
+/// A Local Store with Service `web` and Config `app` saved as #1 and #2 and applied,
+/// `app` mounted at `mount`.
+fn web_and_app(mount: Option<&str>) -> Target {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    applied(&store, "production");
+    match mount {
+        Some(mount) => ok(&store, &["config", "add", "app", "--mount", mount]),
+        None => ok(&store, &["config", "add", "app"]),
+    };
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "a: 1").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(&store, &["config", "put", "app", "app.yml", "--from", from]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    applied(&store, "production");
+    store
+}
+
+/// What `ployz args` prints to people.
+fn printed(store: &Target, args: &[&str]) -> String {
+    let home = tempfile::tempdir().unwrap();
+    let output = store.command(home.path()).args(args).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn a_bare_discard_names_a_dropped_config_mount_by_its_config() {
+    let store = web_and_app(None);
+    ok(&store, &["config", "mount", "web", "app", "/etc/app"]);
+    let discarded = ok(&store, &["discard"]);
+    assert!(
+        discarded["dropped"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("web.configs.@"),
+        "{discarded}"
+    );
+
+    ok(&store, &["config", "mount", "web", "app", "/etc/app"]);
+    let said = printed(&store, &["discard"]);
+    assert!(said.contains("web.configs.app"), "{said}");
+    assert!(!said.contains("configs.@"), "{said}");
+}
+
+#[test]
+fn an_undo_names_the_draft_config_mount_it_overwrites() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["config", "mount", "web", "app", "/etc/other"]);
+
+    let preview = printed(&store, &["history", "undo", "2", "--preview"]);
+    assert!(
+        preview.contains("  overwrites draft web.configs.app\n"),
+        "{preview}"
+    );
+    assert!(!preview.contains("configs.@"), "{preview}");
+
+    let refused = error(&store, &["history", "undo", "2"]);
+    assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.ends_with("draft changes to web.configs.app"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_replaced_config_of_the_same_name_reads_apart_in_diff() {
+    let store = web_and_app(Some("web:/etc/app"));
+    ok(&store, &["config", "rm", "app"]);
+    ok(
+        &store,
+        &["config", "add", "app", "--mount", "web:/etc/app2"],
+    );
+
+    let diff = printed(&store, &["diff"]);
+    let mounts: Vec<&str> = diff
+        .lines()
+        .filter(|line| line.contains("web.configs.app"))
+        .collect();
+    assert_eq!(mounts.len(), 2, "{diff}");
+    assert!(
+        mounts
+            .iter()
+            .all(|line| line.contains("web.configs.app (@")),
+        "{diff}"
+    );
+    assert_ne!(
+        mounts[0].split(':').next(),
+        mounts[1].split(':').next(),
+        "{diff}"
+    );
+}
+
 #[test]
 fn a_bare_discard_names_every_change_it_drops() {
     let store = &Target::Local(tempfile::tempdir().unwrap());
