@@ -13,7 +13,7 @@ pub(crate) struct Plugin {
 
 impl Default for Plugin {
     fn default() -> Self {
-        Self::at("/run/docker/plugins/ployz.sock".into())
+        Self::at(crate::VOLUME_PLUGIN_SOCKET.into())
     }
 }
 

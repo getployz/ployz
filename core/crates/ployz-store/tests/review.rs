@@ -155,7 +155,11 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000003", "name": "web",
                 "row": "00000000-0000-4000-8000-000000000003:node",
                 "lifecycle": "create", "comparison": "introduction",
+                // What it runs, though the introduction already holds it.
                 "settings": [{
+                    "path": "web.image", "kind": "add", "before": null, "after": "nginx:1", "canRestore": false,
+                    "row": "00000000-0000-4000-8000-000000000003:source",
+                }, {
                     "path": "web.replicas", "kind": "update", "before": 1, "after": 3, "canRestore": true,
                     "row": "00000000-0000-4000-8000-000000000003:replicas",
                 }],
@@ -163,11 +167,16 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
             },
             {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000004", "name": "api",
-                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null, "restarts": [],
+                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction",
+                "settings": [{
+                    "path": "api.image", "kind": "add", "before": null, "after": "caddy:2", "canRestore": false,
+                    "row": "00000000-0000-4000-8000-000000000004:source",
+                }],
+                "data": null, "restarts": [],
             },
         ])
     );
-    assert_eq!(view.total_count, 3);
+    assert_eq!(view.total_count, 5);
 }
 
 #[test]
@@ -267,8 +276,11 @@ fn edits_to_a_published_service_never_deployed_are_changes_that_discard_resets()
         .unwrap();
     assert_eq!(web.lifecycle, ReviewLifecycleKind::Create);
     assert_eq!(web.comparison, Some(ReviewComparisonRole::Introduction));
-    assert_eq!(changed(&store, &who, "web"), ["web.preDeployCommand"]);
-    assert_eq!(view.total_count, 3);
+    assert_eq!(
+        changed(&store, &who, "web"),
+        ["web.image", "web.preDeployCommand"]
+    );
+    assert_eq!(view.total_count, 5);
     // Discard targets it; Saved State never held the edit.
     let discarded = discard(&store, &who, Some("web.preDeployCommand"), None).unwrap();
     assert_eq!(discarded.saved, Some(Revision(1)));
@@ -276,16 +288,16 @@ fn edits_to_a_published_service_never_deployed_are_changes_that_discard_resets()
         value(&store, &who, "web.preDeployCommand"),
         Some(Value::Null)
     );
-    assert!(changed(&store, &who, "web").is_empty());
+    assert_eq!(changed(&store, &who, "web"), ["web.image"]);
     set(&store, &who, "web.replicas", json!(4));
     publish(&store, &who, None).unwrap();
-    assert_eq!(changed(&store, &who, "web"), ["web.replicas"]);
+    assert_eq!(changed(&store, &who, "web"), ["web.image", "web.replicas"]);
     let discarded = discard(&store, &who, Some("web.replicas"), None).unwrap();
     assert_eq!(discarded.saved, Some(Revision(2)));
     assert_eq!(value(&store, &who, "web.replicas"), Some(json!(1)));
     let view = diff(&store, &who);
     assert!(!view.published);
-    assert!(changed(&store, &who, "web").is_empty());
+    assert_eq!(changed(&store, &who, "web"), ["web.image"]);
 }
 
 #[test]
@@ -1091,7 +1103,8 @@ fn discard_review_returns_to_saved_and_keeps_an_undeployed_save_listed() {
     assert_eq!(working(&store, &who), saved);
     let after = diff(&store, &who);
     assert_eq!(after.draft_count, 0);
-    assert_eq!(after.total_count, 2);
+    // Each Service the Save creates lists itself and the image it runs.
+    assert_eq!(after.total_count, 4);
     assert_eq!(
         store
             .read(&who, &ployz_store::HistoryQuery::default())
@@ -1117,6 +1130,121 @@ fn discard_review_names_the_settings_an_undeployed_save_loses() {
         )
         .unwrap();
     assert_eq!(discarded.dropped, ["web.replicas"]);
+}
+
+#[test]
+fn discard_review_names_the_source_an_undeployed_save_loses_as_set_names_it() {
+    // Core compares a new Service with its introduction, nginx:1, so a Save of
+    // nginx:2 lists as `web.source` and one of nginx:1 as this PR's `web.image`.
+    for (saved, staged, web_row) in [
+        ("nginx:1", "nginx:2", "web.image"),
+        ("nginx:2", "nginx:1", "web.source"),
+    ] {
+        let (store, who) = shop();
+        set(&store, &who, "web.image", json!(saved));
+        publish(&store, &who, None).unwrap();
+        set(&store, &who, "web.image", json!(staged));
+        let discarded = store
+            .write(
+                &who,
+                &Discard {
+                    target: Some(ployz_store::DiscardTarget::Review),
+                    version: Some(diff(&store, &who).version),
+                    ..Discard::default()
+                },
+            )
+            .unwrap();
+        // api's image row is unchanged, so the discard doesn't name it.
+        assert_eq!(discarded.dropped, ["web.image"], "saved {saved}");
+        let view = diff(&store, &who);
+        let rows: Vec<_> = view
+            .review_changes()
+            .iter()
+            .flat_map(|change| change.settings.clone())
+            .map(|row| row.path)
+            .collect();
+        assert_eq!(rows, [web_row, "api.image"], "saved {saved}");
+        assert_eq!(value(&store, &who, "web.image"), Some(json!(saved)));
+    }
+}
+
+#[test]
+fn discard_review_names_a_staged_repository_on_a_saved_image_as_the_repository() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    git_edit(&store, &who, "web.repository", json!("acme/web"));
+    let discarded = discard_review(&store, &who);
+    // The after-view's `web.image` row shares the source RowId; the repository went.
+    assert_eq!(discarded.dropped, ["web.branch", "web.repository"]);
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("nginx:1")));
+}
+
+#[test]
+fn discard_review_names_a_staged_image_on_a_saved_repository_as_the_image() {
+    let (store, who) = shop();
+    git_edit(&store, &who, "web.repository", json!("acme/web"));
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.repository");
+    set(&store, &who, "web.image", json!("nginx:2"));
+    let before = diff_rows(&store, &who);
+    let discarded = discard_review(&store, &who);
+    assert_eq!(discarded.dropped, ["web.image"]);
+    // The staged image carries no branch, so only the saved repository's comes back:
+    // a row the discard adds, not one it drops.
+    assert_eq!(before, ["web.source", "api.image"]);
+    assert_eq!(
+        diff_rows(&store, &who),
+        ["web.branch", "web.source", "api.image"]
+    );
+    assert_eq!(
+        value(&store, &who, "web.repository"),
+        Some(json!("acme/web"))
+    );
+}
+
+#[test]
+fn discard_review_names_a_staged_image_on_a_saved_empty_source_as_the_image() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("blank").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "blank.image", json!("nginx:2"));
+    // The saved empty source leaves blank no source row to keep after the discard.
+    assert_eq!(discard_review(&store, &who).dropped, ["blank.image"]);
+    assert_eq!(value(&store, &who, "blank.image"), None);
+}
+
+#[test]
+fn discard_review_names_a_deployed_services_source_as_core_does() {
+    let (store, who) = shop();
+    git_edit(&store, &who, "web.repository", json!("acme/web"));
+    apply_all(&store, &who, &Trusted::default());
+    set(&store, &who, "web.rootDir", json!("/one"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.rootDir", json!("/two"));
+    // The saved `/one` keeps a `web.source` row, but web is deployed: only the
+    // rootDir went, and `web.source` is how its review names that.
+    assert_eq!(discard_review(&store, &who).dropped, ["web.source"]);
+    assert_eq!(value(&store, &who, "web.rootDir"), Some(json!("/one")));
+}
+
+fn diff_rows(store: &ConfigStore, who: &Actor) -> Vec<String> {
+    diff(store, who)
+        .review_changes()
+        .iter()
+        .flat_map(|change| change.settings.clone())
+        .map(|row| row.path)
+        .collect()
 }
 
 fn unset(store: &ConfigStore, who: &Actor, path: &str) {
@@ -3963,6 +4091,80 @@ fn deleting_a_deployed_volume_is_destructive() {
     );
 }
 
+/// Delete Volume `data`, then create a different, unmounted Volume named `data`.
+fn replace_data_unmounted(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                restored_from: None,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+fn data_of(changes: &[ployz_store::NodeChange], name: &str) -> Option<DataEffect> {
+    changes
+        .iter()
+        .find(|change| change.name == name)
+        .unwrap()
+        .data
+}
+
+#[test]
+fn a_deployed_volume_replaced_by_one_of_its_name_is_not_kept() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    apply_all(&store, &who, &Trusted::default());
+    replace_data_unmounted(&store, &who);
+    let view = diff(&store, &who);
+    assert_eq!(data_of(&view.changes, "web"), None);
+    assert!(
+        view.effects
+            .iter()
+            .all(|effect| effect.kind != DestructiveKind::DetachesVolume)
+    );
+}
+
+#[test]
+fn a_saved_volume_replaced_by_one_of_its_name_is_not_kept_in_the_draft() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    publish(&store, &who, None).unwrap();
+    replace_data_unmounted(&store, &who);
+    assert_eq!(data_of(&diff(&store, &who).draft_changes, "web"), None);
+}
+
+#[test]
+fn removing_a_deployed_service_keeps_the_data_of_a_volume_that_stays() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let web = diff(&store, &who)
+        .changes
+        .into_iter()
+        .find(|change| change.name == "web")
+        .unwrap();
+    assert_eq!(web.data, Some(DataEffect::Kept));
+}
+
 #[test]
 fn detaching_a_volume_from_a_deployed_service_is_destructive_and_keeps_its_data() {
     let (store, who) = shop();
@@ -4553,7 +4755,7 @@ fn history_hides_the_plain_text_a_lapsed_deployment_protected() {
     }
 }
 
-fn discard_review(store: &ConfigStore, who: &Actor) {
+fn discard_review(store: &ConfigStore, who: &Actor) -> ployz_store::Discarded {
     store
         .write(
             who,
@@ -4563,7 +4765,7 @@ fn discard_review(store: &ConfigStore, who: &Actor) {
                 ..Discard::default()
             },
         )
-        .unwrap();
+        .unwrap()
 }
 
 #[test]

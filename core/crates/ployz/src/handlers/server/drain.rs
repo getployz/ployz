@@ -14,8 +14,8 @@ use super::target;
 use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential};
 use crate::drain::{
-    DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Remaining, ServiceDrain,
-    ServicesRole,
+    DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
+    Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
 };
 use crate::handlers::{Error, leaf_matches, runtime, store, with_client};
 
@@ -117,10 +117,60 @@ fn render(report: &DrainReport) -> Result<(), Error> {
         }
         crate::ui::note(NOTHING_MOVES_BACK);
     })?;
-    if !report.complete() {
-        return Err(Error::partial());
+    if report.complete() {
+        return Ok(());
     }
-    Ok(())
+    Err(incomplete(report))
+}
+
+fn incomplete(report: &DrainReport) -> Error {
+    let server = &report.server.name;
+    let mut stays = Vec::new();
+    let mut left = Vec::new();
+    for entry in &report.services {
+        match &entry.outcome {
+            DrainOutcome::Stays {
+                reason: StayReason::LastIn,
+            }
+            | DrainOutcome::Failed {
+                failure:
+                    MoveFailure::Refused {
+                        reason: StayReason::LastIn,
+                    },
+                ..
+            }
+            | DrainOutcome::Held => stays.push(entry.service.to_string()),
+            DrainOutcome::Moved { moves }
+                if moves.iter().any(|step| step.old != OldCopyEnd::Stopped) =>
+            {
+                left.push(entry.service.to_string());
+            }
+            DrainOutcome::OldCopies { ends }
+                if ends.iter().any(|end| *end != OldCopyEnd::Stopped) =>
+            {
+                left.push(entry.service.to_string());
+            }
+            DrainOutcome::Stays { .. }
+            | DrainOutcome::Moved { .. }
+            | DrainOutcome::OldCopies { .. }
+            | DrainOutcome::NothingToMove
+            | DrainOutcome::Retired
+            | DrainOutcome::NotRetired { .. }
+            | DrainOutcome::Failed { .. }
+            | DrainOutcome::Interrupted { .. }
+            | DrainOutcome::NotAttempted => {}
+        }
+    }
+    if !stays.is_empty() {
+        return Error::conflict(format!("{} stays on {server}.", stays.join(", ")));
+    }
+    if !left.is_empty() {
+        return Error::unavailable(format!(
+            "an old copy of {} is left on {server}. The next drain cleans it up.",
+            left.join(", ")
+        ));
+    }
+    Error::partial()
 }
 
 /// Namespaces some Project owns, when a Config Store is reachable. Standalone Clusters
@@ -173,18 +223,22 @@ fn step_line(step: DrainStep<'_>) -> String {
     }
 }
 
-const fn went_wrong(step: DrainStep<'_>) -> bool {
+fn went_wrong(step: DrainStep<'_>) -> bool {
     match step {
         DrainStep::ServicesOff { .. } => false,
-        DrainStep::Service { service, .. } => match service.outcome {
+        DrainStep::Service { service, .. } => match &service.outcome {
             DrainOutcome::NotRetired { .. }
             | DrainOutcome::Failed { .. }
             | DrainOutcome::Interrupted { .. } => true,
+            DrainOutcome::Moved { moves } => {
+                moves.iter().any(|step| step.old != OldCopyEnd::Stopped)
+            }
+            DrainOutcome::OldCopies { ends } => ends.iter().any(|end| *end != OldCopyEnd::Stopped),
             DrainOutcome::Retired
             | DrainOutcome::Stays { .. }
+            | DrainOutcome::Held
             | DrainOutcome::NothingToMove
-            | DrainOutcome::NotAttempted
-            | DrainOutcome::Moved { .. } => false,
+            | DrainOutcome::NotAttempted => false,
         },
     }
 }
@@ -196,12 +250,32 @@ fn line(entry: &ServiceDrain, server: &MachineName) -> String {
         DrainOutcome::NotRetired { error } => {
             return format!("{service}: global, failed to retire on {server}: {error}");
         }
-        DrainOutcome::Stays { reason } => return format!("{service}: stays: {reason}"),
+        DrainOutcome::Stays { reason } => {
+            return format!("{service}  stays on {server} ({})", stay(service, reason));
+        }
+        DrainOutcome::Held => {
+            return format!(
+                "{service}  stays on {server} (stopped by you; start or remove it first)"
+            );
+        }
         DrainOutcome::NothingToMove => return format!("{service}: nothing to move"),
         DrainOutcome::NotAttempted => return format!("{service}: not attempted"),
-        DrainOutcome::Moved { moves } => (moves, None),
-        DrainOutcome::Failed { moves, failure } => (moves, Some(format!("failed: {failure}"))),
-        DrainOutcome::Interrupted { moves } => (moves, Some("interrupted".to_owned())),
+        DrainOutcome::Moved { moves } => {
+            return moves
+                .iter()
+                .map(|step| moved(service, server, step))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        DrainOutcome::OldCopies { ends } => {
+            return ends
+                .iter()
+                .map(|end| format!("{service}  {}", old_copy(server, end)))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        DrainOutcome::Failed { moves, failure } => (moves, format!("failed: {failure}")),
+        DrainOutcome::Interrupted { moves } => (moves, "interrupted".to_owned()),
     };
     let mut counts = BTreeMap::<(&MachineName, &MachineName), usize>::new();
     for step in moves {
@@ -215,8 +289,62 @@ fn line(entry: &ServiceDrain, server: &MachineName) -> String {
             .collect::<Vec<_>>();
         parts.push(format!("moved {}", routes.join(", ")));
     }
-    parts.extend(ending);
+    parts.push(ending);
     format!("{service}: {}", parts.join("; "))
+}
+
+fn stay(service: &QualifiedService, reason: &StayReason) -> String {
+    match reason {
+        StayReason::LastIn => {
+            format!("last copy in rotation; deploy {service} elsewhere first")
+        }
+        other @ (StayReason::Unobserved { .. }
+        | StayReason::MidRollout
+        | StayReason::Global
+        | StayReason::BindMount { .. }
+        | StayReason::Volume { .. }
+        | StayReason::NoDestination { .. }) => other.to_string(),
+    }
+}
+
+fn moved(service: &QualifiedService, server: &MachineName, step: &Move) -> String {
+    format!(
+        "{service}  moved to {}, {}",
+        step.to.name,
+        old_copy(server, &step.old)
+    )
+}
+
+fn old_copy(server: &MachineName, end: &OldCopyEnd) -> String {
+    match end {
+        OldCopyEnd::Stopped => "old copy stopped  done".to_owned(),
+        OldCopyEnd::Running { unconfirmed } => format!(
+            "old copy left running on {server} ({}). The next drain cleans it up.",
+            not_confirmed(unconfirmed)
+        ),
+        OldCopyEnd::In { unconfirmed } => format!(
+            "old copy still in rotation on {server} ({}). Both copies are serving. The next drain cleans it up.",
+            not_confirmed(unconfirmed)
+        ),
+    }
+}
+
+fn not_confirmed(unconfirmed: &Unconfirmed) -> String {
+    match unconfirmed {
+        Unconfirmed::Proxies { servers } => {
+            let names = servers
+                .iter()
+                .map(|server| server.name.to_string())
+                .collect::<Vec<_>>();
+            if let [one] = names.as_slice() {
+                format!("proxy on {one} did not confirm")
+            } else {
+                format!("proxies on {} did not confirm", names.join(", "))
+            }
+        }
+        Unconfirmed::Cancelled => "the drain was cancelled before it confirmed".to_owned(),
+        Unconfirmed::Failed { detail } => detail.clone(),
+    }
 }
 
 /// What still runs on the Server, or the warning that nobody could look.
@@ -230,11 +358,7 @@ fn remaining(report: &DrainReport) -> Result<String, String> {
             "Still on {server}: {}",
             services
                 .iter()
-                .map(|service| if still_retiring(report, service) {
-                    format!("{service} (retiring)")
-                } else {
-                    service.to_string()
-                })
+                .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -242,12 +366,6 @@ fn remaining(report: &DrainReport) -> Result<String, String> {
             "Cannot observe Services on Server {server}: {error}"
         )),
     }
-}
-
-fn still_retiring(report: &DrainReport, service: &QualifiedService) -> bool {
-    report.services.iter().any(|drained| {
-        drained.service == *service && matches!(drained.outcome, DrainOutcome::Moved { .. })
-    })
 }
 
 #[cfg(test)]

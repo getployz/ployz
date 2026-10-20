@@ -4,8 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, DeployOperation, MachineId, RemoveContainerPurpose, ServiceName, ServiceOutcome,
-    ServiceResult,
+    DeployOperation, MachineId, RemoveContainerPurpose, ServiceName, ServiceOutcome, ServiceResult,
 };
 
 /// New Containers one Machine starts at once for one Deploy. Containers still
@@ -72,9 +71,6 @@ pub struct ServiceGroup {
     /// Flip this Service's pointer once its steps complete. A group without a
     /// Service never publishes.
     pub publish: bool,
-    /// Current Containers of the Service no operation of this Deploy names;
-    /// the flip keeps pointing at them.
-    pub kept: Vec<ContainerId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -493,7 +489,6 @@ mod tests {
             dependencies: dependencies.iter().map(|name| self::name(name)).collect(),
             steps,
             publish: true,
-            kept: Vec::new(),
         }
     }
 
@@ -878,7 +873,6 @@ mod tests {
                     dependencies: Vec::new(),
                     steps: vec![Step::Serial(0)],
                     publish: false,
-                    kept: Vec::new(),
                 },
                 group("a", &[], vec![Step::Serial(1)]),
                 group("b", &[], vec![Step::Serial(2)]),
@@ -908,7 +902,6 @@ mod tests {
                     dependencies: vec![name("a")],
                     steps: vec![Step::Serial(1)],
                     publish: false,
-                    kept: Vec::new(),
                 },
             ],
             vec![
@@ -935,7 +928,6 @@ mod tests {
                 dependencies: Vec::new(),
                 steps: vec![Step::Serial(0)],
                 publish: true,
-                kept: Vec::new(),
             }],
             vec![start('1')],
         );

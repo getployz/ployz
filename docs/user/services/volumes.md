@@ -150,6 +150,8 @@ confirmation stays with the change. See
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
 
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.
+A mounted volume whose first deploy is still running counts as deployed, since that deploy may
+already have created it. Saving or deploying its deletion asks first, the same way.
 
 ## Good to know
 

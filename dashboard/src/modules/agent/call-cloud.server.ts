@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { carriedInto } from "#/modules/approvals/approvals.server";
 import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
@@ -317,6 +318,9 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       const quickSync = action.run.run === "sync" && !action.run.full;
       const lacking = unpermitted(caller, quickSync ? OPERATIONS["volume.sync"].requires : VOLUME_OPERATIONS[volumeRunInput(action.run, "").kind].requires);
       if (lacking !== null) return lacking;
+      // A quick sync asks no one, and still refuses an approval carried into it that isn't for exactly this sync.
+      const carried = quickSync ? yield* carriedInto(caller, approvalId, { command: "sync", subject: `volume:${action.volume}` }) : null;
+      if (carried !== null) return { ok: false, refusal: carried } as const;
       const found = yield* beforeWrite(findVolume(organizationId, action.volume));
       if (found === null) return noSuch("Volume");
       if (quickSync) {

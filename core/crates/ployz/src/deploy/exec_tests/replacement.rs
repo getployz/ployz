@@ -549,6 +549,54 @@ async fn a_stop_first_step_withdraws_beside_a_pending_copy_a_dead_run_left() {
     client.assert_done();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stop_first_scale_up_withdraws_the_old_copy_beside_pending_new_ones() {
+    let (first, second, third) = (machine('1'), machine('2'), machine('3'));
+    let old = container('a');
+    let (new_first, new_second, new_third) = (container('c'), container('d'), container('e'));
+    let mut added = spec(None, None, None);
+    added.update.order = UpdateOrder::StopFirst;
+    let plan = vec![
+        swap(&third, &old, UpdateOrder::StopFirst),
+        run(&first, added.clone(), true),
+        run(&second, added, true),
+    ];
+    let mut client = Scripted::new(vec![
+        observed(Call::Inspect(third, old), running()),
+        created(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            &new_first,
+        ),
+        created(
+            Call::Run(second, ContainerKind::ServiceContainer),
+            &new_second,
+        ),
+        ok(Call::Stop(third, old)),
+        created(
+            Call::Run(third, ContainerKind::ServiceContainer),
+            &new_third,
+        ),
+        observed(Call::Inspect(third, old), running()),
+        ok(Call::Remove(third, old)),
+    ])
+    .with_copy(&third, &old, CopyRotation::In)
+    .routing(&api());
+    client.acks.insert(third, Ack::After(1));
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::New)]),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        client.brought_in().into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([new_first, new_second, new_third])
+    );
+    client.assert_done();
+}
+
 #[tokio::test]
 async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_every_new_one() {
     for order in [UpdateOrder::StopFirst, UpdateOrder::Rolling] {
@@ -767,8 +815,8 @@ async fn a_failed_group_stops_its_new_copies_before_it_restores_the_held_ones() 
                 Call::Run(second, ContainerKind::ServiceContainer),
                 &new_second,
             ),
-            ok(Call::Discard(second, new_second)),
             ok(Call::Stop(first, new_first)),
+            ok(Call::Discard(second, new_second)),
             ok(Call::Restart(first, old_first)),
             ok(Call::Restart(second, old_second)),
             ok(Call::Remove(first, new_first)),

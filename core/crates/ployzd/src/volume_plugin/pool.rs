@@ -497,11 +497,10 @@ impl PoolStorage {
             return Ok(());
         }
         if pool.name() != POOL_NAME {
-            return Err(format!(
-                "Machine Pool {} is not the managed root-backed Pool {POOL_NAME}; automatic growth cannot use {}",
-                pool.name(),
-                self.backing.display()
-            )
+            return Err(ployz_core::StorageCapacityError::PoolCannotGrow {
+                required_bytes: minimum,
+                capacity_bytes: pool.size_bytes().get(),
+            }
             .into());
         }
 

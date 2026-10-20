@@ -446,30 +446,12 @@ impl VolumeStorage {
         Ok(())
     }
 
-    pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
-        let refquota = format!("refquota={bound}");
-        for property in ["readonly=on", &refquota] {
-            self.zfs(&["set", property, fs])
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        self.verify_copy(fs, bound).await
-    }
-
     /// The copy is read-only and carries the slot's bound, whatever the stream said.
-    /// `-p` keeps the bound in bytes; `zfs get` rounds it to `3G` otherwise.
-    async fn verify_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
-        for (property, expected) in [("readonly", "on"), ("refquota", bound.to_string().as_str())] {
-            let actual = self
-                .zfs(&["get", "-Hp", "-o", "value", property, fs])
+    pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
+        for (property, value) in [("readonly", "on"), ("refquota", bound.to_string().as_str())] {
+            self.set_verified(fs, property, value)
                 .await
                 .map_err(|error| error.to_string())?;
-            let actual = actual.trim_end_matches('\n');
-            if actual != expected {
-                return Err(format!(
-                    "{fs} has {property}={actual} after the receive; expected {expected}"
-                ));
-            }
         }
         Ok(())
     }

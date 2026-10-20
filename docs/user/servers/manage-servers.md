@@ -212,7 +212,8 @@ badges what won't move: **Skipped** when no project owns it, which draining leav
 service that runs on no other server, which the drain removes.
 Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
-the same image, and each one starts and is healthy before the old container is removed.
+the same image, and each one starts, is healthy and is routed by every server's proxy before the
+old container is taken out of routing and removed.
 Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
 the dialog is the approval. If a global service's last other copy stopped while the dialog was open,
 the drain doesn't start; open it again to see what stops now. Drains in one organization run one
@@ -230,12 +231,17 @@ A service stays running where it is, and is reported with the reason, when:
 - it mounts a volume or a bind mount on the server (tmpfs mounts don't count);
 - its containers run different versions, because a deploy hasn't finished: deploy it first;
 - a server it involves can't be checked right now;
-- no other server can take it.
+- no other server can take it;
+- you stopped it with `ployz service stop`: start or remove it first;
+- its container here is the last one serving: deploy it to another server first.
 
 When the drain ends, the **Drain** row counts what moved, stopped, stayed and failed, and how many
 services no project owns it left alone. It lists each service with where it went or why it stayed.
 A drain that stops early marks the service it was moving **Interrupted** and the ones it never
-reached **Not attempted**; those still run on the server.
+reached **Not attempted**; those still run on the server. If a server's proxy doesn't confirm the
+switch in time, the moved service's old container keeps running on the drained server and the row says
+so; the next drain removes it, along with any old container an earlier drain left there. While an old
+container is out of routing but still running, `ployz ps` marks it **draining**.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
 reads **Drain again**. Turning services back on doesn't move anything back.
 
