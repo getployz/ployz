@@ -10,6 +10,7 @@ import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
+import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
 import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -101,24 +102,24 @@ export type CopiesPanelProps = {
   refreshing: boolean;
   open: MachineId | null;
   onOpen: (copy: MachineId | null) => void;
-  now?: Date;
 };
 
 /** A Volume's copies: the live one, and every place it survives if that Server dies. A mirror opens in detail. */
 export function VolumeCopiesPanel(props: CopiesPanelProps) {
   const { volume, members, rows, copies, open, onOpen } = props;
+  const now = useMinute() ?? new Date();
   if (members === undefined) return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
   const target = targetPlacement(observePlacement(members), row);
   if (copies === null || target === null) return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
   const mirror = copies.elsewhere.find((copy): copy is MirrorCopy => copy.kind === "mirror" && copy.id === open);
-  if (mirror !== undefined) return <CopyView {...props} members={members} row={row} copies={copies} copy={mirror} onBack={() => onOpen(null)} />;
-  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} />;
+  if (mirror !== undefined) return <CopyView {...props} members={members} row={row} copies={copies} copy={mirror} now={now} onBack={() => onOpen(null)} />;
+  return <CopiesView {...props} members={members} row={row} copies={copies} target={target} now={now} />;
 }
 
-type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies };
+type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies; now: Date };
 
-function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now = new Date() }:
+function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, disabled, deploying, stage, restore, deleteCopy, onOpen, now }:
   Resolved & { target: Placement }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
@@ -304,7 +305,7 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
 
 /** Its staged actions build the same placement the list would; only Details discards them. */
 function CopyView({ volume, members, row, rows, owed, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, refresh, refreshing,
-  onBack, now = new Date() }:
+  onBack, now }:
   Resolved & { copy: MirrorCopy; onBack: () => void }) {
   const blocked = upgrade.length > 0;
   const observed = observePlacement(members);

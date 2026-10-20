@@ -22,8 +22,9 @@ change. Nothing runs on click. Details shows the new volume, named after the ori
 point's time, for example `pg-data-1027`, and says in red what you give up: "Changes after 10:27
 are not in pg-data-1027". To drop the restore, discard it in Details.
 
-Copies, Details and the approval card give a point's time in your own time zone. A point from an
-earlier day shows its date too, like "8 Oct, 10:27".
+Copies, Details, the **Data loss** confirm and the approval card give a point's time in your own
+time zone. A point from an earlier day shows its date too, like "8 Oct, 10:27", and an open page
+adds it once midnight passes.
 
 When an agent deploys a restore, its approval card says the same under the detach, like
 **Detaches volume pg-data from postgres**, then "Changes after 10:27 are not in pg-data-1027".

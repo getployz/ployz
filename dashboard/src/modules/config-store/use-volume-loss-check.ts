@@ -19,7 +19,7 @@ export function useVolumeLossCheck(organizationSlug: string) {
   return (refusal: StoreRefused): VolumeLossCheck | null => {
     const refused = volumeLoss(refusal);
     if (!refused) return null;
-    const items = volumeLossItems(refused.volumes, (id) => machines.find((machine) => machine.id === id)?.name);
+    const items = volumeLossItems(refused.volumes, (id) => machines.find((machine) => machine.id === id)?.name, new Date());
     return { items, evidence: { accept: refused.accept, version: refused.version }, losesWrites: refused.volumes.some((volume) => volume.loss === "writes") };
   };
 }

@@ -519,7 +519,7 @@ describe("changeSteps", () => {
 
 describe("placementLoss", () => {
   const lossOf = (members: Member[], placement: PlacementRow) => {
-    const { version: _, ...loss } = placementLoss(changes(members, placement));
+    const { version: _, ...loss } = placementLoss(changes(members, placement), at);
     return loss;
   };
 
@@ -584,7 +584,7 @@ describe("lossByVolume", () => {
     const staged = [...changes([], seeded), ...changes(members, row(["web-2"], { primary: "web-1" }))];
     const details = JSON.parse(JSON.stringify({ volumes: lossByVolume(placementLosses(staged)), accept: ["data", "pg-data"], version: "9:1:0.1" }));
     const refused = volumeLoss({ code: "confirmation_required", details });
-    expect(refused && volumeLossItems(refused.volumes, (machine) => machine.replace(/0+$/u, ""))).toEqual(placementLoss(staged).items);
+    expect(refused && volumeLossItems(refused.volumes, (machine) => machine.replace(/0+$/u, ""), at)).toEqual(placementLoss(staged, at).items);
   });
 });
 
@@ -593,7 +593,7 @@ describe("two write losses on one Volume", () => {
   const restore = (when: Date): PlacementLost => ({ volume: data, server: null, writes: true, after: when });
   const failover = (when: Date | null): PlacementLost => ({ volume: data, server: { id: id("web-1"), name: "web-1" }, writes: true, after: when });
   const later = new Date(at.getTime() + 3_600_000);
-  const detail = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), () => undefined)[0]?.detail;
+  const detail = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), () => undefined, at)[0]?.detail;
 
   it.each([["restore first", (a: PlacementLost, b: PlacementLost) => [a, b]], ["failover first", (a: PlacementLost, b: PlacementLost) => [b, a]]])(
     "words and binds the earlier cutoff, %s", (_, order) => {
@@ -604,7 +604,7 @@ describe("two write losses on one Volume", () => {
     });
 
   it("names the Server losing a copy beside the writes it loses", () => {
-    const named = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), (machine) => machine.replace(/0+$/u, ""))[0]?.detail;
+    const named = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), (machine) => machine.replace(/0+$/u, ""), at)[0]?.detail;
     expect(named([failover(at)])).toBe(`web-1 · changes after ${lossTime(at)}`);
     expect(named([failover(null)])).toBe("web-1 · recent changes");
   });

@@ -559,10 +559,11 @@ export function lossByVolume(lost: readonly PlacementLost[]): VolumeLost[] {
 export function volumeLossItems(
   volumes: readonly { name: string; deletes: readonly { machine_id: string }[]; loss?: "data" | "writes"; after?: number }[],
   machineName: (id: string) => string | undefined,
+  now: Date,
 ): DeletionItem[] {
   return volumes.map((volume) => {
     const servers = volume.deletes.flatMap((held) => machineName(held.machine_id) ?? []).join(", ");
-    const writes = volume.after !== undefined ? `changes after ${lossTime(new Date(volume.after * 1000))}` : volume.loss === "writes" ? "recent changes" : "";
+    const writes = volume.after !== undefined ? `changes after ${lossMoment(new Date(volume.after * 1000), now)}` : volume.loss === "writes" ? "recent changes" : "";
     return { kind: "volume", name: volume.name, detail: [servers, writes].filter(Boolean).join(" · ") || undefined };
   });
 }
@@ -599,12 +600,12 @@ export type PlacementLoss = {
   readonly version: (version: string) => string;
 };
 
-export function placementLoss(changes: readonly PlacementChange[]): PlacementLoss {
+export function placementLoss(changes: readonly PlacementChange[], now: Date): PlacementLoss {
   const lost = placementLosses(changes);
   const volumes = lossByVolume(lost);
   const servers = lost.flatMap(({ server }) => server ?? []);
   return {
-    items: volumeLossItems(volumes, (id) => servers.find((server) => server.id === id)?.name),
+    items: volumeLossItems(volumes, (id) => servers.find((server) => server.id === id)?.name, now),
     losesWrites: volumes.some(({ loss }) => loss === "writes"),
     accept: [...new Set(lost.map(({ volume }) => volume.name))],
     version: (version) => lossVersion(version, lost),
