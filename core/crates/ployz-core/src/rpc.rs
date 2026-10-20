@@ -1325,6 +1325,21 @@ pub struct RoutesRead {
     pub down: BTreeSet<MachineId>,
 }
 
+impl RoutesRead {
+    /// Each listed Machine outside `down` whose proxy acks no copies `satisfied`
+    /// accepts, and whether its row arrived at all.
+    pub fn unacked<'read>(
+        &'read self,
+        down: &'read BTreeSet<MachineId>,
+        satisfied: impl Fn(&BTreeSet<ContainerId>) -> bool + 'read,
+    ) -> impl Iterator<Item = (MachineId, bool)> + 'read {
+        self.routes.iter().filter_map(move |(machine, routed)| {
+            let acked = routed.as_ref().is_some_and(&satisfied);
+            (!down.contains(machine) && !acked).then_some((*machine, routed.is_some()))
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineUpdated {
     pub machine: Machine,

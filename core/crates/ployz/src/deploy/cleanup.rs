@@ -198,13 +198,10 @@ pub(crate) fn still_waiting(
     satisfied: &impl Fn(&BTreeSet<ContainerId>) -> bool,
 ) -> Unconfirmed {
     let mut waiting = Unconfirmed::default();
-    for (machine, routed) in &read.routes {
-        if read.down.contains(machine) || routed.as_ref().is_some_and(satisfied) {
-            continue;
-        }
-        waiting.machines.push(*machine);
-        if routed.is_none() {
-            waiting.unanswered.push(*machine);
+    for (machine, answered) in read.unacked(&read.down, satisfied) {
+        waiting.machines.push(machine);
+        if !answered {
+            waiting.unanswered.push(machine);
         }
     }
     waiting

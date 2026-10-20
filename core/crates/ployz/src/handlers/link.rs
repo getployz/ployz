@@ -8,19 +8,13 @@
 //! nothing needs ignoring or uploading.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
-use ployz_core::{
-    ContainerId, EnvironmentValues, MachineId, MachineName, MachineObservation,
-    MembershipObservation, Namespace, QualifiedService, RoutesRead, RpcErrorCode,
-    ServiceObservation, serving_containers,
-};
+use ployz_core::RpcErrorCode;
 use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
     EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, NamespaceQuery,
@@ -29,6 +23,7 @@ use ployz_store::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::status_servers::{Subject, UNCHECKED};
 use super::store::{
     Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
 };
@@ -585,30 +580,17 @@ struct Staged {
 
 /// Something that needs someone to act, with the command that acts.
 #[derive(Serialize)]
-struct Attention {
+pub(super) struct Attention {
     /// An error code, `deployment_failed`, `deployment_unknown`, `broken_reference`,
     /// `machine_down` or `routes_not_acked`.
-    reason: String,
-    message: String,
+    pub(super) reason: String,
+    pub(super) message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    deployment: Option<DeploymentId>,
+    pub(super) deployment: Option<DeploymentId>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<String>,
+    pub(super) next: Option<String>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    subject: Option<Subject>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum Subject {
-    NotPickedUp {
-        service: QualifiedService,
-        /// Each such Machine by name, else by ID when the Machine list lacks it.
-        machines: Vec<String>,
-    },
-    Down {
-        machine: MachineName,
-    },
+    pub(super) subject: Option<Subject>,
 }
 
 #[derive(Serialize)]
@@ -717,7 +699,11 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         match store.try_read(&NamespaceQuery {
             environment: scope.at(),
         }) {
-            Ok(view) => attention.extend(server_attention(root, &view.namespace)),
+            Ok(view) => attention.extend(super::status_servers::attention(
+                root,
+                &view.namespace,
+                !deploying.is_empty(),
+            )),
             Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),
         }
     }
@@ -769,143 +755,30 @@ fn this_server() -> Option<LocalCheckin> {
         .flatten()
 }
 
-const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
-
-/// Empty when no Server is set up, and empty after one warning when a read fails.
-fn server_attention(root: &ArgMatches, namespace: &Namespace) -> Vec<Attention> {
-    let found = Rc::new(RefCell::new(Vec::new()));
-    let sink = Rc::clone(&found);
-    let reached = Rc::new(std::cell::Cell::new(false));
-    let dialed = Rc::clone(&reached);
-    let namespace = namespace.clone();
-    let read = super::with_reader(root, |client| {
-        Box::pin(async move {
-            dialed.set(true);
-            let machines = client.machines().await?;
-            let live = client
-                .live_services_from(&machines, EnvironmentValues::Redacted)
-                .await?;
-            let mut reads = Vec::new();
-            if let Some(reader) = live
-                .containers
-                .successes
-                .first()
-                .map(|answered| answered.machine_id)
-            {
-                for service in live.services() {
-                    if service.identity.namespace != namespace
-                        || serving_containers(&service.containers).is_empty()
-                    {
-                        continue;
-                    }
-                    let routes = crate::deploy::MachineOperations::read_routes(
-                        &*client,
-                        &reader,
-                        &service.identity,
-                    )
-                    .await
-                    .map_err(|error| {
-                        Error::caused(
-                            error.code.clone(),
-                            "A Server did not say which copies it routes.",
-                            error,
-                        )
-                    })?;
-                    reads.push((service, routes));
-                }
-            }
-            *sink.borrow_mut() = needs_attention(&machines, &reads);
-            Ok(())
-        })
-    });
-    match read {
-        Ok(None) => found.take(),
-        // Ployz Cloud's CLI never dials Machines for status, and Cloud has no acks query.
-        Ok(Some(_)) => Vec::new(),
-        Err(error) if no_server_set_up(reached.get(), &error) => Vec::new(),
-        Err(error) => {
-            crate::ui::warn_cause(UNCHECKED, &error);
-            Vec::new()
-        }
-    }
-}
-
-fn no_server_set_up(dialed: bool, error: &Error) -> bool {
-    !dialed && error.report().code == RpcErrorCode::NotFound
-}
-
-fn needs_attention(
-    machines: &[MachineObservation],
-    reads: &[(ServiceObservation, RoutesRead)],
-) -> Vec<Attention> {
-    let down = machines
-        .iter()
-        .filter(|observed| observed.membership == MembershipObservation::Down)
-        .map(|observed| Attention {
-            reason: "machine_down".to_owned(),
-            message: "Down. Its copies serve again once it's back.".to_owned(),
-            deployment: None,
-            next: None,
-            subject: Some(Subject::Down {
-                machine: observed.machine.name.clone(),
-            }),
-        });
-    let names = machines
-        .iter()
-        .map(|observed| (observed.machine.id, observed.machine.name.clone()))
-        .collect();
-    down.chain(not_picked_up(reads, &names)).collect()
-}
-
-fn not_picked_up(
-    reads: &[(ServiceObservation, RoutesRead)],
-    names: &HashMap<MachineId, MachineName>,
-) -> Vec<Attention> {
-    reads
-        .iter()
-        .filter_map(|(service, read)| {
-            let serving: BTreeSet<ContainerId> = serving_containers(&service.containers)
-                .iter()
-                .map(|serving| serving.as_observation())
-                .filter(|copy| !read.down.contains(&copy.machine_id))
-                .map(|copy| copy.container_id)
-                .collect();
-            if serving.is_empty() {
-                return None;
-            }
-            let waiting =
-                crate::deploy::cleanup::still_waiting(read, &|routed| serving.is_subset(routed));
-            if waiting.machines.is_empty() {
-                return None;
-            }
-            let machines: Vec<String> = waiting
-                .machines
-                .iter()
-                .map(|machine| {
-                    names
-                        .get(machine)
-                        .map_or_else(|| machine.to_string(), ToString::to_string)
-                })
-                .collect();
-            let (have, its) = match machines.as_slice() {
-                [_] => ("has", "its"),
-                _ => ("have", "their"),
-            };
-            Some(Attention {
-                reason: "routes_not_acked".to_owned(),
-                message: format!(
-                    "{} {have} not picked up the new copies. Check {its} network.",
-                    machines.join(", ")
-                ),
-                deployment: None,
-                next: None,
-                subject: Some(Subject::NotPickedUp {
-                    service: service.identity.clone(),
-                    machines,
-                }),
-            })
-        })
-        .collect()
+/// `attention` as `ployz status` prints it for a local identity with nothing else to show.
+#[cfg(test)]
+pub(super) fn rendered(attention: Vec<Attention>) -> String {
+    let status = Status {
+        this_server: None,
+        identity: Some(Identity {
+            credential: "local",
+            cloud: None,
+            account: None,
+            organization: None,
+        }),
+        scope: Scope {
+            project: None,
+            environment: None,
+            link: None,
+        },
+        environment: None,
+        staged: None,
+        deploying: Vec::new(),
+        attention,
+    };
+    let mut out = Vec::new();
+    status_record(&status).write(&mut out, true).unwrap();
+    anstream::adapter::strip_str(&String::from_utf8(out).unwrap()).to_string()
 }
 
 fn status_record(status: &Status) -> Fields {
@@ -1224,184 +1097,5 @@ mod tests {
             ..linked_in("org_globex", "globex")
         };
         check_acting_in("org_acme", "/src/shop", &link).unwrap();
-    }
-
-    mod routes {
-        use std::net::Ipv4Addr;
-
-        use ployz_core::{
-            ContainerAddress, ContainerObservation, CopyRotation, Machine, service_containers,
-        };
-
-        use super::*;
-        use crate::global_fixtures::{container_id, machine, qualified, running_on, service_id};
-
-        fn machines() -> [Machine; 3] {
-            [
-                machine('a', "machine-1"),
-                machine('b', "machine-2"),
-                machine('c', "machine-3"),
-            ]
-        }
-
-        fn routed_on(machine: &Machine, hex: char) -> ContainerObservation {
-            let mut copy = running_on(machine, hex);
-            copy.try_update(|parts| {
-                parts.rotation = Some(CopyRotation::In);
-                parts.address = Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 1)));
-            })
-            .unwrap();
-            copy
-        }
-
-        fn web(copies: [ContainerObservation; 2]) -> ServiceObservation {
-            ServiceObservation {
-                identity: qualified("app", "web"),
-                service_id: service_id('a'),
-                containers: service_containers(copies),
-                hook_containers: Vec::new(),
-            }
-        }
-
-        fn routes_as_ployzd_answers(
-            acked: &[(&Machine, &[char])],
-            down: &[&Machine],
-        ) -> RoutesRead {
-            RoutesRead {
-                routes: acked
-                    .iter()
-                    .map(|(machine, copies)| {
-                        let copies = copies.iter().copied().map(container_id).collect();
-                        (machine.id, Some(copies))
-                    })
-                    .collect(),
-                complete: true,
-                down: down.iter().map(|machine| machine.id).collect(),
-            }
-        }
-
-        fn listed(up: &[&Machine], down: &[&Machine]) -> Vec<MachineObservation> {
-            let up = up
-                .iter()
-                .map(|machine| (machine, MembershipObservation::Up));
-            let down = down
-                .iter()
-                .map(|machine| (machine, MembershipObservation::Down));
-            up.chain(down)
-                .map(|(machine, membership)| {
-                    MachineObservation::new((*machine).clone(), membership)
-                })
-                .collect()
-        }
-
-        fn rendered(attention: Vec<Attention>) -> String {
-            let status = Status {
-                this_server: None,
-                identity: Some(Identity {
-                    credential: "local",
-                    cloud: None,
-                    account: None,
-                    organization: None,
-                }),
-                scope: Scope {
-                    project: None,
-                    environment: None,
-                    link: None,
-                },
-                environment: None,
-                staged: None,
-                deploying: Vec::new(),
-                attention,
-            };
-            let mut out = Vec::new();
-            status_record(&status).write(&mut out, true).unwrap();
-            anstream::adapter::strip_str(&String::from_utf8(out).unwrap()).to_string()
-        }
-
-        #[test]
-        fn status_names_no_machine_when_every_proxy_acks_the_new_copies() {
-            let [one, two, three] = machines();
-            let reads = [(
-                web([routed_on(&one, '1'), routed_on(&two, '2')]),
-                routes_as_ployzd_answers(
-                    &[
-                        (&one, &['1', '2']),
-                        (&two, &['1', '2']),
-                        (&three, &['1', '2']),
-                    ],
-                    &[],
-                ),
-            )];
-
-            assert!(needs_attention(&listed(&[&one, &two, &three], &[]), &reads).is_empty());
-        }
-
-        #[test]
-        fn status_names_a_live_machine_whose_proxy_lacks_a_new_copy() {
-            let [one, two, three] = machines();
-            let reads = [(
-                web([routed_on(&one, '1'), routed_on(&two, '2')]),
-                routes_as_ployzd_answers(
-                    &[(&one, &['1', '2']), (&two, &['1', '2']), (&three, &['0'])],
-                    &[],
-                ),
-            )];
-
-            let attention = needs_attention(&listed(&[&one, &two, &three], &[]), &reads);
-
-            assert_eq!(
-                serde_json::to_value(&attention).unwrap(),
-                json!([{
-                    "reason": "routes_not_acked",
-                    "message": "machine-3 has not picked up the new copies. Check its network.",
-                    "service": "app/web",
-                    "machines": ["machine-3"],
-                }])
-            );
-            assert_eq!(
-                rendered(attention),
-                "organization  ?\nsigned in as  local\nweb           machine-3 has not picked up the new copies. Check its network.\n"
-            );
-        }
-
-        #[test]
-        fn status_shows_a_down_machine_as_down_and_never_as_not_picking_up() {
-            let [one, two, three] = machines();
-            let reads = [(
-                web([routed_on(&one, '1'), routed_on(&three, '3')]),
-                routes_as_ployzd_answers(&[(&one, &['1']), (&two, &['1'])], &[&three]),
-            )];
-
-            let attention = needs_attention(&listed(&[&one, &two], &[&three]), &reads);
-
-            assert_eq!(
-                serde_json::to_value(&attention).unwrap(),
-                json!([{
-                    "reason": "machine_down",
-                    "message": "Down. Its copies serve again once it's back.",
-                    "machine": "machine-3",
-                }])
-            );
-            assert_eq!(
-                rendered(attention),
-                "organization  ?\nsigned in as  local\nmachine-3     Down. Its copies serve again once it's back.\n"
-            );
-        }
-
-        #[test]
-        fn status_shows_a_down_machine_when_no_service_has_copies() {
-            let [one, two, three] = machines();
-
-            let attention = needs_attention(&listed(&[&one, &two], &[&three]), &[]);
-
-            assert_eq!(
-                serde_json::to_value(&attention).unwrap(),
-                json!([{
-                    "reason": "machine_down",
-                    "message": "Down. Its copies serve again once it's back.",
-                    "machine": "machine-3",
-                }])
-            );
-        }
     }
 }
