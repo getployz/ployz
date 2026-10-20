@@ -60,6 +60,8 @@ command -v zstd >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y 
     { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null; }
 sync
 """
+# A bare host keeps Boat's UFW, which drops inbound IPv6, the only address a sandbox serves the internet on.
+OPEN_WEB = "ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"
 # A clone can carry an sshd listener that systemd no longer tracks, so restarting ssh later fails with
 # port 22 in use. Kill only listeners, so open SSH sessions survive.
 LISTENER = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
@@ -791,6 +793,7 @@ class Provider:
             self.install_key(node, sandbox)
         self.wait_agent(node)
         if self.run.get("bare"):
+            self.exec(node, ["sh", "-ec", OPEN_WEB])
             if self.run.get("distro") == "debian-12":
                 key = (self.private / "id_ed25519.pub").read_text().strip()
                 self.exec(node, ["bash", "-ec", GUEST, "guest", key], timeout=900)

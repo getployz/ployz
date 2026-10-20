@@ -3,8 +3,10 @@
 
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -36,6 +38,27 @@ class Report(unittest.TestCase):
 
 
 class ProbeRun(unittest.TestCase):
+    def test_a_failing_setup_says_why_and_stops_on_a_signal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "acks.jsonl"
+            probe = Probe("ployz", {}, directory, log, service="db",
+                          user="postgres", database="postgres", rate=200, window=16, stall=2)
+            self.addCleanup(probe.log.close)
+            self.addCleanup(probe.stderr.close)
+            failed = subprocess.CompletedProcess([], 1, "", "error: Name a Project\n")
+
+            def psql(*_, **__):
+                probe.stopping.set()
+                return failed
+
+            with patch("ackprobe.subprocess.run", side_effect=psql), patch("sys.stderr"):
+                started = time.monotonic()
+                with self.assertRaisesRegex(RuntimeError, "Name a Project"):
+                    probe.run()
+            self.assertLess(time.monotonic() - started, 5)
+            probe.stderr.flush()
+            self.assertIn(b"Name a Project", log.with_suffix(".stderr").read_bytes())
+
     def test_sent_counts_only_inserts_from_this_invocation(self):
         with tempfile.TemporaryDirectory() as directory:
             probe = Probe("ployz", {}, directory, Path(directory) / "acks.jsonl", service="db",

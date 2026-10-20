@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -45,7 +46,9 @@ class Probe:
         return [self.ployz, "exec", "-T", self.service, "--", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1",
                 "-U", self.user, "-d", self.database, *args]
 
-    def query(self, sql, *, deadline):
+    def query(self, sql, *, deadline, stoppable=False):
+        """Retries until `deadline`, saying each new failure; a `stoppable` query also gives up on SIGINT or SIGTERM."""
+        said = None
         while True:
             try:
                 result = subprocess.run(self.psql("-c", sql), cwd=self.cwd, env=self.environment,
@@ -55,9 +58,14 @@ class Probe:
                 failure = result.stderr.strip()
             except subprocess.TimeoutExpired:
                 failure = "timed out after 60s"
-            if time.monotonic() >= deadline:
+            if failure != said:
+                said = failure
+                self.stderr.write(f"{failure}\n".encode())
+                print(f"ackprobe: {failure} (retrying)", file=sys.stderr, flush=True)
+            if time.monotonic() >= deadline or (stoppable and self.stopping.wait(1)):
                 raise RuntimeError(f"ackprobe: {sql!r} failed: {failure}")
-            time.sleep(1)
+            if not stoppable:
+                time.sleep(1)
 
     def event(self, **fields):
         with self.lock:
@@ -103,8 +111,9 @@ class Probe:
 
     def run(self):
         self.query(f"CREATE TABLE IF NOT EXISTS {TABLE} (id bigint PRIMARY KEY, at timestamptz NOT NULL DEFAULT now())",
-                   deadline=time.monotonic() + 300)
-        next_id = int(self.query(f"SELECT coalesce(max(id), 0) + 1 FROM {TABLE}", deadline=time.monotonic() + 60))
+                   deadline=time.monotonic() + 300, stoppable=True)
+        next_id = int(self.query(f"SELECT coalesce(max(id), 0) + 1 FROM {TABLE}", deadline=time.monotonic() + 60,
+                                 stoppable=True))
         first_id = next_id
         session, reader = self.session()
         opened = time.monotonic()
