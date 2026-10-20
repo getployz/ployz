@@ -258,7 +258,10 @@ reads for it.
 Another deploy brought a newer version of `web` online while yours ran. Yours fails and exits 1.
 It removed the replicas it had started for `web`, and the newer version keeps serving. When the
 service deploys **Stop first** ([Service settings](../services/settings.md)), yours also removes
-the old replica it stopped. If you want your version, deploy again.
+the old replica it stopped, and says
+`A newer deploy is already serving; the old Container will not serve again.` A deploy that loses
+this way shows no log tail, because nothing failed to start. If you want your version, deploy
+again.
 
 ## A stopped replica won't start
 
