@@ -341,8 +341,15 @@ async fn dial_connections(
     crate::connect::connect_selected_with(selected, Arc::new(connector)).await
 }
 
+const NO_SERVERS: &str = "this Organization has no Servers";
+
 fn no_servers() -> Error {
-    Error::not_found("this Organization has no Servers").hint(Hint::Next("ployz server add".into()))
+    Error::conflict(NO_SERVERS).hint(Hint::Next("ployz server add".into()))
+}
+
+/// Whether `report` is [`no_servers`]: Cloud knows no Server to look in.
+fn has_no_servers(report: &RpcError) -> bool {
+    report.code == RpcErrorCode::Conflict && report.message == NO_SERVERS
 }
 
 /// No Server of `access` gave this command access: the `unanswered` ones it held a
