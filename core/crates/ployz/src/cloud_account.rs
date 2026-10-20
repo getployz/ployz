@@ -5,7 +5,7 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
@@ -255,8 +255,35 @@ pub(crate) struct ServerClears {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ServerAccess {
     pub(crate) connections: Vec<crate::context::Connection>,
-    /// Servers Cloud couldn't provision a holder on now.
+    /// Servers that didn't answer Cloud's provisioning of a holder now.
     pub(crate) unreachable: Vec<MachineId>,
+    /// Servers Cloud couldn't provision a holder on for another reason, such as their own refusal.
+    #[serde(default)]
+    pub(crate) refused: Vec<RefusedServer>,
+    /// The names enrollment gave the Organization's Servers, where Cloud holds one.
+    #[serde(default, deserialize_with = "text_names")]
+    pub(crate) names: BTreeMap<MachineId, String>,
+}
+
+/// A Server that gave Cloud no holder for a reason other than silence, with that reason.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RefusedServer {
+    pub(crate) machine_id: MachineId,
+    pub(crate) message: String,
+}
+
+/// Names are display only: an entry that is not a Machine ID and a string is dropped, so
+/// that Server shows by its id and the reply's connections still dial.
+fn text_names<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<MachineId, String>, D::Error> {
+    let serde_json::Value::Object(names) = serde_json::Value::deserialize(deserializer)? else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(names
+        .into_iter()
+        .filter_map(|(id, name)| Some((MachineId::parse(id).ok()?, name.as_str()?.to_owned())))
+        .collect())
 }
 
 /// A token just made: the one reply that carries its secret.
@@ -1277,6 +1304,36 @@ fn answer<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
+
+    #[test]
+    fn a_name_that_is_not_text_costs_only_that_name() {
+        let (held, odd, gone) = ("a".repeat(32), "b".repeat(32), "c".repeat(32));
+        let access: ServerAccess = serde_json::from_value(serde_json::json!({
+            "connections": [{ "machine_id": held, "unix": "/run/ployz.sock" }],
+            "unreachable": [odd, gone],
+            "names": { held.clone(): "web-1", odd: null, gone: 7, "not-an-id": "web-9" },
+        }))
+        .unwrap();
+
+        assert_eq!(access.connections.len(), 1);
+        assert_eq!(access.unreachable.len(), 2);
+        assert_eq!(
+            access.names,
+            BTreeMap::from([(MachineId::parse(held).unwrap(), "web-1".to_owned())])
+        );
+    }
+
+    #[test]
+    fn names_that_are_not_an_object_leave_every_server_by_id() {
+        let access: ServerAccess = serde_json::from_value(serde_json::json!({
+            "connections": [],
+            "unreachable": [],
+            "names": null,
+        }))
+        .unwrap();
+
+        assert!(access.names.is_empty());
+    }
 
     /// A device signed in to `cloud` as Organization `acme`.
     fn signed_in_store(cloud: &str) -> (tempfile::TempDir, CredentialStore) {
