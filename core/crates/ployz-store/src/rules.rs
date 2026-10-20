@@ -774,6 +774,7 @@ pub(crate) mod tests {
                     }],
                     shared_writes: false,
                     storage_locked: false,
+                    restored_from: None,
                 },
             )
             .unwrap();

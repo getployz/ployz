@@ -1237,3 +1237,64 @@ async fn enrollment_token_comes_from_exactly_one_source() {
         assert!(!stdout.contains(TOKEN), "{extra:?}: {stdout}");
     }
 }
+
+#[tokio::test]
+async fn a_token_of_another_kind_is_refused_before_any_request() {
+    const FLEET: &str = "pflt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const ORGANIZATION: &str = "ployz_synthetic-organization-token";
+    let directory = tempfile::tempdir().unwrap();
+    let fleet_file = directory.path().join("token");
+    std::fs::write(&fleet_file, format!("{FLEET}\n")).unwrap();
+    let fleet_file = fleet_file.to_str().unwrap();
+    for (env, token, file, expected) in [
+        (
+            Some(FLEET),
+            FLEET,
+            None,
+            ["PLOYZ_ENROLL_TOKEN", "PLOYZ_FLEET_TOKEN"],
+        ),
+        (
+            Some(ORGANIZATION),
+            ORGANIZATION,
+            None,
+            ["PLOYZ_ENROLL_TOKEN", "PLOYZ_TOKEN"],
+        ),
+        (
+            None,
+            FLEET,
+            Some(fleet_file),
+            ["--token-file", "PLOYZ_FLEET_TOKEN"],
+        ),
+    ] {
+        let cloud = EnrollListen::script([]).await;
+        let mut command = harness::cli();
+        command.env_remove("PLOYZ_ENROLL_TOKEN");
+        if let Some(env) = env {
+            command.env("PLOYZ_ENROLL_TOKEN", env);
+        }
+        command.args([
+            "--json",
+            "server",
+            "add",
+            "ssh://root@127.0.0.1:1",
+            "--no-install",
+            "--cloud-url",
+            &cloud.url,
+            "--storage",
+            "none",
+        ]);
+        if let Some(file) = file {
+            command.args(["--token-file", file]);
+        }
+
+        let output = command.output().await.unwrap();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.code(), Some(2), "{expected:?}: {stdout}");
+        for name in expected {
+            assert!(stdout.contains(name), "{expected:?}: {stdout}");
+        }
+        assert!(!stdout.contains(token), "{expected:?}: {stdout}");
+        assert_eq!(cloud.paths(), Vec::<String>::new(), "{expected:?}");
+    }
+}
