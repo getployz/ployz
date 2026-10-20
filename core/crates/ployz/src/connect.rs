@@ -558,7 +558,7 @@ pub(crate) async fn connect_one(
     connector: &Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
     let channel = connector.connect(connection).await?;
-    let client = Client::new(
+    let mut client = Client::new(
         channel,
         connection.clone(),
         source.clone(),

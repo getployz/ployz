@@ -253,17 +253,19 @@ def lookup(found):
         listing = gh(f"repos/{REPOSITORY}/actions/artifacts?name={found.artifact}&per_page=100", capture_output=True)
     except (OSError, subprocess.SubprocessError):
         return None  # no gh, not signed in, or offline: a miss
-    for artifact in json.loads(listing.stdout)["artifacts"]:
-        run = artifact.get("workflow_run") or {}
-        if (not artifact["expired"] and run.get("head_branch") == "main"
-                and run.get("head_repository_id") == run.get("repository_id")):
-            return artifact
-    return None
+    return next(filter(from_main, json.loads(listing.stdout)["artifacts"]), None)
 
 
-def download(found):
-    """Put found's CI upload into the local cache. Returns whether CI had one."""
-    artifact = lookup(found)
+def from_main(artifact):
+    """Whether an artifact is a live upload from a main run of this repository."""
+    run = artifact.get("workflow_run") or {}
+    return (not artifact["expired"] and run.get("head_branch") == "main"
+            and run.get("head_repository_id") == run.get("repository_id"))
+
+
+def download(found, artifact=None):
+    """Put found's CI upload, or else the given one, into the local cache. Returns whether CI had one."""
+    artifact = artifact or lookup(found)
     if artifact is None:
         return False
     with tempfile.TemporaryDirectory() as scratch:
@@ -284,11 +286,14 @@ def download(found):
     return True
 
 
-def fetch(found, destination, *, announce=True):
-    """Copy an artifact's files into destination, from the local cache or else from CI. Returns its metadata, or None on a miss."""
+def fetch(found, destination, *, announce=True, artifact=None):
+    """Copy an artifact's files into destination, from the local cache or else from CI. Returns its metadata, or None on a miss.
+
+    artifact names the CI upload to download, in place of found's newest one.
+    """
     entry = CACHE / found.kind / found.value
     downloaded = not (entry / "meta.json").exists()
-    if downloaded and not download(found):
+    if downloaded and not download(found, artifact):
         return None
     meta = json.loads((entry / "meta.json").read_text())
     origin = f"github run {meta.get('run')}" if downloaded else f"local {found.value[:8]}"
@@ -305,8 +310,13 @@ def fetch(found, destination, *, announce=True):
     return meta
 
 
-def nearest_main(found, depth=20):
-    """The newest main commit, at or before this checkout's fork point, with a build of found's kind: (commit, key)."""
+def nearest_main(found, depth=20, *, deep=False):
+    """The newest main commit, at or before this checkout's fork point, with a build of found's kind: (commit, key, upload).
+
+    upload is the CI upload deep chose, or None when any build under the key will do.
+
+    deep looks past depth at every live CI upload from main.
+    """
     try:
         base = git("merge-base", "HEAD", "origin/main").decode().strip()
     except subprocess.CalledProcessError:
@@ -318,27 +328,62 @@ def nearest_main(found, depth=20):
             continue
         seen.add(candidate.value)
         if (CACHE / found.kind / candidate.value / "meta.json").exists() or lookup(candidate):
-            return rev, candidate
-    return None
+            return rev, candidate, None
+    return newest_upload_before(found, base) if deep else None
 
 
-def fetch_main(found, destination, hint, *, same_surface=False):
+def newest_upload_before(found, base):
+    """The commit, key and upload of the newest live CI upload from main of found's kind, built at or before base.
+
+    Main runs cancel superseded ones, so a long run of quick merges can leave no build in the last depth commits.
+    """
+    keys = {}
+    page = 1
+    while True:
+        # The listing pages back through every artifact, so one failed page is retried before it ends the search.
+        for attempt in range(3):
+            try:
+                listing = gh(f"repos/{REPOSITORY}/actions/artifacts?per_page=100&page={page}", capture_output=True)
+                break
+            except (OSError, subprocess.SubprocessError):
+                if attempt == 2:
+                    return None
+        uploads = json.loads(listing.stdout)["artifacts"]
+        if not uploads:
+            return None
+        for artifact in uploads:
+            if not (artifact["name"].startswith(KINDS[found.kind].name + "-") and from_main(artifact)):
+                continue
+            rev = artifact["workflow_run"]["head_sha"]
+            if rev not in keys:
+                ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", rev, base], cwd=CORE, capture_output=True)
+                keys[rev] = key(found.kind, found.extra, rev) if ancestor.returncode == 0 else None
+            # Another platform or other build options name a different key.
+            if keys[rev] and keys[rev].artifact == artifact["name"]:
+                return rev, keys[rev], artifact
+        page += 1
+
+
+def fetch_main(found, destination, hint, *, same_surface=False, deep=False):
     """Fetch main's build in place of found and name the crates that differ. Returns its metadata, or None.
 
     same_surface refuses main's build unless the kind's surface and embedded kinds match the checkout's.
+    deep takes main's newest live build at or before the fork point however far back it is.
     """
-    nearest = nearest_main(found)
+    nearest = nearest_main(found, deep=deep)
     if nearest is None:
-        print(f"{found.kind}: main has no build in its last 20 commits", file=sys.stderr)
+        where = "at or before this checkout's fork point" if deep else "in its last 20 commits"
+        print(f"{found.kind}: main has no build {where}", file=sys.stderr)
         return None
-    rev, candidate = nearest
+    rev, candidate, upload = nearest
     if same_surface and surface(found.kind) != surface(found.kind, rev):
         print(f"{found.kind}: interface differs from main@{rev[:9]}, so building", file=sys.stderr)
         return None
     if same_surface and any(key(kind).value != key(kind, rev=rev).value for kind in KINDS[found.kind].embeds):
         print(f"{found.kind}: {', '.join(KINDS[found.kind].embeds)} differs from main@{rev[:9]}, so building", file=sys.stderr)
         return None
-    meta = fetch(candidate, destination, announce=False)
+    # A later main commit past the fork point can upload under the same key, so take the upload deep chose.
+    meta = fetch(candidate, destination, announce=False, artifact=upload)
     if meta is None:
         return None
     differ = sorted(name for name in found.crates.keys() | candidate.crates.keys()

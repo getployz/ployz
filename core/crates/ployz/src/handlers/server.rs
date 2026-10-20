@@ -147,6 +147,15 @@ pub(super) fn signed_in(
     }
 }
 
+/// Whether [`signed_in`] would find something to act with, read from `PLOYZ_TOKEN` and the
+/// stored sign-in alone: it never asks Cloud or writes, so a pending code counts as signed out.
+pub(super) fn signed_in_locally(matches: &ArgMatches) -> bool {
+    std::env::var(crate::cli::env::TOKEN).is_ok_and(|token| !token.is_empty())
+        || super::config_path(matches).is_ok_and(|config| {
+            matches!(CredentialStore::beside(&config).organization(), Ok(Some(_)))
+        })
+}
+
 /// The Server `selector` names, for a Cloud route, among the Servers Cloud's dial sees.
 /// An id resolves there too, since only the Engine knows the name prose says.
 pub(super) fn cloud_machine(

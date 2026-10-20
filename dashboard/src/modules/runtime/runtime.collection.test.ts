@@ -52,7 +52,7 @@ function observedSnapshot(): RuntimeSnapshot {
         observedAt: "2026-07-01T00:00:00.000Z",
       },
     ],
-    volumeCopies: [{ machineId: "m1", name: "app_vol-1", role: "slot" }],
+    volumeCopies: [{ machineId: "m1", name: "app_vol-1", role: "slot", slotRole: "mirror" }],
     certificates: [
       {
         hostname: "api.example.test",

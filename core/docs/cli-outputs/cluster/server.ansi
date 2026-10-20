@@ -1,12 +1,12 @@
 === server add: join a second Server :: $ ployz server add --standalone --no-install root@172.19.0.3 --name beta
-Storage preparation [zfs/none] (none is Docker only, not recommended): WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+! Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
 Added Server beta (3ba1dcbd6b854ea699b76f6ef296576d)
 Waiting for ssh://root@172.19.0.3 to participate: connection attempt failed: Server phase is joining; retrying for up to 299s. Check outbound firewall access if this connection is blocked.
 # exit 0
 
 
 === server add: found a second, separate Cluster (rich ingress progress) :: $ ployz server add --standalone --no-install root@172.19.0.5 --name solo --ployz-config /tmp/ployz-cap-home/solo.yaml
-Storage preparation [zfs/none] (none is Docker only, not recommended): WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+! Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
 Switched context to 'default'
 Initialised Server solo (11b07efcce8e4822b59ca72d20433f1a)
 Waiting for ssh://root@172.19.0.5 to participate: connection attempt failed: Server is not yet published in the Cluster store; retrying for up to 298s. Check outbound firewall access if this connection is blocked.

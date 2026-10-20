@@ -13,6 +13,7 @@ use ts_rs::TS;
 
 use super::{DeploymentStatus, Stored, TargetNode, json_text, now, saved_at};
 use crate::error;
+use crate::id::OrganizationId;
 use crate::storage::{Row, Tx};
 use crate::tools::{LogText, Withheld};
 
@@ -716,6 +717,27 @@ fn history(row: &Row, index: usize) -> Result<Option<Vec<RowTransition>>, RpcErr
             serde_json::from_str(text).map_err(|_| error::corrupt("Deployment row history"))
         })
         .transpose()
+}
+
+/// The name each Server `organization`'s Deployments ran on went by, as the newest
+/// of them knew it.
+pub(crate) fn servers(
+    tx: &mut dyn Tx,
+    organization: &OrganizationId,
+) -> Result<BTreeMap<MachineId, String>, RpcError> {
+    let found = tx.query(
+        "SELECT r.machine, r.server FROM config_deployment_row r \
+         JOIN config_deployment d ON d.id = r.deployment_id \
+         WHERE r.organization_id = ?1 ORDER BY d.admitted",
+        &[organization.as_str().into()],
+    )?;
+    found
+        .iter()
+        .map(|row| {
+            let machine: MachineId = row.parse(0, "Deployment row Machine")?;
+            Ok((machine, row.text(1)?.to_owned()))
+        })
+        .collect()
 }
 
 pub(super) fn of_nodes(

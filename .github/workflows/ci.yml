@@ -9,10 +9,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Every main commit runs to the end, so each leaves its builds behind for later runs and local verify.
-  # A shared group would still cancel a pending main run, so main groups by commit.
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Main pushes share one group, so a newer one cancels older ones. Kache's main builds come mostly from the
+  # latest main run, though a cancelled run keeps what it wrote first, and an older main commit may have no
+  # finished run. A manual run of main groups by commit and is never cancelled once it runs; a newer manual
+  # run of the same commit can still replace it while it waits. Manual runs and pushes never cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -271,7 +273,8 @@ jobs:
       actions: write
     secrets: inherit
 
-  # The binaries the verify harness runs, built once per change on main so local runs download them.
+  # The binaries the verify harness runs, built on main so local runs download them. A cancelled main run may
+  # upload none, so a commit's nearest build can be several commits back.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
     needs: changes

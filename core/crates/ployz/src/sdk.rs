@@ -269,12 +269,11 @@ pub async fn connect_answered(
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty".into()).into());
     }
-    Ok(connect_session(connections, connector).await?)
+    Ok(dial(connections, connector).await?)
 }
 
-/// [`connect_answered`] on `connections` it already checked aren't empty, with the
-/// connection's own error.
-pub(crate) async fn connect_session(
+/// [`connect_connections`] to nonempty `connections`, keeping the connection error.
+async fn dial(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,
 ) -> Result<Session, ConnectError> {

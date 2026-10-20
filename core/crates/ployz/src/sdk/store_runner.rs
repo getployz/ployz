@@ -15,8 +15,8 @@ use ployz_core::{
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, RowState, RowTracker, RunEvidence,
-    RunnerId,
+    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, ObservationFailure, RowState,
+    RowTracker, RunEvidence, RunnerId, VolumeObservation,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -24,9 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
-use super::{
-    ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections, connect_session,
-};
+use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
 use crate::connect::{Client, ConnectError, SystemConnector};
 use crate::context::Connection;
 
@@ -159,7 +157,7 @@ pub async fn run_deployment(
             .await;
     }
     let session = match run
-        .connecting(connect_session(
+        .connecting(super::dial(
             connections,
             Arc::new(SystemConnector::default()),
         ))
@@ -200,19 +198,52 @@ pub async fn run_deployment(
 }
 
 /// Which of `connections`' Servers hold each Docker Volume in `sought`: the
-/// evidence a Deploy that removes deployed Volumes is admitted with.
+/// evidence a Deploy that removes deployed Volumes is admitted with. A check that
+/// fails names each of `connections`' Servers unanswered, and says whether none
+/// could be reached or one answered with an error, naming that one only once its
+/// daemon confirmed which Server it is.
 ///
 /// # Errors
-/// Returns the connection's error when no Server can be reached, or listing the
-/// Machines fails.
+/// Returns `invalid_argument` when `connections` is empty.
 pub async fn observe_volumes(
     connections: Vec<Connection>,
     sought: Vec<ployz_core::DockerVolumeName>,
 ) -> Result<ployz_store::VolumeObservation, RpcError> {
-    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
-    let observed = session.observe_volumes(sought).await;
+    if connections.is_empty() {
+        return Err(super::invalid_argument(
+            "connections must not be empty".into(),
+        ));
+    }
+    let servers: Vec<MachineId> = connections
+        .iter()
+        .filter_map(Connection::machine_id)
+        .copied()
+        .collect();
+    let session = match super::dial(connections, Arc::new(SystemConnector::default())).await {
+        Ok(session) => session,
+        Err(error) => {
+            let failure = if error.unreached() {
+                ObservationFailure::unreachable(error.into())
+            } else {
+                // The daemon that refused never confirmed which Server it is.
+                ObservationFailure::answered(None, error.into())
+            };
+            return Ok(VolumeObservation::failed(sought, servers, failure));
+        }
+    };
+    let observed = match session.observe_volumes(sought.clone()).await {
+        Ok(observed) => observed,
+        Err(error) => {
+            let server = session
+                .client()
+                .ok()
+                .and_then(|client| client.entry_machine());
+            let failure = ObservationFailure::answered(server, error);
+            VolumeObservation::failed(sought, servers, failure)
+        }
+    };
     session.close().await;
-    observed
+    Ok(observed)
 }
 
 /// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep
