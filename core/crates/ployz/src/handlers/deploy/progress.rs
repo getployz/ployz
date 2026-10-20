@@ -67,14 +67,20 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 build.is_some_and(|build| build.status == BuildStatus::Failed),
             );
             row.detail = build.map(|build| {
-                match build.status {
+                let word = match build.status {
                     BuildStatus::Pending => "build pending",
                     BuildStatus::Building => "building",
                     BuildStatus::Built => "built",
                     BuildStatus::Reused => "build reused",
                     BuildStatus::Failed => "build failed",
+                };
+                match (&build.server, build.status) {
+                    (
+                        Some(server),
+                        BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed,
+                    ) => format!("{word} on {server}"),
+                    _ => word.to_owned(),
                 }
-                .to_owned()
             });
         }
         rows.push(row);
@@ -206,8 +212,27 @@ fn ingress_unchecked(view: &DeploymentView) -> impl Iterator<Item = &str> {
 }
 
 /// Where each build ran, and why GitHub passed one on to the Servers.
-pub(super) fn builders(_view: &DeploymentView) -> Vec<String> {
-    Vec::new()
+pub(super) fn builders(view: &DeploymentView) -> Vec<String> {
+    view.builds
+        .iter()
+        .filter_map(|build| {
+            let built = build
+                .server
+                .as_ref()
+                .filter(|_| build.status == BuildStatus::Built)
+                .map(|server| format!("{} built on {server}.", build.service));
+            let skipped = build
+                .github_skipped
+                .as_deref()
+                .map(|why| why.trim_end_matches('.'));
+            match (built, skipped) {
+                (Some(built), Some(why)) => Some(format!("{built} GitHub skipped it: {why}.")),
+                (Some(built), None) => Some(built),
+                (None, Some(why)) => Some(format!("GitHub skipped {}: {why}.", build.service)),
+                (None, None) => None,
+            }
+        })
+        .collect()
 }
 
 /// What the Deployment left out of a Service's variables or a Config's files.

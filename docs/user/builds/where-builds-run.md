@@ -104,9 +104,19 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 
 ![Settings → Build: Build method, Build command and Preferred Builder](../images/service-settings-build.png)
 
+From the CLI, name the server as `ployz server ls` lists it, or `github`:
+
+```bash
+ployz set web.preferredBuilder=machine-1
+```
+
 The service tries that builder first, then follows the build order. A preferred server keeps
 the build on your servers, even with **GitHub only**. **Auto** follows the build order alone.
 **Preferred Builder** applies at once, from the next build.
+
+A deploy names the server each service built on. When GitHub came first and couldn't take
+the build, for example because the repository has no Ployz build workflow, the deploy says so
+and why.
 
 ## When a build fails
 

@@ -454,7 +454,8 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     assert_eq!(
         json!(view.builds),
         json!([{"service": "web", "commit": a, "status": "building", "message": null,
-                "started_at": started_at, "finished_at": null}])
+                "started_at": started_at, "finished_at": null, "server": null,
+                "github_skipped": null}])
     );
     store
         .record(

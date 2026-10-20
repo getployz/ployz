@@ -290,9 +290,15 @@ async fn a_queued_build_says_so_in_its_log_while_it_waits() {
             github_skipped: false,
         },
     };
-    run.report(&target.service, BuildStatus::Building, None, String::new())
-        .await
-        .unwrap();
+    run.report(
+        &target.service,
+        BuildStatus::Building,
+        None,
+        String::new(),
+        None,
+    )
+    .await
+    .unwrap();
     let (release, released) = tokio::sync::oneshot::channel::<()>();
     let running =
         super::super::running::Running::spawn(CancellationToken::new(), |reporter| async move {
@@ -345,9 +351,15 @@ async fn a_build_reports_the_server_it_runs_on_by_name() {
             github_skipped: false,
         },
     };
-    run.report(&target.service, BuildStatus::Building, None, String::new())
-        .await
-        .unwrap();
+    run.report(
+        &target.service,
+        BuildStatus::Building,
+        None,
+        String::new(),
+        None,
+    )
+    .await
+    .unwrap();
     let running =
         super::super::running::Running::spawn(CancellationToken::new(), |reporter| async move {
             reporter.report(super::super::prepare::Progress::Selected(Box::new(

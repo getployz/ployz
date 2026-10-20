@@ -11,7 +11,7 @@ use crate::ui::{self, Hint};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 
-use ployz_core::MachineObservation;
+use ployz_core::{MachineId, MachineObservation, MachineTarget};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
     NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
@@ -318,17 +318,30 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             }],
         );
     }
-    let changes = matches
+    let assignments = matches
         .get_many::<String>("assignment")
         .into_iter()
         .flatten()
         .map(|assignment| {
-            let (path, value) = assignment
+            assignment
                 .split_once('=')
-                .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))?;
+                .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let servers = if assignments
+        .iter()
+        .any(|(path, value)| names_a_server(path, value))
+    {
+        super::server::servers(matches)?
+    } else {
+        Vec::new()
+    };
+    let changes = assignments
+        .into_iter()
+        .map(|(path, value)| {
             Ok(Change::Set {
                 path: SettingPath::parse(path)?,
-                value: Value::String(value.to_owned()),
+                value: Value::String(resolved(path, value, &servers)?),
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -337,9 +350,19 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
 
 /// `value` as `set` sends it for `path`: a Server named as a Preferred Builder becomes
 /// its Machine ID, which is all the Store takes, as only the Servers know their names.
-fn resolved(path: &str, value: &str, _servers: &[MachineObservation]) -> Result<String, Error> {
-    let _ = path;
-    Ok(value.to_owned())
+fn resolved(path: &str, value: &str, servers: &[MachineObservation]) -> Result<String, Error> {
+    if !names_a_server(path, value) {
+        return Ok(value.to_owned());
+    }
+    let server = crate::cluster::visible_machine(&MachineTarget::parse(value)?, servers)?;
+    Ok(server.machine.id.to_string())
+}
+
+/// Whether `value` names a Server as `path`'s Preferred Builder, not GitHub or a Machine ID.
+fn names_a_server(path: &str, value: &str) -> bool {
+    matches!(path.split_once('.'), Some((service, "preferredBuilder")) if !service.contains('.'))
+        && value != "github"
+        && MachineId::parse(value.trim()).is_err()
 }
 
 /// The one positional a flag applies to.
