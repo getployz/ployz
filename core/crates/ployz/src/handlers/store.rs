@@ -4,6 +4,7 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::RpcErrorCode;
 use std::path::Path;
+use std::time::Duration;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
@@ -80,6 +81,32 @@ impl Backend {
                     None,
                 ))?;
                 Q::view(view).map_err(StoreCallError::Refused)
+            }
+        }
+    }
+
+    /// [`Self::read`] once, giving up on Cloud after `limit`: `None` when it doesn't answer.
+    pub(crate) fn read_within<Q: Ask>(&self, query: &Q, limit: Duration) -> Option<Q::View> {
+        match self {
+            Self::Local(..) => self.read(query).ok(),
+            Self::Cloud(runtime, credential) => {
+                let view: View = runtime
+                    .block_on(async {
+                        tokio::time::timeout(
+                            limit,
+                            cloud_account::config_store(
+                                credential,
+                                cloud_account::Via::Cli,
+                                "read",
+                                &query.to_query(),
+                                None,
+                            ),
+                        )
+                        .await
+                    })
+                    .ok()?
+                    .ok()?;
+                Q::view(view).ok()
             }
         }
     }

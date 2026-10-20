@@ -3540,6 +3540,117 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
     );
 }
 
+/// `ployz ctx` in an unlinked directory, as humans read it, and its JSON.
+fn ctx(store: &Target, home: &std::path::Path, dir: &std::path::Path) -> (String, String, Value) {
+    let human = store
+        .command(home)
+        .current_dir(dir)
+        .arg("ctx")
+        .output()
+        .unwrap();
+    assert!(human.status.success(), "{human:?}");
+    let (_, json) = in_dir(store, home, dir, &["ctx"], &[]);
+    (
+        String::from_utf8(human.stdout).unwrap(),
+        String::from_utf8(human.stderr).unwrap(),
+        json,
+    )
+}
+
+#[test]
+fn ctx_asks_the_store_what_an_unlinked_directory_acts_on() {
+    for store in &targets() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        ok(store, &["project", "new", "shop"]);
+        let (stdout, stderr, json) = ctx(store, home.path(), dir.path());
+        assert!(
+            stdout.contains("project = shop (the only Project)"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("environment = production (the Default Environment)"),
+            "{stdout}"
+        );
+        assert!(!stderr.contains("next:"), "{stderr}");
+        assert_eq!(json.get("project"), Some(&Value::Null));
+        assert_eq!(
+            json.get("default"),
+            Some(&json!({ "projects": 1, "project": "shop", "environment": "production" }))
+        );
+        assert_eq!(json.get("next"), None);
+
+        ok(store, &["project", "new", "blog"]);
+        let (stdout, stderr, json) = ctx(store, home.path(), dir.path());
+        assert!(
+            stdout.contains("project = (none: this Organization has 2 Projects)"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("environment = (none)"), "{stdout}");
+        assert!(
+            stderr.contains("next: ployz link --project PROJECT"),
+            "{stderr}"
+        );
+        assert_eq!(json.get("default"), Some(&json!({ "projects": 2 })));
+        assert_eq!(
+            json.get("next"),
+            Some(&json!("ployz link --project PROJECT"))
+        );
+
+        // A linked Project needs no listing.
+        let (code, _) = in_dir(
+            store,
+            home.path(),
+            dir.path(),
+            &["link", "--project", "blog"],
+            &[],
+        );
+        assert_eq!(code, Some(0));
+        let (code, json) = in_dir(store, home.path(), dir.path(), &["ctx"], &[]);
+        assert_eq!(code, Some(0));
+        assert_eq!(json.get("default"), None);
+        assert_eq!(json.get("next"), None);
+    }
+}
+
+/// Offline, or when Cloud is slow to answer, `ployz ctx` says nothing is linked.
+#[test]
+fn ctx_offline_says_nothing_is_linked() {
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let held = format!("http://{}", silent.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let held: Vec<TcpStream> = silent.incoming().map_while(Result::ok).collect();
+        drop(held);
+    });
+    for url in ["http://127.0.0.1:9".to_owned(), held] {
+        let store = Target::Cloud {
+            url,
+            token: "ployz_alice",
+        };
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+        let (stdout, stderr, json) = ctx(&store, home.path(), dir.path());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(stdout.contains("project = (none)\n"), "{stdout}");
+        assert!(stdout.contains("environment = (none)\n"), "{stdout}");
+        assert!(
+            stderr.contains("next: ployz link --project PROJECT"),
+            "{stderr}"
+        );
+        assert_eq!(json.get("default"), None);
+        assert_eq!(
+            json.get("next"),
+            Some(&json!("ployz link --project PROJECT"))
+        );
+    }
+}
+
 #[test]
 fn a_repository_service_is_checked_by_cloud() {
     for store in &targets() {

@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
@@ -16,11 +17,14 @@ use ployz_core::RpcErrorCode;
 use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery,
     EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentSummary, ProjectName,
+    ProjectsQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::store::{Backend, LOCAL_ORGANIZATION, Next, Store, next, reachable, scoped, store};
+use super::store::{
+    Backend, LOCAL_ORGANIZATION, Next, Store, backend_at, next, reachable, scoped, store,
+};
 use super::{Error, config_path, leaf_matches};
 use crate::checkin::{LocalCheckin, Paths};
 use crate::cli::env;
@@ -742,23 +746,68 @@ fn status_record(status: &Status) -> Fields {
     record
 }
 
-/// The scope, the acting Organization and how Servers are reached, without asking
-/// the Store or Cloud: `ployz ctx`.
+/// How long `ployz ctx` waits for the Store to list the Projects.
+const LISTING: Duration = Duration::from_secs(2);
+
+/// The scope, the acting Organization and how Servers are reached: `ployz ctx`.
+/// Only with no Project named does it ask the Store, once, what the Projects are.
 pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     #[derive(Serialize)]
     struct Context<'a> {
         organization: Option<Organization>,
         #[serde(flatten)]
         scope: &'a Scope,
+        /// What an unnamed Project falls back to, when the Store said.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default: Option<Fallback>,
         servers: Servers,
     }
     let matches = leaf_matches(root);
     let config = config_path(matches)?;
     let scope = scope(matches)?;
+    let default = scope.project.is_none().then(|| fallback(&config)).flatten();
     let context = Context {
         organization: acting_organization(&config)?,
         scope: &scope,
+        default,
         servers: servers(matches, &config)?,
+    };
+    let only = context
+        .default
+        .as_ref()
+        .and_then(|default| default.project.as_ref().zip(default.environment.as_ref()));
+    let hint = match (&scope.project, &context.default, only) {
+        (Some(_), ..) | (None, _, Some(_)) => None,
+        (None, Some(Fallback { projects: 0, .. }), None) => Some("ployz project new NAME"),
+        (None, _, None) => Some("ployz link --project PROJECT"),
+    }
+    .map(str::to_owned);
+    let project = match (&scope.project, &context.default) {
+        (Some(project), _) => format!("{} ({})", project.name, project.source.as_str()),
+        (
+            None,
+            Some(Fallback {
+                project: Some(project),
+                ..
+            }),
+        ) => {
+            format!("{project} (the only Project)")
+        }
+        (None, Some(Fallback { projects: 0, .. })) => {
+            "(none: this Organization has no Project yet)".to_owned()
+        }
+        (None, Some(Fallback { projects, .. })) => {
+            format!("(none: this Organization has {projects} Projects)")
+        }
+        (None, None) => "(none)".to_owned(),
+    };
+    let environment = match (&scope.environment, &scope.project, only) {
+        (Some(environment), ..) => {
+            format!("{} ({})", environment.name, environment.source.as_str())
+        }
+        (None, Some(_), _) => "the Default Environment".to_owned(),
+        (None, None, Some((_, environment))) => format!("{environment} (the Default Environment)"),
+        (None, None, None) => "(none)".to_owned(),
     };
     let record = Fields::new()
         .field(
@@ -768,20 +817,8 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
                 .as_ref()
                 .map_or("(the token's)", |organization| organization.slug.as_str()),
         )
-        .field(
-            "project",
-            scope.project.as_ref().map_or_else(
-                || "the only Project".to_owned(),
-                |project| format!("{} ({})", project.name, project.source.as_str()),
-            ),
-        )
-        .field(
-            "environment",
-            scope.environment.as_ref().map_or_else(
-                || "the Default Environment".to_owned(),
-                |environment| format!("{} ({})", environment.name, environment.source.as_str()),
-            ),
-        )
+        .field("project", project)
+        .field("environment", environment)
         .field(
             "servers",
             context.servers.context.as_ref().map_or_else(
@@ -789,7 +826,38 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
                 |name| format!("via context {name}"),
             ),
         );
-    crate::ui::fields(&context, &record)
+    crate::ui::fields(&Next::new(&context, hint.clone()), &record)?;
+    if let Some(hint) = hint {
+        crate::ui::hint(&Hint::Next(hint));
+    }
+    Ok(())
+}
+
+/// The Projects the Store holds, and with just one its Default Environment.
+#[derive(Serialize)]
+struct Fallback {
+    projects: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<ProjectName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment: Option<EnvironmentName>,
+}
+
+/// What an unnamed Project falls back to, or `None` when the Store can't say:
+/// signed out, offline, or not answering within [`LISTING`].
+fn fallback(config: &Path) -> Option<Fallback> {
+    let listed = backend_at(config)
+        .ok()??
+        .read_within(&ProjectsQuery {}, LISTING)?;
+    let only = match listed.projects.as_slice() {
+        [only] => Some(only),
+        _ => None,
+    };
+    Some(Fallback {
+        projects: listed.projects.len(),
+        project: only.map(|only| only.name.clone()),
+        environment: only.map(|only| only.default_environment.clone()),
+    })
 }
 
 /// How live commands reach Servers.
