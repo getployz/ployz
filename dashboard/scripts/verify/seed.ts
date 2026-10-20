@@ -126,7 +126,7 @@ const seed = Effect.gen(function* () {
   const token = env("VERIFY_SESSION_TOKEN");
   const { cookie, cliToken } = yield* signIn(ada.id, "owner", token);
   // Colleagues sign up with their own personal organization, then join Ada's. Their session tokens derive from Ada's, so
-  // their cookies also survive a reseed.
+  // their cookies also keep their values across a reseed.
   const colleague = (name: string, email: string, role: "admin" | "member") => Effect.gen(function* () {
     const [person] = yield* drizzle.insert(user).values({ email, emailVerified: true, name }).returning();
     if (!person) return yield* Effect.die("No user.");

@@ -5,8 +5,9 @@ import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } f
 import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
 import { cliLifetimeLabel, installLines } from "#/modules/machines/waiting/install-lines";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
-import { useCanAddServers, useMintFleetToken } from "./use-waiting";
+import { ADD_SERVERS_REFUSED, useMintFleetToken } from "./use-waiting";
 
 const STEPS = [
   { title: "Run the line", description: "Installs the agent. Docker too, if missing." },
@@ -20,7 +21,7 @@ const STEPS = [
  */
 export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: string; arrived: boolean }) {
   const mint = useMintFleetToken(organizationSlug);
-  const { allowed, refusal } = useCanAddServers(organizationSlug);
+  const gate = useRoleGate(organizationSlug, "servers:add", ADD_SERVERS_REFUSED);
   if (arrived) {
     return mint.data === undefined ? (
       <p className="text-sm text-muted-foreground">Add servers to queue more here.</p>
@@ -38,13 +39,14 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
         <CardDescription>Run this on any Linux server with root. It shows up below in a few seconds.</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {refusal !== undefined ? (
-          <p className="text-sm text-muted-foreground">{refusal}</p>
+        {gate.reason === ADD_SERVERS_REFUSED ? (
+          <p className="text-sm text-muted-foreground">{ADD_SERVERS_REFUSED}</p>
         ) : mint.data === undefined ? (
           <Button
             variant="ink"
             className="w-fit"
-            disabled={!allowed || mint.isPending}
+            disabled={!gate.allowed || mint.isPending}
+            title={gate.reason}
             onClick={() => mint.mutate({ name: null, expiresIn: "7d", autoEnroll: null })}
           >
             {mint.isPending ? <Spinner data-icon="inline-start" /> : <TerminalIcon data-icon="inline-start" />}

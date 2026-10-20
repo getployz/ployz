@@ -53,3 +53,25 @@ it("shows a close waiting for the sweep as deleting, and can delete it again", (
   expect(screen.getByText("Ployz starts taking it off your servers shortly, or at its next hourly sweep if it can't start yet. If it hasn't started by then, delete it again.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Delete feat" }).hasAttribute("disabled")).toBe(false);
 });
+
+it.each([
+  { environment: "feat", support: true, member: false },
+  { environment: null, support: true, member: false },
+])("lets support delete what Cloud lets it, and a member not (environment: $environment)", ({ environment, ...expected }) => {
+  for (const visitor of ["support", "member"] as const) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
+    queryClient.setQueryData(organizationMembersQueryOptions("acme").queryKey, visitor === "support"
+      ? { members: [], invites: [], mail: false, support: true }
+      : { members: [{ you: true, role: "member", name: "Linus", email: "linus@example.com", joined_at: "2026-01-01T00:00:00Z" }], invites: [], mail: false, support: false });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <StoreTeardownSection organizationSlug="acme" target={{ project: "shop", environment }} environments={[]}
+          name="it" place="shop" title="Delete it" description="Deletes it." actionLabel="Delete it" headingId="danger"
+          onCompleted={() => {}} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Delete it" }).hasAttribute("disabled")).toBe(!expected[visitor]);
+    cleanup();
+  }
+});

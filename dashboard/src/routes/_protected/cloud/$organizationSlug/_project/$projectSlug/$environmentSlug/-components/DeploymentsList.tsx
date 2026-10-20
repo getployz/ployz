@@ -6,7 +6,7 @@ import { ListRowSkeletons, ShowMore } from "#/components/show-more";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { admission, deploymentLabel, deploymentLight, deploymentStatusLabel, deploysLabel, uploadLabel } from "#/modules/config-store/store-deployments";
+import { admission, deploymentLabel, deploymentLight, deploymentStatusLabel, deploysLabel, shippedService, uploadLabel } from "#/modules/config-store/store-deployments";
 import { RelativeTime } from "#/components/relative-time";
 import { requireView, servicesQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { DashboardPage } from "#/components/dashboard-page";
@@ -50,8 +50,9 @@ function ListFrame({ service, services, children }: { service: string | null; se
 }
 
 /**
- * Store Deployments newest first, a page at a time. Narrowed to a Service, the ones that deployed it: every full
- * Deploy, and targeted ones that named it. Each opens its Run on that Service's job, carrying `origin` for its back.
+ * Store Deployments newest first, a page at a time. Narrowed to a Service, the ones that shipped it: every full
+ * Deploy, and targeted ones that named it or a Service referencing it. Each opens its Run on that Service's job,
+ * carrying `origin` for its back.
  */
 // ponytail: filters loaded pages by the name the Service had when admitted; a renamed Service loses older rows, and a
 // page can filter to nothing (Show more still loads the next). A Store query by Service when that matters.
@@ -60,7 +61,7 @@ export function StoreDeploymentRows({ service, origin }: { service: ServiceListi
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = useStoreDeployments(params.organizationSlug, store);
   const deployments = data.pages.flatMap((page) => page.deployments)
-    .filter((deployment) => !service || deployment.services.length === 0 || deployment.services.includes(service.name));
+    .filter((deployment) => !service || shippedService(deployment, service.name));
   return <Rows hasMore={hasNextPage} loading={isFetchingNextPage} onShowMore={() => void fetchNextPage()}>
     {deployments.map((deployment) => {
       const { by, at } = admission(deployment);

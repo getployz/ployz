@@ -40,6 +40,7 @@ fn volume(store: &ConfigStore, who: &Actor, n: u8, name: &str, on: &str) {
             &ployz_store::CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: ployz_store::VolumeId::parse(uuid(n)).unwrap(),
                 environment: at("production"),
