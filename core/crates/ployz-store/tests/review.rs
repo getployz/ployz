@@ -1088,6 +1088,24 @@ fn discard_review_returns_to_saved_and_keeps_an_undeployed_save_listed() {
     );
 }
 
+#[test]
+fn discard_review_names_the_settings_an_undeployed_save_loses() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(3));
+    let discarded = store
+        .write(
+            &who,
+            &Discard {
+                target: Some(ployz_store::DiscardTarget::Review),
+                version: Some(diff(&store, &who).version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(discarded.dropped, ["web.replicas"]);
+}
+
 fn unset(store: &ConfigStore, who: &Actor, path: &str) {
     store
         .write(
