@@ -42,6 +42,8 @@
 //!                                       Docker event stream can repeat it
 //!       <cid>-<exit|oom>-<ts>.pending   one whose marker or crash is not
 //!                                       stored yet
+//!     resume-from                       the newest Docker event's time, where
+//!                                       a restarted harvester resumes
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the
@@ -81,6 +83,7 @@ const RETIRED_OUTBOXES: [&str; 1] = ["pageviews"];
 const ANALYTICS_DIR: &str = "analytics";
 const SALTS_FILE: &str = "salts.json";
 const SETTLED_DIR: &str = "settled";
+const RESUME_FILE: &str = "resume-from";
 const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
@@ -138,6 +141,11 @@ impl StoreRoot {
     #[must_use]
     pub fn settled(&self) -> PathBuf {
         self.0.join(SETTLED_DIR)
+    }
+
+    #[must_use]
+    pub fn resume_from(&self) -> PathBuf {
+        self.0.join(RESUME_FILE)
     }
 
     /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.

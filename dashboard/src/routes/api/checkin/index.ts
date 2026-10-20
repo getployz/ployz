@@ -3,7 +3,7 @@ import { getRequestIP } from "@tanstack/react-start/server";
 import { Effect } from "effect";
 import { handleCheckin, observedIp } from "#/routes/api/checkin/-handler";
 import { AppConfig } from "#/server/config.server";
-import { publicErrorResponse } from "#/server/public-error";
+import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 export const Route = createFileRoute("/api/checkin/")({
@@ -19,6 +19,7 @@ export const Route = createFileRoute("/api/checkin/")({
           { signal: request.signal },
         ).catch(publicErrorResponse);
       },
+      ANY: (): Response => methodNotAllowed(Route),
     },
   },
 });

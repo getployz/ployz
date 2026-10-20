@@ -58,8 +58,9 @@ struct Up<'a> {
 pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let config = config_path(matches)?;
-    let events = open_events(matches)?;
     let directory = std::env::current_dir()?.canonicalize()?;
+    refuse_empty(&directory)?;
+    let events = open_events(matches)?;
     let server = matches
         .get_one::<String>("server")
         .map(|destination| add_server(matches, &config, destination))
@@ -244,6 +245,19 @@ fn add_service(
     Ok(())
 }
 
+/// Refuse a directory with nothing to upload before anything is created.
+fn refuse_empty(directory: &Path) -> Result<(), Error> {
+    let listing = crate::build::UploadListing::read(directory)
+        .map_err(super::deploy::unreadable(directory))?;
+    if listing.is_empty() {
+        return Err(Error::usage(format!(
+            "Nothing to deploy: {} is empty. Run ployz up in your app's directory.",
+            directory.display()
+        )));
+    }
+    Ok(())
+}
+
 /// The directory's name as a Project and Service name, else `app`.
 fn directory_name(directory: &Path) -> ServiceName {
     let lowered = directory
@@ -276,5 +290,18 @@ mod tests {
         ] {
             assert_eq!(directory_name(Path::new(directory)).as_str(), name);
         }
+    }
+
+    #[test]
+    fn an_empty_directory_is_refused_before_anything_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = refuse_empty(dir.path()).unwrap_err();
+        assert_eq!(error.report().code, RpcErrorCode::InvalidArgument);
+        assert!(
+            error.to_string().starts_with("Nothing to deploy: "),
+            "{error}"
+        );
+        std::fs::write(dir.path().join("index.html"), "hi").unwrap();
+        refuse_empty(dir.path()).unwrap();
     }
 }

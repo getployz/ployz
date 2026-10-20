@@ -20,6 +20,7 @@ import { RowWarning } from "#/components/settings/row-warning";
 import { SettingsDanger, SettingsSection } from "#/components/settings/settings-section";
 import { listNames, plural } from "#/lib/plural";
 import type { RemoveHint } from "#/modules/machines/server-drain-view";
+import { useClusterReleased } from "#/providers/runtime-provider";
 
 /** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
 async function waitForMachineRemoveAttempt(
@@ -70,6 +71,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const markHere = useStillHere();
+  const clusterReleased = useClusterReleased();
   const abortRef = useRef<AbortController | null>(null);
 
   function onOpenChange(next: boolean) {
@@ -103,6 +105,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         title={`Remove ${machine.name}?`}
         place={machine.name}
         confirmLabel="Remove"
+        pendingLabel="Removing"
         sentence={<>
           {last ? "Everything running on it stops. " : null}
           Its volumes stay on its disk, but your services <span className="text-destructive">lose</span> them.
@@ -130,7 +133,10 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
             if ("release" in result) {
               const { release } = result;
               if (release.kind === "kept") toast.warning(`${machine.name} left the cluster. Cloud keeps its hold: ${release.reason}`);
-              else if (release.kind === "released") toast(`${machine.name} removed. Add a server to deploy again.`);
+              else if (release.kind === "released") {
+                clusterReleased();
+                toast(`${machine.name} removed. Add a server to deploy again.`);
+              }
               else toast(`${machine.name} removed`);
               void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
               return;
@@ -207,6 +213,7 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
         title={`Forget ${machine.name}?`}
         place={machine.name}
         confirmLabel="Forget"
+        pendingLabel="Forgetting"
         sentence={<>Ployz takes it out of the cluster without reaching it. Its volumes{" "}
           <span className="text-destructive">can't be recovered</span>.</>}
         callbacks={{ load, confirm: forget }}
