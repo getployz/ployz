@@ -34,10 +34,10 @@ error, and the incidents in the range.
 
 ```sh
 ployz uptime show web
-ployz uptime show web --project shop --environment staging --from 6h
+ployz uptime show web --project shop --env staging --from 6h
 ```
 
-`--project` and `--environment` default to `PLOYZ_PROJECT` and `PLOYZ_ENV`, then to where the
+`--project` and `--env` default to `PLOYZ_PROJECT` and `PLOYZ_ENV`, then to where the
 directory is linked with `ployz link`, else to your default Project and its default Environment.
 A Project other than the linked one, typed or from `PLOYZ_PROJECT`, leaves the linked Environment
 out, so you get that Project's default Environment unless you name one.

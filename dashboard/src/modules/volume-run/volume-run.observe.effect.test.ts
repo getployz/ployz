@@ -1,5 +1,6 @@
 import type { Client, Connection, RuntimeWatchView } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
+import { vi } from "vitest";
 import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
@@ -13,7 +14,7 @@ import {
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { Database } from "#/server/database.server";
+import { Database, type DatabaseService } from "#/server/database.server";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { COPIES } from "./volume-run.test-fixture";
 import { observeVolumeMembers, planOnCluster } from "./volume-run.server";
@@ -136,6 +137,78 @@ it.effect("a release whose members read takes 35 seconds and whose next connect 
     yield* TestClock.adjust("10 seconds");
     // The test clock stands still from here, so a plan that settles at all settled by 45 seconds of Cluster time.
     assert.deepStrictEqual(yield* Fiber.join(planning), unanswered);
+  }),
+);
+
+/**
+ * One Server that lacks the generation floor and holds a mirror, so a release names what it lacks; its release channel
+ * query waits for the test to answer it, and its inspect answers once `inspected` resolves.
+ */
+const lacking = Effect.gen(function* () {
+  const queries = yield* Queue.unbounded<() => void>();
+  let interrupted = 0;
+  let finished = 0;
+  const releaseChannel = Effect.callback<void>((resume) => { Queue.offerUnsafe(queries, () => resume(Effect.void)); }).pipe(
+    Effect.tap(() => Effect.sync(() => { finished += 1; })),
+    Effect.onInterrupt(() => Effect.sync(() => { interrupted += 1; })),
+    Effect.as([]),
+  );
+  const floorless = runtimeWatchFrameFixture({
+    machines: [runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, capabilities: ["volume_move"] } } })],
+  });
+  const layer = (inspected: Promise<void>) => makeOrganizationRuntimeLayer(
+    () => Effect.succeed({ kind: "ready", generation: "current", connections }),
+    noPairingChanges,
+  ).pipe(
+    Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({
+        close: async () => {},
+        volumeSwitch: async () => {
+          await inspected;
+          return { copy: COPIES.mirror };
+        },
+        runtime: {
+          watch: async function* (): AsyncGenerator<RuntimeWatchView> {
+            yield floorless;
+          },
+        },
+      }),
+    })),
+    Layer.merge(Layer.succeed(Database, asTestDouble<DatabaseService>()({
+      drizzle: asTestDouble<DatabaseService["drizzle"]>()({ select: () => ({ from: () => ({ where: () => releaseChannel }) }) }),
+    }))),
+  );
+  return { layer, queries, interrupted: () => interrupted, finished: () => finished };
+});
+
+it.effect("a Server's release channel query that takes 12 seconds finishes, and the member names the release it needs", () =>
+  Effect.gen(function* () {
+    vi.stubGlobal("fetch", async () => new Response("v0.2.0\n"));
+    const cluster = yield* lacking;
+    const observing = yield* observeVolumeMembers("org-1", "pg-data", release).pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
+    const query = yield* Queue.take(cluster.queries);
+    yield* TestClock.adjust("12 seconds");
+    query();
+    assert.deepStrictEqual(yield* Fiber.join(observing), [{
+      machine: { id: machine.id, name: machine.name },
+      answered: false,
+      lack: "Volume move needs a newer Ployz on box-1. 0.2.0 is out.",
+    }]);
+    assert.strictEqual(cluster.finished(), 1);
+    assert.strictEqual(cluster.interrupted(), 0);
+  }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
+);
+
+it.effect("a Server whose inspect never answers is a member that didn't answer after 10 seconds", () =>
+  Effect.gen(function* () {
+    const cluster = yield* lacking;
+    const observing = yield* observeVolumeMembers("org-1", "pg-data", release).pipe(
+      Effect.provide(cluster.layer(new Promise<void>(() => {}))),
+      Effect.forkChild,
+    );
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    yield* TestClock.adjust("10 seconds");
+    assert.deepStrictEqual(yield* Fiber.join(observing), [{ machine: { id: machine.id, name: machine.name }, answered: false }]);
   }),
 );
 

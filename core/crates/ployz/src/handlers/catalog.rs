@@ -480,7 +480,7 @@ pub(crate) fn setting_paths() -> ArgValueCompleter {
 fn stored_paths() -> Vec<String> {
     let scope = || -> Option<Vec<String>> {
         let config = std::env::var(crate::cli::env::CONFIG)
-            .unwrap_or_else(|_| "~/.config/ployz/config.yaml".to_owned());
+            .unwrap_or_else(|_| crate::context::default_config_path());
         let config = crate::context::expand_home(std::path::Path::new(&config));
         let store = super::store::backend_at(&config).ok()??;
         let environment = super::link::scope_from_env(&config).ok()?.at();

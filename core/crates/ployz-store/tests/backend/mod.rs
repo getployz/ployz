@@ -38,10 +38,51 @@ pub fn execute(url: &str, sql: &str) {
 
 /// A new, empty Store.
 pub fn open() -> ConfigStore {
-    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+    let Ok(server) = std::env::var("PLOYZ_STORE_TEST_POSTGRES") else {
         return ConfigStore::open("sqlite::memory:", key()).unwrap();
+    };
+    let template = migrated_template(&server);
+    let name = format!("store_{}", uuid::Uuid::new_v4().simple());
+    postgres::Client::connect(&server, postgres::NoTls)
+        .unwrap()
+        .batch_execute(&format!("CREATE DATABASE {name} TEMPLATE {template}"))
+        .unwrap();
+    ConfigStore::open(&format!("{server}/{name}"), key()).unwrap()
+}
+
+/// A Store database this test binary migrated, which [`open`] copies: copying takes a
+/// fraction of migrating each one. Each build makes its own, so none goes stale.
+fn migrated_template(server: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let binary = std::env::current_exe().unwrap();
+    let built = std::fs::metadata(&binary).unwrap();
+    let mut hasher = std::hash::DefaultHasher::new();
+    (&binary, built.len(), built.modified().unwrap()).hash(&mut hasher);
+    let template = format!("store_template_{:016x}", hasher.finish());
+    let mut admin = postgres::Client::connect(server, postgres::NoTls).unwrap();
+    // Held until this connection closes, so tests running at once make it only once.
+    admin
+        .batch_execute("SELECT pg_advisory_lock(1226)")
+        .unwrap();
+    let made = admin
+        .query_opt("SELECT 1 FROM pg_database WHERE datname = $1", &[&template])
+        .unwrap()
+        .is_some();
+    if !made {
+        // Migrated under another name, so a test killed midway leaves no half-made template.
+        let building = format!("{template}_building");
+        admin
+            .batch_execute(&format!("DROP DATABASE IF EXISTS {building}"))
+            .unwrap();
+        admin
+            .batch_execute(&format!("CREATE DATABASE {building}"))
+            .unwrap();
+        drop(ConfigStore::open(&format!("{server}/{building}"), key()).unwrap());
+        admin
+            .batch_execute(&format!("ALTER DATABASE {building} RENAME TO {template}"))
+            .unwrap();
     }
-    ConfigStore::open(&fresh_url(&tempfile::tempdir().unwrap()), key()).unwrap()
+    template
 }
 
 /// The key every test Store seals with.

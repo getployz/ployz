@@ -56,10 +56,13 @@ pub fn run() -> Result<(), Error> {
             // A word the tree lacks may be a command Cloud published since the
             // cache was written, or one never cached: one refresh, then parse again.
             let Some(published) = published_after_miss(&error, &command, &args)? else {
-                return Err(usage_failure(error));
+                return Err(usage_failure(misplaced_flag(error, &command, &args)));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
-            command.clone().try_get_matches().map_err(usage_failure)?
+            command
+                .clone()
+                .try_get_matches()
+                .map_err(|error| usage_failure(misplaced_flag(error, &command, &args)))?
         }
     };
     let color = matches
@@ -138,6 +141,43 @@ fn wants_json(args: &[std::ffi::OsString]) -> bool {
     args.iter()
         .take_while(|arg| *arg != "--")
         .any(|arg| arg == "--json")
+}
+
+/// A flag written before the command that takes it, `ployz --project web status`:
+/// clap would offer the nearest top-level flag, so name the command's own instead.
+fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString]) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if error.kind() != ErrorKind::UnknownArgument {
+        return error;
+    }
+    let Some(ContextValue::String(invalid)) = error.get(ContextKind::InvalidArg) else {
+        return error;
+    };
+    let Some(long) = invalid
+        .strip_prefix("--")
+        .and_then(|flag| flag.split('=').next())
+    else {
+        return error;
+    };
+    let path = reached(tree, args);
+    let takes = !path.is_empty()
+        && path
+            .split(' ')
+            .try_fold(tree, |command, name| command.find_subcommand(name))
+            .is_some_and(|command| {
+                command
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some(long))
+            });
+    if !takes {
+        return error;
+    }
+    clap::Error::raw(
+        ErrorKind::UnknownArgument,
+        format!(
+            "unexpected argument '{invalid}' found\n\n  tip: '{path} --{long}' exists; put it after the command\n"
+        ),
+    )
 }
 
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
@@ -581,6 +621,32 @@ mod tests {
         ])));
         assert!(!context_above_leaf(&parsed(&["ployz", "ps", "-c", "prod"])));
         assert!(!context_above_leaf(&parsed(&["ployz", "ps"])));
+    }
+
+    #[test]
+    fn a_flag_typed_before_its_command_names_the_command() {
+        let tip = |args: &[&str]| {
+            let tree = crate::cli::compiled();
+            let args = args
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let error = tree
+                .clone()
+                .try_get_matches_from(std::iter::once("ployz".into()).chain(args.clone()))
+                .unwrap_err();
+            misplaced_flag(error, &tree, &args).to_string()
+        };
+        let error = tip(&["--project", "zs1", "status"]);
+        assert!(error.contains("tip: 'status --project' exists"), "{error}");
+        assert!(!error.contains("--connect"), "{error}");
+        let error = tip(&["--project=zs1", "service", "ls"]);
+        assert!(
+            error.contains("tip: 'service ls --project' exists"),
+            "{error}"
+        );
+        let error = tip(&["--nonsense", "status"]);
+        assert!(!error.contains("exists; put it after"), "{error}");
     }
 
     fn command() -> Command {
