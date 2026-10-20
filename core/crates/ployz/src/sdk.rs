@@ -269,6 +269,14 @@ pub async fn connect_answered(
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty".into()).into());
     }
+    Ok(dial(connections, connector).await?)
+}
+
+/// [`connect_connections`] to nonempty `connections`, keeping the connection error.
+async fn dial(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Session, ConnectError> {
     let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,

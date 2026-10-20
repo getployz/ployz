@@ -55,3 +55,18 @@ it("counts zero repositories once a sync has found none", async () => {
 
   expect(await screen.findByText(/0 repositories/)).toBeTruthy();
 });
+
+it("links an existing installation beside Connect GitHub", async () => {
+  vi.spyOn(connectFunctions, "listOrganizationGithubServerFn").mockResolvedValue({ canManage: true, accounts: [] });
+  const router = createRouter({
+    routeTree: createRootRoute({
+      component: () => <GithubSettings organizationSlug="shop" notice={undefined} offer={undefined} clearConnectSearch={() => {}} />,
+    }),
+    history: createMemoryHistory(),
+  });
+  await router.load();
+  render(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);
+
+  const existing = await screen.findAllByRole("button", { name: "Use existing" });
+  expect(existing.map((link) => link.getAttribute("href"))).toContain("/api/github/connect?organization=shop&existing=1");
+});

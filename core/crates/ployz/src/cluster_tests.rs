@@ -391,3 +391,40 @@ fn an_ingress_off_wait_holds_only_once_the_role_is_off() {
     assert!(RoleSetting::IngressOff.holds(&observed));
     assert!(!RoleSetting::IngressOn.holds(&observed));
 }
+
+/// A Machine that drops `ListMachines` and refuses to describe itself, as a bare
+/// endpoint now held by another daemon does.
+async fn redialed_into_a_refusal(bounded: bool) -> Option<MachineId> {
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(|rpc: tonic::Request<OpaquePayload>| async move {
+            let body = rpc.into_inner().decode_request().unwrap().body;
+            if matches!(body, ployz_core::RpcRequestBody::DescribeContract(_)) {
+                Err(tonic::Status::unauthenticated("not authorized"))
+            } else {
+                Err(tonic::Status::unavailable("restarting"))
+            }
+        })
+        .await;
+    client.entry = Some(machine_id('a'));
+    let refused = if bounded {
+        client
+            .try_read::<op::ListMachines>(
+                ListMachinesRequest {},
+                &MachineTarget::parse("machine-a").unwrap(),
+            )
+            .await
+    } else {
+        client
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await
+    };
+    assert!(refused.is_err(), "{refused:?}");
+    server.abort();
+    client.entry_machine()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_redial_the_new_daemon_refuses_forgets_the_machine_it_replaced() {
+    assert_eq!(redialed_into_a_refusal(false).await, None);
+    assert_eq!(redialed_into_a_refusal(true).await, None);
+}

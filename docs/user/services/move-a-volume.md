@@ -112,6 +112,9 @@ data is deploying; the Deploy ends its run
 now; the mirror reads "Refreshing" on the volume page while it downloads. `volume sync data --full`
 copies everything again as a run, and takes `--wait`.
 
+A server that doesn't answer the sync in time may still have taken it, so the sync says so instead
+of guessing. Run `ployz volume sync data` again to see where each mirror got to.
+
 A copy of a big volume can take hours. Ployz checks on it every few seconds at first, then every
 five minutes. If the copy has not finished after six hours, the run fails and says so.
 

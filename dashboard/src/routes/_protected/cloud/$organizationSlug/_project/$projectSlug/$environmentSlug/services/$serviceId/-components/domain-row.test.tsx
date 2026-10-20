@@ -4,7 +4,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DomainTitle, PublicDomainRow, storeStatusView, type DomainStatusView } from "./domain-row";
 
-const row = (view: DomainStatusView, live = false, pending = false) => (
+const records = [{ type: "CNAME" as const, name: "www", value: "acme.ployz.app" }];
+
+const row = (view: DomainStatusView, live = false, pending = false, dnsRecords = records) => (
   <PublicDomainRow
     organizationSlug="acme"
     title={
@@ -13,7 +15,7 @@ const row = (view: DomainStatusView, live = false, pending = false) => (
     label="www.acme.com"
     portLabel="Port 8080"
     view={view}
-    dnsRecords={[{ type: "CNAME", name: "www", value: "acme.ployz.app" }]}
+    dnsRecords={dnsRecords}
     changed={false}
     pending={pending}
     onEdit={vi.fn()}
@@ -28,7 +30,7 @@ describe("PublicDomainRow", () => {
   });
 
   it("opens a live domain and says nothing else", () => {
-    render(row({ icon: null, phrase: null, action: null }, true));
+    render(row({ icon: null, phrase: null, action: null }, true, false, []));
 
     expect(screen.getByRole("link").getAttribute("href")).toBe("https://www.acme.com");
     expect(screen.getByText("→ Port 8080")).toBeTruthy();
@@ -45,7 +47,7 @@ describe("PublicDomainRow", () => {
   });
 
   it("stays quiet when the status is unknown", () => {
-    render(row({ icon: null, phrase: null, action: null }));
+    render(row({ icon: null, phrase: null, action: null }, false, false, []));
 
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.getByText("→ Port 8080")).toBeTruthy();
@@ -64,11 +66,17 @@ describe("PublicDomainRow", () => {
     expect(screen.getByRole("button", { name: "Copy CNAME name" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy CNAME value" })).toBeTruthy();
   });
+
+  it("offers the DNS records even when the status names another cause", () => {
+    render(row({ icon: null, phrase: "Port 80 is closed on 203.0.113.7", action: null }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Show DNS records" }));
+    expect(screen.getByText("acme.ployz.app")).toBeTruthy();
+  });
 });
 
 describe("storeStatusView", () => {
   it("shows the Store's reason and offers its DNS records, but no action to wait for a deploy", () => {
-    const records = [{ type: "CNAME" as const, name: "www", value: "acme.ployz.app" }];
     expect(storeStatusView({ status: "needs_attention", reason: "Waiting for DNS", action: { type: "dns", records } }))
       .toMatchObject({ phrase: "Waiting for DNS", action: "dns" });
     expect(storeStatusView({ status: "needs_attention", reason: "No Server receives traffic", action: { type: "add_server" } }).action)
