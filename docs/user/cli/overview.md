@@ -36,6 +36,12 @@ Commands act on your only project and its default environment. With more than on
 your app's directory.
 `ployz ctx` shows where commands act from here.
 
+A link belongs to the organization it was made in. Acting in another one, a command that uses the
+link, such as `ployz status`, refuses and names `ployz org use ORG` to switch back. If that
+organization was replaced by a new one with the same name, it says the directory `is linked in an
+earlier Organization ORG, which another Organization of that name replaced` and names
+`ployz link` instead: `org use` can't reach the old one, so link the directory again.
+
 ## Set up your coding agent
 
 Paste this into your coding agent, such as Claude Code or Codex:
