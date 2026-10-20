@@ -18,10 +18,22 @@ const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A 
 /// Each approval-gated request's route, with the approval it carried.
 type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
 
+/// How Cloud answers a read of approval `apr_9`.
+#[derive(Clone, Copy)]
+enum Answer {
+    Approved,
+    /// Drops the connection unanswered, as a Cloud gone mid-wait does.
+    Gone,
+}
+
 /// Cloud that asks for approval `apr_9` before it removes Organization acme or forgets
 /// its Servers, recording each such request in `seen`. Unless `confirms`, a Server
 /// never confirms unpairing, so the approved removal stays partial.
 fn fake_cloud(seen: Seen, confirms: bool) -> String {
+    fake_cloud_answering(seen, confirms, Answer::Approved)
+}
+
+fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -48,6 +60,9 @@ fn fake_cloud(seen: Seen, confirms: bool) -> String {
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
             let route = line.rsplit_once(' ').unwrap().0.to_owned();
+            if matches!(answer, Answer::Gone) && route == "GET /api/cli/approvals/apr_9" {
+                continue;
+            }
             let approved = approval.as_deref() == Some("apr_9");
             let (status, reply) = match route.as_str() {
                 "DELETE /api/cli/organizations/o1" if approved => (
@@ -211,5 +226,58 @@ fn a_partial_org_rm_names_a_retry_that_carries_its_approval() {
                 Some("apr_9".to_owned())
             ),
         ],
+    );
+}
+
+#[test]
+fn waiting_for_an_approval_names_it_and_where_to_answer_it() {
+    let cloud = fake_cloud(Arc::default(), true);
+    let waited = ployz(&cloud, &["org", "rm", "acme", "--confirm", "acme"]);
+    assert!(waited.status.success(), "{waited:?}");
+    let stderr = String::from_utf8_lossy(&waited.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "Approve apr_9 under Waiting on you in the Ployz agent at {cloud}/cloud/acme?chat="
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("next: ployz org approval approve apr_9"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Waiting for approval in Ployz Cloud… approved."),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn losing_cloud_while_waiting_leaves_the_approval_pending_and_names_the_retry() {
+    let cloud = fake_cloud_answering(Arc::default(), true, Answer::Gone);
+    let lost = ployz(&cloud, &["org", "rm", "acme", "--confirm", "acme"]);
+    assert_eq!(lost.status.code(), Some(1), "{lost:?}");
+    let stderr = String::from_utf8_lossy(&lost.stderr);
+    assert!(
+        stderr.contains("Stopped waiting for approval apr_9; it stays pending in Ployz Cloud."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("\n  cause: "), "{stderr}");
+    let retry = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("retry: "))
+        .unwrap_or_default();
+    assert!(
+        retry.ends_with("org rm acme --confirm acme --approval apr_9"),
+        "{stderr}"
+    );
+
+    let json = json_of(&ployz(
+        &cloud,
+        &["--json", "org", "rm", "acme", "--confirm", "acme"],
+    ));
+    assert_eq!(
+        json.pointer("/error/code"),
+        Some(&json!("approval_required")),
+        "{json}"
     );
 }

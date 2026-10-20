@@ -270,27 +270,59 @@ pub(crate) fn settle(
     }
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
+    crate::ui::note(format!(
+        "Approve {} under Waiting on you in the Ployz agent at {}",
+        asked.id,
+        agent_panel(credential, asked.organization.as_deref())
+    ));
+    crate::ui::hint(&crate::ui::Hint::Next(format!(
+        "ployz org approval approve {}",
+        asked.id
+    )));
     crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
     let settled = runtime.block_on(async {
         tokio::select! {
-            () = interrupted.cancelled() => Err(StoreCallError::Stopped(
-                Failure::coded(
-                    RpcErrorCode::Internal,
-                    "Stopped waiting; the approval stays pending in Ployz Cloud.",
-                )
-                .interrupted()
-                .hint(crate::ui::Hint::Retry(retry)),
-            )),
-            settled = decided(credential, &asked.id) => settled,
+            () = interrupted.cancelled() => None,
+            settled = decided(credential, &asked.id) => Some(settled),
         }
     });
     crate::ui::note(match &settled {
-        Ok(Status::Approved) => "approved.",
-        Ok(Status::Denied) => "denied.",
-        Ok(Status::Superseded) => "superseded; asking again.",
-        Ok(Status::Pending) | Err(_) => "",
+        Some(Ok(Status::Approved)) => "approved.",
+        Some(Ok(Status::Denied)) => "denied.",
+        Some(Ok(Status::Superseded)) => "superseded; asking again.",
+        Some(Ok(Status::Pending) | Err(_)) | None => "",
     });
-    settled.map(|_| asked.id.clone())
+    // Ctrl-C or losing Cloud ends the wait, not the approval: it is still there to answer.
+    let stopped = match settled {
+        Some(Ok(_)) => return Ok(asked.id.clone()),
+        Some(Err(StoreCallError::Cloud(error))) => Failure::from(error).context(format!(
+            "Stopped waiting for approval {}; it stays pending in Ployz Cloud.",
+            asked.id
+        )),
+        Some(Err(error)) => return Err(error),
+        None => Failure::coded(
+            RpcErrorCode::Internal,
+            "Stopped waiting; the approval stays pending in Ployz Cloud.",
+        )
+        .interrupted(),
+    };
+    Err(StoreCallError::Stopped(
+        stopped.hint(crate::ui::Hint::Retry(retry)),
+    ))
+}
+
+/// The Ployz agent's panel in Cloud, where an approval waits under Waiting on you: in the
+/// Organization the approval names, else the one this device acts in.
+fn agent_panel(credential: &Credential, organization: Option<&str>) -> String {
+    let cloud = credential.cloud().trim_end_matches('/');
+    let organization = organization.or(match credential {
+        Credential::Device(signed_in) => Some(signed_in.organization.slug.as_str()),
+        Credential::Token { .. } => None,
+    });
+    match organization {
+        Some(organization) => format!("{cloud}/cloud/{organization}?chat={}", uuid::Uuid::new_v4()),
+        None => cloud.to_owned(),
+    }
 }
 
 /// Run `attempt` with `approval` until Cloud stops asking for one: each time it asks,

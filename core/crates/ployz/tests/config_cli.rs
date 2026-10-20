@@ -4601,7 +4601,9 @@ fn without_a_terminal_a_denied_save_fails_with_the_reason() {
         stderr.contains("A human denied the request to save production: the worker still drains"),
         "{stderr}"
     );
-    assert!(!stderr.contains("apr_1"), "{stderr}");
+    // The wait names the approval to answer; a denied one has no retry to name it in.
+    let denial = &stderr[stderr.find("error:").unwrap_or_default()..];
+    assert!(!denial.contains("apr_1"), "{stderr}");
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);
     assert_eq!(diff["holds_staged"], json!(false), "nothing was saved");
@@ -5190,7 +5192,9 @@ fn a_denied_drain_or_cleanup_stops_with_the_reason_and_starts_nothing() {
             )),
             "{stderr}"
         );
-        assert!(!stderr.contains("apr_1"), "{stderr}");
+        // The wait names the approval to answer; a denied one has no retry to name it in.
+        let denial = &stderr[stderr.find("error:").unwrap_or_default()..];
+        assert!(!denial.contains("apr_1"), "{stderr}");
         let followed = approvals.runs().into_iter().any(|run| {
             run.starts_with("GET server-drains") || run.starts_with("GET namespace-cleanups")
         });
