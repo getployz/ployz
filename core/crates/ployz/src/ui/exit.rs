@@ -11,6 +11,8 @@ use crate::failure::Failure;
 /// A result printed, but some Servers failed or did not answer, so part of it is missing.
 pub const PARTIAL_EXIT: u8 = 3;
 
+const SUCCESS_EXIT: u8 = 0;
+
 /// It ran and failed.
 const FAILED_EXIT: u8 = 1;
 
@@ -42,17 +44,37 @@ pub fn exit(result: Result<(), Failure>) -> ExitCode {
     // A result's last line may still sit in std's buffer, and std drops a
     // flush error at exit.
     let _ = io::Write::flush(&mut super::stdout_bytes());
-    let Err(failure) = result else {
-        return ExitCode::SUCCESS;
-    };
-    let code = render(
-        &failure,
+    let code = end(
+        result,
+        super::stdout::take_broken(),
         super::mode(),
         super::emitted(),
         &mut super::stdout_bytes(),
         &mut anstream::stderr().lock(),
     );
     ExitCode::from(code)
+}
+
+/// Print how the command ended and return its exit code. A result that could
+/// not be written to stdout fails with that write error, on stderr.
+fn end(
+    result: Result<(), Failure>,
+    broken: Option<io::Error>,
+    mode: Mode,
+    emitted: bool,
+    stdout: &mut dyn io::Write,
+    stderr: &mut dyn io::Write,
+) -> u8 {
+    let Some(broken) = broken else {
+        return result.err().map_or(SUCCESS_EXIT, |failure| {
+            render(&failure, mode, emitted, stdout, stderr)
+        });
+    };
+    let failure = match result {
+        Err(failure) if failure.is_interrupted() => failure,
+        _ => Failure::from(broken).context("Could not write the result to stdout."),
+    };
+    render(&failure, Mode::Plain, false, &mut io::sink(), stderr)
 }
 
 /// Print `failure` for `mode` and return its exit code. Once a result is
@@ -116,7 +138,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::ui::Hint;
+    use crate::ui::{Hint, Table};
 
     #[test]
     fn cancellation_survives_context_hints_and_committed_json() {
@@ -304,6 +326,47 @@ mod tests {
         assert_eq!(ended.code, PARTIAL_EXIT);
         assert_eq!(ended.stdout, "");
         assert_eq!(ended.stderr, "error: Nope.\n");
+    }
+
+    /// stdout on a full disk.
+    struct Full;
+
+    impl io::Write for Full {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from_raw_os_error(28))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_result_stdout_could_not_take_fails_once_on_stderr() {
+        let mut table = Table::new(["NAME"], "No Services yet.");
+        table.row(["web"]);
+        assert!(
+            table
+                .write(&mut super::super::stdout::Stdout(Full), false)
+                .is_err()
+        );
+        let mut stdout = Vec::new();
+        let mut stderr = anstream::StripStream::new(Vec::new());
+        let code = super::end(
+            Ok(()),
+            super::super::stdout::take_broken(),
+            Mode::Plain,
+            true,
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, 1);
+        assert!(stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(stderr.into_inner()).unwrap(),
+            "error: Could not write the result to stdout.\n  cause: No space left on device (os error 28)\n"
+        );
+        assert!(super::super::stdout::take_broken().is_none());
     }
 
     #[test]

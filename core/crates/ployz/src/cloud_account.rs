@@ -120,17 +120,44 @@ pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, Logi
 ///
 /// Returns a Cloud failure.
 pub(crate) async fn acting_in(credential: &Credential) -> Result<Organization, LoginError> {
+    Ok(acting_as(credential).await?.organization)
+}
+
+/// Who `credential` acts as.
+pub(crate) struct Acting {
+    pub(crate) organization: Organization,
+    /// Cloud hears it as an agent: an agent token, which can't answer for a person.
+    pub(crate) agent: bool,
+}
+
+/// [`acting_in`], and whether Cloud hears `credential` as an agent. A device is
+/// never one; a token's kind is Cloud's to say.
+///
+/// # Errors
+///
+/// Returns a Cloud failure.
+pub(crate) async fn acting_as(credential: &Credential) -> Result<Acting, LoginError> {
     match credential {
-        Credential::Device(signed_in) => Ok(signed_in.organization.clone()),
-        Credential::Token { .. } => organizations(credential)
-            .await?
-            .into_iter()
-            .find(|entry| entry.current)
-            .map(|entry| Organization {
-                id: entry.id,
-                slug: entry.slug,
+        Credential::Device(signed_in) => Ok(Acting {
+            organization: signed_in.organization.clone(),
+            agent: false,
+        }),
+        Credential::Token { .. } => {
+            let listed = listed(credential).await?;
+            let organization = listed
+                .organizations
+                .into_iter()
+                .find(|entry| entry.current)
+                .map(|entry| Organization {
+                    id: entry.id,
+                    slug: entry.slug,
+                })
+                .ok_or(LoginError::TokenRefused)?;
+            Ok(Acting {
+                organization,
+                agent: listed.via.as_deref() == Some(TokenKind::Agent.as_str()),
             })
-            .ok_or(LoginError::TokenRefused),
+        }
     }
 }
 
@@ -260,12 +287,20 @@ pub(crate) struct Removed {
 pub(crate) async fn organizations(
     credential: &Credential,
 ) -> Result<Vec<OrganizationEntry>, LoginError> {
-    #[derive(Deserialize)]
-    struct Reply {
-        organizations: Vec<OrganizationEntry>,
-    }
-    let reply: Reply = call(credential, Method::GET, "organizations", None).await?;
-    Ok(reply.organizations)
+    Ok(listed(credential).await?.organizations)
+}
+
+/// `GET organizations`: the Organizations, and how Cloud hears the caller
+/// (`cli` or `agent`; a Cloud that predates it says nothing).
+#[derive(Deserialize)]
+struct Listed {
+    organizations: Vec<OrganizationEntry>,
+    #[serde(default)]
+    via: Option<String>,
+}
+
+async fn listed(credential: &Credential) -> Result<Listed, LoginError> {
+    call(credential, Method::GET, "organizations", None).await
 }
 
 /// The Organization to switch to: a slug the user typed, or one Cloud listed, sent by ID.
@@ -1106,11 +1141,36 @@ pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
 pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     #[derive(Deserialize)]
     struct Refusal {
-        error: RpcError,
+        error: Refused,
     }
-    serde_json::from_slice::<Refusal>(body)
-        .ok()
-        .map(|refusal| past_token(refusal.error))
+    /// A Cloud command's refusal also names the input field, what fits there and
+    /// whether it wrote. They ride in `details`, where a write's `writes` already does.
+    #[derive(Deserialize)]
+    struct Refused {
+        #[serde(flatten)]
+        error: RpcError,
+        field: Option<serde_json::Value>,
+        expected: Option<serde_json::Value>,
+        writes: Option<serde_json::Value>,
+    }
+    let Refused {
+        mut error,
+        field,
+        expected,
+        writes,
+    } = serde_json::from_slice::<Refusal>(body).ok()?.error;
+    let told = [("field", field), ("expected", expected), ("writes", writes)]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value)));
+    for (key, value) in told {
+        if !error.details.is_object() {
+            error.details = serde_json::json!({});
+        }
+        if let serde_json::Value::Object(details) = &mut error.details {
+            details.insert(key, value);
+        }
+    }
+    Some(past_token(error))
 }
 
 /// `ployz login` while `PLOYZ_TOKEN` is set: the token still wins over the sign-in.

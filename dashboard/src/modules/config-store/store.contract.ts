@@ -5,6 +5,17 @@ import { Data, Schema } from "effect";
 export type StoreRefusal = { code: string; message: string; details: JsonValue };
 
 /**
+ * A Cloud command's refusal, in the shape Store tools refuse: the input `field` it names and the JSON Schema that fits
+ * there, and whether the call wrote anything (`unknown` once a write's `run` started). An agent hears it with `retry`.
+ */
+export type CommandRefusal = StoreRefusal & {
+  readonly field?: string;
+  readonly expected?: JsonValue;
+  readonly writes: "none" | "unknown";
+  readonly retry?: { readonly tool: string; readonly input: JsonValue };
+};
+
+/**
  * The Store refused a call, in the RPC error vocabulary: `conflict` carries fresh state, `not_found` names what's
  * missing. Cloud fails with it; the browser's writer rejects with it.
  */

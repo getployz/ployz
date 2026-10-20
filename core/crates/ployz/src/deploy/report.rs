@@ -397,13 +397,11 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
             operation, error, ..
         } => (Some(&operation.spec.name), operation.machine_id, error),
     };
-    let stored = ployz_store::Failure::of(error, &[]);
-    let message = service.map_or_else(
-        || "Deployment failed.".to_owned(),
-        |service| format!("Deployment of {service} failed."),
-    );
-    let mut causes = vec![stored.reason];
-    causes.extend(stored.cause);
+    let ployz_store::Failure { reason, cause } = ployz_store::Failure::of(error, &[]);
+    let message = crate::ui::sentence(match service {
+        Some(service) => format!("{service}: {reason}"),
+        None => reason,
+    });
     let mut diagnostic = Diagnostic {
         failed_machine: Some(machine),
         logs: tails,
@@ -447,7 +445,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
     Failure::from(RpcError {
         code: RpcErrorCode::Internal,
         message,
-        cause: causes,
+        cause,
         details: serde_json::json!({"outcome": outcome}),
     })
     .with_diagnostic(diagnostic)

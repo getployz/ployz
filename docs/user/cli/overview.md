@@ -311,14 +311,18 @@ Add `--json` to any command to get one JSON object instead of text. A stream, su
 prints JSON Lines instead: one object per line. If the command fails before it prints anything,
 that object is `{"error": {...}}`. A stream that fails after it printed names the failure on stderr
 and exits with code 3. Its `cause` lists every underlying error, outermost first, and
-`details` holds the next command to run when there is one.
+`details` holds the next command to run when there is one. When a Ployz Cloud command such as
+`ployz org member rm` refuses, `details` also says whether it wrote anything (`writes`), and for
+an input it can't take, the JSON Schema `expected`. `field` names the input that is wrong. It is
+left out when the input isn't a JSON object, and when it has a name the command doesn't take,
+because Cloud never repeats that name.
 
 Scripts can tell failures apart by exit code:
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | It failed: something wasn't found, a server couldn't be reached, a deploy failed, Ployz refused, or the server or Cloud doesn't support what you asked. |
+| 1 | It failed: something wasn't found, a server couldn't be reached, a deploy failed, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, or a deploy that applied but couldn't see every server. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |

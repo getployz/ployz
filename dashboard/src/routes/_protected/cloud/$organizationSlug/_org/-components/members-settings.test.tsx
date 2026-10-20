@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { InviteDialog, PendingInvites } from "./members-settings";
+import { membersKey } from "#/modules/organization/members.queries";
+import { organizationKeys } from "#/modules/organization/organization-state.queries";
+import { InviteDialog, MembersSettings, PendingInvites } from "./members-settings";
 
 type Invites = Parameters<typeof PendingInvites>[0]["invites"];
 
@@ -20,6 +23,53 @@ function Pending({ initial, onRevoke }: { initial: Invites; onRevoke: (invite: s
     }} />
   );
 }
+
+const member = (name: string, email: string, row: { role?: "owner" | "admin" | "member"; you?: boolean } = {}) =>
+  ({ name, email, role: row.role ?? "member", you: row.you ?? false, joined_at: "2026-10-01T12:00:00Z" });
+
+describe("MembersSettings", () => {
+  afterEach(() => {
+    cleanup();
+    document.body.replaceChildren();
+  });
+
+  it("names each member's Role and Remove after them, and the confirm says who goes", async () => {
+    const client = new QueryClient();
+    client.setQueryData(membersKey("acme"), {
+      members: [
+        member("Nick", "nick@example.com", { role: "owner", you: true }),
+        member("Ada Lovelace", "ada@example.com"),
+        member("Ada Lovelace", "ada.l@example.com", { role: "admin" }),
+        member("Grace Hopper", "grace@example.com"),
+      ],
+      invites: [],
+      mail: false,
+    });
+    client.setQueryData(organizationKeys.state("acme"), { organizations: [{ slug: "acme", name: "Acme" }] });
+    client.setQueryDefaults(organizationKeys.state("acme"), { refetchOnMount: false });
+    const router = createRouter({
+      routeTree: createRootRoute({ component: () => <MembersSettings organizationSlug="acme" /> }),
+      history: createMemoryHistory(),
+    });
+    await router.load();
+    render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
+
+    const removes = await screen.findAllByRole("button", { name: /^Remove / });
+    expect(removes.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Remove Ada Lovelace, ada@example.com",
+      "Remove Ada Lovelace, ada.l@example.com",
+      "Remove Grace Hopper",
+    ]);
+    expect(screen.getAllByRole("combobox").map((select) => select.getAttribute("aria-label"))).toEqual([
+      "Role of Ada Lovelace, ada@example.com",
+      "Role of Ada Lovelace, ada.l@example.com",
+      "Role of Grace Hopper",
+    ]);
+
+    fireEvent.click(removes[1] as HTMLElement);
+    expect((await screen.findByRole("alertdialog")).textContent).toContain("Remove Ada Lovelace, ada.l@example.com?");
+  });
+});
 
 describe("InviteDialog", () => {
   afterEach(() => {

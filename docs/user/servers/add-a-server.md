@@ -216,6 +216,9 @@ it and still exit cleanly, with the service set up and checking in:
   for example `This Fleet Token already has 5 waiting servers.` The host isn't on the
   **Servers** page yet. It asks again when Cloud says to.
 
+When Cloud already has an enrollment ready for the host, as Enroll on arrival can on a rerun, the
+install ends with `Cloud is ready to enroll this server. The check-in loop runs it.` instead.
+
 - **Without ZFS.** Put `PLOYZ_SKIP_ZFS=1` after `sudo`, as
   `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- VERSION --enroll`. It does what
   `--storage none` does for `ployz server add`.
