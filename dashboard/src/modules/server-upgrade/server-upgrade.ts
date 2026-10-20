@@ -44,6 +44,19 @@ export function isBehind(version: string, release: string | null) {
   return order !== null && order < 0;
 }
 
+/**
+ * A Server that refuses metrics gets them from Beta: its Releases are Stable, Stable has nothing newer than it runs, and
+ * Beta does. `release` is the newest on its channel's line, `beta` the newest on Beta's.
+ */
+export function metricsOnBeta({ version, channel, release, beta }: {
+  version: string;
+  channel: ReleaseChannel;
+  release: string | null;
+  beta: string | null;
+}) {
+  return channel === "stable" && !isBehind(version, release) && isBehind(version, beta);
+}
+
 /** A Server runs `release` or newer. An unknown version is never current. */
 export function isCurrent(version: string, release: string) {
   const order = compareVersions(version, release);

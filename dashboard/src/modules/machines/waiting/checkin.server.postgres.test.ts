@@ -886,6 +886,7 @@ it("reads status from the last check-in and the report", () => {
 
 const readyAuto = { cliVersion: "0.3.1", prep: { docker: "ready", zfs: "ready" } } as const;
 const arrivalWait = { kind: "wait", retryAfter: 2 };
+const noCluster = { ...wait, noCluster: true };
 const autoToken = (maxServers = 2) => run(createFleetToken(ada, { organizationSlug: "ada", name: "auto", expiresIn: "30d", autoEnroll: { maxServers } }));
 const foundOrganization = () => harness.pool.query(`insert into organization_pairing (organization_id, founder_machine_id, founder_claim_machine_id, founder_public_key, encrypted_pairing_secret)
   values ($1, repeat('a', 32), repeat('a', 32), repeat('b', 64), '{}')`, [adaOrg]);
@@ -926,16 +927,28 @@ it("revokes an arrival token mid-burst without deadlock and keeps every started 
 it("never founds on arrival, including while the first server is still founding", async () => {
   const { token } = await autoToken();
   const host = newHost();
-  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await send(token, host, readyAuto)).toEqual(noCluster);
   expect(await autoAttempts()).toHaveLength(0);
   await foundOrganization();
   await harness.pool.query("update organization_pairing set founder_machine_id = null");
-  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await send(token, host, readyAuto)).toEqual(noCluster);
   expect(await autoAttempts()).toHaveLength(0);
   await harness.pool.query("update organization_pairing set founder_machine_id = repeat('a', 32)");
   expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
   expect(await send(token, host, readyAuto)).toMatchObject({ kind: "enroll", role: "joiner", name: "web-1" });
   expect(await autoAttempts()).toHaveLength(1);
+});
+
+it("says an arrival host waits on a first server only while the Organization has none", async () => {
+  const plain = await fleetToken("review");
+  const { token } = await autoToken();
+  const host = newHost();
+  expect(await send(plain.token, newHost(), { ...readyAuto, hostname: "first" })).toEqual(wait);
+  expect(await send(token, host, readyAuto)).toEqual(noCluster);
+  const first = (await rows()).find((row) => row.report.hostname === "first")?.id ?? "";
+  await run(startServerEnrollment(ada, { organizationSlug: "ada", ids: [first], names: { kind: "hostnames" }, storage: { kind: "none" }, runs: { services: true, ingress: true, builds: true } }));
+  expect(await autoAttempts()).toMatchObject([{ role: "founder" }]);
+  expect(await send(token, host, readyAuto)).toEqual(wait);
 });
 
 it("keeps plain tokens and older clients waiting in a founded Organization", async () => {

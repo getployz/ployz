@@ -22,7 +22,8 @@ an approval.
 
    In other apps, look for **Add custom connector** or **Remote MCP server** and paste the link.
 2. The app opens Ployz in your browser. Sign in if you aren't already.
-3. Pick the **Organization** the agent works in and click **Allow**.
+3. Pick the **Organization** the agent works in and click **Allow**. The one you're working in now
+   is picked to start with.
 
 <!-- screenshot: the Connect an agent to Ployz page with the Organization picker -->
 

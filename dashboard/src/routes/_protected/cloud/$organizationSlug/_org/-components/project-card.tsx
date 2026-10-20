@@ -15,18 +15,21 @@ export function ProjectCard({
   environment,
   runtimeServices,
   runtimeStatus,
+  offline,
 }: {
   name: string;
   /** Its Services by name; `slug` is how runtime evidence names each in the Namespace. */
   environment: { name: string; namespace: string; services: { id: string; name: string; slug: string; config: { source: { type: "empty" | "uploaded" | "git" | "image" } } }[] } | null;
   runtimeServices: readonly RuntimeServiceRecord[];
   runtimeStatus: RuntimeLensStatus;
+  /** The Servers that read Offline; what they last reported doesn't count as online. */
+  offline: ReadonlySet<string>;
 }) {
   const backgroundId = useId();
   const services = environment?.services ?? [];
   const overflow = services.length > MAX_TILES ? services.length - (MAX_TILES - 1) : 0;
   const shown = overflow ? services.slice(0, MAX_TILES - 1) : services;
-  const { online, label } = environment ? servicesOnline(environment, runtimeServices, runtimeStatus) : { online: null, label: "No services" };
+  const { online, label } = environment ? servicesOnline(environment, runtimeServices, runtimeStatus, offline) : { online: null, label: "No services" };
 
   return (
     <Card className="h-full transition-colors group-hover/project:ring-foreground/30">
