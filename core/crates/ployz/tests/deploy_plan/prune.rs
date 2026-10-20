@@ -370,6 +370,29 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
 }
 
 #[test]
+fn a_service_without_a_pre_deploy_command_removes_its_old_hook() {
+    let web = spec("web");
+    let mut hook = container('8', '1', &web, &service_id('b'));
+    hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+        .unwrap();
+    let plan = preview_deploy(
+        &DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&web],
+            PlanOptions::default(),
+        ),
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![container('d', '1', &web, &service_id('b')), hook],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(removes(&plan, '8'));
+    assert!(!removes(&plan, 'd'));
+}
+
+#[test]
 fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
     let web = spec("web");
     let debug = spec("debug");

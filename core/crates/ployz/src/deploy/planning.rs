@@ -1283,7 +1283,18 @@ fn pre_deploy_operations(
     hook_machine: Option<&MachineId>,
 ) -> Vec<DeployOperation> {
     if requested.pre_deploy.is_none() {
-        return Vec::new();
+        // A hook left from a pre-deploy command the Service no longer has.
+        return hooks
+            .iter()
+            .map(|container| {
+                let observation = container.as_observation();
+                DeployOperation::RemoveContainer {
+                    machine_id: observation.machine_id,
+                    container_id: observation.container_id,
+                    purpose: ployz_core::RemoveContainerPurpose::Retire,
+                }
+            })
+            .collect();
     }
     let target = service_operations
         .iter()
