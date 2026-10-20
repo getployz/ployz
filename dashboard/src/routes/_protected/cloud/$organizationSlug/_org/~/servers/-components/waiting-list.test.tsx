@@ -483,6 +483,36 @@ it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject fro
   await expectGate(within(sheet).getByRole("button", { name: "Reject" }), state, "servers:add", ENROLL_REFUSED);
 });
 
+it.each(ROLE_STATES)("probes a picked or opened row only for a role that may add servers (%s)", async (state) => {
+  vi.useFakeTimers();
+  vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...host("two"), report, probe: null } as never);
+  await listAs(state, [host("one"), host("two")]);
+  const probes = state === "owner" || state === "admin" || state === "support" ? 1 : 0;
+
+  fireEvent.click(pick("one"));
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).toHaveBeenCalledTimes(probes);
+
+  fireEvent.click(screen.getByRole("button", { name: "two" }));
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).toHaveBeenCalledTimes(probes * 2);
+});
+
+it("probes a picked row only once a role still loading turns out to be allowed", async () => {
+  vi.useFakeTimers();
+  const client = await clientWithRole("ada", "loading");
+  render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={[host("one")]} now={NOW} /></QueryClientProvider>);
+
+  fireEvent.click(pick("one"));
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).not.toHaveBeenCalled();
+
+  await act(async () => { seedRole(client, "ada", "owner"); });
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).toHaveBeenCalledOnce();
+  expect(probe.mock.calls[0]?.[0]).toEqual({ data: { organizationSlug: "ada", ids: ["id-one"] } });
+});
+
 it.each([["failed", "Failed at Setting up ZFS"], ["cancelled", "Cancelled"]] as const)("shows how a %s attempt ended and its message in the detail sheet", async (state, reason) => {
   const one: WaitingServerView = { ...host("one"), returned: { state, stage: "storage", message: "Disk missing" } };
   vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...one, report, probe: null } as never);
