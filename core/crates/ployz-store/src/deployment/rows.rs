@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::config::SavedServiceIntent;
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
     ExecutionError, HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase,
@@ -789,9 +789,12 @@ pub(crate) fn servers(
         .collect()
 }
 
+/// Each node's rows. A mounted Volume's or Config's rows read the Deployment's Saved
+/// State, which is left in `saved` for the caller to reuse.
 pub(super) fn of_nodes(
     tx: &mut dyn Tx,
     stored: &Stored,
+    saved: &mut Option<SavedEnvironmentIntent>,
 ) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
     let found = tx.query(
         "SELECT service, server, state, started, finished, machine, history \
@@ -848,7 +851,11 @@ pub(super) fn of_nodes(
     {
         return Ok(nodes);
     }
-    let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    let saved = saved.insert(saved_at(
+        tx,
+        &stored.summary.environment_id,
+        stored.summary.saved,
+    )?);
     for node in &stored.nodes {
         let id = match node {
             TargetNode::Service { .. } => continue,

@@ -652,30 +652,32 @@ impl TargetNode {
     }
 
     /// Where views list it: Services, then Volumes, then Configs, each by name, as the
-    /// review does. A node the Deployment takes away, being gone from `saved`, lists before
-    /// one that took its name; the id only settles what nothing else tells apart.
+    /// review does.
+    pub(crate) fn listed(&self) -> (EnvironmentNodeType, &str) {
+        match self {
+            Self::Service { name, .. } => (EnvironmentNodeType::Service, name.as_str()),
+            Self::Volume { name, .. } => (EnvironmentNodeType::Volume, name.as_str()),
+            Self::Config { name, .. } => (EnvironmentNodeType::Config, name.as_str()),
+        }
+    }
+
+    /// [`Self::listed`], then a node the Deployment takes away, being gone from `saved`,
+    /// before one that took its name; the id only settles what nothing else tells apart.
     pub(crate) fn order(
         &self,
         saved: &SavedEnvironmentIntent,
     ) -> (EnvironmentNodeType, &str, bool, &str) {
         let id = self.id();
-        let (kind, name, stays) = match self {
-            Self::Service { name, .. } => (
-                EnvironmentNodeType::Service,
-                name.as_str(),
-                !self.retires() && saved.services.iter().any(|service| service.id == id),
-            ),
-            Self::Volume { name, deletes, .. } => (
-                EnvironmentNodeType::Volume,
-                name.as_str(),
-                deletes.is_none() && saved.volumes.iter().any(|volume| volume.resource_id == id),
-            ),
-            Self::Config { name, .. } => (
-                EnvironmentNodeType::Config,
-                name.as_str(),
-                saved.configs.iter().any(|config| config.resource_id == id),
-            ),
+        let stays = match self {
+            Self::Service { .. } => {
+                !self.retires() && saved.services.iter().any(|service| service.id == id)
+            }
+            Self::Volume { deletes, .. } => {
+                deletes.is_none() && saved.volumes.iter().any(|volume| volume.resource_id == id)
+            }
+            Self::Config { .. } => saved.configs.iter().any(|config| config.resource_id == id),
         };
+        let (kind, name) = self.listed();
         (kind, name, stays, id)
     }
 
