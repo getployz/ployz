@@ -22,7 +22,7 @@ use super::layout::{StoreRoot, create_store_dir};
 const PENDING: &str = "pending";
 const TEMP: &str = "tmp";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Kind {
     Exit,
     Oom,
@@ -38,7 +38,7 @@ impl Kind {
 }
 
 /// One exit or OOM kill of one container.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct Key {
     container: ContainerId,
     kind: Kind,
@@ -63,6 +63,10 @@ impl Key {
 
     pub(super) fn container(&self) -> ContainerId {
         self.container
+    }
+
+    pub(super) fn ts(&self) -> i64 {
+        self.ts
     }
 
     fn name(&self) -> String {
@@ -139,6 +143,18 @@ impl Settlements {
     pub(super) fn finish(&self, key: &Key) -> io::Result<()> {
         fs::rename(self.pending(key), self.dir.join(key.name()))?;
         fs::File::open(&self.dir)?.sync_all()
+    }
+
+    /// Gives up an unfinished settlement.
+    pub(super) fn forget(&self, key: &Key) -> io::Result<()> {
+        match fs::remove_file(self.pending(key)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    pub(super) fn count(&self) -> io::Result<usize> {
+        self.entries().map(|entries| entries.len())
     }
 
     pub(super) fn unfinished(&self) -> io::Result<Vec<(Key, Unfinished)>> {

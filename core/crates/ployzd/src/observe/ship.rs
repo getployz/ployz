@@ -31,6 +31,7 @@ const BATCH: usize = 100;
 const LAST_SEQ_FILE: &str = "last_seq";
 const DROPPED_FILE: &str = "dropped";
 const CRASH: &str = "crash";
+const RESERVED: &str = ".reserved";
 const REQUESTS: &str = "requests";
 const TICK: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -191,21 +192,30 @@ impl Outbox {
     #[cfg(test)]
     pub fn push(&self, marker: MetricMarker) -> io::Result<()> {
         let seq = self.reserve(marker.ts)?;
-        self.push_at(seq, marker)
+        self.push_at(seq, marker).map(drop)
     }
 
-    /// Hands out the seq a crash is queued under.
+    /// Hands out the seq a crash is queued under, held by a `.reserved`
+    /// file until [`Outbox::push_at`] queues it.
     pub fn reserve(&self, ts: i64) -> io::Result<u64> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        ledger.take_seq(&self.dir, u64::try_from(ts).unwrap_or(0))
+        let seq = ledger.take_seq(&self.dir, u64::try_from(ts).unwrap_or(0))?;
+        crate::filesystem::atomic_write(&self.dir.join(entry_name(seq, RESERVED)), b"", 0o600)?;
+        Ok(seq)
     }
 
-    /// Queues `marker` under a seq [`Outbox::reserve`] handed out. Queuing
-    /// a seq again rewrites its entry, and Cloud keeps one crash per seq.
-    pub fn push_at(&self, seq: u64, marker: MetricMarker) -> io::Result<()> {
+    /// Queues `marker` under a seq [`Outbox::reserve`] handed out, and says
+    /// whether it did. A seq still queued is rewritten. One no longer
+    /// reserved or queued has shipped or been dropped, and queuing it again
+    /// would only take a slot from a newer crash.
+    pub fn push_at(&self, seq: u64, marker: MetricMarker) -> io::Result<bool> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         let seqs = seqs(&self.dir, "")?;
         let queued = seqs.binary_search(&seq).is_ok();
+        let reserved = self.dir.join(entry_name(seq, RESERVED));
+        if !queued && !exists(&reserved)? {
+            return Ok(false);
+        }
         let excess = (seqs.len() + usize::from(!queued)).saturating_sub(CAP);
         if excess > 0 {
             for oldest in seqs.iter().filter(|queued| **queued != seq).take(excess) {
@@ -219,9 +229,26 @@ impl Outbox {
         }
         let entry = Entry { seq, marker };
         let json = serde_json::to_vec(&entry).map_err(io::Error::other)?;
-        crate::filesystem::atomic_write(&self.dir.join(entry_name(seq, "")), &json, 0o600)?;
+        if queued {
+            crate::filesystem::atomic_write(&self.dir.join(entry_name(seq, "")), &json, 0o600)?;
+        } else {
+            crate::filesystem::atomic_write(&reserved, &json, 0o600)?;
+            fs::rename(&reserved, self.dir.join(entry_name(seq, "")))?;
+            fs::File::open(&self.dir)?.sync_all()?;
+        }
         drop(ledger);
         self.wake.notify_one();
+        Ok(true)
+    }
+
+    /// Releases the reserved seqs not in `keep`, which nothing will queue.
+    pub fn release_reserved(&self, keep: &[u64]) -> io::Result<()> {
+        let _ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        for seq in seqs(&self.dir, RESERVED)? {
+            if !keep.contains(&seq) {
+                remove_entry(&self.dir, seq, RESERVED)?;
+            }
+        }
         Ok(())
     }
 
@@ -332,6 +359,14 @@ fn seqs(dir: &Path, suffix: &str) -> io::Result<Vec<u64>> {
     }
     seqs.sort_unstable();
     Ok(seqs)
+}
+
+fn exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// Whether the entry was there to remove.
@@ -649,6 +684,22 @@ mod tests {
                 marker: crash(90),
             }]
         );
+    }
+
+    #[test]
+    fn queuing_a_crash_cloud_took_again_drops_no_newer_crash() {
+        let (_root, store) = store();
+        let outbox = Outbox::open(&store).unwrap();
+        for ts in 1..=i64::try_from(CAP).unwrap() {
+            outbox.push(crash(ts)).unwrap();
+        }
+        let acked = held(&outbox).first().copied().unwrap();
+        Stream::ack(&*outbox, &[acked]).unwrap();
+        outbox.push(crash(i64::try_from(CAP).unwrap() + 1)).unwrap();
+        assert!(!outbox.push_at(acked, crash(1)).unwrap());
+        let held = held(&outbox);
+        assert_eq!((held.len(), held.first()), (CAP, Some(&(acked + 1))));
+        assert_eq!(outbox.ledger().1, 0);
     }
 
     #[test]

@@ -19,6 +19,7 @@ use bollard::{
 };
 use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
+use memchr::memmem::Finder;
 use ployz_core::{
     ContainerId, MachineId, Namespace, QualifiedService, ServiceId, ServiceName,
     metrics::{MarkerKind, MetricMarker, MetricRange},
@@ -58,6 +59,13 @@ const SYNC_ATTEMPTS: usize = 8;
 const GAP_BOUND_READ_BYTES: u64 = 1 << 20;
 const EXIT_CODE_ATTRIBUTE: &str = "exitCode";
 const SIGNAL_ATTRIBUTE: &str = "signal";
+/// The settlements a resumed stream may pin before it is reopened from the
+/// newest event.
+const SETTLED_LIMIT: usize = 64;
+/// How long a settlement may stay unfinished before it is given up.
+const UNFINISHED_FOR_NANOS: i64 = 24 * 60 * 60 * NANOS_PER_SEC;
+/// The raw segments one maintenance tick may read to resume settlements.
+const SETTLEMENT_SCANS_PER_TICK: usize = 8;
 const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 type DockerEvents = Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>>;
@@ -125,6 +133,9 @@ pub(super) struct Harvester {
     stop_signals: HashMap<ContainerId, Signal>,
     crashes: Arc<Outbox>,
     settlements: Settlements,
+    /// Whether this process knows a settlement's marker is in the raw
+    /// segment, so a resume reads the segment at most once.
+    marker_stored: HashMap<Key, bool>,
 }
 
 /// The evidence Docker's events gave about one run of a container.
@@ -249,12 +260,7 @@ impl Harvester {
                     harvester.rescan();
                     harvester.refresh_all_meta();
                 }
-                _ = maintenance.tick() => {
-                    harvester.rescan();
-                    harvester.settle_unsettled();
-                    harvester.finish_settlements();
-                    harvester.clean();
-                }
+                _ = maintenance.tick() => harvester.maintain(&mut docker_events),
                 _ = terminate.recv() => return Ok(()),
                 result = tokio::signal::ctrl_c() => return result,
             }
@@ -291,6 +297,35 @@ impl Harvester {
             exits: HashMap::new(),
             stop_signals: HashMap::new(),
             crashes,
+            marker_stored: HashMap::new(),
+        }
+    }
+
+    fn maintain(&mut self, docker_events: &mut Option<DockerEvents>) {
+        self.rescan();
+        self.settle_unsettled();
+        self.finish_settlements();
+        if docker_events.is_some() && self.stream_pins_too_many_settlements() {
+            *docker_events = Some(self.docker_events());
+        }
+        self.clean();
+    }
+
+    /// A resumed stream can repeat any event since it resumed, so it pins
+    /// their settlements until it is reopened from the newest event.
+    fn stream_pins_too_many_settlements(&self) -> bool {
+        if !self
+            .stream_since
+            .is_some_and(|since| Some(since) < self.last_event_nanos)
+        {
+            return false;
+        }
+        match self.settlements.count() {
+            Ok(count) => count >= SETTLED_LIMIT,
+            Err(error) => {
+                tracing::warn!(%error, "cannot count settlements");
+                false
+            }
         }
     }
 
@@ -566,25 +601,31 @@ impl Harvester {
     fn finish(&mut self, key: &Key, mut unfinished: Unfinished, resumed: bool) {
         let id = key.container();
         if !unfinished.appended {
-            let stored = if resumed {
-                match marker_stored(&self.store, &unfinished.marker) {
+            let stored = match self.marker_stored.get(key) {
+                Some(stored) => *stored,
+                None if resumed => match marker_stored(&self.store, &unfinished.marker) {
                     Ok(stored) => stored,
                     Err(error) => {
                         tracing::warn!(container = %id, %error, "cannot read whether a metric marker was appended");
                         return;
                     }
-                }
-            } else {
-                false
+                },
+                None => false,
             };
-            if !stored
-                && let Err(error) =
+            self.marker_stored.insert(*key, stored);
+            if !stored {
+                if let Err(error) =
                     segment::append(&self.store, &[Row::Marker(unfinished.marker.clone())])
-            {
-                tracing::warn!(container = %id, %error, "cannot append a metric marker");
-                return;
+                {
+                    tracing::warn!(container = %id, %error, "cannot append a metric marker");
+                    return;
+                }
+                self.marker_stored.insert(*key, true);
             }
             unfinished.appended = true;
+            if let Err(error) = self.settlements.save(key, &unfinished) {
+                tracing::warn!(container = %id, %error, "cannot record that a metric marker was appended");
+            }
         }
         if unfinished.marker.is_crash() {
             let seq = match unfinished.seq {
@@ -612,20 +653,65 @@ impl Harvester {
         }
         if let Err(error) = self.settlements.finish(key) {
             tracing::warn!(container = %id, %error, "cannot record that an exit was settled");
+            return;
         }
+        self.marker_stored.remove(key);
     }
 
     /// Finishes the settlements a failed write or a stopped harvester left
-    /// unfinished.
+    /// unfinished, reading at most a few raw segments, and gives up those a
+    /// day old that no stream can repeat.
     fn finish_settlements(&mut self) {
-        match self.settlements.unfinished() {
-            Ok(unfinished) => {
-                for (key, unfinished) in unfinished {
-                    self.finish(&key, unfinished, true);
+        let unfinished = match self.settlements.unfinished() {
+            Ok(unfinished) => unfinished,
+            Err(error) => {
+                tracing::warn!(%error, "cannot list unfinished settlements");
+                return;
+            }
+        };
+        let give_up_before = self.forget_before().map_or(i64::MIN, |before| {
+            before.min(
+                self.last_event_nanos
+                    .unwrap_or(i64::MIN)
+                    .saturating_sub(UNFINISHED_FOR_NANOS),
+            )
+        });
+        let mut kept = Vec::new();
+        for (key, entry) in unfinished {
+            if key.ts() >= give_up_before {
+                kept.push((key, entry));
+                continue;
+            }
+            tracing::warn!(container = %key.container(), "giving up an exit that could not be settled for a day");
+            match self.settlements.forget(&key) {
+                Ok(()) => {
+                    self.marker_stored.remove(&key);
+                }
+                Err(error) => {
+                    tracing::warn!(container = %key.container(), %error, "cannot give up an exit settlement");
                 }
             }
-            Err(error) => tracing::warn!(%error, "cannot list unfinished settlements"),
         }
+        let reserved: Vec<u64> = kept.iter().filter_map(|(_, entry)| entry.seq).collect();
+        if let Err(error) = self.crashes.release_reserved(&reserved) {
+            tracing::warn!(%error, "cannot release crash seqs nothing will queue");
+        }
+        let mut scans = SETTLEMENT_SCANS_PER_TICK;
+        for (key, entry) in kept {
+            if !entry.appended && !self.marker_stored.contains_key(&key) {
+                if scans == 0 {
+                    continue;
+                }
+                scans -= 1;
+            }
+            self.finish(&key, entry, true);
+        }
+    }
+
+    /// Settlements of events older than this cannot be repeated: the open
+    /// stream resumed after them, or a fresh one has seen a newer event.
+    fn forget_before(&self) -> Option<i64> {
+        self.stream_since.or(self.last_event_nanos)
     }
 
     /// Settles every container the store keeps that Docker no longer has: it
@@ -921,8 +1007,8 @@ impl Harvester {
     }
 
     fn clean(&self) {
-        if let Some(since) = self.stream_since.or(self.last_event_nanos)
-            && let Err(error) = self.settlements.forget_before(since)
+        if let Some(before) = self.forget_before()
+            && let Err(error) = self.settlements.forget_before(before)
         {
             tracing::warn!(%error, "cannot forget settlements no stream can repeat");
         }
@@ -1382,17 +1468,15 @@ fn read_scanned(store_dir: &Path) -> io::Result<Option<u64>> {
 
 /// Whether a raw segment holds `marker`.
 fn marker_stored(store: &StoreRoot, marker: &MetricMarker) -> io::Result<bool> {
-    let mut stored = false;
-    segment::scan(
+    segment::find(
         &store.raw_metrics(),
         MetricRange {
             since_nanos: marker.ts,
             until_nanos: marker.ts.saturating_add(1),
         },
-        &Prefilter::All,
-        |row: Row| stored |= matches!(row, Row::Marker(found) if found == *marker),
-    )?;
-    Ok(stored)
+        &Prefilter::Contains(Finder::new(marker.container_id.to_string().as_bytes()).into_owned()),
+        |row: &Row| matches!(row, Row::Marker(found) if found == marker),
+    )
 }
 
 fn gap_recorded(store_dir: &Path, gap: &Gap) -> io::Result<bool> {
@@ -1629,7 +1713,10 @@ fn service_event(
         Namespace::parse(meta.namespace.as_deref()?).ok()?,
         ServiceName::parse(meta.service.as_deref()?).ok()?,
     );
-    let ts = message.time_nano.unwrap_or_else(now_nanos);
+    let ts = message
+        .time_nano
+        .or_else(|| message.time.map(|secs| secs.saturating_mul(NANOS_PER_SEC)))
+        .unwrap_or_else(now_nanos);
     let marker = move |kind| MetricMarker {
         machine_id,
         container_id: id,
@@ -1835,9 +1922,9 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::{
-        DamageCursor, GAPS_FILE, Harvester, Inspected, Link, Newest, Synced, container_meta,
-        foreign_log_driver, judge_first_set, link_exact, read_meta, record_damage, settle_removed,
-        sync_container, write_meta,
+        DamageCursor, GAPS_FILE, Harvester, Inspected, Link, Newest, SETTLED_LIMIT, Settlements,
+        Synced, UNFINISHED_FOR_NANOS, container_meta, foreign_log_driver, judge_first_set,
+        link_exact, read_meta, record_damage, settle_removed, sync_container, write_meta,
     };
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
@@ -3795,6 +3882,113 @@ mod tests {
         running.harvester.clean();
         assert_eq!(settled(), 0);
         assert_eq!(crashes(&host).len(), 1);
+    }
+
+    fn unfinished(host: &Host) -> usize {
+        fs::read_dir(host.store.settled())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".pending")
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_crash_cloud_took_is_not_queued_again_while_its_settlement_cannot_finish() {
+        let host = host().with_machine();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let finished = host.store.settled().join(format!("{ID}-exit-{}", T0 + 1));
+        fs::create_dir_all(finished.join("blocked")).unwrap();
+        let mut running = host.harvester();
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "1")]));
+        running.settle_exits(|| Inspected::Gone);
+        let shipped = queued(&host);
+        assert_eq!(shipped.len(), 1);
+        ship::Stream::ack(&*Outbox::open(&host.store).unwrap(), &shipped).unwrap();
+        running.harvester.finish_settlements();
+        assert!(queued(&host).is_empty());
+        assert_eq!(unfinished(&host), 1);
+        let mut other = event("start", T0 + 2 + UNFINISHED_FOR_NANOS, &[service]);
+        other.actor.as_mut().unwrap().id = Some("cd".repeat(32));
+        running.harvester.on_docker_event(other);
+        running.harvester.finish_settlements();
+        assert_eq!(unfinished(&host), 0);
+        assert!(queued(&host).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_resumed_stream_held_open_through_a_crash_loop_pins_few_settlements() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let mut other = event("start", T0, &[service]);
+        other.actor.as_mut().unwrap().id = Some("cd".repeat(32));
+        running.harvester.on_docker_event(other);
+        let mut stream = Some(running.harvester.docker_events());
+        for crash in 0..100 {
+            let at = T0 + 1 + 2 * crash;
+            running
+                .harvester
+                .on_docker_event(event("die", at, &[service, ("exitCode", "1")]));
+            running
+                .harvester
+                .on_docker_event(event("start", at + 1, &[service]));
+            running.settle_exits(|| Inspected::Unanswered);
+        }
+        running.harvester.maintain(&mut stream);
+        let settled = fs::read_dir(host.store.settled()).unwrap().count();
+        assert!(settled < SETTLED_LIMIT, "{settled} settlements are kept");
+        assert_eq!(crashes(&host).len(), 100);
+    }
+
+    #[tokio::test]
+    async fn a_tick_reads_few_segments_to_resume_settlements() {
+        let host = host().with_machine();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let mut running = host.harvester();
+        let mut blocked = Vec::new();
+        for crash in 0..20 {
+            let at = T0 + 1 + 2 * crash;
+            let finished = host.store.settled().join(format!("{ID}-exit-{at}"));
+            fs::create_dir_all(finished.join("blocked")).unwrap();
+            blocked.push(finished);
+            running
+                .harvester
+                .on_docker_event(event("die", at, &[service, ("exitCode", "1")]));
+            running
+                .harvester
+                .on_docker_event(event("start", at + 1, &[service]));
+            running.settle_exits(|| Inspected::Unanswered);
+        }
+        drop(running);
+        // A stop between appending each marker and saying so.
+        let settlements = Settlements::open(&host.store);
+        for (key, mut entry) in settlements.unfinished().unwrap() {
+            entry.appended = false;
+            settlements.save(&key, &entry).unwrap();
+        }
+        for finished in blocked {
+            fs::remove_dir_all(finished).unwrap();
+        }
+        let mut running = host.harvester();
+        for left in [12, 4, 0] {
+            running.harvester.finish_settlements();
+            assert_eq!(unfinished(&host), left);
+        }
+        let exits = host
+            .markers()
+            .into_iter()
+            .filter(|(_, kind)| matches!(kind, MarkerKind::Exit { .. }))
+            .count();
+        assert_eq!(exits, 20);
+        assert_eq!(crashes(&host).len(), 20);
     }
 
     #[tokio::test]
