@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { Cause, Effect, Exit } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { readCollection } from "#/collections/read.server";
 import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, session, user } from "#/modules/identity/tables";
@@ -169,5 +170,32 @@ describe("removeOrganization", () => {
     const former = await open(fay);
     expect(Exit.isFailure(former) && Cause.pretty(former.cause)).toContain("The organization was not found.");
     expect(await open(gus)).toEqual(Exit.succeed(NEW_KILN));
+  });
+
+  it("reads a new Organization on a reused slug in full from the deleted one's cursor", async () => {
+    const OVEN = "00000000-0000-4000-8000-00000000c008";
+    const NEW_OVEN = "00000000-0000-4000-8000-00000000c009";
+    const [hal] = (await harness.db.insert(user).values({ email: "hal@example.test", name: "Hal" }).returning({ id: user.id })).map((row) => row.id) as [string];
+    await harness.db.insert(organization).values({ id: OVEN, name: "Oven", slug: "oven" });
+    await harness.db.insert(member).values({ userId: hal, organizationId: OVEN, role: "owner" });
+    await harness.db.insert(organizationSupportAccess).values({ organizationId: OVEN, allowed: true });
+    const readSupport = (since?: string) => harness.runEffect(readCollection({ userId: hal }, {
+      table: "organization_support_access", userId: hal, organizationSlug: "oven", since,
+    }).pipe(Effect.provideService(SupportStaff, supportStaffOf([]))));
+    const cached = await readSupport();
+    expect(cached).toMatchObject({ full: true, rows: [{ id: OVEN, allowed: true }] });
+
+    const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+    const result = await harness.runEffect(removeOrganization({ userId: hal, organization: { id: OVEN, slug: "oven" }, role: "owner" }, OVEN).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    ));
+    expect(result).toMatchObject({ ok: true, value: { removed: true } });
+    await harness.db.insert(organization).values({ id: NEW_OVEN, name: "Oven", slug: "oven" });
+    await harness.db.insert(member).values({ userId: hal, organizationId: NEW_OVEN, role: "owner" });
+
+    expect(await readSupport(cached.cursor)).toMatchObject({ full: true, rows: [] });
   });
 });
