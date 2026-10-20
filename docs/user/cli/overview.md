@@ -331,6 +331,11 @@ a name or the storage choice in `ployz server add`, work the same way. A `deploy
 Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
+When `ployz env rm` or `ployz project rm` would delete volume data, it refuses and names the
+version it reviewed. Pass that version with `--expect-version` to refuse if anything changed since.
+The flag binds only that data-loss review: a removal that deletes no data doesn't compare the
+version, so it goes ahead even when the version you pass is stale.
+
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,
 and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour after the server
