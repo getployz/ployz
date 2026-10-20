@@ -269,6 +269,38 @@ describe("callCloud", () => {
       expect(heard).toEqual(serverRuns("machine-1"));
     }));
 
+  // Catches a replayed act naming its run by the Server's newer name while a poll of the same run names the one it started with.
+  it.live("names a replayed upgrade by the name it started with after the Server is renamed", () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "call-cloud-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      const named = (name: string): ScopedRuntimeClientSession => ({
+        status: "connected",
+        connected: asTestDouble<PloyzSession>()({
+          watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+            machines: [{ membership: "up", machine: { id: MACHINE, name, accepts_ingress: true, public_ip: "203.0.113.2", runtime: { running_builds: 0, daemon_version: "0.1.0" } } }],
+          })),
+        }),
+      });
+      const upgrade = (name: string): Act => ({ attempt: "c".repeat(32), digest: "d".repeat(64), action: { action: "upgrade", server: { machine: MACHINE, name } } });
+      const caller: Caller = { ...member, userId };
+      yield* drizzle.update(organizationMachine).set({ machineName: "old" as MachineName });
+      const started = yield* callCloud(caller, { act: upgrade("old") }).pipe(runtime(named("old"), []), Effect.provide(services));
+      expect(started).toEqual({ ok: true, value: expect.objectContaining({ run: "upgrade old" }) });
+
+      yield* drizzle.update(organizationMachine).set({ machineName: "new" as MachineName });
+      const replayed = yield* callCloud(caller, { act: upgrade("new") }).pipe(runtime(named("new"), []), Effect.provide(services));
+      const polled = yield* callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
+        .pipe(runtime(named("new"), []), Effect.provide(services));
+
+      expect(replayed).toEqual(started);
+      expect(polled).toEqual({ ok: true, value: { operations: [expect.objectContaining({ run: "upgrade old" })] } });
+    }));
+
   // Catches a Server the frame reports with no name read as `drain ` over the name Cloud kept.
   it.live("names a polled Server run by the name Cloud keeps when the frame reports it nameless", () =>
     Effect.gen(function* () {
