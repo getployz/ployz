@@ -959,6 +959,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_unreadable_exit_line_hides_only_itself() {
+        let store = Store::new();
+        let id = store.container('c', "web");
+        store.file(&id, 0, &[line(T0, "first")]);
+        let kept = |ts| {
+            let exit = RunExit {
+                ts,
+                exit_code: Some(137),
+                oom_killed: true,
+            };
+            serde_json::to_vec(&exit).unwrap()
+        };
+        let jsonl = [kept(T0 + 10), vec![0xff, b'{'], kept(T0 + 20)].join(&b'\n');
+        std::fs::write(store.root.container(&id).join("exits.jsonl"), jsonl).unwrap();
+
+        let exits: Vec<_> = store
+            .page(request(LogDirection::Forward, 100))
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                let HistoryRow::Exit { ts, .. } = row else {
+                    return None;
+                };
+                Some(ts)
+            })
+            .collect();
+        assert_eq!(exits, [T0 + 10, T0 + 20]);
+    }
+
+    #[test]
     fn a_running_containers_unfinished_line_waits_until_it_ends() {
         let store = Store::new();
         let id = store.container('d', "web");
