@@ -29,6 +29,8 @@ const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 const PRESSURE_FREE_PERCENT: u64 = 20;
 /// Below this free under the Docker root, a failed pull is a full disk.
 const DISK_FULL_FREE_BYTES: u64 = 1_000_000_000;
+/// How long a failed pull waits on `docker info` before reporting the failure as is.
+const DISK_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl ContainerRuntime {
     /// Make `image` present as `policy` asks, confirm Docker holds it, and answer
@@ -61,13 +63,13 @@ impl ContainerRuntime {
 
     /// `error` from a pull, as a full disk when the Docker root has almost no free
     /// space left: containerd then fails mid-extract with whatever call ran out.
+    /// A `docker info` that fails or stalls past [`DISK_READ_BOUND`] leaves `error`
+    /// as it is.
     pub(super) async fn pull_failure(&self, error: DockerError) -> Error {
-        let free = self
-            .docker
-            .client
-            .info()
+        let free = tokio::time::timeout(DISK_READ_BOUND, self.docker.client.info())
             .await
             .ok()
+            .and_then(Result::ok)
             .and_then(|info| info.docker_root_dir)
             .and_then(|root| {
                 let (_, free_bytes) = crate::host_capacity::filesystem_space(&root).ok()?;
@@ -395,6 +397,61 @@ mod tests {
             Some(("/var/lib/docker".into(), 0)),
         );
         assert!(matches!(error, Error::ImagePull(_)));
+    }
+
+    /// A Docker that refuses the pull with a registry error in the pull's stream, as
+    /// it does for a missing manifest, and never answers `docker info`.
+    async fn runtime_whose_info_never_answers() -> ContainerRuntime {
+        use axum::{
+            Router,
+            http::{Method, StatusCode, Uri},
+        };
+
+        let app = Router::new().fallback(|method: Method, uri: Uri| async move {
+            if method == Method::POST && uri.path().ends_with("/images/create") {
+                (StatusCode::OK, format!("{{\"status\":\"Pulling from acme/missing\"}}\n{{\"errorDetail\":{{\"message\":\"{MANIFEST_UNKNOWN}\"}},\"error\":\"{MANIFEST_UNKNOWN}\"}}\n"))
+            } else {
+                std::future::pending().await
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, app).into_future());
+        // Bollard's default request timeout, as `LocalDocker::connect` uses.
+        let docker = bollard::Docker::connect_with_http(
+            &format!("http://{address}"),
+            120,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .unwrap();
+        let specs = super::super::MachineSpecStore::open(std::env::temp_dir().join(format!(
+            "ployzd-pull-failure-{}.db",
+            ployz_core::MachineId::random()
+        )))
+        .await
+        .unwrap();
+        ContainerRuntime::new(super::super::LocalDocker::from_client(docker), specs)
+    }
+
+    const MANIFEST_UNKNOWN: &str =
+        "manifest for ghcr.io/acme/missing:1 not found: manifest unknown: manifest unknown";
+
+    #[tokio::test]
+    async fn a_pull_failure_does_not_wait_on_a_stalled_docker_info() {
+        let runtime = runtime_whose_info_never_answers().await;
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            runtime.pull_image("ghcr.io/acme/missing:1", PullPolicy::Always, None),
+        )
+        .await
+        .expect("the pull failure returns without waiting on docker info")
+        .unwrap_err();
+        assert!(started.elapsed() < DISK_READ_BOUND + std::time::Duration::from_secs(2));
+        assert!(
+            matches!(&error, Error::ImagePull(DockerError::DockerStreamError { error }) if error == MANIFEST_UNKNOWN),
+            "{error:?}"
+        );
     }
 
     #[test]
