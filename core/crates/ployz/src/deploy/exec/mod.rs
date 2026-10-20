@@ -179,6 +179,8 @@ pub(crate) trait MachineOperations {
         machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<RoutesRead, RpcError>;
+    /// [`Self::read_routes`] as the entry Machine this client reaches reads it.
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
 }
 
 impl MachineOperations for Client {
@@ -304,6 +306,17 @@ impl MachineOperations for Client {
                 routes_only: true,
             },
             &MachineTarget::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+    }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        self.invoke_entry::<op::ReadRoutes>(
+            ReadRoutesRequest {
+                service: service.clone(),
+                routes_only: true,
+            },
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
@@ -471,6 +484,7 @@ restart_policy! {
     wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<ImagePulled, RpcError>;
     wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
     wait fn read_routes(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
+    wait fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
 }
 
 async fn wait_out_restart<T, Fut>(
@@ -1234,10 +1248,9 @@ async fn publish_group<C: MachineOperations>(
             }
         }
     }
-    if let Some(first) = unlisting.first() {
+    if !unlisting.is_empty() {
         let ids: BTreeSet<ContainerId> = unlisting.iter().map(|copy| copy.container_id).collect();
-        let unlisted =
-            cleanup::wait_none_listed(client, &first.machine_id, service, &ids, cancellation).await;
+        let unlisted = cleanup::wait_none_listed(client, service, &ids, cancellation).await;
         let (left, error) = match unlisted {
             Ok(cleanup::Wait::Done) => (None, None),
             Ok(cleanup::Wait::TimedOut(machines)) => {
@@ -1249,7 +1262,7 @@ async fn publish_group<C: MachineOperations>(
             }
             Ok(cleanup::Wait::Cancelled) => (Some(Left::Interrupted), None),
             Err(error) => (
-                Some(Left::FailedOn(first.machine_id, error.clone())),
+                Some(Left::Unread(error.clone())),
                 Some(machine_error(MachineAction::ReadRoutes, error)),
             ),
         };
@@ -1928,6 +1941,13 @@ impl<'a> Rows<'a> {
                 (self.not_confirmed(&unconfirmed), unconfirmed.unanswered)
             }
             Left::Interrupted => ("interrupted".into(), Vec::new()),
+            Left::Unread(error) => (
+                format!(
+                    "the routes could not be read through the Machine this Deploy connects to: {}",
+                    error.message
+                ),
+                Vec::new(),
+            ),
             Left::DeployFailed => ("the Deploy failed".into(), Vec::new()),
             Left::NotListed => (
                 format!(
@@ -1941,7 +1961,6 @@ impl<'a> Rows<'a> {
                 let unanswered = error.code == RpcErrorCode::Unavailable;
                 self.failed_on(copy.machine_id, error, unanswered)
             }
-            Left::FailedOn(machine_id, error) => self.failed_on(machine_id, error, false),
             Left::NotRestored(left, why) => {
                 let (reason, away) = self.explain(copy, *left);
                 (
@@ -1976,13 +1995,13 @@ impl<'a> Rows<'a> {
 enum Left {
     NotConfirmed(cleanup::Unconfirmed),
     Interrupted,
+    /// The entry Machine could not read the routes, so no copy was seen unlisted.
+    Unread(RpcError),
     /// The owner's view never listed a new copy, so it would refuse the Out.
     NotListed,
     Refused(ContainerRefusal),
     /// A call to the copy's owner failed.
     Failed(RpcError),
-    /// A call to this Machine, not the copy's owner, failed.
-    FailedOn(MachineId, RpcError),
     /// This run Held the copy and could not bring it back In, for this reason.
     NotRestored(Box<Left>, String),
     DeployFailed,

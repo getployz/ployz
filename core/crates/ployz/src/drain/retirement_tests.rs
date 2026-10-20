@@ -261,6 +261,10 @@ impl MachineOperations for Cluster {
             ..RoutesRead::default()
         })
     }
+
+    async fn read_entry_routes(&self, _service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        unreachable!("retirement reads routes through the copy's own Machine")
+    }
 }
 
 fn copy_on(machine: &Machine, hex: char, rotation: CopyRotation) -> ContainerObservation {

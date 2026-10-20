@@ -404,6 +404,19 @@ impl Client {
             .map_err(rpc_error)
     }
 
+    /// [`Self::invoke`] on the entry Machine itself, which this client always reaches.
+    pub(crate) async fn invoke_entry<T: Rpc>(
+        &self,
+        request: T::Request,
+        timeout: Option<Duration>,
+    ) -> Result<T::Response, RpcError> {
+        let call = async {
+            let payload = T::into_request(request).encode()?;
+            apply_timeout(timeout, self.call_once::<T>(payload, None)).await
+        };
+        call.await.map_err(rpc_error)
+    }
+
     /// [`Self::invoke`], keeping whether the failure came back from a daemon or no reply came.
     pub(crate) async fn invoke_answered<T: Rpc>(
         &self,

@@ -104,6 +104,10 @@ impl MachineOperations for Recording {
     ) -> Result<RoutesRead, RpcError> {
         self.fake.read_routes(machine_id, service).await
     }
+
+    async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
+        self.fake.read_entry_routes(service).await
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
