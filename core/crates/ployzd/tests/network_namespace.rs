@@ -762,6 +762,25 @@ time.sleep(.3); done.set(); t.join(); print(f'{{len(set(range(sent))-got)}} of {
         "iptables",
         &["-t", "nat", "-I", "POSTROUTING", "1", "-j", "RETURN"],
     );
+    ns(
+        &namespace,
+        "iptables",
+        &[
+            "-I",
+            "DOCKER-USER",
+            "1",
+            "-p",
+            "tcp",
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "NEW",
+            "--ctorigdstport",
+            "80",
+            "-j",
+            "RETURN",
+        ],
+    );
     apply_in_namespace(&namespace, "10.210.1.0/24", "fdcc::1");
     std::fs::write(&stop, "").unwrap();
     let lost = probe.peer();
@@ -780,6 +799,13 @@ time.sleep(.3); done.set(); t.join(); print(f'{{len(set(range(sent))-got)}} of {
         [
             "-A POSTROUTING -s 10.210.1.0/24 -o ployz-wg -j RETURN",
             "-A POSTROUTING -j RETURN"
+        ]
+    );
+    assert_eq!(
+        rules(&namespace, "filter", "DOCKER-USER"),
+        [
+            "-A DOCKER-USER -i ployz-wg -o ployz -j ACCEPT",
+            "-A DOCKER-USER -p tcp -m conntrack --ctstate NEW --ctorigdstport 80 -j RETURN"
         ]
     );
     let jumped = jump_packets(&namespace);

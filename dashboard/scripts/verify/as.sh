@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Signs this checkout's agent-browser session in as one of the seeded people of organization ada, with the session
 # cookie seed.ts wrote for them, and opens /cloud/ada/~, which also makes ada their active organization. A reseed keeps
-# every cookie valid.
+# every cookie's value, so rerun this after one to sign the browser back in.
 # Usage: scripts/verify/as.sh ada|grace|linus      ada owns it, grace is an admin, linus a member.
 set -euo pipefail
 dash=$(cd "$(dirname "$0")/../.." && pwd)

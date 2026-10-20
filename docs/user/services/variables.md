@@ -138,9 +138,12 @@ reference to any variable either way.
 | `PLOYZ_ENVIRONMENT_NAME` | The environment's name, like `production` |
 | `PLOYZ_SERVICE_ID`, `PLOYZ_ENVIRONMENT_ID` | The service's and the environment's IDs |
 
-Only `PORT` reaches your app on its own. To read another one, reference it in a variable of
-your own, like `SELF_HOST=${{ PLOYZ_PRIVATE_DOMAIN }}`. The **Variables** tab lists them, with
-their values, under your own variables.
+Of these, only `PORT` reaches your app on its own. To read another one, reference it in a
+variable of your own, like `SELF_HOST=${{ PLOYZ_PRIVATE_DOMAIN }}`. The **Variables** tab lists
+them, with their values, under your own variables.
+
+Ployz also sets `PLOYZ_MACHINE_ID` in every container, to the ID of the server it runs on. You
+can't reference it, and it replaces a variable of yours with that name.
 
 ## Good to know
 

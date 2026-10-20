@@ -4138,6 +4138,66 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
     }
 }
 
+#[test]
+fn diff_escapes_what_would_steer_the_terminal_in_follow_hints_and_file_names() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let from = file.path().to_str().unwrap();
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["set", "web.env.MSG=one"]);
+        applied(store, "production");
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(store, &["set", "web.env.MSG=mine", "--env", "fix-web"]);
+        ok(store, &["set", "web.env.MSG=hi\u{202E}evil"]);
+        applied(store, "production");
+        ok(store, &["config", "add", "cfg", "--env", "fix-web"]);
+        for name in ["safe\u{202E}evil.txt", "line\u{2028}break.txt"] {
+            ok(
+                store,
+                &[
+                    "config", "put", "cfg", name, "--from", from, "--env", "fix-web",
+                ],
+            );
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let output = store
+            .command(home.path())
+            .args(["diff", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let human = String::from_utf8(output.stdout).unwrap();
+        assert!(!human.contains(['\u{202E}', '\u{2028}']), "{human}");
+        assert!(
+            human
+                .contains(r#"production deployed web.env.MSG = "hi\u{202e}evil", not staged here"#),
+            "{human}"
+        );
+        assert!(
+            human.contains(r"files.safe\u{202e}evil.txt: null → "),
+            "{human}"
+        );
+        assert!(
+            human.contains(r"files.line\u{2028}break.txt: null → "),
+            "{human}"
+        );
+    }
+}
+
 /// A local Store whose Project shop has PR Environments on for acme/web, and ada's
 /// pull request #5 open at head 1111111, with `members` the Organization's GitHub
 /// accounts. Cloud reports the pull request, which this does through the Store itself.
@@ -4345,6 +4405,87 @@ fn a_config_lists_as_new_until_deployed_and_its_change_names_the_services_it_res
     assert!(human(&["diff"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "--plan"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "web", "--plan"]).contains("\n  restarts web\n"));
+}
+
+#[test]
+fn a_verb_that_changes_nothing_says_so_and_keeps_the_revision() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let revision = || ok(store, &["config", "ls"])["environment"]["revision"].clone();
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    ok(store, &["volume", "add", "data", "--docker"]);
+    ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "port: 80\n").unwrap();
+    let from = file.path().to_str().unwrap();
+    ok(store, &["config", "put", "app", "app.yml", "--from", from]);
+    applied(store, "production");
+
+    let unchanged = [
+        (
+            vec!["volume", "rename", "data", "data"],
+            "Nothing changed in shop/production; Volume data already has that name.\n",
+        ),
+        (
+            vec!["volume", "set", "data", "--docker"],
+            "Nothing changed in shop/production; Volume data already has that storage.\n",
+        ),
+        (
+            vec!["config", "put", "app", "app.yml", "--from", from],
+            "Nothing changed in shop/production; Config app already holds app.yml as given.\n",
+        ),
+        (
+            vec!["config", "rename", "app", "app"],
+            "Nothing changed in shop/production; Config app already has that name.\n",
+        ),
+        (
+            vec!["config", "mount", "web", "app", "/etc/app"],
+            "Nothing changed in shop/production; web already mounts Config app there.\n",
+        ),
+    ];
+    for (args, said) in &unchanged {
+        let before = revision();
+        let result = ok(store, args);
+        assert_eq!(result["staged"], json!([]), "{args:?}");
+        assert_eq!(result.get("next"), None, "{args:?}");
+        assert_eq!(result["environment"]["revision"], before, "{args:?}");
+        assert_eq!(&human(args), said, "{args:?}");
+        assert_eq!(revision(), before, "{args:?}");
+    }
+
+    let unmounted = ok(store, &["config", "unmount", "web", "app"]);
+    assert_eq!(unmounted["staged"], json!(["web.configs.app"]));
+    let before = revision();
+    assert_eq!(
+        human(&["config", "unmount", "web", "app"]),
+        "Nothing changed in shop/production; web does not mount Config app.\n"
+    );
+    assert_eq!(revision(), before);
+
+    let listing = human(&["config", "ls"]);
+    let row = listing
+        .lines()
+        .find(|line| line.starts_with("app"))
+        .unwrap();
+    assert!(row.ends_with("unmount from web"), "{listing}");
+    assert_eq!(
+        ok(store, &["config", "ls"])["configs"][0]["mount_changes"],
+        json!([{ "service": "web", "before": "/etc/app", "after": null }])
+    );
+
+    assert_eq!(
+        human(&["project", "rename", "shop", "shop"]),
+        "Nothing changed; Project shop already has that name.\n"
+    );
+    let renamed = ok(store, &["project", "rename", "shop", "shop"]);
+    assert_eq!(renamed["project"]["name"], json!("shop"));
+    assert_eq!(renamed["links"], json!(0));
 }
 
 #[test]
