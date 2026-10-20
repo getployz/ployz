@@ -275,7 +275,7 @@ describe("callCloud", () => {
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const noServers = {
         ok: false,
-        refusal: { code: "unavailable", message: NO_SERVERS_MESSAGE, details: { fix: { fix: "connect_servers" } } },
+        refusal: { code: "conflict", message: NO_SERVERS_MESSAGE, details: { fix: { fix: "connect_servers" } } },
       };
       for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
         expect(yield* callCloud(member, { ask: { query: "servers", only: null } }).pipe(runtime(opened, []), Effect.provide(services))).toEqual({
