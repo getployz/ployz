@@ -503,7 +503,7 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
                     SlotAction::Restarting(restarting.container_id)
                 }
                 HeldIngress::None => SlotAction::Create(
-                    plan_create(intent, &snapshot.only(empty.machine), service_id).map(Box::new),
+                    plan_create(intent, snapshot, empty.machine, service_id).map(Box::new),
                 ),
             },
         });
@@ -512,21 +512,29 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
     all
 }
 
-/// Plan the Ingress Proxy on the one Machine of `only` as the Service `service_id`, which
-/// its siblings run or are created as in the same check and `only` cannot see: they share
-/// its creation key.
+/// Plan the Ingress Proxy on `machine` alone as the Service `service_id`, which its
+/// siblings run or are created as in the same check: they share its creation key. The
+/// flip still keeps every sibling `snapshot` observes, or it would retire them.
 fn plan_create(
     intent: &DeployIntent,
-    only: &DeploySnapshot,
+    snapshot: &DeploySnapshot,
+    machine: &MachineObservation,
     service_id: ServiceId,
 ) -> Result<DeployPlan, PlanError> {
-    let mut planned = plan_operations(intent, only)?;
+    let only = snapshot.only(machine);
+    let mut planned = plan_operations(intent, &only)?;
     for operation in &mut planned.operations {
         if let DeployOperation::RunContainer { spec, .. } = operation {
             spec.service_id = service_id;
         }
     }
-    Ok(admit(intent, only, planned))
+    for group in &mut planned.groups {
+        if let Some(name) = &group.service {
+            let identity = QualifiedService::new(intent.namespace.clone(), name.clone());
+            group.kept = kept_containers(snapshot, &identity, &planned.operations);
+        }
+    }
+    Ok(admit(intent, &only, planned))
 }
 
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {
