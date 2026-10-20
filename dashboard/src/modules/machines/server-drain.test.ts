@@ -68,7 +68,7 @@ describe("Drain result", () => {
     expect(drainSummary(report([]), "web-2")).toBe("Nothing was running here");
     expect(drainSummary(report([{ service: "shop/api", result: "nothing_to_move" }]), "web-2")).toBe("Nothing needed to move");
     expect(drainSummary(report([{ service: "shop/cron", result: "old_copies", ends: [{ kind: "stopped" }] }]), "web-2")).toBe("Everything moved off web-2");
-    expect(drainSummary(report([{ service: "shop/cron", result: "old_copies", ends: [{ kind: "running", unconfirmed: { kind: "proxies", servers: [web1] } }] }]), "web-2")).toBe("1 stopped");
+    expect(drainSummary(report([{ service: "shop/cron", result: "old_copies", ends: [{ kind: "running", unconfirmed: { kind: "proxies", servers: [web1] } }] }]), "web-2")).toBe("1 stayed");
   });
 
   it("counts what it left alone and never says nothing ran here while something does", () => {
@@ -258,5 +258,18 @@ describe("Drain hints", () => {
 
   it("lists what a Drain under way still has to move, without what no Project owns", () => {
     expect(drainLeftRows([postgres, stray], strays).map((row) => [row.key, row.label])).toEqual([["shop/postgres", "Pending"]]);
+  });
+});
+
+describe("A leftover still running here", () => {
+  const leftover: ServiceDrain = { service: "shop/web", result: "old_copies", ends: [{ kind: "running", unconfirmed: { kind: "cancelled" } }] };
+
+  it("reads as still running, not stopped", () => {
+    expect(drainRow(leftover, web2.id)).toMatchObject({ tone: "stayed", label: "Still running here" });
+  });
+
+  it("counts as stayed, not stopped", () => {
+    const value = report([leftover], null, { kind: "observed", services: ["shop/web"], unchosen: [] });
+    expect(drainSummary(value, "web-2")).toBe("1 stayed");
   });
 });

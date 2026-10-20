@@ -105,6 +105,10 @@ export function drainSummary(report: DrainReport, serverName: string): string {
   const { services, remaining } = report;
   const count = (...results: ReadonlyArray<ServiceDrain["result"]>) =>
     services.filter((entry) => results.includes(entry.result)).length;
+  const leftovers = (stopped: boolean) =>
+    services.filter((entry) => entry.result === "old_copies" && leftoverStopped(entry.ends) === stopped).length;
+  const stoppedCount = count("retired") + leftovers(true);
+  const stayedCount = count("stays", "held") + leftovers(false);
   const leftAlone = remaining.kind === "observed" ? remaining.unchosen.length : 0;
   if (report.complete && leftAlone === 0) {
     if (services.length === 0) return "Nothing was running here";
@@ -112,8 +116,8 @@ export function drainSummary(report: DrainReport, serverName: string): string {
   }
   const parts = [
     count("moved") > 0 ? `${count("moved")} moved` : null,
-    count("retired", "old_copies") > 0 ? `${count("retired", "old_copies")} stopped` : null,
-    count("stays", "held") > 0 ? `${count("stays", "held")} stayed` : null,
+    stoppedCount > 0 ? `${stoppedCount} stopped` : null,
+    stayedCount > 0 ? `${stayedCount} stayed` : null,
     count("failed", "not_retired") > 0 ? `${count("failed", "not_retired")} failed` : null,
     count("interrupted") > 0 ? `${count("interrupted")} interrupted` : null,
     count("not_attempted") > 0 ? `${count("not_attempted")} not attempted` : null,
@@ -154,8 +158,12 @@ export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
     }
     case "held":
       return { ...base, tone: "stayed", label: "Stayed", reason: "You stopped it. Start or remove it first." };
-    case "old_copies":
-      return { ...base, tone: "stopped", label: "Stopped here", reason: oldCopiesWords(entry.ends) ?? "Removed what an earlier move left here" };
+    case "old_copies": {
+      const reason = oldCopiesWords(entry.ends);
+      return reason === null
+        ? { ...base, tone: "stopped", label: "Stopped here", reason: "Removed what an earlier move left here" }
+        : { ...base, tone: "stayed", label: "Still running here", reason };
+    }
     case "retired":
       return { ...base, tone: "stopped", label: "Stopped here", reason: "Runs on every server", global: true };
     case "not_retired":
@@ -172,6 +180,9 @@ export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
       return { ...base, tone: "neutral", label: "Unknown outcome" };
   }
 }
+
+/** Whether every old container a leftover had here stopped. */
+const leftoverStopped = (ends: ReadonlyArray<OldCopyEnd>) => ends.every((end) => end.kind === "stopped");
 
 /** What an old container still running here means; null once every one stopped. */
 function oldCopiesWords(ends: ReadonlyArray<OldCopyEnd>): string | null {
