@@ -1,94 +1,71 @@
 === login --wait --json, waiting (timed out by the capture) :: $ ployz login --wait --json
-Open http://localhost:34733/device?user_code=L5XAY4VA and confirm the code L5XAY4VA.
+Open http://localhost:35249/device?user_code=49WME95H and confirm the code 49WME95H.
 Waiting for approval... 
 === login again while pending --json (resumes the same code) :: $ ployz login --json
 {
-  "code": "B2M7BBGT",
+  "code": "PAX8GKJ8",
   "expires_in": 1800,
   "next": "ployz login --wait",
   "status": "pending",
-  "url": "http://localhost:34733/device?user_code=B2M7BBGT"
+  "url": "http://localhost:35249/device?user_code=PAX8GKJ8"
 }
 
 === login when already signed in :: $ ployz login
-Signed in to http://localhost:34733 as ada@example.com in Organization ada.
+Signed in to http://localhost:35249 as ada@example.com in Organization ada.
 
 === login when already signed in --json :: $ ployz login --json
 {
   "account": {
     "email": "ada@example.com",
-    "id": "9489ceb9-1172-4c9d-9a2f-cb3a2d69adce",
+    "id": "63a8db86-9c2e-4a79-9f74-3886d1245c48",
     "name": "Ada Lovelace"
   },
-  "cloud": "http://localhost:34733",
+  "cloud": "http://localhost:35249",
   "organization": {
-    "id": "a52ce0da-943d-4bfb-adfb-9da76e128533",
+    "id": "5e293990-09ad-45c1-b636-6444de4fb848",
     "slug": "ada"
   },
   "status": "signed_in"
 }
 
 === status :: $ ployz status
-Cloud: http://localhost:34733
-Organization ada (ada@example.com).
-Environment shop/production.
-2 staged changes.
-Deployment 1 is queued.
-next: ployz diff
+cloud            http://localhost:35249
+organization     ada
+signed in as     ada@example.com
+needs attention  Name a Project: this Organization has more than one
+next: ployz link --project PROJECT
 
 === status --json :: $ ployz status --json
 {
-  "attention": [],
-  "deploying": [
+  "attention": [
     {
-      "admitted_at": 1791162709,
-      "admitted_by": "Ada Lovelace",
-      "ended_at": null,
-      "environment_id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
-      "id": "939f4f20-8e4a-40a5-a812-52c2c614d9f6",
-      "in_flight": true,
-      "message": "Ship everything",
-      "number": 1,
-      "outcome": null,
-      "remove": false,
-      "runner": null,
-      "saved": 1,
-      "services": [],
-      "started_at": null,
-      "status": "queued",
-      "upload": null
+      "message": "Name a Project: this Organization has more than one",
+      "next": "ployz link --project PROJECT",
+      "reason": "ambiguous"
     }
   ],
-  "environment": {
-    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
-    "name": "production",
-    "project": "shop",
-    "revision": 9
-  },
+  "deploying": [],
+  "environment": null,
   "identity": {
     "account": {
       "email": "ada@example.com",
-      "id": "9489ceb9-1172-4c9d-9a2f-cb3a2d69adce",
+      "id": "63a8db86-9c2e-4a79-9f74-3886d1245c48",
       "name": "Ada Lovelace"
     },
-    "cloud": "http://localhost:34733",
+    "cloud": "http://localhost:35249",
     "credential": "device",
     "organization": {
-      "id": "a52ce0da-943d-4bfb-adfb-9da76e128533",
+      "id": "5e293990-09ad-45c1-b636-6444de4fb848",
       "slug": "ada"
     }
   },
-  "next": "ployz diff",
+  "next": "ployz link --project PROJECT",
   "scope": {
     "environment": null,
     "link": null,
     "project": null
   },
-  "staged": {
-    "changes": 2,
-    "saved": false,
-    "version": "9:1:1.0"
-  }
+  "staged": null
 }
 
 === logout again :: $ ployz logout

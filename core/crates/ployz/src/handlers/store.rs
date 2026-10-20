@@ -10,8 +10,8 @@ use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
-    OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey,
-    Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
+    ObservationFailure, OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery,
+    Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -335,8 +335,8 @@ impl<'m> Store<'m> {
     }
 
     /// Which Servers hold the data of the Volumes each of `queries` removes: a
-    /// Deploy, removal or rollback. A Cluster this can't reach leaves the evidence
-    /// out, so the Store refuses.
+    /// Deploy, removal or rollback. A Cluster this can't reach is a failed
+    /// observation that says why, so the Store refuses with it.
     fn observe(
         &self,
         queries: impl IntoIterator<Item = RemovalsQuery>,
@@ -364,10 +364,36 @@ impl<'m> Store<'m> {
         let Ok(runtime) = runtime() else {
             return Ok(None);
         };
-        Ok(runtime.block_on(async {
-            let mut client = super::server::connect(self.matches, context).await.ok()?;
-            client.observe_volumes(sought).await.ok()
-        }))
+        // The endpoint names the refusal only while no Server is known.
+        let endpoint = self
+            .matches
+            .try_get_one::<String>("connect")
+            .ok()
+            .flatten()
+            .cloned();
+        Ok(Some(runtime.block_on(async {
+            let mut client = match super::server::connect(self.matches, context).await {
+                Ok(client) => client,
+                Err(error) => {
+                    let failure = if error.daemon_answered() {
+                        ObservationFailure::answered(None, error.report())
+                    } else {
+                        ObservationFailure::unreachable(error.report())
+                    };
+                    let failure = failure.at_endpoint(endpoint);
+                    return VolumeObservation::failed(sought, Vec::new(), failure);
+                }
+            };
+            match client.observe_volumes(sought.clone()).await {
+                Ok(observed) => observed,
+                Err(error) => {
+                    let server = client.entry_machine();
+                    let failure = ObservationFailure::answered(server, error)
+                        .at_endpoint(endpoint.filter(|_| server.is_none()));
+                    VolumeObservation::failed(sought, server.into_iter().collect(), failure)
+                }
+            }
+        })))
     }
 
     /// Hand Cloud the archive of `listing`, read from `dir`, the source Deployment
@@ -508,17 +534,7 @@ impl<'m> Store<'m> {
     /// `history`'s `--version`, or `--expect-version` elsewhere. Read from the
     /// command tree: `ArgMatches` refuses unknown ids only in debug builds.
     fn version_flag(&self) -> (&'static str, &'static str) {
-        let root = crate::cli::compiled();
-        let mut command = &root;
-        for word in &self.words {
-            let Some(child) = command.find_subcommand(word) else {
-                break;
-            };
-            command = child;
-        }
-        let takes_version = command
-            .get_arguments()
-            .any(|arg| arg.get_id() == "version" && arg.get_action().takes_values());
+        let takes_version = super::takes_value(self.words.iter().map(String::as_str), "version");
         if takes_version {
             ("version", "--version")
         } else {

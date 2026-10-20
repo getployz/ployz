@@ -9,10 +9,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Every main commit runs to the end, so each leaves its builds behind for later runs and local verify.
-  # A shared group would still cancel a pending main run, so main groups by commit.
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Main pushes share one group, so a newer one cancels older ones. Kache's main builds come mostly from the
+  # latest main run, though a cancelled run keeps what it wrote first, and an older main commit may have no
+  # finished run. A manual run of main groups by commit and is never cancelled once it runs; a newer manual
+  # run of the same commit can still replace it while it waits. Manual runs and pushes never cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -118,11 +120,21 @@ jobs:
         working-directory: core
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
+    name: rust-tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
       contents: read
       actions: write
+    # Standard runners cost a public repo nothing, so each shard builds the workspace itself:
+    # four builds side by side finish sooner than one build feeding an archive to the shards.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SHARD: ${{ matrix.shard }}
+      PARTITION: count:${{ matrix.shard }}/4
     services:
       postgres:
         image: postgres:16-alpine
@@ -157,8 +169,8 @@ jobs:
               connections:
                 - tcp: 127.0.0.1:1
           EOF
-          cargo nextest run --workspace --all-features --locked --no-fail-fast
-          cargo test --doc --workspace --all-features --locked
+          cargo nextest run --workspace --all-features --locked --no-fail-fast --partition "$PARTITION"
+          if [ "$SHARD" = 1 ]; then cargo test --doc --workspace --all-features --locked; fi
       # A throwaway server: durability only slows each test's new database.
       - name: Stop the test Postgres syncing to disk
         if: needs.changes.outputs.postgres == 'true'
@@ -173,15 +185,17 @@ jobs:
         if: needs.changes.outputs.postgres == 'true'
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: cargo nextest run --workspace --all-features --locked -E 'package(ployz-store)'
+        run: cargo nextest run --workspace --all-features --locked -E 'package(ployz-store)' --partition "$PARTITION"
       - name: Check the missing SSH prerequisite
+        if: matrix.shard == 1
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
       # Last: installing Docker restarts dockerd, which stops the Postgres service.
       # Main pushes only: it mostly catches drift in the newest Docker release, and costs 2 minutes per run.
+      # The last shard runs it, away from the doc tests and SSH check on the first.
       - name: Decode the latest Docker's local log files as docker logs prints them
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && matrix.shard == 4
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
         run: |
@@ -190,7 +204,7 @@ jobs:
           docker pull --quiet alpine:3.23.3
           cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && matrix.shard == 1
         with:
           name: rust-build-timings
           path: core/target/cargo-timings/*.html
@@ -271,7 +285,8 @@ jobs:
       actions: write
     secrets: inherit
 
-  # The binaries the verify harness runs, built once per change on main so local runs download them.
+  # The binaries the verify harness runs, built on main so local runs download them. A cancelled main run may
+  # upload none, so a commit's nearest build can be several commits back.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
     needs: changes

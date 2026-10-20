@@ -178,6 +178,7 @@ fn observed(holders: &[char]) -> VolumeObservation {
         sought: vec![DockerVolumeName::parse(DOCKER_VOLUME).unwrap()],
         held: holders.iter().map(|letter| held(*letter)).collect(),
         unanswered: Vec::new(),
+        failure: None,
     }
 }
 
@@ -1274,6 +1275,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
             },
         ],
         unanswered: Vec::new(),
+        failure: None,
     };
     let publish = |accept: &[&str], observed: VolumeObservation, version: Option<&str>| {
         store.write_trusted(

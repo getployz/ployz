@@ -455,6 +455,19 @@ impl MachineRpc for MachineService {
             .await
     }
 
+    async fn set_volume_size(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetVolumeSize>(request)?;
+        self.switch_verb::<ployz_core::SetVolumeSizeReply>(
+            "SetVolumeSize",
+            "Volume.Size.Set",
+            &request,
+        )
+        .await
+    }
+
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,

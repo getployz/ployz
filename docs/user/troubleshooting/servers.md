@@ -80,7 +80,7 @@ only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) fo
 - `Host root has ... bytes available; ZFS validation needs ...`
 
   Free disk space, or give the server a bigger disk. Ployz keeps a quarter of the disk, at least
-  10 GB, free for the system, so use a main disk of 30 GB or more.
+  10 GiB, free for the system, so use a main disk of 30 GiB or more.
 
 ## The install stops while checking Docker
 
@@ -323,8 +323,11 @@ No other server can join until the first one finishes.
 
 The **Servers** page shows **Can't reach your servers right now**, with what your servers last
 reported or nothing at all. Adding a server can fail with `This Organization's Servers can't be
-reached`. A CLI command says `Server web-1 isn't answering`, naming each server it couldn't reach.
-A server that just joined or restarted answers within a minute; try again then.
+reached`. A CLI command, or a deployment that couldn't run, says `Server web-1 isn't answering`,
+naming each server it couldn't reach by the name it last reported, or by its ID if Ployz never
+learned one. When a server answered but refused every connection, the error names the server
+tried last, as in `Server web-2, tried last, refused the connection`. A server that just joined
+or restarted answers within a minute; try again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with

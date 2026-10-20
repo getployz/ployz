@@ -110,7 +110,7 @@ export function PublicDomainRow({
   label: string;
   portLabel: string;
   view: DomainStatusView;
-  /** The records that point the domain here; only custom domains have them. */
+  /** The records that point the domain here, offered whenever given; only custom domains have them. */
   dnsRecords?: DnsRecord[];
   changed: boolean;
   /** A write names this domain; the row waits for the Store's answer. */
@@ -119,7 +119,9 @@ export function PublicDomainRow({
   onDelete: () => void;
 }) {
   const [showDns, setShowDns] = useState(false);
-  const action = view.action === "dns" && dnsRecords.length === 0 ? null : view.action;
+  const action = view.action === "dns" || view.action === null
+    ? (dnsRecords.length > 0 ? "dns" : null)
+    : view.action;
   return (
     <SettingsListItem
       media={view.icon}

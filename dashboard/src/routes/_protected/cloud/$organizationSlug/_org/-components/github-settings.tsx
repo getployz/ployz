@@ -20,7 +20,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { toErrorMessage } from "#/lib/error-message";
-import type { ConnectNotice } from "#/modules/github/github-connect";
+import { type ConnectNotice, githubConnectHref } from "#/modules/github/github-connect";
 import { acceptGithubOfferServerFn, disconnectGithubAccountServerFn } from "#/modules/github/github-connect.functions";
 import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
 import { githubKeys } from "#/modules/github/github.queries";
@@ -33,12 +33,6 @@ const NOTICES = {
   pending: { title: "Waiting on GitHub", description: "An owner of that GitHub account has to approve the app. Then use an existing installation.", tone: "default" },
   failed: { title: "GitHub didn't finish", description: "Nothing was connected. Try again.", tone: "destructive" },
 } satisfies Record<ConnectNotice, { title: string; description: string; tone: "default" | "destructive" }>;
-
-function connectHref(organizationSlug: string, existing: boolean) {
-  const params = new URLSearchParams({ organization: organizationSlug });
-  if (existing) params.set("existing", "1");
-  return `/api/github/connect?${params.toString()}`;
-}
 
 export function GithubSettings({ organizationSlug, notice, offer, clearConnectSearch }: {
   organizationSlug: string;
@@ -104,12 +98,12 @@ export function GithubSettings({ organizationSlug, notice, offer, clearConnectSe
 function ConnectButtons({ organizationSlug, primary }: { organizationSlug: string; primary?: boolean }) {
   return (
     <>
-      <Button variant={primary ? "default" : "outline"} size="sm" nativeButton={false} render={<a href={connectHref(organizationSlug, false)} />}>
+      <Button variant={primary ? "default" : "outline"} size="sm" nativeButton={false} render={<a href={githubConnectHref(organizationSlug, false)} />}>
         <GitHubMarkIcon data-icon="inline-start" />
         Connect GitHub
       </Button>
-      <Button variant="ghost" size="sm" nativeButton={false} render={<a href={connectHref(organizationSlug, true)} />}>
-        Use existing installation
+      <Button variant="ghost" size="sm" nativeButton={false} render={<a href={githubConnectHref(organizationSlug, true)} />}>
+        Use existing
       </Button>
     </>
   );

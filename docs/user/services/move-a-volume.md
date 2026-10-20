@@ -34,7 +34,8 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
 - A move or mirror deletes the old copies on other servers first. Details says so. An old copy on
   the server you move or mirror onto stays, so Ployz sends only what changed since.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
-  changes are lost from, for example "Changes after 10:36 lost". **Use mirror**, or **Make
+  changes are lost from, for example "Changes after 10:36 lost", or "Changes after 8 Oct, 10:36
+  lost" when that was on an earlier day. **Use mirror**, or **Make
   primary** on the mirror, moves the volume there at the next deploy, which asks you to confirm
   **Data loss**.
 - **Drain** on a server page also moves each primary there off at the next deploy, to its mirror
@@ -111,6 +112,9 @@ data is deploying; the Deploy ends its run
 `volume sync` starts no run. It hands the mirror its pull and prints what it did, like Refresh
 now; the mirror reads "Refreshing" on the volume page while it downloads. `volume sync data --full`
 copies everything again as a run, and takes `--wait`.
+
+A server that doesn't answer the sync in time may still have taken it, so the sync says so instead
+of guessing. Run `ployz volume sync data` again to see where each mirror got to.
 
 A copy of a big volume can take hours. Ployz checks on it every few seconds at first, then every
 five minutes. If the copy has not finished after six hours, the run fails and says so.

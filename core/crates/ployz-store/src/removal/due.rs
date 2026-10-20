@@ -467,14 +467,18 @@ fn admit_member(
     Ok(admitted)
 }
 
-/// The Servers that didn't answer Cloud now, or None when Cloud didn't look.
+/// The Servers that didn't answer Cloud now, or None when Cloud didn't look. A
+/// failed observation that names no Server didn't look either.
 fn unanswered(trusted: &Trusted) -> Option<BTreeSet<ployz_core::MachineId>> {
-    if trusted.volumes.is_none() && trusted.unanswered.is_none() {
+    let volumes = trusted
+        .volumes
+        .as_ref()
+        .filter(|observed| observed.failure.is_none() || !observed.unanswered.is_empty());
+    if volumes.is_none() && trusted.unanswered.is_none() {
         return None;
     }
     Some(
-        trusted
-            .volumes
+        volumes
             .iter()
             .flat_map(|observed| &observed.unanswered)
             .chain(trusted.unanswered.iter().flatten())

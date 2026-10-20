@@ -16,9 +16,9 @@ mod tree;
 pub(crate) use error::chain_text;
 pub use error::{Hint, VALID_SHOWN, causes};
 pub(crate) use error::{retrying, row, rpc_error, sentence, warn_cause};
-#[cfg(test)]
-pub(crate) use exit::plain;
 pub use exit::{PARTIAL_EXIT, exit, exit_code};
+#[cfg(test)]
+pub(crate) use exit::{after_result, plain};
 pub use mode::{Mode, Surroundings, mode};
 pub(crate) use prompt::{can_prompt, confirm, confirm_name, secret, select};
 pub use result::json;

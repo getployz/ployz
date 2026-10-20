@@ -50,15 +50,17 @@ async fn mirror_admission_uses_ensure_capacity() {
             _ => json!({"data": 1_073_741_824_u64}),
         };
         let response = post(&socket, route, request).await;
-        let message = match route {
-            "/VolumeDriver.Create" => error(&response).to_owned(),
-            _ => response
-                .pointer("/Err/cause/0")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-        };
-        assert!(message.contains("automatic growth"), "{route}: {response}");
+        match route {
+            "/VolumeDriver.Create" => assert!(
+                error(&response).contains("cannot grow automatically"),
+                "{response}"
+            ),
+            _ => assert_eq!(
+                response.pointer("/Err/details/code"),
+                Some(&json!("pool_cannot_grow")),
+                "{response}"
+            ),
+        }
         assert!(
             !fs::read_to_string(test.0.join("commands"))
                 .unwrap()

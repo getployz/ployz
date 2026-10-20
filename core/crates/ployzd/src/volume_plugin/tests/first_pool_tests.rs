@@ -435,7 +435,7 @@ async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
     );
 }
 
-async fn start_pool_with_data(
+pub(super) async fn start_pool_with_data(
     test: &TestDir,
 ) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
     let socket = test.0.join("plugin.sock");
@@ -841,6 +841,7 @@ pub(super) fn fake_first_pool(directory: &Path, physical_block_size: u64) -> Vol
     let mirror_root = directory.join("mirror-root");
     let slot = directory.join("slot");
     let slot_pull = directory.join("slot-pull");
+    let slot_role = directory.join("slot-role");
     let fail_slot_once = directory.join("fail-slot-once");
     let script_body = format!(
         r#"#!/bin/sh
@@ -958,6 +959,8 @@ case "$name" in
         printf '%s\n' "${{7#refquota=}}" > '{slot}'
         ;;
       'set ployz:pull='*' ployz/ployz-mirror/data') printf '%s\n' "${{2#ployz:pull=}}" > '{slot_pull}' ;;
+      'set ployz:role='*' ployz/ployz-mirror/data') printf '%s\n' "${{2#ployz:role=}}" > '{slot_role}' ;;
+      'get -H -o value ployz:role ployz/ployz-mirror/data') if [ -e '{slot_role}' ]; then cat '{slot_role}'; else echo '-'; fi ;;
       'get -H -o value ployz:pull ployz/ployz-mirror/data') if [ -e '{slot_pull}' ]; then cat '{slot_pull}'; else echo '-'; fi ;;
       'get -H -o value guid ployz/ployz-mirror/data') echo 42 ;;
       receive*) cat > /dev/null ;;
@@ -998,6 +1001,7 @@ esac
         mirror_root = mirror_root.display(),
         slot = slot.display(),
         slot_pull = slot_pull.display(),
+        slot_role = slot_role.display(),
         fail_slot_once = fail_slot_once.display(),
         backing = directory.join(POOL_BACKING_FILE).display(),
     );

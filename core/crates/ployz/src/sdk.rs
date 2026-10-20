@@ -127,7 +127,10 @@ pub struct ObservedCopy {
 fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     use RpcRequestBody as Body;
     match body {
-        Body::InspectVolumeCopy(_) | Body::SeedVolume(_) | Body::SetVolumeCopy(_) => body
+        Body::InspectVolumeCopy(_)
+        | Body::SeedVolume(_)
+        | Body::SetVolumeCopy(_)
+        | Body::SetVolumeSize(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(
@@ -140,12 +143,13 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
 /// The JSON a Volume switch verb's answer carries, or the Machine's error as it sent it.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the volume copy verbs answer with two reply kinds; any other kind is a Machine fault"
+    reason = "the Volume switch verbs answer with three reply kinds; any other kind is a Machine fault"
 )]
 fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, RpcError> {
     let payload = match body {
         RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
         RpcResponseBody::SetVolumeCopyReply(reply) => serde_json::to_value(reply),
+        RpcResponseBody::SetVolumeSizeReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::Error(error) => return Err(error),
         other => {
             return Err(RpcError {
@@ -269,6 +273,14 @@ pub async fn connect_answered(
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty".into()).into());
     }
+    Ok(dial(connections, connector).await?)
+}
+
+/// [`connect_connections`] to nonempty `connections`, keeping the connection error.
+async fn dial(
+    connections: Vec<Connection>,
+    connector: Arc<dyn Connector>,
+) -> Result<Session, ConnectError> {
     let client = connect_selected_with(
         SelectedConnections {
             source: ConnectionSource::Direct,
@@ -940,7 +952,7 @@ impl Session {
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
                 | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
             })?;
-            crate::drain::retirement::retire_ingress_proxy(&mut client, &id, cancel).await
+            crate::drain::retirement::retire_ingress_proxy(&client, &id, cancel).await
         })
         .await
     }

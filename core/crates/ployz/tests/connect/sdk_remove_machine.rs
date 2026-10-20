@@ -712,6 +712,7 @@ fn cluster_with_a_held_peer(
                 role: ployz_core::CopyRole::Slot,
                 maximum_bytes: bytes,
                 used_bytes: 0,
+                slot_role: None,
             },
         )]),
     });

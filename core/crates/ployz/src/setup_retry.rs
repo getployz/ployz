@@ -19,6 +19,8 @@ pub(crate) enum Error<E> {
         wait: Duration,
         #[source]
         last: Option<E>,
+        /// The deadline ended an attempt still running, which may have taken effect.
+        in_flight: bool,
     },
 }
 
@@ -61,7 +63,7 @@ pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
 ) -> Result<T, Error<E>> {
     let deadline = Instant::now() + wait;
     let mut last = None;
-    loop {
+    let in_flight = loop {
         match timeout_at(deadline, attempt(context)).await {
             Ok(Ok(value)) => return Ok(value),
             Ok(Err(error)) if !retryable(&error) => {
@@ -80,19 +82,20 @@ pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
                 }
                 last = Some(error);
             }
-            Err(_) => break,
+            Err(_) => break true,
         }
         if timeout_at(deadline, sleep(Duration::from_secs(1)))
             .await
             .is_err()
         {
-            break;
+            break false;
         }
-    }
+    };
     Err(Error::Exhausted {
         operation: operation.to_owned(),
         wait,
         last,
+        in_flight,
     })
 }
 
@@ -225,6 +228,7 @@ mod tests {
             operation: "Probe".into(),
             wait: WAIT,
             last: Some(crate::connect::ConnectError::EntryNotReady),
+            in_flight: false,
         });
         assert_eq!(timeout.report().code, RpcErrorCode::Unavailable);
         assert_eq!(timeout.to_string(), "Probe did not recover within 60s.");
@@ -301,5 +305,33 @@ mod tests {
         .unwrap_err();
         assert_eq!(Instant::now() - started, WAIT);
         assert!(crate::ui::causes(&error).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_deadline_says_whether_it_cut_an_attempt_in_flight() {
+        for (hangs_after, cut) in [(None, false), (Some(11), true)] {
+            let mut calls = 0;
+            let error = run(
+                &mut calls,
+                "probe",
+                WAIT,
+                |_| true,
+                async |calls| {
+                    *calls += 1;
+                    if hangs_after.is_some_and(|after| *calls > after) {
+                        std::future::pending::<()>().await;
+                    }
+                    Err::<(), _>(Probe("connection refused"))
+                },
+            )
+            .await
+            .unwrap_err();
+            let Error::Exhausted { in_flight, .. } = &error else {
+                panic!("expected exhaustion: {error:?}");
+            };
+            assert_eq!(*in_flight, cut);
+            assert_eq!(error.to_string(), "probe did not recover within 60s.");
+            assert_eq!(crate::ui::causes(&error), ["connection refused"]);
+        }
     }
 }

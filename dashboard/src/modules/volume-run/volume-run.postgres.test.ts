@@ -3,11 +3,13 @@ import type {
   ContainerId,
   CopyObservation,
   CopyRefusal,
+  CopyRotation,
   ExpectedCopy,
   MachineId,
   RuntimeWatchView,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
+  SlotRole,
   Snapshot,
   VolumeCopy,
   VolumeCopyView,
@@ -59,6 +61,7 @@ import {
 import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { appliedMirrors, observePlacement } from "#/modules/volume-placement/volume-placement";
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
@@ -98,7 +101,7 @@ type FakeMachine = {
   floor?: number;
 };
 
-type FakeContainer = { machine: string; id: string; running: boolean; created?: number };
+type FakeContainer = { machine: string; id: string; running: boolean; created?: number; rotation?: CopyRotation; gen?: number };
 
 /**
  * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail to answer, or
@@ -126,8 +129,8 @@ const base = snap("10");
 const seedCopy: VolumeCopy = { kind: "root", readonly: false, newest: null, epoch: 0, seed: true };
 const writerCopy = (newest: Snapshot | null = base, epoch = 0, readonly = false): VolumeCopy =>
   ({ kind: "root", readonly, newest, epoch, seed: false });
-const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: string | null } | null = null, slot = "1"): VolumeCopy =>
-  ({ kind: "slot", slot, readonly: true, newest, resume_token: null, pull });
+const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: string | null } | null = null, slot = "1", role: SlotRole = "mirror"): VolumeCopy =>
+  ({ kind: "slot", slot, readonly: true, newest, resume_token: null, pull, role });
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
 const first = <T>(items: readonly T[]): T => {
   const item = items[0];
@@ -227,7 +230,7 @@ describe("volume runs", () => {
         return copy?.kind === "root" && !copy.readonly && copy.newest?.guid === want.at && copy.epoch === want.epoch
           && (want.start === null || containers.some((container) => container.machine === fake.name && container.running));
       case "mirror":
-        return copy?.kind === "slot" && copy.pull === null && copy.newest?.name === want.target;
+        return copy?.kind === "slot" && copy.pull === null && copy.newest?.name === want.target && (copy.role !== "old_copy" || want.from === null);
       case "snapshot":
         return copy?.kind === "root" && copy.newest?.name === want.name;
       case "forget":
@@ -248,8 +251,9 @@ describe("volume runs", () => {
 
   /**
    * SetVolumeCopy as the daemon answers it: at the wanted state is success, then a landed pull of the wanted target
-   * finishes whatever the expect, else the expect, else the transition. A receive lands on an inspect or a Mirror set and
-   * keeps `pull`; a resend for the running target changes nothing.
+   * finishes whatever the expect, and an old copy already at it becomes the mirror, else the expect, else the transition.
+   * A receive lands on an inspect or a Mirror set and keeps `pull`; a resend for the running target changes nothing. A
+   * cut leaves an old copy; a pull makes a mirror.
    */
   const transition = (fake: FakeMachine, expect: ExpectedCopy, want: WantedCopy): CopyRefusal | null => {
     if (want.kind === "floor" || atWant(fake, want)) return null;
@@ -258,12 +262,16 @@ describe("volume runs", () => {
       fake.copy = { ...copy, pull: null };
       return null;
     }
+    if (want.kind === "mirror" && want.from !== null && copy?.kind === "slot" && copy.pull === null && copy.newest?.name === want.target) {
+      fake.copy = { ...copy, role: "mirror" };
+      return null;
+    }
     if (!matches(fake.copy, expect)) return "mismatch";
     if (copy?.kind === "root") {
       switch (want.kind) {
         case "mirror":
           for (const container of containers) if (container.machine === fake.name) container.running = false;
-          fake.copy = slotCopy(newSnap(want.target), null, newSlot());
+          fake.copy = slotCopy(newSnap(want.target), null, newSlot(), "old_copy");
           return null;
         case "snapshot":
           if ((fake.writes ?? 0) > 0) {
@@ -340,6 +348,7 @@ describe("volume runs", () => {
         namespace: "shop-production",
         resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
         runtime: { state: container.running ? "running" : "exited" },
+        rotation: container.rotation,
         created_at_unix_nanos: container.created ?? 0,
       })),
       incomplete_ids: { machines: [] },
@@ -347,9 +356,12 @@ describe("volume runs", () => {
     },
     inspectContainer: (target: string, container: string) => Effect.promise(async () => {
       await beforeStart?.();
+      const { rotation, gen } = containers.find((entry) => entry.id === container) ?? {};
       return {
         container: {
           container_id: container,
+          rotation,
+          gen,
           resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
         },
       };
@@ -604,6 +616,21 @@ describe("volume runs", () => {
       expect(output.error).toBeUndefined();
       expect(verbs[0]).toBe("snapshot@fsn-1(w-1-0)");
       expect(await rows()).toMatchObject([{ state: "done", inngest_run_id: "run-1" }]);
+    });
+
+    it("adopts an old primary added back as the mirror before any new write, so placement wants no other run", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "1", "old_copy") };
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+      expect(named("fsn-2").copy).toMatchObject({ kind: "slot", newest: base, role: "mirror" });
+      const members = machines.map((fake): Member =>
+        ({ machine: { id: idOf(fake.name), name: fake.name }, address: "fdcc::1", answered: true, view: { copy: fake.copy } }));
+      const row = { volumeId, environmentId: "env-1", mirrors: [], staged: null, unreached: false, deploymentId: null };
+      expect(appliedMirrors(observePlacement(members), row)).toEqual([idOf("fsn-2")]);
     });
 
     it("sweep_closes_terminal_running: closes each stale row by how its run ended, and leaves live ones", async () => {
@@ -1596,6 +1623,19 @@ describe("volume runs", () => {
       expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } } } });
     });
 
+    it.each([
+      { rotation: "in", sent: { in: { run: null, expect: "pending" } } },
+      { rotation: { held: "run-user" }, sent: "pending" },
+      { rotation: "pending", sent: "pending" },
+    ] as const)("starts B at A's gen, routed only when A's copy was: $rotation", async ({ rotation, sent: wanted }) => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, rotation, gen: 3 }];
+
+      await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from: { id: idOf("fsn-1"), name: "fsn-1" }, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", gen: 3, rotation: wanted } });
+    });
+
     it("with no source named, refuses to guess between stopped Containers on two Machines", async () => {
       const ctx = await owned();
       machines.push({ name: "fsn-3", pool: true, copy: null });
@@ -1665,6 +1705,24 @@ describe("volume runs", () => {
 
       expect(verbs).toEqual(["remove@fsn-1(web-fsn-1)"]);
       expect(containers).toEqual([{ machine: "fsn-2", id: "created-1", running: true }]);
+    });
+
+    it("unhealthy_destination_keeps_source_and_fails_run: a B running the Service unrouted while A's copy is routed is asked again, and its failure fails the run before A's stopped Container goes", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) Object.assign(container, { running: false, rotation: "in" });
+      machines[1] = { name: "fsn-2", pool: true, copy: writerCopy(G, 4) };
+      containers.push({ machine: "fsn-2", id: "created-1", running: true, rotation: "pending" });
+      await owned("committed");
+      failNext.set("writer@fsn-2", new RawFault({ code: "conflict", message: "the moved Service is not routed: unhealthy", details: null }));
+
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const failed = await execute((await releaseRow()).id, "run-2");
+
+      expect(failed.error).toMatchObject({ message: expect.stringContaining("not routed") });
+      expect(verbs).toEqual(["writer@fsn-2(create)"]);
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", rotation: { in: { run: null, expect: "pending" } } } });
+      expect(containers.map(({ id }) => id)).toEqual(["web-fsn-1", "created-1"]);
     });
 
     it("on a committed row whose forward release fails before B starts, a later release inherits the commitment, finishes on B and removes A's stopped Container", async () => {

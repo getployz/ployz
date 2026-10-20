@@ -19,7 +19,7 @@
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
+use ployz_core::{DepartureFailure, RpcError, SlotRole, StorageDeparture};
 use ployzd::machine_pool::MachinePool;
 
 use super::{
@@ -141,13 +141,16 @@ impl VolumeStorage {
             Departure::Root(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
                 self.ensure_mirror_root(pool, datasets).await?;
-                self.create_slot_parent(&slot_parent(pool, name), root.refquota)
-                    .await?;
+                let parent = slot_parent(pool, name);
+                self.create_slot_parent(&parent, root.refquota).await?;
+                self.mark_slot_role(&parent, SlotRole::OldCopy).await?;
                 self.move_into_slot(pool, root, name).await?;
                 true
             }
             Departure::RootBesideEmptySlot(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
+                self.mark_slot_role(&slot_parent(pool, name), SlotRole::OldCopy)
+                    .await?;
                 self.move_into_slot(pool, root, name).await?;
                 true
             }

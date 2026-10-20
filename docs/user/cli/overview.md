@@ -35,9 +35,10 @@ curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
 
 This computer starts in the organization the page names. Switching organization in the dashboard
 later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
-If Cloud can't be reached, `ployz logout` still forgets the sign-in here and warns that Cloud may
-still honour it until you remove it with `ployz token rm`. An unreadable sign-in is forgotten too,
-and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
+If Cloud can't be reached, or refuses because you've left the sign-in's organization, `ployz logout`
+still forgets the sign-in here and warns that Cloud may still honour it until you remove it with
+`ployz token rm`. An unreadable sign-in is forgotten too, and `ployz login` replaces it. While it
+is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
 The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when you set
 `XDG_CONFIG_HOME`. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
@@ -337,12 +338,15 @@ Scripts can tell failures apart by exit code:
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
+| 1 | It failed: something wasn't found, a server couldn't be reached, a deploy failed, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
-| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, or some work couldn't be done, such as a `ployz server drain` that leaves a service where it is because no other server can take it. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
+| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server or left an old container running, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
 
-`ployz exec` exits with your command's own exit code.
+`ployz exec` exits with your command's own exit code. When the container stops under it,
+because a deploy replaced it or the service was stopped, it exits 1 with
+`The container for web stopped; exec ended.` A `retry:` line follows when another container of the
+service runs, and running it again attaches there.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
 `service add` and other changes exit 1 with `Cloud ... stopped answering after it got this

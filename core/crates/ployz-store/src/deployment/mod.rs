@@ -20,6 +20,7 @@ pub(crate) use history::*;
 pub(crate) use landing::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
+pub(crate) use rows::servers;
 pub use rows::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
     starts_container,
@@ -426,6 +427,10 @@ pub enum Outcome {
         cause: Vec<String>,
         #[serde(default)]
         services: Vec<ServiceOutcome>,
+        /// What a failed replacement's compensation did to its new and old
+        /// Containers, one sentence each; users read it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        compensation: Vec<String>,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.

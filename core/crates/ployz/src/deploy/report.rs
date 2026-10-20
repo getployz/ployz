@@ -10,7 +10,7 @@ use crate::{
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
     Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
-    ReplacementCompensation, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
+    ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
 use ployz_store::tools::SealedValues;
 use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
@@ -409,35 +409,31 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
         ..Diagnostic::default()
     };
     if let FailedOperation::Replacement { compensation, .. } = failed {
-        let stop = |attempt: &StopAttempt<ExecutionError>| match attempt {
-            StopAttempt::Stopped => Detail {
-                message: "Stopped the new Container.".into(),
-                causes: Vec::new(),
-            },
-            StopAttempt::Failed { error } => Detail {
-                message: "Could not stop the new Container.".into(),
-                causes: failure_causes(error),
+        let stop = |attempt: &StopAttempt<ExecutionError>| Detail {
+            message: attempt.line().into(),
+            causes: match attempt {
+                StopAttempt::Stopped => Vec::new(),
+                StopAttempt::Failed { error } => failure_causes(error),
             },
         };
         match compensation {
             ReplacementCompensation::OldUntouched { stop_new_container } => {
-                diagnostic.compensation.push(stop(stop_new_container))
+                diagnostic.compensation.push(stop(stop_new_container));
             }
             ReplacementCompensation::OldStopped {
                 stop_new_container,
-                restart_old_container,
+                restore_old_container,
             } => {
                 diagnostic
                     .compensation
                     .extend(stop_new_container.iter().map(stop));
-                diagnostic.compensation.push(match restart_old_container {
-                    RestartAttempt::Restarted => Detail {
-                        message: "Restarted the old Container.".into(),
-                        causes: Vec::new(),
-                    },
-                    RestartAttempt::Failed { error } => Detail {
-                        message: "Could not restart the old Container.".into(),
-                        causes: failure_causes(error),
+                diagnostic.compensation.push(Detail {
+                    message: restore_old_container.line().into(),
+                    causes: match restore_old_container {
+                        RestoreAttempt::Failed { error } => failure_causes(error),
+                        RestoreAttempt::Restored
+                        | RestoreAttempt::LeftHeld
+                        | RestoreAttempt::NotServing => Vec::new(),
                     },
                 });
             }

@@ -200,7 +200,7 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
     assert!(
         json.get("next")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|next| next.ends_with("server ls")),
+            .is_some_and(|next| next.ends_with(" login")),
         "{json}"
     );
 
@@ -1384,6 +1384,51 @@ fn a_server_that_is_not_answering_yet_is_named_with_when_to_try_again() {
         json.pointer("/error/details/unreachable").unwrap(),
         &serde_json::json!([joining]),
         "{json}"
+    );
+}
+
+#[test]
+fn a_server_cloud_handed_a_connection_for_that_does_not_answer_is_named() {
+    let held = "0123456789abcdef0123456789abcdef";
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let human = |names: serde_json::Value| {
+        let cloud = waiting_cloud(
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            WaitingCloud {
+                connections: vec![serde_json::json!({ "tcp": closed, "machine_id": held })],
+                names,
+                ..WaitingCloud::of(Vec::new())
+            },
+        );
+        let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+        let (code, _, stderr) = run_output(&["ps"], &token);
+        assert_eq!(code, Some(1), "{stderr}");
+        let (_, json, _) = run_json_with(&["ps", "--json"], &token);
+        assert_eq!(
+            json.pointer("/error/details/unreachable").unwrap(),
+            &serde_json::json!([held]),
+            "{json}"
+        );
+        stderr
+    };
+
+    let named = human(serde_json::json!({ held: "box-node-09c8" }));
+    assert!(
+        named.starts_with(
+            "error: Server box-node-09c8 isn't answering. Check that its Ployz daemon is running, then retry.\n  cause: "
+        ),
+        "{named}"
+    );
+    // Cloud never learned its name: the Machine ID says which.
+    let unnamed = human(serde_json::json!({}));
+    assert!(
+        unnamed.starts_with(&format!(
+            "error: Server {held} isn't answering. Check that its Ployz daemon is running, then retry.\n  cause: "
+        )),
+        "{unnamed}"
     );
 }
 

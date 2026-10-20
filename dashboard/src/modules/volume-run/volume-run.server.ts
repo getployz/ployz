@@ -951,12 +951,19 @@ export const noteRun = Effect.fn("VolumeRun.note")(function* (ctx: Pick<RunConte
 export const refuseRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, refusal: Refusal) =>
   endRun(ctx, inngestRunId, "failed", refusal.message);
 
-class ClusterUnreachable extends Data.TaggedError("ClusterUnreachable")<{ readonly message: string }> {}
+export class ClusterUnreachable extends Data.TaggedError("ClusterUnreachable")<{ readonly message: string }> {}
+
+/** Cloud could not reach the Cluster, or it sent no frame in time: it may answer later. */
+export const unreachable = (error: Error) =>
+  error instanceof ClusterUnreachable || (error instanceof RuntimeConnectionFailure && error.waitable);
+
+/** Cloud holds no connection to the Organization's Servers, as once their pairing is removed. */
+export class ClusterNotConnected extends Data.TaggedError("ClusterNotConnected")<{ readonly message: string }> {}
 
 const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status === "unreachable") return yield* new ClusterUnreachable({ message: "The cluster is unreachable." });
-  if (session.status !== "connected") return yield* Effect.fail(new Error(`The cluster is ${session.status}.`));
+  if (session.status === "no_connection") return yield* new ClusterNotConnected({ message: "The cluster is no_connection." });
   return session.connected;
 });
 
@@ -1049,8 +1056,10 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
 export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
   const session = yield* openSession(asker.organizationId);
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
+    clusterRead,
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
-    Effect.catch((error) => {
+    Effect.catch((error): Effect.Effect<CopyAnswer, ClusterOutOfTime | SwitchAttemptError> => {
+      if (error instanceof ClusterOutOfTime) return Effect.fail(error);
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
         return Effect.fail(new SwitchAttemptError(null, `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
@@ -1184,21 +1193,24 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
 });
 
 /**
- * B becomes the writer at G and creates the Service from the source's stopped Container; a B already running it is left
- * alone. With no source named, a B whose stopped Service is the only one left becomes the writer and stays stopped: an
- * earlier start moved the Service there, and a Deploy's placement may have removed the source since. `ownedBy` is the
- * Inngest run that must still own the row when B is told, or null for a Deploy following another run's committed lane,
- * which owns no row.
+ * B becomes the writer at G and creates the Service from the source's stopped Container, at its gen and routed once
+ * healthy when the source was routed; a B already running it is left alone, unless the source is routed and B is not,
+ * when B is asked again and fails while its copy stays unrouted. With no source named, a B whose stopped Service is
+ * the only one left becomes the writer and stays stopped: an earlier start moved the Service there, and a Deploy's
+ * placement may have removed the source since. `ownedBy` is the Inngest run that must still own the row when B is
+ * told, or null for a Deploy following another run's committed lane, which owns no row.
  */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
   const { to, from } = start;
   const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
-  if (containers.some((container) => container.machine_id === to.id && container.runtime.state === "running")) {
+  const stopped = containers.filter((container) =>
+    container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
+  const routed = stopped.some((container) => container.rotation === "in");
+  if (containers.some((container) =>
+    container.machine_id === to.id && container.runtime.state === "running" && (container.rotation === "in" || !routed))) {
     const running: CopyAnswer = { ok: true, copy: null };
     return running;
   }
-  const stopped = containers.filter((container) =>
-    container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
   const [holder] = stopped;
   if (holder === undefined && from === null && containers.some((container) => container.machine_id === to.id)) {
     if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
@@ -1227,6 +1239,8 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
       namespace: holder.namespace,
       resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
       creation_key: creationKey(ctx, start.at),
+      gen: container.gen ?? 1,
+      rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
     },
   });
 }, Effect.scoped);
@@ -1323,10 +1337,7 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
 export const observeReachable = Effect.fn("VolumeRun.observeReachable")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
   return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx).pipe(
-    Effect.catchIf(
-      (error) => error instanceof ClusterUnreachable || (error instanceof RuntimeConnectionFailure && error.waitable),
-      () => Effect.succeed(null),
-    ),
+    Effect.catchIf(unreachable, () => Effect.succeed(null)),
   );
 });
 

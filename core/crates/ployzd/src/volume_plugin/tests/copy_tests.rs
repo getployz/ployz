@@ -21,13 +21,13 @@ use super::inspect_tests::{set_property, start};
 use super::*;
 
 const ROOT: &str = "tank/ployz/data";
-const SLOT: &str = "tank/ployz-mirror/data";
-const SLOT_FS: &str = "tank/ployz-mirror/data/fs";
+pub(super) const SLOT: &str = "tank/ployz-mirror/data";
+pub(super) const SLOT_FS: &str = "tank/ployz-mirror/data/fs";
 const BOUND: u64 = 1_073_741_824;
 
 type Server = tokio::task::JoinHandle<io::Result<()>>;
 
-fn set_snapshots(test: &TestDir, dataset: &str, snapshots: &[(&str, u64)]) {
+pub(super) fn set_snapshots(test: &TestDir, dataset: &str, snapshots: &[(&str, u64)]) {
     let lines: String = snapshots
         .iter()
         .enumerate()
@@ -170,6 +170,7 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
             "zfs unmount tank/ployz/data",
             "zfs create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror",
             "zfs create -o canmount=off -o readonly=on -o refquota=1073741824 tank/ployz-mirror/data",
+            "zfs set ployz:role=old_copy tank/ployz-mirror/data",
             "zfs rename tank/ployz/data tank/ployz-mirror/data/fs",
         ]
     );
@@ -183,6 +184,94 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
     let before = commands(&test);
     assert_eq!(post(&socket, "/Volume.Copy.Cut", request).await, reply);
     assert!(effects(&commands(&test)[before.len()..]).is_empty());
+    server.abort();
+}
+
+/// What the Machine reports a slot as, to a run and to the Runtime Watch alike.
+async fn slot_roles(socket: &Path) -> (Value, Value) {
+    let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    let capacity = post(socket, "/Storage.Inspect", json!(null)).await;
+    (
+        copy.pointer("/Ok/role").cloned().unwrap_or(Value::Null),
+        capacity
+            .pointer("/Ok/copies/data/slot_role")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn the_cut_leaves_the_root_as_an_old_copy() {
+    let test = TestDir::new();
+    let (socket, server) = writer(&test, &[("w-1-1", 11)]);
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert_eq!(
+        reply.pointer("/Ok/role"),
+        Some(&json!("old_copy")),
+        "{reply}"
+    );
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("old_copy"), json!("old_copy"))
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_into_an_old_copy_makes_it_a_mirror() {
+    let source = Source::start(Some(BOUND), "snapshot w-2-1 78\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
+    set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
+    post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("old_copy"), json!("old_copy"))
+    );
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-2-1")).await;
+    landed(&socket, "w-2-1").await;
+    let reply = finished(&socket, "w-2-1").await;
+    assert_eq!(reply.pointer("/Ok/role"), Some(&json!("mirror")), "{reply}");
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("mirror"), json!("mirror"))
+    );
+    server.abort();
+}
+
+/// The old primary re-added as the mirror before any further write already holds the
+/// target, so the pull sends nothing, and still makes it the mirror.
+#[tokio::test]
+async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
+    let source = Source::start(Some(BOUND), "").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "volume", "mounted"], source.port);
+    set_snapshots(&test, ROOT, &[("w-1-1", 11)]);
+    post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("f-1")).await;
+    assert_eq!(reply.pointer("/Ok/role"), Some(&json!("mirror")), "{reply}");
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("mirror"), json!("mirror"))
+    );
     server.abort();
 }
 
@@ -551,11 +640,11 @@ async fn the_writer_route_reopens_a_read_only_root_of_its_own_epoch() {
 /// the first answer whose key the request URI contains, else the default one. A held
 /// answer sends its headers at once and its stream only after `release`; a silent one
 /// never answers.
-struct Source {
+pub(super) struct Source {
     requests: Arc<StdMutex<Vec<String>>>,
     answers: Arc<StdMutex<Vec<Answer>>>,
     gate: Arc<Semaphore>,
-    port: u16,
+    pub(super) port: u16,
 }
 
 #[derive(Clone)]
@@ -574,7 +663,7 @@ enum Mode {
 }
 
 impl Source {
-    async fn start(bound: Option<u64>, stream: &str) -> Self {
+    pub(super) async fn start(bound: Option<u64>, stream: &str) -> Self {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let answers = Arc::new(StdMutex::new(vec![Answer {
             key: String::new(),
@@ -663,7 +752,7 @@ impl Source {
     }
 }
 
-fn puller(test: &TestDir, markers: &[&str], port: u16) -> (PathBuf, Server) {
+pub(super) fn puller(test: &TestDir, markers: &[&str], port: u16) -> (PathBuf, Server) {
     puller_stalling_after(test, markers, port, Duration::from_secs(60))
 }
 
@@ -696,13 +785,13 @@ fn puller_with_receives(
     (socket, tokio::spawn(serve(listener, storage)), receives)
 }
 
-fn pull(target: &str) -> Value {
+pub(super) fn pull(target: &str) -> Value {
     json!({"name": "data", "from": "::1", "target": target})
 }
 
 /// Polls the copy until the pull landed `target` read-only or stopped with a failure.
 /// The receive shows `target` before the pull checks the copy's properties.
-async fn landed(socket: &Path, target: &str) -> Value {
+pub(super) async fn landed(socket: &Path, target: &str) -> Value {
     for _ in 0..300 {
         let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
         if (copy.pointer("/Ok/newest/name") == Some(&json!(target))

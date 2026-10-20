@@ -205,7 +205,49 @@ pub enum VolumeCopy {
         /// The `SetVolumeCopy` pull in flight, from its start until its prune is done.
         #[serde(default)]
         pull: Option<Pull>,
+        /// What this Machine recorded the slot as. Older daemons omit it.
+        #[serde(default)]
+        #[ts(as = "Option<SlotRole>", optional)]
+        role: SlotRole,
     },
+}
+
+/// What a slot holds its copy for, as its own Machine recorded it: a pull makes it a
+/// Mirror, and a cut or a departure leaves the root behind as an old copy. A slot no step
+/// marked reads as a Mirror.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotRole {
+    #[default]
+    Mirror,
+    OldCopy,
+}
+
+impl SlotRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mirror => "mirror",
+            Self::OldCopy => "old_copy",
+        }
+    }
+}
+
+/// A slot role this Machine did not write.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("invalid slot role {0:?}; expected mirror or old_copy")]
+pub struct SlotRoleParseError(pub String);
+
+impl FromStr for SlotRole {
+    type Err = SlotRoleParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "mirror" => Ok(Self::Mirror),
+            "old_copy" => Ok(Self::OldCopy),
+            _ => Err(SlotRoleParseError(value.to_owned())),
+        }
+    }
 }
 
 /// A `SetVolumeCopy` pull into a slot: which snapshot it fetches and, once the receive
@@ -458,6 +500,7 @@ mod tests {
             newest: None,
             resume_token: None,
             pull: None,
+            role: SlotRole::Mirror,
         };
         let known = |role| {
             vec![KnownCopy {

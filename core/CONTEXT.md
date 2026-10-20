@@ -453,7 +453,7 @@ The one copy of a Provisioned Volume that Containers mount read-write: the datas
 _Avoid_: primary, master, active replica, source of truth
 
 **Mirror**:
-A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared.
+A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared. The Machine records each slot's role: a pull makes it a Mirror, and a cut or a departure that parks the Writer's root in it makes it an **Old copy**, which nothing refreshes.
 _Avoid_: replica, standby, backup, secondary
 
 **Lease**:
@@ -485,11 +485,11 @@ Cloud's Organization-scoped bearer that authorizes copy-paste founding and joini
 _Avoid_: pairing token, API key, join URL as identity
 
 **Fleet Token**:
-Cloud's Organization-scoped `pflt_` secret a signed-in member makes so many hosts can carry it and check in as Waiting Servers to ask to join one Organization. It admits a host to the waiting list, never to a Cluster. `ployz server token` makes, lists and revokes it by its two-word name; the secret is shown once. Expiry or revoke stops new hosts and ends every check-in loop that holds it; Servers already in stay. It is not a Cloud Enroll Token or membership.
+Cloud's Organization-scoped `pflt_` secret a signed-in member makes so many hosts can carry it and check in as Waiting Servers to ask to join one Organization. It admits a host to the waiting list, never to a Cluster. `ployz server token` makes, lists and revokes it by its two-word name; the secret is shown once. Expiry or revoke stops new hosts and removes the token's Waiting Servers that have no open Server Enrollment, so their check-in loops end. Revoke removes them at once, and expiry on each host's next check-in. Enrollments already started finish, and Servers already in stay. It is not a Cloud Enroll Token or membership.
 _Avoid_: Cloud Enroll Token, Enrollment token, join token, bootstrap token, API key
 
 **Waiting Server**:
-A host that has a Fleet Token and checks in with Cloud over HTTP pull until an operator approves, rejects, or the token ends. It holds no Cluster state and runs no daemon besides preparation; the check-in loop ends at enroll, reject, revoke, or expiry.
+A host that has a Fleet Token and checks in with Cloud over HTTP pull until an operator approves, rejects, or the token ends. It holds no Cluster state and runs no daemon besides preparation; the check-in loop ends at enroll, reject, revoke, or expiry. A reject doesn't stop a host once Cloud has heard it report joining or publishing, without a failure, for its open Server Enrollment; it finishes joining. A reject that lands after the daemon commits but before that report reaches Cloud still cancels it.
 _Avoid_: pending Machine, unenrolled Machine, Cluster member
 
 **Check-in Key**:

@@ -31,7 +31,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 1
@@ -68,14 +68,14 @@ stdout:
 ```
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 3
   },
   "next": "ployz deploy --project shop",
   "service": {
-    "id": "fdf7675e-ccc7-4f64-afa5-ca281d550ace",
+    "id": "430251f2-8125-4a07-a6ae-dc9cd76832ff",
     "name": "db",
     "private_dns": "db"
   },
@@ -89,7 +89,8 @@ stdout:
     "db.privateDns",
     "db.replicas",
     "db.restartPolicy",
-    "db.startCommand"
+    "db.startCommand",
+    "db.updateOrder"
   ]
 }
 ```
@@ -202,7 +203,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 4
@@ -210,28 +211,28 @@ stdout:
   "services": [
     {
       "change": "create",
-      "id": "fdf7675e-ccc7-4f64-afa5-ca281d550ace",
+      "id": "430251f2-8125-4a07-a6ae-dc9cd76832ff",
       "name": "db",
       "private_dns": "db",
-      "row": "fdf7675e-ccc7-4f64-afa5-ca281d550ace:node",
+      "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:node",
       "source": "image",
       "template": null
     },
     {
       "change": "create",
-      "id": "87070af3-9604-42c2-b3dc-918e60918fc0",
+      "id": "7265b113-b85e-4796-98d6-ad9e94589c70",
       "name": "web",
       "private_dns": "web",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:node",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:node",
       "source": "image",
       "template": null
     },
     {
       "change": "create",
-      "id": "6b56d40b-9c56-4df3-a375-cd13a984d1ca",
+      "id": "99cc10c6-6a46-4809-a3a5-32d729bdbfdd",
       "name": "worker",
       "private_dns": "worker",
-      "row": "6b56d40b-9c56-4df3-a375-cd13a984d1ca:node",
+      "row": "99cc10c6-6a46-4809-a3a5-32d729bdbfdd:node",
       "source": "empty",
       "template": null
     }
@@ -267,14 +268,14 @@ stdout:
 ```
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 6
   },
   "next": "ployz deploy --project shop",
   "service": {
-    "id": "6b56d40b-9c56-4df3-a375-cd13a984d1ca",
+    "id": "99cc10c6-6a46-4809-a3a5-32d729bdbfdd",
     "name": "worker",
     "private_dns": "worker"
   },
@@ -338,14 +339,14 @@ stdout:
 ```
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 9
   },
   "next": "ployz deploy --project shop",
   "service": {
-    "id": "2d08aede-4cd5-4baf-930e-561d6aecc2a1",
+    "id": "74d2fbca-528d-453f-ae38-b9a7e076493c",
     "name": "cache",
     "private_dns": "cache"
   },

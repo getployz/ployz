@@ -175,6 +175,7 @@ fn held_on_a() -> ployz_store::VolumeObservation {
             name,
         }],
         unanswered: Vec::new(),
+        failure: None,
     }
 }
 
@@ -482,6 +483,138 @@ fn a_push_removes_a_volume_the_servers_still_show_empty() {
         ),
         "{nodes:?}"
     );
+}
+
+/// Deploy production, then add Volume `data` on `web` and admit a Deploy that
+/// creates it, left in flight, then remove `data` from Working State.
+fn volume_in_flight() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("data").unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    backend::admit(&store, &who, "production", 2);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: ployz_store::VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    (store, who)
+}
+
+fn save_dropping_data(
+    store: &ConfigStore,
+    who: &Actor,
+    version: Option<String>,
+) -> Result<ployz_store::Published, ployz_core::RpcError> {
+    store.write_trusted(
+        who,
+        &Publish {
+            id: None,
+            environment: EnvironmentRef::default(),
+            version,
+            message: None,
+            accept_volume_loss: vec![ployz_store::VolumeName::parse("data").unwrap()],
+        },
+        &Trusted {
+            volumes: Some(held_on_a()),
+            ..Trusted::default()
+        },
+    )
+}
+
+#[test]
+fn a_save_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
+    let (store, who) = volume_in_flight();
+    let removals = store
+        .read(&who, &ployz_store::RemovalsQuery::default())
+        .unwrap();
+    assert_eq!(
+        texts(
+            &removals
+                .volumes
+                .iter()
+                .map(|volume| &volume.name)
+                .collect::<Vec<_>>()
+        ),
+        ["data"]
+    );
+    let refused = save_dropping_data(&store, &who, None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    assert!(pushed_deletes(&store, Some(held_on_a())).is_empty());
+
+    let (store, who) = volume_in_flight();
+    let refused = save_dropping_data(&store, &who, None).unwrap_err();
+    save_dropping_data(
+        &store,
+        &who,
+        Some(refused.details["version"].as_str().unwrap().to_owned()),
+    )
+    .unwrap();
+    assert_eq!(
+        pushed_deletes(&store, Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+#[test]
+fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
+    let (store, who) = volume_in_flight();
+    let deploy = |version: Option<String>| {
+        store.write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000103")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version,
+                upload: None,
+                accept_volume_loss: vec![ployz_store::VolumeName::parse("data").unwrap()],
+                message: None,
+            }),
+            &Trusted {
+                volumes: Some(held_on_a()),
+                ..Trusted::default()
+            },
+        )
+    };
+    let refused = deploy(None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    deploy(Some(
+        refused.details["version"].as_str().unwrap().to_owned(),
+    ))
+    .unwrap();
+    let deletes: Vec<String> = store
+        .claim(
+            &ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap(),
+            &ployz_store::RunnerId::parse("runner").unwrap(),
+        )
+        .unwrap()
+        .deletes
+        .iter()
+        .map(|volume| format!("{}:{}", volume.machine_id, volume.name))
+        .collect();
+    assert_eq!(deletes, [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]);
 }
 
 #[test]

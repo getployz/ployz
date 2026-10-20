@@ -60,6 +60,10 @@ pub struct ProvisionedCopy {
     pub role: CopyRole,
     pub maximum_bytes: ProvisionedVolumeMaximumBytes,
     pub used_bytes: u64,
+    /// What a slot's Machine recorded it as; unset on every other role and from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub slot_role: Option<crate::SlotRole>,
 }
 
 /// Fresh storage evidence, including commitments whose Docker metadata may be missing.
@@ -134,8 +138,10 @@ pub enum StorageCapacityError {
         /// The missing or invalid evidence.
         message: String,
     },
-    #[error("Volume {name} already has a different size; it will not be resized or replaced")]
-    /// An existing Volume has a different immutable bound.
+    #[error(
+        "Volume {name} is requested larger than its existing bound, or at two sizes at once; it will not be grown or replaced"
+    )]
+    /// An existing Volume's bound is below the request, or one request names it twice at different sizes.
     VolumeSizeConflict {
         /// The conflicting Volume.
         name: DockerVolumeName,
@@ -252,7 +258,7 @@ impl StorageCapacity {
         let mut additional = 0u64;
         for (name, maximum) in requested {
             match self.volumes.get(name) {
-                Some(existing) if existing != maximum => {
+                Some(existing) if existing < maximum => {
                     return Err(StorageCapacityError::VolumeSizeConflict { name: name.clone() });
                 }
                 Some(_) => {}
@@ -444,6 +450,42 @@ mod tests {
         ));
         capacity.unmanaged_used_bytes = 0;
         assert_eq!(capacity.budget(&volumes).unwrap().required_growth_bytes, 0);
+    }
+
+    #[test]
+    fn an_existing_volume_at_or_above_the_request_needs_no_commitment_and_a_smaller_one_conflicts()
+    {
+        let name = DockerVolumeName::parse("data").unwrap();
+        let gib = |gib| {
+            BTreeMap::from([(
+                name.clone(),
+                ProvisionedVolumeMaximumBytes::new(
+                    std::num::NonZeroU64::new(gib * STORAGE_GIB).unwrap(),
+                ),
+            )])
+        };
+        let capacity = StorageCapacity {
+            backing: StorageBacking::Fixed {
+                pool_size_bytes: 100 * STORAGE_GIB,
+            },
+            unmanaged_used_bytes: 0,
+            volumes: gib(10),
+            copies: BTreeMap::new(),
+        };
+
+        for requested in [2, 10] {
+            assert_eq!(
+                capacity
+                    .budget(&gib(requested))
+                    .unwrap()
+                    .additional_commitment_bytes,
+                0
+            );
+        }
+        assert!(matches!(
+            capacity.budget(&gib(11)),
+            Err(StorageCapacityError::VolumeSizeConflict { .. })
+        ));
     }
 
     #[test]

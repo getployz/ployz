@@ -115,6 +115,21 @@ fn lowering_refuses_unexpanded_managed_hostnames() {
     assert_eq!(error.path, "managedHostnames");
 }
 
+/// Scale to zero is not a Deploy: lowering refuses it, and removing the Service
+/// is what retires its last copy.
+#[test]
+fn lowering_refuses_zero_replicas() {
+    let config = json!({"version":2,"privateDns":"api",
+        "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+        "healthcheck":{"type":"none"},"restartPolicy":"on-failure","replicas":0
+    });
+    let error = lowered(json!({
+        "namespace":"production","snapshots":[{"config":config,"resolvedEnv":{}}]
+    }))
+    .unwrap_err();
+    assert_eq!(error.path, "replicas");
+}
+
 #[test]
 fn lowering_a_memory_limit_gives_its_whole_bytes() {
     // 15MiB stored as GB multiplies back to a hair under its bytes.
