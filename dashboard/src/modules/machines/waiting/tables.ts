@@ -106,7 +106,7 @@ export const fleetTokenJoin = pgTable("fleet_token_join", {
   createdAt,
 }, (table) => [index("fleet_token_join_token_idx").on(table.fleetTokenId)]);
 
-/** The hosts a Fleet Token has started an enrollment for, by Check-in Key, kept after their waiting rows go. */
+/** The hosts a Fleet Token has started an enrollment for, by Check-in Key, kept after their waiting rows go. Only a trigger on server_enrollment writes it. */
 export const fleetTokenAttempt = pgTable("fleet_token_attempt", {
   organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   // No key on the token: its share lock would wait on a revoke that waits on the enrolling host's row.
