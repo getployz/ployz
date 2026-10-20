@@ -1,5 +1,30 @@
+import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import { BaseSequencer, type TestSpecification } from "vitest/node";
+
+// Vitest's shards hold equal file counts, so CI's slowest shard ran three times as long as its fastest.
+// Source size tracks a file's run time, so each shard here takes the largest remaining file while it holds the fewest bytes.
+class SizeBalancedSequencer extends BaseSequencer {
+  override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {
+    const { shard } = this.ctx.config;
+    if (!shard) return files;
+    const key = (spec: TestSpecification) => `${spec.project.name}:${spec.moduleId}`;
+    const sized = files
+      .map((spec) => ({ spec, bytes: statSync(spec.moduleId).size }))
+      .sort((a, b) => b.bytes - a.bytes || (key(a.spec) < key(b.spec) ? -1 : 1));
+    const shards: { bytes: number; files: TestSpecification[] }[] = Array.from({ length: shard.count }, () => ({
+      bytes: 0,
+      files: [],
+    }));
+    for (const { spec, bytes } of sized) {
+      const lightest = shards.reduce((min, next) => (next.bytes < min.bytes ? next : min));
+      lightest.bytes += bytes;
+      lightest.files.push(spec);
+    }
+    return shards[shard.index - 1]?.files ?? [];
+  }
+}
 
 const sharedTestConfig = {
   setupFiles: ["./src/test/setup-env.ts", "./vitest.setup.ts"],
@@ -17,6 +42,7 @@ export default defineConfig({
     },
   },
   test: {
+    sequence: { sequencer: SizeBalancedSequencer },
     projects: [
       {
         test: {
