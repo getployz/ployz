@@ -259,6 +259,10 @@ When web-2 stopped answering during the deploy:
 ! my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.
 ```
 
+If web-2 stops answering in the middle of the switch, the deploy can fail instead, with
+`failed (2/3 ready)`, and exit 1, even though the new replicas serve
+([#2600](https://github.com/getployz/ployz/issues/2600)). Deploy again once web-2 is back.
+
 Until you deploy again, that server can keep answering with the old version. See
 [Old and new versions answer at once](../troubleshooting/deployments.md#old-and-new-versions-answer-at-once).
 
