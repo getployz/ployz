@@ -5,7 +5,7 @@ use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
     ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
     EnsuredContainer, HealthVerdict, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead,
-    RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions,
+    RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions, Unacked,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -198,9 +198,9 @@ pub(crate) fn still_waiting(
     satisfied: &impl Fn(&BTreeSet<ContainerId>) -> bool,
 ) -> Unconfirmed {
     let mut waiting = Unconfirmed::default();
-    for (machine, answered) in read.unacked(&read.down, satisfied) {
-        waiting.machines.push(machine);
-        if !answered {
+    for unacked in read.unacked(satisfied) {
+        waiting.machines.push(unacked.machine());
+        if let Unacked::Unanswered(machine) = unacked {
             waiting.unanswered.push(machine);
         }
     }

@@ -1325,18 +1325,56 @@ pub struct RoutesRead {
     pub down: BTreeSet<MachineId>,
 }
 
+/// A listed Machine whose proxy has not acked the copies a reader waits for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unacked {
+    /// Its row arrived without them.
+    Stale(MachineId),
+    /// Its row has not arrived or does not decode.
+    Unanswered(MachineId),
+}
+
+impl Unacked {
+    #[must_use]
+    pub const fn machine(&self) -> MachineId {
+        match self {
+            Self::Stale(machine) | Self::Unanswered(machine) => *machine,
+        }
+    }
+}
+
 impl RoutesRead {
-    /// Each listed Machine outside `down` whose proxy acks no copies `satisfied`
-    /// accepts, and whether its row arrived at all.
+    /// Whether the reader's membership sample keeps `machine`'s copies in its proxy's
+    /// routes; each proxy drops those its own sample calls Down.
+    #[must_use]
+    pub fn sampled_up(&self, machine: &MachineId) -> bool {
+        !self.down.contains(machine)
+    }
+
+    /// Each listed Machine outside this read's `down` whose proxy acks no copies
+    /// `satisfied` accepts.
     pub fn unacked<'read>(
         &'read self,
-        down: &'read BTreeSet<MachineId>,
         satisfied: impl Fn(&BTreeSet<ContainerId>) -> bool + 'read,
-    ) -> impl Iterator<Item = (MachineId, bool)> + 'read {
-        self.routes.iter().filter_map(move |(machine, routed)| {
-            let acked = routed.as_ref().is_some_and(&satisfied);
-            (!down.contains(machine) && !acked).then_some((*machine, routed.is_some()))
-        })
+    ) -> impl Iterator<Item = Unacked> + 'read {
+        self.unacked_outside(&self.down, satisfied)
+    }
+
+    /// As [`Self::unacked`], but outside the Machines the caller's own Machine list
+    /// reports Down rather than the reader's sample.
+    pub fn unacked_outside<'read>(
+        &'read self,
+        listed_down: &'read BTreeSet<MachineId>,
+        satisfied: impl Fn(&BTreeSet<ContainerId>) -> bool + 'read,
+    ) -> impl Iterator<Item = Unacked> + 'read {
+        self.routes
+            .iter()
+            .filter(|(machine, _)| !listed_down.contains(*machine))
+            .filter_map(move |(machine, routed)| match routed {
+                None => Some(Unacked::Unanswered(*machine)),
+                Some(routed) if !satisfied(routed) => Some(Unacked::Stale(*machine)),
+                Some(_) => None,
+            })
     }
 }
 

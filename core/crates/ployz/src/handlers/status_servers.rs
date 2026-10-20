@@ -5,12 +5,13 @@
 use std::collections::{BTreeSet, HashMap};
 
 use clap::ArgMatches;
-use futures_util::future::join_all;
+use futures_util::{StreamExt, stream};
 use ployz_core::{
     ContainerId, EnvironmentValues, LiveServices, MachineId, MachineName, MachineObservation,
     MembershipObservation, Namespace, QualifiedService, RoutesRead, RpcError, ServiceObservation,
-    serving_containers,
+    Unacked, serving_containers,
 };
+use ployz_store::{DeploymentStatus, DeploymentSummary};
 use serde::Serialize;
 
 use super::link::Attention;
@@ -20,6 +21,8 @@ use crate::cloud_login::LoginError;
 use crate::context::ContextError;
 
 pub(super) const UNCHECKED: &str = "Could not check which Servers picked up the new copies";
+
+const READS_AT_ONCE: usize = 8;
 
 #[derive(Serialize)]
 #[serde(untagged)]
@@ -37,11 +40,12 @@ pub(super) enum Subject {
 pub(super) fn attention(
     root: &ArgMatches,
     namespace: &Namespace,
-    rolling_out: bool,
+    deploying: &[DeploymentSummary],
 ) -> Vec<Attention> {
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     let named = context.is_some() || leaf.get_one::<String>("connect").is_some();
+    let rolling_out = rolling_out(deploying);
     let observed = super::runtime().and_then(|runtime| {
         runtime.block_on(async {
             match server::reach(leaf, context).await? {
@@ -67,6 +71,18 @@ pub(super) fn attention(
     }
 }
 
+fn rolling_out(deploying: &[DeploymentSummary]) -> Option<String> {
+    deploying
+        .iter()
+        .find(|deployment| {
+            matches!(
+                deployment.status,
+                DeploymentStatus::Running | DeploymentStatus::Cancelling
+            )
+        })
+        .map(DeploymentSummary::label)
+}
+
 fn nothing_set_up(error: &Error) -> bool {
     let Some(source) = std::error::Error::source(error) else {
         return false;
@@ -85,7 +101,7 @@ struct Observed {
 }
 
 enum Copies {
-    RollingOut,
+    RollingOut(String),
     Unlisted(Error),
     Listed {
         live: LiveServices<RpcError>,
@@ -98,13 +114,13 @@ enum Copies {
 async fn observe(
     client: &mut crate::connect::Client,
     namespace: &Namespace,
-    rolling_out: bool,
+    rolling_out: Option<String>,
 ) -> Result<Observed, Error> {
     let machines = client.machines().await?;
-    if rolling_out {
+    if let Some(deployment) = rolling_out {
         return Ok(Observed {
             machines,
-            copies: Copies::RollingOut,
+            copies: Copies::RollingOut(deployment),
         });
     }
     let live = match client
@@ -131,16 +147,19 @@ async fn observe(
     let client = &*client;
     let reads = match reader {
         Some(reader) => {
-            join_all(services.map(|service| async move {
-                let read = crate::deploy::MachineOperations::read_routes(
-                    client,
-                    &reader,
-                    &service.identity,
-                )
-                .await;
-                (service, read)
-            }))
-            .await
+            stream::iter(services)
+                .map(|service| async move {
+                    let read = crate::deploy::MachineOperations::read_routes(
+                        client,
+                        &reader,
+                        &service.identity,
+                    )
+                    .await;
+                    (service, read)
+                })
+                .buffered(READS_AT_ONCE)
+                .collect()
+                .await
         }
         None => Vec::new(),
     };
@@ -157,18 +176,31 @@ struct Check {
 }
 
 enum Unseen {
+    RollingOut(String),
     Unlisted(Error),
     Unanswered(Vec<MachineId>),
+    Unreported(BTreeSet<MachineId>),
     Unread {
-        service: QualifiedService,
+        services: Vec<QualifiedService>,
         error: RpcError,
     },
     /// Live Machines the routes read did not judge; `None` when the Server read did not
     /// know every Machine yet.
     Unjudged {
-        service: QualifiedService,
-        machines: Option<Vec<MachineId>>,
+        services: Vec<QualifiedService>,
+        machines: Option<BTreeSet<MachineId>>,
     },
+}
+
+struct ServicesByFact<Fact>(Vec<(Fact, Vec<QualifiedService>)>);
+
+impl<Fact: PartialEq> ServicesByFact<Fact> {
+    fn add(&mut self, fact: Fact, service: QualifiedService) {
+        match self.0.iter_mut().find(|(known, _)| *known == fact) {
+            Some((_, services)) => services.push(service),
+            None => self.0.push((fact, vec![service])),
+        }
+    }
 }
 
 fn judge(observed: Observed) -> Check {
@@ -199,7 +231,10 @@ fn judge(observed: Observed) -> Check {
             .collect(),
     };
     let (live, reads) = match copies {
-        Copies::RollingOut => return check,
+        Copies::RollingOut(deployment) => {
+            check.unseen.push(Unseen::RollingOut(deployment));
+            return check;
+        }
         Copies::Unlisted(error) => {
             check.unseen.push(Unseen::Unlisted(error));
             return check;
@@ -217,40 +252,42 @@ fn judge(observed: Observed) -> Check {
     if !unanswered.is_empty() {
         check.unseen.push(Unseen::Unanswered(unanswered));
     }
+    let mut unreported = BTreeSet::new();
+    let mut unread = ServicesByFact(Vec::new());
+    let mut unjudged = ServicesByFact(Vec::new());
     for (service, read) in reads {
         let read = match read {
             Ok(read) => read,
             Err(error) => {
-                check.unseen.push(Unseen::Unread {
-                    service: service.identity,
-                    error,
-                });
+                unread.add(error, service.identity);
                 continue;
             }
         };
-        let serving: BTreeSet<ContainerId> = serving_containers(&service.containers)
-            .iter()
-            .map(|serving| serving.as_observation())
-            .filter(|copy| !down.contains(&copy.machine_id))
-            .map(|copy| copy.container_id)
-            .collect();
-        if serving.is_empty() {
-            continue;
-        }
-        let waiting: Vec<String> = read
-            .unacked(&down, |routed| serving.is_subset(routed))
-            .map(|(machine, _)| check.name(&machine))
-            .collect();
-        let missing: Vec<MachineId> = machines
+        let missing: BTreeSet<MachineId> = machines
             .iter()
             .map(|observed| observed.machine.id)
             .filter(|machine| !down.contains(machine) && !read.routes.contains_key(machine))
             .collect();
         if !read.complete || !missing.is_empty() {
-            check.unseen.push(Unseen::Unjudged {
-                service: service.identity.clone(),
-                machines: read.complete.then_some(missing),
-            });
+            unjudged.add(read.complete.then_some(missing), service.identity.clone());
+        }
+        let serving: BTreeSet<ContainerId> = serving_containers(&service.containers)
+            .iter()
+            .map(|serving| serving.as_observation())
+            .filter(|copy| !down.contains(&copy.machine_id) && read.sampled_up(&copy.machine_id))
+            .map(|copy| copy.container_id)
+            .collect();
+        if serving.is_empty() {
+            continue;
+        }
+        let mut waiting = Vec::new();
+        for unacked in read.unacked_outside(&down, |routed| serving.is_subset(routed)) {
+            match unacked {
+                Unacked::Stale(machine) => waiting.push(check.name(&machine)),
+                Unacked::Unanswered(machine) => {
+                    unreported.insert(machine);
+                }
+            }
         }
         if !waiting.is_empty() {
             check
@@ -258,6 +295,21 @@ fn judge(observed: Observed) -> Check {
                 .push(not_picked_up(service.identity, waiting));
         }
     }
+    if !unreported.is_empty() {
+        check.unseen.push(Unseen::Unreported(unreported));
+    }
+    check.unseen.extend(
+        unread
+            .0
+            .into_iter()
+            .map(|(error, services)| Unseen::Unread { services, error }),
+    );
+    check.unseen.extend(
+        unjudged
+            .0
+            .into_iter()
+            .map(|(machines, services)| Unseen::Unjudged { services, machines }),
+    );
     check
 }
 
@@ -278,6 +330,14 @@ fn not_picked_up(service: QualifiedService, machines: Vec<String>) -> Attention 
     }
 }
 
+fn service_names(services: &[QualifiedService]) -> String {
+    services
+        .iter()
+        .map(|service| service.name.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl Check {
     fn name(&self, machine: &MachineId) -> String {
         self.names
@@ -285,9 +345,9 @@ impl Check {
             .map_or_else(|| machine.to_string(), ToString::to_string)
     }
 
-    fn names(&self, machines: &[MachineId]) -> String {
+    fn names<'machine>(&self, machines: impl IntoIterator<Item = &'machine MachineId>) -> String {
         machines
-            .iter()
+            .into_iter()
             .map(|machine| self.name(machine))
             .collect::<Vec<_>>()
             .join(", ")
@@ -296,21 +356,35 @@ impl Check {
     fn warn(&self) {
         for unseen in &self.unseen {
             match unseen {
+                Unseen::RollingOut(deployment) => crate::ui::warn(format!(
+                    "Not checking which Servers picked up the new copies while deployment {deployment} rolls out."
+                )),
                 Unseen::Unlisted(error) => crate::ui::warn_cause(UNCHECKED, error),
                 Unseen::Unanswered(machines) => crate::ui::warn(format!(
                     "{} did not answer, so status may miss Servers that have not picked up the new copies.",
                     self.names(machines)
                 )),
-                Unseen::Unread { service, error } => {
-                    crate::ui::warn_cause(format_args!("{UNCHECKED} of {}", service.name), error)
+                Unseen::Unreported(machines) => {
+                    let (has, it, routes) = match machines.len() {
+                        1 => ("has", "it", "routes"),
+                        _ => ("have", "they", "route"),
+                    };
+                    crate::ui::warn(format!(
+                        "{} {has} not reported which copies {it} {routes} yet.",
+                        self.names(machines)
+                    ));
                 }
-                Unseen::Unjudged { service, machines } => crate::ui::warn(format!(
+                Unseen::Unread { services, error } => crate::ui::warn_cause(
+                    format_args!("{UNCHECKED} of {}", service_names(services)),
+                    error,
+                ),
+                Unseen::Unjudged { services, machines } => crate::ui::warn(format!(
                     "Could not check whether {} picked up the new copies of {}.",
-                    machines.as_deref().map_or_else(
+                    machines.as_ref().map_or_else(
                         || "every Server".to_owned(),
                         |machines| self.names(machines)
                     ),
-                    service.name
+                    service_names(services)
                 )),
             }
         }
@@ -348,13 +422,17 @@ mod tests {
         copy
     }
 
-    fn web(copies: [ContainerObservation; 2]) -> ServiceObservation {
+    fn service(name: &str, id: char, copies: [ContainerObservation; 2]) -> ServiceObservation {
         ServiceObservation {
-            identity: qualified("app", "web"),
-            service_id: service_id('a'),
+            identity: qualified("app", name),
+            service_id: service_id(id),
             containers: service_containers(copies),
             hook_containers: Vec::new(),
         }
+    }
+
+    fn web(copies: [ContainerObservation; 2]) -> ServiceObservation {
+        service("web", 'a', copies)
     }
 
     fn routes_as_ployzd_answers(acked: &[(&Machine, &[char])], down: &[&Machine]) -> RoutesRead {
@@ -542,13 +620,13 @@ mod tests {
             vec![(
                 web([routed_on(&one, '1'), routed_on(&three, '3')]),
                 Ok(routes_as_ployzd_answers(
-                    &[(&one, &['1', '3']), (&two, &['1', '3'])],
+                    &[(&one, &['1']), (&two, &['1'])],
                     &[&three],
                 )),
             )],
         );
 
-        assert!(check.attention.is_empty());
+        assert!(check.attention.is_empty(), "no routes_not_acked row");
         assert_eq!(
             warned(&check),
             ["Could not check whether machine-3 picked up the new copies of web."]
@@ -634,11 +712,91 @@ mod tests {
     }
 
     #[test]
-    fn while_a_deployment_rolls_out_only_down_machines_show() {
+    fn a_machine_whose_routes_row_has_not_arrived_is_unreported_not_stale() {
         let [one, two, three] = machines();
+        let mut read = routes_as_ployzd_answers(&[(&one, &['1', '2']), (&two, &['1', '2'])], &[]);
+        read.routes.insert(three.id, None);
+        let check = checked(
+            listed(&[&one, &two, &three], &[]),
+            vec![(web([routed_on(&one, '1'), routed_on(&two, '2')]), Ok(read))],
+        );
+
+        assert!(check.attention.is_empty(), "no routes_not_acked row");
+        assert_eq!(
+            warned(&check),
+            ["machine-3 has not reported which copies it routes yet."]
+        );
+    }
+
+    #[test]
+    fn a_read_that_lacks_the_full_machine_list_warns_once_for_every_service() {
+        let [one, two, three] = machines();
+        let mut read = routes_as_ployzd_answers(&[(&one, &['1', '2']), (&two, &['1', '2'])], &[]);
+        read.complete = false;
+        let copies = || [routed_on(&one, '1'), routed_on(&two, '2')];
+        let check = checked(
+            listed(&[&one, &two, &three], &[]),
+            vec![
+                (service("web", 'a', copies()), Ok(read.clone())),
+                (service("api", 'b', copies()), Ok(read.clone())),
+                (service("worker", 'c', copies()), Ok(read)),
+            ],
+        );
+
+        assert_eq!(
+            warned(&check),
+            ["Could not check whether every Server picked up the new copies of web, api, worker."]
+        );
+    }
+
+    #[test]
+    fn the_same_read_error_for_several_services_warns_once() {
+        let [one, two, three] = machines();
+        let copies = || [routed_on(&one, '1'), routed_on(&two, '2')];
+        let check = checked(
+            listed(&[&one, &two, &three], &[]),
+            vec![
+                (
+                    service("web", 'a', copies()),
+                    Err(unavailable("store not ready")),
+                ),
+                (
+                    service("api", 'b', copies()),
+                    Err(unavailable("store not ready")),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            warned(&check),
+            ["Could not check which Servers picked up the new copies of web, api: store not ready"]
+        );
+    }
+
+    fn deployment(number: u64, status: &str) -> DeploymentSummary {
+        serde_json::from_value(json!({
+            "id": "00000000-0000-4000-8000-000000000101",
+            "environment_id": "00000000-0000-4000-8000-000000000002",
+            "number": number, "status": status, "saved": 1, "services": [],
+            "runner": null, "upload": null, "remove": false, "admitted_by": null,
+            "admitted_at": 0, "started_at": null, "ended_at": null, "message": null,
+            "push": null, "ci": null, "in_flight": true, "outcome": null,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_queued_deployment_does_not_turn_the_check_off() {
+        assert_eq!(rolling_out(&[deployment(12, "queued")]), None);
+    }
+
+    #[test]
+    fn while_a_deployment_rolls_out_status_says_it_skips_the_check() {
+        let [one, two, three] = machines();
+        let deploying = [deployment(13, "queued"), deployment(12, "running")];
         let check = judge(Observed {
             machines: listed(&[&one, &two], &[&three]),
-            copies: Copies::RollingOut,
+            copies: Copies::RollingOut(rolling_out(&deploying).unwrap()),
         });
 
         assert_eq!(
@@ -649,7 +807,10 @@ mod tests {
                 "machine": "machine-3",
             }])
         );
-        assert!(warned(&check).is_empty());
+        assert_eq!(
+            warned(&check),
+            ["Not checking which Servers picked up the new copies while deployment #12 rolls out."]
+        );
     }
 
     fn status_warnings(config: &std::path::Path, flags: &[&str]) -> Vec<String> {
@@ -662,7 +823,7 @@ mod tests {
         args.extend(flags);
         let root = crate::cli::command().try_get_matches_from(args).unwrap();
         let namespace = qualified("app", "web").namespace;
-        assert!(attention(&root, &namespace, false).is_empty());
+        assert!(attention(&root, &namespace, &[]).is_empty());
         let (_, json) = crate::ui::captured(|| crate::ui::show(&json!({})));
         json.and_then(|json| json.get("warnings").cloned())
             .map(|warnings| serde_json::from_value(warnings).unwrap())
@@ -688,6 +849,11 @@ mod tests {
 
     #[test]
     fn status_checks_nothing_and_says_nothing_with_no_server_set_up() {
+        if std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists()
+            || std::env::var_os(crate::cli::env::TOKEN).is_some()
+        {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
 
         assert!(status_warnings(&dir.path().join("config.yaml"), &[]).is_empty());

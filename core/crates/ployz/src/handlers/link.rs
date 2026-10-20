@@ -702,7 +702,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             Ok(view) => attention.extend(super::status_servers::attention(
                 root,
                 &view.namespace,
-                !deploying.is_empty(),
+                &deploying,
             )),
             Err(error) => crate::ui::warn_cause(UNCHECKED, &store.fail(error)),
         }
