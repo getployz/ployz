@@ -42,7 +42,8 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 /// Which of `connections`' Servers hold each Docker Volume named in `sought`: the
 /// evidence (`VolumeObservation`) Cloud admits a Deploy that removes deployed
 /// Volumes with. Servers that don't answer are named, never assumed empty, and when
-/// none can be reached its `failure` says why.
+/// the check fails its `failure` says whether no Server was reached or which one
+/// answered with an error, and why.
 ///
 /// # Errors
 /// Returns `invalid_argument` for malformed input.
