@@ -751,15 +751,16 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
         }
         // A narrowed one also ships, as Service nodes, the Services its named ones
         // reference; a node it left unchanged or never reached ships nothing.
-        let shipped = if newer.services.is_empty() || ours.is_empty() {
-            newer.services.clone()
+        let carries = if newer.services.is_empty() || ours.is_empty() {
+            ships_all(ours, &newer.services)
         } else {
             let Ok(read) = store.read(&ployz_store::DeploymentQuery {
                 id: newer.id.clone(),
             }) else {
                 continue;
             };
-            read.nodes
+            let shipped: Vec<ServiceName> = read
+                .nodes
                 .into_iter()
                 .filter_map(|node| match (node.node, node.outcome) {
                     (
@@ -775,16 +776,17 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
                     )
                     | (DeployedNode::Volume { .. } | DeployedNode::Config { .. }, _) => None,
                 })
-                .collect()
+                .collect();
+            ours.iter().all(|service| shipped.contains(service))
         };
-        if ships_all(ours, &shipped) {
+        if carries {
             return Ok(Some(newer));
         }
     }
     Ok(None)
 }
 
-/// Whether a Deployment shipping `newer` ships every Service one targeting `ours` would; empty ships every Service.
+/// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.
 fn ships_all(ours: &[ServiceName], newer: &[ServiceName]) -> bool {
     newer.is_empty() || !ours.is_empty() && ours.iter().all(|service| newer.contains(service))
 }
