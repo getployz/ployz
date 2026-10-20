@@ -50,6 +50,9 @@ server doesn't answer, Ployz says so instead, since the missing lines may be on 
 other name before reading.
 `ployz logs --follow --machine X` with no service named follows every service that runs on X and
 skips the rest.
+When a followed server stops answering for 10 seconds, `--follow` names it and keeps following the
+others. It ends once none still answers, and exits with code 3. It doesn't pick the server up again
+when it comes back; run the command again.
 
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.
