@@ -10,6 +10,7 @@ import { organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import {
+  COMMITTED_STAGES,
   ENROLL_MIN_CLI_VERSION,
   type EnrollInput,
   type EnrollInstruction,
@@ -449,9 +450,11 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     .innerJoin(waitingServer, eq(waitingServer.id, serverEnrollment.waitingServerId))
     .where(and(
       eq(serverEnrollment.organizationId, organization.id),
-      input.id === undefined ? and(isNull(waitingServer.rejectedAt), or(
-        isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, new Date(Date.now() - RECENT_ENROLLMENT_MS)),
-      )) : eq(serverEnrollment.id, input.id),
+      // Reject spares a committed join, so that attempt stays in view like any other.
+      input.id === undefined ? and(
+        or(isNull(waitingServer.rejectedAt), inArray(serverEnrollment.stage, [...COMMITTED_STAGES])),
+        or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, new Date(Date.now() - RECENT_ENROLLMENT_MS))),
+      ) : eq(serverEnrollment.id, input.id),
     ))
     .orderBy(asc(serverEnrollment.requestedAt), asc(waitingServer.firstSeenAt), asc(waitingServer.id), asc(serverEnrollment.id));
   const { ahead, joining } = yield* readJoinStatus(organization.id);

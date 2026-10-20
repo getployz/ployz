@@ -9,7 +9,10 @@ export type EnrollmentStage = "installing" | "storage" | "enrolling" | "queued" 
 
 export const ENROLLMENT_STAGES: ReadonlyArray<EnrollmentStage> = ["installing", "enrolling", "queued", "storage", "joining", "publishing"];
 
-export const PAST_STORAGE: ReadonlySet<string | null> = new Set(ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexOf("storage") + 1));
+/** The stages a host reports once its daemon has committed the join. */
+export const COMMITTED_STAGES = ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexOf("storage") + 1);
+
+export const PAST_STORAGE: ReadonlySet<string | null> = new Set(COMMITTED_STAGES);
 
 export const OPEN_ENROLLMENT_STATES: ReadonlyArray<EnrollmentState> = ["awaiting_founder", "instructed", "running"];
 

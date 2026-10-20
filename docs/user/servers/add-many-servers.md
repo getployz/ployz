@@ -95,5 +95,6 @@ a stage, **Failed**, or **Cancelled**) and its reason, when there is one. Both s
 
 **Reject** turns away an unrecognized host. The same installation cannot come back with the
 same Fleet Token. Reimaging a host creates a new identity, so review arrivals even when you
-have rejected that hardware before. Revoke a leaked Fleet Token from **Tokens**. This drops
+have rejected that hardware before. A host that is already joining when you reject it finishes
+joining and stays in the Enrolling list. Revoke a leaked Fleet Token from **Tokens**. This drops
 its waiting hosts; servers that already joined stay.

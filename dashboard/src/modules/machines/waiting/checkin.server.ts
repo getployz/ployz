@@ -12,7 +12,7 @@ import {
 } from "#/modules/machines/waiting/checkin-wire";
 import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
+import { asStage, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
@@ -213,7 +213,8 @@ function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentC
   const attempt = request.attempt;
   if (attempt?.attemptId !== open.id) return null;
   if (attempt.failure !== undefined) return { attemptId: open.id, stage: attempt.stage, failure: attempt.failure };
-  return attempt.stage === open.stage ? null : { attemptId: open.id, stage: attempt.stage };
+  // Until the run records a stage, every check-in reports it again, even one a check-in already stored.
+  return attempt.stage === open.stage && open.state === "running" ? null : { attemptId: open.id, stage: attempt.stage };
 }
 
 const answerAttempt = Effect.fn("Checkin.answerAttempt")(function* (
@@ -225,6 +226,12 @@ const answerAttempt = Effect.fn("Checkin.answerAttempt")(function* (
   if (open === null) return WAIT;
   const reported = reportOf(open, request);
   if (reported !== null) {
+    if (reported.failure === undefined && PAST_STORAGE.has(reported.stage) && !PAST_STORAGE.has(open.stage)) {
+      // Reject spares a join it reads as committed. It takes this host's row lock first, so it never reads a stage behind the host's.
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(serverEnrollment).set({ stage: asStage(reported.stage) })
+        .where(and(eq(serverEnrollment.id, open.id), isNull(serverEnrollment.endedAt)));
+    }
     yield* afterDatabaseCommit(sendInngestEvent(createServerEnrollmentReportedEvent(reported)).pipe(
       Effect.catch((error) => Effect.logWarning("An enrollment report was not sent; the next check-in sends it again.", error)),
     ));
