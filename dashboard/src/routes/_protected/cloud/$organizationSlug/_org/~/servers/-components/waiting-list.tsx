@@ -8,6 +8,7 @@ import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select"
 import { Separator } from "#/components/ui/separator";
 import { useMediaQuery } from "#/hooks/use-media-query";
 import { cn } from "#/lib/utils";
+import type { ServerStatus } from "#/modules/machines/server-status";
 import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
@@ -44,7 +45,12 @@ const MIX = [
 ] as const satisfies readonly { value: Readiness; bar: string; text: string }[];
 
 /** Servers waiting to join and servers enrolling, in one tray. The page renders it only when it holds something. */
-export function IntakeTray({ organizationSlug, token, firstRun }: { organizationSlug: string; token: string | undefined; firstRun: boolean }) {
+export function IntakeTray({ organizationSlug, token, firstRun, fleet }: {
+  organizationSlug: string;
+  token: string | undefined;
+  firstRun: boolean;
+  fleet: readonly { status: ServerStatus }[];
+}) {
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
   const cancel = useCancelEnrollment(organizationSlug);
@@ -55,7 +61,7 @@ export function IntakeTray({ organizationSlug, token, firstRun }: { organization
     <Card>
       <CardContent className="flex flex-col gap-4">
         {/* Stays mounted while the last waiting server enrolls, so its sheet survives the row leaving. */}
-        <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} firstRun={firstRun} />
+        <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} firstRun={firstRun} fleet={fleet} />
         {servers.length > 0 && enrolling ? <Separator /> : null}
         <EnrollingList attempts={attempts} onCancel={cancel.mutate} />
       </CardContent>
@@ -63,13 +69,14 @@ export function IntakeTray({ organizationSlug, token, firstRun }: { organization
   );
 }
 
-export function WaitingList({ organizationSlug, servers, now, token, hasFirst = true, firstRun = false }: {
+export function WaitingList({ organizationSlug, servers, now, token, hasFirst = true, firstRun = false, fleet = [] }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
   now: number;
   token?: string | undefined;
   hasFirst?: boolean;
   firstRun?: boolean;
+  fleet?: readonly { status: ServerStatus }[];
 }) {
   const [filter, setFilter] = useState<ReadinessFilter>("all");
   const [provider, setProvider] = useState("");
@@ -140,7 +147,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
 
   const opened = openId === null ? undefined : servers.find((server) => server.id === openId);
   const sheets = <>
-    {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
+    {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} fleet={fleet} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
     <WaitingDetailSheet
       open={openId !== null}
       failed={detail.isError}

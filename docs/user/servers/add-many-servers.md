@@ -61,6 +61,10 @@ check-in refreshes the row. Offline hosts have stopped checking in.
 5. Review the names, storage choices and any **Skip** reasons. For a selection across
    providers or networks, check that every source belongs to you. Click **Enroll N**.
 
+When every server already in the organization reads offline, the sheet says **Servers offline**.
+Ployz Cloud can't join hosts to a cluster it can't reach, so the enroll fails. If those servers
+were deleted, follow **Forget Servers** to forget them first, then enroll.
+
 ## Use spare disk
 
 The Enroll sheet currently uses ZFS on the main disk. Hosts that check in do not yet

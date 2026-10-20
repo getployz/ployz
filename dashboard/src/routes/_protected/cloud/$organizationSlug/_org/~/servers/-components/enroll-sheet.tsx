@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -10,15 +11,18 @@ import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import { Skeleton } from "#/components/ui/skeleton";
 import { toErrorMessage } from "#/lib/error-message";
+import type { ServerStatus } from "#/modules/machines/server-status";
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { startServerEnrollmentServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { enrollmentPlanQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
-export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
+export function EnrollSheet({ organizationSlug, servers, hasFirst, fleet, onClose }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
   hasFirst: boolean;
+  /** The Organization's Servers as last observed. When all are offline, Cloud refuses the enroll until they're forgotten. */
+  fleet: readonly { status: ServerStatus }[];
   onClose: () => void;
 }) {
   const [initialHasFirst] = useState(hasFirst);
@@ -66,6 +70,10 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
       <div className="flex-1 overflow-y-auto px-4">
         <FieldGroup>
           {initialHasFirst !== hasFirst ? <FieldDescription>{hasFirst ? "Another server is starting the cluster." : "Choose the first server again."}</FieldDescription> : null}
+          {fleet.length > 0 && fleet.every((server) => server.status === "offline") ? <Alert variant="destructive">
+            <AlertTitle>Servers offline</AlertTitle>
+            <AlertDescription>Forget them first. <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} hash="organization-teardown" className="underline underline-offset-4">Forget Servers</Link></AlertDescription>
+          </Alert> : null}
           {preview && (preview.spread.providers > 1 || preview.spread.networks > 3) ? <Alert>
             <AlertTitle>{preview.spread.networks} networks, {preview.spread.providers} providers</AlertTitle>
             <AlertDescription>Make sure they’re all yours.<details><summary>Show sources</summary>{servers.map((row) => <p key={row.id}>{row.report.hostname} · {row.observedIp} · {row.report.provider ?? "Unknown"}</p>)}</details></AlertDescription>
