@@ -48,7 +48,6 @@ pub(crate) trait BootHost: Send + Sync {
     ) -> impl Future<Output = Result<EnsuredContainer, LocalMachineError>> + Send;
 }
 
-/// What the pass decides from, read once after catch-up.
 pub(crate) struct Observed {
     pub(crate) containers: Vec<ContainerObservation>,
     pub(crate) routes: BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
