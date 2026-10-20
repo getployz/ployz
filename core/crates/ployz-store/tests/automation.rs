@@ -356,6 +356,7 @@ fn a_push_never_deletes_data_no_save_accepted() {
         .write(
             &who,
             &ployz_store::CreateVolume {
+                restored_from: None,
                 shared_writes: false,
                 storage_locked: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
@@ -409,6 +410,7 @@ fn a_push_removes_a_volume_the_servers_still_show_empty() {
         .write(
             &who,
             &ployz_store::CreateVolume {
+                restored_from: None,
                 shared_writes: false,
                 storage_locked: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
