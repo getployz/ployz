@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { ServerStatus } from "#/modules/machines/server-status";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
@@ -21,7 +20,7 @@ const waiting: WaitingServerView = {
   firstSeenAt: "2026-10-17T09:59:00Z", lastCheckInAt: "2026-10-17T09:59:55Z", arrivalAt: "2026-10-17T09:59:00Z", returned: null,
 };
 
-async function open(fleet: readonly { status: ServerStatus }[]) {
+async function open(serversOffline: boolean) {
   vi.spyOn(waitingFunctions, "planServerEnrollmentServerFn").mockImplementation(async ({ data }) => ({
     rows: data.ids.map((id) => ({ waitingServerId: id, fleetTokenId: "fleet", hostname: "web", role: "joiner" as const,
       instruction: { name: "web", storage: { kind: "zfs" as const }, policy: { labels: {}, acceptsBuilds: true, acceptsServices: true, acceptsIngress: true } } })),
@@ -30,7 +29,7 @@ async function open(fleet: readonly { status: ServerStatus }[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createRouter({
     routeTree: createRootRoute({ component: () => <QueryClientProvider client={client}>
-      <EnrollSheet organizationSlug="ada" servers={[waiting]} hasFirst fleet={fleet} onClose={vi.fn()} />
+      <EnrollSheet organizationSlug="ada" servers={[waiting]} hasFirst serversOffline={serversOffline} onClose={vi.fn()} />
     </QueryClientProvider> }),
     history: createMemoryHistory(),
   });
@@ -39,14 +38,14 @@ async function open(fleet: readonly { status: ServerStatus }[]) {
   await vi.waitFor(() => expect(screen.getByText("ZFS on main disk")).toBeTruthy());
 }
 
-it("warns when every Server is offline, links to Forget Servers, and still lets you enroll", async () => {
-  await open([{ status: "offline" }, { status: "offline" }]);
+it("warns when no Server answers Cloud, links to Forget Servers, and still lets you enroll", async () => {
+  await open(true);
   expect(screen.getByRole("alert").textContent).toBe("Servers offlineForget them first. Forget Servers");
   expect(screen.getByRole("link", { name: "Forget Servers" }).getAttribute("href")).toBe("/cloud/ada/~/settings#organization-teardown");
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Enroll 1" }).disabled).toBe(false);
 });
 
-it("doesn't warn while any Server is online", async () => {
-  await open([{ status: "offline" }, { status: "online" }]);
+it("doesn't warn while a Server answers", async () => {
+  await open(false);
   expect(screen.queryByText("Servers offline")).toBeNull();
 });

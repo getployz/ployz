@@ -11,18 +11,17 @@ import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import { Skeleton } from "#/components/ui/skeleton";
 import { toErrorMessage } from "#/lib/error-message";
-import type { ServerStatus } from "#/modules/machines/server-status";
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { startServerEnrollmentServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { enrollmentPlanQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
-export function EnrollSheet({ organizationSlug, servers, hasFirst, fleet, onClose }: {
+export function EnrollSheet({ organizationSlug, servers, hasFirst, serversOffline, onClose }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
   hasFirst: boolean;
-  /** The Organization's Servers as last observed. When all are offline, Cloud refuses the enroll until they're forgotten. */
-  fleet: readonly { status: ServerStatus }[];
+  /** None of the Organization's Servers answered Cloud, so it refuses the enroll until they're back or forgotten. */
+  serversOffline: boolean;
   onClose: () => void;
 }) {
   const [initialHasFirst] = useState(hasFirst);
@@ -70,7 +69,7 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, fleet, onClos
       <div className="flex-1 overflow-y-auto px-4">
         <FieldGroup>
           {initialHasFirst !== hasFirst ? <FieldDescription>{hasFirst ? "Another server is starting the cluster." : "Choose the first server again."}</FieldDescription> : null}
-          {fleet.length > 0 && fleet.every((server) => server.status === "offline") ? <Alert variant="destructive">
+          {serversOffline ? <Alert variant="destructive">
             <AlertTitle>Servers offline</AlertTitle>
             <AlertDescription>Forget them first. <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} hash="organization-teardown" className="underline underline-offset-4">Forget Servers</Link></AlertDescription>
           </Alert> : null}

@@ -300,7 +300,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const statusKey = serverEnrollmentsQueryOptions("ada").queryKey;
   client.setQueryData(waitingKey, [second]);
   client.setQueryData(statusKey, { attempts: [attempt], hasFirst: true, joining: 0 });
-  render(<QueryClientProvider client={client}><IntakeTray organizationSlug="ada" token={undefined} firstRun={false} fleet={[]} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><IntakeTray organizationSlug="ada" token={undefined} firstRun={false} serversOffline={false} /></QueryClientProvider>);
   expect(rowNames()).toEqual(["second"]);
   const waiting = deferred<WaitingServerView[]>();
   const status = deferred<Awaited<ReturnType<typeof waitingFunctions.serverEnrollmentStatusServerFn>>>();
@@ -396,7 +396,7 @@ it("does not offer an unproven spare-disk promise, and cannot enroll a zero-row 
 it("keeps preview data while editing, debounces names, and permits a background refetch", async () => {
   const preview = previewStub();
   const client = flowClient();
-  render(<QueryClientProvider client={client}><EnrollSheet organizationSlug="ada" servers={[host("one")]} hasFirst fleet={[]} onClose={vi.fn()} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><EnrollSheet organizationSlug="ada" servers={[host("one")]} hasFirst serversOffline={false} onClose={vi.fn()} /></QueryClientProvider>);
   await vi.waitFor(() => expect(screen.getByText("ZFS on main disk")).toBeTruthy());
   const pendingPlan = deferred<ReturnType<typeof planFor>>();
   preview.mockReturnValueOnce(pendingPlan.promise);
