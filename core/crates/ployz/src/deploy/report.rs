@@ -403,10 +403,9 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
         Some(service) => format!("{service}: {reason}"),
         None => reason,
     });
-    // Losing to a newer Deploy is no Machine's fault.
-    let newer = matches!(error, ExecutionError::NewerServing { .. });
+    let lost_to_newer = matches!(error, ExecutionError::NewerServing { .. });
     let mut diagnostic = Diagnostic {
-        failed_machine: (!newer).then_some(machine),
+        failed_machine: (!lost_to_newer).then_some(machine),
         logs: tails,
         ..Diagnostic::default()
     };
@@ -442,7 +441,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
         }
     }
     Failure::from(RpcError {
-        code: if newer {
+        code: if lost_to_newer {
             RpcErrorCode::Conflict
         } else {
             RpcErrorCode::Internal

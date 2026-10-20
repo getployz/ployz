@@ -785,7 +785,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     Published::Cancelled => {
                         fail(last, ExecutionError::Cancelled, Event::PublishFailed(group));
                     }
-                    Published::CopyFailed(task, error) => {
+                    Published::CopyFailed { task, error } => {
                         fail(task, error, Event::PublishFailed(group));
                     }
                     Published::Failed(error) => fail(last, error, Event::PublishFailed(group)),
@@ -911,7 +911,6 @@ async fn restore_group<C: MachineOperations>(
                     restored = true;
                     None
                 }
-                // `restore_old` removed it, or said why it could not.
                 RestoreAttempt::NotServing
                 | RestoreAttempt::Failed {
                     error: ExecutionError::NewerServing { .. },
@@ -1084,8 +1083,7 @@ enum Published {
     Listed,
     Unconfirmed(cleanup::Unconfirmed),
     Cancelled,
-    /// The copy this task started could not go In.
-    CopyFailed(usize, ExecutionError),
+    CopyFailed { task: usize, error: ExecutionError },
     Failed(ExecutionError),
 }
 
@@ -1280,7 +1278,7 @@ async fn route_new<C: MachineOperations>(
             }
             Err(error) => machine_error(MachineAction::StartContainer, error),
         };
-        return Err(Published::CopyFailed(*task, error));
+        return Err(Published::CopyFailed { task: *task, error });
     }
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     match cleanup::wait_listed(client, first_machine, service, &ids, cancellation, |_| {}).await {
@@ -1807,7 +1805,7 @@ impl<'a> Rows<'a> {
                     away,
                 )
             }
-            Left::Older(left) => {
+            Left::OlderNotRemoved(left) => {
                 let (reason, away) = self.explain(copy, *left);
                 let newer = ExecutionError::NewerServing {
                     service: copy.service.clone(),
@@ -1832,8 +1830,7 @@ enum Left {
     Failed(RpcError),
     /// This run Held the copy and could not bring it back In, for this reason.
     NotRestored(Box<Left>, String),
-    /// A newer copy is In, and removing this one stopped for this reason.
-    Older(Box<Left>),
+    OlderNotRemoved(Box<Left>),
     DeployFailed,
 }
 
@@ -2618,8 +2615,6 @@ async fn leave_unstopped<C: MachineOperations>(
     }
 }
 
-/// The owner refuses In to a copy older than one already In, so this copy can
-/// never serve again and leaves for good.
 async fn retire_older<C: MachineOperations>(
     client: &C,
     progress: &Progress,
@@ -2630,7 +2625,7 @@ async fn retire_older<C: MachineOperations>(
     let retired =
         cleanup::retire(client, copy, false, AnonymousVolumes::Remove, cancellation).await;
     if let Some(left) = left_unless_done(retired) {
-        rows.leave_running(progress, copy, Left::Older(Box::new(left)));
+        rows.leave_running(progress, copy, Left::OlderNotRemoved(Box::new(left)));
     }
 }
 
