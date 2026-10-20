@@ -1,4 +1,5 @@
 use super::*;
+use ployz_core::OperationStatus;
 use ployz_core::RunRotation;
 use ployz_core::labels::CREATION_KEY;
 
@@ -1031,5 +1032,82 @@ async fn ingress_create_cleanup_never_names_a_sibling() {
     for (_, sibling) in siblings {
         assert_eq!(client.rotation(&sibling), Some(CopyRotation::Pending));
     }
+    client.assert_done();
+}
+
+/// Only work that starts a Container reads as starting. A removal's row says
+/// what it does from its first frame, for every reader of the stored phase.
+#[tokio::test]
+async fn stop_and_remove_rows_never_read_as_starting() {
+    let machine = machine('1');
+    let (stopped, removed, hook) = (container('9'), container('a'), container('b'));
+    let volume = DockerVolumeId {
+        machine_id: machine,
+        name: DockerVolumeName::parse("data").unwrap(),
+    };
+    let plan = vec![
+        stop(&machine, &stopped),
+        DeployOperation::RemoveContainer {
+            machine_id: machine,
+            container_id: removed,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+        },
+        DeployOperation::StopHook {
+            machine_id: machine,
+            container_id: hook,
+        },
+        DeployOperation::RemoveVolume { id: volume.clone() },
+    ];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, stopped), running()),
+        ok(Call::Stop(machine, stopped)),
+        observed(Call::Inspect(machine, removed), running()),
+        ok(Call::Remove(machine, removed)),
+        ok(Call::StopNow(machine, hook)),
+        ok(Call::RemoveVolume(volume)),
+    ])
+    .with_copy(&machine, &removed, CopyRotation::In);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace()),
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let mut statuses = vec![Vec::new(); 4];
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            for row in rows {
+                let seen: &mut Vec<_> = &mut statuses[row.index as usize];
+                if seen.last() != Some(&row.status) {
+                    seen.push(row.status);
+                }
+            }
+        }
+    }
+    let ran = |phase| {
+        vec![
+            OperationStatus::Pending,
+            OperationStatus::Running { phase },
+            OperationStatus::Completed,
+        ]
+    };
+    assert_eq!(
+        statuses,
+        [
+            ran(OperationPhase::StoppingContainer),
+            ran(OperationPhase::RemovingContainer),
+            ran(OperationPhase::StoppingContainer),
+            ran(OperationPhase::RemovingVolume),
+        ]
+    );
     client.assert_done();
 }
