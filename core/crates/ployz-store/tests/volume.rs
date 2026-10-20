@@ -1765,3 +1765,29 @@ fn discarding_one_setting_cannot_bring_back_a_second_writer() {
     store.write(&who, &discard(None)).unwrap();
     assert!(listed(&store, &who)[0].volume.shared_writes);
 }
+
+#[test]
+fn shared_writes_applies_at_once_and_is_no_diff_row() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    set_shared_writes(&store, &who, true).unwrap();
+    let view = diff(&store, &who);
+    assert!(view.changes.is_empty(), "{:?}", view.changes);
+    assert!(view.draft_changes.is_empty(), "{:?}", view.draft_changes);
+    assert_eq!((view.total_count, view.draft_count), (0, 0));
+
+    // Discarding the whole Volume returns it to the deployed value.
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: Some(SettingPath::parse("volumes.data").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(!listed(&store, &who)[0].volume.shared_writes);
+}
