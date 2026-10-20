@@ -9,7 +9,12 @@ import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { OrganizationRuntime, operationRuntimeFrame, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import {
+  OPERATION_OBSERVE_DEADLINE_MS,
+  OrganizationRuntime,
+  operationRuntimeFrame,
+  RUNTIME_FRAME_TIMEOUT_MS,
+} from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
 import { Conflict } from "#/server/public-error";
 
@@ -210,12 +215,17 @@ export const planClean = Effect.fn("ServerOperations.planClean")(function* (orga
   if (yield* ownedOrSystem(organizationId, namespace)) {
     return yield* new Conflict({ userFacing: true, message: `${namespace} belongs to an Environment: delete that Environment instead.` });
   }
+  return yield* observeClean(organizationId, namespace);
+});
+
+/** The clean read off the Cluster: its connect, its Data Loss and its frame together end at the plan's deadline. */
+const observeClean = Effect.fn("ServerOperations.observeClean")(function* (organizationId: string, namespace: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") return yield* unreachable();
   const lost = yield* session.connected.dataLossIfNamespaceDestroyed(namespace).pipe(Effect.mapError(unreachable));
   const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(Effect.mapError(unreachable));
   return cleanPlan(frame, namespace, lost.data_loss);
-}, Effect.scoped);
+}, Effect.scoped, Effect.timeoutOrElse({ duration: OPERATION_OBSERVE_DEADLINE_MS, orElse: () => Effect.fail(unreachable()) }));
 
 const volumeOwners = Effect.fn("ServerOperations.volumeOwners")(function* (
   organizationId: string,

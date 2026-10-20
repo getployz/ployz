@@ -32,6 +32,12 @@ export const ORGANIZATION_CONNECT_TIMEOUT = "30 seconds";
 /** How long Cloud waits for a Cluster's first Runtime Watch frame when it reads the Cluster once. */
 export const RUNTIME_FRAME_TIMEOUT_MS = 10_000;
 
+/**
+ * How long an operation's plan may spend reading the Cluster, all its reads together. The CLI gives the whole request
+ * 60 seconds, and a plan that reads twice could otherwise spend a connect and a frame ceiling on each read.
+ */
+export const OPERATION_OBSERVE_DEADLINE_MS = 45_000;
+
 export type ConnectedRuntimeClient = PloyzSession;
 
 export type ScopedRuntimeClientSession =

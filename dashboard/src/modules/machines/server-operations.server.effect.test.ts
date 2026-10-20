@@ -1,11 +1,15 @@
-import type { Client, Connection, MachineId } from "@ployz/sdk";
+import type { Client, ConfigStore, Connection, MachineId } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { asTestDouble } from "#/lib/test-double";
-import { planRemove, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
+import { planClean, planRemove, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
-import { makeOrganizationRuntimeLayer, ORGANIZATION_CONNECT_TIMEOUT } from "#/modules/runtime/organization-runtime.server";
+import {
+  makeOrganizationRuntimeLayer,
+  OPERATION_OBSERVE_DEADLINE_MS,
+  ORGANIZATION_CONNECT_TIMEOUT,
+} from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -69,5 +73,35 @@ it.effect("Servers that never answer the connection are reported as not answerin
     yield* TestClock.adjust(ORGANIZATION_CONNECT_TIMEOUT);
     const error = yield* Fiber.join(planning);
     assert.isTrue(error instanceof Conflict && error.message === UNREACHABLE_MESSAGE);
+  }),
+);
+
+// No Environment owns any Namespace, so every clean reaches the Cluster.
+const noOwners = Layer.succeed(CloudStore, {
+  open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async () => ({ namespaces: [] }) })),
+});
+
+it.effect("a clean whose data loss never comes back is reported as not answering once the plan's deadline passes", () =>
+  Effect.gen(function* () {
+    const asking = yield* Deferred.make<void>();
+    const layer = makeOrganizationRuntimeLayer(
+      () => Effect.succeed({ kind: "ready", generation: "current", connections }),
+      noPairingChanges,
+    ).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({
+        close: async () => {},
+        dataLossIfNamespaceDestroyed: () => {
+          Effect.runSync(Deferred.succeed(asking, undefined));
+          return new Promise(() => {});
+        },
+        runtime: { watch: async function* () { yield frame; } },
+      }),
+    })), Layer.merge(noOwners));
+    const planning = yield* planClean("org-1", "stray").pipe(Effect.provide(layer), Effect.flip, Effect.forkChild);
+    yield* Deferred.await(asking);
+    yield* TestClock.adjust(OPERATION_OBSERVE_DEADLINE_MS);
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    const settled = planning.pollUnsafe();
+    assert.isTrue(settled !== undefined && Exit.isSuccess(settled) && settled.value instanceof Conflict && settled.value.message === UNREACHABLE_MESSAGE);
   }),
 );
