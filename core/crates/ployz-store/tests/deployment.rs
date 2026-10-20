@@ -2985,6 +2985,118 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
     assert_eq!(kept(&[1, 2, 6, 31, 99]), [true, false, true, true]);
 }
 
+/// The Store with an uploaded `app` Service.
+fn uploaded_app() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    (store, who)
+}
+
+/// Deploy `n` of every Service, sending `upload` if any.
+fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) -> DeploymentSummary {
+    store
+        .write_trusted(
+            who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: upload.map(digested),
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap()
+}
+
+fn digested(c: char) -> UploadedSource {
+    UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    }
+}
+
+fn fail(store: &ConfigStore, n: u8) {
+    let a = runner("cli-a");
+    store.claim(&id(n), &a).unwrap();
+    store
+        .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+}
+
+fn kept_of(store: &ConfigStore, who: &Actor, deployments: &[u8]) -> Vec<bool> {
+    store
+        .read(
+            who,
+            &ployz_store::UploadsQuery {
+                deployments: deployments.iter().map(|n| id(*n)).collect(),
+            },
+        )
+        .unwrap()
+        .uploads
+        .iter()
+        .map(|held| held.kept)
+        .collect()
+}
+
+#[test]
+fn a_failed_retry_of_a_released_upload_leaves_the_service_on_its_latest_upload() {
+    let (store, who) = uploaded_app();
+    let deploy = |n: u8, upload: Option<char>| deploy_sent(&store, &who, n, upload);
+    deploy(1, Some('a'));
+    fail(&store, 1);
+    deploy(2, Some('b'));
+    fail(&store, 2);
+    deploy(3, Some('a'));
+    fail(&store, 3);
+    // a sent again replaced b: Cloud releases b's chunks.
+    assert_eq!(kept_of(&store, &who, &[2, 3]), [false, true]);
+    // The retry of b finds no upload and fails.
+    retry(&store, &who, 4, 2).unwrap();
+    fail(&store, 4);
+    // The next settings-only Deploy builds from a, which Cloud still holds.
+    let next = deploy(5, None);
+    assert_eq!(next.upload, Some(digested('a')));
+    let claimed = store.claim(&id(5), &runner("cli-a")).unwrap();
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("app").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+    assert_eq!(kept_of(&store, &who, &[3]), [true]);
+}
+
+#[test]
+fn the_same_upload_sent_again_keeps_one_copy() {
+    let (store, who) = uploaded_app();
+    let deploy = |n: u8, upload: Option<char>| deploy_sent(&store, &who, n, upload);
+    // `ployz up` twice with unchanged source: two Deployments send the same content.
+    deploy(1, Some('a'));
+    fail(&store, 1);
+    deploy(2, Some('a'));
+    fail(&store, 2);
+    assert_eq!(kept_of(&store, &who, &[1, 2]), [false, true]);
+    // A settings-only Deploy builds from it, and the one copy stays.
+    assert_eq!(deploy(3, None).upload, Some(digested('a')));
+    assert_eq!(kept_of(&store, &who, &[2]), [true]);
+}
+
 #[test]
 fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_after_it() {
     let upload = |c: char| UploadedSource {
