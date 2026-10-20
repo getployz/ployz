@@ -468,6 +468,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const body = yield* decodeBody(SyncVolume, request, "A volume sync takes its environment.");
       const unsynced = unheld(caller, OPERATIONS["volume.sync"].requires, body.environment.environment);
       if (unsynced !== null) return refusal(unsynced.refusal);
+      // It asks no one, and still refuses an approval carried into it that isn't for exactly this sync.
+      const carried = yield* carriedInto(caller, approvalHeader(request), { command: "sync", subject: `volume:${id ?? ""}` });
+      if (carried !== null) return refusal(carried);
       return yield* refreshMirror({ userId: caller.userId, organizationId: caller.organization.id }, body.environment, id ?? "").pipe(
         Effect.map((synced) => synced.ok ? { lines: synced.lines } : refusal(synced.refusal)),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
