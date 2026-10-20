@@ -1699,9 +1699,42 @@ impl RpcError {
         }
         self.details.get(MISSING_IMAGE)?.as_str()
     }
+
+    /// The full disk a failed pull ran into, as [`DiskFull::details`] named it.
+    #[must_use]
+    pub fn disk_full(&self) -> Option<DiskFull> {
+        serde_json::from_value(self.details.get(DISK_FULL)?.clone()).ok()
+    }
 }
 
 const MISSING_IMAGE: &str = "missing_image";
+const DISK_FULL: &str = "disk_full";
+
+/// A pull failed while the Docker root had almost no free space.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiskFull {
+    pub docker_root: String,
+    pub free_bytes: u64,
+}
+
+impl DiskFull {
+    /// [`RpcError`] details that [`RpcError::disk_full`] reads back.
+    #[must_use]
+    pub fn details(&self) -> Value {
+        serde_json::json!({ DISK_FULL: self })
+    }
+}
+
+impl fmt::Display for DiskFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "The Server's disk is full: {} MB free under {}",
+            self.free_bytes / 1_000_000,
+            self.docker_root
+        )
+    }
+}
 
 /// A Machine refused a route because its Ployz lacks the route's capability.
 #[derive(Clone, Debug, PartialEq)]
