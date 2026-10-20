@@ -30,15 +30,17 @@ impl ContainerRuntime {
     /// with `docker update`, then record `spec` as its resolved spec. The Container
     /// keeps its identity and Docker applies the limits without a restart.
     ///
-    /// Only a difference [`compare_specs`] calls `NeedsUpdate` is admitted. The spec
-    /// is written only after Docker reports the requested limits, so a crash between
-    /// the two leaves the old spec and the next Deploy plans the update again.
+    /// Only a difference [`compare_specs`] calls `NeedsUpdate` is admitted, and
+    /// only a memory limit at or above the one Docker runs the Container with. The
+    /// spec is written only after Docker reports the requested limits, so a crash
+    /// between the two leaves the old spec and the next Deploy plans the update again.
     ///
     /// # Errors
     ///
     /// Refuses a Container without a stored spec, one that is not a Service
     /// Container, one that is not running, a spec that differs in more than
-    /// limits, and limits Docker does not report back after the update.
+    /// limits, a memory limit below the live one, and limits Docker does not
+    /// report back after the update.
     pub async fn update_limits(
         &self,
         container_id: &ContainerId,
@@ -69,6 +71,7 @@ impl ContainerRuntime {
         // promised a serving copy, so the caller must replace it instead.
         refuse_unless_running(container_id, &inspected)?;
         let requested = spec.container.resources.limits();
+        refuse_lowering_memory(container_id, requested, &inspected)?;
         self.docker
             .client
             .update_container(container_id.as_str(), update_body(requested))
@@ -108,6 +111,29 @@ fn refusal(stored: &ResolvedServiceSpec, spec: &ResolvedServiceSpec) -> Option<L
         SpecChange::UpToDate => Some(LimitsRefusal::UpToDate),
         SpecChange::NeedsRecreate => Some(LimitsRefusal::NeedsRecreate),
     }
+}
+
+/// The stored spec admits only a raise, but Docker runs the Container with the
+/// limits of its last update, which a crash or a restored spec can leave above
+/// the spec. A raise against the spec that lowers the live limit could kill the
+/// Container, so the live limit decides.
+fn refuse_lowering_memory(
+    container_id: &ContainerId,
+    requested: ContainerLimits,
+    inspected: &ContainerInspectResponse,
+) -> Result<(), Error> {
+    let Some(requested) = requested.memory_bytes else {
+        return Ok(());
+    };
+    let refusal = match live_limits(inspected)?.memory_bytes {
+        None => LimitsRefusal::MemoryUnlimited,
+        Some(live) if requested < live => LimitsRefusal::WouldLowerMemory,
+        Some(_) => return Ok(()),
+    };
+    Err(Error::LimitsRefused {
+        container_id: *container_id,
+        refusal,
+    })
 }
 
 fn live_limits(inspected: &ContainerInspectResponse) -> Result<ContainerLimits, Error> {
@@ -259,6 +285,50 @@ mod tests {
                 }) if id == container_id
             ));
         }
+    }
+
+    #[test]
+    fn a_memory_limit_below_or_onto_the_live_one_is_refused() {
+        let container_id = ContainerId::parse("c".repeat(64)).unwrap();
+        let live = |memory: Option<i64>| ContainerInspectResponse {
+            host_config: Some(HostConfig {
+                memory,
+                ..HostConfig::default()
+            }),
+            ..ContainerInspectResponse::default()
+        };
+        let requested = |memory: Option<i64>| spec(memory).container.resources.limits();
+        let refusal = |result: Result<(), Error>| match result {
+            Ok(()) => None,
+            Err(Error::LimitsRefused { refusal, .. }) => Some(refusal),
+            Err(other) => panic!("{other}"),
+        };
+        for (live_memory, memory, expected) in [
+            (Some(64), Some(128), None),
+            (Some(64), Some(64), None),
+            (Some(128), Some(64), Some(LimitsRefusal::WouldLowerMemory)),
+            (Some(0), Some(64), Some(LimitsRefusal::MemoryUnlimited)),
+            (None, Some(64), Some(LimitsRefusal::MemoryUnlimited)),
+            (Some(128), None, None),
+        ] {
+            assert_eq!(
+                refusal(refuse_lowering_memory(
+                    &container_id,
+                    requested(memory),
+                    &live(live_memory)
+                )),
+                expected,
+                "live {live_memory:?}, requested {memory:?}"
+            );
+        }
+        assert_eq!(
+            refusal(refuse_lowering_memory(
+                &container_id,
+                requested(Some(64)),
+                &ContainerInspectResponse::default()
+            )),
+            Some(LimitsRefusal::MemoryUnlimited)
+        );
     }
 
     #[test]

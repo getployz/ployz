@@ -330,6 +330,46 @@ async fn update_limits_changes_a_running_container_in_place() {
         Some(updated.clone())
     );
 
+    // A spec restored below the live limit admits a raise against the spec that
+    // would lower what Docker runs; the live limit refuses it.
+    specs
+        .config_operation()
+        .await
+        .put(&container_id, &spec)
+        .await
+        .unwrap();
+    let mut below_live = spec.clone();
+    below_live.container.resources.memory_bytes = Some(ByteQuantity::try_from(96 << 20).unwrap());
+    let refused = runtime
+        .update_limits(&container_id, &below_live)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Error::LimitsRefused {
+                refusal: LimitsRefusal::WouldLowerMemory,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(specs.get(&container_id).await.unwrap(), Some(spec.clone()));
+    let host_config = docker
+        .client
+        .inspect_container(container_id.as_str(), None)
+        .await
+        .unwrap()
+        .host_config
+        .unwrap();
+    assert_eq!(host_config.memory, Some(128 << 20));
+    specs
+        .config_operation()
+        .await
+        .put(&container_id, &updated)
+        .await
+        .unwrap();
+
     runtime.stop(&container_id, None, Some(1)).await.unwrap();
     let mut raised = updated.clone();
     raised.container.resources.memory_bytes = Some(ByteQuantity::try_from(256 << 20).unwrap());
