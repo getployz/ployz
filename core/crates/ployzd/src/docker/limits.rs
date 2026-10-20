@@ -3,34 +3,10 @@
 use bollard::models::{ContainerInspectResponse, ContainerUpdateBody, HostConfig};
 use ployz_core::{
     ByteQuantity, ContainerId, ContainerKind, ContainerLimits, ContainerLimitsUpdated, CpuNanos,
-    ResolvedServiceSpec, SpecChange, compare_specs,
+    LimitsRefusal, ResolvedServiceSpec, SpecChange, compare_specs,
 };
 
 use super::{ContainerRuntime, Error, ManagedLabels, docker_error};
-
-/// Why a Machine refuses to change a Container's limits in place.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LimitsRefusal {
-    /// The spec names another Service than the Container runs.
-    OtherService,
-    /// The spec equals the Container's; there is nothing to apply.
-    UpToDate,
-    /// The change needs a new Container.
-    NeedsRecreate,
-    /// The Container is not running, so there is nothing serving to keep.
-    NotRunning,
-}
-
-impl std::fmt::Display for LimitsRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::OtherService => "the spec names another Service",
-            Self::UpToDate => "the spec is already current",
-            Self::NeedsRecreate => "the change needs a new Container",
-            Self::NotRunning => "the Container is not running",
-        })
-    }
-}
 
 /// The limits Docker reports on a Container after an update asked for others.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,12 +81,7 @@ impl ContainerRuntime {
             .await
             .map_err(|error| docker_error(container_id, error))?;
         refuse_unless_running(container_id, &inspected)?;
-        let observed = inspected
-            .host_config
-            .as_ref()
-            .map(observed_limits)
-            .transpose()?
-            .unwrap_or_default();
+        let observed = live_limits(&inspected)?;
         if observed != requested {
             return Err(Error::LimitsUnapplied {
                 container_id: *container_id,
@@ -137,6 +108,15 @@ fn refusal(stored: &ResolvedServiceSpec, spec: &ResolvedServiceSpec) -> Option<L
         SpecChange::UpToDate => Some(LimitsRefusal::UpToDate),
         SpecChange::NeedsRecreate => Some(LimitsRefusal::NeedsRecreate),
     }
+}
+
+fn live_limits(inspected: &ContainerInspectResponse) -> Result<ContainerLimits, Error> {
+    inspected
+        .host_config
+        .as_ref()
+        .map(observed_limits)
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn refuse_unless_running(

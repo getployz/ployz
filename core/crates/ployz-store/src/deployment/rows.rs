@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
-    ExecutionError, HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase,
-    OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
+    ExecutionError, HealthFailure, HookFailure, LimitsRefusal, MachineAction, MachineId,
+    OperationPhase, OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -353,9 +353,21 @@ impl Failure {
                     });
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
+                // A refusal comes before any Docker change, so the old limits hold.
+                // Anything else, such as a Docker error, an unapplied read-back or a
+                // lost answer, leaves the live limits unknown.
+                let outcome = match LimitsRefusal::from_details(&error.details) {
+                    Some(LimitsRefusal::NotRunning) => {
+                        "found the Container not running, so the new limits do not apply. The next deploy replaces it"
+                    }
+                    Some(_) => {
+                        "did not apply the new limits. The Container keeps its previous limits"
+                    }
+                    None => "could not confirm the new limits",
+                };
                 (
                     format!(
-                        "{} did not apply the new limits. The Container keeps serving with its previous limits",
+                        "{} {outcome}",
                         server.map_or_else(
                             || "The Server".to_owned(),
                             |name| format!("Server {name}")
@@ -1137,14 +1149,45 @@ mod tests {
         let named = Failure::of(&error, &operations);
         assert_eq!(
             named.reason,
-            "Server prod-1 did not apply the new limits. The Container keeps serving with its previous limits"
+            "Server prod-1 could not confirm the new limits"
         );
         assert_eq!(named.cause, ["Docker operation failed", docker]);
         assert_eq!(
             Failure::of(&error, &[]).reason,
+            format!("Server {machine_id} could not confirm the new limits")
+        );
+    }
+
+    #[test]
+    fn a_refused_limits_update_says_which_limits_hold() {
+        let machine_id = "a".repeat(32);
+        let refused = |reason: &str, message: &str| ExecutionError::Machine {
+            action: MachineAction::UpdateContainerLimits,
+            error: RpcError {
+                code: RpcErrorCode::Conflict,
+                message: message.into(),
+                details: serde_json::json!({"machine_id": machine_id, "reason": reason}),
+                cause: Vec::new(),
+            },
+        };
+        let message = "container c cannot take these limits in place: the Container runs with a higher memory limit";
+        let before_any_change = Failure::of(&refused("would_lower_memory", message), &[]);
+        assert_eq!(
+            before_any_change.reason,
             format!(
-                "Server {machine_id} did not apply the new limits. The Container keeps serving with its previous limits"
+                "Server {machine_id} did not apply the new limits. The Container keeps its previous limits"
             )
+        );
+        assert_eq!(before_any_change.cause, [message]);
+        assert_eq!(
+            Failure::of(&refused("not_running", "stopped"), &[]).reason,
+            format!(
+                "Server {machine_id} found the Container not running, so the new limits do not apply. The next deploy replaces it"
+            )
+        );
+        assert_eq!(
+            Failure::of(&refused("some_future_reason", "later"), &[]).reason,
+            format!("Server {machine_id} could not confirm the new limits")
         );
     }
 

@@ -52,9 +52,10 @@ use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
-pub use limits::{LimitsRefusal, UnappliedLimits};
+pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
+use ployz_core::LimitsRefusal;
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
 pub use unregistry::ImageIngest;
 
@@ -1351,6 +1352,7 @@ impl From<&Error> for RpcError {
                 serde_json::json!({ "in_use_by": services })
             }
             Error::DiskFull { full, .. } => full.details(),
+            Error::LimitsRefused { refusal, .. } => serde_json::json!({ "reason": refusal }),
             _ => serde_json::Value::Null,
         };
         let code = error.rpc_code();

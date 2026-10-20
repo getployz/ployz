@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn a_failed_limits_update_keeps_dockers_words_and_says_to_deploy_again() {
         let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
-        let reason = "web: Server edge did not apply the new limits. The Container keeps serving with its previous limits";
+        let reason = "web: Server edge could not confirm the new limits";
         let cause = ["Docker operation failed", docker];
         let mut view = view();
         view.deployment.outcome = Some(

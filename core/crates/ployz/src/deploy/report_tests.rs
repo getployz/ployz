@@ -893,7 +893,7 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
 }
 
 #[test]
-fn a_failed_limits_update_names_the_server_and_says_the_old_copy_still_serves() {
+fn a_failed_limits_update_names_the_server_and_claims_nothing_about_the_live_limits() {
     let machine = MachineId::random();
     let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
     let update = planned(
@@ -925,9 +925,7 @@ fn a_failed_limits_update_names_the_server_and_says_the_old_copy_still_serves() 
     let failure = failure(&outcome, std::slice::from_ref(&update), Vec::new());
     assert_eq!(
         crate::ui::plain(&failure),
-        format!(
-            "error: web: Server edge did not apply the new limits. The Container keeps serving with its previous limits.\n  cause: {docker}\n"
-        )
+        format!("error: web: Server edge could not confirm the new limits.\n  cause: {docker}\n")
     );
     assert_eq!(
         failure.json().get("cause"),
