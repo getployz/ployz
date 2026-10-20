@@ -801,6 +801,35 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
 }
 
 #[test]
+fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
+    let docker = "Docker responded with status code 404: nginx:doesnotexist: not found";
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: operation(0, MachineId::random(), OperationStatus::Pending).operation,
+            error: ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error: RpcError {
+                    code: RpcErrorCode::NotFound,
+                    message: "image pull failed".into(),
+                    details: serde_json::Value::Null,
+                    cause: vec![docker.into()],
+                }
+                .pulling("nginx:doesnotexist", ployz_core::PullPolicy::Missing),
+            },
+        },
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    assert_eq!(
+        crate::ui::plain(&failure(&outcome, Vec::new())),
+        format!(
+            "error: web: Image nginx:doesnotexist not found, or its registry needs credentials.\n  cause: {docker}\n"
+        )
+    );
+}
+
+#[test]
 fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     let machine = MachineId::random();
     let replacement = ployz_core::ReplacementOperation {
