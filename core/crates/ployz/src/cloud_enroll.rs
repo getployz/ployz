@@ -13,6 +13,10 @@ const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 1;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long an enroll request waits for Cloud's answer. Cloud reads its database
+/// unbounded, then may spend 10s reaching the Cluster, so the client's 15s default
+/// would give up on an enrollment Cloud goes on to finish.
+const ENROLL_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long enrollment waits for another Server to finish founding: past Cloud's own
 /// ten minutes for a fresh founding claim, so Cloud answers first.
 const FOUNDER_WAIT: Duration = Duration::from_secs(15 * 60);
@@ -360,7 +364,7 @@ pub(crate) async fn enroll(
             &format!("Cloud enrollment at {}", diagnostic_origin(url)),
             crate::setup_retry::WAIT,
             |error| matches!(error, Error::Connect(_)),
-            async |_| post_json(&http, url, token, identity).await,
+            async |_| send(enroll_request(&http, url, token, identity)).await,
         )
         .await
         .map_err(|error| retry_error("enrollment", error))?;
@@ -528,19 +532,35 @@ fn classify_http(error: reqwest::Error) -> Error {
     }
 }
 
+fn enroll_request(
+    http: &reqwest::Client,
+    url: &str,
+    token: &CloudEnrollToken,
+    identity: &EnrollIdentity,
+) -> reqwest::RequestBuilder {
+    post(http, url, token, identity).timeout(ENROLL_TIMEOUT)
+}
+
+fn post(
+    http: &reqwest::Client,
+    url: &str,
+    token: &CloudEnrollToken,
+    body: &impl Serialize,
+) -> reqwest::RequestBuilder {
+    http.post(url).bearer_auth(token.as_str()).json(body)
+}
+
 async fn post_json(
     http: &reqwest::Client,
     url: &str,
     token: &CloudEnrollToken,
     body: &impl Serialize,
 ) -> Result<Vec<u8>, Error> {
-    let sent = http
-        .post(url)
-        .bearer_auth(token.as_str())
-        .json(body)
-        .send()
-        .await
-        .map_err(classify_http)?;
+    send(post(http, url, token, body)).await
+}
+
+async fn send(request: reqwest::RequestBuilder) -> Result<Vec<u8>, Error> {
+    let sent = request.send().await.map_err(classify_http)?;
     let status = sent.status();
     let bytes = sent.bytes().await.map_err(classify_http)?;
     if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -1088,6 +1108,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_enroll_request_waits_past_the_cluster_time_cloud_may_spend_on_it() {
+        // Cloud gives the Cluster 10s after its SQL, which runs unbounded.
+        let cloud_bound = Duration::from_secs(10);
+        let request = enroll_request(
+            &http_client().unwrap(),
+            "https://cloud.test/api/enroll",
+            &token(),
+            &identity(),
+        )
+        .build()
+        .unwrap();
+        assert!(
+            request
+                .timeout()
+                .is_some_and(|waits| *waits >= cloud_bound + Duration::from_secs(5)),
+            "{:?}",
+            request.timeout()
+        );
+    }
+
     #[tokio::test]
     async fn timeout_is_distinct_from_connection_failure() {
         let (listener, hang) = listen().await;
@@ -1131,7 +1172,7 @@ mod tests {
                 read_http(&mut stream).await;
                 if timeout {
                     tokio::time::pause();
-                    tokio::time::advance(REQUEST_TIMEOUT).await;
+                    tokio::time::advance(ENROLL_TIMEOUT).await;
                     tokio::time::resume();
                 }
                 drop(stream);
@@ -1142,7 +1183,7 @@ mod tests {
                 );
             });
             let error = tokio::time::timeout(
-                Duration::from_secs(25),
+                ENROLL_TIMEOUT + Duration::from_secs(10),
                 enroll(&url, &token(), &identity(), &|_| {}),
             )
             .await
