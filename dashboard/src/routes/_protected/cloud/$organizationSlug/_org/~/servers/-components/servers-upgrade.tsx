@@ -3,6 +3,7 @@ import { Settings2Icon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import type { ServerListItem } from "#/modules/machines/use-servers";
+import { type RoleGate, useRoleGate } from "#/modules/organization/members.queries";
 import {
   NEWEST_RELEASE,
   newestAttempt,
@@ -12,7 +13,7 @@ import {
   serverUpgradeLines,
   type ServersUpgradeLine,
 } from "#/modules/server-upgrade/server-upgrade";
-import { useNow, useRequestUpgrade, useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
+import { UPGRADE_REFUSED, useNow, useRequestUpgrade, useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
 import { useChannelRelease, useServerUpgrades } from "#/modules/server-upgrade/server-upgrade.queries";
 import { ServerUpgradesDialog } from "./server-upgrades-dialog";
 
@@ -44,9 +45,10 @@ export type ServersUpgrade = ReturnType<typeof useServersUpgrade>;
 /** The top bar's upgrade controls, and the Server upgrades dialog they open. */
 export function ServersUpgradeBar({ organizationSlug, upgrade }: { organizationSlug: string; upgrade: ServersUpgrade }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const gate = useRoleGate(organizationSlug, "servers:operate", UPGRADE_REFUSED);
   return (
     <>
-      <ServersUpgradeActions {...upgrade} onSettings={() => setSettingsOpen(true)} />
+      <ServersUpgradeActions {...upgrade} gate={gate} onSettings={() => setSettingsOpen(true)} />
       <ServerUpgradesDialog organizationSlug={organizationSlug} open={settingsOpen} onOpenChange={setSettingsOpen} />
     </>
   );
@@ -55,9 +57,11 @@ export function ServersUpgradeBar({ organizationSlug, upgrade }: { organizationS
 const mono = (version: string) => <span className="font-mono">{version}</span>;
 
 /** A newer major line's release notes, a rollout's progress or Upgrade, and the upgrade settings. */
-export function ServersUpgradeActions({ line, major, upgrade, onSettings }: {
+export function ServersUpgradeActions({ line, major, gate, upgrade, onSettings }: {
   line: ServersUpgradeLine;
   major: ReturnType<typeof newMajorLine>;
+  /** Whether your role may upgrade. */
+  gate: RoleGate;
   upgrade: () => void;
   onSettings: () => void;
 }) {
@@ -76,7 +80,7 @@ export function ServersUpgradeActions({ line, major, upgrade, onSettings }: {
       {line?.kind === "upgrading" ? (
         <p className="text-sm whitespace-nowrap text-muted-foreground">Upgrading {line.done}/{line.total}</p>
       ) : line?.kind === "behind" && line.canUpgrade ? (
-        <Button variant="outline" onClick={upgrade}>
+        <Button variant="outline" disabled={!gate.allowed} title={gate.reason} onClick={upgrade}>
           Upgrade to {mono(line.release)}
         </Button>
       ) : null}

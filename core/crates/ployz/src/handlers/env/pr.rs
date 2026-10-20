@@ -29,7 +29,7 @@ pub(crate) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
     let version = matches.get_one::<String>("expect-version").cloned();
     let (view, ran) = take_off(matches, &store, &at, (&accept, version), events)?;
     if view.deployment.status != DeploymentStatus::Applied {
-        return unfinished(matches, (&view, &[]), &[], ran, &again);
+        return unfinished(matches, &view, ran, &again);
     }
     let on = store::next(matches, &["deploy", "--env", name.as_str()]);
     deploy::finish_view(&view, Some(on))
