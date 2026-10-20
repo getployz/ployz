@@ -155,6 +155,11 @@ slowing the others on its server. Ployz doesn't check that a server has room for
 headroom. Changes and `ployz diff` show it in vCPUs, such as `0.5 vCPUs → 2 vCPUs`. See
 [Scaling and multiple servers](scaling.md#run-more-replicas).
 
+A deploy that changes only the CPU or memory limit applies the new limit to each running replica
+in place, without a restart, on a server whose daemon supports it. The deploy shows the replica as
+**updating limits**. A server that can't, or a change that also removes a limit, replaces the
+replica as any other change does, and the deploy says so in a warning.
+
 ### Memory limit
 
 Empty by default, which means no limit. Set it in GB, from 0.01 (10 MB, since Docker refuses
