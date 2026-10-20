@@ -419,34 +419,26 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             };
             let cancellation = cancellation_on_ctrl_c();
             let _cancel_listener = cancellation.clone().drop_guard();
-            let mut outcome: Option<ServiceActionOutcome> = None;
-            'batches: for services in &batches {
-                for &action in actions {
-                    if cancellation.is_cancelled() {
-                        break 'batches;
-                    }
-                    let (signal, timeout) = match action {
-                        ContainerAction::Stop | ContainerAction::Restart => {
-                            (signal.clone(), timeout)
-                        }
-                        ContainerAction::Start | ContainerAction::Remove => (None, None),
-                    };
-                    let step = apply_service_action(
+            let client = &*client;
+            let outcome = run_batches(&batches, actions, &cancellation, |services, action| {
+                let (signal, timeout) = match action {
+                    ContainerAction::Stop | ContainerAction::Restart => (signal.clone(), timeout),
+                    ContainerAction::Start | ContainerAction::Remove => (None, None),
+                };
+                let (live, names, cancellation) = (&live, &names, &cancellation);
+                async move {
+                    apply_service_action(
                         client,
-                        &live,
-                        &names,
+                        live,
+                        names,
                         services,
                         (action, signal, timeout),
-                        &cancellation,
+                        cancellation,
                     )
-                    .await?;
-                    outcome = Some(match outcome {
-                        Some(before) => before.then(step),
-                        None => step,
-                    });
+                    .await
                 }
-            }
-            let outcome = outcome.expect("a lifecycle command has an action");
+            })
+            .await?;
             crate::ui::emit(&ServiceActionResult {
                 next: outcome.partial.then_some(hint.as_str()),
                 ..outcome.result(&live)
@@ -458,6 +450,34 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             }
         })
     })
+}
+
+/// Run each action on each batch in turn. A run `cancellation` cut short is partial.
+async fn run_batches<'a, B, F, Fut>(
+    batches: &'a [B],
+    actions: &[ContainerAction],
+    cancellation: &CancellationToken,
+    mut step: F,
+) -> Result<ServiceActionOutcome, Error>
+where
+    F: FnMut(&'a B, ContainerAction) -> Fut,
+    Fut: Future<Output = Result<ServiceActionOutcome, Error>>,
+{
+    let mut outcome = ServiceActionOutcome {
+        containers: Vec::new(),
+        container_failures: Vec::new(),
+        partial: false,
+    };
+    for services in batches {
+        for &action in actions {
+            if cancellation.is_cancelled() {
+                outcome.partial = true;
+                return Ok(outcome);
+            }
+            outcome = outcome.then(step(services, action).await?);
+        }
+    }
+    Ok(outcome)
 }
 
 struct ServiceActionOutcome {

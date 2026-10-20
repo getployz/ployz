@@ -412,6 +412,7 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     machine_id: &MachineId,
     container_id: &ContainerId,
     stop: StopOptions,
+    queued: u32,
     cancellation: &CancellationToken,
 ) -> Result<UserStarted, RpcError> {
     let observed = observe(client, machine_id, container_id).await?;
@@ -427,7 +428,7 @@ pub(crate) async fn user_restart<C: MachineOperations>(
         }
         (true, CopyRotation::In) => fresh_run(),
         (false, _) | (true, CopyRotation::Pending) => {
-            let stopped = stopped(client, &copy, spec, stop, 1).await;
+            let stopped = stopped(client, &copy, spec, stop, queued).await;
             let started = run_pending(client, &copy).await;
             stopped?;
             return started;
@@ -439,7 +440,7 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     };
     let stopped = match hold(client, &copy, run.clone(), cancellation).await? {
         Step::Refused(refusal) => return Err(refusal.into_error()),
-        Step::Done => stopped(client, &held, spec, stop, 1).await,
+        Step::Done => stopped(client, &held, spec, stop, queued).await,
         Step::NotConfirmed(unconfirmed) => Err(unavailable(format!(
             "Container {} was not restarted: the proxies on {} did not confirm they stopped routing it.",
             copy.container_id,

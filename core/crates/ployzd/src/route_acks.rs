@@ -82,7 +82,12 @@ pub(crate) async fn sample_ackers(
 ) -> Membership {
     let states = sample_states(admin)
         .await
-        .inspect_err(|_| tracing::warn!("membership sample failed; every Machine must ack"))
+        .inspect_err(|error| {
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(error),
+                "membership sample failed; every Machine must ack"
+            );
+        })
         .ok();
     required_ackers(machines, local, states.as_ref())
 }

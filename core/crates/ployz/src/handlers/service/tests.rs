@@ -472,3 +472,46 @@ async fn ps_reads_retiring_ids_from_a_reached_publisher() {
     );
     assert_eq!(reads, 1);
 }
+
+fn changed(partial: bool) -> ServiceActionOutcome {
+    ServiceActionOutcome {
+        containers: Vec::new(),
+        container_failures: Vec::new(),
+        partial,
+    }
+}
+
+#[tokio::test]
+async fn a_lifecycle_cancelled_before_its_first_step_is_partial() {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let outcome = run_batches(
+        &[()],
+        &[ContainerAction::Stop],
+        &cancellation,
+        |(), _| async { Ok(changed(false)) },
+    )
+    .await
+    .unwrap();
+    assert!(outcome.partial);
+}
+
+#[tokio::test]
+async fn a_lifecycle_cancelled_between_batches_is_partial() {
+    let cancellation = CancellationToken::new();
+    let mut steps = 0;
+    let outcome = run_batches(
+        &[(), ()],
+        &[ContainerAction::Restart],
+        &cancellation,
+        |(), _| {
+            steps += 1;
+            cancellation.cancel();
+            async { Ok(changed(false)) }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(steps, 1);
+    assert!(outcome.partial);
+}

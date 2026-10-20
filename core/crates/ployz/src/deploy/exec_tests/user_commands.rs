@@ -13,6 +13,7 @@ use crate::deploy::cleanup::{self, UserStarted};
 struct Recording {
     fake: Scripted,
     wants: Mutex<Vec<ContainerWant>>,
+    stop_deadlines: Mutex<Vec<Option<Duration>>>,
 }
 
 impl Recording {
@@ -20,6 +21,7 @@ impl Recording {
         Self {
             fake,
             wants: Mutex::new(Vec::new()),
+            stop_deadlines: Mutex::new(Vec::new()),
         }
     }
 
@@ -88,6 +90,9 @@ impl MachineOperations for Recording {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<EnsuredContainer, RpcError> {
+        if matches!(want, ContainerWant::Stopped { .. }) {
+            self.stop_deadlines.lock().unwrap().push(timeout);
+        }
         self.wants.lock().unwrap().push(want.clone());
         self.fake.ensure_unsettled(machine_id, want, timeout).await
     }
@@ -141,6 +146,7 @@ async fn run_command(command: Command, recording: Recording) -> Ran {
             &machine,
             &copy,
             none(),
+            1,
             &CancellationToken::new(),
         )
         .await
@@ -569,6 +575,7 @@ async fn a_cancelled_restart_or_stop_brings_the_copy_back_in() {
                 &machine('a'),
                 &container('1'),
                 none(),
+                1,
                 &cancellation,
             )
             .await
@@ -609,6 +616,42 @@ async fn a_cancelled_restart_or_stop_brings_the_copy_back_in() {
                 .iter()
                 .any(|want| matches!(want, ContainerWant::Stopped { .. })),
             "{command:?} stopped a copy it never confirmed unlisted"
+        );
+    }
+}
+
+/// A restart queued behind others on its Machine waits out their stops too,
+/// on both the rotation path and the Pending path.
+#[tokio::test(start_paused = true)]
+async fn a_queued_restart_waits_for_the_stops_ahead_of_it() {
+    for rotation in [CopyRotation::In, CopyRotation::Pending] {
+        let fake = Scripted::new(vec![
+            inspected(),
+            copy_call(Call::Stop),
+            copy_call(Call::Restart),
+        ])
+        .with_copy(&machine('a'), &container('1'), rotation.clone());
+        let recording = Recording::of(fake);
+        let stop = StopOptions {
+            signal: None,
+            grace_period_seconds: None,
+        };
+        cleanup::user_restart(
+            &recording,
+            &machine('a'),
+            &container('1'),
+            stop,
+            3,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        recording.fake.assert_done();
+        assert_eq!(
+            *recording.stop_deadlines.lock().unwrap(),
+            // Docker's default grace, once for each stop queued on the Machine.
+            [crate::connect::stop_rpc_timeout(Some(10), 3)],
+            "{rotation:?}"
         );
     }
 }

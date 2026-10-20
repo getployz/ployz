@@ -1851,7 +1851,7 @@ async fn change_container_rpc(
             .await
             .and_then(admitted),
         ContainerAction::Restart => {
-            cleanup::user_restart(client, machine_id, container_id, stop, cancellation)
+            cleanup::user_restart(client, machine_id, container_id, stop, queued, cancellation)
                 .await
                 .and_then(admitted)
         }
