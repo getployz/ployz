@@ -115,6 +115,17 @@ it("words a secret as Sealed, or as needing a value until it has one", () => {
   expect(shownValue({ secret: false })).toBe("Not set");
 });
 
+it("words a memory limit in the unit it was likely given", () => {
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
+    { path: "web.memLimit", kind: "update", before: 0.201326592, after: 0.5, canRestore: true, row: null },
+    { path: "web.memLimit", kind: "add", before: null, after: 1.073741824, canRestore: true, row: null },
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.label, row.currentValue, row.newValue])).toEqual([
+    ["Memory limit", "192 MiB", "0.5 GB"],
+    ["Memory limit", "", "1 GiB"],
+  ]);
+});
+
 it("words a Volume's storage by its limit", () => {
   expect(shownValue({ kind: "provisioned", maximumBytes: 4_100_000_000 })).toBe("4.1 GB limit");
   expect(shownValue({ kind: "docker" })).toBe("Docker volume");

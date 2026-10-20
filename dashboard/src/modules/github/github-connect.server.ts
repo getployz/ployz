@@ -236,6 +236,7 @@ export const listOrganizationGithub = Effect.fn("GithubConnect.list")(function* 
       login: installation.accountLogin,
       avatarUrl: installation.accountAvatarUrl,
       repositories: repositories.filter((repository) => repository.installationId === installation.installationId).length,
+      repositoriesSynced: installation.repositoriesSyncedAt !== null,
       connectedBy: installation.connectedByName,
       connectedAt: installation.connectedAt.toISOString(),
     })),

@@ -382,7 +382,7 @@ describe("organization enrollment coordinator", () => {
     if (Result.isFailure(completed) || Result.isFailure(repeated)) return;
     expect(completed.success).toEqual({ machineId: founderMachineId });
     expect(repeated.success).toEqual(completed.success);
-    // Only a deployment that needs a generated hostname reserves the Cluster Domain.
+    // Only staging or deploying a generated domain reserves the Cluster Domain.
     expect((await harness.pool.query("select name from organization_cluster_domain")).rows).toEqual([]);
 
     const waiterTokens = await Promise.all(Array.from({ length: 19 }, () => issueToken()));
