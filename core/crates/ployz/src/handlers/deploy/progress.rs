@@ -1362,6 +1362,13 @@ mod tests {
             ingress_warnings(&view),
             ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
         );
+        view.deployment.ingress.first_mut().unwrap().failure = Some(IngressFailure::Failed {
+            cause: "pull failed.".into(),
+        });
+        assert_eq!(
+            ingress_warnings(&view),
+            ["Ingress isn't running on web-1: pull failed. Deploy again to retry."]
+        );
     }
 
     #[test]
