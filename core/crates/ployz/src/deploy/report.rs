@@ -456,8 +456,10 @@ pub(super) fn failure(
         Some(service) => format!("{service}: {reason}"),
         None => reason,
     });
+    // Losing to a newer Deploy is no Machine's fault.
+    let newer = matches!(error, ExecutionError::NewerServing { .. });
     let mut diagnostic = Diagnostic {
-        failed_machine: Some(machine),
+        failed_machine: (!newer).then_some(machine),
         logs: tails,
         ..Diagnostic::default()
     };
@@ -493,7 +495,11 @@ pub(super) fn failure(
         }
     }
     Failure::from(RpcError {
-        code: RpcErrorCode::Internal,
+        code: if newer {
+            RpcErrorCode::Conflict
+        } else {
+            RpcErrorCode::Internal
+        },
         message,
         cause,
         details: serde_json::json!({"outcome": outcome}),
