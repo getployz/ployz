@@ -50,7 +50,7 @@ export function checkResize({ volume, recorded, working, requested, holders }: R
   if (requested === recorded) return working === recorded ? { kind: "settled" } : { kind: "restage" };
   if (holders === null) return { kind: "grow", from: recorded, to: requested, copies: null };
   if (!holders.some((holder) => holder.role === "primary")) {
-    return { kind: "refused", message: `${volume} has no deployed size to change yet; deploy it first.` };
+    return { kind: "refused", message: `No server answers with ${volume}'s primary copy, so it can't grow now.` };
   }
 
   // The run asks every copy, old ones included. A Server with no record can't be checked, and an empty list claims no verb.

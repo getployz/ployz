@@ -31,12 +31,12 @@ describe("checkResize", () => {
     [
       "copies with no primary have no deployed size to grow, as the run refuses",
       ask(20 * GB, { holders: [holder("fsn-2", "mirror"), holder("fsn-3", "old_copy")] }),
-      { kind: "refused", message: "data has no deployed size to change yet; deploy it first." },
+      { kind: "refused", message: "No server answers with data's primary copy, so it can't grow now." },
     ],
     [
       "no copy anywhere has no deployed size to grow",
       ask(20 * GB, { holders: [] }),
-      { kind: "refused", message: "data has no deployed size to change yet; deploy it first." },
+      { kind: "refused", message: "No server answers with data's primary copy, so it can't grow now." },
     ],
     [
       "a retry after a partial grow needs no room on the copy that already grew",
