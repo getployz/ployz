@@ -61,9 +61,10 @@ ployz volume set data --size 8 --wait
 ```
 
 Ployz shrinks the copy your service writes to first, then each mirror. A volume can't shrink
-below what it holds plus some headroom: 10% or 1 GB, whichever is larger. If a server refuses,
-Ployz names it and the smallest size it accepts, rounded up to a whole GB, and stops. If the copy
-your service writes to refuses, the volume keeps its old limit. If a mirror refuses after that
+below what it holds plus some headroom: 10% or 1 GB, whichever is larger. If a server's copy
+holds too much for the new limit, Ployz names the server and the smallest size it accepts,
+rounded up to a whole GB, and stops; a server whose Ployz is too old to shrink is named too. If the
+copy your service writes to refuses, the volume keeps its old limit. If a mirror refuses after that
 copy shrank, the volume has its new limit: free space in it, run `ployz volume sync data` so the
 mirror's copy follows, then run the same `ployz volume set` again. A shrunk volume has less free
 space, so it may fill up sooner.
