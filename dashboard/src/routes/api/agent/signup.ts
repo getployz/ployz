@@ -20,7 +20,7 @@ export const Route = createFileRoute("/api/agent/signup")({
           { signal: request.signal },
         ).catch(publicErrorResponse);
       },
-      GET: signupMethodNotAllowed,
+      ANY: signupMethodNotAllowed,
     },
   },
 });

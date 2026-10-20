@@ -76,8 +76,8 @@ no service arguments, and `--follow` still use live container discovery.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't kept, until their next deploy.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
-  a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`) sets it. A line
-  without one counts as **Info**, stderr included.
+  a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
+  timestamp, sets it. A line without one counts as **Info**, stderr included.
 - **The dashboard never shows a Sealed value.** It replaces each one with `[secret NAME]`, and a
   variable you seal while you watch is scrubbed from the next lines on. Lines it couldn't check,
   say because your servers couldn't read the service's variables, show as

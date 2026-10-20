@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { handleMachineEnrollmentJoin } from "#/routes/api/enroll/-handlers";
-import { publicErrorResponse } from "#/server/public-error";
+import { publicErrorResponse, methodNotAllowed } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 export const Route = createFileRoute("/api/enroll/")({
@@ -11,6 +11,7 @@ export const Route = createFileRoute("/api/enroll/")({
           handleMachineEnrollmentJoin(request),
           { signal: request.signal },
         ).catch(publicErrorResponse),
+      ANY: (): Response => methodNotAllowed(Route),
     },
   },
 });
