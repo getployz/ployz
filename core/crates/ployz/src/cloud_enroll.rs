@@ -56,7 +56,7 @@ pub(crate) enum Error {
 
 #[derive(Debug, Error)]
 #[error("The response was lost; the enrollment outcome may be uncertain.")]
-struct ResponseLost(#[source] Error);
+struct ResponseLost(#[source] Option<Error>);
 
 impl Error {
     fn is_transport(&self) -> bool {
@@ -493,12 +493,19 @@ fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>)
             if matches!(error, Error::Timeout(_) | Error::Http(_)) {
                 Error::RetrySameCommand {
                     operation,
-                    cause: Box::new(ResponseLost(error)),
+                    cause: Box::new(ResponseLost(Some(error))),
                 }
             } else {
                 error
             }
         }
+        // The deadline cut an attempt that may already have sent its POST.
+        crate::setup_retry::Error::Exhausted {
+            in_flight: true, ..
+        } => Error::RetrySameCommand {
+            operation,
+            cause: Box::new(ResponseLost(None)),
+        },
         exhausted => Error::RetrySameCommand {
             operation,
             cause: Box::new(exhausted),
@@ -1202,6 +1209,48 @@ mod tests {
             assert!(error.to_string().contains("without --reset"), "{error}");
             server.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn an_enroll_cut_by_the_retry_budget_after_dispatch_is_uncertain() {
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = closed.local_addr().unwrap();
+        drop(closed);
+        let server = tokio::spawn(async move {
+            // Cloud is unreachable for the first 11s of the retry budget.
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(11)).await;
+            tokio::time::resume();
+            let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+            let (mut held, _) = listener.accept().await.unwrap();
+            read_http(&mut held).await;
+            // Hold the POST past the budget's remaining 49s, short of its own timeout.
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(49)).await;
+            tokio::time::resume();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let error = tokio::time::timeout(
+            crate::setup_retry::WAIT + Duration::from_secs(10),
+            enroll(
+                &format!("http://{address}/api/enroll"),
+                &token(),
+                &identity(),
+                &|_| {},
+            ),
+        )
+        .await
+        .expect("the retry budget ends the held request")
+        .unwrap_err();
+        let rendered = crate::ui::chain_text(&error);
+        assert!(rendered.contains("uncertain"), "{rendered}");
+        assert!(!rendered.contains("did not recover"), "{rendered}");
+        assert!(error.to_string().contains("without --reset"), "{error}");
+        server.await.unwrap();
     }
 
     #[tokio::test]
