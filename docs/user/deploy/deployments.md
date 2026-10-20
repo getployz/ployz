@@ -246,10 +246,17 @@ server has, the old replicas get no new requests, finish the ones they have for 
 and stop. Your app keeps serving the whole time.
 
 Ployz waits up to five minutes for each server to switch. If a server is cut off or powered off,
-the deploy keeps the new replicas and leaves the old one running there, and says so:
+the deploy keeps the new replicas, leaves the old one running there, exits 3, and says so. When
+web-2 was already down as the deploy started:
 
 ```text
-! my-app-production/web left running on web-2 (proxy on web-2 did not confirm). The next deploy cleans it up.
+! Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.
+```
+
+When web-2 stopped answering during the deploy:
+
+```text
+! my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.
 ```
 
 Until you deploy again, that server can keep answering with the old version. See

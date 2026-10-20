@@ -314,7 +314,7 @@ server waiting for approval, it leads with a **this server** line: `Installing D
 `Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
 it as `blocked` lines. With `--json` this is the `this_server` object.
 
-When a server is up but still sends a service's requests to its old replicas after a deploy,
+When a server is up but its proxy hasn't picked up a service's current replicas after a deploy,
 `ployz status` names it, one line per service, like
 `web = web-2 has not picked up the new copies. Check its network.` A server that's down shows as
 **Down** instead. See

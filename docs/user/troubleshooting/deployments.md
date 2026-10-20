@@ -219,8 +219,8 @@ for.
 
 ## Old and new versions answer at once
 
-`my-app-production/web left running on web-2 (proxy on web-2 did not confirm). The next deploy cleans it up.`,
-then `Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.`
+`Once web-2 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.`
+or `my-app-production/web left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
 
 A deploy couldn't reach web-2 to retire its old replica, because web-2 was cut off or powered
 off. Once web-2 is back, that replica can answer beside the new ones, so visitors get either
@@ -240,8 +240,11 @@ The deploy stops the old replica, and the warning doesn't come back.
 
 `web = web-2 has not picked up the new copies. Check its network.`
 
-`ployz status` prints this when web-2 is up but still sends `web`'s requests to the old
-replicas. Visitors who reach web-2 get the old version.
+`ployz status` prints this when web-2 is up but its proxy hasn't picked up `web`'s current copies,
+so visitors who reach web-2 can get the old version. It doesn't flag a copy a deploy reported as
+left running: that copy keeps serving beside the new ones until the next deploy, and the deploy's
+exit 3 line is what says so. See
+[Old and new versions answer at once](#old-and-new-versions-answer-at-once).
 
 - **Check web-2's network.** Your servers need UDP port 51820 open between them. See
   [Troubleshooting servers](servers.md).
