@@ -3,137 +3,129 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    ContainerAddress, ContainerObservation, ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL,
-    DeploymentLogId, QualifiedService, ServiceContainer, ServingPointer, ServingShape,
+    ContainerAddress, ContainerObservation, ContainerRuntimeObservation, CopyRotation, MachineId,
+    QualifiedService, ServiceContainer, ServingShape,
 };
 
-/// Proof that a Service Container may serve, is addressed, and is of a selected Serving Shape.
+/// Proof that a Service Container is In, may serve, and is addressed.
 ///
 /// Only [`serving_containers`] constructs this type.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ServingContainer<'serving> {
-    container: &'serving ServiceContainer,
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServingContainer {
+    container: ServiceContainer,
     address: ContainerAddress,
 }
 
-impl<'serving> ServingContainer<'serving> {
+impl ServingContainer {
+    fn prove(container: &ServiceContainer) -> Option<Self> {
+        let observation = container.as_observation();
+        if *observation.rotation() != CopyRotation::In
+            || observation.identity() == QualifiedService::system_ingress()
+        {
+            return None;
+        }
+        let address = container.traffic_address()?;
+        Some(Self {
+            container: container.clone(),
+            address,
+        })
+    }
+
     /// Container Address proven when this Serving Container was built.
     #[must_use]
-    pub fn address(self) -> ContainerAddress {
+    pub fn address(&self) -> ContainerAddress {
         self.address
     }
 
     /// The Service Container that [`serving_containers`] proved may serve.
     #[must_use]
-    pub fn as_container(self) -> &'serving ServiceContainer {
-        self.container
+    pub fn as_container(&self) -> &ServiceContainer {
+        &self.container
     }
 
     /// Borrow the mixed observation this Serving Container was proven from.
     #[must_use]
-    pub fn as_observation(self) -> &'serving ContainerObservation {
+    pub fn as_observation(&self) -> &ContainerObservation {
         self.container.as_observation()
     }
 }
 
-/// Serving Containers for this observer: may serve, addressed, and selected per
-/// Qualified Service by its Serving Pointer, or by the newest traffic-eligible
-/// Serving Shape when `pointer_for` has none.
-///
-/// With a pointer, the pointed Containers serve alone while every pointed id is
-/// visible and one of them may serve. Otherwise the previous deploy's Containers
-/// serve beside them, so an identity routes nothing only when none of those may
-/// serve.
+/// Serving Containers: copies that are In, may serve, and are addressed. A copy
+/// of the Ingress Proxy Service never is one.
 #[must_use]
-pub fn serving_containers<'serving, 'pointer>(
+pub fn serving_containers<'serving>(
     containers: impl IntoIterator<Item = &'serving ServiceContainer>,
-    pointer_for: impl Fn(&QualifiedService) -> Option<&'pointer ServingPointer>,
-) -> Vec<ServingContainer<'serving>> {
-    let mut by_identity = BTreeMap::<QualifiedService, Vec<&'serving ServiceContainer>>::new();
-    for container in containers {
-        by_identity
-            .entry(container.as_observation().identity())
-            .or_default()
-            .push(container);
-    }
-    let mut serving = Vec::new();
-    for (identity, members) in by_identity {
-        let selected = match pointer_for(&identity) {
-            Some(pointer) => pointed_or_fallback(members, pointer),
-            None => newest_shape(members),
-        };
-        serving.extend(selected.into_iter().filter_map(|container| {
-            let address = container.traffic_address()?;
-            Some(ServingContainer { container, address })
-        }));
-    }
-    serving
+) -> Vec<ServingContainer> {
+    containers
+        .into_iter()
+        .filter_map(ServingContainer::prove)
+        .collect()
 }
 
-fn newest_shape(members: Vec<&ServiceContainer>) -> Vec<&ServiceContainer> {
-    let Some(newest) = members
-        .iter()
-        .filter(|container| container.traffic_address().is_some())
-        .max_by_key(|container| {
-            let observation = container.as_observation();
-            (
-                observation.created_at_unix_nanos,
-                observation.container_id.as_str(),
-            )
-        })
-    else {
-        return Vec::new();
-    };
-    let selected = newest
-        .as_observation()
-        .resolved_spec
-        .published_serving_shape();
-    members
+/// The copies one proxy routes, per Qualified Service.
+pub type ProxyRoutes = BTreeMap<QualifiedService, Vec<ServingContainer>>;
+
+/// What a proxy routes next, for every Service it observes a copy of.
+///
+/// A Service routes its Serving Containers on Machines that are not Down. With
+/// none, it keeps its `current` route while a copy that route lists is out of
+/// view or some copy is In or Pending, so lag, Down owners and health blips
+/// never empty it. It empties once every copy in view is Held or Out. A Service
+/// missing from `current` has never been routed by this proxy, as after a
+/// restart, and routes its Serving Containers on any Machine instead. A Service
+/// with no observed copy has no route, and the Ingress Proxy Service never has one.
+#[must_use]
+pub fn proxy_routes(
+    containers: &[ServiceContainer],
+    is_down: impl Fn(&MachineId) -> bool,
+    current: &ProxyRoutes,
+) -> ProxyRoutes {
+    let mut by_service = BTreeMap::<QualifiedService, Vec<&ServiceContainer>>::new();
+    for container in containers {
+        let identity = container.as_observation().identity();
+        if identity != QualifiedService::system_ingress() {
+            by_service.entry(identity).or_default().push(container);
+        }
+    }
+    by_service
         .into_iter()
-        .filter(|container| {
-            container
-                .as_observation()
-                .resolved_spec
-                .published_serving_shape()
-                == selected
+        .map(|(service, siblings)| {
+            let route = next_route(&siblings, &is_down, current.get(&service));
+            (service, route)
         })
         .collect()
 }
 
-fn pointed_or_fallback<'serving>(
-    members: Vec<&'serving ServiceContainer>,
-    pointer: &ServingPointer,
-) -> Vec<&'serving ServiceContainer> {
-    let all_visible = pointer.containers.iter().all(|id| {
-        members
-            .iter()
-            .any(|container| container.as_observation().container_id == *id)
-    });
-    let (pointed, others): (Vec<_>, Vec<_>) = members.into_iter().partition(|container| {
-        pointer
-            .containers
-            .contains(&container.as_observation().container_id)
-    });
-    let any_pointed_routable = pointed
-        .iter()
-        .any(|container| container.traffic_address().is_some());
-    if all_visible && any_pointed_routable {
-        return pointed;
+fn next_route(
+    siblings: &[&ServiceContainer],
+    is_down: impl Fn(&MachineId) -> bool,
+    current: Option<&Vec<ServingContainer>>,
+) -> Vec<ServingContainer> {
+    let (candidates, on_down): (Vec<_>, Vec<_>) = serving_containers(siblings.iter().copied())
+        .into_iter()
+        .partition(|serving| !is_down(&serving.as_observation().machine_id));
+    if !candidates.is_empty() {
+        return candidates;
     }
-    // The previous deploy is its labelled copies plus the retiring ids that
-    // carry no deploy label; a retiring copy labelled with an older deploy is
-    // never revived.
-    let previous = pointer.previous.as_ref().map(DeploymentLogId::as_str);
-    let fallback = others.into_iter().filter(|container| {
-        previous.is_some_and(|previous| {
-            let observation = container.as_observation();
-            match observation.labels.get(DEPLOYMENT_ID_LABEL) {
-                Some(deploy) => deploy == previous,
-                None => pointer.retiring.contains(&observation.container_id),
-            }
+    let Some(current) = current else {
+        return on_down;
+    };
+    let entering = siblings.iter().any(|sibling| {
+        matches!(
+            sibling.as_observation().rotation(),
+            CopyRotation::In | CopyRotation::Pending
+        )
+    });
+    let routed_out_of_view = current.iter().any(|routed| {
+        !siblings.iter().any(|sibling| {
+            sibling.as_observation().container_id == routed.as_observation().container_id
         })
     });
-    pointed.into_iter().chain(fallback).collect()
+    if entering || routed_out_of_view {
+        current.clone()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Machine-local occupancy of one wanted Serving Shape.
@@ -181,16 +173,29 @@ impl SlotOccupancy {
 mod tests {
     use serde_json::json;
 
-    use super::{SlotOccupancy, serving_containers};
+    use super::{SlotOccupancy, proxy_routes, serving_containers};
     use crate::service::tests::observation;
     use crate::{
-        ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-        ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL, DeploymentLogId, HealthObservation,
-        ResolvedServiceSpec, ServiceContainer, ServiceId, ServingPointer, service_containers,
+        ContainerAddress, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+        CopyRotation, DeploymentLogId, HealthObservation, Namespace, ProxyRoutes,
+        ResolvedServiceSpec, ServiceContainer, ServiceId, ServiceName, service_containers,
     };
 
+    fn serving_ids(containers: &[ServiceContainer]) -> Vec<&ContainerObservation> {
+        let serving = serving_containers(containers);
+        containers
+            .iter()
+            .filter(|container| {
+                serving
+                    .iter()
+                    .any(|serving| serving.as_container() == *container)
+            })
+            .map(ServiceContainer::as_observation)
+            .collect()
+    }
+
     #[test]
-    fn serving_containers_are_addressed_service_containers_that_may_serve() {
+    fn serving_containers_are_addressed_in_copies_that_may_serve() {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
         let healthy = serving_observation(
             '1',
@@ -273,27 +278,49 @@ mod tests {
             no_address,
             exited,
         ]);
-        let serving = serving_containers(&containers, |_| None);
 
         assert_eq!(
-            serving
-                .into_iter()
-                .map(super::ServingContainer::as_observation)
-                .collect::<Vec<_>>(),
+            serving_ids(&containers),
             vec![&healthy, &not_configured, &failing]
         );
     }
 
     #[test]
-    fn serving_containers_cut_over_only_when_a_newer_shape_can_take_traffic() {
+    fn only_an_in_copy_serves() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let run = DeploymentLogId::parse("run").unwrap();
+        for (rotation, serves) in [
+            (CopyRotation::Pending, false),
+            (CopyRotation::In, true),
+            (CopyRotation::Held(run), false),
+            (CopyRotation::Out, false),
+        ] {
+            let mut copy = serving_observation(
+                '1',
+                &service_id,
+                ContainerKind::ServiceContainer,
+                HEALTHY,
+                Some([10, 210, 1, 2]),
+            );
+            copy.try_update(|parts| parts.rotation = Some(rotation.clone()))
+                .unwrap();
+            let containers = service_containers([copy]);
+            assert_eq!(
+                serving_containers(&containers).len(),
+                usize::from(serves),
+                "{rotation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn serving_containers_route_every_in_copy_whatever_its_shape() {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
         let mut v3 = serving_observation(
             '1',
             &service_id,
             ContainerKind::ServiceContainer,
-            ContainerRuntimeObservation::Running {
-                health: HealthObservation::Healthy,
-            },
+            HEALTHY,
             Some([10, 210, 1, 2]),
         );
         v3.try_update(|parts| {
@@ -305,9 +332,7 @@ mod tests {
             '2',
             &service_id,
             ContainerKind::ServiceContainer,
-            ContainerRuntimeObservation::Running {
-                health: HealthObservation::Healthy,
-            },
+            HEALTHY,
             Some([10, 210, 1, 3]),
         );
         v4.try_update(|parts| {
@@ -315,112 +340,10 @@ mod tests {
             parts.resolved_spec.container.image = "api:4".into();
         })
         .unwrap();
-        let mut unready_v4 = serving_observation(
-            '3',
-            &service_id,
-            ContainerKind::ServiceContainer,
-            ContainerRuntimeObservation::Running {
-                health: HealthObservation::Starting,
-            },
-            Some([10, 210, 1, 4]),
-        );
-        unready_v4
-            .try_update(|parts| {
-                parts.created_at_unix_nanos = 3;
-                parts.resolved_spec.container.image = "api:4".into();
-            })
-            .unwrap();
 
-        let mixed = service_containers([v3.clone(), v4.clone()]);
-        let serving = serving_containers(&mixed, |_| None);
-        assert_eq!(
-            serving
-                .into_iter()
-                .map(super::ServingContainer::as_observation)
-                .collect::<Vec<_>>(),
-            vec![&v4]
-        );
+        let containers = service_containers([v3.clone(), v4.clone()]);
 
-        for runtime in [
-            ContainerRuntimeObservation::Running {
-                health: HealthObservation::Starting,
-            },
-            ContainerRuntimeObservation::Running {
-                health: HealthObservation::Unhealthy,
-            },
-            ContainerRuntimeObservation::Exited { code: 0 },
-        ] {
-            unready_v4
-                .try_update(|parts| parts.runtime = runtime)
-                .unwrap();
-            let unready_newest = service_containers([v3.clone(), unready_v4.clone()]);
-            assert_eq!(
-                serving_containers(&unready_newest, |_| None)
-                    .into_iter()
-                    .map(super::ServingContainer::as_observation)
-                    .collect::<Vec<_>>(),
-                vec![&v3]
-            );
-        }
-        unready_v4
-            .try_update(|parts| {
-                parts.runtime = ContainerRuntimeObservation::Running {
-                    health: HealthObservation::Healthy,
-                };
-                parts.address = None;
-            })
-            .unwrap();
-        let unaddressed_newest = service_containers([v3.clone(), unready_v4]);
-        assert_eq!(
-            serving_containers(&unaddressed_newest, |_| None)
-                .into_iter()
-                .map(super::ServingContainer::as_observation)
-                .collect::<Vec<_>>(),
-            vec![&v3]
-        );
-    }
-
-    #[test]
-    fn serving_containers_keep_a_newer_shape_that_passed_once_and_is_failing_now() {
-        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
-        let mut v3 = serving_observation(
-            '1',
-            &service_id,
-            ContainerKind::ServiceContainer,
-            ContainerRuntimeObservation::Running {
-                health: HealthObservation::Healthy,
-            },
-            Some([10, 210, 1, 2]),
-        );
-        v3.try_update(|parts| {
-            parts.created_at_unix_nanos = 1;
-            parts.resolved_spec.container.image = "api:3".into();
-        })
-        .unwrap();
-        let mut failing_v4 = serving_observation(
-            '2',
-            &service_id,
-            ContainerKind::ServiceContainer,
-            ContainerRuntimeObservation::Running {
-                health: HealthObservation::Failing,
-            },
-            Some([10, 210, 1, 3]),
-        );
-        failing_v4
-            .try_update(|parts| {
-                parts.created_at_unix_nanos = 2;
-                parts.resolved_spec.container.image = "api:4".into();
-            })
-            .unwrap();
-
-        let containers = service_containers([v3, failing_v4.clone()]);
-        assert_eq!(
-            serving_containers(&containers, |_| None)
-                .into_iter()
-                .map(super::ServingContainer::as_observation)
-                .collect::<Vec<_>>(),
-            vec![&failing_v4]
-        );
+        assert_eq!(serving_ids(&containers), vec![&v3, &v4]);
     }
 
     #[test]
@@ -438,14 +361,11 @@ mod tests {
             "configs": [{ "name": "settings", "content": b"token=config-secret".to_vec() }]
         }))
         .unwrap();
-        let healthy = ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        };
         let mut trunk_row = serving_observation(
             '1',
             &service_id,
             ContainerKind::ServiceContainer,
-            healthy.clone(),
+            HEALTHY,
             Some([10, 210, 1, 2]),
         );
         trunk_row
@@ -458,7 +378,7 @@ mod tests {
             '2',
             &service_id,
             ContainerKind::ServiceContainer,
-            healthy,
+            HEALTHY,
             Some([10, 210, 1, 3]),
         );
         head_row
@@ -471,295 +391,35 @@ mod tests {
 
         let containers = service_containers([trunk_row.clone(), head_row.clone()]);
 
-        assert_eq!(
-            serving_containers(&containers, |_| None)
-                .into_iter()
-                .map(super::ServingContainer::as_observation)
-                .collect::<Vec<_>>(),
-            vec![&trunk_row, &head_row]
+        assert_eq!(serving_ids(&containers), vec![&trunk_row, &head_row]);
+    }
+
+    #[test]
+    fn proxy_copies_never_routed_always_removable() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let mut proxy = serving_observation(
+            '1',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            HEALTHY,
+            Some([10, 210, 1, 2]),
         );
+        proxy
+            .try_update(|parts| {
+                parts.namespace = Namespace::system();
+                parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+            })
+            .unwrap();
+        assert_eq!(proxy.identity(), crate::QualifiedService::system_ingress());
+        let containers = service_containers([proxy]);
+
+        assert!(serving_containers(&containers).is_empty());
+        assert!(proxy_routes(&containers, |_| false, &ProxyRoutes::new()).is_empty());
     }
 
     const HEALTHY: ContainerRuntimeObservation = ContainerRuntimeObservation::Running {
         health: HealthObservation::Healthy,
     };
-
-    struct VisibilityCase {
-        name: &'static str,
-        rows: Vec<(char, u8, ContainerRuntimeObservation)>,
-        pointer: bool,
-        routed: &'static [char],
-    }
-
-    fn visibility_cases() -> Vec<VisibilityCase> {
-        let exited = ContainerRuntimeObservation::Exited { code: 0 };
-        let booting = (
-            'c',
-            2,
-            ContainerRuntimeObservation::Running {
-                health: HealthObservation::Starting,
-            },
-        );
-        let old = || {
-            vec![
-                ('1', 1, HEALTHY),
-                ('2', 1, HEALTHY),
-                ('3', 1, exited.clone()),
-            ]
-        };
-        let mut cases = vec![
-            VisibilityCase {
-                name: "pointed all present",
-                rows: [old(), vec![('a', 2, HEALTHY), ('b', 2, HEALTHY)]].concat(),
-                pointer: true,
-                routed: &['a', 'b'],
-            },
-            VisibilityCase {
-                name: "one pointed row missing",
-                rows: [old(), vec![('a', 2, HEALTHY)]].concat(),
-                pointer: true,
-                routed: &['1', '2', 'a'],
-            },
-            VisibilityCase {
-                name: "pointed Container crashed but present",
-                rows: [old(), vec![('a', 2, HEALTHY), ('b', 2, exited.clone())]].concat(),
-                pointer: true,
-                routed: &['a'],
-            },
-            VisibilityCase {
-                name: "pointed row removed after old retire",
-                rows: vec![('a', 2, HEALTHY)],
-                pointer: true,
-                routed: &['a'],
-            },
-            VisibilityCase {
-                name: "previous deploy fully gone",
-                rows: vec![('a', 2, HEALTHY), ('b', 2, HEALTHY)],
-                pointer: true,
-                routed: &['a', 'b'],
-            },
-            VisibilityCase {
-                name: "no pointer",
-                rows: [old(), vec![('a', 2, HEALTHY), ('b', 2, HEALTHY)]].concat(),
-                pointer: false,
-                routed: &['a', 'b'],
-            },
-        ];
-        for case in &mut cases {
-            case.rows.push(booting.clone());
-        }
-        cases
-    }
-
-    fn visibility_row(
-        id: char,
-        deploy: u8,
-        runtime: ContainerRuntimeObservation,
-    ) -> ContainerObservation {
-        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
-        let octet = u8::try_from(id.to_digit(16).unwrap()).unwrap();
-        let mut row = serving_observation(
-            id,
-            &service_id,
-            ContainerKind::ServiceContainer,
-            runtime,
-            Some([10, 210, 1, octet]),
-        );
-        row.try_update(|parts| {
-            parts.created_at_unix_nanos = i64::from(deploy);
-            parts.resolved_spec.container.image = format!("api:{deploy}");
-            parts
-                .labels
-                .insert(DEPLOYMENT_ID_LABEL.into(), format!("d{deploy}"));
-        })
-        .unwrap();
-        row
-    }
-
-    fn visibility_pointer(retiring: &[char]) -> ServingPointer {
-        pointer_of("d2", &['a', 'b'], Some("d1"), retiring)
-    }
-
-    fn visibility_containers(case: &VisibilityCase) -> Vec<ServiceContainer> {
-        service_containers(
-            case.rows
-                .iter()
-                .map(|(id, deploy, runtime)| visibility_row(*id, *deploy, runtime.clone())),
-        )
-    }
-
-    fn id_char(container: &ServiceContainer) -> char {
-        container
-            .as_observation()
-            .container_id
-            .as_str()
-            .chars()
-            .next()
-            .unwrap()
-    }
-
-    fn routed_ids(case: &VisibilityCase, pointer: &ServingPointer) -> Vec<char> {
-        let containers = visibility_containers(case);
-        let pointer = case.pointer.then_some(pointer);
-        let mut routed: Vec<char> = serving_containers(&containers, |_| pointer)
-            .into_iter()
-            .map(|serving| id_char(serving.as_container()))
-            .collect();
-        routed.sort_unstable();
-        routed
-    }
-
-    #[test]
-    fn serving_containers_follow_the_union_rule_per_visibility_case() {
-        let pointer = visibility_pointer(&[]);
-        for case in visibility_cases() {
-            assert_eq!(routed_ids(&case, &pointer), case.routed, "{}", case.name);
-        }
-    }
-
-    #[test]
-    fn serving_containers_never_route_an_unaddressed_container() {
-        let pointer = visibility_pointer(&[]);
-        for case in visibility_cases() {
-            let unaddressed: Vec<char> = visibility_containers(&case)
-                .iter()
-                .filter(|container| container.traffic_address().is_none())
-                .map(id_char)
-                .collect();
-            assert!(!unaddressed.is_empty(), "{}", case.name);
-            for id in routed_ids(&case, &pointer) {
-                assert!(!unaddressed.contains(&id), "{}: routed {id}", case.name);
-            }
-        }
-    }
-
-    #[test]
-    fn an_unlabelled_old_copy_serves_through_retiring_until_the_pointed_copy_is_visible() {
-        let mut unlabelled = visibility_row('1', 1, HEALTHY);
-        unlabelled
-            .try_update(|parts| {
-                parts.labels.remove(DEPLOYMENT_ID_LABEL);
-            })
-            .unwrap();
-        let containers = service_containers([unlabelled]);
-        let pointer = ServingPointer {
-            deploy: DeploymentLogId::parse("d2").unwrap(),
-            containers: vec![ContainerId::parse("b".repeat(64)).unwrap()],
-            previous: Some(DeploymentLogId::parse("pin-d2").unwrap()),
-            retiring: vec![ContainerId::parse("1".repeat(64)).unwrap()],
-            deciding: None,
-        };
-
-        let routed: Vec<char> = serving_containers(&containers, |_| Some(&pointer))
-            .into_iter()
-            .map(|serving| id_char(serving.as_container()))
-            .collect();
-
-        assert_eq!(routed, ['1']);
-    }
-
-    #[test]
-    fn serving_containers_ignore_the_retiring_list_while_a_pointed_container_routes() {
-        let without = visibility_pointer(&[]);
-        let with = visibility_pointer(&['1', '2', '3']);
-        for case in visibility_cases() {
-            assert_eq!(
-                routed_ids(&case, &without),
-                routed_ids(&case, &with),
-                "{}",
-                case.name
-            );
-        }
-    }
-
-    const STOPPING: ContainerRuntimeObservation = ContainerRuntimeObservation::Running {
-        health: HealthObservation::Stopping,
-    };
-
-    fn pointer_routes(
-        rows: &[(char, u8, ContainerRuntimeObservation)],
-        pointer: &ServingPointer,
-    ) -> Vec<char> {
-        let containers = service_containers(
-            rows.iter()
-                .map(|(id, deploy, runtime)| visibility_row(*id, *deploy, runtime.clone())),
-        );
-        let mut routed: Vec<char> = serving_containers(&containers, |_| Some(pointer))
-            .into_iter()
-            .map(|serving| id_char(serving.as_container()))
-            .collect();
-        routed.sort_unstable();
-        routed
-    }
-
-    fn pointer_of(
-        deploy: &str,
-        containers: &[char],
-        previous: Option<&str>,
-        retiring: &[char],
-    ) -> ServingPointer {
-        let ids = |ids: &[char]| {
-            ids.iter()
-                .map(|id| ContainerId::parse(id.to_string().repeat(64)).unwrap())
-                .collect()
-        };
-        ServingPointer {
-            deploy: DeploymentLogId::parse(deploy).unwrap(),
-            containers: ids(containers),
-            previous: previous.map(|previous| DeploymentLogId::parse(previous).unwrap()),
-            retiring: ids(retiring),
-            deciding: None,
-        }
-    }
-
-    #[test]
-    fn a_rollback_to_a_stopping_container_routes_the_running_one_it_retires() {
-        let rows = [('a', 1, STOPPING), ('b', 2, HEALTHY)];
-        assert_eq!(
-            pointer_routes(&rows, &pointer_of("d3", &['a'], Some("d2"), &['b'])),
-            vec!['b']
-        );
-    }
-
-    #[test]
-    fn a_new_pointer_never_revives_a_retiring_container_older_than_previous() {
-        let rows = [('a', 1, HEALTHY), ('b', 2, HEALTHY)];
-        assert_eq!(
-            pointer_routes(&rows, &pointer_of("d3", &['c'], Some("d2"), &['a', 'b'])),
-            vec!['b']
-        );
-    }
-
-    #[test]
-    fn routable_pointed_containers_exclude_retiring_and_previous_ones() {
-        let rows = [
-            ('a', 2, HEALTHY),
-            ('b', 2, STOPPING),
-            ('1', 1, HEALTHY),
-            ('0', 0, HEALTHY),
-        ];
-        assert_eq!(
-            pointer_routes(
-                &rows,
-                &pointer_of("d2", &['a', 'b'], Some("d1"), &['0', '1'])
-            ),
-            vec!['a']
-        );
-    }
-
-    #[test]
-    fn nothing_routable_routes_nothing() {
-        let rows = [
-            ('a', 3, STOPPING),
-            ('b', 2, STOPPING),
-            ('1', 1, ContainerRuntimeObservation::Exited { code: 0 }),
-            ('c', 4, HEALTHY),
-        ];
-        assert_eq!(
-            pointer_routes(&rows, &pointer_of("d3", &['a'], Some("d1"), &['b'])),
-            Vec::<char>::new()
-        );
-    }
 
     #[test]
     fn slot_occupancy_does_not_treat_another_shape_as_current() {
@@ -840,7 +500,8 @@ mod tests {
             .unwrap();
         observation
             .try_update(|parts| {
-                parts.address = address.map(|octets| ContainerAddress(octets.into()))
+                parts.address = address.map(|octets| ContainerAddress(octets.into()));
+                parts.rotation = Some(CopyRotation::In);
             })
             .unwrap();
         observation

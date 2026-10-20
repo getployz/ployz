@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { ConfigWritten, EnvironmentRef, MachineId, MachineName, VolumeListing } from "@ployz/sdk";
+import { useMinute } from "#/hooks/use-minute";
 import { toErrorMessage } from "#/lib/error-message";
 import { environmentKey, invalidateViews } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -95,7 +96,7 @@ export function useStagedPlacements(
     const changes = placementChanges(volume, answered, row);
     return changes.length === 0 ? [] : [{ volume, row, members: answered, changes }];
   });
-  const now = new Date();
+  const now = useMinute() ?? new Date();
   const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.unreached));
   const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId, environment } });
   return {

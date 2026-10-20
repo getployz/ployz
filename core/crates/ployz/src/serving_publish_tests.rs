@@ -1,51 +1,6 @@
-use std::sync::{Arc, Mutex};
-
 use ployz_core::{ContainerId, DeploymentLogId};
 
 use super::*;
-
-/// One shared row with the store's compare-and-set: write only over the value read.
-#[derive(Clone, Default)]
-pub(crate) struct FakeRow {
-    pub(crate) row: Arc<Mutex<Option<ServingPointer>>>,
-    pub(crate) publishes: Arc<Mutex<u32>>,
-    /// Pointers another writer lands just before each of this client's publishes.
-    pub(crate) interlopers: Arc<Mutex<Vec<ServingPointer>>>,
-}
-
-impl PointerClient for FakeRow {
-    async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError> {
-        Ok(MachineTarget::parse("publisher").unwrap())
-    }
-
-    async fn read_pointer_at(
-        &mut self,
-        _at: &mut MachineTarget,
-        _service: &QualifiedService,
-    ) -> Result<Option<ServingPointer>, RpcError> {
-        Ok(self.row.lock().unwrap().clone())
-    }
-
-    async fn publish_pointer_at(
-        &mut self,
-        _at: &mut MachineTarget,
-        request: PublishServingPointerRequest,
-    ) -> Result<ServingPointerPublication, RpcError> {
-        tokio::task::yield_now().await;
-        if let Some(interloper) = self.interlopers.lock().unwrap().pop() {
-            *self.row.lock().unwrap() = Some(interloper);
-        }
-        *self.publishes.lock().unwrap() += 1;
-        let mut row = self.row.lock().unwrap();
-        if *row != request.read {
-            return Ok(ServingPointerPublication::Superseded {
-                current: row.clone(),
-            });
-        }
-        *row = Some(request.pointer);
-        Ok(ServingPointerPublication::Published)
-    }
-}
 
 pub(crate) fn deploy(deploy: char) -> DeploymentLogId {
     DeploymentLogId::parse(format!("dep-{deploy}")).unwrap()
@@ -106,154 +61,6 @@ pub(crate) fn labelled(new: char, deploy: char) -> Rotation {
     }
 }
 
-#[tokio::test]
-async fn amending_a_service_with_no_pointer_writes_nothing() {
-    let mut fake = FakeRow::default();
-    let amended = amend_pointer(
-        &mut fake,
-        &service(),
-        &deploy('a'),
-        &CancellationToken::new(),
-        &replacing('2', '1'),
-    )
-    .await
-    .unwrap();
-    assert_eq!(amended, Amendment::NoPointer);
-    assert_eq!(*fake.publishes.lock().unwrap(), 0);
-    assert_eq!(*fake.row.lock().unwrap(), None);
-}
-
-#[tokio::test]
-async fn a_lost_amendment_retries_over_the_winner_and_keeps_both_changes() {
-    let mut fake = FakeRow::default();
-    *fake.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));
-    fake.interlopers
-        .lock()
-        .unwrap()
-        .push(pointer('a', &['1', '4'], &[]));
-    let amended = amend_pointer(
-        &mut fake,
-        &service(),
-        &deploy('a'),
-        &CancellationToken::new(),
-        &replacing('2', '1'),
-    )
-    .await
-    .unwrap();
-    assert_eq!(amended, Amendment::Published { retries: 1 });
-    assert_eq!(
-        *fake.row.lock().unwrap(),
-        Some(retired_from(pointer('a', &['4', '2'], &['1']), 'a'))
-    );
-}
-
-#[tokio::test]
-async fn an_amendment_gives_up_after_three_lost_retries() {
-    let mut fake = FakeRow::default();
-    *fake.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));
-    *fake.interlopers.lock().unwrap() = ['5', '6', '7', '8']
-        .iter()
-        .map(|id| pointer('a', &[*id], &[]))
-        .collect();
-    let error = amend_pointer(
-        &mut fake,
-        &service(),
-        &deploy('a'),
-        &CancellationToken::new(),
-        &labelled('2', 'a'),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
-    assert_eq!(*fake.publishes.lock().unwrap(), AMEND_RETRIES + 1);
-}
-
-#[derive(Clone, Copy)]
-enum Stall {
-    Publisher,
-    Read,
-    Publish,
-}
-
-struct Stalled {
-    row: FakeRow,
-    stall: Stall,
-}
-
-impl PointerClient for Stalled {
-    async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError> {
-        if matches!(self.stall, Stall::Publisher) {
-            std::future::pending::<()>().await;
-        }
-        self.row.pointer_publisher().await
-    }
-
-    async fn read_pointer_at(
-        &mut self,
-        at: &mut MachineTarget,
-        service: &QualifiedService,
-    ) -> Result<Option<ServingPointer>, RpcError> {
-        if matches!(self.stall, Stall::Read) {
-            std::future::pending::<()>().await;
-        }
-        self.row.read_pointer_at(at, service).await
-    }
-
-    async fn publish_pointer_at(
-        &mut self,
-        at: &mut MachineTarget,
-        request: PublishServingPointerRequest,
-    ) -> Result<ServingPointerPublication, RpcError> {
-        if matches!(self.stall, Stall::Publish) {
-            std::future::pending::<()>().await;
-        }
-        self.row.publish_pointer_at(at, request).await
-    }
-}
-
-async fn cancelled_amendment(stall: Stall) -> (RpcError, FakeRow) {
-    let row = FakeRow::default();
-    *row.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));
-    let mut stalled = Stalled {
-        row: row.clone(),
-        stall,
-    };
-    let (service, cancellation) = (service(), CancellationToken::new());
-    let (bound, rotation) = (deploy('a'), replacing('2', '1'));
-    let amending = amend_pointer(&mut stalled, &service, &bound, &cancellation, &rotation);
-    tokio::pin!(amending);
-    tokio::select! {
-        amended = &mut amending => panic!("returned before cancel: {amended:?}"),
-        () = tokio::task::yield_now() => {}
-    }
-    cancellation.cancel();
-    let error = tokio::time::timeout(Duration::from_secs(1), amending)
-        .await
-        .expect("cancellation returns promptly")
-        .unwrap_err();
-    assert_eq!(error.code, ployz_core::RpcErrorCode::Unavailable);
-    (error, row)
-}
-
-#[tokio::test]
-async fn cancelling_a_pending_publisher_lookup_or_pointer_read_publishes_nothing() {
-    for stall in [Stall::Publisher, Stall::Read] {
-        let (error, row) = cancelled_amendment(stall).await;
-        assert!(error.message.contains("cancelled before"), "{error:?}");
-        assert_eq!(*row.publishes.lock().unwrap(), 0);
-        assert_eq!(*row.row.lock().unwrap(), Some(pointer('a', &['1'], &[])));
-    }
-}
-
-#[tokio::test]
-async fn cancelling_a_sent_publish_says_it_may_have_been_written() {
-    let (error, _) = cancelled_amendment(Stall::Publish).await;
-    assert_eq!(
-        error.message,
-        "cancelled after sending the Serving Pointer of app/api; it may have been written"
-    );
-}
-
 #[test]
 fn a_first_pointer_that_gains_retiring_ids_names_its_own_deploy_as_previous() {
     let first = pointer('a', &['1', '2'], &[]);
@@ -275,7 +82,6 @@ fn a_rotation_that_retires_nothing_leaves_previous_alone() {
 #[test]
 fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
     let read = retired_from(pointer('a', &['1'], &['8', '9']), 'a');
-    let listed = [container('1'), container('2'), container('9')];
     let rotation = Rotation {
         joining: vec![Join {
             copy: container('2'),
@@ -285,9 +91,8 @@ fn a_rotation_prunes_only_retiring_ids_the_listing_lacked_before_the_read() {
             },
         }],
         leaving: vec![container('1')],
-        pruning: absent_retiring(&read, &listed),
+        pruning: vec![container('8')],
     };
-    assert_eq!(rotation.pruning, [container('8')]);
     assert_eq!(
         rotation.apply(&read),
         Applied::Next(retired_from(pointer('a', &['2'], &['9', '1']), 'a')),
@@ -347,83 +152,6 @@ fn a_join_without_evidence_is_refused() {
         "7 is neither named nor labelled with dep-b"
     );
     assert_eq!(labelled('3', 'a').apply(&current), Applied::Unproven);
-}
-
-#[tokio::test]
-async fn an_amendment_joining_without_evidence_is_outdated_and_writes_nothing() {
-    let mut fake = FakeRow::default();
-    *fake.row.lock().unwrap() = Some(pointer('b', &['1'], &[]));
-    let amended = amend_pointer(
-        &mut fake,
-        &service(),
-        &deploy('b'),
-        &CancellationToken::new(),
-        &labelled('3', 'a'),
-    )
-    .await
-    .unwrap();
-    assert_eq!(amended, Amendment::Outdated);
-    assert_eq!(*fake.publishes.lock().unwrap(), 0);
-    assert_eq!(*fake.row.lock().unwrap(), Some(pointer('b', &['1'], &[])));
-}
-
-#[tokio::test]
-async fn an_amendment_losing_its_evidence_to_a_newer_row_is_outdated() {
-    let mut fake = FakeRow::default();
-    *fake.row.lock().unwrap() = Some(pointer('a', &['1'], &[]));
-    fake.interlopers
-        .lock()
-        .unwrap()
-        .push(pointer('a', &['4'], &['1']));
-    let amended = amend_pointer(
-        &mut fake,
-        &service(),
-        &deploy('a'),
-        &CancellationToken::new(),
-        &replacing('2', '1'),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        amended,
-        Amendment::Outdated,
-        "the winner retired the source; the copy's spec is unproven against the new row"
-    );
-    assert_eq!(
-        *fake.row.lock().unwrap(),
-        Some(pointer('a', &['4'], &['1']))
-    );
-}
-
-#[tokio::test]
-async fn a_read_immediately_before_removal_says_what_names_the_copy() {
-    let mut fake = FakeRow::default();
-    assert_eq!(
-        protection(&mut fake, &service(), &container('1'))
-            .await
-            .unwrap(),
-        Protection::Unnamed
-    );
-    let row = pointer('a', &['1'], &['2']);
-    *fake.row.lock().unwrap() = Some(row.clone());
-    assert_eq!(
-        protection(&mut fake, &service(), &container('1'))
-            .await
-            .unwrap(),
-        Protection::Pointed(row.clone())
-    );
-    assert_eq!(
-        protection(&mut fake, &service(), &container('2'))
-            .await
-            .unwrap(),
-        Protection::Retiring(row)
-    );
-    assert_eq!(
-        protection(&mut fake, &service(), &container('3'))
-            .await
-            .unwrap(),
-        Protection::Unnamed
-    );
 }
 
 mod rpc {
@@ -572,27 +300,6 @@ mod rpc {
         server.abort();
     }
 
-    #[tokio::test]
-    async fn an_amendment_reads_the_existing_row_and_publishes_over_it() {
-        let (mut client, fixture, server) =
-            cluster(Some(pointer('a', &['1'], &[])), None, None).await;
-        let amended = amend_pointer(
-            &mut client,
-            &service(),
-            &deploy('a'),
-            &CancellationToken::new(),
-            &replacing('2', '1'),
-        )
-        .await
-        .unwrap();
-        assert_eq!(amended, Amendment::Published { retries: 0 });
-        assert_eq!(
-            *fixture.row.lock().unwrap(),
-            Some(retired_from(pointer('a', &['2'], &['1']), 'a'))
-        );
-        server.abort();
-    }
-
     /// Only the publisher answers a pointer read, so the read asks for the pointer and
     /// not just the routes any Machine holds.
     #[tokio::test]
@@ -604,27 +311,6 @@ mod rpc {
         assert_eq!(
             *fixture.calls.lock().unwrap(),
             vec![("read", at('1')), ("read", at('2'))]
-        );
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn an_amendment_follows_one_refusal_and_publishes_where_it_read() {
-        let (mut client, fixture, server) =
-            cluster(Some(pointer('a', &['1'], &[])), Some('1'), Some('2')).await;
-        let amended = amend_pointer(
-            &mut client,
-            &service(),
-            &deploy('a'),
-            &CancellationToken::new(),
-            &labelled('2', 'a'),
-        )
-        .await
-        .unwrap();
-        assert_eq!(amended, Amendment::Published { retries: 0 });
-        assert_eq!(
-            *fixture.calls.lock().unwrap(),
-            vec![("read", at('2')), ("read", at('1')), ("publish", at('1'))]
         );
         server.abort();
     }

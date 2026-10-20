@@ -157,7 +157,7 @@ pub async fn run_deployment(
             .await;
     }
     let session = match run
-        .connecting(connect_connections(
+        .connecting(super::dial(
             connections,
             Arc::new(SystemConnector::default()),
         ))
@@ -165,17 +165,14 @@ pub async fn run_deployment(
     {
         Ok(Some(session)) => session,
         Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
-        // Users read it on the Deployment: plain words and one action first, then
-        // what the connection said.
+        // Users read it on the Deployment: the connection's own sentence first, naming the
+        // Server where it knows which and saying whether a daemon answered, then what the
+        // connection said.
         Err(error) => {
-            let Failure { reason, mut cause } = Failure::from(&error);
-            cause.insert(0, reason);
             return run
                 .not_executed(Failure {
-                    reason:
-                        "Ployz couldn't reach your Servers. Check that they're online, then retry."
-                            .into(),
-                    cause,
+                    reason: error.to_string(),
+                    cause: ployz_core::error_chain::causes(&error),
                 })
                 .await;
         }
@@ -376,12 +373,13 @@ impl Run {
     async fn fill_ingress(&self, session: &Session) {
         let filled = match session.client() {
             Ok(mut client) => {
+                let server = client.server();
                 let stop = CancellationToken::new();
                 self.renewing(crate::ingress::fill_slots(&mut client, &stop), || {
                     stop.cancel()
                 })
                 .await
-                .map_err(|failure| crate::ui::row(&failure))
+                .map_err(|failure| crate::ingress::unchecked(&failure, server))
             }
             Err(error) => Err(crate::ui::row(&error)),
         };
@@ -691,10 +689,10 @@ impl Run {
         *warnings = unrecorded;
     }
 
-    async fn connecting<T>(
+    async fn connecting<T, E>(
         &self,
-        work: impl std::future::Future<Output = Result<T, RpcError>>,
-    ) -> Result<Option<T>, RpcError> {
+        work: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Result<Option<T>, E> {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
         loop {

@@ -19,8 +19,8 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FramingError, MachineId, MachineTarget, Retry, RoutingMetadataError, RpcError,
-    RpcErrorCode, apply_one_target,
+    CodecError, FramingError, MachineId, MachineTarget, ResolvedServiceSpec, Retry,
+    RoutingMetadataError, RpcError, RpcErrorCode, apply_one_target, settle_deadline,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -59,6 +59,12 @@ pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<u16>, queued: u32) -> Option<Duration> {
     grace_period_seconds
         .map(|seconds| TARGET_RPC_TIMEOUT + Duration::from_secs(u64::from(seconds)) * queued.max(1))
+}
+
+/// The deadline of an In RPC: the owner settles the copy's health before it
+/// writes In, so the ask waits out the copy's settle deadline on top of the RPC.
+pub(crate) fn in_rpc_timeout(spec: &ResolvedServiceSpec) -> Duration {
+    TARGET_RPC_TIMEOUT + settle_deadline(spec)
 }
 
 pub trait ProxyStream: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -514,6 +520,7 @@ pub async fn connect_selected_with(
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
     let mut last_error = None;
+    let mut server = None;
     let mut retry = Retry::Never;
     let mut reached = false;
     for (index, connection) in selected.connections.iter().enumerate() {
@@ -536,12 +543,14 @@ pub async fn connect_selected_with(
                 }
                 reached |= !error.unreached();
                 last_error = Some(error);
+                server = connection.server();
             }
         }
     }
     Err(ConnectError::AllFailed {
         selection: selected.source,
         attempts: selected.connections.len(),
+        server,
         retry,
         reached,
         last: last_error.map(Box::new),
@@ -662,7 +671,7 @@ pub enum ConnectError {
     Exhausted(Box<dyn std::error::Error + Send + Sync>),
     /// Not retried: a starting daemon costs one confirm timeout, not one per retry.
     #[error(
-        "connection attempt failed: entry Machine daemon did not answer within {:?}; it may still be starting, retry shortly",
+        "the Server's daemon accepted the connection but didn't answer within {:?}; it may still be starting",
         CONNECT_CONFIRM_TIMEOUT
     )]
     EntryNotReady,
@@ -709,10 +718,12 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("{}", all_failed(*attempts, selection, *reached))]
+    #[error("{}", all_failed(*attempts, selection, *reached, server.as_deref(), last.as_deref()))]
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
+        /// The Server the last connection tried enters, by name or else Machine ID.
+        server: Option<String>,
         /// [`Retry::AfterRestart`] when any connection may still come up.
         retry: Retry,
         /// A daemon answered at least one connection, even if `last` did not reach one.
@@ -732,15 +743,48 @@ pub enum ConnectError {
     Value(#[from] ployz_core::ValueError),
 }
 
-/// Say a daemon answered when one did: a refusal is not an unreachable Server.
-fn all_failed(attempts: usize, selection: &ConnectionSource, reached: bool) -> String {
-    match (attempts, reached) {
-        (1, false) => "Ployz couldn't reach your Server's daemon.".into(),
-        (1, true) => "Your Server's daemon answered, but the connection was refused.".into(),
-        (_, false) => format!(
+const NOT_ANSWERING_NEXT: &str = "Check that its Ployz daemon is running, then retry.";
+
+/// `server`, by name or Machine ID, gave no answer to a connection this process made.
+pub(crate) fn not_answering(server: &str) -> String {
+    format!("Server {server} isn't answering. {NOT_ANSWERING_NEXT}")
+}
+
+/// Say a daemon answered when one did: a refusal is not an unreachable Server. Name the
+/// Server tried last where the connection says which it is, and how `last` failed there.
+fn all_failed(
+    attempts: usize,
+    selection: &ConnectionSource,
+    reached: bool,
+    server: Option<&str>,
+    last: Option<&ConnectError>,
+) -> String {
+    match (attempts, reached, server) {
+        (1, false, Some(server)) => not_answering(server),
+        (1, false, None) => "Ployz couldn't reach your Server's daemon.".into(),
+        (1, true, Some(server)) => {
+            format!("Server {server}'s daemon answered, but the connection was refused.")
+        }
+        (1, true, None) => "Your Server's daemon answered, but the connection was refused.".into(),
+        (_, false, Some(server)) => format!(
+            "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}. \
+             Server {server}, tried last, isn't answering. {NOT_ANSWERING_NEXT}"
+        ),
+        (_, false, None) => format!(
             "Ployz couldn't reach a Server's daemon through any of the {attempts} connections from {selection}."
         ),
-        (_, true) => format!(
+        (_, true, Some(server)) => {
+            let how = if last.is_some_and(|last| !last.unreached()) {
+                "refused the connection.".into()
+            } else {
+                format!("isn't answering. {NOT_ANSWERING_NEXT}")
+            };
+            format!(
+                "A Server's daemon answered, but the {attempts} connections from {selection} all failed. \
+                 Server {server}, tried last, {how}"
+            )
+        }
+        (_, true, None) => format!(
             "A Server's daemon answered, but the {attempts} connections from {selection} all failed."
         ),
     }

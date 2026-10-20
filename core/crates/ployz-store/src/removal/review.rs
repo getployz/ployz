@@ -87,15 +87,14 @@ pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, R
     Ok(ConsentedView { volumes })
 }
 
-/// The Volumes Applied State holds that `target` drops: what a full Deploy of
-/// `target` removes from the Servers.
+/// The Volumes `held` holds that `target` drops: what a full Deploy of `target`
+/// removes from the Servers.
 pub(crate) fn removed(
-    applied: &SavedEnvironmentIntent,
+    held: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
     namespace: &Namespace,
 ) -> Result<Vec<RemovedVolume>, RpcError> {
-    applied
-        .volumes
+    held.volumes
         .iter()
         .filter(|old| drops(target, &old.resource_id))
         .map(|volume| {

@@ -298,7 +298,7 @@ fn deploy(
     let mut frozen = deployment::freeze(
         id,
         &saved_intent,
-        &deployment::Landing::applied(&review.head.applied),
+        &deployment::Landing::of(&review.head),
         deployment::Scope::of(&admit.services, &losses),
         namespace,
         cluster_domain,

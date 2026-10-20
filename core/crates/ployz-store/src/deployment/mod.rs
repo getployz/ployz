@@ -408,6 +408,13 @@ impl NodeStatus {
     pub(crate) const fn advances(self) -> bool {
         matches!(self, Self::Deployed | Self::Removed)
     }
+
+    /// Whether Applied State takes the node from a Deployment that `succeeded` or
+    /// not: once it succeeded, an Unchanged node too, since the Deploy covered it
+    /// even when the runtime had nothing to do (a rename, a tag).
+    pub(crate) const fn applied(self, succeeded: bool) -> bool {
+        self.advances() || (succeeded && matches!(self, Self::Unchanged))
+    }
 }
 
 /// What a Deployment's runner recorded at its end.
@@ -427,6 +434,10 @@ pub enum Outcome {
         cause: Vec<String>,
         #[serde(default)]
         services: Vec<ServiceOutcome>,
+        /// What a failed replacement's compensation did to its new and old
+        /// Containers, one sentence each; users read it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        compensation: Vec<String>,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.
