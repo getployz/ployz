@@ -12,12 +12,12 @@ import {
 } from "#/modules/machines/waiting/checkin-wire";
 import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { asStage, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
+import { asStage, forwardTo, openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hasFirstServer, startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
-import { PAST_STORAGE, isReadyFor, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
+import { PAST_STORAGE, isReadyFor, joinCommitted, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -139,7 +139,13 @@ const admit = Effect.fn("Checkin.admit")(function* (
     eq(waitingServer.checkinKey, request.checkinKey),
   );
   const [existing] = yield* drizzle
-    .select({ id: waitingServer.id, fleetTokenId: waitingServer.fleetTokenId, rejectedAt: waitingServer.rejectedAt })
+    .select({
+      id: waitingServer.id,
+      fleetTokenId: waitingServer.fleetTokenId,
+      rejectedAt: waitingServer.rejectedAt,
+      reportedAttemptId: waitingServer.reportedAttemptId,
+      reportedStage: waitingServer.reportedStage,
+    })
     .from(waitingServer)
     .where(key);
   const newToToken = existing?.fleetTokenId !== token.id;
@@ -151,7 +157,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
   if (stopped !== null) return stopped;
   if (!newToToken && existing.rejectedAt !== null) {
     const open = yield* openAttemptFor(existing.id);
-    if (open === null || !PAST_STORAGE.has(open.stage)) return stop("rejected");
+    if (open === null || !joinCommitted(open, existing)) return stop("rejected");
   }
   if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
     return yield* new CheckinRefused({
@@ -213,8 +219,7 @@ function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentC
   const attempt = request.attempt;
   if (attempt?.attemptId !== open.id) return null;
   if (attempt.failure !== undefined) return { attemptId: open.id, stage: attempt.stage, failure: attempt.failure };
-  // Until the run records a stage, every check-in reports it again, even one a check-in already stored.
-  return attempt.stage === open.stage && open.state === "running" ? null : { attemptId: open.id, stage: attempt.stage };
+  return attempt.stage === open.stage ? null : { attemptId: open.id, stage: attempt.stage };
 }
 
 const answerAttempt = Effect.fn("Checkin.answerAttempt")(function* (
@@ -224,14 +229,17 @@ const answerAttempt = Effect.fn("Checkin.answerAttempt")(function* (
 ) {
   const open = yield* openAttemptFor(waitingServerId);
   if (open === null) return WAIT;
+  const committed = request.attempt?.attemptId === open.id && request.attempt.failure === undefined ? asStage(request.attempt.stage) : null;
+  if (PAST_STORAGE.has(committed)) {
+    // Reject spares a join it reads as committed. It locks this row first, so it never reads a report behind the host's.
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(waitingServer).set({
+      reportedAttemptId: open.id,
+      reportedStage: forwardTo(waitingServer.reportedStage, committed, eq(waitingServer.reportedAttemptId, open.id)),
+    }).where(eq(waitingServer.id, waitingServerId));
+  }
   const reported = reportOf(open, request);
   if (reported !== null) {
-    if (reported.failure === undefined && PAST_STORAGE.has(reported.stage) && !PAST_STORAGE.has(open.stage)) {
-      // Reject spares a join it reads as committed. It takes this host's row lock first, so it never reads a stage behind the host's.
-      const { drizzle } = yield* Database;
-      yield* drizzle.update(serverEnrollment).set({ stage: asStage(reported.stage) })
-        .where(and(eq(serverEnrollment.id, open.id), isNull(serverEnrollment.endedAt)));
-    }
     yield* afterDatabaseCommit(sendInngestEvent(createServerEnrollmentReportedEvent(reported)).pipe(
       Effect.catch((error) => Effect.logWarning("An enrollment report was not sent; the next check-in sends it again.", error)),
     ));

@@ -14,6 +14,16 @@ export const COMMITTED_STAGES = ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexO
 
 export const PAST_STORAGE: ReadonlySet<string | null> = new Set(COMMITTED_STAGES);
 
+/** The committed stages further along than `stage`. A report of `stage` arriving late must not replace them. */
+export const committedAfter = (stage: string | null): ReadonlyArray<EnrollmentStage> =>
+  COMMITTED_STAGES.slice(COMMITTED_STAGES.findIndex((known) => known === stage) + 1);
+
+/** Whether the host's daemon has committed this attempt's join, by the run's record or by the host's report on its waiting row. */
+export const joinCommitted = (
+  attempt: { readonly id: string; readonly stage: string | null },
+  row: { readonly reportedAttemptId: string | null; readonly reportedStage: string | null },
+) => PAST_STORAGE.has(attempt.stage) || (row.reportedAttemptId === attempt.id && PAST_STORAGE.has(row.reportedStage));
+
 export const OPEN_ENROLLMENT_STATES: ReadonlyArray<EnrollmentState> = ["awaiting_founder", "instructed", "running"];
 
 export type EnrollStorage = { readonly kind: "none" } | { readonly kind: "zfs"; readonly device?: string };

@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, exists, inArray, isNotNull, isNull, lt, notExists, or, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNotNull, isNull, lt, notExists, or, sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { RunEnd } from "#/modules/inngest/attempt-lifecycle";
 import { createServerEnrollmentCancelEvent } from "#/modules/inngest/events";
 import type { MachineId } from "#/db/tables";
 import { machineEnrollmentToken } from "#/modules/machines/tables";
-import { COMMITTED_STAGES, ENROLLMENT_STAGES, PAST_STORAGE, type EnrollmentFailure, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
+import { committedAfter, ENROLLMENT_STAGES, type EnrollmentFailure, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -66,16 +67,15 @@ export const releaseJoiner = Effect.fn("ServerEnrollment.release")(function* (at
 export const asStage = (stage: string | null): EnrollmentStage | null =>
   ENROLLMENT_STAGES.find((known) => known === stage) ?? null;
 
+/** `next`, unless `column` already holds a committed stage further along, where `when` holds. Reports reach Cloud out of order. */
+export const forwardTo = (column: AnyPgColumn, next: EnrollmentStage | null, when?: SQL) => {
+  const later = committedAfter(next);
+  return later.length === 0 ? next : sql<EnrollmentStage | null>`case when ${and(when, inArray(column, [...later]))} then ${column} else ${next} end`;
+};
+
 export const recordStage = Effect.fn("ServerEnrollment.recordStage")(function* (attemptId: string, runId: string, stage: string | null) {
   const { drizzle } = yield* Database;
-  // A check-in stores a committed stage before its event reaches the run, so a late event never moves it back.
-  const next = asStage(stage);
-  const rows = yield* drizzle.update(serverEnrollment).set({
-    state: "running",
-    stage: PAST_STORAGE.has(next)
-      ? next
-      : sql<EnrollmentStage | null>`case when ${inArray(serverEnrollment.stage, [...COMMITTED_STAGES])} then ${serverEnrollment.stage} else ${next} end`,
-  }).where(and(
+  const rows = yield* drizzle.update(serverEnrollment).set({ state: "running", stage: forwardTo(serverEnrollment.stage, asStage(stage)) }).where(and(
     eq(serverEnrollment.id, attemptId),
     ownedBy(runId),
   )).returning({ id: serverEnrollment.id });

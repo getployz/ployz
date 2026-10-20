@@ -450,10 +450,16 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     .innerJoin(waitingServer, eq(waitingServer.id, serverEnrollment.waitingServerId))
     .where(and(
       eq(serverEnrollment.organizationId, organization.id),
-      // Reject spares a committed join, so that attempt stays in view like any other.
       input.id === undefined ? and(
-        or(isNull(waitingServer.rejectedAt), inArray(serverEnrollment.stage, [...COMMITTED_STAGES])),
         or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, new Date(Date.now() - RECENT_ENROLLMENT_MS))),
+        // Reject spares the join it found committed, so that attempt stays in view like any other.
+        or(isNull(waitingServer.rejectedAt), and(
+          or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, waitingServer.rejectedAt)),
+          or(
+            inArray(serverEnrollment.stage, [...COMMITTED_STAGES]),
+            and(eq(waitingServer.reportedAttemptId, serverEnrollment.id), inArray(waitingServer.reportedStage, [...COMMITTED_STAGES])),
+          ),
+        )),
       ) : eq(serverEnrollment.id, input.id),
     ))
     .orderBy(asc(serverEnrollment.requestedAt), asc(waitingServer.firstSeenAt), asc(waitingServer.id), asc(serverEnrollment.id));

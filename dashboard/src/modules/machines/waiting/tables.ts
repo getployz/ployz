@@ -55,6 +55,10 @@ export const waitingServer = pgTable(
     firstSeenAt: timestamp("first_seen_at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
     lastCheckInAt: timestamp("last_check_in_at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
     rejectedAt: timestamp("rejected_at", { mode: "date", withTimezone: true }),
+    /** The attempt this host last reported a committed stage for. Check-in writes it under this row's lock, which Reject also takes. */
+    reportedAttemptId: uuid("reported_attempt_id"),
+    /** The furthest committed stage the host reported for `reportedAttemptId`. */
+    reportedStage: text("reported_stage").$type<EnrollmentStage>(),
   },
   (table) => [
     uniqueIndex("waiting_server_key_idx").on(table.organizationId, table.checkinKey),
