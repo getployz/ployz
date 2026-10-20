@@ -105,6 +105,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
         mounts,
         shared_writes: matches.get_one("shared-writes") == Some(&true),
         storage_locked: false,
+        restored_from: None,
     })?;
     warn_docker(storage);
     if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {

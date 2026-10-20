@@ -441,6 +441,7 @@ fn a_narrowed_deploy_records_a_changed_volume_a_service_it_references_mounts() {
                 }],
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
             },
         )
         .unwrap();

@@ -436,6 +436,8 @@ impl Plan {
                         name,
                         storage,
                         shared_writes,
+                        // Only creating a Volume sets it, so no edit changes it.
+                        restored_from: _,
                     } = after;
                     invariant(
                         *resource_lineage_id == before.resource_lineage_id,

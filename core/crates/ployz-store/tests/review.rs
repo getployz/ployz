@@ -397,6 +397,7 @@ fn discard_keeps_mounts_it_does_not_name() {
                 // Three replicas of web write it below.
                 shared_writes: true,
                 storage_locked: false,
+                restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),
@@ -1315,6 +1316,7 @@ fn history_undo_of_a_volume_that_replaced_a_mount_puts_the_old_mount_back() {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -1344,6 +1346,7 @@ fn history_undo_of_a_mount_move_takes_back_what_took_its_old_path() {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -2116,6 +2119,7 @@ fn create_volume(store: &ConfigStore, who: &Actor, n: u8) {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(format!("00000000-0000-4000-8000-0000000000{n:02}")).unwrap(),
                 environment: EnvironmentRef::default(),
@@ -2693,6 +2697,7 @@ fn history_undo_volume_mount_named_name_and_shared_writes() {
                 storage: ployz_core::config::VolumeKind::Docker {},
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 mounts: vec![Mount {
                     service: ServiceName::parse("web").unwrap(),
                     path: "/old".into(),
@@ -3860,6 +3865,7 @@ fn mount_data(store: &ConfigStore, who: &Actor) {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -3895,6 +3901,7 @@ fn removing_a_deployed_service_is_destructive_and_a_new_one_is_not() {
             name: "web".into(),
             node: WEB.into(),
             path: "web".into(),
+            lost_after: None,
         }]
     );
 }
@@ -4308,6 +4315,7 @@ fn volume_at(store: &ConfigStore, who: &Actor, path: &str) {
             &CreateVolume {
                 shared_writes: false,
                 storage_locked: false,
+                restored_from: None,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
