@@ -9,8 +9,8 @@ use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ContainerRuntimeObservation, HealthObservation, LastHealthCheck, RequestedServiceSpec,
-    ResolvedServiceSpec,
+    ByteQuantity, ContainerRuntimeObservation, HealthObservation, LastHealthCheck,
+    RequestedServiceSpec, ResolvedServiceSpec,
 };
 use crate::{
     ContainerId, DockerVolumeId, DockerVolumeName, IngressHost, MachineId, MachineName, Namespace,
@@ -391,11 +391,12 @@ pub enum FailedOperation<E> {
 pub enum ReplacementCompensation<E> {
     /// The old container was left as it was; `stop_new_container` is the stop attempt on the new one.
     OldUntouched { stop_new_container: StopAttempt<E> },
-    /// Stop-first replacement stopped the old container; `restart_old_container` restores it.
-    /// `stop_new_container` is `None` when the new container never started.
+    /// Stop-first replacement withdrew and stopped the old container;
+    /// `restore_old_container` brings it back In. `stop_new_container` is
+    /// `None` when the new container never started.
     OldStopped {
         stop_new_container: Option<StopAttempt<E>>,
-        restart_old_container: RestartAttempt<E>,
+        restore_old_container: RestoreAttempt<E>,
     },
 }
 
@@ -415,6 +416,33 @@ impl<E> StopAttempt<E> {
     pub const fn stopped(&self) -> bool {
         matches!(self, Self::Stopped)
     }
+
+    /// The sentence a user reads; the error stays out of it.
+    #[must_use]
+    pub const fn line(&self) -> &'static str {
+        match self {
+            Self::Stopped => "Stopped the new Container.",
+            Self::Failed { .. } => "Could not stop the new Container.",
+        }
+    }
+}
+
+impl<E> ReplacementCompensation<E> {
+    /// What the compensation did, one sentence per attempt, in order.
+    #[must_use]
+    pub fn lines(&self) -> Vec<&'static str> {
+        match self {
+            Self::OldUntouched { stop_new_container } => vec![stop_new_container.line()],
+            Self::OldStopped {
+                stop_new_container,
+                restore_old_container,
+            } => stop_new_container
+                .iter()
+                .map(StopAttempt::line)
+                .chain([restore_old_container.line()])
+                .collect(),
+        }
+    }
 }
 
 impl<E> From<Result<(), E>> for StopAttempt<E> {
@@ -429,27 +457,46 @@ impl<E> From<Result<(), E>> for StopAttempt<E> {
 /// The attempt to restore the old container after a failed stop-first replacement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum RestartAttempt<E> {
-    /// The old container restarted and serves again.
-    Restarted,
-    /// The restart, or the wait for the old container to serve, returned `error`.
+pub enum RestoreAttempt<E> {
+    /// The old container is In again and every live proxy routes it.
+    Restored,
+    /// Another Deploy holds the old container; it stays Held.
+    LeftHeld,
+    /// The old container was not serving before this Deploy; nothing to restore.
+    NotServing,
+    /// The restore, or the wait for the proxies to route the old container, returned `error`.
     Failed { error: E },
 }
 
-impl<E> From<Result<(), E>> for RestartAttempt<E> {
+impl<E> RestoreAttempt<E> {
+    /// The sentence a user reads; the error stays out of it.
+    #[must_use]
+    pub const fn line(&self) -> &'static str {
+        match self {
+            Self::Restored => "Restored the old Container; it serves again.",
+            Self::LeftHeld => "The old Container is left Held by another Deploy.",
+            Self::NotServing => {
+                "The old Container was not serving before this Deploy; nothing to restore."
+            }
+            Self::Failed { .. } => "Could not restore the old Container.",
+        }
+    }
+}
+
+impl<E> From<Result<(), E>> for RestoreAttempt<E> {
     fn from(result: Result<(), E>) -> Self {
         match result {
-            Ok(()) => Self::Restarted,
+            Ok(()) => Self::Restored,
             Err(error) => Self::Failed { error },
         }
     }
 }
 
-impl<E> RestartAttempt<E> {
+impl<E> RestoreAttempt<E> {
     /// Whether the old container serves again.
     #[must_use]
-    pub const fn restarted(&self) -> bool {
-        matches!(self, Self::Restarted)
+    pub const fn restored(&self) -> bool {
+        matches!(self, Self::Restored)
     }
 }
 
@@ -757,9 +804,33 @@ pub enum DeployWarning {
         exposed: Vec<u16>,
         routed: Vec<u16>,
     },
+    /// Cleanup could not withdraw this copy: it keeps running on `machine`
+    /// until a later Deploy or a user command removes it.
+    LeftRunning {
+        service: QualifiedService,
+        container_id: ContainerId,
+        /// The Machine's name when the plan knows it, else its id.
+        machine: String,
+        reason: String,
+    },
+    /// Cleanup could not reach or confirm `machine` (cut off or powered off).
+    /// Once it is back, a copy left running can answer beside the new copies.
+    MixedAfterReturn {
+        /// The Machine's name when the plan knows it, else its id.
+        machine: String,
+    },
 }
 
 impl DeployWarning {
+    /// Cleanup left a copy running, or its Machine may serve one once it returns.
+    #[must_use]
+    pub const fn leaves_a_copy_running(&self) -> bool {
+        matches!(
+            self,
+            Self::LeftRunning { .. } | Self::MixedAfterReturn { .. }
+        )
+    }
+
     /// A relevant, independently evidenced gap. Legacy and generic warnings have none.
     #[must_use]
     pub fn observation_gap(&self) -> Option<(MachineId, &ObservationGap)> {
@@ -776,7 +847,9 @@ impl DeployWarning {
             | Self::IngressHostname { .. }
             | Self::ObserverRelativeHostnameConflict
             | Self::SkippedDependencyHealth { .. }
-            | Self::ImagePortMismatch { .. } => None,
+            | Self::ImagePortMismatch { .. }
+            | Self::LeftRunning { .. }
+            | Self::MixedAfterReturn { .. } => None,
         }
     }
 }
@@ -820,6 +893,19 @@ impl Display for DeployWarning {
                 "{service}'s image {image} exposes {}; its domains send to {}. Set the domain port or PORT.",
                 join_ports(exposed),
                 join_ports(routed),
+            ),
+            Self::LeftRunning {
+                service,
+                machine,
+                reason,
+                ..
+            } => write!(
+                f,
+                "{service} left running on {machine} ({reason}). The next deploy cleans it up."
+            ),
+            Self::MixedAfterReturn { machine } => write!(
+                f,
+                "Once {machine} is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy."
             ),
         }
     }
@@ -924,6 +1010,15 @@ impl Display for HealthFailure {
     }
 }
 
+/// Docker OOM-killed a process of a Container, which ran under this limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct OutOfMemory {
+    /// The Service's memLimit; `None` when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub memory_bytes: Option<ByteQuantity>,
+}
+
 /// Why a `service_healthy` dependency gate failed.
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -990,6 +1085,10 @@ pub enum ExecutionError {
     Health {
         container_id: ContainerId,
         failure: HealthFailure,
+        /// Docker OOM-killed a process of the Container while it was checked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        out_of_memory: Option<OutOfMemory>,
     },
     #[error("dependency {dependency} failed health gate: {failure}")]
     DependencyHealth {
@@ -1194,4 +1293,32 @@ pub struct MachineStorageBudget {
     pub machine_name: MachineName,
     /// Aggregate capacity for the selected provisioned Volumes on this Machine.
     pub budget: crate::StorageBudget,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compensation_lines_say_what_became_of_each_container_in_order() {
+        let restored = ReplacementCompensation::<String>::OldStopped {
+            stop_new_container: Some(StopAttempt::Stopped),
+            restore_old_container: RestoreAttempt::Restored,
+        };
+        assert_eq!(
+            restored.lines(),
+            [
+                "Stopped the new Container.",
+                "Restored the old Container; it serves again."
+            ]
+        );
+        let held = ReplacementCompensation::<String>::OldStopped {
+            stop_new_container: None,
+            restore_old_container: RestoreAttempt::LeftHeld,
+        };
+        assert_eq!(
+            held.lines(),
+            ["The old Container is left Held by another Deploy."]
+        );
+    }
 }

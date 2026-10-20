@@ -1049,8 +1049,10 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
 export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
   const session = yield* openSession(asker.organizationId);
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
+    clusterRead,
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
-    Effect.catch((error) => {
+    Effect.catch((error): Effect.Effect<CopyAnswer, ClusterOutOfTime | SwitchAttemptError> => {
+      if (error instanceof ClusterOutOfTime) return Effect.fail(error);
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
         return Effect.fail(new SwitchAttemptError(null, `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
@@ -1184,21 +1186,24 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
 });
 
 /**
- * B becomes the writer at G and creates the Service from the source's stopped Container; a B already running it is left
- * alone. With no source named, a B whose stopped Service is the only one left becomes the writer and stays stopped: an
- * earlier start moved the Service there, and a Deploy's placement may have removed the source since. `ownedBy` is the
- * Inngest run that must still own the row when B is told, or null for a Deploy following another run's committed lane,
- * which owns no row.
+ * B becomes the writer at G and creates the Service from the source's stopped Container, at its gen and routed once
+ * healthy when the source was routed; a B already running it is left alone, unless the source is routed and B is not,
+ * when B is asked again and fails while its copy stays unrouted. With no source named, a B whose stopped Service is
+ * the only one left becomes the writer and stays stopped: an earlier start moved the Service there, and a Deploy's
+ * placement may have removed the source since. `ownedBy` is the Inngest run that must still own the row when B is
+ * told, or null for a Deploy following another run's committed lane, which owns no row.
  */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
   const { to, from } = start;
   const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
-  if (containers.some((container) => container.machine_id === to.id && container.runtime.state === "running")) {
+  const stopped = containers.filter((container) =>
+    container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
+  const routed = stopped.some((container) => container.rotation === "in");
+  if (containers.some((container) =>
+    container.machine_id === to.id && container.runtime.state === "running" && (container.rotation === "in" || !routed))) {
     const running: CopyAnswer = { ok: true, copy: null };
     return running;
   }
-  const stopped = containers.filter((container) =>
-    container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
   const [holder] = stopped;
   if (holder === undefined && from === null && containers.some((container) => container.machine_id === to.id)) {
     if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
@@ -1227,6 +1232,8 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
       namespace: holder.namespace,
       resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
       creation_key: creationKey(ctx, start.at),
+      gen: container.gen ?? 1,
+      rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
     },
   });
 }, Effect.scoped);
@@ -1273,6 +1280,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     const floorless = run !== undefined && serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.volumeFloor) === false;
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
+      Effect.timeout(OBSERVE_TIMEOUT),
       Effect.flatMap((view) => floorless && (view.copy !== null || isDestination(run, ref))
         ? lacks(requirements.volumeFloor.capability)
         : Effect.succeed<Member>({
@@ -1282,7 +1290,6 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           view,
           floorless,
         })),
-      Effect.timeout(OBSERVE_TIMEOUT),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
@@ -1302,8 +1309,7 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
   const feature: Requirement = kind === undefined ? required : { capability: required.capability, feature: RUN_FEATURES[kind] };
   const line = releaseLine(server.daemonVersion);
   const release = line === null ? null : yield* organizationReleaseChannel(organizationId).pipe(
-    Effect.flatMap((channel) => channelRelease(channel, line)),
-    Effect.timeout(OBSERVE_TIMEOUT),
+    Effect.flatMap((channel) => channelRelease(channel, line).pipe(Effect.timeout(OBSERVE_TIMEOUT))),
     Effect.orElseSucceed(() => null),
   );
   const needs = `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}.`;

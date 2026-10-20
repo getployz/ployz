@@ -25,8 +25,10 @@ turned off, use Docker volumes.
 
 Open **Tokens** to see **Auto up to N** and **x/N joined**. Open enrollments also reserve
 capacity. Failed or cancelled enrollments free their capacity for another host. Each host
-gets one automatic attempt per token: after a failed or cancelled one it stays in Waiting
-until you enroll it again.
+enrolls automatically at most once per token, and an enrollment you start under the token
+counts as that once. After a failed or cancelled enrollment the host stays in Waiting until
+you enroll it again. Ployz remembers this by the host's own key, so a host that left Waiting
+and later checks in with the same token again still waits for you.
 Successful joins count for the token's lifetime, including after their waiting rows age out
 after seven days or a joined server is removed. Hosts beyond the limit stay in Waiting and
 can be enrolled manually. Manual enrolls of its hosts use its capacity too and can take the
@@ -36,10 +38,11 @@ count past N. Revoke stops new arrivals while open enrollments finish.
 
 1. Open **Servers** and click **Add servers**.
 2. Name the token and choose an expiry of 1 day, 7 days or 30 days. Click **Create**.
-3. Copy the install line while it is visible. The **Shell**, **cloud-init** and **Terraform**
-   tabs use the same token. Ployz shows its secret once.
-4. Run the line on each host as root or with `sudo`. For user data, use the cloud-init or
-   Terraform example instead. The line returns once check-in is running.
+3. Copy the install line and the token while they are visible. Ployz shows the token once. The
+   **cloud-init** and **Terraform** tabs carry the same token in the line.
+4. Run the **Shell** line on each host as root or with `sudo`, and paste the token when it asks.
+   For user data, use the cloud-init or Terraform example instead; it has no terminal to ask at.
+   The line returns once check-in is running.
 5. Return to **Servers**. Hosts appear under **Waiting to join** in arrival order. **Installing Docker**
    and **Building ZFS** show preparation. **Ready** means preparation has finished.
 
@@ -92,5 +95,8 @@ a stage, **Failed**, or **Cancelled**) and its reason, when there is one. Both s
 
 **Reject** turns away an unrecognized host. The same installation cannot come back with the
 same Fleet Token. Reimaging a host creates a new identity, so review arrivals even when you
-have rejected that hardware before. Revoke a leaked Fleet Token from **Tokens**. This drops
+have rejected that hardware before. Once Cloud has heard a host report that it is joining,
+rejecting it no longer stops the join, and the host stays in the Enrolling list until it ends.
+A reject that lands after the server commits to joining but before Cloud hears so still cancels
+it. Revoke a leaked Fleet Token from **Tokens**. This drops
 its waiting hosts; servers that already joined stay.

@@ -13,8 +13,10 @@ use ployz_core::{
 use thiserror::Error;
 
 mod apply;
+pub(crate) mod cleanup;
 mod convergence;
 mod exec;
+pub(crate) use exec::MachineOperations;
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
@@ -23,7 +25,7 @@ mod report;
 mod schedule;
 
 pub(crate) use apply::{Outcome, apply_requested};
-pub(crate) use convergence::{Converged, OldCopy, Replacement, converge};
+pub(crate) use convergence::{Converged, OldCopy, Replacement, can_move, converge};
 pub use convergence::{DrainStop, MachineRef, Move, MoveFailure, StayReason};
 pub use pipeline::DeployError;
 pub(crate) use pipeline::plan_options;
@@ -36,7 +38,7 @@ pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,
     OperationPhase, OperationRow, OperationStatus, PlanOptions, PruneRefusal,
-    ReplacementCompensation, ReplacementOperation, RestartAttempt, ServiceAttempt, StopAttempt,
+    ReplacementCompensation, ReplacementOperation, RestoreAttempt, ServiceAttempt, StopAttempt,
 };
 pub use schedule::{ServiceGroup, Step};
 

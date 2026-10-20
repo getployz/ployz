@@ -2,8 +2,8 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, RpcError, RpcErrorCode, SlotId, Snapshot, SnapshotGuid,
-    SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
+    InspectVolumeCopyRequest, Pull, RpcError, RpcErrorCode, SlotId, SlotRole, Snapshot,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
 };
 use ployzd::machine_pool::MachinePool;
 
@@ -11,8 +11,8 @@ use super::{
     Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
     seed::SEED_PROPERTY,
     storage::{
-        EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs,
-        slot_parent,
+        EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, ROLE_PROPERTY,
+        slot_fs, slot_parent,
     },
 };
 
@@ -145,6 +145,24 @@ impl VolumeStorage {
         }
     }
 
+    /// What this Machine recorded a slot parent as.
+    pub(super) async fn slot_role(&self, parent: &str) -> Result<SlotRole> {
+        match self.property(parent, ROLE_PROPERTY).await? {
+            None => Ok(SlotRole::default()),
+            Some(value) => value.parse().map_err(|error| {
+                VolumeError::from(format!(
+                    "{parent} carries an unreadable {ROLE_PROPERTY} {value:?}: {error}"
+                ))
+            }),
+        }
+    }
+
+    pub(super) async fn mark_slot_role(&self, parent: &str, role: SlotRole) -> Result<()> {
+        self.zfs(&["set", &format!("{ROLE_PROPERTY}={}", role.as_str()), parent])
+            .await
+            .map(drop)
+    }
+
     async fn slot_id(&self, parent: &str) -> Result<SlotId> {
         let value = self.property(parent, "guid").await?.unwrap_or_default();
         value.parse().map(SlotId::new).map_err(|error| {
@@ -208,6 +226,7 @@ impl VolumeStorage {
             newest,
             resume_token,
             pull: self.pull(slot, name).await?,
+            role: self.slot_role(&slot.name).await?,
         }))
     }
 
@@ -231,14 +250,30 @@ impl VolumeStorage {
         datasets.iter().find(|dataset| dataset.name == fs)
     }
 
+    /// The copy as one moment saw it. A receive task finishing between the reads would
+    /// mix the slot before and after it, so those reads are taken again; a finished task
+    /// and its children change nothing more, and the caller's mutation keeps every route
+    /// out.
+    pub(super) async fn current_copy(
+        &self,
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Result<Option<VolumeCopy>> {
+        let running = self.receives.running(name);
+        let copy = self.copy(&self.datasets(pool).await?, pool, name).await?;
+        if running && !self.receives.running(name) {
+            return self.copy(&self.datasets(pool).await?, pool, name).await;
+        }
+        Ok(copy)
+    }
+
     async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(VolumeCopyView { copy: None });
         };
-        let datasets = self.datasets(&pool).await?;
         Ok(VolumeCopyView {
-            copy: self.copy(&datasets, &pool, name).await?,
+            copy: self.current_copy(&pool, name).await?,
         })
     }
 }

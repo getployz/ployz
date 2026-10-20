@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, DataLoss, DependencyCondition, HookContainer,
-    IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
-    PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    UpdateOrder, VolumeToCreate, explicit_ingress_hosts, hostname_owners,
-    machine_matches_placement, same_service_mode_kind,
+    ContainerAction, ContainerId, ContainerKind, CopyRotation, DataLoss, DependencyCondition,
+    HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
+    ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
+    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
+    hostname_owners, machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
@@ -16,6 +16,8 @@ use super::{
 };
 
 pub(super) mod capacity;
+#[cfg(test)]
+pub(super) mod ingress_repairs;
 mod observation;
 mod placement;
 mod storage;
@@ -75,6 +77,8 @@ pub struct DeployPlan {
     preview: DeployPreview,
     /// The intent's pull credentials, for execution only; never in the preview.
     registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
+    /// Every snapshot Machine's name, so a report names a Machine the plan places nothing on.
+    machine_names: BTreeMap<MachineId, ployz_core::MachineName>,
 }
 
 impl DeployPlan {
@@ -98,6 +102,10 @@ impl DeployPlan {
         &self,
     ) -> &std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth> {
         &self.registry_auth
+    }
+
+    pub(super) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
+        &self.machine_names
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -142,7 +150,21 @@ impl DeployPlan {
             groups,
             preview: DeployPreview::new(rows, Vec::new(), namespace),
             registry_auth: std::collections::BTreeMap::new(),
+            machine_names: BTreeMap::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_machine_names(mut self, machines: &[MachineId]) -> Self {
+        self.machine_names = machines
+            .iter()
+            .map(|id| {
+                let hex = id.to_string().chars().next().expect("a machine id");
+                let name = ployz_core::MachineName::parse(format!("machine-{hex}")).unwrap();
+                (*id, name)
+            })
+            .collect();
+        self
     }
 }
 
@@ -501,7 +523,7 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
                     SlotAction::Restarting(restarting.container_id)
                 }
                 HeldIngress::None => SlotAction::Create(
-                    plan_create(intent, &snapshot.only(empty.machine), service_id).map(Box::new),
+                    plan_create(intent, snapshot, empty.machine, service_id).map(Box::new),
                 ),
             },
         });
@@ -510,21 +532,29 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
     all
 }
 
-/// Plan the Ingress Proxy on the one Machine of `only` as the Service `service_id`, which
-/// its siblings run or are created as in the same check and `only` cannot see: they share
-/// its creation key.
+/// Plan the Ingress Proxy on `machine` alone as the Service `service_id`, which its
+/// siblings run or are created as in the same check: they share its creation key. The
+/// flip still keeps every sibling `snapshot` observes, or it would retire them.
 fn plan_create(
     intent: &DeployIntent,
-    only: &DeploySnapshot,
+    snapshot: &DeploySnapshot,
+    machine: &MachineObservation,
     service_id: ServiceId,
 ) -> Result<DeployPlan, PlanError> {
-    let mut planned = plan_operations(intent, only)?;
+    let only = snapshot.only(machine);
+    let mut planned = plan_operations(intent, &only)?;
     for operation in &mut planned.operations {
         if let DeployOperation::RunContainer { spec, .. } = operation {
             spec.service_id = service_id;
         }
     }
-    Ok(admit(intent, only, planned))
+    for group in &mut planned.groups {
+        if let Some(name) = &group.service {
+            let identity = QualifiedService::new(intent.namespace.clone(), name.clone());
+            group.kept = kept_containers(snapshot, &identity, &planned.operations);
+        }
+    }
+    Ok(admit(intent, &only, planned))
 }
 
 fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {
@@ -572,6 +602,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         groups: planned.groups,
         preview,
         registry_auth: std::collections::BTreeMap::new(),
+        machine_names: super::progress::machine_names(snapshot),
     }
 }
 
@@ -872,10 +903,17 @@ fn removal_operations(
     obsolete: &[QualifiedService],
 ) -> Vec<DeployOperation> {
     let obsolete = obsolete.iter().collect::<BTreeSet<_>>();
-    services
+    let mut retiring: Vec<_> = services
         .iter()
         .filter(|service| obsolete.contains(&service.identity))
         .flat_map(|service| service.containers_for(ContainerAction::Remove))
+        .collect();
+    // A Pending sibling keeps proxies on the last routed copy, whose Out then
+    // never confirms, so Pending copies go first.
+    retiring
+        .sort_by_key(|container| *container.as_observation().rotation() != CopyRotation::Pending);
+    retiring
+        .into_iter()
         .map(|container| {
             let observation = container.as_observation();
             DeployOperation::RemoveContainer {

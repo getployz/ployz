@@ -46,9 +46,10 @@ describe("copiesFromPlacement", () => {
     expect(traySpeech(model)).toEqual({ tone: "staged", words: "Moving to web-2" });
   });
 
-  it("lists a copy the dashboard does not mirror as an old copy, red once staged for deletion", () => {
-    expect(summary(copies(row([])))).toEqual(["old web-2 - -"]);
-    expect(summary(copies(row([], { primary: "web-1", deletes: ["web-2"] })))).toEqual(["old web-2 removing -"]);
+  it("lists a copy its Server records as an old copy as one, red once staged for deletion", () => {
+    const moved = [member("web-1", "writer"), member("web-2", "old")];
+    expect(summary(copies(row([]), moved))).toEqual(["old web-2 - -"]);
+    expect(summary(copies(row([], { primary: "web-1", deletes: ["web-2"] }), moved))).toEqual(["old web-2 removing -"]);
   });
 
   it("puts what runs on the copy it runs on, and a move on the tray", () => {
@@ -104,7 +105,7 @@ describe("copiesFromPlacement", () => {
   });
 
   it("marks only the mirror Refreshing while a refresh runs, leaving an old copy free", () => {
-    const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")], run("sync", { full: false }, "running"));
+    const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")], run("sync", { full: false }, "running"));
     expect(summary(model)).toEqual(["mirror web-2 - Refreshing", "old web-3 - -"]);
   });
 

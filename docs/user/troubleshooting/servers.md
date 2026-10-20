@@ -323,8 +323,11 @@ No other server can join until the first one finishes.
 
 The **Servers** page shows **Can't reach your servers right now**, with what your servers last
 reported or nothing at all. Adding a server can fail with `This Organization's Servers can't be
-reached`. A CLI command says `Server web-1 isn't answering`, naming each server it couldn't reach.
-A server that just joined or restarted answers within a minute; try again then.
+reached`. A CLI command, or a deployment that couldn't run, says `Server web-1 isn't answering`,
+naming each server it couldn't reach by the name it last reported, or by its ID if Ployz never
+learned one. When a server answered but refused every connection, the error names the server
+tried last, as in `Server web-2, tried last, refused the connection`. A server that just joined
+or restarted answers within a minute; try again then.
 
 1. Check at your provider that the servers are running.
 2. On a server, run `sudo systemctl status ployz`. If Ployz is stopped, start it with
@@ -332,6 +335,18 @@ A server that just joined or restarted answers within a minute; try again then.
 3. If your servers' outgoing traffic is filtered, allow https to `relay.ployz.dev`.
 4. If you deleted the servers, see
    [Forget servers you deleted](../servers/manage-servers.md#forget-servers-you-deleted).
+5. If the servers run Ployz 0.3.0-beta.6 or earlier, Cloud can't reach them through the relay.
+   Upgrade each one over SSH, as in
+   [Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
+
+## The CLI says a server runs 0.3.0-beta.6 or earlier
+
+```text
+This Server runs Ployz 0.3.0-beta.6 or earlier, which this release can't reach through the relay.
+```
+
+Upgrade that server over SSH, as in
+[Servers on 0.3.0-beta.6 or earlier](../servers/manage-servers.md#servers-on-030-beta6-or-earlier).
 
 A server that answers but refuses says so instead, with its own reason:
 `Server web-1 couldn't give this command access: Cluster store is not available`. It is running, so

@@ -13,9 +13,9 @@ $ ployz org ls
 
 stdout:
 ```
-ORGANIZATION	NAME
-ada *	Ada Lovelace's Projects
-babbage	Babbage Labs
+ORGANIZATION	NAME	CURRENT
+ada	Ada Lovelace's Projects	current
+babbage	Babbage Labs	-
 ```
 
 ### org ls --json
@@ -31,13 +31,13 @@ stdout:
   "organizations": [
     {
       "current": true,
-      "id": "a52ce0da-943d-4bfb-adfb-9da76e128533",
+      "id": "5e293990-09ad-45c1-b636-6444de4fb848",
       "name": "Ada Lovelace's Projects",
       "slug": "ada"
     },
     {
       "current": false,
-      "id": "d3d09d4f-a5b4-488c-8718-8a743f985dc8",
+      "id": "47e4dfcf-7e63-44d0-9a6e-f183ca472a51",
       "name": "Babbage Labs",
       "slug": "babbage"
     }
@@ -49,28 +49,34 @@ stdout:
 
 ```console
 $ ployz org
-# exit 2
+# exit 0
 ```
 
-stderr:
+stdout:
 ```
-List or switch Organizations
+List, make or switch Organizations
 
 Usage: ployz org [OPTIONS] [COMMAND]
 
 Commands:
-  ls           List the Organizations you can act in
-  use          Act in another of your Organizations from this device
   build-order  Show or set which Builders build Git Services, in turn
+  leave        Leave the Organization you act in; this device moves to another of yours
+  ls           List the Organizations you can act in
+  new          Make an Organization you own; this device moves to it
   rm           Delete the Organization you act in, once it has no Project
+  use          Act in another of your Organizations from this device
+  approval     Commands: ls, show, approve, deny
+  member       Commands: ls, invite, role, rm
+  invite       Commands: ls, revoke
   help         Print this message or the help of the given subcommand(s)
 
 Options:
-      --connect <connect>            [env: PLOYZ_CONNECT=]
-      --ssh-timeout <SECONDS>        SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
-      --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=] [default: ~/.config/ployz/config.yaml]
-      --json                         Print the result as one JSON object on stdout
-  -h, --help                         Print help (see more with '--help')
+      --connect <connect>      Reach the Servers through this connection instead of Cloud or a context [env: PLOYZ_CONNECT=]
+      --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
+      --json                   Print the result as one JSON object on stdout; streams print one per line
+      --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
+  -h, --help                   Print help (see more with '--help')
+
 ```
 
 ### org use babbage
@@ -96,7 +102,7 @@ stdout:
 ```
 {
   "organization": {
-    "id": "a52ce0da-943d-4bfb-adfb-9da76e128533",
+    "id": "5e293990-09ad-45c1-b636-6444de4fb848",
     "slug": "ada"
   }
 }
@@ -111,7 +117,7 @@ $ ployz org use nope
 
 stderr:
 ```
-no Organization nope of yours
+error: no Organization nope of yours
 next: ployz org ls
 ```
 
@@ -124,7 +130,7 @@ $ ployz org use nope --json
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"next":"ployz org ls"},"message":"no Organization nope of yours"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz org ls"},"message":"no Organization nope of yours"}}
 ```
 
 ## org build-order
@@ -196,13 +202,13 @@ stdout:
 
 ```console
 $ ployz org rm ada
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Removing Organization ada deletes it with its tokens, Servers' pairing and settings; this can't be undone. No changes made.
-Retry: ployz org rm ada --confirm ada
+error: Removing Organization ada deletes it with its tokens, Servers' pairing and settings; this can't be undone. No changes made.
+retry: ployz org rm ada --confirm ada
 ```
 
 ### org rm ada --confirm wrong
@@ -214,7 +220,8 @@ $ ployz org rm ada --confirm wrong
 
 stderr:
 ```
---confirm wrong does not match Organization ada. No changes made.
+error: --confirm wrong does not match Organization ada. No changes made.
+retry: ployz org rm ada --confirm ada
 ```
 
 ### org rm ada --confirm ada (has Projects)
@@ -226,8 +233,7 @@ $ ployz org rm ada --confirm ada
 
 stderr:
 ```
-This Organization still has Projects (shop). Remove them first
-next: ployz project rm shop --confirm shop
+error: This Organization still has Projects (blog, shop). Remove them first
 ```
 
 ### org rm ada --confirm ada --json (has Projects)
@@ -239,19 +245,19 @@ $ ployz org rm ada --confirm ada --json
 
 stdout:
 ```
-{"error":{"code":"conflict","details":{"next":"ployz project rm shop --confirm shop","projects":["shop"]},"message":"This Organization still has Projects (shop). Remove them first"}}
+{"error":{"cause":[],"code":"conflict","details":{"next":{"input":{"project":"blog"},"tool":"remove"},"projects":["blog","shop"]},"message":"This Organization still has Projects (blog, shop). Remove them first"}}
 ```
 
 ### org rm babbage while acting in ada
 
 ```console
 $ ployz org rm babbage --confirm babbage
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-This credential acts in Organization ada, not babbage. No changes made.
+error: This credential acts in Organization ada, not babbage. No changes made.
 next: ployz org use babbage
 ```
 
@@ -259,37 +265,47 @@ next: ployz org use babbage
 
 ```console
 $ ployz org rm babbage --confirm babbage
-# exit 0
+# exit 124
 ```
 
-stdout:
+stderr:
 ```
-Removed Organization babbage.
+This removal in Organization babbage destroys 1 thing:
+  ✕ removes Organization babbage
+Waiting for approval in Ployz Cloud… 
 ```
 
 ### org ls after removal
 
 ```console
 $ ployz org ls
-# exit 1
+# exit 0
 ```
 
-stderr:
+stdout:
 ```
-this sign-in's Organization babbage is no longer one of yours
-next: ployz org ls
+ORGANIZATION	NAME	CURRENT
+ada	Ada Lovelace's Projects	-
+babbage	Babbage Labs	current
 ```
 
 ### status after removing the acting Organization
 
 ```console
 $ ployz status
-# exit 1
+# exit 0
+```
+
+stdout:
+```
+cloud = http://localhost:35249
+organization = babbage
+signed in as = ada@example.com
+needs attention = This Organization has no Project yet
 ```
 
 stderr:
 ```
-this sign-in's Organization babbage is no longer one of yours
-next: ployz org ls
+next: ployz project new NAME
 ```
 

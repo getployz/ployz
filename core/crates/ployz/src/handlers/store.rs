@@ -10,8 +10,8 @@ use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
-    OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey,
-    Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
+    ObservationFailure, OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery,
+    Remove, SealingKey, Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -24,7 +24,16 @@ use crate::ui::Hint;
 impl From<StoreCallError> for Error {
     fn from(error: StoreCallError) -> Self {
         match error {
-            StoreCallError::Refused(error) => error.into(),
+            StoreCallError::Refused(mut error) => {
+                // A stale review hands back the whole fresh one; a retry needs only its version.
+                if error.code == RpcErrorCode::Conflict
+                    && let Some(diff) = error.details.get_mut("diff")
+                    && let Some(version) = diff.get("version").cloned()
+                {
+                    *diff = serde_json::json!({ "version": version });
+                }
+                error.into()
+            }
             StoreCallError::Cloud(error) => error.into(),
             StoreCallError::Stopped(failure) => failure,
         }
@@ -326,8 +335,8 @@ impl<'m> Store<'m> {
     }
 
     /// Which Servers hold the data of the Volumes each of `queries` removes: a
-    /// Deploy, removal or rollback. A Cluster this can't reach leaves the evidence
-    /// out, so the Store refuses.
+    /// Deploy, removal or rollback. A Cluster this can't reach is a failed
+    /// observation that says why, so the Store refuses with it.
     fn observe(
         &self,
         queries: impl IntoIterator<Item = RemovalsQuery>,
@@ -355,10 +364,36 @@ impl<'m> Store<'m> {
         let Ok(runtime) = runtime() else {
             return Ok(None);
         };
-        Ok(runtime.block_on(async {
-            let mut client = super::server::connect(self.matches, context).await.ok()?;
-            client.observe_volumes(sought).await.ok()
-        }))
+        // The endpoint names the refusal only while no Server is known.
+        let endpoint = self
+            .matches
+            .try_get_one::<String>("connect")
+            .ok()
+            .flatten()
+            .cloned();
+        Ok(Some(runtime.block_on(async {
+            let mut client = match super::server::connect(self.matches, context).await {
+                Ok(client) => client,
+                Err(error) => {
+                    let failure = if error.daemon_answered() {
+                        ObservationFailure::answered(None, error.report())
+                    } else {
+                        ObservationFailure::unreachable(error.report())
+                    };
+                    let failure = failure.at_endpoint(endpoint);
+                    return VolumeObservation::failed(sought, Vec::new(), failure);
+                }
+            };
+            match client.observe_volumes(sought.clone()).await {
+                Ok(observed) => observed,
+                Err(error) => {
+                    let server = client.entry_machine();
+                    let failure = ObservationFailure::answered(server, error)
+                        .at_endpoint(endpoint.filter(|_| server.is_none()));
+                    VolumeObservation::failed(sought, server.into_iter().collect(), failure)
+                }
+            }
+        })))
     }
 
     /// Hand Cloud the archive of `listing`, read from `dir`, the source Deployment
@@ -499,17 +534,7 @@ impl<'m> Store<'m> {
     /// `history`'s `--version`, or `--expect-version` elsewhere. Read from the
     /// command tree: `ArgMatches` refuses unknown ids only in debug builds.
     fn version_flag(&self) -> (&'static str, &'static str) {
-        let root = crate::cli::compiled();
-        let mut command = &root;
-        for word in &self.words {
-            let Some(child) = command.find_subcommand(word) else {
-                break;
-            };
-            command = child;
-        }
-        let takes_version = command
-            .get_arguments()
-            .any(|arg| arg.get_id() == "version" && arg.get_action().takes_values());
+        let takes_version = super::takes_value(self.words.iter().map(String::as_str), "version");
         if takes_version {
             ("version", "--version")
         } else {
@@ -868,6 +893,9 @@ fn pieces(text: &str) -> impl Iterator<Item = String> + '_ {
 /// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
 /// one line per domain, `web.domains: added shop.acme.ployz.app`, never as the field storing it.
 pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<String> {
+    if let Some(lines) = config_changed(row).or_else(|| source_changed(row)) {
+        return lines;
+    }
     let Some(domains) = ployz_store::DomainChange::of(row) else {
         let value = |value: &serde_json::Value| match value.as_f64() {
             Some(gb) if row.path.ends_with(".memLimit") => ployz_store::memory_size(gb),
@@ -887,6 +915,65 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
         .iter()
         .map(|domain| format!("{service}.domains: {domain}"))
         .collect()
+}
+
+/// Each part of a source row and the Setting `set` and `get` name it by.
+const SOURCE_PARTS: [(&str, &str); 4] = [
+    ("image", "image"),
+    ("credentials", "registryCredential"),
+    ("repository", "repository"),
+    ("rootDir", "rootDir"),
+];
+
+/// A source row as the Settings it holds, `web.image: "nginx:1.26" → "nginx:1.27"`,
+/// or `None` when no part `set` names changed.
+fn source_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
+    let service = crate::ui::escaped(row.path.strip_suffix(".source")?);
+    // No registry credential reads as unset, so a removed Service doesn't list one.
+    let part = |value: &serde_json::Value, field: &str| {
+        value
+            .get(field)
+            .filter(|part| **part != serde_json::Value::Bool(false))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let lines: Vec<String> = SOURCE_PARTS
+        .iter()
+        .filter_map(|&(field, setting)| {
+            let (before, after) = (part(&row.before, field), part(&row.after, field));
+            (before != after).then(|| {
+                format!(
+                    "{service}.{setting}: {} → {}",
+                    shown(&before),
+                    shown(&after)
+                )
+            })
+        })
+        .collect();
+    (!lines.is_empty()).then_some(lines)
+}
+
+/// A Config row by name, `name: "app" → "app2"` or `files: removed empty.txt`, never
+/// by the id its path keeps.
+fn config_changed(row: &ployz_core::config::ServiceSettingChange) -> Option<Vec<String>> {
+    let (_, field) = row.path.strip_prefix("configs.@")?.split_once('.')?;
+    let line = match field.strip_prefix("files.") {
+        Some(file) => {
+            let edit = match (row.before.is_null(), row.after.is_null()) {
+                (true, _) => "added",
+                (_, true) => "removed",
+                _ => "changed",
+            };
+            format!("files: {edit} {}", crate::ui::escaped(file))
+        }
+        None => format!(
+            "{}: {} → {}",
+            crate::ui::escaped(field),
+            shown(&row.before),
+            shown(&row.after)
+        ),
+    };
+    Some(vec![line])
 }
 
 /// A staged domain change as JSON reports it, beside the raw row storing it as
@@ -1057,6 +1144,67 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(changed(&route), ["web.domains: removed app.example.com"]);
+    }
+
+    fn row(path: &str, before: serde_json::Value, after: serde_json::Value) -> Vec<String> {
+        changed(
+            &serde_json::from_value(json!({
+                "path": path, "kind": "update", "canRestore": false,
+                "before": before, "after": after,
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_staged_image_change_reads_as_the_setting_set_names() {
+        let source = |image: &str| json!({ "type": "image", "credentials": false, "image": image });
+        assert_eq!(
+            row(
+                "web.source",
+                source("traefik/whoami:v1.10.0"),
+                source("traefik/whoami:v1.10.1")
+            ),
+            [r#"web.image: "traefik/whoami:v1.10.0" → "traefik/whoami:v1.10.1""#]
+        );
+        assert_eq!(
+            row(
+                "web.source",
+                json!({ "type": "git", "repository": "acme/web", "rootDir": "/" }),
+                json!({ "type": "git", "repository": "acme/web", "rootDir": "/api" })
+            ),
+            [r#"web.rootDir: "/" → "/api""#]
+        );
+        assert_eq!(
+            row("db.source", source("postgres:16"), json!(null)),
+            [r#"db.image: "postgres:16" → null"#]
+        );
+    }
+
+    #[test]
+    fn a_staged_config_change_reads_by_name_not_id() {
+        let at = "configs.@765c98f1-af88-4dc8-a63d-6f8127034983";
+        assert_eq!(
+            row(&format!("{at}.name"), json!("app"), json!("app2")),
+            [r#"name: "app" → "app2""#]
+        );
+        let file = json!({ "content": "", "gid": 0, "mode": "0444", "uid": 0 });
+        assert_eq!(
+            row(&format!("{at}.files.empty.txt"), file.clone(), json!(null)),
+            ["files: removed empty.txt"]
+        );
+        assert_eq!(
+            row(&format!("{at}.files.run.sh"), json!(null), file),
+            ["files: added run.sh"]
+        );
+        assert_eq!(
+            row(
+                &format!("{at}.files.a\u{202E}b.txt"),
+                json!(null),
+                json!({})
+            ),
+            [r"files: added a\u{202e}b.txt"]
+        );
     }
 
     #[test]

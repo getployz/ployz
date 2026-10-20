@@ -256,7 +256,7 @@ fn scope(
 
 /// Refuse a bad `PLOYZ_PROJECT` or `PLOYZ_ENV` before fetching the manifest that a
 /// command line the cache lacks needs, as [`scope`] would once the command is known.
-/// A typed `--project` or `--environment` still wins over its variable.
+/// A typed `--project` or `--env` still wins over its variable.
 pub(crate) fn check_scope_env(args: &[OsString]) -> Result<(), Failure> {
     let typed = |flag: &str| {
         args.iter()
@@ -267,7 +267,7 @@ pub(crate) fn check_scope_env(args: &[OsString]) -> Result<(), Failure> {
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
             })
     };
-    crate::handlers::link::check_env(typed("--project"), typed("--environment"))
+    crate::handlers::link::check_env(typed("--project"), typed("--env"))
 }
 
 fn print(

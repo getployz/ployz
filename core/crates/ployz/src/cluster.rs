@@ -6,22 +6,23 @@ use std::{
 
 use futures_util::future::join_all;
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerAction, ContainerId, ContainerLocator, ContainerNow,
-    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation,
-    DescribeContractRequest, DockerVolumeId, DockerVolumeName, Drain, EnsureContainerRequest,
-    EnvironmentValues, ForgetRequest, Forgotten, InspectRequest, InspectStorageRequest,
-    LeaveRequest, Left, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
-    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
-    MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
-    Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
-    RpcResponseBody, RunRotation, RunTarget, StopOptions, StorageCapacity, UnconfirmedDataLoss,
-    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
+    BridgeEndpointCapacity, ContainerAction, ContainerId, ContainerNow, ContainerObservation,
+    ContainerWant, CopyRole, DataLoss, DataLossConfirmation, DescribeContractRequest,
+    DockerVolumeId, DockerVolumeName, EnsureContainerRequest, EnvironmentValues, ForgetRequest,
+    Forgotten, InspectRequest, InspectStorageRequest, LeaveRequest, Left, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
+    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
+    MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest, RemoveVolumesRequest,
+    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StopOptions,
+    StorageCapacity, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
+    derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tonic::{
     Streaming,
     codec::{CompressionEncoding, ProstCodec},
@@ -32,11 +33,13 @@ use tonic::{
 use crate::{
     connect::{
         BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
-        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout,
-        target_request,
+        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, target_request,
     },
     context::{Connection, ConnectionSource},
-    deploy::{DeploySnapshot, VolumeSnapshot},
+    deploy::{
+        DeploySnapshot, VolumeSnapshot,
+        cleanup::{self, UserStarted},
+    },
     service::ContainerOperationFailure,
 };
 
@@ -60,6 +63,8 @@ pub struct Client {
     connection: Connection,
     source: ConnectionSource,
     connector: Arc<dyn Connector>,
+    /// The Machine the entry described itself as when it was last confirmed.
+    entry: Option<MachineId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -82,6 +87,7 @@ impl Client {
             connection,
             source,
             connector,
+            entry: None,
         }
     }
 
@@ -95,6 +101,19 @@ impl Client {
         &self.source
     }
 
+    /// The entry Machine this client reaches, as the daemon on its current channel
+    /// described itself when confirmed. None when it didn't.
+    pub(crate) fn entry_machine(&self) -> Option<MachineId> {
+        self.entry
+    }
+
+    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one.
+    async fn redial(&mut self) -> Result<(), ConnectError> {
+        self.entry = None;
+        self.channel = self.connector.connect(&self.connection).await?;
+        self.confirm_entry().await
+    }
+
     /// One-shot check that this channel reaches a daemon. No unary retry — a
     /// down daemon must not stall the connection walk.
     ///
@@ -102,7 +121,7 @@ impl Client {
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
     /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
-    pub(crate) async fn confirm_entry(&self) -> Result<(), ConnectError> {
+    pub(crate) async fn confirm_entry(&mut self) -> Result<(), ConnectError> {
         let confirm = async {
             let payload =
                 op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
@@ -124,15 +143,16 @@ impl Client {
                             },
                         ));
                     }
-                    Ok(())
+                    Ok(Some(description.machine_id))
                 }
-                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(()),
+                Err(ConnectError::Remote(_)) if self.connection.machine_id().is_none() => Ok(None),
                 Err(error) => Err(error),
             }
         };
-        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
+        self.entry = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
             .await
-            .map_err(|_| ConnectError::EntryNotReady)?
+            .map_err(|_| ConnectError::EntryNotReady)??;
+        Ok(())
     }
 
     /// The id of the Machine this client enters by.
@@ -332,11 +352,7 @@ impl Client {
         deadline: tokio::time::Instant,
     ) -> Result<T::Response, ConnectError> {
         if redial {
-            let reconnect = async {
-                self.channel = self.connector.connect(&self.connection).await?;
-                self.confirm_entry().await
-            };
-            match tokio::time::timeout_at(deadline, reconnect).await {
+            match tokio::time::timeout_at(deadline, self.redial()).await {
                 Ok(confirmed) => confirmed?,
                 Err(_) => {
                     return Err(tonic::Status::deadline_exceeded(
@@ -362,8 +378,7 @@ impl Client {
         redial: bool,
     ) -> Result<T::Response, ConnectError> {
         if redial {
-            self.channel = self.connector.connect(&self.connection).await?;
-            self.confirm_entry().await?;
+            self.redial().await?;
         }
         self.call_once::<T>(payload, target).await
     }
@@ -684,6 +699,7 @@ impl Client {
             sought,
             held: held.into_iter().collect(),
             unanswered: unanswered.into_iter().collect(),
+            failure: None,
         })
     }
 
@@ -1062,6 +1078,19 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<(ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
+        self.ensure_unsettled(machine_id, want, timeout)
+            .await?
+            .into_settled()
+    }
+
+    /// Converge one Container and keep a refusal as the owner typed it, for
+    /// callers that act on which rotation rule refused.
+    pub(crate) async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
@@ -1071,8 +1100,7 @@ impl Client {
             self.call_once::<op::EnsureContainer>(payload, Some(&target)),
         )
         .await
-        .map_err(|error| answered_by(machine_id, error))?
-        .into_settled()
+        .map_err(|error| answered_by(machine_id, error))
     }
 
     pub async fn change_observed_service(
@@ -1081,6 +1109,7 @@ impl Client {
         action: ContainerAction,
         signal: Option<String>,
         grace_period_seconds: Option<u16>,
+        cancellation: &CancellationToken,
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
@@ -1099,9 +1128,12 @@ impl Client {
                 machine_id,
                 container_id,
                 action,
-                signal.clone(),
-                grace_period_seconds,
+                StopOptions {
+                    signal: signal.clone(),
+                    grace_period_seconds,
+                },
                 queued.get(&machine_id).copied().unwrap_or(1),
+                cancellation.clone(),
             ));
             task_targets.insert(handle.id(), (machine_id, container_id));
         }
@@ -1632,20 +1664,21 @@ async fn data_loss_on_machine(
             ..failure.error
         })?;
     Ok(ObservedDataLoss {
-        data_loss: volumes
-            .value
-            .volumes
-            .into_iter()
-            .map(|volume| DataLoss::DockerVolume { id: volume.id })
-            .chain(
-                volumes
-                    .value
-                    .failures
-                    .into_iter()
-                    .map(|failure| DataLoss::DockerVolume { id: failure.id }),
-            )
-            .collect(),
+        data_loss: volumes_lost(volumes.value),
     })
+}
+
+/// The Docker Volumes a reset loses: every one listed or failing to list, but the
+/// builder's cache, which is no one's data.
+fn volumes_lost(inventory: VolumeInventory) -> Vec<DataLoss> {
+    inventory
+        .volumes
+        .into_iter()
+        .map(|volume| volume.id)
+        .chain(inventory.failures.into_iter().map(|failure| failure.id))
+        .filter(|id| !ployz_build::is_builder_cache(id.name.as_str()))
+        .map(|id| DataLoss::DockerVolume { id })
+        .collect()
 }
 
 fn server_did_not_respond(name: &MachineName) -> RpcError {
@@ -1775,18 +1808,18 @@ async fn change_on_machine(
     machine_id: MachineId,
     container_id: ContainerId,
     action: ContainerAction,
-    signal: Option<String>,
-    grace_period_seconds: Option<u16>,
+    stop: StopOptions,
     queued: u32,
+    cancellation: CancellationToken,
 ) -> Result<MachineSuccess<ContainerId>, MachineFailure<ContainerOperationFailure>> {
     match change_container_rpc(
         &client,
         &machine_id,
         &container_id,
         action,
-        signal,
-        grace_period_seconds,
+        stop,
         queued,
+        &cancellation,
     )
     .await
     {
@@ -1809,43 +1842,40 @@ async fn change_container_rpc(
     machine_id: &MachineId,
     container_id: &ContainerId,
     action: ContainerAction,
-    signal: Option<String>,
-    grace_period_seconds: Option<u16>,
+    stop: StopOptions,
     queued: u32,
+    cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
-    let container = ContainerLocator::Id(*container_id);
-    let (want, timeout) = match action {
-        ContainerAction::Start => (
-            ContainerWant::Running {
-                container: RunTarget::Existing(container),
-                rotation: RunRotation::Pending,
-            },
-            Some(TARGET_RPC_TIMEOUT),
-        ),
-        ContainerAction::Stop => (
-            ContainerWant::Stopped {
-                container,
-                drain: Drain::DEFAULT,
-                stop: StopOptions {
-                    signal,
-                    grace_period_seconds,
-                },
-            },
-            stop_rpc_timeout(grace_period_seconds, queued),
-        ),
-        ContainerAction::Remove => (
-            ContainerWant::Gone {
-                container,
-                drain: Drain::DEFAULT,
-                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-            },
-            stop_rpc_timeout(grace_period_seconds, queued),
-        ),
-    };
-    client
-        .ensure_container(machine_id, want, timeout)
-        .await
-        .map(|_| ())
+    match action {
+        ContainerAction::Start => cleanup::user_start(client, machine_id, container_id)
+            .await
+            .and_then(admitted),
+        ContainerAction::Restart => {
+            cleanup::user_restart(client, machine_id, container_id, stop, queued, cancellation)
+                .await
+                .and_then(admitted)
+        }
+        ContainerAction::Stop => {
+            cleanup::user_stop(client, machine_id, container_id, stop, queued, cancellation).await
+        }
+        ContainerAction::Remove => {
+            cleanup::user_remove(client, machine_id, container_id, cancellation).await
+        }
+    }
+}
+
+fn admitted(started: UserStarted) -> Result<(), RpcError> {
+    match started {
+        UserStarted::In | UserStarted::Running => Ok(()),
+        UserStarted::NotIn(health) => Err(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "The Container started but did not pass its healthcheck, so proxies do not route to it.".into(),
+            details: health
+                .and_then(ployz_core::HealthVerdict::into_failure)
+                .map_or(Value::Null, |failure| json!(failure)),
+            cause: Vec::new(),
+        }),
+    }
 }
 
 #[cfg(test)]

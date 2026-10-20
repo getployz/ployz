@@ -6,7 +6,7 @@
 use axum::{Json, extract::State};
 use ployz_core::{
     CopyRefusal, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
-    SetVolumeCopyRefused, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
+    SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
 };
 use ployzd::{
     faults::{Identity, Want},
@@ -202,21 +202,13 @@ impl VolumeStorage {
 
     /// The copy as the datasets stand now.
     async fn copy_now(&self, scope: &Scope) -> Result<Copy, RpcError> {
-        let datasets = self.datasets(&scope.pool).await.map_err(internal)?;
-        self.copy(&datasets, &scope.pool, &scope.name)
-            .await
-            .map_err(internal)
-    }
-
-    /// The copy the route found, for a refusal that changed nothing.
-    async fn copy_found(&self, scope: &Scope) -> Result<Copy, RpcError> {
-        self.copy(&scope.datasets, &scope.pool, &scope.name)
+        self.current_copy(&scope.pool, &scope.name)
             .await
             .map_err(internal)
     }
 
     async fn refuse_found(&self, scope: &Scope, reason: CopyRefusal, message: String) -> RpcError {
-        match self.copy_found(scope).await {
+        match self.copy_now(scope).await {
             Ok(copy) => refuse(reason, copy, message),
             Err(error) => error,
         }
@@ -245,7 +237,7 @@ impl VolumeStorage {
         let Some(scope) = self.scope(name).await? else {
             return Ok(None);
         };
-        self.copy_found(&scope).await
+        self.copy_now(&scope).await
     }
 
     /// Writer to Mirror. The daemon stopped the Container and holds its admission turn;
@@ -254,7 +246,7 @@ impl VolumeStorage {
         let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let name = &scope.name;
         let Some(root) = scope.root()? else {
-            let copy = self.copy_found(&scope).await?;
+            let copy = self.copy_now(&scope).await?;
             return match &copy {
                 Some(VolumeCopy::Slot {
                     newest: Some(newest),
@@ -318,10 +310,13 @@ impl VolumeStorage {
         self.ensure_mirror_root(&scope.pool, &scope.datasets)
             .await
             .map_err(internal)?;
+        let parent = slot_parent(&scope.pool, name);
         if scope.slot().is_none() {
-            self.create_bounded_slot(&slot_parent(&scope.pool, name), refquota)
-                .await?;
+            self.create_bounded_slot(&parent, refquota).await?;
         }
+        self.mark_slot_role(&parent, SlotRole::OldCopy)
+            .await
+            .map_err(internal)?;
         self.z(&["rename", &root_name, &slot_fs(&scope.pool, name)])
             .await?;
         self.copy_now(&scope).await
@@ -667,6 +662,12 @@ impl VolumeStorage {
         };
         let newest_name = newest.as_ref().map(|newest| newest.name.as_str());
         if newest_name == Some(target.as_str()) {
+            // An old copy already holding the target receives nothing, and is the mirror now.
+            if self.slot_role(&parent).await.map_err(internal)? != SlotRole::Mirror {
+                self.mark_slot_role(&parent, SlotRole::Mirror)
+                    .await
+                    .map_err(internal)?;
+            }
             self.finish_copy(&fs, bound)
                 .await
                 .map_err(|error| internal(error.into()))?;
@@ -680,6 +681,9 @@ impl VolumeStorage {
             return self.copy_now(&scope).await;
         }
         if pulling.as_deref() != Some(target.as_str()) {
+            self.mark_slot_role(&parent, SlotRole::Mirror)
+                .await
+                .map_err(internal)?;
             self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
                 .await?;
         }

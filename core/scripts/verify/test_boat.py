@@ -748,6 +748,29 @@ class Pool(unittest.TestCase):
         self.assertEqual(boat.read(boat.fingerprints("bake-a")), {"containers": []})
         self.assertEqual([path.exists() for path in kept], [True, True, True])
 
+    def test_a_bare_sandbox_opens_80_and_443_through_ufw(self):
+        provider = self.provider("machine-1")
+        boat.write(provider.registry, dict(run="run1", sandboxes={}))
+        provider.run.update(bare=True, image=None)
+        provider.launch = lambda node: provider.mark(node["name"], id="bx_a", state="running") or "bx_a"
+        info = dict(sandbox=dict(ip="2001:db8:0:1::1", sshEndpoint="203.0.113.1:22"))
+        provider.boat = lambda *args, **kwargs: subprocess.CompletedProcess([], 0, json.dumps(info).encode(), b"")
+        provider.wait_agent = provider.install_key = lambda *args, **kwargs: None
+        scripts = []
+        provider.exec = lambda node, argv, **kwargs: scripts.append(" ".join(argv))
+        provider.start(dict(name="machine-1"))
+        self.assertEqual(scripts, ["sh -ec ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"])
+
+    def test_down_deletes_a_bare_sandbox_and_never_pools_it(self):
+        provider = self.provider("machine-1")
+        provider.run.update(bare=True, image=None)
+        boat.write(provider.registry, dict(run="run1", sandboxes={"machine-1": dict(
+            id="bx_a", state="running", ip="2001:db8:0:1::1", ssh="203.0.113.1:22")}))
+        provider.park = lambda name: self.fail("a bare sandbox was offered to the pool")
+        provider.destroy()
+        self.assertIn(["delete", "bx_a", "--yes"], self.calls)
+        self.assertIsNone(boat.read(boat.POOL))
+
     def test_every_clone_disables_ufw_because_boat_restores_it(self):
         provider = self.provider("machine-1")
         boat.write(provider.registry, dict(run="run1", sandboxes={}))

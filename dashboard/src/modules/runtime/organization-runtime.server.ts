@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
-import type { Connection, MachineId } from "@ployz/sdk";
-import { Clock, Context, Data, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
+import type { Connection, MachineId, RuntimeWatchView } from "@ployz/sdk";
+import { Clock, Context, Data, Deferred, Effect, Exit, FiberSet, Layer, Schedule, Scope } from "effect";
 import {
   Ployz,
   PloyzProviderError,
@@ -9,6 +9,7 @@ import {
 import {
   loadOrganizationConnections,
 } from "#/modules/machines/connections.server";
+import { recordMachineNames } from "#/modules/machines/machine-names.server";
 import { currentChangeCursor, readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -115,14 +116,80 @@ export type PairingChanges = {
   ) => Effect.Effect<{ readonly cursor: string; readonly changed: boolean }, OrganizationChangeLogFailure>;
 };
 
+/** What Cloud keeps from a Runtime Watch frame its Organization's session read. */
+export type RecordFrame = (organizationId: string, frame: RuntimeWatchView) => Effect.Effect<void, Error>;
+
+/**
+ * Hands each frame to `recordFrame` off the read that carried it: the read never waits on the write, so no deadline
+ * of the read's reaches the SQL. Each Organization writes in one fiber of the layer's scope at a time; frames read
+ * during a write coalesce into the latest, written next. Names equal to the last written are skipped, and a failed
+ * write is logged and retried by the next frame. When the layer closes, the write in flight finishes and a coalesced
+ * one is dropped, for the Cluster's next frame to write.
+ */
+const makeFrameRecorder = Effect.fnUntraced(function* (recordFrame: RecordFrame) {
+  const run = yield* FiberSet.makeRuntime<never>();
+  type Pending = { readonly names: string; readonly frame: RuntimeWatchView };
+  type Organization = { written?: string; next?: Pending; writing: boolean };
+  const organizations = new Map<string, Organization>();
+  const writeAll = (organizationId: string, organization: Organization) => {
+    // Clears `writing` in the same step that finds nothing left, so a frame read meanwhile starts a new write.
+    const take = Effect.sync(() => {
+      const next = organization.next;
+      organization.next = undefined;
+      if (next === undefined) organization.writing = false;
+      return next;
+    });
+    return Effect.gen(function* () {
+      for (let next = yield* take; next !== undefined; next = yield* take) {
+        if (next.names === organization.written) continue;
+        const written = yield* recordFrame(organizationId, next.frame).pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) => Effect.logWarning("Runtime frame not recorded", cause).pipe(Effect.as(false))),
+          // Uninterruptible like the pairing check, since interrupting pooled SQL can cancel a later statement.
+          Effect.uninterruptible,
+        );
+        // Advanced only once the write lands, so a failed write is retried by the next frame.
+        if (written) organization.written = next.names;
+      }
+    });
+  };
+  return (organizationId: string, frame: RuntimeWatchView) => {
+    const names = JSON.stringify(frame.machines.map(({ machine }) => [machine.id, machine.name]));
+    const organization = organizations.get(organizationId) ?? { writing: false };
+    organizations.set(organizationId, organization);
+    if (!organization.writing && names === organization.written) return;
+    organization.next = { names, frame };
+    if (organization.writing) return;
+    organization.writing = true;
+    run(writeAll(organizationId, organization));
+  };
+});
+
+/** `session`, whose reads hand each frame they read to `record`. */
+function recordingFrames(session: PloyzSession, record: (frame: RuntimeWatchView) => void): PloyzSession {
+  async function* recordEach(frames: AsyncIterable<RuntimeWatchView>) {
+    for await (const frame of frames) {
+      record(frame);
+      yield frame;
+    }
+  }
+  return {
+    ...session,
+    watch: (options) => session.watch(options).pipe(Effect.map(recordEach)),
+    watchFirstFrame: (timeoutMs) => session.watchFirstFrame(timeoutMs).pipe(Effect.tap((frame) => Effect.sync(() => record(frame)))),
+  };
+}
+
 export function makeOrganizationRuntimeLayer(
   loadConnections: LoadConnections,
   pairingChanges: PairingChanges,
+  recordFrame: RecordFrame = () => Effect.void,
 ) {
   return Layer.effect(
     OrganizationRuntime,
     Effect.gen(function* () {
       const ployz = yield* Ployz;
+      const record = yield* makeFrameRecorder(recordFrame);
       type Session = {
         scope: Scope.Closeable;
         generation?: string;
@@ -222,7 +289,7 @@ export function makeOrganizationRuntimeLayer(
               Effect.tap(() => Effect.forkIn(watchPairing(organizationId, session, cursor), parent)),
               Effect.map((connected) => session.closed ? noConnection : ({
                 status: "connected" as const,
-                connected,
+                connected: recordingFrames(connected, (frame) => record(organizationId, frame)),
               })),
               // Out of Cluster time fails the open, so its plan refuses instead of reading on as if unpaired.
               Effect.catch((error) => error instanceof ClusterOutOfTime ? Effect.fail(error) : Effect.succeed(session.closed ? noConnection : ({
@@ -259,6 +326,7 @@ export const OrganizationRuntimeLive = Layer.unwrap(
           Effect.provideService(Database, database),
         ),
       },
+      (organizationId, frame) => recordMachineNames(organizationId, frame).pipe(Effect.provideService(Database, database)),
     );
   }),
 );
@@ -276,8 +344,8 @@ export const operationRuntimeFrame = Effect.fn("OrganizationRuntime.operationFra
 
 /**
  * One Runtime Watch frame of the Organization's Cluster, for a read that looks once: null when no Cluster is paired.
- * Fails when the Cluster doesn't answer within 5 seconds, so a slow one never holds up what asked.
+ * Fails when the Cluster doesn't answer within 5 seconds of Cluster time, so a slow one never holds up what asked.
  */
 export const firstRuntimeFrame = Effect.fn("OrganizationRuntime.firstFrame")(function* (organizationId: string) {
   return yield* operationRuntimeFrame(organizationId);
-}, Effect.timeout("5 seconds"));
+}, withClusterBudget(5_000));

@@ -8,12 +8,16 @@ Captured by cloud/run.sh against a seeded local Ployz Cloud (dashboard verify), 
 
 ```console
 $ ployz status
-# exit 1
+# exit 0
+```
+
+stdout:
+```
+signed in as = no one
 ```
 
 stderr:
 ```
-not signed in to Cloud
 next: ployz login
 ```
 
@@ -21,12 +25,24 @@ next: ployz login
 
 ```console
 $ ployz status --json
-# exit 1
+# exit 0
 ```
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+{
+  "attention": [],
+  "deploying": [],
+  "environment": null,
+  "identity": null,
+  "next": "ployz login",
+  "scope": {
+    "environment": null,
+    "link": null,
+    "project": null
+  },
+  "staged": null
+}
 ```
 
 ### not signed in: token ls
@@ -38,7 +54,7 @@ $ ployz token ls
 
 stderr:
 ```
-not signed in to Cloud
+error: Not signed in to Cloud.
 next: ployz login
 ```
 
@@ -51,7 +67,7 @@ $ ployz token ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### not signed in: org ls
@@ -63,7 +79,7 @@ $ ployz org ls
 
 stderr:
 ```
-not signed in to Cloud
+error: Not signed in to Cloud.
 next: ployz login
 ```
 
@@ -76,7 +92,7 @@ $ ployz org ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### not signed in: github ls
@@ -88,7 +104,7 @@ $ ployz github ls
 
 stderr:
 ```
-not signed in to Cloud
+error: Not signed in to Cloud.
 next: ployz login
 ```
 
@@ -101,7 +117,7 @@ $ ployz github ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### not signed in: domain ls
@@ -113,7 +129,7 @@ $ ployz domain ls
 
 stderr:
 ```
-not signed in to Cloud
+error: Not signed in to Cloud.
 next: ployz login
 ```
 
@@ -126,7 +142,7 @@ $ ployz domain ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### not signed in: deployment ls
@@ -138,7 +154,7 @@ $ ployz deployment ls
 
 stderr:
 ```
-not signed in to Cloud
+error: Not signed in to Cloud.
 next: ployz login
 ```
 
@@ -151,7 +167,7 @@ $ ployz deployment ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### not signed in: deploy --plan
@@ -163,7 +179,7 @@ $ ployz deploy --plan
 
 stderr:
 ```
-not signed in to Cloud
+error: Not signed in to Cloud.
 next: ployz login
 ```
 
@@ -176,7 +192,7 @@ $ ployz deploy --plan --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### not signed in: logs
@@ -188,7 +204,8 @@ $ ployz logs
 
 stderr:
 ```
-could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)
+error: Not signed in to Cloud.
+next: ployz login
 ```
 
 ### not signed in: logs --json
@@ -200,7 +217,7 @@ $ ployz logs --json
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":null,"message":"could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### not signed in: ps
@@ -212,7 +229,8 @@ $ ployz ps
 
 stderr:
 ```
-could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)
+error: Not signed in to Cloud.
+next: ployz login
 ```
 
 ### not signed in: ps --json
@@ -224,7 +242,7 @@ $ ployz ps --json
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":null,"message":"could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### not signed in: cloud reset -y
@@ -236,7 +254,7 @@ $ ployz cloud reset -y
 
 stderr:
 ```
-not signed in to Cloud
+error: Not signed in to Cloud.
 next: ployz login
 ```
 
@@ -249,7 +267,7 @@ $ ployz cloud reset -y --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"ployz login"},"message":"Not signed in to Cloud."}}
 ```
 
 ### logout when not signed in
@@ -292,7 +310,8 @@ $ ployz login
 
 stderr:
 ```
-could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)
+error: Could not reach Cloud at http://127.0.0.1:9.
+  cause: Connection refused (os error 111)
 ```
 
 ### login, Cloud unreachable --json
@@ -304,7 +323,7 @@ $ ployz login --json
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":null,"message":"could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)"}}
+{"error":{"cause":["error sending request","client error (Connect)","tcp connect error","Connection refused (os error 111)"],"code":"unavailable","details":null,"message":"Could not reach Cloud at http://127.0.0.1:9."}}
 ```
 
 ### token ls, token against unreachable Cloud
@@ -316,7 +335,8 @@ $ ployz token ls
 
 stderr:
 ```
-could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)
+error: Could not reach Cloud at http://127.0.0.1:9.
+  cause: Connection refused (os error 111)
 ```
 
 ### token ls, token against unreachable Cloud --json
@@ -328,19 +348,19 @@ $ ployz token ls --json
 
 stdout:
 ```
-{"error":{"code":"unavailable","details":null,"message":"could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)"}}
+{"error":{"cause":["error sending request","client error (Connect)","tcp connect error","Connection refused (os error 111)"],"code":"unavailable","details":null,"message":"Could not reach Cloud at http://127.0.0.1:9."}}
 ```
 
 ### login --json, URL that is not a Ployz Cloud
 
 ```console
 $ ployz login --json
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":null,"message":"Cloud answered HTTP 405: <!doctype html><html lang=\"en\"><head><title>Example Domain</title><link rel=\"icon\" href=\"data:,\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\"https://iana.org/domains/example\">Learn more</a></p></div></body></html>"}}
+{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"Cloud answered HTTP 405"}}
 ```
 
 ## Bad PLOYZ_TOKEN
@@ -354,7 +374,7 @@ $ ployz status
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+error: Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
 next: unset PLOYZ_TOKEN && ployz login
 ```
 
@@ -367,7 +387,7 @@ $ ployz status --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 
 ### bogus PLOYZ_TOKEN: token ls
@@ -379,7 +399,7 @@ $ ployz token ls
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+error: Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
 next: unset PLOYZ_TOKEN && ployz login
 ```
 
@@ -392,7 +412,7 @@ $ ployz token ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 
 ### bogus PLOYZ_TOKEN: org ls
@@ -404,7 +424,7 @@ $ ployz org ls
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+error: Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
 next: unset PLOYZ_TOKEN && ployz login
 ```
 
@@ -417,7 +437,7 @@ $ ployz org ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 
 ### bogus PLOYZ_TOKEN: deployment ls
@@ -429,7 +449,7 @@ $ ployz deployment ls
 
 stderr:
 ```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
+error: Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted
 next: unset PLOYZ_TOKEN && ployz login
 ```
 
@@ -442,7 +462,7 @@ $ ployz deployment ls --json
 
 stdout:
 ```
-{"error":{"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
+{"error":{"cause":[],"code":"unauthenticated","details":{"next":"unset PLOYZ_TOKEN && ployz login"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, its maker left its Organization, or its Organization was deleted"}}
 ```
 
 ## Usage errors (clap)
@@ -473,7 +493,7 @@ $ ployz token new --json
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":null,"message":"the following required arguments were not provided:\n  <name>\n\nUsage: ployz token new --json <name>\n\nFor more information, try '--help'."}}
+{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"the following required arguments were not provided:\n  <name>\n\nUsage: ployz token new --json <name>\n\nFor more information, try '--help'."}}
 ```
 
 ### org use without a slug

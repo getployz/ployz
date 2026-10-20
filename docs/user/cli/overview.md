@@ -35,9 +35,13 @@ curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
 
 This computer starts in the organization the page names. Switching organization in the dashboard
 later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
-If Cloud can't be reached, `ployz logout` still forgets the sign-in here and warns that Cloud may
-still honour it until you remove it with `ployz token rm`. An unreadable sign-in is forgotten too,
-and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
+If Cloud can't be reached, or refuses because you've left the sign-in's organization, `ployz logout`
+still forgets the sign-in here and warns that Cloud may still honour it until you remove it with
+`ployz token rm`. An unreadable sign-in is forgotten too, and `ployz login` replaces it. While it
+is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
+
+The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when you set
+`XDG_CONFIG_HOME`. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
@@ -46,6 +50,14 @@ your app's directory.
 which projects there are: it names your only project, or says the organization has several and
 how to link one. If Cloud doesn't answer within a few seconds, it shows `(none)` and the same
 `ployz link` step.
+
+A link belongs to the organization it was made in. Acting in another one, a command that uses the
+link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names
+`ployz org use ORG` to switch back. When either is the local organization, it names `ployz link`
+to link the directory where you act now. If the organization the link was made in was replaced by
+a new one with the same name, it says the directory `is linked in an
+earlier Organization ORG, which another Organization of that name replaced` and names
+`ployz link` instead: `org use` can't reach the old one, so link the directory again.
 
 ## Set up your coding agent
 
@@ -230,7 +242,8 @@ ployz up
 ```
 
 The first time, Ployz creates a project named after the directory, adds a service with an https
-address, builds your app, deploys it and prints the address.
+address, builds your app, deploys it and prints the address. In an empty directory it stops
+before it creates anything, with `Nothing to deploy` and exit code 2.
 
 An upload can be at most 95 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
@@ -244,7 +257,7 @@ CI jobs and scripts sign in with a token instead of a browser. Set it as `PLOYZ_
 
 ```sh
 # On your computer: make a token that can deploy only to staging. It's shown once, so copy it.
-ployz token new ci --preset deploy --environment staging
+ployz token new ci --preset deploy --env staging
 
 # In CI, with the token stored as the secret PLOYZ_TOKEN
 ployz up --project my-app --env staging
@@ -258,7 +271,7 @@ A token acts as you in this organization, narrowed by its preset:
 | ------ | -------------- |
 | `full` (the default) | Everything you can, and it follows your role if it changes. |
 | `read` | Read what you can read. It can't change anything. |
-| `deploy` | Read what you can, and stage and deploy changes to the one Environment `--environment` names, in any project. That Environment must already exist in one of your projects. If it's Protected, only an owner or admin can make one. |
+| `deploy` | Read what you can, and stage and deploy changes to the one Environment `--env` names, in any project. That Environment must already exist in one of your projects. If it's Protected, only an owner or admin can make one. |
 
 A deploy token that tries to change another Environment is refused and nothing changes. With the token above, `ployz up --project my-app --env production`
 fails with `This token can deploy only to staging.` A token refused for its preset names what it lacks, such as
@@ -325,9 +338,9 @@ Scripts can tell failures apart by exit code:
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
+| 1 | It failed: something wasn't found, a server couldn't be reached, a deploy failed, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
-| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, or some work couldn't be done, such as a `ployz server drain` that leaves a service where it is because no other server can take it. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
+| 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server or left an old container running, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
 | 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
 
 `ployz exec` exits with your command's own exit code. When the container stops under it,
@@ -350,6 +363,14 @@ a name or the storage choice in `ployz server add`, work the same way. A `deploy
 `--skip-deploy`, that needs an approval asks the same way in a terminal. Without one it waits for the approval in
 Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
+
+Ployz reviews a `ployz env rm` or `ployz project rm` before it runs when it takes a deployed
+service or volume off your servers. The name you confirm with binds that review: the command says
+what goes, such as `Removing shop/qa removes Service web.`, and removes it at the version it
+reviewed. To bind a version yourself, pass `--expect-version`: the removal refuses if anything
+changed since, and names the version it reviewed now. The version binds only a removal that Ployz
+reviews before it runs. Removing an environment with nothing deployed, such as a new empty
+project, doesn't compare it, so it goes ahead even when the version you pass is stale.
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,

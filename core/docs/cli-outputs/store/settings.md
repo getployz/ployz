@@ -42,7 +42,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 11
@@ -126,7 +126,7 @@ next: ployz deploy --project shop
 $ printf s3cr3t | ployz --json set web.env.API_KEY2 --secret
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 15
@@ -282,7 +282,7 @@ stderr:
 ```
 error: Unknown Service Setting
 valid: did you mean replicas?
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
 ### set --json: unknown Setting
@@ -294,7 +294,7 @@ $ ployz --json set web.replicaz=2
 
 stdout:
 ```
-{"error":{"cause":[],"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts"]},"message":"Unknown Service Setting"}}
+{"error":{"cause":[],"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","updateOrder","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts","domains"]},"message":"Unknown Service Setting"}}
 ```
 
 ### set: bad value type
@@ -367,18 +367,18 @@ $ ployz get
 
 stdout:
 ```
-db.image = postgres:16
-db.mounts.pgdata = /var/lib/postgresql/data
-web.healthcheck = {"path":"/healthz","timeoutSeconds":300}
-web.image = nginx:1.27
-web.replicas = 2
-web.env.A = 1
+db.image = "postgres:16" (default -)
+db.mounts.pgdata = "/var/lib/postgresql/data"
+web.healthcheck = {"path":"/healthz","timeoutSeconds":300} (default -)
+web.image = "nginx:1.27" (default -)
+web.replicas = 2 (default 1)
+web.env.A = "1"
 web.env.API_KEY = {"secret":true}
 web.env.API_KEY2 = {"secret":true}
-web.env.B = two
-web.env.DB_URL = postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app
-web.env.LOG_LEVEL = info
-web.env.PORT = 8080
+web.env.B = "two"
+web.env.DB_URL = "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
+web.env.LOG_LEVEL = "info"
+web.env.PORT = "8080"
 ```
 
 ### get --json (all Services)
@@ -391,8 +391,9 @@ $ ployz --json get
 stdout:
 ```
 {
+  "domains": [],
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 19
@@ -435,14 +436,14 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.A",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.A",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.A",
       "value": "1"
     },
     {
       "apply": "staged",
       "default": null,
       "path": "web.env.API_KEY",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY",
       "value": {
         "secret": true
       }
@@ -451,7 +452,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.API_KEY2",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY2",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY2",
       "value": {
         "secret": true
       }
@@ -460,28 +461,28 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.B",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.B",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.B",
       "value": "two"
     },
     {
       "apply": "staged",
       "default": null,
       "path": "web.env.DB_URL",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.DB_URL",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.DB_URL",
       "value": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
     },
     {
       "apply": "staged",
       "default": null,
       "path": "web.env.LOG_LEVEL",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.LOG_LEVEL",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.LOG_LEVEL",
       "value": "info"
     },
     {
       "apply": "staged",
       "default": null,
       "path": "web.env.PORT",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.PORT",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.PORT",
       "value": "8080"
     }
   ]
@@ -499,43 +500,47 @@ stdout:
 ```
 db.cpuLimit = - (default)
 db.healthcheck = - (default)
-db.image = postgres:16
+db.image = "postgres:16" (default -)
 db.maxRetries = 10 (default)
 db.memLimit = - (default)
 db.preDeployCommand = - (default)
-db.privateDns = db (default)
+db.privateDns = "db" (default)
 db.registryCredential = - (default)
 db.replicas = 1 (default)
-db.restartPolicy = unless-stopped (default)
+db.restartPolicy = "unless-stopped" (default)
 db.startCommand = - (default)
 db.template = - (default)
-db.mounts.pgdata = /var/lib/postgresql/data
+db.updateOrder = - (default)
+db.mounts.pgdata = "/var/lib/postgresql/data"
+db.domains = -
 web.cpuLimit = - (default)
-web.healthcheck = {"path":"/healthz","timeoutSeconds":300}
-web.image = nginx:1.27
+web.healthcheck = {"path":"/healthz","timeoutSeconds":300} (default -)
+web.image = "nginx:1.27" (default -)
 web.maxRetries = 10 (default)
 web.memLimit = - (default)
 web.preDeployCommand = - (default)
-web.privateDns = web (default)
+web.privateDns = "web" (default)
 web.registryCredential = - (default)
-web.replicas = 2
-web.restartPolicy = unless-stopped (default)
+web.replicas = 2 (default 1)
+web.restartPolicy = "unless-stopped" (default)
 web.startCommand = - (default)
 web.template = - (default)
-web.env.A = 1
+web.updateOrder = - (default)
+web.env.A = "1"
 web.env.A.exported = false (default)
 web.env.API_KEY = {"secret":true}
 web.env.API_KEY.exported = false (default)
 web.env.API_KEY2 = {"secret":true}
 web.env.API_KEY2.exported = false (default)
-web.env.B = two
+web.env.B = "two"
 web.env.B.exported = false (default)
-web.env.DB_URL = postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app
+web.env.DB_URL = "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
 web.env.DB_URL.exported = false (default)
-web.env.LOG_LEVEL = info
+web.env.LOG_LEVEL = "info"
 web.env.LOG_LEVEL.exported = false (default)
-web.env.PORT = 8080
+web.env.PORT = "8080"
 web.env.PORT.exported = false (default)
+web.domains = -
 ```
 
 ### get one Service
@@ -548,31 +553,33 @@ $ ployz get web
 stdout:
 ```
 web.cpuLimit = - (default)
-web.healthcheck = {"path":"/healthz","timeoutSeconds":300}
-web.image = nginx:1.27
+web.healthcheck = {"path":"/healthz","timeoutSeconds":300} (default -)
+web.image = "nginx:1.27" (default -)
 web.maxRetries = 10 (default)
 web.memLimit = - (default)
 web.preDeployCommand = - (default)
-web.privateDns = web (default)
+web.privateDns = "web" (default)
 web.registryCredential = - (default)
-web.replicas = 2
-web.restartPolicy = unless-stopped (default)
+web.replicas = 2 (default 1)
+web.restartPolicy = "unless-stopped" (default)
 web.startCommand = - (default)
 web.template = - (default)
-web.env.A = 1
+web.updateOrder = - (default)
+web.env.A = "1"
 web.env.A.exported = false (default)
 web.env.API_KEY = {"secret":true}
 web.env.API_KEY.exported = false (default)
 web.env.API_KEY2 = {"secret":true}
 web.env.API_KEY2.exported = false (default)
-web.env.B = two
+web.env.B = "two"
 web.env.B.exported = false (default)
-web.env.DB_URL = postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app
+web.env.DB_URL = "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
 web.env.DB_URL.exported = false (default)
-web.env.LOG_LEVEL = info
+web.env.LOG_LEVEL = "info"
 web.env.LOG_LEVEL.exported = false (default)
-web.env.PORT = 8080
+web.env.PORT = "8080"
 web.env.PORT.exported = false (default)
+web.domains = -
 ```
 
 ### get --json one Service
@@ -585,8 +592,9 @@ $ ployz --json get web
 stdout:
 ```
 {
+  "domains": [],
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 19
@@ -670,8 +678,14 @@ stdout:
     {
       "apply": "staged",
       "default": null,
+      "path": "web.updateOrder",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
       "path": "web.env.A",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.A",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.A",
       "value": "1"
     },
     {
@@ -684,7 +698,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.API_KEY",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY",
       "value": {
         "secret": true
       }
@@ -699,7 +713,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.API_KEY2",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY2",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY2",
       "value": {
         "secret": true
       }
@@ -714,7 +728,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.B",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.B",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.B",
       "value": "two"
     },
     {
@@ -727,7 +741,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.DB_URL",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.DB_URL",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.DB_URL",
       "value": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
     },
     {
@@ -740,7 +754,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.LOG_LEVEL",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.LOG_LEVEL",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.LOG_LEVEL",
       "value": "info"
     },
     {
@@ -753,7 +767,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.PORT",
-      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.PORT",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.PORT",
       "value": "8080"
     },
     {
@@ -799,7 +813,7 @@ $ ployz get web.replicas
 
 stdout:
 ```
-web.replicas = 2
+web.replicas = 2 (default 1)
 ```
 
 ### get --json one Setting
@@ -813,7 +827,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 19
@@ -838,7 +852,7 @@ $ ployz get web.env.LOG_LEVEL
 
 stdout:
 ```
-web.env.LOG_LEVEL = info
+web.env.LOG_LEVEL = "info"
 ```
 
 ### get a secret env var
@@ -889,7 +903,7 @@ stderr:
 ```
 error: Unknown Service Setting
 valid: did you mean replicas?
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
 ### get: unset env var
@@ -933,7 +947,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -958,7 +972,7 @@ stderr:
 ```
 error: Unknown Service Setting
 valid: did you mean replicas?
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
 ### unset: variable not set
@@ -1044,7 +1058,7 @@ stderr:
 ```
 error: Unknown Service Setting
 valid: did you mean replicas?
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 
 ### explain --json: unknown Setting
@@ -1056,20 +1070,46 @@ $ ployz --json explain web.replicaz
 
 stdout:
 ```
-{"error":{"cause":[],"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts"]},"message":"Unknown Service Setting"}}
+{"error":{"cause":[],"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","updateOrder","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts","domains"]},"message":"Unknown Service Setting"}}
 ```
 
 ### explain: Service only
 
 ```console
 $ ployz explain web
-# exit 2
+# exit 0
 ```
 
-stderr:
+stdout:
 ```
-error: Name a Setting: SERVICE.SETTING
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 14 more
+SETTING	DEFAULT	APPLIES	TITLE
+web.autoDeploy	true	immediate	Auto-deploy
+web.branch	-	staged	Branch
+web.buildCommand	-	staged	Build command
+web.buildMethod	"railpack"	staged	Build method
+web.configs	-	staged	Config mounts
+web.cpuLimit	-	staged	CPU limit
+web.dockerfilePath	-	staged	Dockerfile path
+web.env	-	staged	Variables
+web.healthcheck	-	staged	Healthcheck
+web.image	-	staged	Container image
+web.maxRetries	10	staged	Max retries
+web.memLimit	-	staged	Memory limit
+web.mounts	-	staged	Mounts
+web.preDeployCommand	-	staged	Pre-deploy command
+web.preferredBuilder	-	immediate	Preferred Builder
+web.privateDns	"web"	staged	Private DNS
+web.registryCredential	-	immediate	Registry credentials
+web.replicas	1	staged	Replicas
+web.repository	-	staged	Repository
+web.restartPolicy	"unless-stopped"	staged	Restart policy
+web.rootDir	-	staged	Root directory
+web.startCommand	-	staged	Start command
+web.template	-	immediate	Template
+web.updateOrder	-	staged	Update order
+web.waitForCi	false	immediate	Wait for CI
+web.watchPaths	[]	immediate	Watch paths
+web.domains	-	staged	Domains, set with `ployz domain add web`
 ```
 
 ### schema (human)
@@ -1079,17 +1119,17 @@ $ ployz schema
 # exit 0
 ```
 
-stdout (3229 lines, first 40 shown):
+stdout (6629 lines, first 40 shown):
 ```
 {
   "$defs": {
     "service": {
       "additionalProperties": false,
-      "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
+      "description": "A Service's Settings, by name. Reads show them in this shape, and a patch takes the same shape.",
       "properties": {
         "autoDeploy": {
           "default": true,
-          "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+          "description": "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once.",
           "examples": [
             false
           ],
@@ -1131,17 +1171,17 @@ $ ployz --json schema
 # exit 0
 ```
 
-stdout (3229 lines, first 40 shown):
+stdout (6629 lines, first 40 shown):
 ```
 {
   "$defs": {
     "service": {
       "additionalProperties": false,
-      "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
+      "description": "A Service's Settings, by name. Reads show them in this shape, and a patch takes the same shape.",
       "properties": {
         "autoDeploy": {
           "default": true,
-          "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+          "description": "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once.",
           "examples": [
             false
           ],
@@ -1183,16 +1223,16 @@ $ ployz schema web
 # exit 0
 ```
 
-stdout (516 lines, first 40 shown):
+stdout (601 lines, first 40 shown):
 ```
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
+  "description": "A Service's Settings, by name. Reads show them in this shape, and a patch takes the same shape.",
   "properties": {
     "autoDeploy": {
       "default": true,
-      "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+      "description": "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once.",
       "examples": [
         false
       ],
@@ -1293,6 +1333,6 @@ stderr:
 ```
 error: Unknown Service Setting. `ployz schema` takes SERVICE or SERVICE.SETTING; `ployz schema web` lists its Settings
 valid: did you mean replicas?
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 18 more
 ```
 

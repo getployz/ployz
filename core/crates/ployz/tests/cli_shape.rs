@@ -173,6 +173,7 @@ fn run_json_with<V: AsRef<std::ffi::OsStr>>(
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
@@ -199,7 +200,7 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
     assert!(
         json.get("next")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|next| next.ends_with("server ls")),
+            .is_some_and(|next| next.ends_with(" login")),
         "{json}"
     );
 
@@ -274,6 +275,7 @@ fn an_unreadable_config_fails_the_same_way_for_every_command() {
             .args(args)
             .args(["--json", "--ployz-config", config.to_str().unwrap()])
             .env("HOME", home.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("PLOYZ_CONTEXT")
             .env_remove("PLOYZ_CONNECT")
             .env_remove("PLOYZ_TOKEN")
@@ -382,6 +384,7 @@ fn human_output(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
@@ -586,6 +589,7 @@ fn a_group_without_its_subcommand_prints_its_help_like_bare_ployz() {
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
             .arg(group)
             .env("HOME", home.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("PLOYZ_CONTEXT")
             .output()
             .unwrap();
@@ -920,6 +924,10 @@ fn waiting_cloud(
                         ),
                     }
                 }
+                "POST /api/config/read" => (
+                    "404 Not Found",
+                    serde_json::json!({ "error": { "code": "not_found", "message": "This Organization has no Project yet" } }),
+                ),
                 _ => ("404 Not Found", serde_json::json!({ "error": "not found" })),
             };
             let recorded = match route.starts_with("POST") {
@@ -958,6 +966,30 @@ fn server_ls_lists_an_organization_without_servers_as_empty() {
         "SERVER\tMEMBERSHIP\tSTORAGE\tPUBLIC IP\tSUBNET\tDAEMON\tOS\n"
     );
     assert!(stderr.contains("No Servers yet."), "{stderr}");
+}
+
+#[test]
+fn ps_lists_an_organization_without_servers_as_empty() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes, WaitingCloud::of(Vec::new()));
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, stderr) = run_json_with(&["ps", "--json"], &token);
+    assert_eq!(code, Some(0), "{json} {stderr}");
+    assert_eq!(
+        json,
+        serde_json::json!({ "containers": [], "failures": [], "omitted": [] })
+    );
+
+    let (code, stdout, stderr) = run_output(&["ps"], &token);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout.unwrap(), "SERVICE\tKIND\tSERVER\tSTATE\n");
+    assert!(stderr.contains("No Containers running yet."), "{stderr}");
+
+    let (code, json, _) = run_json_with(&["metrics", "--server", "web-1", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict", "{json}");
+    assert_eq!(message(&json), "this Organization has no Servers");
 }
 
 #[test]
@@ -1115,6 +1147,7 @@ fn run_output(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, Option<Strin
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .envs(env.iter().copied())
@@ -1351,6 +1384,51 @@ fn a_server_that_is_not_answering_yet_is_named_with_when_to_try_again() {
         json.pointer("/error/details/unreachable").unwrap(),
         &serde_json::json!([joining]),
         "{json}"
+    );
+}
+
+#[test]
+fn a_server_cloud_handed_a_connection_for_that_does_not_answer_is_named() {
+    let held = "0123456789abcdef0123456789abcdef";
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let human = |names: serde_json::Value| {
+        let cloud = waiting_cloud(
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            WaitingCloud {
+                connections: vec![serde_json::json!({ "tcp": closed, "machine_id": held })],
+                names,
+                ..WaitingCloud::of(Vec::new())
+            },
+        );
+        let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+        let (code, _, stderr) = run_output(&["ps"], &token);
+        assert_eq!(code, Some(1), "{stderr}");
+        let (_, json, _) = run_json_with(&["ps", "--json"], &token);
+        assert_eq!(
+            json.pointer("/error/details/unreachable").unwrap(),
+            &serde_json::json!([held]),
+            "{json}"
+        );
+        stderr
+    };
+
+    let named = human(serde_json::json!({ held: "box-node-09c8" }));
+    assert!(
+        named.starts_with(
+            "error: Server box-node-09c8 isn't answering. Check that its Ployz daemon is running, then retry.\n  cause: "
+        ),
+        "{named}"
+    );
+    // Cloud never learned its name: the Machine ID says which.
+    let unnamed = human(serde_json::json!({}));
+    assert!(
+        unnamed.starts_with(&format!(
+            "error: Server {held} isn't answering. Check that its Ployz daemon is running, then retry.\n  cause: "
+        )),
+        "{unnamed}"
     );
 }
 
@@ -1894,6 +1972,7 @@ fn show_web_1_with_config(
         .args(["server", "show", "web-1", "--json"])
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_STORE")
@@ -2159,6 +2238,7 @@ fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
         .args(["--json", "server", "ls", "--connect", &connect])
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
@@ -2469,6 +2549,7 @@ fn results_on_stdout_side_channel_on_stderr() {
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
             .args(args)
             .env("HOME", home.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
             .env(
                 "PLOYZ_STORE",
@@ -2566,7 +2647,7 @@ fn server_show_says_when_the_waiting_list_could_not_be_read() {
     let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
     let (code, json, stderr) = run_json_with(&["server", "show", "nobody", "--json"], &token);
     assert_eq!(code, Some(1), "{json}");
-    assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict", "{json}");
     assert_eq!(message(&json), "this Organization has no Servers");
     assert!(
         stderr.contains("The servers waiting to join could not be read"),
@@ -2693,6 +2774,7 @@ fn run_token_cloud(cloud: &str, args: &[&str]) -> (Option<i32>, String, String) 
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_STORE")
@@ -2786,8 +2868,9 @@ fn server_token_create_prints_the_secret_once_with_its_install_line() {
     for line in [
         "Created blue-heron\n",
         "Anyone with this token can add servers. Keep it secret.",
+        "Run on each host, and paste the token when it asks:",
         &format!(
-            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' PLOYZ_ENROLL_TOKEN=pflt_secret sh -s -- {}\n",
+            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' sh -s -- {} --enroll\n",
             env!("CARGO_PKG_VERSION")
         ),
         "Shown once. Expires in 7d.",
@@ -2814,7 +2897,7 @@ fn server_token_create_defaults_to_a_day_without_auto() {
 }
 
 #[test]
-fn server_token_create_json_carries_the_secret_and_install_line() {
+fn server_token_create_json_carries_the_secret_and_an_install_line_without_it() {
     let (cloud, _) = token_cloud(
         200,
         r#"{"fleet_token":{"id":"0d6f1f3e-0000-4000-8000-000000000001","name":"amber-falcon","token":"pflt_secret","expires_at":"2026-10-17T00:00:00.000Z"}}"#,
@@ -2824,16 +2907,15 @@ fn server_token_create_json_carries_the_secret_and_install_line() {
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(json.pointer("/fleet_token/token").unwrap(), "pflt_secret");
     assert_eq!(json.pointer("/fleet_token/name").unwrap(), "amber-falcon");
+    let install = json
+        .pointer("/install")
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
     assert!(
-        json.pointer("/install")
-            .and_then(serde_json::Value::as_str)
-            .unwrap()
-            .ends_with(&format!(
-                "PLOYZ_ENROLL_TOKEN=pflt_secret sh -s -- {}",
-                env!("CARGO_PKG_VERSION")
-            )),
+        install.ends_with(&format!("sh -s -- {} --enroll", env!("CARGO_PKG_VERSION"))),
         "{json}"
     );
+    assert!(!install.contains("pflt_secret"), "{json}");
 }
 
 #[test]

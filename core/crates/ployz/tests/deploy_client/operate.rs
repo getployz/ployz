@@ -9,13 +9,18 @@
 use super::*;
 use serde_json::Value;
 
-/// `ployz --json ARGS` in its own home, away from any ambient sign-in, Store or link.
-async fn ployz(store: Option<&std::path::Path>, address: &str, args: &[&str]) -> (i32, Value) {
+/// `ployz ARGS` in its own home, away from any ambient sign-in, Store or link.
+async fn run(
+    store: Option<&std::path::Path>,
+    address: &str,
+    args: &[&str],
+) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
     command
         .current_dir(home.path())
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
         .env_remove("PLOYZ_STORE")
         .env_remove("PLOYZ_TOKEN")
@@ -25,12 +30,17 @@ async fn ployz(store: Option<&std::path::Path>, address: &str, args: &[&str]) ->
     if let Some(store) = store {
         command.env("PLOYZ_STORE", format!("sqlite:{}", store.display()));
     }
-    let output = command
-        .args(["--json", "--connect", &format!("tcp://{address}")])
+    command
+        .args(["--connect", &format!("tcp://{address}")])
         .args(args)
         .output()
         .await
-        .unwrap();
+        .unwrap()
+}
+
+/// `ployz --json ARGS`, as [`run`].
+async fn ployz(store: Option<&std::path::Path>, address: &str, args: &[&str]) -> (i32, Value) {
+    let output = run(store, address, &[&["--json"], args].concat()).await;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json = serde_json::Deserializer::from_str(&stdout)
         .into_iter::<Value>()
@@ -143,7 +153,7 @@ async fn a_server_that_fails_to_answer_makes_the_result_partial() {
 }
 
 #[tokio::test]
-async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
+async fn restart_reports_one_restart_or_the_start_that_failed() {
     for fail in [false, true] {
         let machine = machine('a', "one");
         let mut service = DeployService::new(machine.clone());
@@ -154,7 +164,7 @@ async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
             .listed_containers()
             .lock()
             .unwrap()
-            .push(running_container(&machine, &spec("web")));
+            .push(deployed_container(&machine, &spec("web")));
         let (address, server) = listening(service).await;
 
         let (code, restarted) =
@@ -167,7 +177,7 @@ async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
             .collect::<Vec<_>>();
         if fail {
             assert_eq!(code, 3, "{restarted}");
-            assert_eq!(actions, ["stop"], "{restarted}");
+            assert!(actions.is_empty(), "{restarted}");
             assert_eq!(
                 restarted["container_failures"][0]["error"]["message"],
                 "no start"
@@ -175,7 +185,7 @@ async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
             assert_eq!(restarted["next"], "ployz ps", "{restarted}");
         } else {
             assert_eq!(code, 0, "{restarted}");
-            assert_eq!(actions, ["stop", "start"], "{restarted}");
+            assert_eq!(actions, ["restart"], "{restarted}");
             assert!(restarted.get("next").is_none(), "{restarted}");
         }
         server.abort();
@@ -191,7 +201,7 @@ async fn restart_returns_once_a_slow_start_passes_its_healthcheck() {
         .listed_containers()
         .lock()
         .unwrap()
-        .push(running_container(&machine, &spec("web")));
+        .push(deployed_container(&machine, &spec("web")));
     let (address, server) = listening(service).await;
     let begun = std::time::Instant::now();
 
@@ -221,7 +231,7 @@ async fn restart_reports_a_start_that_never_passes_its_healthcheck() {
         .listed_containers()
         .lock()
         .unwrap()
-        .push(running_container(&machine, &spec("web")));
+        .push(deployed_container(&machine, &spec("web")));
     let (address, server) = listening(service).await;
 
     let (code, restarted) = ployz(None, &address.to_string(), &["service", "restart", "web"]).await;
@@ -346,6 +356,7 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
         command
             .current_dir(root.path())
             .env("HOME", root.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env("PLOYZ_CONFIG", root.path().join("default.yaml"))
             .env("PLOYZ_STORE", format!("sqlite:{}", db.display()))
             .env_remove("PLOYZ_TOKEN")
@@ -381,7 +392,7 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
     server.abort();
     server.await.ok();
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["status"], "failed", "{result}");
     let hints = stderr
@@ -511,4 +522,274 @@ async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepte
         "{listed}"
     );
     server.abort();
+}
+
+/// A Store with Volume `data` deployed on Server `one` of `service`, then removed
+/// from the Environment, unsaved: the next Deploy removes deployed data.
+async fn removing_deployed_data(
+    db: &std::path::Path,
+    service: DeployService,
+) -> (
+    String,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let (address, server) = listening(service).await;
+    let address = address.to_string();
+    for args in [
+        &["project", "new", "shop"][..],
+        &["service", "add", "web", "--image", "web:1"],
+        &["volume", "add", "data", "--mount", "web:/data", "--docker"],
+        &["deploy"],
+        &["volume", "rm", "data"],
+    ] {
+        let (code, result) = ployz(Some(db), &address, args).await;
+        assert_eq!(code, 0, "{args:?}: {result}");
+    }
+    (address, server)
+}
+
+/// The `--json` refusal of a Deploy that removes `data` through `address`, which
+/// no longer answers, as it names `address` and the connection's cause.
+async fn refused_through_dead_endpoint(db: &std::path::Path, address: &str) -> Value {
+    let (code, refused) = ployz(Some(db), address, &["deploy", "--skip-deploy"]).await;
+    assert_eq!(code, 1, "{refused}");
+    let refused = refused["error"].clone();
+    assert_eq!(refused["code"], "unavailable", "{refused}");
+    assert_eq!(
+        refused["message"],
+        format!(
+            "This removes deployed Volumes, and Ployz couldn't reach tcp://{address} to check \
+             for their data, so it refuses. Try again once it can be reached"
+        ),
+        "{refused}"
+    );
+    assert_eq!(
+        refused["details"],
+        serde_json::json!({
+            "volumes": ["data"],
+            "unanswered": [],
+            "endpoint": format!("tcp://{address}"),
+        }),
+        "{refused}"
+    );
+    refused
+}
+
+#[tokio::test]
+async fn a_removal_deployed_while_its_server_is_down_names_the_endpoint_and_why() {
+    let store = tempfile::tempdir().unwrap();
+    let db = store.path().join("store.db");
+    let (address, server) =
+        removing_deployed_data(&db, DeployService::new(machine('a', "one"))).await;
+    server.abort();
+    let _ = server.await;
+
+    let refused = refused_through_dead_endpoint(&db, &address).await;
+    let cause: Vec<&str> = refused["cause"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cause| cause.as_str().unwrap())
+        .collect();
+    assert!(
+        cause
+            .last()
+            .is_some_and(|cause| cause.contains("Connection refused")),
+        "{refused}"
+    );
+
+    let human = run(Some(&db), &address, &["deploy", "--skip-deploy"]).await;
+    assert_eq!(human.status.code(), Some(1), "{human:?}");
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "error: This removes deployed Volumes, and Ployz couldn't reach tcp://{address}"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.trim_start().starts_with("cause:")
+                && line.contains("Connection refused")),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
+async fn a_removal_deployed_while_its_server_fails_the_check_names_the_error() {
+    let store = tempfile::tempdir().unwrap();
+    let db = store.path().join("store.db");
+    let service = DeployService::new(machine('a', "one"));
+    let machines_error = std::sync::Arc::clone(&service.machines_error);
+    let (address, server) = removing_deployed_data(&db, service).await;
+    *machines_error.lock().unwrap() = Some(ployz_core::RpcError {
+        code: ployz_core::RpcErrorCode::Internal,
+        message: "The Machine list is unavailable.".into(),
+        details: Value::Null,
+        cause: vec!["database is locked".into()],
+    });
+
+    let (code, refused) = ployz(Some(&db), &address, &["deploy", "--skip-deploy"]).await;
+    assert_eq!(code, 1, "{refused}");
+    let refused = &refused["error"];
+    assert_eq!(refused["code"], "unavailable", "{refused}");
+    assert_eq!(
+        refused["message"],
+        "This removes deployed Volumes, and Server one returned an error when Ployz checked \
+         for their data, so it refuses. Fix the error Server one returned, then try again",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["details"],
+        serde_json::json!({ "volumes": ["data"], "server": "one" }),
+        "{refused}"
+    );
+    assert_eq!(
+        refused["cause"],
+        serde_json::json!(["The Machine list is unavailable.", "database is locked"]),
+        "{refused}"
+    );
+
+    let human = run(Some(&db), &address, &["deploy", "--skip-deploy"]).await;
+    assert_eq!(human.status.code(), Some(1), "{human:?}");
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.contains("cause: database is locked"), "{stderr}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_removal_refused_by_an_unknown_daemon_names_the_endpoint_and_no_server() {
+    let store = tempfile::tempdir().unwrap();
+    let db = store.path().join("store.db");
+    let service = DeployService::new(machine('a', "one"));
+    let describe_refusal = std::sync::Arc::clone(&service.describe_refusal);
+    let (address, server) = removing_deployed_data(&db, service).await;
+    *describe_refusal.lock().unwrap() = Some("not authorized".into());
+
+    let (code, refused) = ployz(Some(&db), &address, &["deploy", "--skip-deploy"]).await;
+    assert_eq!(code, 1, "{refused}");
+    let refused = &refused["error"];
+    assert_eq!(refused["code"], "unavailable", "{refused}");
+    assert_eq!(
+        refused["details"],
+        serde_json::json!({ "volumes": ["data"], "endpoint": format!("tcp://{address}") }),
+        "{refused}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_removal_deployed_through_a_dead_endpoint_names_no_server_it_did_not_ask() {
+    let store = tempfile::tempdir().unwrap();
+    let db = store.path().join("store.db");
+    // Server two ran an earlier Deployment of this Organization.
+    let (two, server) = listening(DeployService::new(machine('b', "two"))).await;
+    let two = two.to_string();
+    for args in [
+        &["project", "new", "shop"][..],
+        &["service", "add", "api", "--image", "api:1"],
+        &["deploy"],
+    ] {
+        let (code, result) = ployz(Some(&db), &two, args).await;
+        assert_eq!(code, 0, "{args:?}: {result}");
+    }
+    server.abort();
+    let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
+    let address = address.to_string();
+    for args in [
+        &["service", "add", "web", "--image", "web:1"][..],
+        &["volume", "add", "data", "--mount", "web:/data", "--docker"],
+        &["deploy"],
+        &["volume", "rm", "data"],
+    ] {
+        let (code, result) = ployz(Some(&db), &address, args).await;
+        assert_eq!(code, 0, "{args:?}: {result}");
+    }
+    server.abort();
+    let _ = server.await;
+
+    refused_through_dead_endpoint(&db, &address).await;
+}
+
+#[tokio::test]
+async fn ctrl_c_during_cleanup_prints_each_copy_left_running_and_exits_non_zero() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("store.db");
+    let (entry, edge) = (machine('a', "entry"), machine('b', "edge"));
+    let earlier = serde_json::from_value(serde_json::json!({
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "web:1", "pull_policy": "always" }
+    }))
+    .unwrap();
+    let mut old = running_container_in(&entry, &earlier, "shop-production", '1');
+    old.try_update(|parts| parts.rotation = Some(ployz_core::CopyRotation::In))
+        .unwrap();
+    let old_id = old.container_id;
+    let daemon = DeployService::new(entry.clone())
+        .with_machines(vec![entry, edge.clone()])
+        .never_unroute_on(edge.machine.id);
+    daemon.listed_containers().lock().unwrap().push(old);
+    let unrouted = daemon.unrouted();
+    let (address, server) = listening(daemon).await;
+    let connect = format!("tcp://{address}");
+    let command = |args: &[&str]| {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .current_dir(root.path())
+            .env("HOME", root.path())
+            .env("PLOYZ_CONFIG", root.path().join("config.yaml"))
+            .env("PLOYZ_STORE", format!("sqlite:{}", db.display()))
+            .env_remove("PLOYZ_TOKEN")
+            .env_remove("PLOYZ_PROJECT")
+            .env_remove("PLOYZ_ENV")
+            .env_remove("PLOYZ_CONTEXT")
+            .env_remove("PLOYZ_CONNECT")
+            .args(["--color=never", "--connect", &connect])
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        command
+    };
+    for args in [
+        &["project", "new", "shop"][..],
+        &["service", "add", "web", "--image", "web:2"],
+    ] {
+        let output = command(args).output().await.unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    let deploy = command(&["deploy"]).spawn().unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !unrouted.lock().unwrap().contains(&old_id) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("cleanup takes the old copy out of rotation");
+    let interrupted = std::process::Command::new("kill")
+        .args(["-INT", &deploy.id().unwrap().to_string()])
+        .status()
+        .unwrap();
+    assert!(interrupted.success());
+    let output = tokio::time::timeout(Duration::from_secs(20), deploy.wait_with_output())
+        .await
+        .expect("Ctrl-C ends the deploy")
+        .unwrap();
+    server.abort();
+
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_ne!(output.status.code(), Some(0), "{printed}");
+    assert!(
+        printed.contains(
+            "shop-production/web left running on entry (interrupted). The next deploy cleans it up."
+        ),
+        "{printed}"
+    );
+    assert!(!printed.contains(&old_id.to_string()), "{printed}");
 }

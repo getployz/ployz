@@ -37,6 +37,7 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
     let client = Scripted::new(vec![
         created(Call::Run(machine, ContainerKind::PreDeployHook), &hook_id),
         observed(Call::Inspect(machine, hook_id), exited(0)),
+        observed(Call::Inspect(machine, suffix), running()),
         ok(Call::Stop(machine, suffix)),
     ]);
     assert!(matches!(

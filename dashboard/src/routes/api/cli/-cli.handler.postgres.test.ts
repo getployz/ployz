@@ -3,7 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
+import type { Client, DockerVolumeName, MachineId, MachineName, RuntimeWatchView } from "@ployz/sdk";
 import { and, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -739,6 +739,13 @@ it.live(
         const offline = (yield* cli("POST", "server-access", alice)).json;
         assert.deepStrictEqual(offline.unreachable, [later]);
         assert.deepStrictEqual(offline.names, { [later]: "box-node-2" });
+        // The name a Server's Cluster last reported wins over enrollment's; one Cloud never learned stays out.
+        yield* database.drizzle.update(organizationMachine).set({ machineName: "box-node-09c8" as MachineName })
+          .where(eq(organizationMachine.machineId, later));
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.names, { [later]: "box-node-09c8" });
+        yield* database.drizzle.update(organizationMachine).set({ machineName: "box-node-1" as MachineName })
+          .where(eq(organizationMachine.machineId, first));
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.names, { [first]: "box-node-1", [later]: "box-node-09c8" });
         laterServer.online = true;
         const both = (yield* cli("POST", "server-access", alice)).json;
         assert.deepStrictEqual(both.connections?.map((row) => row.machine_id).sort(), [first, later]);
@@ -1526,7 +1533,7 @@ it.live(
           cli("POST", "tokens", alice, { name: "deploy", expires_in_days: 30, preset: "deploy", environment });
         assert.deepStrictEqual(refusedWith(yield* minted("Not An Environment")),
           [422, "No Project here has an Environment named Not An Environment."]);
-        assert.deepStrictEqual(refusedWith(yield* minted("")), [422, "A Deploy token needs an Environment; pass `--environment`."]);
+        assert.deepStrictEqual(refusedWith(yield* minted("")), [422, "A Deploy token needs an Environment; pass `--env`."]);
         const unknown = yield* minted("staging");
         assert.deepStrictEqual(refusedWith(unknown), [422, "No Project here has an Environment named staging."]);
         assert.lengthOf(yield* (yield* Database).drizzle.select().from(organizationToken), 0);

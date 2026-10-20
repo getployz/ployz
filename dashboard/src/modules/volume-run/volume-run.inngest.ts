@@ -205,8 +205,9 @@ type SlotAt = Extract<VolumeCopy, { kind: "slot" }> & { readonly newest: Snapsho
 const slotAt = (copy: VolumeCopy | null): SlotAt | null =>
   copy?.kind === "slot" && copy.newest !== null ? { ...copy, newest: copy.newest } : null;
 
+/** An old copy already at `target` still takes the ask, which makes it the mirror on its Machine. */
 const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
-  copy?.kind === "slot" && copy.pull === null && copy.newest?.guid === target.guid;
+  copy?.kind === "slot" && copy.pull === null && copy.newest?.guid === target.guid && copy.role !== "old_copy";
 
 const MAX_DRIFTS = 3;
 

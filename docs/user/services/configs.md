@@ -35,7 +35,8 @@ Use relative paths without `..`.
 ![The same config mounted on web and worker at /etc/app](../images/config-mounts.png)
 
 The service reads `app.conf` at `/etc/app/app.conf`. Each directory holds one config or volume,
-so choose another directory if one is already mounted there.
+so choose another directory if one is already mounted there. A config can't mount under `/proc`,
+`/sys` or `/dev`, which the kernel fills.
 
 The config's panel shows each mount's actual directory. Open the menu at the end of its row and choose
 **Edit directory** to move it, or **Unmount** to detach it on the next deploy.

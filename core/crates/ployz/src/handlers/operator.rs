@@ -43,7 +43,9 @@ use super::{
 
 pub(super) fn exec_command(command: Command) -> Command {
     scoped(base(command, "Run a command in a Service's container"))
-        .arg(value("container", None))
+        .arg(value("container", None).value_name("CONTAINER").help(
+            "Which of the Service's Containers, by name or ID prefix [default: a running one]",
+        ))
         .arg(switch("detach", Some('d')))
         .arg(switch("no-tty", Some('T')))
         .arg(positional("service", true))

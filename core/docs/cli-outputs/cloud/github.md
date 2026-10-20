@@ -8,27 +8,30 @@ Captured by cloud/run.sh against a seeded local Ployz Cloud (dashboard verify), 
 
 ```console
 $ ployz github
-# exit 2
+# exit 0
 ```
 
-stderr:
+stdout:
 ```
 Connect GitHub so Services can build your repositories
 
 Usage: ployz github [OPTIONS] [COMMAND]
 
 Commands:
-  connect     Print the GitHub App install link and wait until it is installed
-  ls          List your GitHub installations and repositories, or one repository's branches
-  disconnect  Forget one of your GitHub installations; uninstall the App on GitHub
+  cat         Print one file of a repository
+  connect     Print the link that connects a GitHub account and wait until it is connected
+  disconnect  Disconnect a GitHub account from this Organization; uninstall the App on GitHub
+  ls          List this Organization's GitHub accounts and repositories, or one repository's branches
+  tree        List a repository's files
   help        Print this message or the help of the given subcommand(s)
 
 Options:
-      --connect <connect>            [env: PLOYZ_CONNECT=]
-      --ssh-timeout <SECONDS>        SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
-      --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=] [default: ~/.config/ployz/config.yaml]
-      --json                         Print the result as one JSON object on stdout
-  -h, --help                         Print help (see more with '--help')
+      --connect <connect>      Reach the Servers through this connection instead of Cloud or a context [env: PLOYZ_CONNECT=]
+      --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
+      --json                   Print the result as one JSON object on stdout; streams print one per line
+      --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
+  -h, --help                   Print help (see more with '--help')
+
 ```
 
 ### github ls
@@ -40,8 +43,13 @@ $ ployz github ls
 
 stdout:
 ```
-INSTALLATION	ACCOUNT	REPOSITORIES
-No repositories yet. Next: ployz github connect
+REPOSITORY	VISIBILITY	DEFAULT BRANCH
+```
+
+stderr:
+```
+No repositories yet.
+next: ployz github connect
 ```
 
 ### github ls --json
@@ -54,9 +62,8 @@ $ ployz github ls --json
 stdout:
 ```
 {
-  "install_url": "https://github.com/apps/ployz-verify/installations/new",
+  "connect_url": "http://localhost:35249/api/github/connect?organization=ada",
   "installations": [],
-  "linked": false,
   "next": "ployz github connect",
   "ready": false,
   "repositories": []
@@ -67,25 +74,35 @@ stdout:
 
 ```console
 $ ployz github connect --json
-# exit 1
+# exit 0
 ```
 
 stdout:
 ```
-{"error":{"code":"unsupported","details":{"next":"ployz github connect"},"message":"GitHub reports installs by GitHub account, and yours isn't linked: sign in to Ployz Cloud with GitHub once, then rerun"}}
+{
+  "connection": {
+    "connect_url": "http://localhost:35249/api/github/connect?organization=ada",
+    "installations": [],
+    "ready": false,
+    "repositories": []
+  },
+  "next": "ployz github connect --wait",
+  "status": "pending",
+  "url": "http://localhost:35249/api/github/connect?organization=ada"
+}
 ```
 
 ### github connect (waits; timed out by the capture)
 
 ```console
 $ ployz github connect
-# exit 1
+# exit 124
 ```
 
 stderr:
 ```
-GitHub reports installs by GitHub account, and yours isn't linked: sign in to Ployz Cloud with GitHub once, then rerun
-next: ployz github connect
+Connect GitHub: http://localhost:35249/api/github/connect?organization=ada
+Waiting for GitHub... 
 ```
 
 ### github disconnect unknown
@@ -97,7 +114,7 @@ $ ployz github disconnect 12345
 
 stderr:
 ```
-No such GitHub installation of yours
+error: No GitHub account by that login in this Organization
 next: ployz github ls
 ```
 
@@ -110,7 +127,7 @@ $ ployz github disconnect 12345 --json
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"next":"ployz github ls"},"message":"No such GitHub installation of yours"}}
+{"error":{"cause":[],"code":"not_found","details":{"next":"ployz github ls"},"message":"No GitHub account by that login in this Organization"}}
 ```
 
 ### github ls REPO (unknown repository)
@@ -122,7 +139,6 @@ $ ployz github ls acme/shop
 
 stderr:
 ```
-No repository by that name that this Organization can read
-next: ployz github ls
+error: No repository by that name that this Organization can read.
 ```
 

@@ -188,24 +188,36 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     expect(runtimeSnapshotFromWatchFrame(frame).published).toEqual(["api.example.test", "plain.example.test"]);
   });
 
-  it("carries each managed Volume copy's role and nothing else of the Volume", () => {
-    const provisioned = (machineId: string, role: "slot" | "switching" | null) => runtimeWatchVolumeFixture(machineId, "app_vol-v1", {
-      labels: { secret: "label" },
-      storage: { kind: "provisioned", mountpoint: "/var/lib/ployz/volumes/app_vol-v1", bound_bytes: 10, used_bytes: 1, role },
-    });
+  it("carries each managed Volume copy's role, and a slot's as its Machine records it, and nothing else of the Volume", () => {
+    const provisioned = (machineId: string, role: "slot" | "switching" | null, slot_role?: "mirror" | "old_copy") =>
+      runtimeWatchVolumeFixture(machineId, "app_vol-v1", {
+        labels: { secret: "label" },
+        storage: { kind: "provisioned", mountpoint: "/var/lib/ployz/volumes/app_vol-v1", bound_bytes: 10, used_bytes: 1, role, slot_role },
+      });
     const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
-      volumes: [provisioned("web-1", null), provisioned("web-2", "slot"), provisioned("web-3", "switching"), runtimeWatchVolumeFixture("web-1", "plain")],
+      volumes: [
+        provisioned("web-1", null),
+        provisioned("web-2", "slot", "mirror"),
+        provisioned("web-3", "switching"),
+        provisioned("web-4", "slot", "old_copy"),
+        provisioned("web-5", "slot"),
+        runtimeWatchVolumeFixture("web-1", "plain"),
+      ],
     }));
 
     expect(frame.volumes).toEqual([
-      { machine_id: "web-1", name: "app_vol-v1", role: "writer" },
-      { machine_id: "web-2", name: "app_vol-v1", role: "slot" },
-      { machine_id: "web-3", name: "app_vol-v1", role: "switching" },
+      { machine_id: "web-1", name: "app_vol-v1", role: "writer", slot_role: null },
+      { machine_id: "web-2", name: "app_vol-v1", role: "slot", slot_role: "mirror" },
+      { machine_id: "web-3", name: "app_vol-v1", role: "switching", slot_role: null },
+      { machine_id: "web-4", name: "app_vol-v1", role: "slot", slot_role: "old_copy" },
+      { machine_id: "web-5", name: "app_vol-v1", role: "slot", slot_role: "mirror" },
     ]);
-    expect(runtimeSnapshotFromWatchFrame(frame).volumeCopies).toEqual([
-      { machineId: "web-1", name: "app_vol-v1", role: "writer" },
-      { machineId: "web-2", name: "app_vol-v1", role: "slot" },
-      { machineId: "web-3", name: "app_vol-v1", role: "switching" },
+    expect(runtimeSnapshotFromWatchFrame(frame).volumeCopies.map(({ machineId, role, slotRole }) => [machineId, role, slotRole])).toEqual([
+      ["web-1", "writer", null],
+      ["web-2", "slot", "mirror"],
+      ["web-3", "switching", null],
+      ["web-4", "slot", "old_copy"],
+      ["web-5", "slot", "mirror"],
     ]);
   });
 
