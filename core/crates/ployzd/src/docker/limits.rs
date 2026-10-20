@@ -31,7 +31,9 @@ impl ContainerRuntime {
     /// keeps its identity and Docker applies the limits without a restart.
     ///
     /// Only a difference [`compare_specs`] calls `NeedsUpdate` is admitted, and
-    /// only a memory limit at or above the one Docker runs the Container with. The
+    /// only a memory limit at or above the one Docker runs the Container with. A
+    /// spec already stored that Docker runs with answers a resent request as
+    /// applied. The
     /// spec is written only after Docker reports the requested limits, so a crash
     /// between the two leaves the old spec and the next Deploy plans the update again.
     ///
@@ -52,12 +54,17 @@ impl ContainerRuntime {
             .get(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
-        if let Some(refusal) = refusal(&stored, spec) {
-            return Err(Error::LimitsRefused {
-                container_id: *container_id,
-                refusal,
-            });
-        }
+        // A resent request whose first attempt applied the limits finds them stored.
+        let resent = match refusal(&stored, spec) {
+            None => false,
+            Some(LimitsRefusal::UpToDate) => true,
+            Some(refusal) => {
+                return Err(Error::LimitsRefused {
+                    container_id: *container_id,
+                    refusal,
+                });
+            }
+        };
         let inspected = self.ensure_managed(container_id).await?;
         let labels = inspected
             .config
@@ -71,6 +78,18 @@ impl ContainerRuntime {
         // promised a serving copy, so the caller must replace it instead.
         refuse_unless_running(container_id, &inspected)?;
         let requested = spec.container.resources.limits();
+        if resent {
+            return match live_limits(&inspected)? {
+                limits if limits == requested => Ok(ContainerLimitsUpdated {
+                    container_id: *container_id,
+                    limits,
+                }),
+                _ => Err(Error::LimitsRefused {
+                    container_id: *container_id,
+                    refusal: LimitsRefusal::UpToDate,
+                }),
+            };
+        }
         refuse_lowering_memory(container_id, requested, &inspected)?;
         self.docker
             .client

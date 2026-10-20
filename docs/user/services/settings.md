@@ -170,8 +170,9 @@ killed, and its [Restart policy](#restart-policy) decides whether it comes back.
 
 A deploy that only changes the CPU limit, or only raises the Memory limit, applies it to each
 running replica in place, with no restart. A replica replaces instead when the deploy lowers the
-Memory limit or sets its first one, clears a limit, changes anything else, also adds or replaces
-replicas of that service, or its server runs an older Ployz. If a server fails to apply the new
+Memory limit or sets its first one, clears a limit, or changes anything else. Every replica of
+the service replaces when the deploy also adds or replaces replicas of it, or when any server
+running one runs an older Ployz. If a server fails to apply the new
 limit, the deploy fails there and the replica keeps running with its old limit; deploying again
 retries.
 

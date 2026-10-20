@@ -309,6 +309,13 @@ async fn update_limits_changes_a_running_container_in_place() {
         Some(updated.clone())
     );
 
+    // A resent request whose first attempt applied the limits answers as applied.
+    let resent = runtime
+        .update_limits(&container_id, &updated)
+        .await
+        .unwrap();
+    assert_eq!(resent.limits, updated.container.resources.limits());
+
     let mut other_image = updated.clone();
     other_image.container.image = "alpine:3.22".into();
     let refused = runtime
