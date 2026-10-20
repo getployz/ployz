@@ -90,6 +90,16 @@ impl Failure {
         self
     }
 
+    /// Whether a command failed because the Ployz config has no contexts.
+    pub(crate) fn has_no_contexts(&self) -> bool {
+        std::iter::successors(self.source(), |&link| link.source()).any(|link| {
+            matches!(
+                link.downcast_ref::<ContextError>(),
+                Some(ContextError::NoContexts(_))
+            )
+        })
+    }
+
     /// End the process with `code`, whatever it printed already said: the remote
     /// command's exit code, a cancelled prompt, or clap's help.
     #[must_use]
