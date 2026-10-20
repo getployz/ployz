@@ -115,8 +115,7 @@ The agent picks up your answer and carries on. If you denied it, the agent gets 
 
 A card for a save, like **Save production**, is marked **Deletes on deploy**: saving deletes
 nothing yet. Approving it saves without deploying, and shows **Approved. Saved, not deployed.**
-Your next deploy deletes the data. A Git push deletes it only when it deploys every service that
-used the volume.
+Your next deploy deletes the data, including one a Git push starts.
 
 While approvals are waiting, the **Agent** button shows how many, like **1 waiting**. An approval you didn't
 start from this chat, like one a coding agent opened from the CLI or an agent you

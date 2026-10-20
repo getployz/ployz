@@ -43,10 +43,10 @@ deployment's page and `ployz deploy` name each one.
 
 **Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
 records your changes and optional message without deploying them. Ployz shows **Saved, not
-deployed**. Your next deploy takes them along; unsaved changes stay behind. A push to GitHub
-takes only the saved changes of the services it deploys; see
-[Deploy on push](github.md#deploy-on-push). Saving again with no changes creates no new version.
-The CLI calls this `ployz deploy --skip-deploy`, and accepts `--message`.
+deployed**. Your
+next deploy takes them along, including one started by a push to GitHub; unsaved changes stay
+behind. Saving again with no changes creates no new version. The CLI calls this
+`ployz deploy --skip-deploy`, and accepts `--message`.
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
 Discarding a service or volume you never deployed deletes it. Discard does not save a version.
@@ -181,9 +181,9 @@ their recorded outcomes.
   runner stopped reporting.
 - An applied removal or shutdown can't be redeployed: there is nothing left to ship. One that
   failed, was cancelled or reads `unknown` can.
-- **A rollback lasts until your next deploy, or a push that deploys the rolled-back service**
-  (see [Deploy on push](github.md#deploy-on-push)), which ships your latest commit and saved
-  settings again. To keep it, revert the commit in Git and change the settings back.
+- **A rollback lasts until your next push or deploy**, which ships your saved settings again. A
+  deploy ships your latest commit too; a push, only to the services it builds. To keep the
+  rollback, revert the commit in Git and change the settings back.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
@@ -278,8 +278,7 @@ click **Deploy**. If you didn't mean it, cancel, then discard the change in **De
 
 **Save only** asks the same way, under **Next deploy deletes data**. Saving deletes nothing and
 starts no deploy. Your confirmation is saved with the change, so the next deploy deletes that data
-without asking again. That holds for a deploy you start and for one a Git push starts, though a
-push deletes a volume's data only when it deploys every service that used the volume.
+without asking again. That holds for a deploy you start and for one a Git push starts.
 
 Ployz asks again only when what it would delete changed since you confirmed. That happens when
 another server starts holding that data, or someone stages a different copy change on that volume.
