@@ -223,7 +223,7 @@ Captured with gamma stopped ([cluster/errors.md](cluster/errors.md)) unless note
 | logs, server logs | 0 | Nothing; gamma's lines are just missing |
 | server show gamma | 1 | `target Machine RPC timed out` |
 
-A failed Deployment also exits 3, with the result on stdout and nothing on stderr: `Deployment #1 of shop/production: failed` / `  No Server is enrolled in this Organization` ([store/errors.md](store/errors.md)).
+A failed Deployment exits 1, with its progress and the error on stderr: `Deploying #1 of shop/production`, a line per node such as `db: not started` and `Volume pgdata: not attempted`, then `error: No Server is enrolled in this Organization.` ([store/errors.md](store/errors.md)). A Deployment that applied but could not see every Server, or that a newer one superseded or someone cancelled, exits 3.
 
 ## 10. Human output that is really JSON
 
