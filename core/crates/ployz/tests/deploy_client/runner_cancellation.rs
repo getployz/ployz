@@ -250,7 +250,11 @@ async fn cancel_during_cleanup_records_each_copy_left_running_by_machine_name() 
         .iter()
         .filter_map(|warning| match warning {
             ployz_store::DeploymentWarning::Deploy { warning } => Some(warning.to_string()),
-            _ => None,
+            ployz_store::DeploymentWarning::Fragile { .. }
+            | ployz_store::DeploymentWarning::NotSet { .. }
+            | ployz_store::DeploymentWarning::NotSetInFile { .. }
+            | ployz_store::DeploymentWarning::IngressNotServing { .. }
+            | ployz_store::DeploymentWarning::IngressUnchecked { .. } => None,
         })
         .filter(|line| line.contains("left running"))
         .collect::<Vec<_>>();

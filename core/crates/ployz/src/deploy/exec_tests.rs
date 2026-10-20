@@ -166,7 +166,7 @@ impl Ask {
         match target {
             RotationTarget::In { .. } => Self::In,
             RotationTarget::Held(_) => Self::Held,
-            _ => Self::Out,
+            RotationTarget::Out | RotationTarget::Stopped | RotationTarget::Gone => Self::Out,
         }
     }
 }
@@ -315,7 +315,7 @@ impl Scripted {
             .into_iter()
             .filter_map(|applied| match applied {
                 Move::To(id, CopyRotation::In) => Some(id),
-                _ => None,
+                Move::To(..) | Move::Gone(_) => None,
             })
             .collect()
     }
@@ -326,7 +326,7 @@ impl Scripted {
             .iter()
             .position(|other| other == applied)
             .unwrap_or_else(|| panic!("{applied:?} was never applied"));
-        self.listed.lock().unwrap()[at].clone()
+        self.listed.lock().unwrap().get(at).unwrap().clone()
     }
 
     fn answers(&self) -> Vec<AnswerWhen> {
@@ -514,7 +514,9 @@ impl Scripted {
             ployz_core::RotationEdge::Refused(refused) => {
                 return Decision::Refused(edge_refusal(refused));
             }
-            edge => panic!("no rotation ask reaches {edge:?}"),
+            edge @ (ployz_core::RotationEdge::Keep | ployz_core::RotationEdge::Remove) => {
+                panic!("no rotation ask reaches {edge:?}")
+            }
         };
         let copies = self.copies.lock().unwrap();
         let siblings = || {
@@ -604,7 +606,13 @@ impl Scripted {
                     Reply::Settled(_, verdict) => Some(verdict),
                     Reply::Error(error) => return Err(error),
                     Reply::Pending => std::future::pending().await,
-                    _ => panic!("scripted restart requires Ok, Settled or Error"),
+                    Reply::Listed(_)
+                    | Reply::CreatedLater(_)
+                    | Reply::CreatedAfter(..)
+                    | Reply::Observed(..)
+                    | Reply::ObservedIngress(_) => {
+                        panic!("scripted restart requires Ok, Settled or Error")
+                    }
                 }
             } else {
                 self.unhealthy_in.get(&container_id).cloned()
@@ -654,7 +662,11 @@ impl Scripted {
                 container: ContainerLocator::Id(id),
                 ..
             } => Some((*id, RotationTarget::Gone)),
-            _ => None,
+            ContainerWant::Running { .. }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Gone { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => None,
         };
         if let Some((id, target)) = &lifecycle {
             let copy = self.copies.lock().unwrap().get(id).cloned();
@@ -745,7 +757,12 @@ impl Scripted {
         let container_id = match &reply {
             Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedLater(id) => Some(*id),
             Reply::CreatedAfter(id, _) => Some(*id),
-            _ => None,
+            Reply::Ok
+            | Reply::Listed(_)
+            | Reply::Observed(..)
+            | Reply::ObservedIngress(_)
+            | Reply::Pending
+            | Reply::Error(_) => None,
         };
         if let (Some((service, kind, r#gen)), Some(id)) = (created, container_id) {
             self.copies.lock().unwrap().insert(
@@ -796,7 +813,12 @@ impl Scripted {
                     self.record(id, |copy| copy.present = false);
                     self.applied(Move::Gone(id));
                 }
-                _ => {}
+                Call::Prepare(_)
+                | Call::List(_)
+                | Call::Run(..)
+                | Call::Inspect(..)
+                | Call::DiscardSlot(..)
+                | Call::RemoveVolume(_) => {}
             }
         }
         answer
@@ -933,7 +955,9 @@ impl MachineOperations for Scripted {
                 )
                 .await
             }
-            want => self.converge(machine_id, want).await,
+            want @ (ContainerWant::Running { .. }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Gone { .. }) => self.converge(machine_id, want).await,
         }
     }
 

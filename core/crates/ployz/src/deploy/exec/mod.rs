@@ -962,14 +962,20 @@ async fn publish_group<C: MachineOperations>(
             }
             Err(error) => {
                 let copy = cleanup::Copy {
-                    machine_id: machine_id.clone(),
+                    machine_id: *machine_id,
                     service: service.clone(),
                     container_id: *container_id,
                     rotation: CopyRotation::Pending,
                 };
                 let left = match error {
                     ExecutionError::Machine { error, .. } => Left::Failed(error),
-                    error => Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error)),
+                    error @ (ExecutionError::Health { .. }
+                    | ExecutionError::DependencyHealth { .. }
+                    | ExecutionError::Hook { .. }
+                    | ExecutionError::NewerServing { .. }
+                    | ExecutionError::Cancelled) => {
+                        Left::Failed(RpcError::caused(RpcErrorCode::Internal, &error))
+                    }
                 };
                 rows.leave_running(progress, &copy, left);
                 continue;
@@ -1005,7 +1011,7 @@ async fn route_new<C: MachineOperations>(
     let (_, first_machine, _) = new.first().expect("a published group started copies");
     for (task, machine_id, container_id) in new {
         let copy = cleanup::Copy {
-            machine_id: machine_id.clone(),
+            machine_id: *machine_id,
             service: service.clone(),
             container_id: *container_id,
             rotation: CopyRotation::Pending,
@@ -1073,9 +1079,16 @@ fn old_copies(
         })
         .filter_map(|index| match operation_at(operations, index) {
             DeployOperation::ReplaceContainer(replacement) => {
-                Some((replacement.machine_id.clone(), replacement.old_container_id))
+                Some((replacement.machine_id, replacement.old_container_id))
             }
-            _ => None,
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::RunContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect()
 }
@@ -1333,6 +1346,10 @@ impl<'a> Rows<'a> {
         Ok(r#gen)
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "ExecutionError is the Deploy's wire failure value; every step in this file returns it unboxed"
+    )]
     fn confirmed(
         &self,
         step: Result<cleanup::Step, RpcError>,
@@ -1385,7 +1402,7 @@ impl<'a> Rows<'a> {
             Left::Refused(refusal) => (refusal.message, Vec::new()),
             Left::Failed(error) if unanswered(&error) => (
                 format!("{} did not answer", self.machine_name(&copy.machine_id)),
-                vec![copy.machine_id.clone()],
+                vec![copy.machine_id],
             ),
             Left::Failed(error) => (error.message, Vec::new()),
             Left::NotRestored(left, why) => {
