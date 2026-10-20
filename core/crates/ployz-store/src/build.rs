@@ -73,6 +73,9 @@ pub struct BuildReport {
     /// Why it failed. Users read it: it holds no secret.
     pub message: Option<String>,
     pub log: String,
+    /// The Server building it, by name, once one was chosen.
+    #[serde(default)]
+    pub server: Option<String>,
 }
 
 /// One build of a Deployment.
@@ -95,6 +98,13 @@ pub struct BuildView {
     #[serde(default)]
     #[ts(type = "number | null")]
     pub finished_at: Option<i64>,
+    /// The Server that built it, by name; none until one starts it, and when GitHub
+    /// builds it.
+    #[serde(default)]
+    pub server: Option<String>,
+    /// Why GitHub passed it to the next Builder, when it did.
+    #[serde(default)]
+    pub github_skipped: Option<String>,
 }
 
 /// Ask for the log of `service`'s build in `deployment`; `not_found` when that
@@ -199,7 +209,8 @@ pub(crate) fn record(
     append(&mut log, &report.log);
     let message = report.message.as_deref().map(trimmed);
     tx.execute(
-        "UPDATE config_build SET status = ?3, message = ?4, log = ?5 \
+        "UPDATE config_build SET status = ?3, message = ?4, log = ?5, \
+         server = COALESCE(?6, server) \
          WHERE deployment_id = ?1 AND service = ?2",
         &[
             id.as_str().into(),
@@ -207,6 +218,7 @@ pub(crate) fn record(
             name_of(report.status).as_str().into(),
             message.as_deref().into(),
             log.as_str().into(),
+            report.server.as_deref().into(),
         ],
     )?;
     clock(tx, id, &report.service, report.status)
@@ -285,6 +297,10 @@ struct BuildRow {
     organization: OrganizationId,
     started: Option<i64>,
     finished: Option<i64>,
+    /// The Server that ran it, by name.
+    server: Option<String>,
+    /// Why GitHub passed it on to the next Builder.
+    github_skipped: Option<String>,
 }
 
 impl BuildRow {
@@ -309,6 +325,8 @@ impl BuildRow {
             message: self.message.clone(),
             started_at: self.started,
             finished_at: self.finished,
+            server: self.server.clone(),
+            github_skipped: self.github_skipped.clone(),
         }
     }
 }
@@ -316,7 +334,7 @@ impl BuildRow {
 fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
         "SELECT service, commit_sha, status, message, log, github, organization_id, \
-         started, finished \
+         started, finished, server, github_skipped \
          FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
@@ -338,6 +356,8 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             organization: row.parse(6, "build")?,
             started: row.optional_int(7)?,
             finished: row.optional_int(8)?,
+            server: row.optional_text(9)?.map(str::to_owned),
+            github_skipped: row.optional_text(10)?.map(str::to_owned),
         })
     })
     .collect()
@@ -690,7 +710,8 @@ pub(crate) fn github_dispatched(
         received: 0,
         ended: None,
     };
-    save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))
+    save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))?;
+    skip(tx, id, None)
 }
 
 pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<GithubBuild, RpcError> {
@@ -885,7 +906,25 @@ pub(crate) fn github_end(
         }
     };
     save_github(tx, id, status, message.as_deref(), &log, github)?;
+    let skipped = match end {
+        GithubEnd::Skipped { .. } | GithubEnd::Unstarted { .. } => message.as_deref(),
+        GithubEnd::Built { .. } | GithubEnd::Failed { .. } => None,
+    };
+    skip(tx, id, skipped)?;
     Ok(status)
+}
+
+/// Record why GitHub passed `id` on, or with `None` that GitHub has it again.
+fn skip(tx: &mut dyn Tx, id: &GithubBuildId, why: Option<&str>) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_build SET github_skipped = ?3 WHERE deployment_id = ?1 AND service = ?2",
+        &[
+            id.deployment.as_str().into(),
+            id.service.as_str().into(),
+            why.into(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// Deployment `id`'s builds still on GitHub: what cancelling it stops.
