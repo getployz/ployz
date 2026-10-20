@@ -1095,3 +1095,49 @@ fn a_machine_away_during_cleanup_is_named_once_under_the_copies_left_on_it() {
         ]
     );
 }
+
+/// The Servers the summary counts once every planned operation of `plan` completed.
+fn servers_after(plan: &crate::deploy::DeployPlan) -> usize {
+    let preview = plan.preview();
+    let mut direct = Direct::new(preview, "Deploying app".into());
+    let done: Vec<_> = preview
+        .operations
+        .iter()
+        .cloned()
+        .map(|row| OperationRow {
+            status: OperationStatus::Completed,
+            ..row
+        })
+        .collect();
+    direct.observe(&done);
+    let frame = direct.frame();
+    let [row] = frame.rows.as_slice() else {
+        panic!("{:?}", frame.rows);
+    };
+    match &row.subject {
+        Subject::Service(graph) => graph.machines.len(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_summary_counts_every_server_a_scaled_service_runs_on() {
+    use crate::global_fixtures::replicated_plan;
+    let kept = replicated_plan(8, &['1'], 8);
+    assert_eq!(
+        kept.preview().operations.len(),
+        7,
+        "the copy on server-1 is kept"
+    );
+    assert_eq!(servers_after(&kept), 8, "8 copies on 8 Servers, one kept");
+    assert_eq!(
+        servers_after(&replicated_plan(4, &[], 12)),
+        4,
+        "12 copies on 4 Servers"
+    );
+    assert_eq!(
+        servers_after(&replicated_plan(8, &[], 3)),
+        3,
+        "5 of 8 Servers run none"
+    );
+}
