@@ -6,11 +6,13 @@ use crate::ui::{
     Hint,
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
+use ployz_core::config::{RuntimeFailureKind, RuntimeOutcomeSummary};
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, DeploymentWarning, FailedAt,
     IngressAction, IngressFailure, NodeStatus, RowState,
 };
+use serde::Deserialize;
 use std::time::{Duration, UNIX_EPOCH};
 
 pub(super) fn frame(view: &DeploymentView) -> Frame {
@@ -334,6 +336,14 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             Vec::new(),
         ),
     };
+    let lost_to_newer = matches!(
+        &view.deployment.outcome,
+        Some(ployz_store::Outcome::Executed { summary, .. })
+            if matches!(
+                RuntimeOutcomeSummary::deserialize(summary),
+                Ok(RuntimeOutcomeSummary::Failed { reason: RuntimeFailureKind::NewerServing, .. })
+            )
+    );
     let mut diagnostic = Diagnostic::default();
     if let Some(ployz_store::Outcome::Executed { compensation, .. }) = &view.deployment.outcome {
         diagnostic.compensation = compensation
@@ -374,6 +384,9 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                     message: format!("{name} on {}: {row_reason}.", row.server),
                     causes: row_cause.clone(),
                 });
+            }
+            if lost_to_newer {
+                continue;
             }
             diagnostic.logs.push(LogTail {
                 service: service.clone(),
@@ -417,7 +430,11 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
         }
     }
     let mut failure = Failure::from(RpcError {
-        code: RpcErrorCode::Internal,
+        code: if lost_to_newer {
+            RpcErrorCode::Conflict
+        } else {
+            RpcErrorCode::Internal
+        },
         message: crate::ui::sentence(reason),
         cause,
         details: serde_json::Value::Null,
@@ -653,6 +670,34 @@ mod tests {
             *row = None;
         }
         assert!(inspects(&failure(&view, command)).is_empty());
+    }
+
+    #[test]
+    fn a_deploy_a_newer_one_serves_past_is_a_conflict_without_the_losing_copys_logs() {
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed",
+                "summary": {"type": "failed", "completed": 1, "unexecuted": 0, "reason": "newer_serving"},
+                "reason": "web: a newer deploy is already serving web",
+            }))
+            .unwrap(),
+        );
+        for row in failed_rows(&mut view) {
+            *row = None;
+        }
+        let failed = failure(&view, command);
+        assert_eq!(failed.report().code, RpcErrorCode::Conflict);
+        assert_eq!(failed.json().pointer("/details/progress/logs/0"), None);
+        let text = crate::ui::plain(&failed);
+        assert!(!text.contains("startup failed"), "{text}");
+        assert!(inspects(&failed).is_empty());
+        assert!(
+            failed
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Retry(_)))
+        );
     }
 
     #[test]

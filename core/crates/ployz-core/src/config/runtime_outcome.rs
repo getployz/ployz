@@ -20,7 +20,7 @@ struct RuntimeOutcomeEvidence {
 }
 
 /// Sanitized failure kinds; provider details remain inside encrypted evidence.
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeFailureKind {
     /// A Machine request failed.
@@ -40,7 +40,7 @@ pub enum RuntimeFailureKind {
 }
 
 /// Public counts contain no operation inputs or provider error messages.
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, Deserialize, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeOutcomeSummary {
     /// Every operation completed.
