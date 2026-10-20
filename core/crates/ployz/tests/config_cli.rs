@@ -2033,7 +2033,7 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
         assert!(human.status.success());
         let human = String::from_utf8(human.stdout).unwrap();
         assert!(
-            human.contains("\n  web.image: \"web:1\" → \"web:2\"\n"),
+            human.contains("\n  web (update)\n    web.image: \"web:1\" → \"web:2\"\n"),
             "{human}"
         );
         let image = &rows[0];
@@ -2126,6 +2126,65 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
         assert_eq!(closed["closing"], json!(true));
         let listed = ok(store, &["env", "ls"]);
         assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+    }
+}
+
+/// `env sync --plan` reads as `ployz diff` does: each node under its name and what
+/// happens to it, a Config's files by name, and never a node as raw JSON.
+#[test]
+fn a_sync_plan_reads_new_nodes_and_config_files_as_diff_does() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let from = file.path().to_str().unwrap();
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["config", "add", "app", "--mount", "web:/etc/app"]);
+        ok(store, &["config", "put", "app", "app.yml", "--from", from]);
+        ok(
+            store,
+            &[
+                "env",
+                "branch",
+                "fix-web",
+                "--copy",
+                "web",
+                "--copy",
+                "configs.app",
+            ],
+        );
+        ok(
+            store,
+            &[
+                "config", "put", "app", "new.yml", "--from", from, "--env", "fix-web",
+            ],
+        );
+        ok(
+            store,
+            &[
+                "service", "add", "api", "--image", "api:1", "--env", "fix-web",
+            ],
+        );
+        ok(store, &["volume", "add", "data", "--env", "fix-web"]);
+        ok(store, &["config", "add", "extra", "--env", "fix-web"]);
+
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["env", "sync", "--to", "--plan", "--env", "fix-web"])
+            .output()
+            .unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        let (_, rows) = human.split_once('\n').unwrap();
+        for block in [
+            "  app (update)\n    files: added new.yml (new)\n",
+            "  data (create)\n",
+            "  api (create)\n    api.image: null → \"api:1\"\n",
+            "  extra (create)\n",
+        ] {
+            assert!(rows.contains(block), "{rows}");
+        }
+        assert_eq!(rows.lines().count(), 6, "{rows}");
     }
 }
 
