@@ -144,7 +144,7 @@ $ ployz service add Web_1
 
 stderr:
 ```
-error: Expected a Service name: up to 63 lowercase letters, digits and -, like web
+error: Expected a Service name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit, like web
 ```
 
 ### service add: --image and --repo together

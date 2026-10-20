@@ -613,51 +613,10 @@ pub async fn open_service_logs(
     cancellation: CancellationToken,
     deployment: Option<&str>,
 ) -> Result<Vec<LogInput>, OperatorError> {
-    let machine_ids = &scope.asked;
     let services = scope.live.services();
-    let mut every = Vec::new();
-    let args = if args.is_empty() {
-        every = services
-            .iter()
-            .filter(|service| {
-                namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
-            })
-            .map(|service| ServiceArg {
-                service: ServiceSelector::from(&service.identity),
-                containers: Vec::new(),
-            })
-            .collect::<Vec<_>>();
-        if every.is_empty() {
-            return Err(OperatorError::NoServices);
-        }
-        every.as_slice()
-    } else {
-        args
-    };
     let mut inputs = Vec::new();
-    for arg in args {
-        let service = select_service(&services, &arg.service)
-            .map_err(|error| not_running(&services, namespace, error))?;
-        let containers = select_log_containers(service, &arg.containers)?;
-        let containers = containers
-            .into_iter()
-            .filter(|container| {
-                let observation = container.as_observation();
-                machine_ids.contains(&observation.machine_id)
-                    && deployment.is_none_or(|id| {
-                        observation.labels.get(DEPLOYMENT_LABEL).map(String::as_str) == Some(id)
-                    })
-            })
-            .collect::<Vec<_>>();
-        if containers.is_empty() {
-            // Of every Service, only those the Deployment still has containers of.
-            if deployment.is_some() && !every.is_empty() {
-                continue;
-            }
-            return Err(OperatorError::NoContainersOnMachines {
-                service: arg.service.clone(),
-            });
-        }
+    for target in log_targets(&services, &scope.asked, args, namespace, deployment) {
+        let (service, containers) = target?;
         for container in containers {
             let observation = container.as_observation();
             let request = op::TailLogs::into_request(TailLogsRequest {
@@ -665,7 +624,7 @@ pub async fn open_service_logs(
                 options: options.clone(),
             })
             .encode()?;
-            let identity = format!("{}/{}", arg.service, observation.display_name);
+            let identity = format!("{service}/{}", observation.display_name);
             let target = MachineTarget::from(&observation.machine_id);
             // TODO: earlier Container log streams intentionally survive until the
             // parent cancellation token is cancelled.
@@ -694,10 +653,80 @@ pub async fn open_service_logs(
             }
         }
     }
-    if inputs.is_empty() {
-        return Err(OperatorError::NoDeploymentContainers);
-    }
     Ok(inputs)
+}
+
+/// The containers on the asked Servers each of `args` streams from, in argument
+/// order; none means every Service in `namespace`, and any of them with nothing
+/// there is skipped.
+fn log_targets<'a>(
+    services: &'a [ServiceObservation],
+    asked: &HashSet<ployz_core::MachineId>,
+    args: &[ServiceArg],
+    namespace: Option<&Namespace>,
+    deployment: Option<&str>,
+) -> Vec<Result<(ServiceSelector, Vec<ContainerRef<'a>>), OperatorError>> {
+    let every = args.is_empty();
+    let every_arg;
+    let args = if every {
+        every_arg = services
+            .iter()
+            .filter(|service| {
+                namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
+            })
+            .map(|service| ServiceArg {
+                service: ServiceSelector::from(&service.identity),
+                containers: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        if every_arg.is_empty() {
+            return vec![Err(OperatorError::NoServices)];
+        }
+        every_arg.as_slice()
+    } else {
+        args
+    };
+    let mut targets = Vec::new();
+    for arg in args {
+        let selected = select_service(services, &arg.service)
+            .map_err(|error| not_running(services, namespace, error))
+            .and_then(|service| select_log_containers(service, &arg.containers));
+        let containers = match selected {
+            Ok(containers) => containers,
+            Err(error) => {
+                targets.push(Err(error));
+                continue;
+            }
+        };
+        let containers = containers
+            .into_iter()
+            .filter(|container| {
+                let observation = container.as_observation();
+                asked.contains(&observation.machine_id)
+                    && deployment.is_none_or(|id| {
+                        observation.labels.get(DEPLOYMENT_LABEL).map(String::as_str) == Some(id)
+                    })
+            })
+            .collect::<Vec<_>>();
+        if containers.is_empty() {
+            if every {
+                continue;
+            }
+            targets.push(Err(OperatorError::NoContainersOnMachines {
+                service: arg.service.clone(),
+            }));
+            continue;
+        }
+        targets.push(Ok((arg.service.clone(), containers)));
+    }
+    if targets.is_empty() {
+        targets.push(Err(if deployment.is_some() {
+            OperatorError::NoDeploymentContainers
+        } else {
+            OperatorError::NoServices
+        }));
+    }
+    targets
 }
 
 fn not_running(

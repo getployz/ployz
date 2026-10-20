@@ -94,8 +94,8 @@ impl Tool for EnvironmentShow {
             .collect::<Vec<_>>();
         let services = services_with_domains(&services.services, &domains.domains);
         let latest = deployments
-            .deployments
-            .first()
+            .latest
+            .as_ref()
             .map(|deployment| json!({ "number": deployment.number, "status": deployment.status }));
         Ok(json!({
             "at": at(&diff.environment),
@@ -202,6 +202,12 @@ impl Tool for EnvironmentPr {
         let repository = match (self.repository, plans.plans.as_slice()) {
             (Some(repository), _) => repository,
             (None, [only]) => only.repository.clone(),
+            (None, []) if !self.enabled => {
+                return Ok(json!({
+                    "at": at(&services.environment),
+                    "pull_request_environments": false,
+                }));
+            }
             (None, []) => {
                 return Err(Refusal::invalid(
                     "No repository is connected to this Project yet",

@@ -11,8 +11,8 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain ls --json
@@ -31,7 +31,7 @@ stdout:
       "hostname": "acme.com",
       "kind": "custom",
       "port": null,
-      "reason": "Port 80 is closed on 203.0.113.10",
+      "reason": "Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
       "service": "web",
       "status": "needs_attention"
     },
@@ -41,7 +41,7 @@ stdout:
       "kind": "generated",
       "port": 80,
       "prefix": "web",
-      "reason": "Port 80 is closed on 203.0.113.10",
+      "reason": "Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
       "service": "web",
       "status": "needs_attention"
     }
@@ -64,7 +64,7 @@ $ ployz domain check web.ada.ployz.test
 
 stdout:
 ```
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain check --json the generated domain
@@ -83,7 +83,7 @@ stdout:
     "kind": "generated",
     "port": 80,
     "prefix": "web",
-    "reason": "Port 80 is closed on 203.0.113.10",
+    "reason": "Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
     "service": "web",
     "status": "needs_attention"
   },
@@ -105,7 +105,7 @@ $ ployz domain check acme.com
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain check --json a custom domain
@@ -123,7 +123,7 @@ stdout:
     "hostname": "acme.com",
     "kind": "custom",
     "port": null,
-    "reason": "Port 80 is closed on 203.0.113.10",
+    "reason": "Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)",
     "service": "web",
     "status": "needs_attention"
   },
@@ -159,7 +159,7 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 shopweb.ada.ployz.test	web → 80	Setting up · Live after your next deploy
 ```
 
@@ -208,8 +208,8 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-shopweb.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+shopweb.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain set --json back
@@ -309,9 +309,9 @@ $ ployz domain ls
 
 stdout:
 ```
-acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
-api.ada.ployz.test	api → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
+api.ada.ployz.test	api → PORT	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### domain rm
@@ -443,7 +443,7 @@ $ ployz domain ls
 
 stdout:
 ```
-web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10. Open port 80 in the Server's firewall (for example ufw allow 80/tcp)
 ```
 
 ### discard

@@ -547,3 +547,98 @@ async fn departure_demotes_the_others_and_names_a_seed_whose_receive_will_not_st
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn a_seed_refuses_a_slot_holding_a_copy_this_machine_wrote() {
+    for (property, value) in [
+        (
+            "snapshots",
+            "tank/ployz-mirror/seed/fs@dep-100\t900\t1690000000",
+        ),
+        ("ployz:cut", "on"),
+        ("ployz:epoch", "3"),
+    ] {
+        let test = TestDir::new();
+        let (socket, _server) = start(
+            &test,
+            USABLE_POOL,
+            &["root", "volume", "seed-slot", "seed-fs"],
+        );
+        set_property(&test, "tank/ployz/data", "snapshots", POINT);
+        set_property(&test, "tank/ployz-mirror/seed/fs", property, value);
+
+        let reply = post(&socket, "/Volume.Seed", seed(77)).await;
+        assert!(reply.get("Err").is_some(), "{property}: {reply}");
+        let log = commands(&test);
+        assert!(!log.contains("zfs destroy"), "{property}: {log}");
+        assert!(test.0.join("seed-fs").exists(), "{property}");
+    }
+}
+
+/// A slot at another point that no mirror pull marked: a mirror v0.3.0-beta.2 or earlier
+/// left, or a seed's completed copy whose source may since have pruned its point. Nothing
+/// proves a writer elsewhere holds it, so the seed keeps it.
+#[tokio::test]
+async fn a_seed_refuses_a_slot_no_mirror_pull_marked() {
+    for pulling in [false, true] {
+        let test = TestDir::new();
+        let (socket, _server) = start(
+            &test,
+            USABLE_POOL,
+            &["root", "volume", "seed-slot", "seed-fs"],
+        );
+        set_property(&test, "tank/ployz/data", "snapshots", POINT);
+        set_property(
+            &test,
+            "tank/ployz-mirror/seed/fs",
+            "snapshots",
+            "tank/ployz-mirror/seed/fs@w-9-1\t900\t1690000000",
+        );
+        if pulling {
+            set_property(&test, "tank/ployz-mirror/seed", "ployz:pull", "w-9-1");
+        }
+
+        let reply = post(&socket, "/Volume.Seed", seed(77)).await;
+        assert!(reply.get("Err").is_some(), "pulling {pulling}: {reply}");
+        let log = commands(&test);
+        assert!(!log.contains("zfs destroy"), "pulling {pulling}: {log}");
+        assert!(test.0.join("seed-fs").exists(), "pulling {pulling}");
+    }
+}
+
+/// A mirror whose newest snapshot a mirror pull marked holds a copy a writer elsewhere
+/// made, and a slot with no snapshot holds no point at all: the seed replaces either.
+#[tokio::test]
+async fn a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point() {
+    for pulled in [true, false] {
+        let test = TestDir::new();
+        let (socket, _server) = start(
+            &test,
+            USABLE_POOL,
+            &["root", "volume", "seed-slot", "seed-fs"],
+        );
+        set_property(&test, "tank/ployz/data", "snapshots", POINT);
+        if pulled {
+            set_property(
+                &test,
+                "tank/ployz-mirror/seed/fs",
+                "snapshots",
+                "tank/ployz-mirror/seed/fs@w-9-1\t900\t1690000000",
+            );
+            set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:pulled", "900");
+        }
+
+        let landed = settled(&socket).await;
+        assert_eq!(
+            landed.pointer("/Ok/copy/kind").unwrap(),
+            "root",
+            "pulled {pulled}: {landed}"
+        );
+        let log = commands(&test);
+        assert!(
+            log.contains("zfs destroy -r tank/ployz-mirror/seed\n"),
+            "pulled {pulled}: {log}"
+        );
+        assert_landed(&test);
+    }
+}

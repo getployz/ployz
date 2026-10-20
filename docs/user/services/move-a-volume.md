@@ -87,16 +87,19 @@ ployz volume runs data                   # what ran on this volume, and how it e
 ```
 
 Each command starts a run in Ployz Cloud and prints its id. Add `--wait` to wait for it to
-finish. One run at a time per volume. A second one is refused and says how to stop the first:
+finish. One run at a time per volume. A second one is refused and says how to follow the first,
+and how to stop it:
 
 ```
-VolumeBusy: data is busy with a mirror; ployz volume release data stops it
+data is busy with a mirror; ployz volume runs data 8c41d2e0-5a7f-4b19-a3e6-0f2d9b7c1e58 follows it, and ployz volume release data stops it
 ```
 
-A run that can't be stopped, such as a mirror removal, says it finishes on its own instead:
+A run that can't be stopped, such as a mirror removal, says it finishes on its own instead, and a
+release in progress only says how to follow it:
 
 ```
-VolumeBusy: data is busy with a mirror removal; it finishes on its own
+data is busy with a mirror removal, which finishes on its own; ployz volume runs data 8c41d2e0-5a7f-4b19-a3e6-0f2d9b7c1e58 follows it
+data is busy with a release; ployz volume runs data 8c41d2e0-5a7f-4b19-a3e6-0f2d9b7c1e58 follows it
 ```
 
 While a deploy runs, each of these runs is refused until the deploy ends:
@@ -106,8 +109,8 @@ data is deploying; the Deploy ends its run
 ```
 
 `volume sync` starts no run. It hands the mirror its pull and prints what it did, like Refresh
-now; `ployz volume show data` shows the download. `volume sync data --full` copies everything
-again as a run, and takes `--wait`.
+now; the mirror reads "Refreshing" on the volume page while it downloads. `volume sync data --full`
+copies everything again as a run, and takes `--wait`.
 
 A copy of a big volume can take hours. Ployz checks on it every few seconds at first, then every
 five minutes. If the copy has not finished after six hours, the run fails and says so.

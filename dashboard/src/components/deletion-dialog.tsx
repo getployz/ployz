@@ -77,6 +77,8 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
   const [changed, setChanged] = useState(false);
   const [check, setCheck] = useState<Check<Evidence>>({ status: "checking" });
   const [pending, setPending] = useState(false);
+  // Why the last confirm failed: what the servers reported still stands, so Delete stays for another try.
+  const [failure, setFailure] = useState<string | null>(null);
   const loadOnOpen = useEffectEvent(() => reload(known));
 
   useEffect(() => {
@@ -103,6 +105,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
   async function confirm() {
     if (check.status !== "ready" || typed !== place || pending) return;
     setPending(true);
+    setFailure(null);
     try {
       const again = await callbacks.confirm(check.evidence);
       if (!again) {
@@ -114,7 +117,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
       setTyped("");
       setChanged(true);
     } catch (error) {
-      setCheck({ status: "failed", message: toErrorMessage(error, FAILED) });
+      setFailure(toErrorMessage(error, FAILED));
     } finally {
       setPending(false);
     }
@@ -132,18 +135,21 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
             {title}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {sentence ?? (check.status === "ready" && items.length === 0
-              ? <><span className="text-foreground">{place}</span> is empty: nothing else goes with it.</>
+            {sentence ?? (items.length === 0
+              ? check.status === "ready"
+                ? <><span className="text-foreground">{place}</span> is empty: nothing else goes with it.</>
+                : <>You're <span className="text-destructive">deleting</span> <span className="text-foreground">{place}</span>.</>
               : <>You're <span className="text-destructive">deleting</span> from <span className="text-foreground">{place}</span>:</>)}
           </AlertDialogDescription>
           {check.status === "failed" ? (
-            <p className="text-sm text-destructive">
+            <p role="alert" className="text-sm text-destructive">
               {check.message}{" "}
               <Button type="button" variant="link" className="h-auto p-0 text-destructive underline" onClick={() => void reload(known)}>
                 Retry
               </Button>
             </p>
           ) : null}
+          {failure ? <p role="alert" className="text-sm text-destructive">{failure}</p> : null}
           {changed && fresh.size === 0 ? (
             <p className="text-sm text-warning">Your servers changed since you opened this.</p>
           ) : null}

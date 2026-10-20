@@ -106,6 +106,14 @@ pub struct DeploymentsView {
     pub deployments: Vec<DeploymentSummary>,
     /// Pass as `cursor` for the next page; none on the last.
     pub next_cursor: Option<String>,
+    /// The Environment's newest numbered Deployment, whatever page it falls on:
+    /// holds waiting for CI take no number, so a burst of them never hides it.
+    /// None before the first Deploy.
+    pub latest: Option<DeploymentSummary>,
+    /// Its Deployments in flight (queued, running, cancelling), newest number
+    /// first, whatever page they fall on: holds made since push them down the
+    /// list, however few rows a page holds.
+    pub in_flight: Vec<DeploymentSummary>,
 }
 
 /// One Deployment, by ID.
@@ -115,13 +123,16 @@ pub struct DeploymentQuery {
     pub id: DeploymentId,
 }
 
-/// One Deployment, by its number in an Environment.
+/// One Deployment, by its number in an Environment; or its latest numbered one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NumberedDeploymentQuery {
     #[serde(default)]
     pub environment: EnvironmentRef,
-    pub number: u64,
+    /// None: the latest Deployment that was numbered. A hold waiting for CI has
+    /// no number and is never the latest.
+    #[serde(default)]
+    pub number: Option<u64>,
 }
 
 pub(crate) fn numbered(
@@ -130,19 +141,33 @@ pub(crate) fn numbered(
     query: &NumberedDeploymentQuery,
 ) -> Result<DeploymentView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
-    let number = i64::try_from(query.number).unwrap_or(i64::MAX);
-    let rows = tx.query(
-        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND number = ?2",
-        &[environment.summary.id.as_str().into(), number.into()],
-    )?;
+    let id = &environment.summary.id;
+    let rows = match query.number {
+        Some(number) => tx.query(
+            "SELECT id FROM config_deployment WHERE environment_id = ?1 AND number = ?2",
+            &[
+                id.as_str().into(),
+                i64::try_from(number).unwrap_or(i64::MAX).into(),
+            ],
+        )?,
+        None => tx.query(
+            "SELECT id FROM config_deployment \
+             WHERE environment_id = ?1 AND number IS NOT NULL ORDER BY number DESC LIMIT 1",
+            &[id.as_str().into()],
+        )?,
+    };
     let Some(row) = rows.first() else {
-        return Err(error::not_found(
-            format!(
-                "{}/{} has no Deployment #{}",
-                environment.summary.project, environment.summary.name, query.number
+        let (project, name) = (&environment.summary.project, &environment.summary.name);
+        return Err(match query.number {
+            Some(number) => error::not_found(
+                format!("{project}/{name} has no Deployment #{number}"),
+                json!({ "next": "ployz deployment ls" }),
             ),
-            json!({ "next": "ployz deployment ls" }),
-        ));
+            None => error::not_found(
+                format!("{project}/{name} has no Deployment yet"),
+                json!({ "next": "ployz deploy" }),
+            ),
+        });
     };
     let id = row.parse(0, "identity")?;
     deployment::view(tx, who, &id)
@@ -274,16 +299,20 @@ pub(crate) fn page(
         .cursor
         .as_deref()
         .map(|cursor| {
-            cursor
-                .parse::<u64>()
-                .map_err(|_| error::invalid("Expected a cursor from a previous page", json!({})))
+            deployment::Cursor::decode(cursor)
+                .ok_or_else(|| error::invalid("Expected a cursor from a previous page", json!({})))
         })
         .transpose()?;
     let environment = scope::environment(tx, who, &query.environment)?;
-    let (deployments, next) = deployment::page(tx, &environment.summary.id, limit, cursor)?;
+    let (deployments, next) =
+        deployment::page(tx, &environment.summary.id, limit, cursor.as_ref())?;
+    let latest = deployment::latest_numbered(tx, &environment.summary.id)?;
+    let in_flight = deployment::all_in_flight(tx, &environment.summary.id)?;
     Ok(DeploymentsView {
         environment: environment.summary,
         deployments,
-        next_cursor: next.map(|number| number.to_string()),
+        next_cursor: next.map(|cursor| cursor.encode()),
+        latest,
+        in_flight,
     })
 }
