@@ -136,7 +136,7 @@ pub(super) fn container_column_asked(error: clap::Error, args: &[OsString]) -> c
     clap::Error::raw(
         ErrorKind::UnknownArgument,
         format!(
-            "ployz ps has no '{flag}': it shows a CONTAINER column only where two rows would read the same\n\n  tip: 'ployz ps --json' lists each container's container_id, which 'ployz exec --container' takes\n"
+            "ployz ps has no '{flag}': it shows a CONTAINER column only where two rows would read the same\n\n  tip: with server access, 'ployz ps --json' lists each container's container_id, which 'ployz exec --container' takes\n"
         ),
     )
 }

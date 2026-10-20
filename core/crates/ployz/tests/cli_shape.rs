@@ -473,7 +473,9 @@ fn asking_ps_for_a_container_column_says_where_the_ids_are() {
         let (code, stderr) = run_human(args);
         assert_eq!(code, Some(2), "{args:?}: {stderr}");
         assert!(
-            stderr.contains("'ployz ps --json' lists each container's container_id"),
+            stderr.contains(
+                "with server access, 'ployz ps --json' lists each container's container_id"
+            ),
             "{args:?}: {stderr}"
         );
         assert!(!stderr.contains("--connect"), "{args:?}: {stderr}");
