@@ -236,11 +236,6 @@ case "$*" in
     require "$6"
     prop "$6" "$5" {slot_bound}
     ;;
-  'get -Hp -o value referenced '*)
-    require "$6"
-    case "$6" in tank/ployz/data) used={data_used} ;; *) used=0 ;; esac
-    prop "$6" referenced "$used"
-    ;;
   'get -Hp -o value '*)
     require "$6"
     prop "$6" "$5" -
@@ -513,7 +508,6 @@ esac
         slot_bound = SLOT_BOUND_BYTES,
         props = props.display(),
         next_guid = next_guid.display(),
-        data_used = 966_367_642,
     );
     fs::write(&script, script_body).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();

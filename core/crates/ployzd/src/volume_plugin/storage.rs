@@ -282,26 +282,6 @@ impl VolumeStorage {
             .await
     }
 
-    /// Bytes the dataset holding `held`'s data references; a slot with no copy holds none.
-    pub(super) async fn referenced(&self, held: &Held<'_>) -> Result<u64> {
-        let dataset = match held {
-            Held::Root(root) => root,
-            Held::Slot { fs: Some(fs), .. } => fs,
-            Held::Slot { fs: None, .. } => return Ok(0),
-        };
-        let value = self
-            .zfs(&["get", "-Hp", "-o", "value", "referenced", &dataset.name])
-            .await?;
-        let value = value.trim_end_matches('\n');
-        value.parse().map_err(|_| {
-            format!(
-                "ZFS reported referenced={value} for dataset {}",
-                dataset.name
-            )
-            .into()
-        })
-    }
-
     /// Sets `property` on `dataset` and reads it back in bytes (`-p`): the value ZFS
     /// reports is the one that counts, whatever the write accepted.
     pub(super) async fn set_verified(
@@ -476,6 +456,16 @@ impl Held<'_> {
     /// The Provisioned Volume bound; a `refquota` of 0 is none.
     pub(super) fn bound(&self) -> Option<NonZeroU64> {
         self.dataset().bound()
+    }
+
+    /// Bytes the dataset holding the data references, the root or the slot's copy; a
+    /// slot with no copy holds none.
+    pub(super) fn referenced_bytes(&self) -> u64 {
+        match self {
+            Self::Root(root) => root.referenced_bytes,
+            Self::Slot { fs: Some(fs), .. } => fs.referenced_bytes,
+            Self::Slot { fs: None, .. } => 0,
+        }
     }
 
     /// Whether a Volume Run has the Volume mid-switch on this Machine. A root switches

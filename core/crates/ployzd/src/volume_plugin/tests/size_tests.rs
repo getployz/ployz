@@ -483,7 +483,7 @@ async fn a_shrink_below_the_floor_is_refused_with_the_floor_and_the_bound_held()
 }
 
 #[tokio::test]
-async fn a_shrink_of_a_root_held_by_a_run_is_refused_before_reading_the_floor() {
+async fn a_shrink_of_a_root_held_by_a_run_is_refused_and_writes_nothing() {
     let test = TestDir::new();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "readonly-volume"]);
 
@@ -493,7 +493,6 @@ async fn a_shrink_of_a_root_held_by_a_run_is_refused_before_reading_the_floor() 
     assert_eq!(refusal(&reply), "switching", "{reply}");
     assert_eq!(reply.pointer("/Err/details/bound_bytes").unwrap(), GIB);
     let log = commands(&test);
-    assert!(!log.contains("referenced"), "{log}");
     assert!(!log.contains("zfs set "), "{log}");
 }
 
@@ -568,11 +567,6 @@ async fn a_slot_with_no_copy_shrinks_to_the_floor_of_an_empty_volume() {
     assert_eq!(
         refquota_sets(&test),
         [format!("zfs set refquota=1000000000 {SLOT}")]
-    );
-    assert!(
-        !commands(&test).contains("referenced"),
-        "{}",
-        commands(&test)
     );
 }
 

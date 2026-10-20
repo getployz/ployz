@@ -113,7 +113,7 @@ impl VolumeStorage {
             if held.switching() {
                 return Err(switching());
             }
-            let referenced = self.referenced(&held).await.map_err(internal)?;
+            let referenced = held.referenced_bytes();
             let floor = shrink_floor(referenced);
             if wanted < floor {
                 return Err(SetVolumeSizeRefused {
