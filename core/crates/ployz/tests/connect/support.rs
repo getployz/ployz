@@ -235,6 +235,8 @@ pub(super) enum SwitchFailure {
     Unanswered,
     /// No reply ever comes, so the caller's own deadline ends the call.
     Hangs,
+    /// The target takes the request, signals it, and never replies.
+    Taken(Arc<tokio::sync::Notify>),
 }
 
 impl DiscoveryService {
@@ -1480,6 +1482,10 @@ impl FakeMachine for DiscoveryService {
                 &std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset"),
             )),
             Some(SwitchFailure::Hangs) => std::future::pending().await,
+            Some(SwitchFailure::Taken(taken)) => {
+                taken.notify_one();
+                std::future::pending().await
+            }
             None => Err(Status::unimplemented(
                 "SetVolumeCopy is not used by this fixture",
             )),

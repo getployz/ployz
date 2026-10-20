@@ -270,6 +270,37 @@ async fn a_volume_switch_that_outlives_its_deadline_may_have_reached_it() {
 }
 
 #[tokio::test]
+async fn a_volume_switch_closed_after_the_target_took_it_may_have_reached_it() {
+    let taken = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (client, _session, _machine) =
+        switch_session(machine_id('b'), SwitchFailure::Taken(taken.clone())).await;
+    let switching = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .volume_switch(machine_id('b').as_str(), set_volume_copy())
+                .await
+        }
+    });
+    taken.notified().await;
+    client.close().await;
+    let failure = switching.await.unwrap().unwrap_err();
+    assert_eq!(failure.error.message, "client is closed");
+    assert!(failure.unanswered, "{failure}");
+}
+
+#[tokio::test]
+async fn a_volume_switch_on_a_closed_session_is_never_sent() {
+    let (client, _session, _machine) = switch_session(machine_id('b'), SwitchFailure::Hangs).await;
+    client.close().await;
+    let failure = client
+        .volume_switch(machine_id('b').as_str(), set_volume_copy())
+        .await
+        .unwrap_err();
+    assert!(!failure.unanswered, "{failure}");
+}
+
+#[tokio::test]
 async fn a_volume_switch_the_target_refused_unavailable_is_answered() {
     let refusal = SwitchFailure::Refused(tonic::Status::unavailable("not participating"));
     let (client, _session, _machine) = switch_session(machine_id('b'), refusal).await;
