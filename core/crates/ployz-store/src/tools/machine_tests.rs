@@ -175,3 +175,116 @@ fn a_resume_must_answer_the_step_it_was_given() {
         }
     ));
 }
+
+#[test]
+fn a_bad_argument_outlines_what_fits_instead_of_echoing_the_schema() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "service_update")
+        .unwrap();
+    let whole = (entry.def)().input_schema.to_string().len();
+    for field in ["", "set", "set.bogus"] {
+        let refusal = finish(
+            Refusal::invalid("Unknown Service Setting", field),
+            entry,
+            &Call::new("service_update", json!({ "set": { "bogus": 1 } })),
+            "call-1",
+        );
+        let expected = refusal.expected.unwrap();
+        let size = expected.to_string().len();
+        assert!(
+            size < 2_048 && size < whole / 4,
+            "{field}: {size} of {whole}"
+        );
+        let names = expected
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap();
+        let want = match field {
+            "" => "service",
+            _ => "env",
+        };
+        assert!(names.contains_key(want), "{field}: {expected}");
+    }
+}
+
+#[test]
+fn a_number_outside_its_declared_range_is_refused() {
+    for (input, field) in [
+        (json!({ "wait_seconds": 301 }), "wait_seconds"),
+        (json!({ "wait_seconds": 100_000 }), "wait_seconds"),
+        (json!({ "deployment": 0 }), "deployment"),
+    ] {
+        let (step, _) = start("deployment_show", input.clone(), &PLACE, "call-1");
+        let Step::Done {
+            result: ToolResult::Refused(refusal),
+        } = step
+        else {
+            panic!("{input} is out of range");
+        };
+        assert_eq!(refusal.code, RpcErrorCode::InvalidArgument, "{input}");
+        assert_eq!(refusal.field.as_deref(), Some(field), "{input}");
+    }
+    let (step, _) = start(
+        "deployment_show",
+        json!({ "wait_seconds": 300 }),
+        &PLACE,
+        "call-1",
+    );
+    assert!(!matches!(step, Step::Done { .. }), "300 is in range");
+}
+
+#[test]
+fn an_ambiguous_refusal_leaves_the_choice_to_the_agent_instead_of_a_retry() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "domain_check")
+        .unwrap();
+    let call = Call::new("domain_check", json!({ "domain": "example.com" }));
+    let refusal = finish(
+        from_store(
+            RpcError {
+                code: RpcErrorCode::Ambiguous,
+                message: "Name a Project: this Organization has more than one".into(),
+                details: json!({ "projects": ["blog", "shop"] }),
+                cause: Vec::new(),
+            },
+            &call,
+            Writes::None,
+        ),
+        entry,
+        &call,
+        "call-1",
+    );
+    assert_eq!(refusal.valid, ["blog", "shop"]);
+    assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
+}
+
+#[test]
+fn a_move_to_where_the_volume_already_is_offers_no_retry() {
+    let entry = super::super::TOOLS
+        .iter()
+        .find(|entry| entry.name == "volume_move")
+        .unwrap();
+    let call = Call::new(
+        "volume_move",
+        json!({ "volume": "files", "to": "machine-1" }),
+    );
+    let shown = Call::new("volume_show", json!({ "volume": "files" }));
+    let Stop::Refuse(refusal) = refused_act(
+        RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "files's writer is already on machine-1".into(),
+            details: json!({ "settled": true }),
+            cause: Vec::new(),
+        },
+        &call,
+        shown.clone(),
+    ) else {
+        panic!("a refused act stops with a refusal");
+    };
+    let refusal = finish(*refusal, entry, &call, "call-1");
+    assert_eq!(refusal.code, RpcErrorCode::Conflict);
+    assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
+    assert_eq!(refusal.next, [shown]);
+}

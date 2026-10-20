@@ -1,7 +1,7 @@
-import type { ConfigCommand, ConfigWritten, EnvironmentListing, JsonValue } from "@ployz/sdk";
+import type { ConfigCommand, ConfigWritten, DeploymentStatus, EnvironmentListing, EnvironmentRemoval, JsonValue } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { removeTarget, storeEnvironmentTree } from "./store-workspace";
+import { removalDeployment, removeTarget, removing, storeEnvironmentNotes, storeEnvironmentTree } from "./store-workspace";
 import { StoreRefused } from "./store.contract";
 
 const refused = (code: string, details: JsonValue) => new StoreRefused({ code, message: code, details });
@@ -55,8 +55,31 @@ it("passes any other refusal on", async () => {
   await expect(removeTarget(commit, { project: "shop", environment: "production" }, none)).rejects.toThrow("unsupported");
 });
 
+it("passes on a failure that isn't the Store's answer, such as Cloud's own error", async () => {
+  const failure = { _tag: "PublicError", code: "INTERNAL", message: "Something went wrong." };
+  const commit = () => Promise.reject(failure);
+  await expect(removeTarget(commit, { project: "shop", environment: "staging" }, none)).rejects.toBe(failure);
+});
+
 it("lists each Branch right under its Parent", () => {
   const listing = (name: string, parent: string | null = null): EnvironmentListing => ({ id: name, name, default: false, parent, removal: null, merged: false, branch_setup: [], protected: false, protections: 0 });
   const tree = storeEnvironmentTree([listing("fix", "staging"), listing("production"), listing("staging"), listing("orphan", "gone")]);
   expect(tree.map(({ environment, depth }) => `${depth}:${environment.name}`)).toEqual(["0:production", "0:staging", "1:fix", "0:orphan"]);
+});
+
+it("notes a close waiting for the sweep apart from a removal that runs or ended", () => {
+  const listing = (removal: EnvironmentListing["removal"]): EnvironmentListing =>
+    ({ id: "fix", name: "fix", default: false, parent: "production", removal, merged: false, branch_setup: [], protected: false, protections: 0 });
+  const deployment = (status: DeploymentStatus, in_flight: boolean) =>
+    asTestDouble<EnvironmentRemoval>()({ kind: "deployment", status, in_flight });
+  const listings = [
+    listing({ kind: "pending", because: "synced", since: 0 }),
+    listing(deployment("running", true)),
+    listing(deployment("applied", false)),
+    listing(deployment("failed", false)),
+    listing(null),
+  ];
+  expect(listings.map(storeEnvironmentNotes)).toEqual([["deletion pending"], ["deleting"], ["off your servers"], ["deletion failed"], []]);
+  expect(listings.map(removing)).toEqual([false, true, false, false, false]);
+  expect(listings.map((one) => removalDeployment(one)?.status ?? null)).toEqual([null, "running", "applied", "failed", null]);
 });

@@ -45,6 +45,14 @@ it("lets pointer users submit a valid image and blocks invalid or pending select
   expect(select).toHaveBeenCalledTimes(1);
 });
 
+it("starts from the current image, with the caret at its end", () => {
+  render(<ImageSelector initialImage="redis:7-alpine" onSelectImage={vi.fn()} />);
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Container image" });
+  expect(input.value).toBe("redis:7-alpine");
+  expect(document.activeElement).toBe(input);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([14, 14]);
+});
+
 it.each([false, true])("shows an initial read failure and recovers (empty snapshot: %s)", async (empty) => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("scrollTo", () => {});

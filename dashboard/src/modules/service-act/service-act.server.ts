@@ -81,22 +81,32 @@ export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
   const [replayed] = yield* drizzle.select().from(serviceAct)
     .where(and(eq(serviceAct.organizationId, caller.organizationId), eq(serviceAct.id, input.attemptId)));
   if (replayed !== undefined) return { ok: true, id: replayed.id } satisfies Admission;
+  const run = yield* activeServiceAct(caller.organizationId, input);
+  return {
+    ok: false,
+    refusal: run === null
+      ? { code: "conflict", message: `${input.service} just finished another run. Try again.`, details: { run } }
+      : busyRefusal(input.service, run),
+  } satisfies Admission;
+});
+
+/** The run that holds `runtime` in its Environment now, if one does. */
+export const activeServiceAct = Effect.fn("ServiceAct.active")(function* (
+  organizationId: string,
+  input: { readonly environmentId: string; readonly runtime: string },
+) {
+  const { drizzle } = yield* Database;
   const [active] = yield* drizzle.select().from(serviceAct).where(and(
-    eq(serviceAct.organizationId, caller.organizationId),
+    eq(serviceAct.organizationId, organizationId),
     eq(serviceAct.environmentId, input.environmentId),
     eq(serviceAct.runtime, input.runtime),
     inArray(serviceAct.state, ACTIVE_STATES),
   )).limit(1);
-  const run = active === undefined ? null : operationOf(active);
-  return {
-    ok: false,
-    refusal: {
-      code: "conflict",
-      message: run === null ? `${input.service} just finished another run. Try again.` : `${input.service} is busy: ${run.run} is still running.`,
-      details: { run },
-    },
-  } satisfies Admission;
+  return active === undefined ? null : operationOf(active);
 });
+
+export const busyRefusal = (service: string, run: Operation) =>
+  ({ code: "conflict", message: `${service} is busy: ${run.run} is still running.`, details: { run } }) as const;
 
 export const serviceActExists = Effect.fn("ServiceAct.exists")(function* (organizationId: string, actId: string) {
   const { drizzle } = yield* Database;
