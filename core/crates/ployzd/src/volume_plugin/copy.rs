@@ -670,6 +670,12 @@ impl VolumeStorage {
         };
         let newest_name = newest.as_ref().map(|newest| newest.name.as_str());
         if newest_name == Some(target.as_str()) {
+            // An old copy already holding the target receives nothing, and is the mirror now.
+            if self.slot_role(&parent).await.map_err(internal)? != SlotRole::Mirror {
+                self.mark_slot_role(&parent, SlotRole::Mirror)
+                    .await
+                    .map_err(internal)?;
+            }
             self.finish_copy(&fs, bound)
                 .await
                 .map_err(|error| internal(error.into()))?;
