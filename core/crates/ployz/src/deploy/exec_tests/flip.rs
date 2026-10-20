@@ -2514,3 +2514,39 @@ async fn an_ingress_repair_does_not_bring_back_a_proxy_removed_after_it_was_plan
     assert!(client.brought_in().is_empty(), "{:?}", client.moves());
     client.assert_done();
 }
+
+/// The old copy's restore lands and it runs In, but the Machine answers with an
+/// error. It may be writing the Volume, so the new copy must stay stopped.
+#[tokio::test(start_paused = true)]
+async fn an_answered_error_after_the_old_copy_returns_keeps_the_new_copy_stopped() {
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let cancellation = CancellationToken::new();
+    let client = Scripted {
+        read_latency: true,
+        cancel_on_move: Some((Move::To(new, CopyRotation::In), cancellation.clone())),
+        answered_error_after_in: BTreeSet::from([old]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Stop(machine, new)),
+            ok(Call::Restart(machine, old)),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let (_, warnings) = execute_reported(&plan, &[machine], &client, &cancellation).await;
+
+    let copies = client.copies.lock().unwrap();
+    let (old_copy, new_copy) = (copies.get(&old).unwrap(), copies.get(&new).unwrap());
+    assert!(!old_copy.stopped, "the old copy runs again");
+    assert!(new_copy.stopped, "the new copy stays stopped: {warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|line| line.contains("its old copy may be serving")),
+        "{warnings:?}"
+    );
+}

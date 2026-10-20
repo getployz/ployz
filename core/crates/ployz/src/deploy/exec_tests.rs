@@ -226,6 +226,9 @@ struct Scripted {
     unhealthy_in: BTreeMap<ContainerId, HealthVerdict>,
     /// An In ask on this copy lands, but its reply never arrives.
     unanswered_in: BTreeSet<ContainerId>,
+    /// An In ask on this copy lands and the copy runs, but the Machine answers
+    /// with an error, as when its inspect after the write fails.
+    answered_error_after_in: BTreeSet<ContainerId>,
     /// A Held ask on this copy lands, but no reply to it, or to a resend,
     /// ever arrives.
     unanswered_held: BTreeSet<ContainerId>,
@@ -275,6 +278,7 @@ impl Scripted {
             down: BTreeSet::new(),
             unhealthy_in: BTreeMap::new(),
             unanswered_in: BTreeSet::new(),
+            answered_error_after_in: BTreeSet::new(),
             unanswered_held: BTreeSet::new(),
             failed_route_reads: Mutex::new(0),
             read_latency: false,
@@ -736,6 +740,9 @@ impl Scripted {
         }
         let holding = matches!(to, CopyRotation::Held(_));
         self.applied(Move::To(container_id, to));
+        if routing && self.answered_error_after_in.contains(&container_id) {
+            return Err(error("Docker inspect failed after writing In"));
+        }
         if routing && self.unanswered_in.contains(&container_id)
             || holding && self.unanswered_held.contains(&container_id)
         {

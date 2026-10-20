@@ -2841,7 +2841,8 @@ async fn compensate<C: MachineOperations>(
 }
 
 /// A restore that failed may still have started the old copy: `may_run`
-/// stays true once its start could have landed.
+/// stays true unless the Machine refused it. An error, even one the Machine
+/// answered, can come after the copy already runs.
 struct Restore {
     attempt: RestoreAttempt<ExecutionError>,
     may_run: bool,
@@ -2865,13 +2866,10 @@ async fn restore_old<C: MachineOperations>(
             };
             return match client.ensure_container(&old.machine_id, want).await {
                 Ok(_) => ended(RestoreAttempt::Restored, true),
-                Err(error) => {
-                    let may_run = error.target_unanswered();
-                    ended(
-                        failed(machine_error(MachineAction::StartContainer, error)),
-                        may_run,
-                    )
-                }
+                Err(error) => ended(
+                    failed(machine_error(MachineAction::StartContainer, error)),
+                    true,
+                ),
             };
         }
         CopyRotation::In | CopyRotation::Held(_) => {}
@@ -2903,10 +2901,9 @@ async fn restore_old<C: MachineOperations>(
             );
         }
         Err(error) => {
-            let may_run = error.target_unanswered();
             return ended(
                 failed(machine_error(MachineAction::StartContainer, error)),
-                may_run,
+                true,
             );
         }
     }
