@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -66,6 +67,10 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
       <div className="flex-1 overflow-y-auto px-4">
         <FieldGroup>
           {initialHasFirst !== hasFirst ? <FieldDescription>{hasFirst ? "Another server is starting the cluster." : "Choose the first server again."}</FieldDescription> : null}
+          {preview?.serversOffline ? <Alert variant="destructive">
+            <AlertTitle>Servers offline</AlertTitle>
+            <AlertDescription>Forget them first. <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} hash="organization-teardown" className="underline underline-offset-4">Forget Servers</Link></AlertDescription>
+          </Alert> : null}
           {preview && (preview.spread.providers > 1 || preview.spread.networks > 3) ? <Alert>
             <AlertTitle>{preview.spread.networks} networks, {preview.spread.providers} providers</AlertTitle>
             <AlertDescription>Make sure they’re all yours.<details><summary>Show sources</summary>{servers.map((row) => <p key={row.id}>{row.report.hostname} · {row.observedIp} · {row.report.provider ?? "Unknown"}</p>)}</details></AlertDescription>

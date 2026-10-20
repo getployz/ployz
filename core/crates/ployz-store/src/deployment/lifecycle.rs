@@ -211,6 +211,7 @@ pub(crate) fn admit(
         status: DeploymentStatus::Queued,
         saved,
         services: targets,
+        ships: shipped(&nodes),
         runner: None,
         upload,
         remove: saved == NOTHING,
@@ -687,6 +688,7 @@ pub(crate) fn retry(
         number: Some(number),
         status: DeploymentStatus::Queued,
         services,
+        ships: shipped(&nodes),
         runner: None,
         admitted_by: who.principal.clone(),
         admitted_at,
@@ -1032,7 +1034,7 @@ pub(crate) fn claim(
     sealing: &SealingKey,
 ) -> Result<Result<Claimed, RpcError>, RpcError> {
     let mut stored = locked(tx, id)?;
-    match stored.summary.status {
+    let starting = match stored.summary.status {
         DeploymentStatus::Running | DeploymentStatus::Cancelling
             if stored.summary.runner.as_ref() == Some(runner) =>
         {
@@ -1047,6 +1049,7 @@ pub(crate) fn claim(
             }
             stored.lease = now() + LEASE;
             save(tx, &mut stored)?;
+            false
         }
         DeploymentStatus::Running | DeploymentStatus::Cancelling => {
             return Ok(Err(owned_elsewhere(id)));
@@ -1058,40 +1061,62 @@ pub(crate) fn claim(
         | DeploymentStatus::Unknown
         | DeploymentStatus::Cancelled => return Ok(Err(ended(id))),
         DeploymentStatus::Queued => {
-            let taken_over = tx.execute(
-                "UPDATE config_deployment SET status = 'unknown' \
-                 WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
-                &[stored.summary.environment_id.as_str().into()],
-            )?;
             let started = now();
             stored.summary.status = DeploymentStatus::Running;
             stored.summary.runner = Some(runner.clone());
             stored.summary.started_at = Some(started);
             stored.lease = started + LEASE;
-            save(tx, &mut stored)?;
-            if taken_over > 0 {
-                crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
-            }
+            true
         }
-    }
+    };
     let sources = build::sources_of(tx, &stored)?;
     let uploads = build::uploads_of(tx, &stored)?;
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (services, removals) = stored.lowering();
-    let Lowered {
-        input,
-        mut intent,
-        warnings,
-        ..
-    } = lower(
+    let lowered = lower(
         &stored.summary.environment_id,
         &saved,
         (&services, &removals),
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
-    )?;
+    );
+    let Lowered {
+        input,
+        mut intent,
+        warnings,
+        ..
+    } = match lowered {
+        Ok(lowered) => lowered,
+        // Every claim lowers it the same way: it fails rather than waits queued,
+        // and takes nothing over.
+        Err(refused) if refused.code == ployz_core::RpcErrorCode::InvalidArgument => {
+            finish(
+                tx,
+                stored,
+                Outcome::NotExecuted {
+                    reason: refused.message.clone(),
+                    cause: Vec::new(),
+                    needs_upload: Vec::new(),
+                },
+                DeploymentStatus::Failed,
+            )?;
+            return Ok(Err(error::conflict(refused.message, refused.details)));
+        }
+        Err(error) => return Err(error),
+    };
+    if starting {
+        let taken_over = tx.execute(
+            "UPDATE config_deployment SET status = 'unknown' \
+             WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
+            &[stored.summary.environment_id.as_str().into()],
+        )?;
+        save(tx, &mut stored)?;
+        if taken_over > 0 {
+            crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
+        }
+    }
     if stored.run.warnings != warnings {
         stored.run.warnings = warnings;
         stored.summary.warnings = stored.run.summary_warnings();

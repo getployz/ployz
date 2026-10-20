@@ -30,7 +30,7 @@ pub fn schema(path: Option<&str>) -> Result<Value, RpcError> {
     let Some(path) = path else {
         return Ok(versioned(json!({
             "title": "Ployz Environment Settings",
-            "description": "An Environment's Settings by Service name. A path is SERVICE.SETTING, for example web.replicas.",
+            "description": "An Environment's Settings by Service name. A path is SERVICE.SETTING, for example web.replicas. A Branch's Setup Command for a Service is at setup.SERVICE.",
             "type": "object",
             "patternProperties": { NODE_NAME: { "$ref": "#/$defs/service" } },
             "additionalProperties": false,
@@ -77,6 +77,10 @@ pub fn complete(input: &str) -> Vec<String> {
     let Some((service, prefix)) = input.split_once('.') else {
         return Vec::new();
     };
+    // `setup.` is followed by a Service, which only the Store knows.
+    if service == "setup" {
+        return Vec::new();
+    }
     ServiceSetting::ALL
         .into_iter()
         .filter(|one| one.name().starts_with(prefix))
@@ -197,6 +201,18 @@ fn target(target: &Target, named: Option<&ServiceName>) -> Value {
             "description": "Where the Service runs from, as one change: its image, or its repository and root directory. Discard takes it back whole; set image or repository to change it.",
         }),
         Target::Variable(_) => variables::schema(),
+        Target::Setup => json!({
+            "title": "Setup Command",
+            "description": "A shell command a Branch runs in its copy of the Service before that copy first deploys, such as filling its new database. Only a Branch has one. Takes effect at once: the next Deploy runs it if the Service hasn't deployed in the Branch yet. Unset removes it.",
+            "type": "string",
+            "pattern": "^[^\\u0000]*$",
+            "minLength": 1,
+            "maxLength": ployz_core::config::COMMAND_MAX,
+            "examples": ["pnpm db:seed"],
+            "x-ployz-apply": "immediate",
+            "x-ployz-secret": false,
+            "x-ployz-data-loss": false,
+        }),
         Target::Description(_) => {
             json!({ "title": "Description", "type": ["string", "null"], "readOnly": true })
         }
@@ -293,6 +309,7 @@ mod tests {
                 "web.configs.sentry".to_owned(),
                 schema(Some("web.configs.sentry")).unwrap(),
             ),
+            ("setup.web".to_owned(), schema(Some("setup.web")).unwrap()),
         ];
         let properties = service["properties"].as_object().unwrap().clone();
         for (name, property) in properties.into_iter().chain(variable) {
@@ -313,6 +330,7 @@ mod tests {
             schema(Some("web.env.K.exported")).unwrap(),
             schema(Some("web.mounts.data")).unwrap(),
             schema(Some("web.configs.sentry")).unwrap(),
+            schema(Some("setup.web")).unwrap(),
         ];
         for schema in schemas {
             let text = schema.to_string();
@@ -409,6 +427,10 @@ mod tests {
             explain("web.replicas").unwrap().path.to_string(),
             "web.replicas"
         );
+        let setup = explain("setup.web").unwrap();
+        assert_eq!(setup.path.to_string(), "setup.web");
+        assert_eq!(setup.schema["x-ployz-apply"], "immediate");
+        assert!(explain("setup.web.x").is_err());
     }
 
     #[test]
@@ -450,5 +472,6 @@ mod tests {
             ]
         );
         assert!(complete("web").is_empty());
+        assert!(complete("setup.w").is_empty());
     }
 }

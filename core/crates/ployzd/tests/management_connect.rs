@@ -417,15 +417,11 @@ async fn contract() {
         .await
         .unwrap();
     let removal_connection = observed.recv().await.unwrap();
-    let replaced = match ployz::sdk::connect_connections(
-        vec![connection(&abandoned)],
-        connector.clone(),
-    )
-    .await
-    {
-        Ok(_) => panic!("abandoned capability must be refused"),
-        Err(error) => error,
-    };
+    let replaced =
+        match ployz::sdk::connect_answered(vec![connection(&abandoned)], connector.clone()).await {
+            Ok(_) => panic!("abandoned capability must be refused"),
+            Err(error) => refused(error),
+        };
     assert_eq!(replaced.code, RpcErrorCode::Unauthenticated);
     assert_eq!(replaced.details, serde_json::Value::Null);
     // Cloud provisions a device's own slot, and a Clear of it leaves Cloud's slot alone.
@@ -452,6 +448,7 @@ async fn contract() {
             .await,
     ] {
         let error = refused.expect_err("a cli- slot must not set a slot");
+        assert!(!error.unanswered, "{error}");
         assert!(
             error.to_string().contains("only Cloud manages slots"),
             "{error}"
@@ -519,9 +516,9 @@ async fn contract() {
         .unwrap();
     drop(device_session);
     let error =
-        match ployz::sdk::connect_connections(vec![connection(&device)], connector.clone()).await {
+        match ployz::sdk::connect_answered(vec![connection(&device)], connector.clone()).await {
             Ok(_) => panic!("a cleared device capability must be refused"),
-            Err(error) => error,
+            Err(error) => refused(error),
         };
     assert_eq!(
         error.details,
@@ -536,13 +533,12 @@ async fn contract() {
         .unwrap();
     drop(session);
     // A lost Clear response is confirmed by the redial.
-    let error =
-        match ployz::sdk::connect_connections(vec![connection(&capability)], connector.clone())
-            .await
-        {
-            Ok(_) => panic!("removed capability must not reconnect through the SDK"),
-            Err(error) => error,
-        };
+    let error = match ployz::sdk::connect_answered(vec![connection(&capability)], connector.clone())
+        .await
+    {
+        Ok(_) => panic!("removed capability must not reconnect through the SDK"),
+        Err(error) => refused(error),
+    };
     assert_eq!(error.code, RpcErrorCode::Unauthenticated);
     assert_eq!(
         error.details,
@@ -1126,4 +1122,10 @@ impl Service<http::Request<Body>> for ObservedApi {
             future.await
         })
     }
+}
+
+/// The Machine's own refusal, which the SDK must not mark unanswered.
+fn refused(failure: ployz::sdk::CallError) -> ployz_core::RpcError {
+    assert!(!failure.unanswered, "{failure}");
+    failure.error
 }
