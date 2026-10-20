@@ -802,7 +802,7 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
         server: "edge".into(),
         log: Some(shown("could not load configuration")),
     };
-    let failure = crate::handlers::ingress_hints(failure(&outcome, vec![tail]), |args| {
+    let failure = crate::handlers::ingress_hints(failure(&outcome, &[], vec![tail]), |args| {
         shell_words::join(
             std::iter::once("ployz")
                 .chain(args.iter().copied())
@@ -839,6 +839,50 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
 }
 
 #[test]
+fn a_failed_limits_update_names_the_server_and_says_the_old_copy_still_serves() {
+    let machine = MachineId::random();
+    let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
+    let update = planned(
+        0,
+        DeployOperation::UpdateContainer(ployz_core::LimitsUpdateOperation {
+            machine_id: machine,
+            container_id: old('f'),
+            spec: spec(),
+        }),
+        OperationStatus::Pending,
+    );
+    let outcome = DeployOutcome::Failed {
+        completed: Vec::new(),
+        failed: FailedOperation::Operation {
+            operation: update.operation.clone(),
+            error: ExecutionError::Machine {
+                action: MachineAction::UpdateContainerLimits,
+                error: RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: "Docker operation failed".into(),
+                    details: serde_json::json!({"machine_id": machine}),
+                    cause: vec![docker.into()],
+                },
+            },
+        },
+        unexecuted: Vec::new(),
+        services: Vec::new(),
+    };
+    let failure = failure(&outcome, std::slice::from_ref(&update), Vec::new());
+    assert_eq!(
+        crate::ui::plain(&failure),
+        format!(
+            "error: web: Server edge did not apply the new limits. The Container keeps serving with its previous limits.\n  cause: {docker}\n"
+        )
+    );
+    let json = failure.json();
+    assert_eq!(
+        json["cause"],
+        serde_json::json!(["Docker operation failed", docker])
+    );
+}
+
+#[test]
 fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
     let docker = "Docker responded with status code 404: nginx:doesnotexist: not found";
     let outcome = DeployOutcome::Failed {
@@ -860,7 +904,7 @@ fn a_missing_image_reads_as_its_own_sentence_over_the_docker_cause() {
         services: Vec::new(),
     };
     assert_eq!(
-        crate::ui::plain(&failure(&outcome, Vec::new())),
+        crate::ui::plain(&failure(&outcome, &[], Vec::new())),
         format!(
             "error: web: Image nginx:doesnotexist not found, or its registry needs credentials.\n  cause: {docker}\n"
         )
@@ -897,7 +941,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
         log: None,
     };
     let text = crate::ui::plain(&crate::handlers::ingress_hints(
-        failure(&outcome, vec![tail]),
+        failure(&outcome, &[], vec![tail]),
         |args| {
             shell_words::join(
                 std::iter::once("ployz")

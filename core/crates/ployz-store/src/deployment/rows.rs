@@ -336,6 +336,34 @@ impl Failure {
             } if let Some(full) = error.disk_full() => {
                 (full.to_string(), ployz_core::error_chain::causes(error))
             }
+            ExecutionError::Machine {
+                action: MachineAction::UpdateContainerLimits,
+                error,
+            } => {
+                let server = error
+                    .details
+                    .get("machine_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| {
+                        operations
+                            .iter()
+                            .find(|row| row.machine_id.to_string() == id)
+                            .and_then(|row| row.machine_name.as_ref())
+                            .map_or_else(|| id.to_owned(), ToString::to_string)
+                    });
+                let mut cause = vec![error.message.clone()];
+                cause.extend(ployz_core::error_chain::causes(error));
+                (
+                    format!(
+                        "{} did not apply the new limits. The Container keeps serving with its previous limits",
+                        server.map_or_else(
+                            || "The Server".to_owned(),
+                            |name| format!("Server {name}")
+                        )
+                    ),
+                    cause,
+                )
+            }
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
@@ -1083,6 +1111,39 @@ mod tests {
             Failure::of(&error, &[]).reason,
             format!(
                 "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
+            )
+        );
+    }
+
+    #[test]
+    fn a_failed_limits_update_names_the_server_and_keeps_dockers_words() {
+        let machine_id = "a".repeat(32);
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
+        let error = ExecutionError::Machine {
+            action: MachineAction::UpdateContainerLimits,
+            error: RpcError {
+                code: RpcErrorCode::Internal,
+                message: "Docker operation failed".into(),
+                details: serde_json::json!({"machine_id": machine_id}),
+                cause: vec![docker.into()],
+            },
+        };
+        let named = Failure::of(&error, &operations);
+        assert_eq!(
+            named.reason,
+            "Server prod-1 did not apply the new limits. The Container keeps serving with its previous limits"
+        );
+        assert_eq!(named.cause, ["Docker operation failed", docker]);
+        assert_eq!(
+            Failure::of(&error, &[]).reason,
+            format!(
+                "Server {machine_id} did not apply the new limits. The Container keeps serving with its previous limits"
             )
         );
     }

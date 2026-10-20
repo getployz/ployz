@@ -401,7 +401,11 @@ impl Direct {
     }
 }
 
-pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTail>) -> Failure {
+pub(super) fn failure(
+    outcome: &DeployOutcome<ExecutionError>,
+    operations: &[OperationRow],
+    tails: Vec<LogTail>,
+) -> Failure {
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return Failure::coded(
             RpcErrorCode::Internal,
@@ -416,7 +420,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
             operation, error, ..
         } => (Some(&operation.spec.name), operation.machine_id, error),
     };
-    let ployz_store::Failure { reason, cause } = ployz_store::Failure::of(error, &[]);
+    let ployz_store::Failure { reason, cause } = ployz_store::Failure::of(error, operations);
     let message = crate::ui::sentence(match service {
         Some(service) => format!("{service}: {reason}"),
         None => reason,

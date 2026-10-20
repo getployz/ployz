@@ -2055,16 +2055,12 @@ async fn execute_operation<C: MachineOperations>(
             .prepare_volumes(machine_id, specs)
             .await
             .map(|_| Ran::default())
-            .map_err(|mut error| {
-                if !error.details.is_object() {
-                    error.details = serde_json::json!({});
-                }
-                error
-                    .details
-                    .as_object_mut()
-                    .expect("details normalized to object")
-                    .insert("machine_id".into(), serde_json::json!(machine_id));
-                machine_error(MachineAction::PrepareVolumes, error).into()
+            .map_err(|error| {
+                machine_error(
+                    MachineAction::PrepareVolumes,
+                    naming_machine(error, machine_id),
+                )
+                .into()
             }),
         DeployOperation::WaitHealthy { dependency, .. } => {
             wait_healthy(client, index, progress, dependency, rows.run, cancellation)
@@ -2231,7 +2227,13 @@ async fn execute_operation<C: MachineOperations>(
                 .update_container_limits(&update.machine_id, &update.container_id, &update.spec)
                 .await
                 .map(|_| Ran::default())
-                .map_err(|error| machine_error(MachineAction::UpdateContainerLimits, error).into())
+                .map_err(|error| {
+                    machine_error(
+                        MachineAction::UpdateContainerLimits,
+                        naming_machine(error, &update.machine_id),
+                    )
+                    .into()
+                })
         }
         DeployOperation::StopHook {
             machine_id,
@@ -3153,6 +3155,19 @@ pub(super) async fn inspect<C: MachineOperations>(
 
 fn machine_error(action: MachineAction, error: RpcError) -> ExecutionError {
     ExecutionError::Machine { action, error }
+}
+
+/// The Machine that answered `error`, for a failure sentence that names the Server.
+fn naming_machine(mut error: RpcError, machine_id: &MachineId) -> RpcError {
+    if !error.details.is_object() {
+        error.details = serde_json::json!({});
+    }
+    error
+        .details
+        .as_object_mut()
+        .expect("details normalized to object")
+        .insert("machine_id".into(), serde_json::json!(machine_id));
+    error
 }
 
 fn ignore_not_found(result: Result<(), RpcError>) -> Result<(), RpcError> {

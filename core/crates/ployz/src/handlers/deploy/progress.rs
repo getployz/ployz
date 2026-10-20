@@ -672,6 +672,40 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_limits_update_keeps_dockers_words_and_says_to_deploy_again() {
+        let docker = "Docker responded with status code 400: Conflicting options: Nano CPUs and CPU Period cannot both be set";
+        let reason = "web: Server edge did not apply the new limits. The Container keeps serving with its previous limits";
+        let cause = ["Docker operation failed", docker];
+        let mut view = view();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed", "summary": {}, "reason": reason, "cause": cause,
+            }))
+            .unwrap(),
+        );
+        view.nodes.truncate(1);
+        view.nodes[0] = serde_json::from_value(json!({
+            "type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "failed", "rows": [
+                {"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": &reason[5..], "cause": cause, "log": null, "started_at": 1, "finished_at": 2}
+            ]
+        }))
+        .unwrap();
+        let failure = failure(&view, command);
+        assert_eq!(
+            crate::ui::plain(&failure),
+            format!(
+                "error: {reason}.\n  cause: {docker}\nretry: ployz deploy --project shop --env production\n"
+            )
+        );
+        assert_eq!(
+            hints(&failure),
+            ["retry: ployz deploy --project shop --env production"]
+        );
+        let json = failure.json();
+        assert_eq!(json["cause"], json!(cause));
+    }
+
+    #[test]
     fn a_failed_deploy_prints_what_became_of_the_old_container() {
         let mut view = view();
         view.deployment.outcome = Some(
