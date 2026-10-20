@@ -442,6 +442,7 @@ fn a_grown_provisioned_volume_is_reused_despite_the_size_docker_froze_at_create(
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
         role: None,
+        slot_role: None,
     };
 
     let preview = explicitly_targeted_provisioned_deploy(

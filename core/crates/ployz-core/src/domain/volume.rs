@@ -628,6 +628,7 @@ mod tests {
             bound_bytes: NonZeroU64::new(bytes).unwrap(),
             used_bytes: 0,
             role: None,
+            slot_role: None,
         }
     }
 
