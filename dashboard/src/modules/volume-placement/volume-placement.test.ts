@@ -129,7 +129,7 @@ describe("placementChanges", () => {
     const placement = row([], { primary: "web-2", mirrors: ["web-3"] });
     expect(review(members, placement)).toEqual([{ kind: "add", name: "Mirror", currentValue: "", newValue: "web-3", detail: "Deletes pg-data-old first" }]);
     expect(steps(members, placement)).toEqual([
-      { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null, machine: id("web-1") } },
+      { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null, machine: id("web-1"), role: "old_copy" } },
       { kind: "mirror", args: { to: "web-3" } },
     ]);
   });
@@ -154,7 +154,7 @@ describe("placementChanges", () => {
   it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent Server", () => {
     expect(changes([member("web-1", "writer"), pooled("web-2")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
     expect(steps([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"], { primary: "web-1" }))).toEqual([
-      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: id("web-2") } },
+      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: id("web-2"), role: "mirror" } },
     ]);
   });
 
@@ -165,7 +165,7 @@ describe("placementChanges", () => {
       { kind: "mirror", args: { to: "web-3" } },
     ]);
     expect(steps(members, row(["web-2"], { primary: "web-3" }))).toEqual([
-      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: id("web-2") } },
+      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: id("web-2"), role: "mirror" } },
       { kind: "move", args: { to: "web-3" } },
     ]);
   });
@@ -327,7 +327,7 @@ describe("nextPlacementStep", () => {
   it("keeps the mirrors while a change still has runs after this one", () => {
     const members = [member("web-2", "writer"), member("web-1", "old"), pooled("web-3")];
     expect(next(members, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({
-      run: { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null, machine: id("web-1") } },
+      run: { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null, machine: id("web-1"), role: "old_copy" } },
       mirrors: [],
       change: { kind: "add_mirror", server: id("web-3") },
     });

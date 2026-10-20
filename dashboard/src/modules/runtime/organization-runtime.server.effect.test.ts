@@ -16,6 +16,7 @@ import {
 } from "#/modules/runtime/organization-runtime.server";
 import { OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { noPairingChanges } from "#/test/organization-runtime";
+import { type ConnectionAborts, connectionAborts } from "#/test/connection-aborts";
 import { makePloyzLayer, PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { namedMachines } from "#/modules/volume-run/volume-run.server";
@@ -614,5 +615,52 @@ it.effect("Cluster reads in flight together spend their budget once, and time be
     assert.isUndefined(read.pollUnsafe());
     yield* TestClock.adjust("4 seconds");
     assert.isTrue((yield* Fiber.join(read)) instanceof ClusterOutOfTime);
+  }),
+);
+
+/** A runtime whose Cluster answers one frame but whose close settles only with `closed`; `closing` succeeds once it starts. */
+const slowClosing = (closing: Deferred.Deferred<void>, aborts: ConnectionAborts, closed = new Promise<void>(() => {})) =>
+  makeOrganizationRuntimeLayer(() => Effect.succeed({ kind: "ready", generation: "current", connections }), noPairingChanges)
+    .pipe(Layer.provide(makePloyzLayer({
+      connect: async ({ signal }) => {
+        aborts.watch(signal);
+        return asTestDouble<Client>()({
+          close: () => {
+            Effect.runSync(Deferred.succeed(closing, undefined));
+            return closed;
+          },
+          runtime: { watch: async function* () { yield runtimeWatchFrameFixture(); } },
+        });
+      },
+    })));
+
+it.effect("a look-once frame answers within its Cluster time, and aborts the connection, when the session never closes", () =>
+  Effect.gen(function* () {
+    const closing = yield* Deferred.make<void>();
+    const aborts = connectionAborts();
+    const looking = yield* firstRuntimeFrame("org-1").pipe(Effect.provide(slowClosing(closing, aborts)), Effect.forkChild);
+    yield* Deferred.await(closing);
+    yield* TestClock.adjust("5 seconds");
+    assert.deepStrictEqual(yield* Fiber.join(looking), runtimeWatchFrameFixture());
+    assert.deepStrictEqual(aborts.aborted(), [true]);
+  }),
+);
+
+it.effect("a session opened with no Cluster budget waits for its close", () =>
+  Effect.gen(function* () {
+    const closing = yield* Deferred.make<void>();
+    const aborts = connectionAborts();
+    let close = () => {};
+    const closed = new Promise<void>((resolve) => { close = resolve; });
+    const open = yield* Effect.scoped(Effect.gen(function* () {
+      yield* (yield* OrganizationRuntime).open("org-1");
+    })).pipe(Effect.provide(slowClosing(closing, aborts, closed)), Effect.forkChild);
+    yield* Deferred.await(closing);
+    yield* TestClock.adjust("1 hour");
+    assert.isUndefined(open.pollUnsafe());
+    assert.deepStrictEqual(aborts.aborted(), [false]);
+    close();
+    yield* Fiber.join(open);
+    assert.deepStrictEqual(aborts.aborted(), [true]);
   }),
 );

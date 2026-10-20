@@ -10,7 +10,7 @@ const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentV
 const preview = (fields: Partial<NonNullable<DeploymentView["preview"]>>) =>
   asTestDouble<NonNullable<DeploymentView["preview"]>>()({ depths: {}, dependencies: [], ...fields });
 const build = (service: string, fields: Partial<BuildView> = {}): BuildView =>
-  ({ service, commit: null, status: "built", message: null, started_at: null, finished_at: null, ...fields });
+  ({ service, commit: null, status: "built", message: null, started_at: null, finished_at: null, server: null, github_skipped: null, ...fields });
 const at = { machine_id: machineId("1"), server: "fsn-1", started_at: 10, finished_at: null, history: null };
 const running = (phase: RowPhase): ServerRow => ({ ...at, state: "running", phase, serving: false });
 const completed = (server = "fsn-1", started_at = 10, finished_at = 20): ServerRow =>

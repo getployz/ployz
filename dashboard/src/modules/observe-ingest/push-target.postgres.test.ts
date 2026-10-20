@@ -7,10 +7,12 @@ import type { MachineId } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { organizationMachine } from "#/modules/machines/tables";
 import { deliverPushTargets } from "#/modules/observe-ingest/push-target.server";
+import { SESSION_CLOSE_CLUSTER_MS } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
+import { connectionAborts } from "#/test/connection-aborts";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f301";
@@ -21,10 +23,12 @@ const url = (machine: string) => `http://localhost:3000/api/machines/${machine}/
 
 type OnSet = (machine: string, republish: (machine: MachineId) => Promise<void>) => Promise<void>;
 
-const setup = Effect.fn(function* (onSet: OnSet = async () => {}) {
+const setup = Effect.fn(function* (onSet: OnSet = async () => {}, close: () => Promise<void> = async () => undefined) {
   const dialed: Array<{ machine: string; url: string | null }> = [];
+  const aborts = connectionAborts();
   const ployz = makePloyzLayer({
     connect: async (options) => {
+      aborts.watch(options.signal);
       const [connection] = options.connections;
       const machine = connection && "machine_id" in connection ? connection.machine_id ?? "" : "";
       if (machine === OFFLINE) throw new Error("Endpoint unavailable");
@@ -35,7 +39,7 @@ const setup = Effect.fn(function* (onSet: OnSet = async () => {}) {
           if (machine === OLD) throw { code: "unsupported", message: "ployz.machine.set-push-target.v1 is not advertised", details: { capability: "ployz.machine.set-push-target.v1", target: machine } };
           await onSet(machine, republish);
         },
-        close: async () => undefined,
+        close,
       });
     },
   });
@@ -66,7 +70,7 @@ const setup = Effect.fn(function* (onSet: OnSet = async () => {}) {
       .where(eq(organizationMachine.machineId, machine));
   })));
   const sweep = () => deliverPushTargets().pipe(Effect.provide(cloud), Effect.orDie);
-  return { dialed, confirmed, sweep, republish };
+  return { dialed, aborts, confirmed, sweep, republish };
 });
 
 it.live("a sweep points each Machine at its observe URL and records only what the Machine confirmed", () => Effect.gen(function* () {
@@ -107,3 +111,12 @@ it.live("a capability published while Cloud dials leaves the Machine pending for
   yield* sweep();
   expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBe(url(CURRENT));
 }));
+
+it.live("a sweep finishes within its Cluster time, and aborts each connection, when a Machine's session never closes", () => Effect.gen(function* () {
+  const { aborts, confirmed, sweep } = yield* setup(undefined, () => new Promise<void>(() => {}));
+  const held = Effect.promise(() => new Promise<"held">((resolve) => { setTimeout(() => resolve("held"), SESSION_CLOSE_CLUSTER_MS + 8_000); }));
+  const outcomes = yield* Effect.raceFirst(sweep(), held);
+  expect(outcomes).toEqual(expect.arrayContaining([{ machineId: CURRENT, delivery: "set" }, { machineId: OLD, delivery: "lacks" }]));
+  expect((yield* confirmed()).find((row) => row.machineId === CURRENT)?.pushTarget).toBe(url(CURRENT));
+  expect(aborts.aborted()).toEqual([true, true, true]);
+}), 30_000);

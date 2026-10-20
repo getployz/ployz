@@ -67,14 +67,20 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 build.is_some_and(|build| build.status == BuildStatus::Failed),
             );
             row.detail = build.map(|build| {
-                match build.status {
+                let word = match build.status {
                     BuildStatus::Pending => "build pending",
                     BuildStatus::Building => "building",
                     BuildStatus::Built => "built",
                     BuildStatus::Reused => "build reused",
                     BuildStatus::Failed => "build failed",
+                };
+                match (&build.server, build.status) {
+                    (
+                        Some(server),
+                        BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed,
+                    ) => format!("{word} on {server}"),
+                    _ => word.to_owned(),
                 }
-                .to_owned()
             });
         }
         rows.push(row);
@@ -204,6 +210,30 @@ fn ingress_unchecked(view: &DeploymentView) -> impl Iterator<Item = &str> {
             | DeploymentWarning::IngressNotServing { .. }
             | DeploymentWarning::Deploy { .. } => None,
         })
+}
+
+/// Where each build ran, and why GitHub passed one on to the Servers.
+pub(super) fn builders(view: &DeploymentView) -> Vec<String> {
+    view.builds
+        .iter()
+        .filter_map(|build| {
+            let built = build
+                .server
+                .as_ref()
+                .filter(|_| build.status == BuildStatus::Built)
+                .map(|server| format!("{} built on {server}.", build.service));
+            let skipped = build
+                .github_skipped
+                .as_deref()
+                .map(|why| why.trim_end_matches('.'));
+            match (built, skipped) {
+                (Some(built), Some(why)) => Some(format!("{built} GitHub skipped it: {why}.")),
+                (Some(built), None) => Some(built),
+                (None, Some(why)) => Some(format!("GitHub skipped {}: {why}.", build.service)),
+                (None, None) => None,
+            }
+        })
+        .collect()
 }
 
 /// What the Deployment left out of a Service's variables or a Config's files.
@@ -1394,6 +1424,8 @@ mod tests {
             message: None,
             started_at: None,
             finished_at: None,
+            server: None,
+            github_skipped: None,
         });
         assert!(!visible(&view));
         for (status, detail, state) in [
@@ -1425,5 +1457,47 @@ mod tests {
         ));
         assert!(!visible(&view));
         assert!(noop(&view));
+    }
+
+    #[test]
+    fn a_build_names_its_server_while_it_runs_and_once_it_ends() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Running;
+        view.nodes.truncate(1);
+        view.nodes.first_mut().unwrap().rows.clear();
+        view.builds = serde_json::from_value(json!([
+            {"service": "web", "commit": null, "status": "building", "message": null, "server": "machine-1"}
+        ]))
+        .unwrap();
+        assert_eq!(
+            frame(&view).rows.first().unwrap().detail.as_deref(),
+            Some("building on machine-1")
+        );
+        view.builds.first_mut().unwrap().status = BuildStatus::Built;
+        assert_eq!(
+            frame(&view).rows.first().unwrap().detail.as_deref(),
+            Some("built on machine-1")
+        );
+        assert_eq!(builders(&view), ["web built on machine-1."]);
+    }
+
+    #[test]
+    fn a_build_github_passed_on_says_why_and_where_it_built_instead() {
+        let mut view = view();
+        view.builds = serde_json::from_value(json!([
+            {"service": "web", "commit": null, "status": "built", "message": null, "server": "machine-2",
+             "github_skipped": "acme/web has no .github/workflows/ployz-build.yml on its default branch"},
+            {"service": "api", "commit": null, "status": "failed", "message": "exit code: 1",
+             "github_skipped": "GitHub couldn't take the build: rate limited."},
+            {"service": "worker", "commit": null, "status": "reused", "message": null}
+        ]))
+        .unwrap();
+        assert_eq!(
+            builders(&view),
+            [
+                "web built on machine-2. GitHub skipped it: acme/web has no .github/workflows/ployz-build.yml on its default branch.",
+                "GitHub skipped api: GitHub couldn't take the build: rate limited.",
+            ]
+        );
     }
 }

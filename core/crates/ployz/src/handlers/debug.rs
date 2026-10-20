@@ -62,7 +62,8 @@ fn send(root: &ArgMatches, target: Option<MachineTarget>) -> Result<(), Error> {
         Box::pin(async move {
             let response = client
                 .invoke_raw(&request, path, target.as_ref(), Some(TARGET_RPC_TIMEOUT))
-                .await?;
+                .await
+                .map_err(ployz_core::RpcError::from)?;
             if let RpcResponseBody::Error(error) = response.body {
                 return Err(Error::from(error));
             }

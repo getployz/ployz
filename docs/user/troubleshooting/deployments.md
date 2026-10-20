@@ -265,6 +265,16 @@ only one of them. Services that don't need a new build reuse their images, so th
 the service with the older upload must build again. Run the command it shows, and `web` builds
 from its own upload.
 
+## A waiting deploy says its upload is chosen when it starts
+
+`uploaded by nick, sha256 3f2a9c81b0d4 for now; chosen again when it starts`
+
+A deploy without a new upload builds each service from the upload it last ran. If you deploy
+while another deployment is still running, yours waits, and which upload each service ran is
+known only once that one ends. When yours starts, its page and `ployz deployment show` show the
+upload it runs, which can differ from the one it showed while it waited. To ship the code in your
+directory instead, run `ployz up`.
+
 ## Deploy asks me to confirm it deletes data
 
 **Deletes data** or **Data loss**

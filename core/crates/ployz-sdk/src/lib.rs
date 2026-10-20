@@ -583,7 +583,8 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when `request` is not a Volume
     /// switch request, the session is closed, or the Machine refuses; a fence refusal
-    /// carries its `SwitchError` in `details`.
+    /// carries its `SwitchError` in `details`. One no Machine sent is `unanswered`: the
+    /// Machine may have taken the request.
     #[napi(ts_return_type = "Promise<SetVolumeCopyReply | VolumeCopyView>")]
     pub async fn volume_switch(
         &self,
@@ -598,7 +599,7 @@ impl Client {
             .inner
             .volume_switch(&machine, whole_numbers(request))
             .await;
-        switched.map_err(rpc_to_napi)
+        switched.map_err(call_to_napi)
     }
 
     /// Container `container` on `machine` with its spec's real environment values.

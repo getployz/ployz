@@ -270,6 +270,18 @@ impl VolumeStorage {
             .await
     }
 
+    /// Lowers the bound `held` carries to `wanted`, which releases the difference from the
+    /// Pool's commitment. A slot's copy comes down before its parent, so a write that
+    /// fails between them leaves the committed bound at or above the copy's.
+    pub(super) async fn shrink_bound(&self, held: &Held<'_>, wanted: u64) -> Result<()> {
+        let wanted = wanted.to_string();
+        if let Held::Slot { fs: Some(fs), .. } = held {
+            self.set_verified(&fs.name, "refquota", &wanted).await?;
+        }
+        self.set_verified(&held.dataset().name, "refquota", &wanted)
+            .await
+    }
+
     /// Sets `property` on `dataset` and reads it back in bytes (`-p`): the value ZFS
     /// reports is the one that counts, whatever the write accepted.
     pub(super) async fn set_verified(
@@ -344,7 +356,7 @@ impl VolumeStorage {
                 "list",
                 "-Hp",
                 "-o",
-                "name,refquota,used,usedbydataset,mountpoint,mounted,readonly",
+                "name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly",
                 "-r",
                 pool.name(),
             ])
@@ -446,6 +458,16 @@ impl Held<'_> {
         self.dataset().bound()
     }
 
+    /// Bytes the dataset holding the data references, the root or the slot's copy; a
+    /// slot with no copy holds none.
+    pub(super) fn referenced_bytes(&self) -> u64 {
+        match self {
+            Self::Root(root) => root.referenced_bytes,
+            Self::Slot { fs: Some(fs), .. } => fs.referenced_bytes,
+            Self::Slot { fs: None, .. } => 0,
+        }
+    }
+
     /// Whether a Volume Run has the Volume mid-switch on this Machine. A root switches
     /// while [`Dataset::switching`]. A slot switches only while a receive runs into it:
     /// its pull mark stays until a later pull settles, and its copy's cut mark until a
@@ -461,7 +483,9 @@ impl Held<'_> {
 pub(super) struct Dataset {
     pub(super) name: String,
     pub(super) refquota: u64,
-    pub(super) used_bytes: u64,
+    /// ZFS `referenced`: the copy's data as `refquota` bounds it, shared snapshot
+    /// blocks included.
+    pub(super) referenced_bytes: u64,
     pub(super) active_used_bytes: u64,
     pub(super) mountpoint: String,
     pub(super) mounted: bool,
@@ -477,11 +501,13 @@ impl Dataset {
             Some(refquota),
             Some(used_bytes),
             Some(active_used_bytes),
+            Some(referenced_bytes),
             Some(mountpoint),
             Some(mounted),
             Some(readonly),
             None,
         ) = (
+            fields.next(),
             fields.next(),
             fields.next(),
             fields.next(),
@@ -502,7 +528,7 @@ impl Dataset {
         Ok(Self {
             name: name.to_owned(),
             refquota: parse_zfs_bytes(refquota)?,
-            used_bytes,
+            referenced_bytes: referenced_bytes.parse::<u64>().map_err(|_| invalid())?,
             active_used_bytes,
             mountpoint: mountpoint.to_owned(),
             mounted: mounted == "yes",

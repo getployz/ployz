@@ -478,6 +478,7 @@ fn expected(expect: Expect, machine: Machine) -> ExpectedCopy {
         Expect::Mirror { newest } => ExpectedCopy::Mirror {
             newest: snapshot(newest).guid,
             slot: slot_id(machine),
+            role: None,
         },
         Expect::None => ExpectedCopy::None,
     }
