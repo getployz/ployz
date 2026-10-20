@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DockerVolume, DockerVolumeId, DockerVolumeName, PROVISIONED_VOLUME_DRIVER, RpcError,
-    VolumeSource,
+    ContainerId, ContainerLimits, DockerVolume, DockerVolumeId, DockerVolumeName,
+    PROVISIONED_VOLUME_DRIVER, ResolvedServiceSpec, RpcError, VolumeSource,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -157,6 +157,22 @@ mod tests {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VolumeRemoved {}
+
+/// Ask a Machine to apply `spec`'s CPU and memory limits to the running Service
+/// Container `container_id` in place, and record `spec` as its resolved spec. The
+/// Machine refuses any other difference between `spec` and the Container's spec.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdateContainerLimitsRequest {
+    pub container_id: ContainerId,
+    pub spec: ResolvedServiceSpec,
+}
+
+/// The limits a Machine read back from Docker after an in-place update.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerLimitsUpdated {
+    pub container_id: ContainerId,
+    pub limits: ContainerLimits,
+}
 
 /// Request fresh storage commitments and physical backing capacity.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

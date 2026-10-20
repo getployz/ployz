@@ -63,6 +63,7 @@ macro_rules! rpc_catalog {
                 ListContainers: (list_containers, "ListContainers", ListContainersRequest, "list_containers", ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container),
                 InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container),
                 EnsureContainer: (ensure_container, "EnsureContainer", EnsureContainerRequest, "ensure_container", EnsuredContainer, ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1", Container),
+                UpdateContainerLimits: (update_container_limits, "UpdateContainerLimits", UpdateContainerLimitsRequest, "update_container_limits", ContainerLimitsUpdated, UPDATE_CONTAINER_LIMITS_CAPABILITY, "ployz.container.limits.update.v1", Container),
                 InspectStorage: (inspect_storage, "InspectStorage", InspectStorageRequest, "inspect_storage", StorageCapacity, INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1", Container),
                 PrepareVolumes: (prepare_volumes, "PrepareVolumes", PrepareVolumesRequest, "prepare_volumes", PreparedVolumes, PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1", Container),
                 ListVolumes: (list_volumes, "ListVolumes", ListVolumesRequest, "list_volumes", VolumeInventory, LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1", Container),
