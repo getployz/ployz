@@ -295,6 +295,12 @@ impl StorageCapacity {
     /// The largest further Provisioned Volume bound this Machine's Pool admits now, net of
     /// every root and slot bound it already commits, growing its backing where it can.
     ///
+    /// Bisects the admission [`Self::budget`] runs instead of inverting it. The headroom
+    /// `max(commitment / 10, 1 GiB)` is piecewise with floor division, root-backed growth
+    /// rounds the backing extension up to whole GiB and refills TRIM holes, and the host
+    /// reserve only applies once growth is needed, so a closed form would be a second
+    /// formula to keep in step.
+    ///
     /// # Errors
     /// Returns unknown capacity for inconsistent observations.
     pub fn committable_bytes(&self) -> Result<u64, StorageCapacityError> {
@@ -315,9 +321,8 @@ impl StorageCapacity {
             Err(error @ StorageCapacityError::StorageCapacityUnknown { .. }) => return Err(error),
             Err(_) => return Ok(0),
         }
-        // Admission only gets harder as the commitment grows, on every backing, so the
-        // last admitted extra bound is a bisection away. A commitment of u64::MAX
-        // overflows its headroom, so the top of the range starts refused.
+        // Admission only gets harder as the commitment grows, on every backing. A
+        // commitment of u64::MAX overflows its headroom, so the top starts refused.
         let (mut admitted, mut refused) = (0u64, u64::MAX - committed);
         while refused - admitted > 1 {
             let extra = admitted + (refused - admitted) / 2;

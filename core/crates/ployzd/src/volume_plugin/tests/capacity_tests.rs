@@ -309,3 +309,95 @@ async fn a_slot_reports_the_bytes_its_copy_references() {
     );
     server.abort();
 }
+
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// A Pool already committed to a 2 GiB root and a 1 GiB mirror slot, served fresh.
+fn committed_pool(
+    test: &TestDir,
+    fixed: bool,
+) -> (PathBuf, tokio::task::JoinHandle<io::Result<()>>) {
+    let storage = fake_first_pool(&test.0, 4096);
+    let script = test.0.join("fake-storage");
+    let mut body = fs::read_to_string(&script)
+        .unwrap()
+        .replace("ployz-mirror/data", "ployz-mirror/copy");
+    if fixed {
+        body = body
+            .replace("ployz/ployz", "ployz-device/ployz")
+            .replace("-r ployz'", "-r ployz-device'")
+            .replace(
+                "  zpool)\n",
+                &format!(
+                    r#"  zpool)
+    case "$*" in
+      import) printf '   pool: ployz-device\n'; exit 0 ;;
+      'list -Hp -o name,size,allocated,free,health,readonly')
+        printf 'ployz-device\t{}\t{}\t0\tONLINE\toff\n'
+        exit 0 ;;
+    esac
+"#,
+                    8 * GIB,
+                    GIB
+                ),
+            );
+    } else {
+        fs::write(test.0.join(POOL_BACKING_FILE), "").unwrap();
+        fs::write(test.0.join("pool"), "").unwrap();
+        fs::write(test.0.join("allocated"), (8 * GIB).to_string()).unwrap();
+    }
+    fs::write(script, body).unwrap();
+    for marker in ["root", "volume", "mirror-root"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    fs::write(test.0.join("volume-bound"), (2 * GIB).to_string()).unwrap();
+    fs::write(test.0.join("slot"), GIB.to_string()).unwrap();
+    let socket = test.0.join("plugin.sock");
+    let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+    (socket, server)
+}
+
+async fn create_other(test: &TestDir, fixed: bool, bytes: u64) -> Value {
+    let (socket, server) = committed_pool(test, fixed);
+    let response = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"other","Opts":{"size":format!("{bytes}b")}}),
+    )
+    .await;
+    server.abort();
+    response
+}
+
+#[tokio::test]
+async fn committable_bytes_is_exactly_what_volume_creation_admits() {
+    for (fixed, refusal) in [(true, "automatic growth"), (false, "Not enough disk space")] {
+        let test = TestDir::new();
+        let (socket, server) = committed_pool(&test, fixed);
+        let inspected = post(&socket, "/Storage.Inspect", json!(null)).await;
+        server.abort();
+        let capacity: ployz_core::StorageCapacity =
+            serde_json::from_value(inspected.get("Ok").cloned().unwrap()).unwrap();
+        assert_eq!(capacity.copies.len(), 2, "a root and a slot: {inspected}");
+        let committable = capacity.committable_bytes().unwrap();
+        assert!(committable > GIB, "fixed={fixed}: {committable}");
+
+        let over = TestDir::new();
+        let refused = create_other(&over, fixed, committable + 1).await;
+        let message = refused.get("Err").and_then(Value::as_str).unwrap();
+        assert!(message.contains(refusal), "fixed={fixed}: {refused}");
+        assert!(
+            !fs::read_to_string(over.0.join("commands"))
+                .unwrap()
+                .contains("ployz/other"),
+            "fixed={fixed}: a refused Volume creates no dataset"
+        );
+
+        let edge = TestDir::new();
+        assert_eq!(
+            create_other(&edge, fixed, committable).await,
+            json!({"Err":""}),
+            "fixed={fixed}"
+        );
+    }
+}
