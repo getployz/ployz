@@ -48,6 +48,7 @@ fn isolated(home: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
     command
         .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", home.join("config.yaml"))
         .env_remove("PLOYZ_STORE")
         .env_remove("PLOYZ_TOKEN")
@@ -1409,6 +1410,19 @@ fn an_agent_adds_checks_and_removes_domains() {
             (cloud, !cloud),
             "{planned}"
         );
+        let unreached = ok(
+            store,
+            &[&["deploy", "--plan"][..], &UNREACHABLE_SERVER].concat(),
+        );
+        let cause = unreached["ingress_unchecked"][0]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            cause.starts_with(
+                "Ployz couldn't reach your Server's daemon: Couldn't open a connection to the Server: "
+            ) && cause.contains("refused"),
+            "{unreached}"
+        );
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];
@@ -2337,7 +2351,10 @@ fn discarding_a_save_never_deployed_says_how_to_bring_it_back() {
         let back = "web is in saved #1 but was never deployed, so discarding removes it. Bring it back: ployz discard web";
 
         let first = discard();
-        assert!(first.contains("Discarded every staged change"), "{first}");
+        assert!(
+            first.contains("Discarded 1 staged change in shop/production: web."),
+            "{first}"
+        );
         assert!(first.contains(back), "{first}");
         let diff = ok(store, &["diff"]);
         assert_eq!(diff["draft_changes"][0]["name"], json!("web"), "{diff}");
@@ -2406,6 +2423,11 @@ fn an_agent_reviews_saves_and_discards() {
             .unwrap()
             .as_str()
             .unwrap();
+        assert_eq!(
+            stale.pointer("/details/diff"),
+            Some(&json!({ "version": fresh })),
+            "a stale review hands back only the fresh version, not every staged value"
+        );
         assert_eq!(
             stale.pointer("/details/next"),
             Some(&json!(format!(
@@ -3001,6 +3023,13 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(deployed["saved"], json!(1));
         assert_eq!(deployed["status"], json!("failed"));
         assert_eq!(deployed["outcome"]["type"], json!("not_executed"));
+        let outcome = deployed["outcome"].to_string();
+        assert!(
+            outcome.contains("Ployz couldn't reach your Server's daemon")
+                && !outcome.contains("connections from")
+                && !outcome.contains("Machine"),
+            "{outcome}"
+        );
         assert_eq!(deployed["nodes"][0]["outcome"], json!("not_attempted"));
         let id = deployed["id"].as_str().unwrap().to_owned();
         assert_eq!(
@@ -3391,12 +3420,79 @@ fn up_ships_a_directory_without_git() {
 
         let other = second.path().join("My Shop");
         std::fs::create_dir(&other).unwrap();
+        let events = home.path().join("events.jsonl");
+        let empty_args = [&args[..], &["--events", events.to_str().unwrap()]].concat();
+        let (code, empty) = in_dir(store, home.path(), &other, &empty_args, &[]);
+        assert_eq!(code, Some(2), "{empty}");
+        assert!(
+            empty["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Nothing to deploy: ")),
+            "{empty}"
+        );
+        assert!(!events.exists(), "a refused up leaves --events alone");
+        std::fs::write(other.join("Dockerfile"), "FROM scratch\n").unwrap();
         let (code, taken) = in_dir(store, home.path(), &other, &args, &[]);
         assert_eq!(code, Some(1), "{taken}");
         assert_eq!(
             taken["error"]["details"]["next"],
             json!("ployz up --project my-shop")
         );
+    }
+}
+
+/// A Branch's copy of a Service `ployz up` uploaded has no source until an upload,
+/// so the Branch names `ployz up --env`, which ships it; `deploy` there is refused.
+#[test]
+fn a_branch_of_an_uploaded_service_names_up_to_ship_it() {
+    let up = [&["up"][..], &UNREACHABLE_SERVER].concat();
+    for store in &targets() {
+        let (home, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = root.path().canonicalize().unwrap().join("up-local");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
+        let run = |args: &[&str]| in_dir(store, home.path(), &dir, args, &[]);
+        let (code, shipped) = run(&up);
+        assert_eq!(code, Some(3), "{shipped}");
+
+        let (code, made) = run(&["env", "branch", "staging", "--copy", "up-local"]);
+        assert_eq!(code, Some(0), "{made}");
+        assert_eq!(made["next"], json!("ployz up --env staging"));
+        let deploy = [&["deploy", "--env", "staging"][..], &UNREACHABLE_SERVER].concat();
+        let (code, refused) = run(&deploy);
+        assert_eq!(code, Some(2), "{refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("has nothing to run yet")),
+            "{refused}"
+        );
+        let (code, staging) = run(&[&up[..], &["--env", "staging"]].concat());
+        assert_eq!(code, Some(3), "{staging}");
+        assert_eq!(
+            staging["deployment"]["environment"]["name"],
+            json!("staging"),
+            "{staging}"
+        );
+    }
+}
+
+/// `config mount` written the way `config add --mount` takes it names the order it takes,
+/// before it looks up the Service or the Config.
+#[test]
+fn a_config_mount_written_like_add_names_the_order_mount_takes() {
+    for store in &targets() {
+        for args in [
+            ["config", "mount", "app", "web:/etc/app"],
+            ["config", "mount", "web:/etc/app", "app"],
+        ] {
+            let refused = error(store, &args);
+            assert_eq!(
+                refused["message"],
+                json!("config mount takes SERVICE CONFIG DIR: ployz config mount web app /etc/app"),
+                "{args:?}"
+            );
+        }
     }
 }
 
@@ -4302,11 +4398,11 @@ fn diff_escapes_what_would_steer_the_terminal_in_follow_hints_and_file_names() {
             "{human}"
         );
         assert!(
-            human.contains(r"files.safe\u{202e}evil.txt: null → "),
+            human.contains(r"files: added safe\u{202e}evil.txt"),
             "{human}"
         );
         assert!(
-            human.contains(r"files.line\u{2028}break.txt: null → "),
+            human.contains(r"files: added line\u{2028}break.txt"),
             "{human}"
         );
     }
@@ -4664,6 +4760,72 @@ fn history_says_nothing_staged_when_the_next_deploy_already_matches() {
         human(&["history", "undo", "3"]),
         "Nothing to undo in #3. Nothing staged.\n"
     );
+}
+
+#[test]
+fn history_lists_when_who_and_what_and_names_the_draft_an_action_overwrites() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["set", "web.env.SOAK=saved"]);
+    ok(&store, &["deploy", "--skip-deploy", "--message", "soak it"]);
+    let listed = human(&["history"]);
+    let newest = listed.lines().nth(1).unwrap_or_default();
+    assert!(newest.starts_with("#2"), "{listed}");
+    assert!(newest.contains("web.env.SOAK"), "{listed}");
+    assert!(newest.contains("soak it"), "{listed}");
+    assert!(newest.contains("s ago"), "{listed}");
+    assert!(
+        listed
+            .lines()
+            .nth(2)
+            .unwrap_or_default()
+            .contains("first version"),
+        "{listed}"
+    );
+
+    ok(&store, &["set", "web.env.SOAK=draft"]);
+    let refused = error(&store, &["history", "undo", "2"]);
+    assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("draft changes to web.env.SOAK"),
+        "{refused}"
+    );
+    assert_eq!(
+        refused["details"]["next"],
+        json!("ployz history undo 2 --accept-overwrite"),
+        "{refused}"
+    );
+    ok(&store, &["history", "undo", "2", "--accept-overwrite"]);
+}
+
+#[test]
+fn a_bare_discard_names_every_change_it_drops() {
+    let store = &Target::Local(tempfile::tempdir().unwrap());
+    ok(store, &["project", "new", "shop"]);
+    ok(store, &["service", "add", "web", "--image", "web:1"]);
+    applied(store, "production");
+    ok(store, &["set", "web.env.MINE=1"]);
+    ok(store, &["service", "add", "api", "--image", "api:1"]);
+    let discarded = ok(store, &["discard"]);
+    let mut dropped: Vec<&str> = discarded["dropped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap())
+        .collect();
+    dropped.sort_unstable();
+    assert_eq!(dropped, ["api", "web.env.MINE"], "{discarded}");
 }
 
 #[test]

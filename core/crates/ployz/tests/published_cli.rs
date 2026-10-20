@@ -138,6 +138,7 @@ impl Fixture {
         command
             .current_dir(dir)
             .env("HOME", self.home.path())
+            .env_remove("XDG_CONFIG_HOME")
             .env("PLOYZ_CONFIG", self.config())
             .env("PLOYZ_TOKEN", "ployz_test_token")
             .env("PLOYZ_CLOUD_URL", &self.url)
@@ -570,6 +571,7 @@ fn a_command_line_that_misses_without_a_cloud_never_touches_the_network() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(&args)
         .env("HOME", cloud.home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", cloud.config())
         .env_remove("PLOYZ_TOKEN")
         .env_remove("PLOYZ_CLOUD_URL")
@@ -599,6 +601,7 @@ fn a_device_signed_in_to_one_cloud_never_reads_commands_from_the_cloud_url_names
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(&args)
         .env("HOME", signed_in.home.path())
+        .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", signed_in.config())
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", &named.url)
@@ -859,7 +862,7 @@ fn a_typed_project_wins_over_an_empty_ployz_project() {
 fn a_typed_environment_wins_over_an_empty_ployz_env() {
     let cloud = Fixture::new("one");
     let mut args = scoped_args(&entry_scoped());
-    args.extend(["--environment".to_owned(), "production".to_owned()]);
+    args.extend(["--env".to_owned(), "production".to_owned()]);
 
     let output = cloud
         .command_in(cloud.home.path())

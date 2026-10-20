@@ -98,8 +98,14 @@ fn arg(arg: &PublishedArg) -> Arg {
     if arg.positional {
         clap = clap.value_name(arg.name.to_uppercase());
     } else {
+        // Cloud's `environment` input is `--env`, as on every compiled command.
+        let long = if arg.name == "environment" {
+            "env"
+        } else {
+            arg.name.as_str()
+        };
         clap = clap
-            .long(arg.name.clone())
+            .long(long.to_owned())
             .value_name(arg.name.to_uppercase());
     }
     if let Some(help) = &arg.help {
@@ -169,6 +175,20 @@ mod tests {
                 assert_eq!(arg.is_positional(), positional, "{} {name}", command.path());
             }
         }
+    }
+
+    #[test]
+    fn a_published_environment_is_the_env_flag() {
+        let root = attach(crate::cli::compiled(), &published());
+        let matches = root
+            .try_get_matches_from(["ployz", "uptime", "show", "web", "--env", "staging"])
+            .unwrap();
+        let (_, uptime) = matches.subcommand().unwrap();
+        let (_, show) = uptime.subcommand().unwrap();
+        assert_eq!(
+            show.get_one::<String>("environment").map(String::as_str),
+            Some("staging")
+        );
     }
 
     #[test]

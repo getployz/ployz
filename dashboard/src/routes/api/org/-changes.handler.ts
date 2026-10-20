@@ -9,15 +9,16 @@ export type OrgChangesHandlerDeps = {
   authorize: (organizationSlug: string) => Promise<{ organizationId: string }>;
   /** Where every stream starts: the current horizon. */
   currentCursor: () => Promise<string>;
-  /** Collections changed since `since`, and the cursor to read from next. */
-  readChanges: (input: { organizationId: string; since: string }) => Promise<{ cursor: string; collections: ChangeName[] }>;
+  /** Collections changed since `since`, and the cursor to read from next; null once the Organization is gone. */
+  readChanges: (input: { organizationId: string; since: string }) => Promise<{ cursor: string; collections: ChangeName[] } | null>;
 };
 
 const POLL_MS = 250;
 
 /**
- * Organization change stream: each event names the collections to refetch. It never resumes: every
- * connect starts at the current horizon, and the client's refetch on `open` covers the gap.
+ * Organization change stream: it first names the Organization the slug resolved to, then each event names the
+ * collections to refetch. It never resumes: every connect starts at the current horizon, and the client's refetch on
+ * `open` covers the gap. It ends when the Organization is gone, so the client reconnects and learns what the slug names now.
  */
 export async function handleOrgChangesRequest(request: Request, organizationSlug: string, deps: OrgChangesHandlerDeps) {
   let organizationId: string;
@@ -48,9 +49,10 @@ async function* noEvents(): AsyncGenerator<string> {}
 // ponytail: one poll loop per open stream; move to one loop per instance if open tabs reach the thousands.
 async function* orgChangeEvents(organizationId: string, start: string, deps: OrgChangesHandlerDeps, signal: AbortSignal) {
   let cursor = start;
+  yield sseEvent({ event: "organization", data: { id: organizationId } });
   while (!signal.aborted) {
     const changes = await deps.readChanges({ organizationId, since: cursor }).catch(logReadFailure);
-    // Ending the stream on a failed read makes EventSource reconnect, and its `open` refetch catches up.
+    // Ending the stream on a failed read or a removed Organization makes EventSource reconnect, and its `open` refetch catches up.
     if (!changes) return;
     if (changes.collections.length > 0) yield sseEvent({ event: "changes", data: { collections: changes.collections } });
     cursor = changes.cursor;

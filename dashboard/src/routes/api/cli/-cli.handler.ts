@@ -68,7 +68,7 @@ const presetOf = (input: typeof NewToken.Type): Effect.Effect<TokenPreset, Valid
   if (preset === "deploy") {
     // Any other name is looked up, so one that isn't a DNS label hears that no Environment has it.
     return input.environment === undefined || input.environment === ""
-      ? Effect.fail(new Validation({ message: "A Deploy token needs an Environment; pass `--environment`.", userFacing: true }))
+      ? Effect.fail(new Validation({ message: "A Deploy token needs an Environment; pass `--env`.", userFacing: true }))
       : Effect.succeed({ preset, environment: input.environment });
   }
   return input.environment === undefined

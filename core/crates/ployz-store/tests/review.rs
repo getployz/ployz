@@ -567,6 +567,19 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
     assert_eq!(revision.saved_by, who.principal);
     assert!(revision.saved_at.is_some());
     assert_eq!(revision.predecessor, None);
+    let mut created: Vec<_> = revision
+        .changes
+        .iter()
+        .map(|change| (change.name.as_str(), change.lifecycle))
+        .collect();
+    created.sort_by_key(|(name, _)| *name);
+    assert_eq!(
+        created,
+        [
+            ("api", ReviewLifecycleKind::Create),
+            ("web", ReviewLifecycleKind::Create)
+        ]
+    );
     assert!(!save("A duplicate must not replace the message").created);
     assert_eq!(
         store

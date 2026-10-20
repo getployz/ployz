@@ -159,9 +159,12 @@ impl Service<http::Request<Body>> for MachineApi {
         else {
             return self.proxy.call(request);
         };
-        let remote = connection
-            .upgrade()
-            .map(|connection| *connection.remote_id().as_bytes());
+        let remote = connection.upgrade().and(
+            request
+                .extensions()
+                .get::<crate::management::ProvenClient>()
+                .map(|client| client.0),
+        );
         let service = self.service.clone();
         let proxy = self.proxy.clone();
         Box::pin(async move {

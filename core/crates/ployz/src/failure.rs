@@ -364,6 +364,18 @@ fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
             serde_json::json!({ "inspect": ["ployz server ls"] }),
         );
     }
+    let container = error
+        .downcast_ref::<ContainerSelectorError>()
+        .or_else(|| match error.downcast_ref::<OperatorError>() {
+            Some(OperatorError::Container(container)) => Some(container),
+            _ => None,
+        });
+    if let Some(ContainerSelectorError::NotFound { valid, .. }) = container {
+        return (
+            RpcErrorCode::NotFound,
+            serde_json::json!({ "valid_children": valid }),
+        );
+    }
     if let Some(OperatorError::NotRunning {
         running_in_scope, ..
     }) = error.downcast_ref::<OperatorError>()
@@ -488,6 +500,7 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Remote(error) => error.code.clone(),
         ConnectError::Rpc(error) => error.to_rpc_error().code,
         ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
+        ConnectError::OlderMachine => RpcErrorCode::Unsupported,
         ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
             RpcErrorCode::Unsupported
         }
@@ -1193,13 +1206,30 @@ mod tests {
             )))),
         });
         let display = failure.to_string();
-        assert!(
-            display.contains("3 connections from context prod"),
-            "{display}"
+        assert_eq!(
+            display,
+            "Ployz couldn't reach a Server's daemon through any of the 3 connections from context prod."
         );
         assert!(
             !display.contains("Os {") && !display.contains("code: 111"),
             "{display}"
+        );
+    }
+
+    #[test]
+    fn exhausted_connections_say_a_daemon_answered_when_one_did() {
+        let failure = Failure::from(ConnectError::AllFailed {
+            selection: crate::context::ConnectionSource::Context("prod".into()),
+            attempts: 2,
+            retry: ployz_core::Retry::Never,
+            reached: true,
+            last: Some(Box::new(ConnectError::Io(io::Error::from(
+                io::ErrorKind::ConnectionRefused,
+            )))),
+        });
+        assert_eq!(
+            failure.to_string(),
+            "A Server's daemon answered, but the 2 connections from context prod all failed."
         );
     }
 
@@ -1315,6 +1345,25 @@ mod tests {
         assert_eq!(failure.report().code, RpcErrorCode::NotFound);
         assert_eq!(failure.report().message, "No running Service \"nope\"");
         assert_eq!(failure.hints(), [Hint::valid(["web"])]);
+    }
+
+    #[test]
+    fn a_missing_container_lists_the_service_containers() {
+        let missing = ContainerSelectorError::NotFound {
+            selector: ployz_core::ContainerSelector::parse("bogus").unwrap(),
+            valid: vec!["web-1".into(), "web-2".into()],
+        };
+        for failure in [
+            Failure::from(missing.clone()),
+            Failure::from(OperatorError::Container(missing)),
+        ] {
+            assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+            assert_eq!(
+                failure.report().message,
+                "Container \"bogus\" was not found"
+            );
+            assert_eq!(failure.hints(), [Hint::valid(["web-1", "web-2"])]);
+        }
     }
 
     #[test]

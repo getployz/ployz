@@ -266,7 +266,7 @@ fn confirm_in_cloud(
         "Namespace",
         next.clone(),
         || {
-            let Preview { volumes } = runtime.block_on(cloud_account::refusable(
+            let Preview { volumes } = runtime.block_on(cloud_account::refusable_operation(
                 credential,
                 Method::GET,
                 &format!("namespaces/{namespace}/clean"),

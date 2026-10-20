@@ -1,3 +1,5 @@
+use ployz_core::ByteQuantity;
+
 use super::*;
 
 #[tokio::test(start_paused = true)]
@@ -371,6 +373,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
                 HealthVerdict::Failed {
                     observation: unhealthy(),
                     last_check: Some(last_check.clone()),
+                    oom_killed: false,
                 },
             ),
         ),
@@ -392,6 +395,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
                 observation: unhealthy(),
                 last_check: Some(last_check),
             },
+            out_of_memory: None,
         }
     );
     assert!(
@@ -420,6 +424,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                 HealthVerdict::TimedOut {
                     deadline_millis: None,
                     last_check: None,
+                    oom_killed: false,
                 },
             ),
         ),
@@ -438,6 +443,7 @@ async fn a_timed_out_verdict_fails_the_start() {
                         deadline_millis: None,
                         last_check: None,
                     },
+                    out_of_memory: None,
                 },
                 ..
             },
@@ -445,6 +451,63 @@ async fn a_timed_out_verdict_fails_the_start() {
         } if container_id == new
     ));
     client.assert_done();
+}
+
+#[tokio::test]
+async fn a_verdict_docker_killed_out_of_memory_fails_with_the_memory_limit() {
+    let machine = machine('1');
+    let new = container('a');
+    let limit = ByteQuantity::try_from(16 * 1024 * 1024).unwrap();
+    let last_check = LastHealthCheck::exited(1, "wget: can't connect to remote host");
+    for (memory_bytes, oom_killed, out_of_memory) in [
+        (
+            Some(limit),
+            true,
+            Some(OutOfMemory {
+                memory_bytes: Some(limit),
+            }),
+        ),
+        (None, true, Some(OutOfMemory { memory_bytes: None })),
+        (Some(limit), false, None),
+    ] {
+        let mut spec = spec(Some(0), Some(healthcheck()), None);
+        spec.container.resources.memory_bytes = memory_bytes;
+        let plan = vec![run(&machine, spec, false)];
+        let client = Scripted::new(vec![
+            Step(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                Reply::Settled(
+                    new,
+                    HealthVerdict::TimedOut {
+                        deadline_millis: Some(30_000),
+                        last_check: Some(last_check.clone()),
+                        oom_killed,
+                    },
+                ),
+            ),
+            ok(Call::Discard(machine, new)),
+        ]);
+
+        let DeployOutcome::Failed {
+            failed: FailedOperation::Operation { error, .. },
+            ..
+        } = execute_with(&plan, &client, &CancellationToken::new()).await
+        else {
+            panic!("the deploy should fail");
+        };
+        assert_eq!(
+            error,
+            ExecutionError::Health {
+                container_id: new,
+                failure: HealthFailure::TimedOut {
+                    deadline_millis: Some(30_000),
+                    last_check: Some(last_check.clone()),
+                },
+                out_of_memory,
+            }
+        );
+        client.assert_done();
+    }
 }
 
 #[tokio::test]
