@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "088eed7f-029f-4c2a-b5d2-5ed55786803f",
+  "id": "3212ab1f-559e-40ff-9c4c-825d2fedb13c",
   "prevIds": [
-    "5a78ca9e-8282-4bb0-81bc-6029dcc76ee4",
+    "378d8c2e-af71-4303-b7c8-6c4c32fd2d51",
     "86409c18-a1c8-4d0f-be60-f5c1cb279124"
   ],
   "ddl": [
@@ -244,6 +244,12 @@
     {
       "isRlsEnabled": false,
       "name": "organization_cluster_domain",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "deployment_cleanup",
       "entityType": "tables",
       "schema": "public"
     },
@@ -5656,6 +5662,110 @@
       "entityType": "columns",
       "schema": "public",
       "table": "organization_cluster_domain"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "deployment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_cleanup"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_cleanup"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "environment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_cleanup"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_cleanup"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_cleanup"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'[]'",
+      "generated": null,
+      "identity": null,
+      "name": "left",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_cleanup"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "message",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_cleanup"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "deployment_cleanup"
     },
     {
       "type": "text",
@@ -12230,6 +12340,23 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "deployment_cleanup_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "deployment_cleanup"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "deployment_run_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -13313,6 +13440,16 @@
     },
     {
       "columns": [
+        "deployment_id"
+      ],
+      "nameExplicit": false,
+      "name": "deployment_cleanup_pkey",
+      "schema": "public",
+      "table": "deployment_cleanup",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "run_id"
       ],
       "nameExplicit": false,
@@ -13986,6 +14123,13 @@
       "entityType": "checks",
       "schema": "public",
       "table": "organization_cluster_domain"
+    },
+    {
+      "value": "\"state\" in ('waiting','done','left_running','cancelled','failed')",
+      "name": "deployment_cleanup_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "deployment_cleanup"
     },
     {
       "value": "\"index\" >= 0",
