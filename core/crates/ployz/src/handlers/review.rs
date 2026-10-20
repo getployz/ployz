@@ -131,12 +131,20 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
         }
+        for setup in &view.setup {
+            crate::ui::stream(format_args!(
+                "setup.{} = {} (runs before {} first deploys)",
+                setup.service,
+                serde_json::Value::String(setup.command.clone()),
+                setup.service
+            ));
+        }
         for hint in &view.follow_hints {
             crate::ui::stream(format_args!(
                 "{} deployed {} = {}, not staged here; use it: {}",
                 hint.from,
                 hint.at,
-                hint.value,
+                super::store::shown(&hint.value),
                 next(
                     matches,
                     &[
