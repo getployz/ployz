@@ -299,6 +299,8 @@ from its own upload.
 
 `uploaded by nick, sha256 3f2a9c81b0d4 for now; chosen again when it starts`
 
+In Ployz Cloud: **Uploaded by nick for now; chosen again when it starts**
+
 A deploy without a new upload builds each service from the upload it last ran. If you deploy
 while another deployment is still running, yours waits, and which upload each service ran is
 known only once that one ends. When yours starts, its page and `ployz deployment show` show the

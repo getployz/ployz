@@ -91,14 +91,13 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         let observation =
             crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
         let selected = observation.machine.clone();
-        let current = client
+        let mut current = client
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await?
             .machine_id;
         if selected.id == current && machines.len() > 1 {
-            return Err(Error::conflict(
-                "the current entry Server cannot be removed while another Server is visible",
-            ));
+            (client, current) =
+                super::connect_avoiding(matches, options.context(), &selected).await?;
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let held = match removal {
@@ -339,7 +338,13 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
         if let Some(reason) = &reset_failure {
-            crate::ui::warn(format!("Server {} was not fully cleaned up or reset: {reason}. Reset does not erase volume data.", selected.name));
+            crate::ui::warn(crate::ui::then_sentence(
+                &crate::ui::with_reason(
+                    format_args!("Server {} was not fully cleaned up or reset", selected.name),
+                    reason,
+                ),
+                "Reset does not erase volume data.",
+            ));
         } else {
             for loss in &observed.data_loss {
                 crate::ui::stream(format_args!(

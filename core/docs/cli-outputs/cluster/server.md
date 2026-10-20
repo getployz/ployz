@@ -856,6 +856,11 @@ $ ployz server upgrade 0.2.3 gamma
 # exit 3
 ```
 
+stdout:
+```
+Server gamma failed to upgrade to 0.2.3 while launching.
+```
+
 stderr:
 ```
 error: Server gamma failed to upgrade to 0.2.3 while launching: could not inspect the Machine upgrade worker: No such file or directory (os error 2)

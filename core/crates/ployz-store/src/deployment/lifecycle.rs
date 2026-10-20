@@ -213,6 +213,7 @@ pub(crate) fn admit(
             DeploymentStatus::Queued,
             service_uploads.as_ref(),
         ),
+        preparing: false,
         remove: saved == NOTHING,
         admitted_by: who.principal.clone(),
         admitted_at,
@@ -729,6 +730,7 @@ pub(crate) fn retry(
         ci: None,
         held: false,
         chooses_upload_at_start: false,
+        preparing: false,
         ..stored.summary
     };
     Ok((summary, rollback))
