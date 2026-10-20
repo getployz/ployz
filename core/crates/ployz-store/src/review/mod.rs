@@ -17,9 +17,9 @@ use std::collections::BTreeSet;
 use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
-    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableValue, SavedVolumeIntent, ServiceGitBranch,
-    ServiceSettingChange, ServiceSource, canonicalize_environment_intent,
+    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedConfigIntent,
+    SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue, SavedVolumeIntent,
+    ServiceGitBranch, ServiceSettingChange, ServiceSource, canonicalize_environment_intent,
     compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
@@ -196,6 +196,58 @@ pub(crate) struct InFlight {
     pub(crate) cluster_domain: Option<Hostname>,
     pub(crate) services: Vec<SavedServiceIntent>,
     pub(crate) volumes: Vec<SavedVolumeIntent>,
+    pub(crate) configs: Vec<SavedConfigIntent>,
+}
+
+impl Head {
+    /// What `saved` drops of what runs or is on its way: each Service, Volume and
+    /// Config that Applied State or a Deployment in flight holds and `saved` lacks.
+    /// Secrets ship inside the Services, so they go with them.
+    pub(crate) fn dropped(&self, saved: &SavedEnvironmentIntent) -> SavedEnvironmentIntent {
+        fn gone<'a, T: Clone + 'a>(
+            held: impl Iterator<Item = &'a T>,
+            kept: &[T],
+            id: impl Fn(&T) -> &str,
+        ) -> Vec<T> {
+            let mut gone: Vec<T> = Vec::new();
+            for item in held {
+                let same = |other: &T| id(other) == id(item);
+                if !kept.iter().any(same) && !gone.iter().any(same) {
+                    gone.push(item.clone());
+                }
+            }
+            gone
+        }
+        let flights = || self.in_flight.iter();
+        SavedEnvironmentIntent {
+            version: self.applied.version,
+            environment_slug: self.applied.environment_slug.clone(),
+            services: gone(
+                self.applied
+                    .services
+                    .iter()
+                    .chain(flights().flat_map(|target| &target.services)),
+                &saved.services,
+                |service| &service.id,
+            ),
+            volumes: gone(
+                self.applied
+                    .volumes
+                    .iter()
+                    .chain(flights().flat_map(|target| &target.volumes)),
+                &saved.volumes,
+                |volume| &volume.resource_id,
+            ),
+            configs: gone(
+                self.applied
+                    .configs
+                    .iter()
+                    .chain(flights().flat_map(|target| &target.configs)),
+                &saved.configs,
+                |config| &config.resource_id,
+            ),
+        }
+    }
 }
 
 /// A review and the bases it was computed on.
@@ -488,14 +540,6 @@ pub(crate) fn destructive(
 /// The losses saved with `saved` as consent for its next Deploy.
 pub(crate) fn consent(saved: Option<&Saved>) -> &[crate::VolumeLoss] {
     saved.map_or(&[], |saved| saved.accepted.as_slice())
-}
-
-/// The reviewed losses that delete data, which saving keeps as that consent.
-pub(crate) fn lost(losses: Vec<crate::VolumeLoss>) -> Vec<crate::VolumeLoss> {
-    losses
-        .into_iter()
-        .filter(|loss| !loss.deletes.is_empty())
-        .collect()
 }
 
 /// Core compares Settings only, so a Service renamed since Head gets its name row

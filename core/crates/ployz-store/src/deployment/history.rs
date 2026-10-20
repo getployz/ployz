@@ -107,6 +107,17 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                 })
                 .cloned()
                 .collect(),
+            configs: nodes
+                .iter()
+                .filter_map(|node| match node {
+                    TargetNode::Config { .. } => saved
+                        .configs
+                        .iter()
+                        .find(|config| config.resource_id == node.id()),
+                    TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
+                })
+                .cloned()
+                .collect(),
         };
         if head.in_flight.is_empty() {
             head.token = format!("{}.{ended}", row.int(0)?);
@@ -120,18 +131,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
             intent
                 .configs
                 .retain(|config| nodes.iter().all(|node| node.id() != config.resource_id));
-            intent.configs.extend(
-                nodes
-                    .iter()
-                    .filter_map(|node| match node {
-                        TargetNode::Config { .. } => saved
-                            .configs
-                            .iter()
-                            .find(|config| config.resource_id == node.id()),
-                        TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
-                    })
-                    .cloned(),
-            );
+            intent.configs.extend(target.configs.iter().cloned());
             intent.services.extend(target.services.iter().cloned());
             intent.volumes.extend(target.volumes.iter().cloned());
         }

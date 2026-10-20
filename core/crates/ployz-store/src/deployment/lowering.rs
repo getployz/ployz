@@ -8,15 +8,18 @@ pub(crate) enum Scope<'a> {
     /// State holds and Saved does not, which deletes the Docker Volumes `losses` names.
     All { losses: &'a [VolumeLoss] },
     /// `services` and the Volumes and Configs they mount, and the teardown of the
-    /// Services `retire` names. With `saved`, also every Service whose Saved
-    /// snapshot, or a Config or Volume it mounts, differs from Applied State. It
+    /// Services `retire` names. With `dropped`, what [`Head::dropped`] finds Saved
+    /// drops, it ships every Saved change: each Service, Volume and Config that
+    /// differs from Applied State, and the removal of each dropped Config. It
     /// removes a Volume of `losses` once it ships every Service Applied State
     /// mounts it on, at once when none does.
+    ///
+    /// [`Head::dropped`]: crate::review::Head::dropped
     Narrow {
         services: &'a [ServiceName],
         retire: &'a [Retire],
         losses: &'a [VolumeLoss],
-        saved: bool,
+        dropped: Option<&'a SavedEnvironmentIntent>,
     },
 }
 
@@ -30,7 +33,7 @@ impl<'a> Scope<'a> {
                 services,
                 retire: &[],
                 losses: &[],
-                saved: false,
+                dropped: None,
             }
         }
     }
@@ -136,21 +139,22 @@ pub(crate) fn freeze(
     namespace: Namespace,
     cluster_domain: Option<&Hostname>,
 ) -> Result<Frozen, RpcError> {
-    let (full, services, retire, losses, every_saved): (
+    let (full, services, retire, losses, dropped): (
         bool,
         &[ServiceName],
         &[Retire],
         &[VolumeLoss],
-        bool,
+        Option<&SavedEnvironmentIntent>,
     ) = match scope {
-        Scope::All { losses } => (true, &[], &[], losses, false),
+        Scope::All { losses } => (true, &[], &[], losses, None),
         Scope::Narrow {
             services,
             retire,
             losses,
-            saved,
-        } => (false, services, retire, losses, saved),
+            dropped,
+        } => (false, services, retire, losses, dropped),
     };
+    let every_saved = dropped.is_some();
     if !full && services.is_empty() && retire.is_empty() {
         return Err(error::invalid(
             "A targeted Deployment names no Service",
@@ -335,13 +339,19 @@ pub(crate) fn freeze(
                         .find(|old| old.resource_id == config.resource_id)
                         != Some(*config)
         })
-        .chain(applied.configs.iter().filter(|old| {
-            (full || every_saved)
-                && !saved
-                    .configs
-                    .iter()
-                    .any(|new| new.resource_id == old.resource_id)
-        }))
+        .chain(match dropped {
+            Some(dropped) => dropped.configs.iter().collect(),
+            None => applied
+                .configs
+                .iter()
+                .filter(|old| {
+                    full && !saved
+                        .configs
+                        .iter()
+                        .any(|new| new.resource_id == old.resource_id)
+                })
+                .collect::<Vec<_>>(),
+        })
         .map(TargetNode::config)
         .collect::<Result<_, _>>()?;
     nodes.extend(configs);
@@ -369,6 +379,7 @@ pub(crate) fn freeze(
             let volume = applied
                 .volumes
                 .iter()
+                .chain(dropped.iter().flat_map(|dropped| &dropped.volumes))
                 .find(|volume| volume.resource_id == loss.volume.id.as_str())
                 .ok_or_else(|| error::corrupt("Applied State"))?;
             TargetNode::volume(volume, Some(loss.deletes.clone()))

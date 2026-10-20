@@ -46,8 +46,8 @@ pub struct VolumeLoss {
 pub struct ConsentedQuery {}
 
 /// What a push needs observed: the Docker Volumes of each Volume whose loss was
-/// accepted when it was saved and that is still deployed. Pass what the Servers
-/// hold with the push, or it deletes none of them.
+/// accepted when it was saved and that still runs or is on its way. Pass what the
+/// Servers hold with the push, or it deletes none of them.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConsentedView {
     pub volumes: Vec<DockerVolumeName>,
@@ -55,7 +55,7 @@ pub struct ConsentedView {
 
 pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, RpcError> {
     let rows = tx.query(
-        "SELECT s.environment_id, s.accepted_losses FROM config_saved s \
+        "SELECT s.environment_id FROM config_saved s \
          JOIN config_environment e ON e.id = s.environment_id \
          WHERE s.organization_id = ?1 AND s.accepted_losses IS NOT NULL \
          AND s.revision = (SELECT MAX(l.revision) FROM config_saved l WHERE l.environment_id = s.environment_id) \
@@ -65,15 +65,17 @@ pub(crate) fn consented(tx: &mut dyn Tx, who: &Actor) -> Result<ConsentedView, R
     let mut volumes = Vec::new();
     for row in rows {
         let id: EnvironmentId = row.parse(0, "Environment ID")?;
-        let accepted: Vec<VolumeLoss> = serde_json::from_str(row.text(1)?)
-            .map_err(|_| error::corrupt("accepted Volume losses"))?;
+        let Some(saved) = crate::review::latest_saved(tx, &id)? else {
+            continue;
+        };
         let environment = crate::scope::load_by_id(tx, &id)?;
-        let applied = crate::deployment::head(tx, &environment)?.applied;
+        let dropped = crate::deployment::head(tx, &environment)?.dropped(&saved.intent);
         volumes.extend(
-            accepted
+            saved
+                .accepted
                 .into_iter()
                 .filter(|loss| {
-                    applied
+                    dropped
                         .volumes
                         .iter()
                         .any(|volume| volume.resource_id == loss.volume.id.as_str())

@@ -712,23 +712,12 @@ fn admit(
     let retire = match shut_down {
         true => Vec::new(),
         false => {
-            // What runs or is on its way: Applied State and every Deployment in flight.
-            let head = deployment::head(tx, &environment)?;
             let mut removed = landed.removals.clone();
-            for service in head
-                .applied
+            for service in deployment::head(tx, &environment)?
+                .dropped(&saved.intent)
                 .services
-                .iter()
-                .chain(head.in_flight.iter().flat_map(|target| &target.services))
             {
-                if !saved
-                    .intent
-                    .services
-                    .iter()
-                    .any(|kept| kept.id == service.id)
-                {
-                    removed.insert(ServiceLineageId::parse(service.id.as_str())?);
-                }
+                removed.insert(ServiceLineageId::parse(service.id.as_str())?);
             }
             deployment::retirements(tx, id, &saved.intent, &removed)?
         }
@@ -1004,8 +993,15 @@ pub(crate) fn auto_admit(
         trusted,
     )?;
     let head = deployment::head(tx, environment)?;
-    let losses = consented(&head.applied, saved, &namespace, trusted)?;
     let full = services.is_empty() && retire.is_empty();
+    let dropped = head.dropped(&saved.intent);
+    // A full Deploy removes what Applied State holds, a narrowed one all it drops.
+    let losses = consented(
+        if full { &head.applied } else { &dropped },
+        saved,
+        &namespace,
+        trusted,
+    )?;
     let mut frozen = deployment::freeze(
         id,
         &saved.intent,
@@ -1017,7 +1013,7 @@ pub(crate) fn auto_admit(
                 services,
                 retire,
                 losses: &losses,
-                saved: true,
+                dropped: Some(&dropped),
             }
         },
         namespace,
@@ -1060,15 +1056,16 @@ pub(crate) fn auto_admit(
     Ok(summary)
 }
 
-/// The losses `saved` holds consent for that the Servers still show unchanged.
-/// Without that evidence a push keeps the data, and the next Deploy asks again.
+/// The losses of the Volumes `held` that `saved` drops and holds consent for, while
+/// the Servers still show them unchanged. Without that evidence a push keeps the
+/// data, and the next Deploy asks again.
 fn consented(
-    applied: &SavedEnvironmentIntent,
+    held: &SavedEnvironmentIntent,
     saved: &review::Saved,
     namespace: &ployz_core::Namespace,
     trusted: &Trusted,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
-    let removed: Vec<_> = crate::removal::removed(applied, &saved.intent, namespace)?
+    let removed: Vec<_> = crate::removal::removed(held, &saved.intent, namespace)?
         .into_iter()
         .filter(|volume| {
             saved
