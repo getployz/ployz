@@ -1168,6 +1168,49 @@ fn discard_review_names_the_source_an_undeployed_save_loses_as_set_names_it() {
     }
 }
 
+#[test]
+fn discard_review_names_a_staged_repository_on_a_saved_image_as_the_repository() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    git_edit(&store, &who, "web.repository", json!("acme/web"));
+    let discarded = discard_review(&store, &who);
+    // The after-view's `web.image` row shares the source RowId; the repository went.
+    assert_eq!(discarded.dropped, ["web.branch", "web.repository"]);
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("nginx:1")));
+}
+
+#[test]
+fn discard_review_names_a_staged_image_on_a_saved_repository_as_the_image() {
+    let (store, who) = shop();
+    git_edit(&store, &who, "web.repository", json!("acme/web"));
+    publish(&store, &who, None).unwrap();
+    unset(&store, &who, "web.repository");
+    set(&store, &who, "web.image", json!("nginx:2"));
+    let before = diff_rows(&store, &who);
+    let discarded = discard_review(&store, &who);
+    assert_eq!(discarded.dropped, ["web.image"]);
+    // The staged image carries no branch, so only the saved repository's comes back:
+    // a row the discard adds, not one it drops.
+    assert_eq!(before, ["web.source", "api.image"]);
+    assert_eq!(
+        diff_rows(&store, &who),
+        ["web.branch", "web.source", "api.image"]
+    );
+    assert_eq!(
+        value(&store, &who, "web.repository"),
+        Some(json!("acme/web"))
+    );
+}
+
+fn diff_rows(store: &ConfigStore, who: &Actor) -> Vec<String> {
+    diff(store, who)
+        .review_changes()
+        .iter()
+        .flat_map(|change| change.settings.clone())
+        .map(|row| row.path)
+        .collect()
+}
+
 fn unset(store: &ConfigStore, who: &Actor, path: &str) {
     store
         .write(
@@ -4602,7 +4645,7 @@ fn history_hides_the_plain_text_a_lapsed_deployment_protected() {
     }
 }
 
-fn discard_review(store: &ConfigStore, who: &Actor) {
+fn discard_review(store: &ConfigStore, who: &Actor) -> ployz_store::Discarded {
     store
         .write(
             who,
@@ -4612,7 +4655,7 @@ fn discard_review(store: &ConfigStore, who: &Actor) {
                 ..Discard::default()
             },
         )
-        .unwrap();
+        .unwrap()
 }
 
 #[test]

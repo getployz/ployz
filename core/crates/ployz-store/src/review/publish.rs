@@ -285,14 +285,20 @@ pub(crate) fn discard(
 }
 
 /// Core names a source that changed since its introduction `web.source`; once that
-/// change goes, a new Service's row is the one `set` names, such as `web.image`.
+/// change goes, a new Service's row is the one `set` names. Name it by the kind the
+/// discard threw away, `web.image` or `web.repository`, since one RowId holds both.
 fn source_named(row: &ServiceSettingChange, now: &super::NodeChange) -> String {
-    let same = now
+    let kept = now
         .settings
         .iter()
-        .find(|kept| kept.row.is_some() && kept.row == row.row);
-    match same {
-        Some(kept) if row.path.ends_with(".source") => kept.path.clone(),
+        .any(|kept| kept.row.is_some() && kept.row == row.row);
+    let set = match row.after.get("type").and_then(|kind| kind.as_str()) {
+        Some("image") => "image",
+        Some("git") => "repository",
+        _ => return row.path.clone(),
+    };
+    match row.path.strip_suffix(".source") {
+        Some(service) if kept => format!("{service}.{set}"),
         _ => row.path.clone(),
     }
 }
