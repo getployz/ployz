@@ -116,10 +116,10 @@ fn failed(store: &Target, args: &[&str], exit: i32) -> Value {
 
 const UNREACHABLE_SERVER: [&str; 4] = ["--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
 
-/// Run `ployz --json ARGS` where no Server answers, so its Deployment ends not executed: exit 3.
+/// Run `ployz --json ARGS` where no Server answers, so its Deployment ends not executed: exit 1.
 fn no_server_answers(store: &Target, args: &[&str]) -> Value {
     let (code, json) = ployz(Some(store), &[args, &UNREACHABLE_SERVER].concat());
-    assert_eq!(code, Some(3), "{args:?}: {json}");
+    assert_eq!(code, Some(1), "{args:?}: {json}");
     json
 }
 
@@ -2954,7 +2954,7 @@ fn deployment_text_shows_the_deepest_cause_and_json_keeps_the_chain() {
     ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
     for number in 1..=3 {
         let (code, deployed) = ployz(Some(&cloud), &["deploy"]);
-        assert_eq!(code, Some(3), "{deployed}");
+        assert_eq!(code, Some(1), "{deployed}");
         let id = deployed["id"].as_str().unwrap();
         let shown = ok(&cloud, &["deployment", "show", id]);
         assert_eq!(shown["outcome"], deployed["outcome"]);
@@ -3349,7 +3349,7 @@ fn up_ships_a_directory_without_git() {
         std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
 
         let (code, up) = in_dir(store, home.path(), &dir, &args, &[]);
-        assert_eq!(code, Some(3), "{up}");
+        assert_eq!(code, Some(1), "{up}");
         assert_eq!(up["directory"], json!(dir.to_str().unwrap()));
         let deployment = &up["deployment"];
         assert_eq!(deployment["environment"]["project"], json!("my-shop"));
@@ -3379,7 +3379,7 @@ fn up_ships_a_directory_without_git() {
         }
 
         let (code, again) = in_dir(store, home.path(), &dir, &args, &[]);
-        assert_eq!(code, Some(3), "{again}");
+        assert_eq!(code, Some(1), "{again}");
         assert_eq!(
             again["deployment"]["environment"]["project"],
             json!("my-shop")
@@ -3453,7 +3453,7 @@ fn a_branch_of_an_uploaded_service_names_up_to_ship_it() {
         std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
         let run = |args: &[&str]| in_dir(store, home.path(), &dir, args, &[]);
         let (code, shipped) = run(&up);
-        assert_eq!(code, Some(3), "{shipped}");
+        assert_eq!(code, Some(1), "{shipped}");
 
         let (code, made) = run(&["env", "branch", "staging", "--copy", "up-local"]);
         assert_eq!(code, Some(0), "{made}");
@@ -3468,7 +3468,7 @@ fn a_branch_of_an_uploaded_service_names_up_to_ship_it() {
             "{refused}"
         );
         let (code, staging) = run(&[&up[..], &["--env", "staging"]].concat());
-        assert_eq!(code, Some(3), "{staging}");
+        assert_eq!(code, Some(1), "{staging}");
         assert_eq!(
             staging["deployment"]["environment"]["name"],
             json!("staging"),
@@ -5525,7 +5525,7 @@ fn a_removal_no_server_answers_is_still_removing_and_retries_with_the_same_rm() 
     ok(&cloud, &[&web[..], &["--env", "staging"]].concat());
     assert_eq!(
         ployz(Some(&cloud), &["deploy", "--env", "staging"]).0,
-        Some(3)
+        Some(1)
     );
 
     let removing = |args: &[&str]| {
@@ -5652,7 +5652,7 @@ fn a_removal_without_volumes_names_the_server_that_did_not_answer_cloud() {
     ok(&cloud, &[&web[..], &["--env", "staging"]].concat());
     assert_eq!(
         ployz(Some(&cloud), &["deploy", "--env", "staging"]).0,
-        Some(3)
+        Some(1)
     );
 
     let why = "It didn't answer, so shop/staging can't come off it yet";

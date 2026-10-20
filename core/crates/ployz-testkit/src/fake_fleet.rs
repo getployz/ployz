@@ -35,7 +35,7 @@ use ployz_core::{
     OpaquePayload, PROTOCOL_MAJOR, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode,
     RpcRequestBody, RpcResponse, RunTarget, RuntimeWatchFrame, ServiceId, ServiceName, SlotId,
-    StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
+    SlotRole, StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
     WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
@@ -844,6 +844,7 @@ impl Fleet {
                             newest: None,
                             resume_token: None,
                             pull: None,
+                            role: SlotRole::Mirror,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             readonly: false,
@@ -1126,6 +1127,7 @@ impl MachineState {
                         bound_bytes: VOLUME_BYTES,
                         used_bytes: USED_BYTES,
                         role: Some(copy.role),
+                        slot_role: None,
                     },
                 }
             })
@@ -1155,6 +1157,7 @@ impl MachineState {
                             role: copy.role,
                             maximum_bytes: maximum,
                             used_bytes: USED_BYTES,
+                            slot_role: None,
                         },
                     )
                 })

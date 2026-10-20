@@ -98,6 +98,7 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
         bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 42,
         role: None,
+        slot_role: None,
     };
     let containers = PartialResult {
         successes: vec![MachineSuccess {
