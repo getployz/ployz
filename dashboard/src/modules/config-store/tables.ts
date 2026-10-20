@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
-import { bytea, check, index, integer, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { bytea, check, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sqlStringLiterals, updatedAt } from "#/db/tables";
 import { organization } from "#/modules/organization/tables";
 
 /**
@@ -32,3 +33,30 @@ export const deploymentRun = pgTable("deployment_run", {
   deploymentId: text("deployment_id").notNull(),
   createdAt: timestamp("created_at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+export const DEPLOYMENT_CLEANUP_STATES = ["waiting", "done", "left_running", "cancelled", "failed"] as const;
+export type DeploymentCleanupState = (typeof DEPLOYMENT_CLEANUP_STATES)[number];
+
+/** An old copy a Deployment's cleanup could not retire. `machine` is the Machine's name. */
+export type CleanupLeft = { machine: string; service: string; reason: string };
+
+/**
+ * How a Cloud Deploy's cleanup of the old copies it replaced went, for the Run page. A display record only: the Store
+ * owns which copies are old. CLI Deploys and runs before cleanup was a step have none.
+ */
+export const deploymentCleanup = pgTable(
+  "deployment_cleanup",
+  {
+    deploymentId: text("deployment_id").primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
+    environmentId: text("environment_id").notNull(),
+    runId: text("run_id").notNull(),
+    state: text("state").notNull().$type<DeploymentCleanupState>(),
+    left: jsonb("left").notNull().default([]).$type<CleanupLeft[]>(),
+    message: text("message"),
+    updatedAt,
+  },
+  (table) => [
+    check("deployment_cleanup_state_check", sql`${table.state} in (${sqlStringLiterals(DEPLOYMENT_CLEANUP_STATES)})`),
+  ],
+);
