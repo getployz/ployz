@@ -586,7 +586,7 @@ impl Client {
     /// carries its `SwitchError` in `details`. One no Machine sent is `unanswered`: the
     /// Machine may have taken the request. One whose entry Machine could not dial
     /// `machine` is not, since `machine` never got it.
-    #[napi(ts_return_type = "Promise<SetVolumeCopyReply | VolumeCopyView>")]
+    #[napi(ts_return_type = "Promise<SetVolumeCopyReply | SetVolumeSizeReply | VolumeCopyView>")]
     pub async fn volume_switch(
         &self,
         machine: String,
