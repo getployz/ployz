@@ -1078,6 +1078,7 @@ mod tests {
                     pool_size_bytes: 10 * gib,
                 },
                 unmanaged_used_bytes: 0,
+                slot_bound_bytes: 0,
                 volumes: BTreeMap::new(),
                 copies: BTreeMap::new(),
             }}),

@@ -81,6 +81,10 @@ pub struct StorageCapacity {
     /// omits it; its `volumes` are then writers.
     #[serde(default)]
     pub copies: BTreeMap<DockerVolumeName, ProvisionedCopy>,
+    /// Every mirror slot's bound, summed apart from `copies`, where a root of the same name
+    /// hides its slot. Zero from a daemon that predates it.
+    #[serde(default)]
+    pub slot_bound_bytes: u64,
 }
 
 impl StorageCapacity {
@@ -299,13 +303,7 @@ impl StorageCapacity {
             .volumes
             .values()
             .map(|maximum| maximum.get())
-            .chain(
-                self.copies
-                    .values()
-                    .filter(|copy| copy.role == CopyRole::Slot)
-                    .map(|copy| copy.maximum_bytes.get()),
-            )
-            .try_fold(0u64, u64::checked_add)
+            .try_fold(self.slot_bound_bytes, u64::checked_add)
             .ok_or_else(|| unknown("existing commitments overflow u64"))?;
         match self.admit(committed) {
             Ok(_) => {}
@@ -442,6 +440,7 @@ mod tests {
                 pool_size_bytes: 100 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 95 * STORAGE_GIB,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::new(),
             copies: BTreeMap::new(),
         };
@@ -477,6 +476,7 @@ mod tests {
                 pool_size_bytes: 100 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 20 * STORAGE_GIB,
+            slot_bound_bytes: 0,
             volumes: volumes.clone(),
             copies: BTreeMap::new(),
         };
@@ -516,6 +516,7 @@ mod tests {
                 pool_size_bytes: 100 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: gib(10),
             copies: BTreeMap::new(),
         };
@@ -550,6 +551,7 @@ mod tests {
                 host_available_bytes: 60 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::new(),
             copies: BTreeMap::new(),
         };
@@ -596,6 +598,7 @@ mod tests {
                 pool_size_bytes: 10 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::new(),
             copies: BTreeMap::new(),
         };
@@ -625,6 +628,7 @@ mod tests {
                 host_available_bytes: 30 * STORAGE_GIB + 123,
             },
             unmanaged_used_bytes: STORAGE_GIB / 3,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::from([(
                 DockerVolumeName::parse("data").unwrap(),
                 bound(5 * STORAGE_GIB),
@@ -653,6 +657,7 @@ mod tests {
                 host_available_bytes: 40 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::new(),
             copies: BTreeMap::new(),
         };
@@ -661,23 +666,15 @@ mod tests {
 
     #[test]
     fn slot_bounds_count_against_committable_bytes() {
-        let mut capacity = StorageCapacity {
+        let capacity = StorageCapacity {
             backing: StorageBacking::Fixed {
                 pool_size_bytes: 10 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 2 * STORAGE_GIB,
             volumes: BTreeMap::new(),
             copies: BTreeMap::new(),
         };
-        capacity.copies.insert(
-            DockerVolumeName::parse("mirror").unwrap(),
-            ProvisionedCopy {
-                role: CopyRole::Slot,
-                maximum_bytes: bound(2 * STORAGE_GIB),
-                used_bytes: 0,
-                slot_role: None,
-            },
-        );
         assert_eq!(capacity.committable_bytes().unwrap(), 7 * STORAGE_GIB);
     }
 
@@ -688,6 +685,7 @@ mod tests {
                 pool_size_bytes: 10 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::from([(
                 DockerVolumeName::parse("data").unwrap(),
                 bound(10 * STORAGE_GIB),
@@ -736,6 +734,7 @@ mod tests {
                 host_available_bytes: 60 * STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::new(),
             copies: BTreeMap::new(),
         };

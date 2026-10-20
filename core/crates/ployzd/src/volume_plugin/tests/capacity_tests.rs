@@ -323,11 +323,19 @@ fn committed_pool(
     test: &TestDir,
     fixed: bool,
 ) -> (PathBuf, tokio::task::JoinHandle<io::Result<()>>) {
+    committed_pool_with_slot(test, fixed, "copy")
+}
+
+fn committed_pool_with_slot(
+    test: &TestDir,
+    fixed: bool,
+    slot: &str,
+) -> (PathBuf, tokio::task::JoinHandle<io::Result<()>>) {
     let storage = fake_first_pool(&test.0, 4096);
     let script = test.0.join("fake-storage");
     let mut body = fs::read_to_string(&script)
         .unwrap()
-        .replace("ployz-mirror/data", "ployz-mirror/copy");
+        .replace("ployz-mirror/data", &format!("ployz-mirror/{slot}"));
     if fixed {
         body = body
             .replace("ployz/ployz", "ployz-device/ployz")
@@ -460,4 +468,45 @@ async fn committable_bytes_is_exactly_what_a_grow_admits() {
             "fixed={fixed}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_slot_a_root_of_its_name_hides_still_counts_against_committable_bytes() {
+    let test = TestDir::new();
+    let (socket, server) = committed_pool_with_slot(&test, true, "data");
+    let inspected = post(&socket, "/Storage.Inspect", json!(null)).await;
+    server.abort();
+    let capacity: ployz_core::StorageCapacity =
+        serde_json::from_value(inspected.get("Ok").cloned().unwrap()).unwrap();
+    assert_eq!(capacity.copies.len(), 1, "{inspected}");
+    assert_eq!(capacity.slot_bound_bytes, SLOT_BOUND, "{inspected}");
+    let committable = capacity.committable_bytes().unwrap();
+
+    let over = TestDir::new();
+    let (socket, server) = committed_pool_with_slot(&over, true, "data");
+    let refused = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"other","Opts":{"size":format!("{}b", committable + 1)}}),
+    )
+    .await;
+    server.abort();
+    assert!(
+        refused
+            .get("Err")
+            .and_then(Value::as_str)
+            .is_some_and(|error| !error.is_empty()),
+        "{refused}"
+    );
+
+    let edge = TestDir::new();
+    let (socket, server) = committed_pool_with_slot(&edge, true, "data");
+    let created = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"other","Opts":{"size":format!("{committable}b")}}),
+    )
+    .await;
+    server.abort();
+    assert_eq!(created, json!({"Err":""}));
 }

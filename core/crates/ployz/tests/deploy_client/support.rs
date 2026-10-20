@@ -643,6 +643,7 @@ impl FakeMachine for DeployService {
                 host_available_bytes: 90 * ployz_core::STORAGE_GIB,
             },
             unmanaged_used_bytes: 0,
+            slot_bound_bytes: 0,
             volumes: BTreeMap::new(),
             copies: self.copies.lock().unwrap().clone(),
         }))
