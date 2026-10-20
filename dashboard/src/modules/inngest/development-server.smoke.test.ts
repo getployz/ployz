@@ -6,8 +6,12 @@ import { join } from "node:path";
 import { connect, type WorkerConnection } from "inngest/connect";
 import { Inngest } from "inngest";
 import { afterEach, describe, expect, it } from "vitest";
+import { createRetireOld } from "#/modules/config-store/retire-old.inngest";
 import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
-import { serverDrainRequestedEvent, serverPolicyChangeRequestedEvent, volumeRunTakenEvent } from "#/modules/inngest/events";
+import {
+  createConfigDeploymentRetireRequestedEvent, createConfigDeploymentStartedEvent, serverDrainRequestedEvent,
+  serverPolicyChangeRequestedEvent, volumeRunTakenEvent,
+} from "#/modules/inngest/events";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 
@@ -405,6 +409,58 @@ describe("Inngest development server durable smoke", () => {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
 
     expect([...finished]).toEqual(["kept"]);
+  }, 60_000);
+
+  it("retire_old_taken_over: a cleanup starts once per Deployment, and only a higher-numbered Deployment of its Environment cancels it", async () => {
+    const started = await startDevServer();
+    devServer = started.process;
+    const inngest = new Inngest({
+      id: "ployz-retire-old-smoke",
+      eventKey: "local",
+      baseUrl: `http://127.0.0.1:${started.devPort}`,
+      isDev: true,
+    });
+    const { cancelOn } = createRetireOld(new Inngest({ id: "test" })).opts;
+    const claimed: string[] = [];
+    const finished = new Set<string>();
+    const run = inngest.createFunction(
+      { id: "retire-old-smoke", retries: 0, triggers: [{ event: "smoke/retire-old" }], cancelOn },
+      async ({ event, step }) => {
+        const deploymentId = String(event.data["deploymentId"]);
+        await step.run("claim", () => { claimed.push(deploymentId); });
+        await step.sleep("hold", "3s");
+        await step.run("finish", () => { finished.add(deploymentId); });
+      },
+    );
+    worker = await connect({ apps: [{ client: inngest, functions: [run] }],
+      gatewayUrl: `ws://127.0.0.1:${started.gatewayPort}/v0/connect`, handleShutdownSignals: [] });
+
+    // The real event's id, so a duplicate request for one Deployment starts no second cleanup.
+    const retire = (environmentId: string, deploymentId: string, number: number) => {
+      const { id, data } = createConfigDeploymentRetireRequestedEvent({ organizationId: "org", environmentId, deploymentId, number });
+      return inngest.send({ id, name: "smoke/retire-old", data });
+    };
+    const admit = (environmentId: string, deploymentId: string, number: number | null) =>
+      inngest.send(createConfigDeploymentStartedEvent({ organizationId: "org", environmentId, deploymentId, number }));
+    await retire("env-1", "same", 2);
+    await retire("env-1", "same", 2);
+    await retire("env-2", "superseded", 2);
+    await retire("env-3", "elsewhere", 2);
+    await retire("env-5", "current", 3);
+    await retire("env-6", "unnumbered", 2);
+    await expect.poll(() => claimed.length, { timeout: 10_000 }).toBe(5);
+    await admit("env-1", "same", 2);
+    await admit("env-2", "newer", 3);
+    await admit("env-4", "other", 9);
+    // A late redispatch of an older Deployment of the same Environment.
+    await admit("env-5", "older", 2);
+    await admit("env-6", "unknown", null);
+    const kept = ["current", "elsewhere", "same", "unnumbered"];
+    await expect.poll(() => [...finished].sort(), { timeout: 20_000 }).toEqual(kept);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    expect([...finished].sort()).toEqual(kept);
+    expect(claimed.sort()).toEqual(["current", "elsewhere", "same", "superseded", "unnumbered"]);
   }, 60_000);
 });
 

@@ -78,12 +78,15 @@ const setup = Effect.fn(function* () {
   const deliver = (applied: boolean) => Effect.promise(() => new InngestTestEngine({
     function: worker,
     events: [{ name: configDeploymentAdmittedEvent, data: { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYED } }],
-    steps: applied
-      ? [
-        { id: "run-deployment", handler: () => ({ ran: { id: DEPLOYED, status: "applied", remove: false } }) },
-        { id: "delete-orphan-mirrors", handler: () => null },
-      ]
-      : [],
+    steps: [
+      ...applied
+        ? [
+          { id: "run-deployment", handler: () => ({ ran: { id: DEPLOYED, status: "applied", remove: false } }) },
+          { id: "delete-orphan-mirrors", handler: () => null },
+        ]
+        : [],
+      { id: "retire-old", handler: () => ({ ids: [] }) },
+    ],
   }).execute());
   const backfill = createUptimeMaintenanceFunctions(new Inngest({ id: "uptime-backfill-test" }), (program) =>
     Effect.runPromise(program.pipe(Effect.provide(services)))).find(({ opts }) => opts.id === "uptime-backfill");
