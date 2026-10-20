@@ -577,6 +577,24 @@ fn a_save_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
 }
 
 #[test]
+fn the_diff_marks_deleted_a_volume_a_deploy_in_flight_creates() {
+    let (store, who) = volume_in_flight();
+    let diff = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    let data = diff
+        .changes
+        .iter()
+        .find(|change| change.name == "data")
+        .unwrap();
+    assert_eq!(
+        data.lifecycle,
+        ployz_core::config::ReviewLifecycleKind::Delete
+    );
+    assert_eq!(data.data, Some(ployz_store::DataEffect::Deleted));
+}
+
+#[test]
 fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
     let (store, who) = volume_in_flight();
     let deploy = |version: Option<String>| {
