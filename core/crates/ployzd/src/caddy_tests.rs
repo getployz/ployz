@@ -82,7 +82,7 @@ async fn reconcile<A: CaddyAdmin>(
         &service_containers(observations.iter().cloned()),
         certificates,
     );
-    apply_caddy(&projection, None, config_file, admin, &mut None).await
+    apply_caddy(&projection, config_file, admin).await
 }
 
 #[test]
@@ -1063,65 +1063,6 @@ async fn failed_load_preserves_the_last_caddyfile() {
 }
 
 #[tokio::test]
-async fn reconcile_loads_only_a_changed_config() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join(CONFIG_FILE);
-    let local = MachineId::parse("a".repeat(32)).unwrap();
-    let render = |address| {
-        projection(
-            &local,
-            "node-a",
-            &service_containers([observation(
-                1,
-                &local,
-                "api",
-                Some(address),
-                vec![ingress("example.com", 80, HttpProtocol::Http)],
-            )]),
-            &BTreeMap::new(),
-        )
-    };
-    let first = render([10, 210, 1, 2]);
-    let admin = FakeAdmin::default();
-    let failing = FakeAdmin {
-        fail_load: true,
-        ..FakeAdmin::default()
-    };
-    let mut loaded = None;
-
-    apply_caddy(&first, None, &path, Some(&failing), &mut loaded)
-        .await
-        .unwrap_err();
-    apply_caddy(&first, None, &path, Some(&admin), &mut loaded)
-        .await
-        .unwrap();
-    assert_eq!(*admin.loads.lock().unwrap(), 1, "a failed load is retried");
-    apply_caddy(&first, None, &path, Some(&admin), &mut loaded)
-        .await
-        .unwrap();
-    assert_eq!(
-        *admin.loads.lock().unwrap(),
-        1,
-        "unchanged config is not loaded"
-    );
-    apply_caddy(
-        &render([10, 210, 1, 3]),
-        None,
-        &path,
-        Some(&admin),
-        &mut loaded,
-    )
-    .await
-    .unwrap();
-    assert_eq!(*admin.loads.lock().unwrap(), 2, "changed config is loaded");
-    assert!(
-        std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("10.210.1.3:80")
-    );
-}
-
-#[tokio::test]
 async fn reconcile_writes_material_and_pins_it_before_load() {
     let directory =
         std::env::temp_dir().join(format!("ployz-caddy-cert-test-{}", std::process::id()));
@@ -1296,7 +1237,6 @@ fn pinned_file_names(pin: &str) -> (String, String) {
 #[derive(Default)]
 struct FakeAdmin {
     adapted: Mutex<Vec<String>>,
-    loads: Mutex<usize>,
     fail_load: bool,
 }
 
@@ -1310,7 +1250,6 @@ impl CaddyAdmin for FakeAdmin {
         if self.fail_load {
             Err(Error::Admin("load failed".into()))
         } else {
-            *self.loads.lock().unwrap() += 1;
             Ok(())
         }
     }
