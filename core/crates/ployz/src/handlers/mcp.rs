@@ -596,6 +596,10 @@ impl Server {
             .into());
         }
         let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id, tool));
+        let retry = tools::Call::new(
+            tool,
+            Value::Object(repeat(&command, &input, approval.as_deref())),
+        );
         let (ran, revision) = tokio::select! {
             biased;
             ran = published::run_on(&credential, Via::Agent, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
@@ -623,7 +627,7 @@ impl Server {
                         );
                         approval_required(text, id, &error.message, &url)
                     }
-                    _ => CallToolResult::structured_error(json!(error)),
+                    _ => CallToolResult::structured_error(json!(command_refusal(error, retry))),
                 }
             }
             Err(error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_))) => {
@@ -1221,6 +1225,58 @@ fn approval_required(text: String, id: &str, message: &str, url: &str) -> CallTo
         "approval_required": { "approval_id": id, "message": message, "url": url },
     }));
     result
+}
+
+/// The call to repeat after `command` refused: the fields it takes, so a key the caller
+/// made up is not echoed, and the approval the call carried, which stays good while the
+/// plan it approved does.
+fn repeat(command: &PublishedCommand, input: &JsonObject, approval: Option<&str>) -> JsonObject {
+    let takes = command.input.get("properties").and_then(Value::as_object);
+    let mut asked: JsonObject = input
+        .iter()
+        .filter(|(key, _)| takes.is_some_and(|takes| takes.contains_key(*key)))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if let Some(id) = approval {
+        asked.insert(APPROVAL.to_owned(), Value::String(id.to_owned()));
+    }
+    asked
+}
+
+/// A Cloud command's refusal in the shape a compiled tool refuses, with the call to
+/// repeat. A Cloud that predates `writes` can't say what it wrote: `unknown`.
+fn command_refusal(mut error: RpcError, retry: tools::Call) -> tools::Refusal {
+    let mut told = |key: &str| {
+        error
+            .details
+            .as_object_mut()
+            .and_then(|details| details.remove(key))
+    };
+    let field = told("field").and_then(|field| field.as_str().map(str::to_owned));
+    let expected = told("expected");
+    let writes = told("writes")
+        .and_then(|writes| serde_json::from_value(writes).ok())
+        .unwrap_or(tools::Writes::Unknown);
+    if error
+        .details
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty)
+    {
+        error.details = Value::Null;
+    }
+    tools::Refusal {
+        code: error.code,
+        message: error.message,
+        field,
+        expected,
+        example: None,
+        did_you_mean: None,
+        valid: Vec::new(),
+        retry,
+        writes,
+        next: Vec::new(),
+        details: error.details,
+    }
 }
 
 fn refused(text: String) -> CallToolResult {

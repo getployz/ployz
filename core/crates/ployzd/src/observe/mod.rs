@@ -16,6 +16,7 @@ mod query;
 mod request;
 mod salts;
 mod serve;
+mod settled;
 mod ship;
 pub(crate) mod unit;
 
