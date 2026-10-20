@@ -39,15 +39,16 @@ $ ployz --json diff
 stdout:
 ```
 {
+  "broken": [],
   "changes": [
     {
       "comparison": "introduction",
       "data": null,
-      "id": "42c35a79-6df9-4e4f-af34-a0d505f94119",
+      "id": "430251f2-8125-4a07-a6ae-dc9cd76832ff",
       "lifecycle": "create",
       "name": "db",
       "restarts": [],
-      "row": "42c35a79-6df9-4e4f-af34-a0d505f94119:node",
+      "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:node",
       "settings": [
         {
           "after": "/var/lib/postgresql/data",
@@ -55,7 +56,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "db.mounts.pgdata",
-          "row": "42c35a79-6df9-4e4f-af34-a0d505f94119:mounts.f7cf94ed-d72d-49a8-af9d-82e33e2d0d5f"
+          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:mounts.9c3a6adf-5556-4c17-b492-caaf199a34b2"
         }
       ],
       "type": "service"
@@ -63,11 +64,11 @@ stdout:
     {
       "comparison": "introduction",
       "data": null,
-      "id": "94fc28fc-bde0-4703-8d79-6571f662a0eb",
+      "id": "7265b113-b85e-4796-98d6-ad9e94589c70",
       "lifecycle": "create",
       "name": "web",
       "restarts": [],
-      "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:node",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:node",
       "settings": [
         {
           "after": {
@@ -78,7 +79,7 @@ stdout:
           "canRestore": true,
           "kind": "update",
           "path": "web.healthcheck",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:healthcheck"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:healthcheck"
         },
         {
           "after": "1",
@@ -86,7 +87,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.A",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.A"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.A"
         },
         {
           "after": {
@@ -96,7 +97,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.API_KEY",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.API_KEY"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY"
         },
         {
           "after": {
@@ -106,7 +107,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.API_KEY2",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.API_KEY2"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY2"
         },
         {
           "after": "two",
@@ -114,7 +115,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.B",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.B"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.B"
         },
         {
           "after": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
@@ -122,7 +123,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DB_URL",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.DB_URL"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.DB_URL"
         },
         {
           "after": "info",
@@ -130,7 +131,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.LOG_LEVEL",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.LOG_LEVEL"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.LOG_LEVEL"
         }
       ],
       "type": "service"
@@ -138,11 +139,11 @@ stdout:
     {
       "comparison": "introduction",
       "data": null,
-      "id": "f7cf94ed-d72d-49a8-af9d-82e33e2d0d5f",
+      "id": "9c3a6adf-5556-4c17-b492-caaf199a34b2",
       "lifecycle": "create",
       "name": "pgdata",
       "restarts": [],
-      "row": "f7cf94ed-d72d-49a8-af9d-82e33e2d0d5f:node",
+      "row": "9c3a6adf-5556-4c17-b492-caaf199a34b2:node",
       "settings": [],
       "type": "volume"
     }
@@ -151,11 +152,11 @@ stdout:
     {
       "comparison": "saved",
       "data": null,
-      "id": "42c35a79-6df9-4e4f-af34-a0d505f94119",
+      "id": "430251f2-8125-4a07-a6ae-dc9cd76832ff",
       "lifecycle": "create",
       "name": "db",
       "restarts": [],
-      "row": "42c35a79-6df9-4e4f-af34-a0d505f94119:node",
+      "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:node",
       "settings": [
         {
           "after": {
@@ -167,7 +168,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "db.source",
-          "row": "42c35a79-6df9-4e4f-af34-a0d505f94119:source"
+          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:source"
         },
         {
           "after": "db",
@@ -175,7 +176,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "db.privateDns",
-          "row": "42c35a79-6df9-4e4f-af34-a0d505f94119:privateDns"
+          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:privateDns"
         },
         {
           "after": [],
@@ -183,7 +184,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "db.managedHostnames",
-          "row": "42c35a79-6df9-4e4f-af34-a0d505f94119:managedHostnames"
+          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:managedHostnames"
         },
         {
           "after": "/var/lib/postgresql/data",
@@ -191,7 +192,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "db.mounts.pgdata",
-          "row": "42c35a79-6df9-4e4f-af34-a0d505f94119:mounts.f7cf94ed-d72d-49a8-af9d-82e33e2d0d5f"
+          "row": "430251f2-8125-4a07-a6ae-dc9cd76832ff:mounts.9c3a6adf-5556-4c17-b492-caaf199a34b2"
         }
       ],
       "type": "service"
@@ -199,11 +200,11 @@ stdout:
     {
       "comparison": "saved",
       "data": null,
-      "id": "94fc28fc-bde0-4703-8d79-6571f662a0eb",
+      "id": "7265b113-b85e-4796-98d6-ad9e94589c70",
       "lifecycle": "create",
       "name": "web",
       "restarts": [],
-      "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:node",
+      "row": "7265b113-b85e-4796-98d6-ad9e94589c70:node",
       "settings": [
         {
           "after": {
@@ -215,7 +216,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.source",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:source"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:source"
         },
         {
           "after": {
@@ -226,7 +227,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.healthcheck",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:healthcheck"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:healthcheck"
         },
         {
           "after": "web",
@@ -234,7 +235,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.privateDns",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:privateDns"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:privateDns"
         },
         {
           "after": [],
@@ -242,7 +243,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.managedHostnames",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:managedHostnames"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:managedHostnames"
         },
         {
           "after": "1",
@@ -250,7 +251,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.env.A",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.A"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.A"
         },
         {
           "after": {
@@ -260,7 +261,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.env.API_KEY",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.API_KEY"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY"
         },
         {
           "after": {
@@ -270,7 +271,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.env.API_KEY2",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.API_KEY2"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.API_KEY2"
         },
         {
           "after": "two",
@@ -278,7 +279,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.env.B",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.B"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.B"
         },
         {
           "after": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
@@ -286,7 +287,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.env.DB_URL",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.DB_URL"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.DB_URL"
         },
         {
           "after": "info",
@@ -294,7 +295,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "web.env.LOG_LEVEL",
-          "row": "94fc28fc-bde0-4703-8d79-6571f662a0eb:variables.LOG_LEVEL"
+          "row": "7265b113-b85e-4796-98d6-ad9e94589c70:variables.LOG_LEVEL"
         }
       ],
       "type": "service"
@@ -302,11 +303,11 @@ stdout:
     {
       "comparison": "saved",
       "data": null,
-      "id": "f7cf94ed-d72d-49a8-af9d-82e33e2d0d5f",
+      "id": "9c3a6adf-5556-4c17-b492-caaf199a34b2",
       "lifecycle": "create",
       "name": "pgdata",
       "restarts": [],
-      "row": "f7cf94ed-d72d-49a8-af9d-82e33e2d0d5f:node",
+      "row": "9c3a6adf-5556-4c17-b492-caaf199a34b2:node",
       "settings": [
         {
           "after": {
@@ -317,7 +318,7 @@ stdout:
           "canRestore": false,
           "kind": "add",
           "path": "volumes.pgdata.storage",
-          "row": "f7cf94ed-d72d-49a8-af9d-82e33e2d0d5f:storage"
+          "row": "9c3a6adf-5556-4c17-b492-caaf199a34b2:storage"
         }
       ],
       "type": "volume"
@@ -326,7 +327,7 @@ stdout:
   "draft_count": 3,
   "effects": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -337,6 +338,7 @@ stdout:
   "incoming": [],
   "next": "ployz deploy --project shop",
   "saved": null,
+  "setup": [],
   "total_count": 11,
   "version": "21:0:0.0"
 }
@@ -370,13 +372,16 @@ stdout:
 ```
 {
   "changed": true,
+  "comes_back": [],
+  "dropped": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 23
   },
   "next": "ployz diff --project shop",
+  "reversed": [],
   "saved": null
 }
 ```
@@ -479,7 +484,7 @@ stdout:
 {
   "created": false,
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 23
@@ -501,7 +506,7 @@ stdout:
 {
   "created": true,
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 24
@@ -533,12 +538,13 @@ $ ployz --json diff --project empty
 stdout:
 ```
 {
+  "broken": [],
   "changes": [],
   "draft_changes": [],
   "draft_count": 0,
   "effects": [],
   "environment": {
-    "id": "3f70dfb0-a138-4a89-879e-589443cc4602",
+    "id": "c8a635dd-2847-46e3-946d-e7976d8b3de6",
     "name": "production",
     "project": "empty",
     "revision": 1
@@ -548,6 +554,7 @@ stdout:
   "included": [],
   "incoming": [],
   "saved": null,
+  "setup": [],
   "total_count": 0,
   "version": "1:0:0.0"
 }
@@ -576,12 +583,15 @@ stdout:
 ```
 {
   "changed": false,
+  "comes_back": [],
+  "dropped": [],
   "environment": {
-    "id": "3f70dfb0-a138-4a89-879e-589443cc4602",
+    "id": "c8a635dd-2847-46e3-946d-e7976d8b3de6",
     "name": "production",
     "project": "empty",
     "revision": 1
   },
+  "reversed": [],
   "saved": null
 }
 ```
@@ -607,7 +617,10 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production.
+Discarded 3 staged changes in shop/production: db, web, volumes.pgdata.
+db is in saved #2 but was never deployed, so discarding removes it. Bring it back: ployz discard db --project shop
+web is in saved #2 but was never deployed, so discarding removes it. Bring it back: ployz discard web --project shop
+pgdata is in saved #2 but was never deployed, so discarding removes it. Bring it back: ployz discard volumes.pgdata --project shop
 ```
 
 stderr:
@@ -638,12 +651,12 @@ $ ployz diff
 stdout:
 ```
 db (delete)
-  db.source: {"credentials":false,"image":"postgres:16","type":"image"} → null
+  db.image: "postgres:16" → null
   db.privateDns: "db" → null
   db.mounts.pgdata: "/var/lib/postgresql/data" → null
   a detached Volume keeps its data
 web (delete)
-  web.source: {"credentials":false,"image":"nginx:1.27","type":"image"} → null
+  web.image: "nginx:1.27" → null
   web.replicas: 4 → null
   web.privateDns: "web" → null
   web.env.A: "1" → null
@@ -671,7 +684,7 @@ $ ployz diff
 stdout:
 ```
 web (create)
-  web.source: {"credentials":false,"image":"nginx:1.27","type":"image"} → {"credentials":false,"image":"nginx:1.28","type":"image"}
+  web.image: "nginx:1.27" → "nginx:1.28"
   web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
   web.env.DEBUG: null → "1"
   web.env.NEW: null → "1"
@@ -695,15 +708,16 @@ $ ployz --json diff
 stdout:
 ```
 {
+  "broken": [],
   "changes": [
     {
       "comparison": "introduction",
       "data": null,
-      "id": "38e45555-ce42-4b19-b0f9-98aef27f7cf0",
+      "id": "70e1e3d2-e0ac-4856-a13c-9994cf812d17",
       "lifecycle": "create",
       "name": "web",
       "restarts": [],
-      "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:node",
+      "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:node",
       "settings": [
         {
           "after": {
@@ -719,7 +733,7 @@ stdout:
           "canRestore": true,
           "kind": "update",
           "path": "web.source",
-          "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:source"
+          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:source"
         },
         {
           "after": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
@@ -727,7 +741,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DB_URL",
-          "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:variables.DB_URL"
+          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.DB_URL"
         },
         {
           "after": "1",
@@ -735,7 +749,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DEBUG",
-          "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:variables.DEBUG"
+          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.DEBUG"
         },
         {
           "after": "1",
@@ -743,7 +757,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.NEW",
-          "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:variables.NEW"
+          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.NEW"
         }
       ],
       "type": "service"
@@ -751,11 +765,11 @@ stdout:
     {
       "comparison": "introduction",
       "data": null,
-      "id": "cefc5f12-24bb-4854-87a2-323693e5b5f0",
+      "id": "91eb1be9-f932-4960-bd04-3cc3892ab37a",
       "lifecycle": "create",
       "name": "db",
       "restarts": [],
-      "row": "cefc5f12-24bb-4854-87a2-323693e5b5f0:node",
+      "row": "91eb1be9-f932-4960-bd04-3cc3892ab37a:node",
       "settings": [
         {
           "after": "/var/lib/postgresql/data",
@@ -763,7 +777,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "db.mounts.pgdata",
-          "row": "cefc5f12-24bb-4854-87a2-323693e5b5f0:mounts.458758c4-1381-4d05-8a3b-e9463693f9e4"
+          "row": "91eb1be9-f932-4960-bd04-3cc3892ab37a:mounts.5ece3534-fed3-4955-8f42-588e3f174b84"
         }
       ],
       "type": "service"
@@ -771,11 +785,11 @@ stdout:
     {
       "comparison": "introduction",
       "data": null,
-      "id": "458758c4-1381-4d05-8a3b-e9463693f9e4",
+      "id": "5ece3534-fed3-4955-8f42-588e3f174b84",
       "lifecycle": "create",
       "name": "pgdata",
       "restarts": [],
-      "row": "458758c4-1381-4d05-8a3b-e9463693f9e4:node",
+      "row": "5ece3534-fed3-4955-8f42-588e3f174b84:node",
       "settings": [],
       "type": "volume"
     }
@@ -784,11 +798,11 @@ stdout:
     {
       "comparison": "saved",
       "data": null,
-      "id": "38e45555-ce42-4b19-b0f9-98aef27f7cf0",
+      "id": "70e1e3d2-e0ac-4856-a13c-9994cf812d17",
       "lifecycle": "update",
       "name": "web",
       "restarts": [],
-      "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:node",
+      "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:node",
       "settings": [
         {
           "after": {
@@ -808,7 +822,7 @@ stdout:
           "canRestore": true,
           "kind": "update",
           "path": "web.source",
-          "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:source"
+          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:source"
         },
         {
           "after": "1",
@@ -816,7 +830,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DEBUG",
-          "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:variables.DEBUG"
+          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.DEBUG"
         },
         {
           "after": "1",
@@ -824,7 +838,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.NEW",
-          "row": "38e45555-ce42-4b19-b0f9-98aef27f7cf0:variables.NEW"
+          "row": "70e1e3d2-e0ac-4856-a13c-9994cf812d17:variables.NEW"
         }
       ],
       "type": "service"
@@ -833,7 +847,7 @@ stdout:
   "draft_count": 3,
   "effects": [],
   "environment": {
-    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
+    "id": "21abbb55-7ab1-4483-9b82-2ce3f1d1cbfa",
     "name": "production",
     "project": "shop",
     "revision": 33
@@ -844,20 +858,21 @@ stdout:
     {
       "changes": 3,
       "newer": false,
-      "proposal": "e5d81297-c109-4896-bb06-e15b5674962c",
+      "proposal": "4c53c893-aeef-4e49-99ad-4a9e11351f63",
       "revision": 3,
       "source": {
-        "id": "d54fe1b1-8d24-40fd-8ec3-cdc7c9a1dbfc",
+        "id": "642e0a02-21d7-4651-960a-c52da7fb9db7",
         "kind": "environment",
         "live": true,
         "name": "fix-web"
       },
-      "sync": "13ac280b-8f0b-4096-bf12-b5642dbb32d0"
+      "sync": "10c7920a-7cfe-42bb-bac1-7dba04f20ae7"
     }
   ],
   "incoming": [],
   "next": "ployz deploy --project shop",
   "saved": 3,
+  "setup": [],
   "total_count": 8,
   "version": "33:3:0.0"
 }
