@@ -806,8 +806,7 @@ async fn a_check_in_is_signed_and_its_answer_recorded() {
     assert_eq!(
         next,
         Next::Wait {
-            after: Duration::from_secs(10),
-            log: None
+            after: Duration::from_secs(10)
         }
     );
     let request = server.await.unwrap();
@@ -934,8 +933,7 @@ async fn a_check_in_reports_a_window_only_once_it_has_ended() {
         assert_eq!(
             next,
             Next::Wait {
-                after: Duration::from_secs(10),
-                log: None
+                after: Duration::from_secs(10)
             }
         );
         tokio::time::timeout(Duration::from_secs(3), async {

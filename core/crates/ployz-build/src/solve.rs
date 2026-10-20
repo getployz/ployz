@@ -10,7 +10,7 @@ use std::{
 use base64::Engine as _;
 use serde::Deserialize;
 
-use crate::{BuildStep, Progress};
+use crate::{BuildError, BuildStep, Progress};
 
 /// Longest unterminated line held back before it is passed on as plain
 /// output. A first vertex report can list every step of a large graph.
@@ -61,6 +61,7 @@ pub(crate) struct SolveParser {
     pending: Vec<u8>,
     partial: HashMap<StreamKey, Vec<u8>>,
     started: HashSet<String>,
+    failed: Option<BuildError>,
 }
 
 impl SolveParser {
@@ -73,6 +74,12 @@ impl SolveParser {
         if self.pending.len() > MAX_LINE {
             progress(Progress::Output(std::mem::take(&mut self.pending)));
         }
+    }
+
+    /// The first step BuildKit reported failing for its own reason. The steps
+    /// it cancelled because of that failure can report theirs first.
+    pub(crate) fn failure(&mut self) -> Option<BuildError> {
+        self.failed.take()
     }
 
     pub(crate) fn finish(&mut self, progress: &dyn Fn(Progress)) {
@@ -93,6 +100,16 @@ impl SolveParser {
         // after the status's final logs. Repeated completions must not reopen rows.
         let mut completed = Vec::new();
         for vertex in status.vertexes {
+            if let Some(error) = &vertex.error
+                && self.failed.as_ref().is_none_or(|failed| {
+                    matches!(failed, BuildError::Step { error, .. } if error.ends_with("context canceled"))
+                })
+            {
+                self.failed = Some(BuildError::Step {
+                    step: vertex.name.clone(),
+                    error: error.clone(),
+                });
+            }
             let step = BuildStep {
                 id: vertex.digest,
                 name: vertex.name,
@@ -287,6 +304,41 @@ mod tests {
                 | Progress::Target { .. } => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_step_cancelled_by_the_failure_does_not_hide_it() {
+        let mut parser = SolveParser::default();
+        for (digest, name, error) in [
+            (
+                "sha256:b",
+                "copy /mise/installs",
+                "context canceled: context canceled",
+            ),
+            (
+                "sha256:a",
+                "npm run build",
+                "process \\\"npm run build\\\" did not complete successfully: exit code: 3",
+            ),
+            ("sha256:c", "copy /app", "context canceled"),
+        ] {
+            parser.feed(
+                format!(
+                    "{{\"vertexes\":[{{\"digest\":\"{digest}\",\"name\":\"{name}\",\"started\":\"2026-10-18T15:09:30Z\",\"completed\":\"2026-10-18T15:09:31Z\",\"error\":\"{error}\"}}]}}\n"
+                )
+                .as_bytes(),
+                &|_| {},
+            );
+        }
+        assert_eq!(
+            parser
+                .failure()
+                .map(|failure| failure.to_string())
+                .as_deref(),
+            Some(
+                r#"npm run build: process "npm run build" did not complete successfully: exit code: 3"#
+            )
+        );
     }
 
     #[test]

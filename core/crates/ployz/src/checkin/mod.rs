@@ -285,8 +285,9 @@ pub(crate) async fn systemctl(args: &[&str]) -> Result<(), String> {
 pub(crate) enum Next {
     Wait {
         after: Duration,
-        log: Option<&'static str>,
     },
+    /// Cloud has an enrollment ready. Only an install pass answers this, and leaves it to the loop.
+    Enrolling,
     Retry {
         after: Duration,
         why: String,
@@ -475,10 +476,8 @@ pub(crate) async fn run<H: Host>(
     let mut probes = Probes::load(paths.probe());
     loop {
         match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
-            Next::Wait { after, log } => {
-                if let Some(line) = said.fresh(log.map(str::to_owned)) {
-                    crate::ui::note(line);
-                }
+            Next::Wait { after } => {
+                said.fresh(None);
                 tokio::time::sleep(after).await;
             }
             // Cloud holds a full token back pass after pass, so the hold is logged once.
@@ -527,6 +526,7 @@ pub(crate) async fn run<H: Host>(
                 tokio::time::sleep(client::BACKOFF).await;
             }
             Next::Enrolled => return enroll::finish(host, paths).await,
+            Next::Enrolling => unreachable!("only an install pass leaves enrolling to the loop"),
         }
     }
 }
@@ -841,10 +841,7 @@ async fn check_in<H: Host>(
                     .and_then(|attempt| attempt.failure.as_ref())
                     .map(enroll::failure_line);
             }
-            Next::Wait {
-                after: wait.after,
-                log: None,
-            }
+            Next::Wait { after: wait.after }
         }
         client::Reply::Answer(Answer::Probe(wait, handout)) => {
             probes.open(handout, key, sent).await;
@@ -856,18 +853,12 @@ async fn check_in<H: Host>(
                 probes.finish().await;
             }
             status.waited(wait);
-            Next::Wait {
-                after: wait.after,
-                log: None,
-            }
+            Next::Wait { after: wait.after }
         }
         client::Reply::Answer(Answer::Enroll(_)) if installing => {
             probes.close().await;
             status.answer = Seen::Wait;
-            Next::Wait {
-                after: Duration::ZERO,
-                log: Some(enroll::LOOP_ENROLLS),
-            }
+            Next::Enrolling
         }
         client::Reply::Answer(Answer::Enroll(instruction)) => {
             probes.close().await;

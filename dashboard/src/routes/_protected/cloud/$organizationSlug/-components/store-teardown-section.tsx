@@ -1,7 +1,6 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
 import type { DeploymentStatus, EnvironmentListing, Removal } from "@ployz/sdk";
@@ -16,8 +15,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
 import { useServerList } from "#/modules/machines/use-servers";
-import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { can } from "#/modules/organization/permissions";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 
@@ -71,11 +69,8 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   const writer = useStoreWriter(organizationSlug);
   const [open, setOpen] = useState(false);
   const [left, setLeft] = useState<Extract<Removal, { removal: "removing" }> | null>(null);
-  // Support has no row here; the Store still checks it. Until the members load, the role is unknown, so it waits.
-  const members = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members;
-  const yourRole = members?.find((row) => row.you)?.role;
-  const refused = yourRole !== undefined && !can(yourRole, target.environment === null ? "project:delete" : "environment:delete");
-  const disabledReason = refused ? "Only an owner or admin can delete it." : blocked;
+  const gate = useRoleGate(organizationSlug, target.environment === null ? "project:delete" : "environment:delete", "Only an owner or admin can delete it.");
+  const disabledReason = gate.reason ?? blocked;
   const offline = useServerList(organizationSlug).servers.filter((server) => server.status === "offline")
     .map((server) => ({ id: server.machine.id, name: server.name }));
   const inScope = target.environment === null ? environments : environments.filter((row) => row.name === target.environment);
@@ -178,7 +173,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
             label={title}
             hint={description}
             action={
-              <Button variant="destructive" disabled={busy || members === undefined || disabledReason !== undefined} onClick={() => setOpen(true)}>
+              <Button variant="destructive" disabled={busy || !gate.allowed || disabledReason !== undefined} onClick={() => setOpen(true)}>
                 <Trash2Icon data-icon="inline-start" />
                 {actionLabel}
               </Button>

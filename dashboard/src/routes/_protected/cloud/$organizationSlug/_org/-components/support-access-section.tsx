@@ -1,10 +1,9 @@
 import { useId } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { getRouteApi } from "@tanstack/react-router";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
 import { SettingsSection } from "#/components/settings/settings-section";
 import { Switch } from "#/components/ui/switch";
-import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { can } from "#/modules/organization/permissions";
+import { useRoleGate } from "#/modules/organization/members.queries";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { useSupportAccess } from "#/modules/support-access/support-access.hooks";
 
@@ -14,17 +13,20 @@ const SHOWS = [
   { setting: "logs", label: "Container logs" },
 ] as const;
 
+const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
+
 /** "Allow support access": whether Ployz support may open this Organization and act in it, and what it may read there. */
 export function SupportAccessSection({ organizationSlug }: { organizationSlug: string }) {
   const { row, change } = useSupportAccess(organizationSlug);
   // Only an owner or admin decides what Ployz support may do. Everyone else, support included, sees the switches but can't move them.
-  const yourRole = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
-  const locked = yourRole === undefined || !can(yourRole, "org:settings");
+  const { access } = organizationRoute.useLoaderData();
+  const gate = useRoleGate(organizationSlug, "org:settings");
+  const locked = access === "support" || !gate.allowed;
   return (
     <SettingsSection id="support-access" title="Support">
       <SettingsGroup
         label="Allow support access"
-        hint={row.allowed ? "Let Ployz support open this Organization and act in it, and read what's on below. Sealed variables stay hidden." : "Let Ployz support open this Organization and act in it."}
+        hint={`${row.allowed ? "Let Ployz support open this Organization and act in it, and read what's on below. Sealed variables stay hidden." : "Let Ployz support open this Organization and act in it."}${gate.reason ? ` ${gate.reason}` : ""}`}
         commit="change"
         control={(
           <Switch
