@@ -3236,6 +3236,30 @@ describe("volume runs", () => {
       expect(send).not.toHaveBeenCalled();
     });
 
+    it("mirror rm --if-old-copy is refused once its old copy became the mirror, and writes no run", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy() },
+        { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "mirror") },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
+
+      expect(admitted).toEqual({ ok: false, refusal: { code: "conflict", message: "data-fsn-2 is no longer an old copy, so nothing was deleted", details: null } });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("mirror rm --if-old-copy of a real old copy starts its delete, named for an old copy", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy() },
+        { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" } });
+
+      expect(admitted).toMatchObject({ ok: true });
+      expect(await rows()).toMatchObject([{ kind: "delete_mirror", state: "requested", args: { slot: "fsn-2", role: "old_copy" } }]);
+    });
+
     it("a Mirror Remove on a busy Volume is refused as busy before it asks", async () => {
       machines = [
         { name: "fsn-1", pool: true, copy: null },

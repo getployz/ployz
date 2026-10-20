@@ -76,6 +76,7 @@ fn each_volume_run_command_parses_to_its_own_handler() {
         "data-web-2",
         "--confirm",
         "data",
+        "--if-old-copy",
     ])
     .unwrap();
     assert_eq!(path(&remove), "volume mirror rm");
@@ -88,6 +89,7 @@ fn each_volume_run_command_parses_to_its_own_handler() {
         leaf.get_one::<String>("confirm").map(String::as_str),
         Some("data")
     );
+    assert!(leaf.get_flag("if-old-copy"));
 
     let sync = parsed(&["ployz", "volume", "sync", "data", "--full"]).unwrap();
     assert_eq!(path(&sync), "volume sync");
@@ -261,10 +263,23 @@ async fn each_kind_posts_only_its_own_fields() {
                 ask: RunAsk::DeleteMirror {
                     slot: MachineName::parse("web-2").unwrap(),
                     confirm: Some("data".to_owned()),
+                    role: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
             json!({ "slot": "web-2", "confirmed_name": "data" }),
+        ),
+        (
+            RunRequest {
+                environment: named(),
+                ask: RunAsk::DeleteMirror {
+                    slot: MachineName::parse("web-1").unwrap(),
+                    confirm: None,
+                    role: Some(IfOldCopy),
+                },
+            },
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-1", "role": "old_copy" }),
+            json!({ "slot": "web-1" }),
         ),
         (
             RunRequest {
@@ -322,6 +337,24 @@ async fn each_kind_posts_only_its_own_fields() {
         assert_eq!(started.state, MaybeKnown::Known(VolumeRunState::Requested));
         assert_eq!(serde_json::to_value(started.kind).unwrap(), json!(kind));
     }
+}
+
+#[test]
+fn a_removal_s_retry_line_keeps_if_old_copy() {
+    let volume = VolumeName::parse("data").unwrap();
+    let removal = |confirm: Option<&str>, role| RunAsk::DeleteMirror {
+        slot: MachineName::parse("web-1").unwrap(),
+        confirm: confirm.map(str::to_owned),
+        role,
+    };
+    assert_eq!(
+        removal(Some("data"), Some(IfOldCopy)).words(&volume),
+        ["volume", "mirror", "rm", "data-web-1", "--if-old-copy", "--confirm", "data"]
+    );
+    assert_eq!(
+        removal(None, None).words(&volume),
+        ["volume", "mirror", "rm", "data-web-1"]
+    );
 }
 
 #[tokio::test]
