@@ -169,7 +169,7 @@ a server was cut off. Click it to see each old replica that is still running and
 | **Done** | Every old replica stopped |
 | **Left running on server-3** | After three tries over a few minutes, these old replicas still run. A server cut off during the deployment shows here too, since an old replica may still run on it. Your deployment still applied. |
 | **A newer Deployment took over** | You deployed again before cleanup finished. The newer deployment's own cleanup takes over. |
-| **Failed** | Cleanup itself hit an error, shown on the card |
+| **Failed** | Cleanup itself hit an error, shown on the card. A cleanup Cloud lost track of also ends here, after about an hour, and lists the old replicas it last saw running. |
 
 A replica left running keeps serving alongside the new ones once its server is back. Deploy again
 to stop it. CLI deployments clean up while they run, report a replica left running at the end, and

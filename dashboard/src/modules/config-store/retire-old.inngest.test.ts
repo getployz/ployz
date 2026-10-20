@@ -1,5 +1,5 @@
 import { InngestTestEngine, mockCtx } from "@inngest/test";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { Inngest } from "inngest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCancelRetireOld, createRetireOld } from "#/modules/config-store/retire-old.inngest";
@@ -20,7 +20,8 @@ beforeEach(() => {
   vi.spyOn(cleanupRows, "retireOldCopies").mockImplementation(() => Effect.succeed({ left: answers.shift() ?? [] }));
   vi.spyOn(cleanupRows, "recordCleanupWaiting").mockImplementation((runId, _data, left = []) =>
     Effect.sync(() => { writes.push({ waiting: runId, left }); }));
-  vi.spyOn(cleanupRows, "endCleanup").mockImplementation((runId, end) => Effect.sync(() => writes.push({ end: runId, ...end })));
+  vi.spyOn(cleanupRows, "endCleanup").mockImplementation((runId, end, requested) =>
+    Effect.sync(() => writes.push({ end: runId, ...end, deploymentId: Option.getOrUndefined(requested)?.deploymentId })));
 });
 
 const requested = {
@@ -47,7 +48,7 @@ describe("retiring a Deploy's old copies", () => {
     expect(writes).toEqual([
       { waiting: "run-1", left: [] },
       { waiting: "run-1", left: [machine3] },
-      { end: "run-1", state: "done" },
+      { end: "run-1", state: "done", deploymentId: "dep" },
     ]);
   });
 
@@ -55,24 +56,23 @@ describe("retiring a Deploy's old copies", () => {
     const { result, sleeps } = await cleanup([[machine3], [machine3], [machine3], []]);
     expect(result).toEqual({ state: "left_running", left: [machine3] });
     expect(sleeps).toHaveLength(2);
-    expect(writes.at(-1)).toEqual({ end: "run-1", state: "left_running", left: [machine3] });
+    expect(writes.at(-1)).toEqual({ end: "run-1", state: "left_running", left: [machine3], deploymentId: "dep" });
     expect(answers).toEqual([[]]);
   });
 
-  it("marks the row cancelled when Inngest cancels a cleanup, under either function id, and skips any other", async () => {
+  it("marks the Deployment's row cancelled when Inngest cancels a cleanup, and skips any other function", async () => {
     const cancel = (functionId: string) => new InngestTestEngine({
       function: createCancelRetireOld(new Inngest({ id: "ployz-cloud" })),
-      events: [{ name: "inngest/function.cancelled", data: { function_id: functionId, run_id: "run-1" } }],
+      events: [{ name: "inngest/function.cancelled", data: { function_id: functionId, run_id: "run-1", event: requested } }],
     }).execute();
 
-    await cancel("retire-old");
     await cancel("ployz-cloud-retire-old");
     expect((await cancel("ployz-cloud-run-volume")).result).toEqual({ skipped: true });
-    expect(writes).toEqual([{ end: "run-1", state: "cancelled" }, { end: "run-1", state: "cancelled" }]);
+    expect(writes).toEqual([{ end: "run-1", state: "cancelled", deploymentId: "dep" }]);
   });
 
-  it("marks the row failed with the error once its retries run out", async () => {
+  it("marks the Deployment's row failed with the error once its retries run out", async () => {
     await invokeOnFailure(createRetireOld(new Inngest({ id: "test" })), "run-1", requested);
-    expect(writes).toEqual([{ end: "run-1", state: "failed", message: "the run failed" }]);
+    expect(writes).toEqual([{ end: "run-1", state: "failed", message: "the run failed", deploymentId: "dep" }]);
   });
 });

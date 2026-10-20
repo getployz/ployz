@@ -6,6 +6,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { runInngestEffect } from "#/server/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
+import { createCancelRetireOld, createRetireOldFunctions } from "#/modules/config-store/retire-old.inngest";
 import { createCancelNamespaceCleanup, createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
 import { createCancelServerDrain, createServerDrainFunctions } from "#/modules/machines/server-drain.inngest";
 import { createCancelServerUpgrade, createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
@@ -17,6 +18,7 @@ describe("attemptLifecycle", () => {
     ["clean-namespace", createNamespaceCleanupFunctions, "namespace/cleanup.requested", "cancel-namespace-cleanup", "close-stale-namespace-cleanups"],
     ["roll-out-server-upgrade", createServerUpgradeFunctions, "server/upgrade.requested", "cancel-server-upgrade", "schedule-server-upgrades"],
     ["run-volume", createVolumeRunFunctions, "volume/run.requested", "cancel-volume-run", "close-stale-volume-runs"],
+    ["retire-old", createRetireOldFunctions, "config/deployment.retire-requested", "cancel-retire-old", "close-stale-deployment-cleanups"],
   ])("registers %s with its failure handler, its cancel handler and its hourly sweep", (id, create, event, cancelId, sweepId) => {
     const [run, cancel, sweep] = create(new Inngest({ id: "test" }));
 
@@ -30,6 +32,7 @@ describe("attemptLifecycle", () => {
     ["ployz-cloud-clean-namespace", createCancelNamespaceCleanup, "ployz-cloud-drain-server"],
     ["ployz-cloud-roll-out-server-upgrade", createCancelServerUpgrade, "ployz-cloud-run-volume"],
     ["ployz-cloud-run-volume", createCancelVolumeRun, "ployz-cloud-drain-server"],
+    ["ployz-cloud-retire-old", createCancelRetireOld, "ployz-cloud-run-volume"],
   ])("closes the run when Inngest cancels %s, and skips another function's cancellation", async (functionId, createCancel, otherFunctionId) => {
     const cancel = (cancelled: string) => new InngestTestEngine({
       function: createCancel(new Inngest({ id: "ployz-cloud" })),
@@ -41,15 +44,15 @@ describe("attemptLifecycle", () => {
     expect((await cancel(otherFunctionId)).result).toEqual({ skipped: true });
   });
 
-  it("hands a failed run's triggering event to closeRun only when the workflow asks for it", async () => {
+  it("hands a failed run's error, and its triggering event only when the workflow asks for it, to closeRun", async () => {
     const closed: unknown[] = [];
     const probe = (triggeringOnFailure: boolean) => attemptLifecycle({
       run: { id: "probe", triggers: [{ event: "probe/requested" }], handler: async () => null },
       cancelId: "cancel-probe",
       triggeringEvent: Schema.Struct({ data: Schema.Struct({ attemptId: Schema.String }) }),
       triggeringOnFailure,
-      closeRun: (runId, end, triggering) => {
-        closed.push([runId, end, Option.getOrUndefined(triggering)?.data.attemptId]);
+      closeRun: (runId, end, triggering, error) => {
+        closed.push([runId, end, Option.getOrUndefined(triggering)?.data.attemptId, error?.message]);
         return Effect.succeed(1);
       },
       sweep: { id: "probe-sweep", closeStale: () => Effect.succeed({}) },
@@ -57,7 +60,7 @@ describe("attemptLifecycle", () => {
     const event = { name: "probe/requested", data: { attemptId: "a-1" } };
     await invokeOnFailure(probe(true), "run-1", event);
     await invokeOnFailure(probe(false), "run-2", event);
-    expect(closed).toEqual([["run-1", "failure", "a-1"], ["run-2", "failure", undefined]]);
+    expect(closed).toEqual([["run-1", "failure", "a-1", "the run failed"], ["run-2", "failure", undefined, "the run failed"]]);
   });
 
   it("names the cancelled function under the client's app id", async () => {
