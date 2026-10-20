@@ -221,6 +221,71 @@ fn diff_and_a_deployment_list_each_kind_of_node_by_name_not_by_id() {
 }
 
 #[test]
+fn a_recreated_service_lists_after_the_one_it_replaces_whichever_id_sorts_first() {
+    // The replacement's id sorts below the original's (…03) in one run, above it in the other.
+    for replacement in [
+        "00000000-0000-4000-8000-000000000000",
+        "00000000-0000-4000-8000-0000000000ff",
+    ] {
+        let (store, who) = shop();
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write(
+                &who,
+                &RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(replacement).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("nginx:2".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        let view = diff(&store, &who);
+        for changes in [view.changes.clone(), view.review_changes()] {
+            let listed: Vec<_> = changes
+                .iter()
+                .map(|change| (change.name.as_str(), change.lifecycle))
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    ("web", ReviewLifecycleKind::Delete),
+                    ("web", ReviewLifecycleKind::Create)
+                ],
+                "replacement {replacement}"
+            );
+        }
+        admit(&store, &who, 2, &[], None).unwrap();
+        let ids: Vec<_> = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+            .unwrap()
+            .nodes
+            .into_iter()
+            .map(|node| node.node.id().to_owned())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "00000000-0000-4000-8000-000000000004",
+                "00000000-0000-4000-8000-000000000003",
+                replacement
+            ],
+            "replacement {replacement}"
+        );
+    }
+}
+
+#[test]
 fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     let (store, who) = shop();
     let admitted = admit(&store, &who, 1, &[], None).unwrap();
