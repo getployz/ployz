@@ -37,8 +37,10 @@ your app's directory.
 `ployz ctx` shows where commands act from here.
 
 A link belongs to the organization it was made in. Acting in another one, a command that uses the
-link, such as `ployz status`, refuses and names `ployz org use ORG` to switch back. If that
-organization was replaced by a new one with the same name, it says the directory `is linked in an
+link, such as `ployz status`, refuses. When both are Ployz Cloud organizations, it names
+`ployz org use ORG` to switch back. When either is the local organization, it names `ployz link`
+to link the directory where you act now. If the organization the link was made in was replaced by
+a new one with the same name, it says the directory `is linked in an
 earlier Organization ORG, which another Organization of that name replaced` and names
 `ployz link` instead: `org use` can't reach the old one, so link the directory again.
 
