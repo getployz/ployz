@@ -8,6 +8,7 @@ import { ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BO
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
+import { ResizeVolumeInput } from "#/modules/volume-run/resize-check";
 import type { Permission } from "#/modules/organization/permissions";
 import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
@@ -382,7 +383,17 @@ export const OPERATIONS = {
         options: { volume: { via: ":id" }, environment: { via: "environment" }, size: { via: "maximum_bytes" }, wait: CLI_FOLLOWS },
       },
       agent: { absent: "No agent tool resizes a deployed Volume; its volume_update is refused with the CLI command." },
-      ui: { absent: "The dashboard has no resize control for a deployed Volume." },
+      ui: {
+        fn: "resizeVolumeServerFn",
+        input: ResizeVolumeInput,
+        ungated: "The human confirms in the page's own dialog.",
+        options: {
+          volume: { via: "volumeId" },
+          environment: { via: "environment" },
+          size: { via: "maximumBytes" },
+          wait: { omitted: "The drawer follows the run itself." },
+        },
+      },
     },
   }),
   "volume.seed": operation({
