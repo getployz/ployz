@@ -418,9 +418,16 @@ async fn user_stop_start_restart_remove() {
         vec![inspected(), copy_call(Call::Stop), copy_call(Call::Restart)],
     )
     .await;
-    assert_eq!(ran.answer.unwrap(), Some(UserStarted::Running));
-    assert_eq!(ran.rotation, Some(CopyRotation::Pending));
-    assert_eq!(ran.wants, [stopped(), started_pending()]);
+    assert_eq!(ran.answer.unwrap(), Some(UserStarted::In));
+    assert_eq!(ran.rotation, Some(CopyRotation::In));
+    assert_eq!(
+        ran.wants,
+        [
+            stopped(),
+            started_pending(),
+            brought_in(None, CopyRotation::Pending)
+        ]
+    );
 
     for (rotation, was_stopped) in [
         (CopyRotation::In, true),
@@ -662,8 +669,9 @@ fn assert_serving(fake: &Scripted, command: Command) {
     assert_eq!(fake.rotation(&copy), Some(CopyRotation::In), "{command:?}");
     let service = {
         let copies = fake.copies.lock().unwrap();
-        assert!(!copies[&copy].stopped, "{command:?} left the copy stopped");
-        copies[&copy].service.clone()
+        let recorded = copies.get(&copy).unwrap();
+        assert!(!recorded.stopped, "{command:?} left the copy stopped");
+        recorded.service.clone()
     };
     let routes = fake.routes(&service, false);
     assert!(!routes.is_empty(), "{command:?}");
@@ -718,4 +726,52 @@ async fn an_unanswered_held_ask_whose_re_read_fails_brings_the_copy_back_in() {
         let ran = run_command(command, Recording::of(fake)).await;
         assert_failed_back_in(&ran, command);
     }
+}
+
+/// A restart asks a Pending copy In as start does, so a gen 3 copy beside an In
+/// gen 4 copy is named left unrouted, with the reason, and is running again.
+#[tokio::test(start_paused = true)]
+async fn a_restart_of_a_pending_copy_older_than_an_in_copy_reports_it_left_unrouted() {
+    let newer = container('2');
+    let fake = Scripted::new(vec![
+        inspected(),
+        copy_call(Call::Stop),
+        copy_call(Call::Restart),
+    ])
+    .with_copy_at(
+        &api(),
+        &machine('a'),
+        &container('1'),
+        CopyRotation::Pending,
+        ployz_core::Gen::new(3),
+    )
+    .with_copy_at(
+        &api(),
+        &machine('b'),
+        &newer,
+        CopyRotation::In,
+        ployz_core::Gen::new(4),
+    );
+    let ran = run_command(Command::Restart, Recording::of(fake)).await;
+
+    let error = ran.answer.as_ref().unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.contains(&container('1').to_string())
+            && error.message.contains("left Pending and not routed")
+            && error.message.contains("a newer copy is In"),
+        "{error:?}"
+    );
+    assert_eq!(ran.rotation, Some(CopyRotation::Pending));
+    assert!(
+        !ran.fake
+            .copies
+            .lock()
+            .unwrap()
+            .get(&container('1'))
+            .unwrap()
+            .stopped,
+        "the restart left the copy stopped"
+    );
+    assert_eq!(ran.fake.rotation(&newer), Some(CopyRotation::In));
 }

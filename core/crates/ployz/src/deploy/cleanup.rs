@@ -437,11 +437,12 @@ pub(crate) async fn user_restart<C: MachineOperations>(
             );
         }
         (true, CopyRotation::In) => fresh_run(),
-        (false, _) | (true, CopyRotation::Pending) => {
-            let stopped = stopped(client, &copy, spec, stop, queued).await;
-            let started = run_pending(client, &copy).await;
-            stopped?;
-            return started;
+        (false, _) => return restart_pending(client, &copy, spec, stop, queued).await,
+        // Asked In as start does, so a copy older than an In one is named, not
+        // left unrouted unsaid.
+        (true, CopyRotation::Pending) => {
+            restart_pending(client, &copy, spec, stop, queued).await?;
+            return started(&copy, bring_in(client, &copy, spec, None).await?);
         }
     };
     let held = Copy {
@@ -548,6 +549,19 @@ async fn stopped<C: MachineOperations>(
         .await?
         .into_settled()
         .map(|_| ())
+}
+
+async fn restart_pending<C: MachineOperations>(
+    client: &C,
+    copy: &Copy,
+    spec: &ResolvedServiceSpec,
+    stop: StopOptions,
+    queued: u32,
+) -> Result<UserStarted, RpcError> {
+    let stopped = stopped(client, copy, spec, stop, queued).await;
+    let started = run_pending(client, copy).await;
+    stopped?;
+    started
 }
 
 async fn run_pending<C: MachineOperations>(
