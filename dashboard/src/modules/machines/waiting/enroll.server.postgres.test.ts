@@ -20,7 +20,7 @@ import {
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
 import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
-import { listWaitingServers } from "#/modules/machines/waiting/waiting-servers.server";
+import { listWaitingServers, showWaitingServer } from "#/modules/machines/waiting/waiting-servers.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
@@ -1161,6 +1161,25 @@ it.each(["failed", "cancelled"] as const)("projects a %s return and its effectiv
   expect(Date.parse(returned?.arrivalAt ?? "")).toBeGreaterThan(Date.parse(result[0]?.arrivalAt ?? ""));
   expect(returned).not.toHaveProperty("probe");
   expect(returned?.report).not.toHaveProperty("kernel");
+});
+
+it("keeps a failed return across check-ins and replaces it with the next attempt", async () => {
+  const [first] = await waiting("first");
+  if (!first?.id) throw new Error("one host");
+  const id = first.id;
+  const returned = async () => ({
+    listed: (await run(listWaitingServers(ada, { organizationSlug: "ada" }))).find((row) => row.id === id)?.returned,
+    shown: (await run(showWaitingServer(ada, { organizationSlug: "ada", id }))).returned,
+  });
+  const started = await run(enroll([first], { first: id }));
+  await harness.pool.query("update server_enrollment set state = 'failed', ended_at = now(), stage = 'storage', failure = '{\"stage\":\"storage\",\"message\":\"Disk missing\"}' where id = $1", [started.attempts[0]?.id]);
+  await checkin(first);
+  const kept = { state: "failed", stage: "storage", message: "Disk missing" };
+  expect(await returned()).toEqual({ listed: kept, shown: kept });
+  await run(enroll([first], { first: id }));
+  expect((await run(listWaitingServers(ada, { organizationSlug: "ada" }))).map((row) => row.id)).toEqual([]);
+  await harness.pool.query("update server_enrollment set state = 'cancelled', ended_at = now(), stage = null, failure = null where ended_at is null");
+  expect(await returned()).toEqual({ listed: { state: "cancelled", stage: null, message: null }, shown: { state: "cancelled", stage: null, message: null } });
 });
 
 it("polls open attempts and one hour of ended attempts while preserving direct history reads", async () => {
