@@ -1495,7 +1495,6 @@ pub(crate) fn record(
                     } => compensation.lines().into_iter().map(String::from).collect(),
                     DeployOutcome::Failed { .. }
                     | DeployOutcome::Success { .. }
-                    | DeployOutcome::Superseded { .. }
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
             };

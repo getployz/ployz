@@ -456,9 +456,10 @@ pub(super) fn failure(
         Some(service) => format!("{service}: {reason}"),
         None => reason,
     });
+    let lost_to_newer = matches!(error, ExecutionError::NewerServing { .. });
     let mut diagnostic = Diagnostic {
-        failed_machine: Some(machine),
-        logs: tails,
+        failed_machine: (!lost_to_newer).then_some(machine),
+        logs: if lost_to_newer { Vec::new() } else { tails },
         ..Diagnostic::default()
     };
     if let FailedOperation::Replacement { compensation, .. } = failed {
@@ -486,14 +487,19 @@ pub(super) fn failure(
                         RestoreAttempt::Failed { error } => failure_causes(error),
                         RestoreAttempt::Restored
                         | RestoreAttempt::LeftHeld
-                        | RestoreAttempt::NotServing => Vec::new(),
+                        | RestoreAttempt::NotServing
+                        | RestoreAttempt::NewerServing => Vec::new(),
                     },
                 });
             }
         }
     }
     Failure::from(RpcError {
-        code: RpcErrorCode::Internal,
+        code: if lost_to_newer {
+            RpcErrorCode::Conflict
+        } else {
+            RpcErrorCode::Internal
+        },
         message,
         cause,
         details: serde_json::json!({"outcome": outcome}),
