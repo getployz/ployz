@@ -26,6 +26,7 @@ import { operationApprovals } from "#/modules/approvals/tables";
 import type { Caller } from "#/modules/identity/actor";
 import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { forgetServer } from "#/modules/operations/operations.server";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
@@ -1916,6 +1917,31 @@ it.live(
         assert.strictEqual(drained.status, 202, drained.text);
         assert.lengthOf(sent.mock.calls, 1);
         assert.lengthOf(yield* drizzle.select({ id: operationApprovals.id }).from(operationApprovals), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+// Catches a CLI drain stored under the name Cloud kept before a rename reached it, not the one the CLI resolved its Server by.
+it.live(
+  "a CLI drain names its run by the Server's name in the frame while Cloud still keeps its old one",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-drain-name-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf({ destroys: false, namespace: "left-behind" }), inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        yield* drizzle.execute(sql`insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
+          values (${alice.organization.id}, ${fra1}, ${"a".repeat(64)}, '{}', 'old')
+          on conflict (organization_id, machine_id) do update set machine_name = excluded.machine_name`);
+
+        const drained = yield* cli("POST", `servers/${fra1}/drain`, alice);
+
+        assert.strictEqual(drained.status, 202, drained.text);
+        const runs = yield* operationsOn(alice.organization.id, { kind: "server", machine: fra1 }, null, 5);
+        assert.deepStrictEqual(runs.map(({ run }) => run), ["drain fra-1"]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

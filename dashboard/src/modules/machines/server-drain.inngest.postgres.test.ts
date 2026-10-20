@@ -13,6 +13,7 @@ import {
   executeDrainOnce, latestDrainOf, listLatestServerDrains, requestCliServerDrain, requestServerDrain,
 } from "#/modules/machines/server-drain.server";
 import { applyServerPolicyChangeActivity, requestServerPolicyChange } from "#/modules/machines/server-policy.server";
+import { operationsOn } from "#/modules/operations/operation-history.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
@@ -160,6 +161,39 @@ describe("drain-server", () => {
       insert into member (id, organization_id, user_id, role, created_at)
       values (gen_random_uuid(), '${organizationId}', '${userId}', 'owner', now());
     `);
+  });
+
+  /** Cloud keeps `name` for web-2, as it enrolled or as the Cluster last reported it. */
+  const keep = (name: string) => harness.pool.query(
+    `insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name)
+     values ($1, $2, $3, $4, $5)
+     on conflict (organization_id, machine_id) do update set machine_name = excluded.machine_name`,
+    [organizationId, machineId, "a".repeat(64), {}, name],
+  );
+  const runNames = async () =>
+    (await runEffect(operationsOn(organizationId, { kind: "server", machine: machineId }, null, 5))).map(({ run }) => run);
+
+  // Catches a dashboard Drain stored under the name Cloud kept before a rename reached it, not the one its page showed.
+  it("names a dashboard drain by the Server's name in the frame while Cloud still keeps its old one", async () => {
+    await keep("old");
+
+    await request();
+
+    expect(await runNames()).toEqual(["drain web-2"]);
+    await keep("web-2");
+    expect(await runNames()).toEqual(["drain web-2"]);
+  });
+
+  // Catches a drain the frame names no Server for frozen under Cloud's kept name, so a later rename never reaches it.
+  it("keeps no name for a drain whose frame names its Server nothing, so it reads the name Cloud keeps now", async () => {
+    frame = { ...frame, machines: frame.machines.map((observed) =>
+      observed.machine.id === machineId ? { ...observed, machine: { ...observed.machine, name: "" } } : observed) };
+    await keep("web-2");
+
+    await request();
+    await keep("web-3");
+
+    expect(await runNames()).toEqual(["drain web-3"]);
   });
 
   it("writes one pending row per request: the same UUID returns it, and a second tab gets the active one", async () => {

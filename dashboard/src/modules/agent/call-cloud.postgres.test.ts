@@ -13,7 +13,9 @@ import { presetGrant } from "#/modules/identity/token-grant";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
 import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
+import { enqueueMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestCliServerDrain } from "#/modules/machines/server-drain.server";
+import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
 import { machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
@@ -203,13 +205,15 @@ describe("callCloud", () => {
       });
     }));
 
-  /** Starts a drain, a removal and an upgrade of `MACHINE` the way Cloud starts them. */
-  const startServerRuns = (userId: string) => Effect.gen(function* () {
-    yield* requestCliServerDrain({ organizationId: ORGANIZATION, userId }, { attemptId: DRAIN, machineId: MACHINE, targets: [], approvalId: null, planDigest: "p" });
-    yield* requestMachineRemoveAttempt({ organizationId: ORGANIZATION, requestedByUserId: userId, machineId: MACHINE, confirmDataLoss: [] });
+  /** Starts a drain, a removal and an upgrade of `MACHINE` the way Cloud starts them, each from a caller that showed `serverName`. */
+  const startServerRuns = (userId: string, serverName: MachineName) => Effect.gen(function* () {
+    yield* requestCliServerDrain({ organizationId: ORGANIZATION, userId }, {
+      attemptId: DRAIN, machineId: MACHINE, targets: [], approvalId: null, planDigest: "p", serverName,
+    });
+    yield* requestMachineRemoveAttempt({ organizationId: ORGANIZATION, requestedByUserId: userId, machineId: MACHINE, confirmDataLoss: [], serverName });
     yield* recordUpgradeAttempt({
       request: { organizationId: ORGANIZATION, machineId: MACHINE, trigger: "manual", userId },
-      attemptId: UPGRADE as MachineUpgradeAttemptId, channel: "stable", fromVersion: "", inngestRunId: "run-1",
+      attemptId: UPGRADE as MachineUpgradeAttemptId, channel: "stable", fromVersion: "", inngestRunId: "run-1", serverName,
     });
   });
   const serverRuns = (name: string) => ({
@@ -239,7 +243,7 @@ describe("callCloud", () => {
         joinedMachineId: MACHINE, claimedMachineId: MACHINE, claimedPublicKey: "machine-key", claimedName: "machine-1" as MachineName, claimedAt: new Date(),
       });
       yield* drizzle.update(organizationMachine).set({ machineName: "web-1" as MachineName }).where(sql`${organizationMachine.machineId} = ${MACHINE}`);
-      yield* startServerRuns(userId).pipe(Effect.provide(services));
+      yield* startServerRuns(userId, "web-1").pipe(Effect.provide(services));
       expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "reset" }).pipe(Effect.provide(services)))
         .toEqual({ kind: "others_remain" });
 
@@ -258,7 +262,7 @@ describe("callCloud", () => {
       const generation = createHash("sha256").update("ppair_fixture_store").digest("hex");
       const { drizzle } = yield* Database.pipe(Effect.provide(services));
       yield* drizzle.update(organizationMachine).set({ machineName: "machine-1" as MachineName });
-      yield* startServerRuns(userId).pipe(Effect.provide(services));
+      yield* startServerRuns(userId, "machine-1").pipe(Effect.provide(services));
       expect(yield* dropRemovedServer({ organizationId: ORGANIZATION, machineId: MACHINE, generation, removal: "reset" }).pipe(Effect.provide(services)))
         .toEqual({ kind: "last" });
       expect(yield* forgetEmptiedPairing(ORGANIZATION, generation).pipe(Effect.provide(services))).toEqual({ kind: "released" });
@@ -313,6 +317,34 @@ describe("callCloud", () => {
 
         expect(started).toEqual({ ok: true, value: expect.objectContaining({ run: `${verb} new` }) });
         expect(polled).toEqual({ ok: true, value: { operations: [expect.objectContaining({ run: `${verb} new` })] } });
+      }));
+  }
+
+  const dashboardRuns = [
+    ["remove", (caller: Caller) => enqueueMachineRemove(caller, { organizationSlug: "shop", machineId: MACHINE, confirmDataLoss: [] })],
+    ["forget", (caller: Caller) => forgetServerFromDashboard({ ...caller, via: "dashboard" }, MACHINE, "forget-1")],
+  ] as const;
+  for (const [verb, start] of dashboardRuns) {
+    // Catches a dashboard run stored under the name Cloud kept before a rename reached it, not the one the Server's page showed.
+    it.live(`names a dashboard ${verb} by the Server's name in the frame while Cloud still keeps its old one`, () =>
+      Effect.gen(function* () {
+        const inngest = new Inngest({ id: "call-cloud-test" });
+        vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+        const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+        const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+        yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_fixture_store", server: MACHINE }).pipe(Effect.provide(services));
+        const { drizzle } = yield* Database.pipe(Effect.provide(services));
+        const keep = (name: string) => drizzle.update(organizationMachine).set({ machineName: name as MachineName });
+        const caller: Caller = { ...member, userId };
+        const poll = () => callCloud(caller, { ask: { query: "operations", subject: { kind: "server", machine: MACHINE }, attempt: null, limit: 5 } })
+          .pipe(runtime(framed("web-2"), []), Effect.provide(services));
+        yield* keep("old");
+
+        yield* start(caller).pipe(runtime(framed("web-2"), []), Effect.provide(services));
+
+        expect(yield* poll()).toEqual({ ok: true, value: { operations: [expect.objectContaining({ run: "remove web-2" })] } });
+        yield* keep("web-2");
+        expect(yield* poll()).toEqual({ ok: true, value: { operations: [expect.objectContaining({ run: "remove web-2" })] } });
       }));
   }
 
