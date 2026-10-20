@@ -9,9 +9,10 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { toErrorMessage } from "#/lib/error-message";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { useYouMay } from "#/modules/organization/members.queries";
 import { removeOrganizationServerFn } from "#/modules/organization/organization-removal.functions";
 import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
-import { ForgetServersDialog } from "./forget-servers-dialog";
+import { ForgetServersDialog, useForgetServersRefusal } from "./forget-servers-dialog";
 
 /**
  * Delete organization over the Config Store, as `ployz org rm`: once it has no Project, whose Environments all left the
@@ -52,9 +53,12 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
     }
   }
 
-  const disabledReason = projects.length > 0
-    ? `Delete its projects first: ${projects.map((project) => project.name).join(", ")}.`
-    : undefined;
+  const forgetRefused = useForgetServersRefusal(organizationSlug);
+  const disabledReason = !useYouMay(organizationSlug, "org:delete")
+    ? "Only an owner can delete it."
+    : projects.length > 0
+      ? `Delete its projects first: ${projects.map((project) => project.name).join(", ")}.`
+      : undefined;
 
   return (
     <>
@@ -69,9 +73,9 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
         )}
         <SettingsDanger
           label="Forget all servers"
-          hint="Use this when your servers were deleted. Your projects and settings stay."
+          hint={`Use this when your servers were deleted. Your projects and settings stay.${forgetRefused ? ` ${forgetRefused}` : ""}`}
           action={
-            <Button variant="destructive" onClick={() => setForgetting(true)}>
+            <Button variant="destructive" disabled={forgetRefused !== undefined} onClick={() => setForgetting(true)}>
               <ServerOffIcon data-icon="inline-start" />
               Forget servers
             </Button>

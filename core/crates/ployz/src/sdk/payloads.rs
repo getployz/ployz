@@ -103,7 +103,7 @@ fn typescript_declarations() -> String {
     declarations.add::<RpcError>();
     declarations.add::<ployz_core::StorageCapacityError>();
     declarations.add::<RuntimeWatchView>();
-    declarations.add::<super::ContainerLogRecord>();
+    declarations.add::<super::LiveLogRecord>();
     declarations.add::<super::LogHistoryRecord>();
     declarations.add::<VolumeRemoval>();
     declarations.add::<ployz_core::config::ServiceConfig>();

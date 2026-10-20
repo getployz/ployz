@@ -98,7 +98,8 @@ export const revokeInvite = Effect.fn("Invitation.revoke")(function* (organizati
 
 const byToken = (token: string) => eq(invitation.tokenHash, hashInviteToken(token));
 
-export const readInvite = Effect.fn("Invitation.read")(function* (token: string) {
+/** Where the link leads, and whether `userId` is in that Organization already. */
+export const readInvite = Effect.fn("Invitation.read")(function* (token: string, userId: string | null) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({
     organization: organization.name,
@@ -108,12 +109,14 @@ export const readInvite = Effect.fn("Invitation.read")(function* (token: string)
     status: invitation.status,
     expiresAt: invitation.expiresAt,
     fromManager,
+    member: userId === null ? sql<boolean>`false` : sql<boolean>`exists (select 1 from ${member} where ${member.organizationId} = ${invitation.organizationId}
+      and ${member.userId} = ${userId})`,
   }).from(invitation)
     .innerJoin(organization, eq(organization.id, invitation.organizationId))
     .innerJoin(user, eq(user.id, invitation.inviterId))
     .where(byToken(token)).limit(1);
   if (row === undefined) return null;
-  return { organization: row.organization, slug: row.slug, invitedBy: row.invitedBy, role: row.role, state: stateOf(row, new Date()) };
+  return { organization: row.organization, slug: row.slug, invitedBy: row.invitedBy, role: row.role, state: stateOf(row, new Date()), member: row.member };
 });
 
 const UNUSABLE = {

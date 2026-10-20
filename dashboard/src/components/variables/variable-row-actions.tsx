@@ -21,7 +21,9 @@ import {
 import type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 
 export function VariableRowActions({
+  variableKey,
   editing,
+  refocus,
   exported,
   isSealed,
   plainValue,
@@ -36,7 +38,10 @@ export function VariableRowActions({
   onToggleNeverSync,
   onOpenRename,
 }: {
+  variableKey: string;
   editing: boolean;
+  /** Focus the menu as it comes back after an edit. */
+  refocus: boolean;
   exported: boolean;
   isSealed: boolean;
   plainValue: string;
@@ -83,9 +88,9 @@ export function VariableRowActions({
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
-          <Button type="button" variant="ghost" size="icon-sm">
+          <Button type="button" variant="ghost" size="icon-sm" autoFocus={refocus}>
             <MoreVerticalIcon />
-            <span className="sr-only">Variable actions</span>
+            <span className="sr-only">Actions for {variableKey}</span>
           </Button>
         }
       />

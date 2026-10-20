@@ -5,9 +5,22 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 
 fn run() -> (Run, ployz_store::Actor) {
+    admitted(None)
+}
+
+/// A claimed Deploy of an uploaded `app` Service.
+fn uploaded() -> (Run, ployz_store::Actor) {
+    admitted(Some(ployz_store::UploadedSource {
+        digest: UploadDigest::parse("d".repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    }))
+}
+
+fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::Actor) {
     use ployz_store::{
-        Actor, Admit, CreateProject, Deploy, EnvironmentRef, OrganizationId, ProjectId,
-        ProjectName, SealingKey,
+        Actor, Admit, CreateProject, CreateService, Deploy, EnvironmentRef, OrganizationId,
+        ProjectId, ProjectName, SealingKey, ServiceLineageId,
     };
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap());
@@ -22,6 +35,20 @@ fn run() -> (Run, ployz_store::Actor) {
             },
         )
         .unwrap();
+    if upload.is_some() {
+        store
+            .write(
+                &actor,
+                &CreateService {
+                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("app").unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
     let deployment = DeploymentId::parse("00000000-0000-4000-8000-000000000003").unwrap();
     store
         .write_trusted(
@@ -31,7 +58,7 @@ fn run() -> (Run, ployz_store::Actor) {
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
-                upload: None,
+                upload,
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
@@ -248,6 +275,60 @@ async fn a_launch_or_initial_report_failure_settles_all_started_builds_and_keeps
             .map(|entry| entry.get("service").unwrap().as_str().unwrap())
             .collect::<Vec<_>>(),
         ["web", "worker"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_queued_build_says_so_in_its_log_while_it_waits() {
+    let (run, actor) = uploaded();
+    let target = Target {
+        service: ServiceName::parse("app").unwrap(),
+        build: Build::Upload {
+            digest: UploadDigest::parse("d".repeat(64)).unwrap(),
+            source: None,
+            github_skipped: false,
+        },
+    };
+    run.report(&target.service, BuildStatus::Building, None, String::new())
+        .await
+        .unwrap();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let running =
+        super::super::running::Running::spawn(CancellationToken::new(), |reporter| async move {
+            reporter.report(super::super::prepare::Progress::Build(
+                ployz_build::Progress::Stage(ployz_build::Stage::Queued),
+            ));
+            let _ = released.await;
+            Err(internal("released"))
+        });
+    let log = || {
+        run.store
+            .read(
+                &actor,
+                &ployz_store::BuildLogQuery {
+                    deployment: run.deployment.clone(),
+                    service: target.service.clone(),
+                },
+            )
+            .unwrap()
+            .log
+    };
+    let watch = async {
+        let shown = tokio::time::timeout(Duration::from_secs(30), async {
+            while !log().contains("Waiting for a build slot") {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        release.send(()).unwrap();
+        shown
+    };
+    let (followed, shown) = tokio::join!(run.follow(&target, &running), watch);
+    assert!(followed.unwrap().is_err());
+    assert!(
+        shown.is_ok(),
+        "the log said nothing while queued: {:?}",
+        log()
     );
 }
 

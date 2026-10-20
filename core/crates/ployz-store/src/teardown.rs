@@ -52,8 +52,9 @@ pub struct EnvironmentListing {
     pub default: bool,
     /// The Environment it is a Branch of, if it is one.
     pub parent: Option<EnvironmentName>,
-    /// Its latest Deployment, when that removes it from the Servers.
-    pub removal: Option<DeploymentSummary>,
+    /// Its removal from the Servers: asked and waiting for the sweep, or its
+    /// latest Deployment when that removes it. None when neither.
+    pub removal: Option<EnvironmentRemoval>,
     /// Whether it is a PR Environment whose pull request merged.
     pub merged: bool,
     /// What a new Branch of it runs when it names no Setup Commands.
@@ -63,6 +64,35 @@ pub struct EnvironmentListing {
     /// How many times it was protected: an approval to unprotect it holds for one
     /// protection, so protecting it again asks again.
     pub protections: u32,
+}
+
+/// Where an Environment's removal from the Servers stands.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EnvironmentRemoval {
+    /// Asked, and waiting for the sweep to start the Deployment that removes it.
+    Pending {
+        because: RemovedBecause,
+        /// When it was asked, in Unix seconds.
+        #[ts(type = "number")]
+        since: i64,
+    },
+    /// The Deployment that removes it, running or ended.
+    Deployment(Box<DeploymentSummary>),
+}
+
+/// Why an Environment is being removed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RemovedBecause {
+    /// Someone removed it, or its Project.
+    Removed,
+    /// Its pull request closed.
+    PullRequest,
+    /// It went unused for too long.
+    Idle,
+    /// It synced into its Parent and wasn't kept.
+    Synced,
 }
 
 /// Make an Environment its Project's Default Environment.
@@ -147,7 +177,7 @@ pub(crate) fn environments(
             default: id == project.default_environment,
             name: row.parse::<EnvironmentName>(1, "Environment")?,
             parent,
-            removal: crate::removal::latest(tx, &id)?,
+            removal: crate::removal::listed(tx, &id)?,
             merged: merged(tx, who, &id)?,
             branch_setup: match row.optional_text(3)? {
                 Some(_) => row.json(3, "Branch setup")?,
