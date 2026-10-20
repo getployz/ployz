@@ -3065,6 +3065,31 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
+    it("asked again for a size every copy holds, asks each again and tells the Store again", async () => {
+      const first = await requested(grow(20));
+      await execute(first.id);
+      verbs.length = 0;
+      const again = await requested(grow(20));
+
+      await execute(again.id, "run-2");
+
+      expect(verbs).toEqual(["size@fsn-2(20)", "size@fsn-3(20)", "size@fsn-1(20)"]);
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([recorded, recorded]);
+      expect(await rows()).toMatchObject([{ id: first.id, state: "done" }, { id: again.id, state: "done" }]);
+    });
+
+    it("a cancellation after the record leaves every copy and the Store at the new size", async () => {
+      const run = await requested(grow(20));
+
+      await execute(run.id, "run-1", [{ id: "05-finish", handler: () => undefined }]);
+      await runEffect(closeVolumeRun("run-1", "cancellation"));
+
+      expect(bounds()).toEqual({ "fsn-1": 20, "fsn-2": 20, "fsn-3": 20 });
+      expect(storeEvents).toEqual([recorded]);
+      expect(await rows()).toMatchObject([{ state: "cancelled", message: "the run was cancelled" }]);
+    });
+
     it("the primary without room ends the run with the mirrors grown, the Store at the old size, and what to do", async () => {
       failNext.set("size@fsn-1", refusal({ reason: "no_capacity", capacity: { code: "insufficient_storage", required_growth_bytes: 4 * GB } }));
       const run = await requested(grow(20));
