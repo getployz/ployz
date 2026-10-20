@@ -500,6 +500,7 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Remote(error) => error.code.clone(),
         ConnectError::Rpc(error) => error.to_rpc_error().code,
         ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
+        ConnectError::OlderMachine => RpcErrorCode::Unsupported,
         ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
             RpcErrorCode::Unsupported
         }
