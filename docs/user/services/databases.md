@@ -19,7 +19,7 @@ it's an ordinary service you can change like any other.
 2. Choose **Database**, then **PostgreSQL**, **MySQL**, **Redis** or **MongoDB**.
 3. Its data goes on a 5 GB [volume](volumes.md). For more room, click the volume, change
    **Storage limit (GB)** and click **Save storage** now. After you deploy it, grow it on
-   Ployz Cloud with `ployz volume set NAME --size N`.
+   Ployz Cloud from the volume's panel, or with `ployz volume set NAME --size N`.
 4. Click **Deploy**.
 
 ![Create → Database: PostgreSQL, Redis, MongoDB and MySQL](../images/database-preset-menu.png)

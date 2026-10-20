@@ -35,6 +35,7 @@ export function ServiceSettingInput({
   inputMode,
   suffix,
   ariaLabel,
+  disabled,
   validate,
   onCommit,
 }: {
@@ -52,6 +53,7 @@ export function ServiceSettingInput({
   inputMode?: "decimal" | "numeric" | "text";
   suffix?: ReactNode;
   ariaLabel: string;
+  disabled?: boolean;
   /** Return an error message to block the commit, or null to allow it. */
   validate?: (raw: string) => string | null;
   onCommit: (raw: string) => PersistableTransaction;
@@ -90,6 +92,7 @@ export function ServiceSettingInput({
 
   const inputProps = {
     "aria-label": ariaLabel,
+    disabled,
     // Leaving the field must not overwrite a value changed elsewhere: replacing it waits for Enter or ✓.
     commit: notice ? ("check" as const) : ("blur" as const),
     "aria-invalid": active.error ? true : undefined,

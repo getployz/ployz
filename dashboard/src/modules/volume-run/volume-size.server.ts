@@ -4,7 +4,7 @@ import { storeSystem } from "#/modules/config-store/config-store.server";
 import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { ClusterOutOfTime, clusterRead } from "#/modules/runtime/organization-runtime.server";
 import { sdkFailureMessage } from "#/modules/runtime/ployz.server";
-import { type Bytes, gb, type PoolShortfall, type SizeDirection, type SizeOutcome } from "#/modules/volume-run/resize";
+import { type Bytes, gb, type SizeDirection, type SizeOutcome } from "#/modules/volume-run/resize";
 import { type MachineRef, openSession, requireOwner, type RunContext, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
 
 /**
@@ -20,9 +20,6 @@ const SizeRefusedDetails = Schema.Struct({
   }),
 });
 const decodeSizeRefused = Schema.decodeUnknownOption(SizeRefusedDetails);
-
-const lacked = (capacity: PoolShortfall | undefined) =>
-  capacity?.required_growth_bytes === undefined ? "" : ` (it lacks ${gb(capacity.required_growth_bytes)})`;
 
 /**
  * What a SetVolumeSize rejection means for a run that wants `machine`'s copy to hold at least `bytes`, or null when
@@ -41,7 +38,7 @@ export function sizeRefusalOf(volumeName: string, machine: MachineRef, bytes: By
     case "switching":
       return { kind: "retry" };
     case "no_capacity":
-      return refused(`${machine.name} has no room to grow ${volumeName} to ${gb(bytes)}${lacked(capacity)}`);
+      return refused(`${machine.name} has no room to grow ${volumeName} to ${gb(bytes)}`);
     case "not_found":
       return refused(`${machine.name} no longer holds a copy of ${volumeName}`);
     case "not_provisioned":

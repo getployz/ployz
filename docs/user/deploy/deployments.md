@@ -157,6 +157,24 @@ its new containers printed. A failed deployment opens on the card that failed.
 | **Cancelled** | Someone cancelled it. A service it stopped partway reads **Cancelled**, not **Failed**. |
 | **Unknown** | Ployz can't tell what applied. Redeploy it. |
 
+### Cleanup
+
+After a deployment from the dashboard or GitHub ran, a **Cleanup** card appears after its last
+service. It stops the old replicas the deployment couldn't stop while it ran, for example because
+a server was cut off. Click it to see each old replica that is still running and why.
+
+| Cleanup | What it means |
+| --- | --- |
+| **Waiting** | Retrying the old replicas still running. The card updates without a reload. |
+| **Done** | Every old replica stopped |
+| **Left running on server-3** | After three tries over a few minutes, these old replicas still run. A server cut off before or during the deployment shows here too, since an old replica may still run on it. So does a service that failed to deploy: cleanup leaves its old replica, which may be the one serving. Cleanup names those at once, since trying again changes nothing. |
+| **A newer Deployment took over** | You deployed again before cleanup finished. The newer deployment's own cleanup takes over. |
+| **Failed** | Cleanup itself hit an error, shown on the card. A cleanup Cloud lost track of also ends here, after about an hour, and lists the old replicas it last saw running. |
+
+A replica left running keeps serving alongside the new ones once its server is back. Deploy again
+to stop it. CLI deployments clean up while they run, report a replica left running at the end, and
+show no **Cleanup** card.
+
 From the CLI, `ployz deployment ls` lists the environment's deployments, newest first, with
 each one's status and saved revision. To inspect per-server progress, run:
 

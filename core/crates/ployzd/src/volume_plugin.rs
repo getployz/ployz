@@ -3,10 +3,7 @@
 use std::{
     collections::BTreeMap,
     fmt, fs, io,
-    os::unix::{
-        fs::{FileTypeExt, MetadataExt, PermissionsExt},
-        net::UnixListener as StdUnixListener,
-    },
+    os::unix::{fs::PermissionsExt, net::UnixListener as StdUnixListener},
     path::Path,
     str::FromStr,
     time::Duration,
@@ -166,38 +163,13 @@ pub(super) fn listener(path: &Path) -> io::Result<PluginSocket> {
         fs::create_dir_all(parent)?;
     }
     let claim = ployzd::socket_activation::claim_socket_path(path)?;
-    remove_stale_socket(path)?;
+    ployzd::socket_activation::remove_stale_socket(path)?;
     let listener = StdUnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
     Ok(PluginSocket {
         claim: Some(claim),
         listener,
     })
-}
-
-fn remove_stale_socket(path: &Path) -> io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if !metadata.file_type().is_socket() || metadata.uid() != fs::metadata("/proc/self")?.uid() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!(
-                "refusing to replace {}: not a socket this user owns",
-                path.display()
-            ),
-        ));
-    }
-    match std::os::unix::net::UnixStream::connect(path) {
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            format!("another process serves {}", path.display()),
-        )),
-        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path),
-        Err(error) => Err(error),
-    }
 }
 
 /// Serves the Docker Volume plugin on its Unix listener.
