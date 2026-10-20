@@ -15,7 +15,7 @@ use ployz_core::{
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
     DeploymentId, DeploymentQuery, Edit, EnvironmentId, EnvironmentRef, HistoryAction,
-    HistoryPreviewQuery, Mount, OrganizationId, ProjectId, ProjectName, Retry, Revision,
+    HistoryPreviewQuery, Mount, OrganizationId, ProjectId, ProjectName, Publish, Retry, Revision,
     RunEvidence, RunnerId, ServiceLineageId, SetVolumeStorage, SettingPath, StageHistory,
     SystemEvent, Trusted, VolumeId, VolumeListing, VolumeName, VolumeResized, VolumesQuery,
 };
@@ -200,6 +200,23 @@ fn deploy(store: &ConfigStore, who: &Actor, n: u8) {
     run(store, n);
 }
 
+/// Save Working State as a revision of its own, as the CLI does before a Deploy.
+fn publish(store: &ConfigStore, who: &Actor) {
+    store
+        .write_trusted(
+            who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+}
+
 fn resized(volume: &str, from: u64, to: u64) -> SystemEvent {
     SystemEvent::VolumeResized(VolumeResized {
         environment: EnvironmentId::parse(ENVIRONMENT).unwrap(),
@@ -236,6 +253,18 @@ fn storage_row(store: &ConfigStore, who: &Actor) -> Option<(Value, Value)> {
         .read(who, &ployz_store::DiffQuery::default())
         .unwrap()
         .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|setting| setting.path == "volumes.data.storage")
+        .map(|setting| (setting.before.clone(), setting.after.clone()))
+}
+
+/// The storage row a Save would record, against the latest Saved revision.
+fn draft_storage_row(store: &ConfigStore, who: &Actor) -> Option<(Value, Value)> {
+    store
+        .read(who, &ployz_store::DiffQuery::default())
+        .unwrap()
+        .draft_changes
         .iter()
         .flat_map(|change| &change.settings)
         .find(|setting| setting.path == "volumes.data.storage")
@@ -352,6 +381,26 @@ fn a_record_moves_the_lock_working_state_and_applied_state_at_once() {
     restore(&store, &who, revision_of(&store, &who, 1)).unwrap();
     assert_eq!(
         storage_row(&store, &who),
+        Some((storage_json(20), storage_json(10)))
+    );
+}
+
+#[test]
+fn a_record_is_no_draft_against_the_saved_revision_it_outgrew() {
+    let (store, who) = shop(managed(10));
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    resize(&store, 10, 20).unwrap();
+    let view = store
+        .read(&who, &ployz_store::DiffQuery::default())
+        .unwrap();
+    assert_eq!(draft_storage_row(&store, &who), None);
+    assert_eq!(view.draft_count, 0);
+    assert_eq!(storage_row(&store, &who), None);
+
+    restore(&store, &who, revision_of(&store, &who, 1)).unwrap();
+    assert_eq!(
+        draft_storage_row(&store, &who),
         Some((storage_json(20), storage_json(10)))
     );
 }

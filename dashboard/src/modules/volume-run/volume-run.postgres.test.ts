@@ -3133,7 +3133,7 @@ describe("volume runs", () => {
     });
 
     it("a Store that recorded another size since the run read it ends the run failed, naming both, and lowers no copy", async () => {
-      storeRefuse = () => new RpcError({ code: "conflict", message: "size changed", details: { reason: "size_changed", volume: volumeId, recorded: { kind: "provisioned", maximum_bytes: 30 * GB } } });
+      storeRefuse = () => new RpcError({ code: "conflict", message: "size changed", details: { reason: "size_changed", volume: volumeId, recorded: { kind: "provisioned", maximumBytes: 30 * GB } } });
       const run = await requested(grow(20));
 
       await execute(run.id);

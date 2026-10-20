@@ -45,8 +45,9 @@ ployz volume set data --size 20 --wait
 
 Ployz grows each mirror first and the copy your service writes to last. If one server holding
 a copy has no room, Ployz refuses the whole resize, names that server, and the volume keeps its
-old limit. `ployz volume runs data` shows how a resize went. Shrinking a volume isn't
-supported yet.
+old limit. `ployz volume runs data` shows how a resize went. The new limit isn't a staged
+change: `ployz diff` shows nothing, and your next deploy leaves the service's container alone.
+Shrinking a volume isn't supported yet.
 
 The dashboard doesn't show how full a volume is yet:
 

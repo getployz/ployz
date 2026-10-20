@@ -98,7 +98,7 @@ export type RecordAnswer =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "changed" | "gone"; readonly message: string };
 
-const Recorded = Schema.Struct({ recorded: Schema.Union([Schema.Struct({ kind: Schema.Literal("provisioned"), maximum_bytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") })]) });
+const Recorded = Schema.Struct({ recorded: Schema.Union([Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") })]) });
 const decodeRecorded = Schema.decodeUnknownOption(Recorded);
 
 /**
@@ -119,7 +119,7 @@ export const recordVolumeSize = Effect.fn("VolumeRun.recordVolumeSize")(function
       if (refusal.code !== "conflict") return Effect.fail(refusal);
       const recorded = decodeRecorded(refusal.details);
       const holds = Option.isSome(recorded)
-        ? recorded.value.recorded.kind === "provisioned" ? `records ${ctx.volumeName} at ${gb(recorded.value.recorded.maximum_bytes)}, not ${gb(record.from)}` : `records ${ctx.volumeName} as a Docker Volume`
+        ? recorded.value.recorded.kind === "provisioned" ? `records ${ctx.volumeName} at ${gb(recorded.value.recorded.maximumBytes)}, not ${gb(record.from)}` : `records ${ctx.volumeName} as a Docker Volume`
         : `no longer records ${ctx.volumeName} at ${gb(record.from)}`;
       return Effect.succeed({ ok: false, reason: "changed", message: `the Store ${holds}; read its size again` });
     }),

@@ -242,10 +242,13 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect::<Vec<_>>(),
     );
     view.broken = crate::rules::broken_in(tx, environment, names)?;
-    let baseline = saved.as_ref().map_or_else(
+    let mut baseline = saved.as_ref().map_or_else(
         || crate::scope::empty(environment.summary.name.as_str()),
         |saved| saved.intent.clone(),
     );
+    // A record moved Working State to the size the Servers hold; against the size
+    // the Saved revision asked for, that is no draft of the user's.
+    crate::volume::size::held(tx, id, &mut baseline.volumes)?;
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
