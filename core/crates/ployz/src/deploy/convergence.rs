@@ -342,7 +342,9 @@ fn refusal(
     let active = snapshot
         .containers
         .iter()
-        .filter(|container| is_service_container(container, service))
+        .filter(|container| {
+            is_service_container(container, service) && *container.rotation() != CopyRotation::Out
+        })
         .collect::<Vec<_>>();
     let spec = &active.first()?.resolved_spec;
     if active
@@ -930,6 +932,33 @@ mod tests {
             .map(|container| container.container_id)
             .collect();
         assert_eq!(moved, [id('1'), id('2'), id('5')]);
+    }
+
+    #[test]
+    fn only_a_serving_copy_of_another_shape_holds_a_move() {
+        let service = QualifiedService::parse("app/api").unwrap();
+        let mut older = serde_json::to_value(stateless()).unwrap();
+        *older.pointer_mut("/container/image").unwrap() = json!("alpine:3.22.0");
+        let older: ResolvedServiceSpec = serde_json::from_value(older).unwrap();
+        let with_older = |rotation| {
+            let mut snapshot = two_on_a();
+            let parts = ContainerObservationParts::from(container('3', 'a', older.clone()));
+            snapshot.containers.push(
+                ContainerObservation::try_from(ContainerObservationParts {
+                    rotation: Some(rotation),
+                    ..parts
+                })
+                .unwrap(),
+            );
+            snapshot
+        };
+        let out = with_older(CopyRotation::Out);
+        assert_eq!(refusal(&out, &service, &movable(&out, &service)), None);
+        let serving = with_older(CopyRotation::In);
+        assert_eq!(
+            refusal(&serving, &service, &movable(&serving, &service)),
+            Some(super::StayReason::MidRollout)
+        );
     }
 
     fn rotating(hex: char, rotation: CopyRotation) -> ContainerObservation {
