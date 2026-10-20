@@ -91,11 +91,9 @@ pub(crate) struct ServiceUploads {
 
 /// Whether `deployment` applied `service`: it runs the upload it built it from.
 fn applied(deployment: &Stored, service: &str) -> bool {
-    deployment
-        .run
-        .nodes
-        .get(service)
-        .is_some_and(|status| status.advances())
+    deployment.run.nodes.get(service).is_some_and(|status| {
+        status.applied(deployment.summary.status == crate::DeploymentStatus::Applied)
+    })
 }
 
 /// Whether `deployment` moved `service` onto the upload it builds it from: it sent
