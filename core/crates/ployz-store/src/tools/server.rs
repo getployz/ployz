@@ -35,13 +35,13 @@ const SETTABLE: [&str; 4] = [
 /// How many of a Server's runs `server_show` reads to find its newest Drain under later ones.
 const RUNS_READ: u8 = 20;
 
-/// The Server's newest Drain, by the `drain <server>` Cloud names it, when it failed and a
-/// later run took `latest`. A later Drain is the newest, so a failure before it never shows.
+/// The Server's newest ended Drain, by the `drain <server>` Cloud names it, when it failed and a
+/// later run took `latest`. A later Drain that is only accepted or running leaves it shown.
 fn failed_drain(operations: &[Operation]) -> Option<&Operation> {
     let (at, drain) = operations
         .iter()
         .enumerate()
-        .find(|(_, operation)| operation.run.starts_with("drain "))?;
+        .find(|(_, operation)| operation.run.starts_with("drain ") && operation.state.ended())?;
     (at > 0 && drain.state == RunState::Failed).then_some(drain)
 }
 

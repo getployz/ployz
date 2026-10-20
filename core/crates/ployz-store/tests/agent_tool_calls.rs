@@ -3368,3 +3368,26 @@ fn server_show_keeps_a_failed_drain_a_later_run_hides() {
         "{drained_since}"
     );
 }
+
+// Catches a newer Drain that only got accepted clearing an older failure,
+// though nothing has drained the Server since.
+#[test]
+fn server_show_keeps_a_failed_drain_a_later_unfinished_drain_follows() {
+    let never = "The drain never started.";
+
+    let pending = shown_with_runs(&[
+        ("upgrade web-1", "done", None),
+        ("drain web-1", "accepted", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(pending["failed_drain"]["run"], "drain web-1", "{pending}");
+    assert_eq!(pending["failed_drain"]["state"], "failed");
+    assert_eq!(pending["failed_drain"]["reason"], never);
+
+    let running = shown_with_runs(&[
+        ("drain web-1", "running", None),
+        ("drain web-1", "failed", Some(never)),
+    ]);
+    assert_eq!(running["latest"]["state"], "running");
+    assert_eq!(running["failed_drain"]["reason"], never, "{running}");
+}
