@@ -1006,7 +1006,12 @@ fn a_shrink_is_not_recorded_while_a_deployment_is_in_flight() {
     refused_while_deploying(&resize(&store, 5, 3).unwrap_err(), 2);
     assert_eq!(shipped_sizes(&store, 2), vec![5]);
     refused_while_deploying(&resize(&store, 5, 3).unwrap_err(), 2);
-    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(5)));
+    // The refusal commits nothing: the lock row, Applied State and Working State all
+    // still say 5, so Cloud's change log, read from Applied State, has no resize.
+    let listed = listing(&store, &who, "data");
+    assert_eq!(listed.recorded_storage, Some(gb(5)));
+    assert_eq!(listed.volume.storage, managed(5));
+    assert_eq!(storage_row(&store, &who), None);
     assert_eq!(runs_nothing(&store, &who, 2), unchanged());
     resize(&store, 5, 3).unwrap();
     assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(3)));
