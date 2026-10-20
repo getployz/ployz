@@ -331,10 +331,13 @@ a name or the storage choice in `ployz server add`, work the same way. A `deploy
 Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
-When `ployz env rm` or `ployz project rm` would delete volume data, it refuses and names the
-version it reviewed. Pass that version with `--expect-version` to refuse if anything changed since.
-The flag binds only that data-loss review: a removal that deletes no data doesn't compare the
-version, so it goes ahead even when the version you pass is stale.
+Ployz reviews a `ployz env rm` or `ployz project rm` before it runs when it takes a deployed
+service or volume off your servers. The name you confirm with binds that review: the command says
+what goes, such as `Removing shop/qa removes Service web.`, and removes it at the version it
+reviewed. To bind a version yourself, pass `--expect-version`: the removal refuses if anything
+changed since, and names the version it reviewed now. The version binds only a removal that Ployz
+reviews before it runs. Removing an environment with nothing deployed, such as a new empty
+project, doesn't compare it, so it goes ahead even when the version you pass is stale.
 
 `ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
 doesn't answer, the command returns with the environment still being removed, names the server,
