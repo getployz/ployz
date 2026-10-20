@@ -2610,3 +2610,45 @@ async fn an_owner_whose_calls_time_out_on_this_client_is_named_away() {
         "{outcome:?}"
     );
 }
+
+/// A planned removal whose owner was cut off after the switch: the copy may still
+/// be In, so it is named left running and its Machine away, and the Deploy fails.
+#[tokio::test(start_paused = true)]
+async fn a_removal_whose_owner_does_not_answer_names_the_copy_left_running() {
+    let machine = machine('1');
+    let kept = container('a');
+    let removed = container('b');
+    let plan = vec![DeployOperation::RemoveContainer {
+        machine_id: machine,
+        container_id: removed,
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
+    }];
+    let client = Scripted::new(
+        std::iter::repeat_with(|| {
+            failed_unavailable(
+                Call::Inspect(machine, removed),
+                "target Machine RPC timed out",
+            )
+        })
+        .take(1000)
+        .collect(),
+    )
+    .with_copy(&machine, &kept, CopyRotation::In)
+    .with_copy(&machine, &removed, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_groups_reported(&plan, scale_down_groups(&[kept]), &[machine], &client).await;
+
+    assert!(
+        !matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        warnings,
+        [
+            left_running("machine-1", "machine-1 did not answer"),
+            mixed_after_return("machine-1"),
+        ]
+    );
+    assert!(client.moves().is_empty(), "{:?}", client.moves());
+}

@@ -1521,6 +1521,9 @@ struct Rows<'a> {
     operations: &'a [DeployOperation],
     run: &'a DeploymentLogId,
     names: BTreeMap<MachineId, MachineName>,
+    /// The Service each rollout removal retires a copy of, so one that cannot
+    /// inspect its copy can still name it.
+    services: BTreeMap<usize, &'a ServiceName>,
     gens: tokio::sync::Mutex<BTreeMap<QualifiedService, Gen>>,
     stop_first: Vec<StopFirstStep<'a>>,
 }
@@ -1589,11 +1592,40 @@ impl<'a> Rows<'a> {
             })
             .collect();
         let names = plan.machine_names().clone();
+        // A rollout's removals run in a group of their own that depends on just
+        // the Service they roll out.
+        let services = plan
+            .groups()
+            .iter()
+            .filter_map(|group| match group.dependencies.as_slice() {
+                [service] if group.service.is_none() => Some((service, &group.steps)),
+                _ => None,
+            })
+            .flat_map(|(service, steps)| {
+                steps
+                    .iter()
+                    .flat_map(|step| match step {
+                        Step::Serial(index) => std::slice::from_ref(index),
+                        Step::Parallel(indices) => indices.as_slice(),
+                    })
+                    .map(move |index| (*index, service))
+            })
+            .filter(|(index, _)| {
+                matches!(
+                    operation_at(operations, *index),
+                    DeployOperation::RemoveContainer {
+                        purpose: RemoveContainerPurpose::Rollout,
+                        ..
+                    }
+                )
+            })
+            .collect();
         Self {
             namespace: &plan.namespace,
             operations,
             run,
             names,
+            services,
             gens: tokio::sync::Mutex::new(BTreeMap::new()),
             stop_first,
         }
@@ -2064,7 +2096,24 @@ async fn execute_operation<C: MachineOperations>(
                 {
                     return Ok(Ran::default());
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    // Unread, the copy may still be In and serving the old version.
+                    if let (ExecutionError::Machine { error: cause, .. }, Some(service)) =
+                        (&error, rows.services.get(&index))
+                    {
+                        let copy = cleanup::Copy {
+                            machine_id: *machine_id,
+                            service: QualifiedService::new(
+                                rows.namespace.clone(),
+                                (*service).clone(),
+                            ),
+                            container_id: *container_id,
+                            rotation: CopyRotation::In,
+                        };
+                        rows.leave_running(progress, &copy, Left::Failed(cause.clone()));
+                    }
+                    return Err(error.into());
+                }
             };
             progress.set_running(index, OperationPhase::RemovingContainer);
             let allow_empty = matches!(purpose, RemoveContainerPurpose::Retire);
