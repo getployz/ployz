@@ -638,6 +638,13 @@ pub(crate) fn retry(
         rollback.removes.clone_from(losses);
     }
     let (services, nodes) = retried(tx, &stored, fresh)?;
+    // A retry builds from what its source did, but sends nothing.
+    let retried_uploads = stored.service_uploads.clone().map(|uploads| {
+        json_text(&super::uploads::ServiceUploads {
+            sent: false,
+            ..uploads
+        })
+    });
     let admitted_at = now();
     let number = queue(tx, &stored.summary.environment_id, false, |tx, number| {
         let listed = next_listed(tx, &stored.summary.environment_id)?;
@@ -650,7 +657,7 @@ pub(crate) fn retry(
               message, listed, service_uploads) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              service_uploads \
+              ?10 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -664,6 +671,7 @@ pub(crate) fn retry(
                 json_text(&services).as_str().into(),
                 json_text(&nodes).as_str().into(),
                 listed.into(),
+                retried_uploads.as_deref().into(),
             ],
         )?;
         // A retry builds the commits its source pinned.

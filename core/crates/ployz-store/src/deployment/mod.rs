@@ -740,7 +740,7 @@ pub(crate) struct Stored {
     /// The digest of the upload each target Service without a source of its own
     /// builds from, by lineage; none for one admitted before it was kept, whose
     /// every such Service builds from its upload.
-    pub(crate) service_uploads: Option<BTreeMap<String, ployz_core::UploadDigest>>,
+    pub(crate) service_uploads: Option<uploads::ServiceUploads>,
 }
 
 impl Stored {

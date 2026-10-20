@@ -71,7 +71,7 @@ pub(crate) fn own<'a>(deployment: &'a Stored, service: &str) -> Option<&'a Uploa
         return None;
     }
     match &deployment.service_uploads {
-        Some(uploads) => uploads.get(service),
+        Some(uploads) => uploads.services.get(service),
         None => deployment
             .summary
             .upload
@@ -80,8 +80,36 @@ pub(crate) fn own<'a>(deployment: &'a Stored, service: &str) -> Option<&'a Uploa
     }
 }
 
-/// The digest of the upload each Service without a source builds from, by lineage.
-pub(crate) type ServiceUploads = BTreeMap<String, UploadDigest>;
+/// The digest of the upload each target Service without a source builds from, by
+/// lineage, and whether its Deployment sent that upload.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ServiceUploads {
+    /// A retry, or a Deploy without a new upload, sent none.
+    pub(crate) sent: bool,
+    pub(crate) services: BTreeMap<String, UploadDigest>,
+}
+
+/// Whether `deployment` moves its Services onto the uploads it builds from: it sent
+/// them, it applied, or it may still run. A failed retry of an older upload leaves
+/// each on its latest.
+fn advances(deployment: &Stored) -> bool {
+    deployment.summary.status == crate::DeploymentStatus::Applied
+        || deployment.summary.in_flight
+        || deployment
+            .service_uploads
+            .as_ref()
+            .is_none_or(|uploads| uploads.sent)
+}
+
+/// The upload `service` builds from: its own in the latest Deployment that moved it.
+fn lineage<'a>(deployments: &'a [Stored], service: &str) -> Option<(usize, &'a UploadDigest)> {
+    deployments
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, deployment)| advances(deployment))
+        .find_map(|(at, deployment)| own(deployment, service).map(|digest| (at, digest)))
+}
 
 /// What a Deployment admitted with `upload` builds its target Services without a
 /// source from: the upload it carries, and each such Service's digest by lineage.
@@ -106,23 +134,24 @@ pub(crate) fn admitted(
         return Ok((upload, None));
     }
     if let Some(upload) = upload {
-        let uploads = sourceless
+        let services = sourceless
             .iter()
             .map(|service| ((*service).to_owned(), upload.digest.clone()))
             .collect();
-        return Ok((Some(upload), Some(uploads)));
+        return Ok((
+            Some(upload),
+            Some(ServiceUploads {
+                sent: true,
+                services,
+            }),
+        ));
     }
     let deployments = uploaded(tx, environment)?;
     // Each Service's own upload, with where its latest Deployment stands.
     let owned: Vec<(&str, usize, &UploadDigest)> = sourceless
         .iter()
         .filter_map(|service| {
-            deployments
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(at, deployment)| own(deployment, service).map(|digest| (at, digest)))
-                .map(|(at, digest)| (*service, at, digest))
+            lineage(&deployments, service).map(|(at, digest)| (*service, at, digest))
         })
         .collect();
     // The newest, preferring what that Deployment carried itself.
@@ -148,7 +177,7 @@ pub(crate) fn admitted(
     else {
         return Err(error::corrupt("Deployment upload"));
     };
-    let uploads = sourceless
+    let services = sourceless
         .iter()
         .map(|service| {
             let digest = owned
@@ -158,7 +187,13 @@ pub(crate) fn admitted(
             ((*service).to_owned(), digest.clone())
         })
         .collect();
-    Ok((Some(carried), Some(uploads)))
+    Ok((
+        Some(carried),
+        Some(ServiceUploads {
+            sent: false,
+            services,
+        }),
+    ))
 }
 
 /// The digests Cloud keeps for `environment`, given `held`, the Deployments Cloud
@@ -187,7 +222,7 @@ fn kept(
             deployment
                 .service_uploads
                 .iter()
-                .flat_map(|uploads| uploads.values().cloned()),
+                .flat_map(|uploads| uploads.services.values().cloned()),
         );
     }
     let Some(saved) = crate::review::latest_saved(tx, environment)? else {
@@ -200,12 +235,7 @@ fn kept(
         .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
     {
         let mut latest = deployments.iter().rev();
-        kept.extend(
-            latest
-                .clone()
-                .find_map(|deployment| own(deployment, &service.id))
-                .cloned(),
-        );
+        kept.extend(lineage(&deployments, &service.id).map(|(_, digest)| digest.clone()));
         kept.extend(
             latest
                 .find(|deployment| {
@@ -224,30 +254,50 @@ pub(crate) fn uploads(
     query: &UploadsQuery,
 ) -> Result<UploadsView, RpcError> {
     let held: BTreeSet<DeploymentId> = query.deployments.iter().cloned().collect();
+    let mut found = Vec::new();
+    for id in &query.deployments {
+        match super::owned(tx, who, id) {
+            Ok(deployment) => found.push(deployment),
+            Err(refused) if refused.code == ployz_core::RpcErrorCode::NotFound => {}
+            Err(refused) => return Err(refused),
+        }
+    }
+    // One copy of each kept upload stays: the newest sent, and any a Deployment that
+    // may still run reads.
+    let mut newest: BTreeMap<(&EnvironmentId, &UploadDigest), u64> = BTreeMap::new();
+    for deployment in &found {
+        if let Some(upload) = &deployment.summary.upload {
+            let number = deployment.summary.number.unwrap_or_default();
+            let at = newest
+                .entry((&deployment.summary.environment_id, &upload.digest))
+                .or_insert(number);
+            *at = (*at).max(number);
+        }
+    }
     let mut environments: BTreeMap<EnvironmentId, BTreeSet<UploadDigest>> = BTreeMap::new();
     let mut uploads = Vec::new();
-    for id in &query.deployments {
-        let deployment = match super::owned(tx, who, id) {
-            Ok(deployment) => deployment,
-            Err(refused) if refused.code == ployz_core::RpcErrorCode::NotFound => continue,
-            Err(refused) => return Err(refused),
-        };
-        let environment = deployment.summary.environment_id.clone();
+    for deployment in &found {
+        let environment = &deployment.summary.environment_id;
         let digests = match environments.entry(environment.clone()) {
             std::collections::btree_map::Entry::Occupied(known) => known.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(kept(tx, &environment, &held)?)
+                entry.insert(kept(tx, environment, &held)?)
             }
         };
-        let digest = deployment.summary.upload.map(|upload| upload.digest);
-        let kept = digest
+        let digest = deployment
+            .summary
+            .upload
             .as_ref()
-            .is_some_and(|digest| digests.contains(digest));
-        let digest = digest.map(|digest| digest.as_str().to_owned());
+            .map(|upload| &upload.digest);
+        let kept = digest.is_some_and(|digest| {
+            digests.contains(digest)
+                && (deployment.summary.in_flight
+                    || newest.get(&(environment, digest)) == deployment.summary.number.as_ref())
+        });
         uploads.push(HeldUpload {
-            deployment: id.clone(),
-            environment_id: environment,
-            digest,
+            deployment: deployment.summary.id.clone(),
+            environment_id: environment.clone(),
+            digest: digest.map(|digest| digest.as_str().to_owned()),
             kept,
         });
     }

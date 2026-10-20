@@ -1631,10 +1631,9 @@ it.live(
         assert.strictEqual((yield* admit(webOnly, here, null, ["web"])).status, 200);
         assert.strictEqual(yield* uploadOwner(store, organizationId, webOnly), both);
         yield* run(webOnly);
-        // A Deploy of both builds each from its own upload. Cloud extracts the one the newer Deployment built from,
-        // web's, and keeps both.
+        // A Deploy of both builds each from its own upload. Cloud extracts the newer one sent, api's, and keeps both.
         assert.strictEqual((yield* admit(together, here, null)).status, 200);
-        assert.strictEqual(yield* uploadOwner(store, organizationId, together), both);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, together), apiOnly);
         yield* run(together);
         yield* releaseUploads(store, organizationId);
         assert.deepStrictEqual([yield* held(both), yield* held(apiOnly)], [1, 1]);
@@ -1659,6 +1658,8 @@ it.live(
         yield* run(retriedFailed);
         yield* releaseUploads(store, organizationId);
         assert.deepStrictEqual([yield* held(failed), yield* held(sentAgain)], [0, 1]);
+        // The same content sent twice is kept once: the newer copy.
+        assert.strictEqual(yield* held(firstSent), 0);
         assert.strictEqual(yield* held(apiOnly), 0);
 
         // Release takes no lock, so it may delete an upload as a run reads it, before or mid-read. Either way the

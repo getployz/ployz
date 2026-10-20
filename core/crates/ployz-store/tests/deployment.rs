@@ -2953,8 +2953,8 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
     );
     end(3);
     // A full Deploy builds each from its own upload, and carries the newer for Cloud to
-    // extract: front's, sent after back's.
-    assert_eq!(deploy(4, &[], None).unwrap().upload, Some(upload('a')));
+    // extract: back's, sent after front's. #3 failed, so it moved front onto nothing.
+    assert_eq!(deploy(4, &[], None).unwrap().upload, Some(upload('b')));
     let own = |name: &str, c: char| (ServiceName::parse(name).unwrap(), Some(upload(c).digest));
     assert_eq!(
         store.claim(&id(4), &a).unwrap().uploads,
@@ -3168,15 +3168,16 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
             end(3);
             deploy(4, Some(upload('a')));
             end(4);
-            assert_eq!(kept(&[1, 2, 4]), [true, false, true]);
+            // #4 sent a again: one copy of a stays.
+            assert_eq!(kept(&[1, 2, 4]), [false, false, true]);
         } else {
             // The user uploads a again, then retries the failed one: a is still the newest
-            // upload, and b is what the Service last built from.
+            // upload, kept once. The failed retry moved the Service onto nothing, so b goes.
             deploy(3, Some(upload('a')));
             end(3);
             retry(&store, &who, 4, 2).unwrap();
             end(4);
-            assert_eq!(kept(&[1, 2, 3]), [true, true, true]);
+            assert_eq!(kept(&[1, 2, 3]), [false, false, true]);
         }
     }
 }
