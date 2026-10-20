@@ -3319,6 +3319,19 @@ describe("volume runs", () => {
         expect(storeEvents).toEqual([]);
         expect(await rows()).toMatchObject([{ state: "failed", message: "Volume shrink needs a newer Ployz on fsn-3." }]);
       });
+
+      it("a Store left larger than every copy by a stale record is set back to the held size, and no copy moves", async () => {
+        for (const fake of machines) fake.bound = 10 * GB;
+        const run = await requested(shrink(10));
+
+        const output = await execute(run.id);
+
+        expect(output.result).toEqual({ runId: run.id, resized: 10 * GB });
+        expect(storeEvents).toEqual([shrunk]);
+        expect(verbs).toEqual(["size@fsn-1(10)", "size@fsn-2(10)", "size@fsn-3(10)"]);
+        expect(bounds()).toEqual({ "fsn-1": 10, "fsn-2": 10, "fsn-3": 10 });
+        expect(await rows()).toMatchObject([{ state: "done", message: "data is 10 GB on fsn-1, fsn-2, fsn-3" }]);
+      });
     });
 
     it("a release takes a warm resize over", async () => {
