@@ -9,6 +9,9 @@ import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { type CopyServer, VolumeCopiesPanel } from "./StoreVolumeCopies";
 
 const NOW = new Date("2026-10-12T12:00:00Z");
+const DAY = 86_400_000;
+const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+const dated = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 const id = (server: string) => server.padEnd(32, "0") as MachineId;
 const volume = { id: "v1", name: "data", mounts: [{ service: "postgres" }] };
 const pooled = (server: string) => member(server, "empty");
@@ -141,6 +144,28 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.getByText("web-1 is not answering")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
   });
+
+  it("dates an old copy's and a silent Primary's restore point from another day", async () => {
+    const at = new Date(NOW.getTime() - 3 * DAY);
+    panel([member("web-1", "writer"), mirrorAsOf("web-3", at)], row([]));
+    expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${dated.format(at)}`)]);
+    fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
+    expect(within(await screen.findByRole("alertdialog")).getByText(`web-3 · data · ${dated.format(at)}`)).toBeTruthy();
+    cleanup();
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"]));
+    expect(screen.getByText(`Changes after ${dated.format(at)} lost`)).toBeTruthy();
+  });
+
+  it("gives an old copy's and a silent Primary's restore point from today the time alone", async () => {
+    const at = new Date(NOW.getTime() - 5 * 60_000);
+    panel([member("web-1", "writer"), mirrorAsOf("web-3", at)], row([]));
+    expect(rows("Elsewhere")).toEqual([expect.stringContaining(`Old copy · ${clock.format(at)}`)]);
+    fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
+    expect(within(await screen.findByRole("alertdialog")).getByText(`web-3 · data · ${clock.format(at)}`)).toBeTruthy();
+    cleanup();
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"]));
+    expect(screen.getByText(`Changes after ${clock.format(at)} lost`)).toBeTruthy();
+  });
 });
 
 describe("mirror detail", () => {
@@ -169,6 +194,17 @@ describe("mirror detail", () => {
     const { restore } = panel(fresh(), row(["web-2"]), { open: "web-2" });
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
     expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-2" }));
+  });
+
+  it("gives a restore point from today the time alone", () => {
+    panel(fresh(), row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(clock.format(new Date(NOW.getTime() - 5 * 60_000)))).toBeTruthy();
+  });
+
+  it("dates a restore point from another day, so an older point reads apart from today's", () => {
+    const at = new Date(NOW.getTime() - 3 * DAY);
+    panel([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText(dated.format(at))).toBeTruthy();
   });
 
   const silent = () => [member("web-1", "writer"), member("web-2", "unanswered")];
