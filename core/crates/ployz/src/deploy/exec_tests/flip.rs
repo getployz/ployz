@@ -1969,3 +1969,107 @@ async fn a_late_ingress_repair_keeps_the_proxy_an_earlier_repair_published() {
     first_client.assert_done();
     second_client.assert_done();
 }
+
+/// Runs the ingress repair planned for edge-1, while edge-1 and edge-2 are empty and
+/// edge-3 serves proxy `c`, against `admitted`, the pointer some later Deploy wrote.
+async fn repair_against(
+    admitted: ServingPointer,
+) -> (DeployOutcome<ExecutionError>, ServingPointer) {
+    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
+    use crate::deploy::planning::{SlotAction, plan_ingress_repairs};
+
+    let first = crate::global_fixtures::machine('1', "edge-1");
+    let second = crate::global_fixtures::machine('2', "edge-2");
+    let serving = crate::global_fixtures::machine('3', "edge-3");
+    let snapshot = servers(
+        &[first.clone(), second, serving.clone()],
+        vec![ingress_on('c', &serving)],
+    );
+    let repair = plan_ingress_repairs(&ingress_intent(), &snapshot)
+        .into_iter()
+        .find(|repair| repair.machine_id == first.id)
+        .expect("edge-1 is repaired");
+    let plan = match repair.action {
+        SlotAction::Create(Ok(plan)) => plan,
+        action @ (SlotAction::Create(Err(_))
+        | SlotAction::Start(_)
+        | SlotAction::Dead(_)
+        | SlotAction::Restarting(_)
+        | SlotAction::Unchecked(_)) => panic!("a create on edge-1, got {action:?}"),
+    };
+    let ingress = QualifiedService::system_ingress();
+    let client = Scripted::new(vec![created(
+        Call::Run(first.id, ContainerKind::ServiceContainer),
+        &container('a'),
+    )]);
+    client
+        .pointers
+        .lock()
+        .unwrap()
+        .insert(ingress.clone(), admitted);
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+    client.assert_done();
+    let last = client
+        .pointers
+        .lock()
+        .unwrap()
+        .get(&ingress)
+        .cloned()
+        .expect("the repair flipped the pointer");
+    (outcome, last)
+}
+
+/// A regular Deploy retired `c` after the repair was planned. The repair only adds
+/// its own proxy, so `c` stays retiring.
+#[tokio::test]
+async fn an_ingress_repair_leaves_a_proxy_a_newer_deploy_retired_retiring() {
+    let (outcome, last) = repair_against(ServingPointer {
+        deploy: DeploymentLogId::parse("newer").unwrap(),
+        containers: vec![container('d'), container('e')],
+        previous: None,
+        retiring: vec![container('c')],
+        deciding: None,
+    })
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let mut serving_now = last.containers.clone();
+    serving_now.sort();
+    assert_eq!(
+        serving_now,
+        vec![container('a'), container('d'), container('e')]
+    );
+    assert!(last.retiring.contains(&container('c')), "{last:?}");
+}
+
+/// A drain or a Server removal dropped `c` from the pointer after the repair was
+/// planned. The repair must not route it again.
+#[tokio::test]
+async fn an_ingress_repair_does_not_route_a_proxy_the_pointer_dropped() {
+    let (outcome, last) = repair_against(ServingPointer {
+        deploy: DeploymentLogId::parse("drained").unwrap(),
+        containers: vec![container('d')],
+        previous: None,
+        retiring: Vec::new(),
+        deciding: None,
+    })
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let mut serving_now = last.containers.clone();
+    serving_now.sort();
+    assert_eq!(serving_now, vec![container('a'), container('d')]);
+}
