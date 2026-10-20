@@ -311,6 +311,42 @@ fn a_narrowed_deploy_lists_the_services_it_references_among_those_it_ships() {
 }
 
 #[test]
+fn a_rollback_reads_back_the_services_it_ships_as_admitted() {
+    let (store, who) = store();
+    create(&store, &who, 3, "client");
+    let first = deploy(&store, &who, 1, &[]);
+    assert_eq!(run(&store, &first, &["client"]), DeploymentStatus::Applied);
+    create(&store, &who, 4, "postgres");
+    let second = deploy(&store, &who, 2, &[]);
+    assert_eq!(
+        run(&store, &second, &["postgres", "client"]),
+        DeploymentStatus::Applied
+    );
+    let admitted = store
+        .write(
+            &who,
+            &Admit::Retry(crate::Retry {
+                id: deployment(5),
+                deployment: first,
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+        )
+        .unwrap();
+    let listed = store
+        .read(
+            &who,
+            &crate::DeploymentQuery {
+                id: admitted.id.clone(),
+            },
+        )
+        .unwrap()
+        .deployment;
+    assert_eq!(admitted.ships, listed.ships);
+}
+
+#[test]
 fn a_narrowed_deploy_records_the_saved_change_of_a_service_it_references() {
     let (store, who) = store();
     create(&store, &who, 3, "client");
