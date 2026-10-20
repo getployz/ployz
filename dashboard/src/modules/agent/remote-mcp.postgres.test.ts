@@ -354,6 +354,20 @@ it.live("a Cloud command refuses a remote agent as a Store tool does: the field,
     });
   }).pipe(Effect.scoped), 30_000);
 
+it.live("a gated removal the Store refuses reaches a remote agent in the tool's shape: nothing written, the call to repeat and the read to make", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const refused = yield* agent.call("project_remove", { project: "nope" });
+    expect(refused).toMatchObject({
+      isError: true,
+      body: {
+        ok: false,
+        refusal: { code: "not_found", writes: "none", retry: { tool: "project_remove", input: { project: "nope" } }, next: [{ tool: "environment_show", input: {} }] },
+      },
+    });
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("a call missing an argument is refused in the tools' own shape, not the transport's", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();

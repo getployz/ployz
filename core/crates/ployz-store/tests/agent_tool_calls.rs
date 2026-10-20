@@ -3260,6 +3260,25 @@ fn an_unknown_environment_lists_the_real_ones_instead_of_creating_it() {
 }
 
 #[test]
+fn an_unknown_project_points_at_the_read_that_lists_the_real_ones() {
+    let store = shop();
+    let refusal = call(
+        &store,
+        "project_remove",
+        json!({ "project": "nope" }),
+        "call-1",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.writes, Writes::None);
+    assert_eq!(
+        refusal.retry,
+        Call::new("project_remove", json!({ "project": "nope" }))
+    );
+    assert_eq!(refusal.next, vec![Call::new("environment_show", json!({}))]);
+}
+
+#[test]
 fn review_says_every_agent_deploy_asks_on_cloud_and_none_does_locally() {
     let store = shop();
     let service = json!({ "name": "web", "image": "traefik/whoami" });
