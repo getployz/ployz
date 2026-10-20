@@ -119,7 +119,6 @@ struct Recorded {
     in_before: bool,
     stopped: bool,
     present: bool,
-    deploy: Option<DeploymentLogId>,
 }
 
 impl Recorded {
@@ -134,7 +133,6 @@ impl Recorded {
             in_before: *observed.rotation() == CopyRotation::In,
             stopped: false,
             present: true,
-            deploy: observed.deploy_label(),
         }
     }
 
@@ -325,7 +323,6 @@ impl Scripted {
                 rotation,
                 stopped: false,
                 present: true,
-                deploy: None,
             },
         );
         self
@@ -899,7 +896,6 @@ impl Scripted {
                     in_before: false,
                     stopped: false,
                     present: true,
-                    deploy: self.deploys.lock().unwrap().last().cloned().flatten(),
                 },
             );
         }

@@ -147,8 +147,8 @@ pub(crate) async fn let_go<C: MachineOperations>(
     name: &dyn Fn(&MachineId) -> MachineRef,
     cancellation: &CancellationToken,
 ) -> OldCopyEnd {
-    let proxies = |machines: &[MachineId]| Unconfirmed::Proxies {
-        servers: machines.iter().map(name).collect(),
+    let proxies = |waiting: &cleanup::Unconfirmed| Unconfirmed::Proxies {
+        servers: waiting.machines.iter().map(name).collect(),
     };
     let unlisted = cleanup::wait_unlisted(
         client,
@@ -189,6 +189,7 @@ fn ended(step: Step) -> Result<(), RpcError> {
                 "not unlisted after {} s; the proxies on {} did not confirm",
                 ACK_WAIT.as_secs(),
                 machines
+                    .machines
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
