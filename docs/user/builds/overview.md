@@ -58,8 +58,9 @@ server more time, see [Build resources and cache](build-resources-and-cache.md#g
 
 ## Good to know
 
-- **Changing a variable rebuilds** the GitHub services that use it on their next deploy, because
-  builds can read variables. Changing replicas, domains, or CPU and memory limits doesn't.
+- **Changing a variable rebuilds** the services that use it on their next deploy, because builds
+  can read variables. That includes a service you deploy with `ployz up`: Ployz keeps its latest
+  upload and builds it again. Changing replicas, domains, or CPU and memory limits doesn't.
 - **Git submodules, Git LFS and very large repositories don't build.** Keep large files out of
   the repository; see [Troubleshooting builds](../troubleshooting/builds.md#my-repository-is-too-big-or-uses-submodules).
 - **A build gets your service's variables, secrets included.** See

@@ -1,6 +1,6 @@
 import { CopyButton } from "#/components/copy-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
-import type { installLines } from "#/modules/machines/waiting/install-lines";
+import { installLines, type InstallTarget } from "#/modules/machines/waiting/install-lines";
 
 export function CopyBlock({ value }: { value: string }) {
   return (
@@ -13,7 +13,8 @@ export function CopyBlock({ value }: { value: string }) {
   );
 }
 
-export function InstallTabs({ lines }: { lines: ReturnType<typeof installLines> }) {
+export function InstallTabs({ target }: { target: InstallTarget }) {
+  const lines = installLines(target);
   return (
     <Tabs defaultValue="shell">
       <TabsList>
@@ -21,7 +22,11 @@ export function InstallTabs({ lines }: { lines: ReturnType<typeof installLines> 
         <TabsTrigger value="cloud-init">cloud-init</TabsTrigger>
         <TabsTrigger value="terraform">Terraform</TabsTrigger>
       </TabsList>
-      <TabsContent value="shell"><CopyBlock value={lines.shell} /></TabsContent>
+      <TabsContent value="shell" className="flex flex-col gap-2">
+        <CopyBlock value={lines.shell} />
+        <p className="text-sm text-muted-foreground">Paste this Fleet Token when it asks. It doesn't show what you paste.</p>
+        <CopyBlock value={target.token} />
+      </TabsContent>
       <TabsContent value="cloud-init"><CopyBlock value={lines.cloudInit} /></TabsContent>
       <TabsContent value="terraform"><CopyBlock value={lines.terraform} /></TabsContent>
     </Tabs>

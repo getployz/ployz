@@ -1389,6 +1389,90 @@ async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
 }
 
 #[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "A fixed fixture.")]
+async fn a_settings_only_deploy_of_an_upload_rebuilds_from_the_held_upload() {
+    let (root, service, builds) = fixture();
+    fs::remove_file(root.join("Dockerfile")).unwrap();
+    let railpack = |greeting: &str| {
+        let mut input = uploaded(&root, true);
+        let snapshot = &mut input.deployment["snapshots"][0];
+        snapshot["config"]["build"]["buildMethod"] = json!("railpack");
+        snapshot["resolvedEnv"] = json!({"GREETING": greeting});
+        input
+    };
+    let (session, server) = session(service).await;
+    let built = session
+        .prepare(railpack("hello"))
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipts: BTreeMap<_, _> = built
+        .build_receipts()
+        .iter()
+        .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+        .collect();
+    built.close();
+    let name = ServiceName::parse("one").unwrap();
+
+    // Cloud still holds the upload, so the variable change rebuilds from it.
+    let mut changed = railpack("hello-staging");
+    changed.build_receipts = receipts.clone();
+    let deployed = session.prepare(changed).unwrap().finished().await.unwrap();
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        2,
+        "a Railpack build reads every variable, so a new value rebuilds"
+    );
+    assert_ne!(
+        deployed.build_receipts()[&name].fingerprint,
+        receipts[&name][0].fingerprint,
+        "the new image's build inputs hold the new value"
+    );
+    assert!(deployed.preview().operations.iter().any(|row| {
+        row.operation.spec().is_some_and(|spec| {
+            spec.container
+                .environment
+                .get("GREETING")
+                .map(String::as_str)
+                == Some("hello-staging")
+        })
+    }));
+    deployed.close();
+
+    // Cloud released the upload before the run read it: an unchanged build still reuses
+    // its image, and a changed one needs a new upload, which the run records as such.
+    let mut unchanged = railpack("hello");
+    unchanged.sources.clear();
+    unchanged.build_receipts = receipts.clone();
+    session
+        .prepare(unchanged)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap()
+        .close();
+    let mut released = railpack("hello-production");
+    released.sources.clear();
+    released.build_receipts = receipts;
+    let error = session
+        .prepare(released)
+        .unwrap()
+        .finished()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        crate::sdk::preparation::needs_upload(&error),
+        Some(vec![name])
+    );
+    assert_eq!(builds.definitions.lock().unwrap().len(), 2, "nothing built");
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn a_build_still_queued_at_its_start_limit_reports_queued_and_starts_nothing() {
     let (root, service, builds) = fixture();
     builds.hold_in_queue.store(true, Ordering::SeqCst);
