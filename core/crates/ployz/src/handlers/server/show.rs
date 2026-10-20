@@ -6,7 +6,7 @@ use ployz_core::{
 };
 use serde_json::{Value, json};
 
-use super::{connect_or_none, signed_in, waiting};
+use super::{connect_or_none, has_no_servers, signed_in, waiting};
 use crate::{
     cluster::StorageGaps,
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
@@ -146,7 +146,7 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
         Err(Unshown::Failed(error)) => (error, false),
     };
     let report = error.report();
-    let missing = report.code == RpcErrorCode::NotFound;
+    let missing = report.code == RpcErrorCode::NotFound || has_no_servers(&report);
     let unreachable =
         report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some();
     // An inherited PLOYZ_CONNECT or PLOYZ_CONTEXT that reached no daemon was never asked.

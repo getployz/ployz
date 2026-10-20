@@ -2327,7 +2327,7 @@ fn server_show_says_when_the_waiting_list_could_not_be_read() {
     let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
     let (code, json, stderr) = run_json_with(&["server", "show", "nobody", "--json"], &token);
     assert_eq!(code, Some(1), "{json}");
-    assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict", "{json}");
     assert_eq!(message(&json), "this Organization has no Servers");
     assert!(
         stderr.contains("The servers waiting to join could not be read"),
